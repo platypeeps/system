@@ -54,10 +54,11 @@ exit 0
 """
 
 
-AUTOCOMMIT_STUB = """#!/bin/sh
-# Test double for local-autocommit: record the argv instead of committing.
-printf '%s\\n' "$@" >> "$AUTOCOMMIT_LOG"
-exit 0
+GIT_WRAPPER = """#!/bin/sh
+# Test wrapper for git: record the call, then run the real git, so the script
+# still scans and pulls while the test sees every verb it used.
+printf '%s\\n' "$*" >> "$GIT_LOG"
+exec "$REAL_GIT" "$@"
 """
 
 
@@ -80,14 +81,15 @@ class Fixture:
         shutil.copy(script, self.folder / "repo-sync.sh")
         (self.tmp / "lib").mkdir()
         shutil.copy(LIB / "config.sh", self.tmp / "lib" / "config.sh")
-        # Every profile but terra layers the profile conf on the common one,
-        # and the commit step has to cover both. Written for every profile so
-        # a fixture switched to `personal` needs nothing else.
+        # Every profile but terra layers the profile conf on the common one.
+        # Written for every profile so a fixture switched to `personal` needs
+        # nothing else.
         (self.folder / "repos.common.conf").write_text("")
-        autocommit_dir = self.tmp / "local-autocommit"
-        autocommit_dir.mkdir()
-        (autocommit_dir / "autocommit.sh").write_text(AUTOCOMMIT_STUB)
-        self.autocommit_log = self.tmp / "autocommit.log"
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        (self.bin / "git").write_text(GIT_WRAPPER)
+        (self.bin / "git").chmod(0o755)
+        self.git_log = self.tmp / "git.log"
         self.root = self.tmp / "root"
         self.root.mkdir()
         (self.tmp / "home").mkdir()
@@ -105,31 +107,11 @@ class Fixture:
     def write_conf(self, text):
         (self.folder / f"repos.{self.profile}.conf").write_text(text)
 
-    def autocommit_calls(self):
-        """Each recorded argv, one list per call, oldest first.
-
-        The double appends one argument per line and nothing else, so a run
-        that never reached it leaves no file at all.
-        """
-        if not self.autocommit_log.exists():
+    def git_verbs(self):
+        """Every git call the script made, as one argument string each."""
+        if not self.git_log.exists():
             return []
-        lines = self.autocommit_log.read_text().splitlines()
-        calls, current = [], []
-        for line in lines:
-            if line in ("check", "commit") and current:
-                calls.append(current)
-                current = []
-            current.append(line)
-        if current:
-            calls.append(current)
-        return calls
-
-    def autocommit_scopes(self, verb):
-        """The scopes one verb was given, in the order it got them."""
-        for call in self.autocommit_calls():
-            if call and call[0] == verb:
-                return [call[i + 1] for i, a in enumerate(call) if a == "--scope"]
-        return []
+        return self.git_log.read_text().splitlines()
 
     def checkout(self, rel, origin=None):
         """A directory that scan_disk will see: a git dir, optionally with an
@@ -168,7 +150,7 @@ class Fixture:
 
     # --- running it ---------------------------------------------------------
 
-    def run(self, *args, expect=0, autocommit=False, extra_env=None):
+    def run(self, *args, expect=0, extra_env=None):
         """Run the script and require `expect` as its status.
 
         Checking only stdout and the rewritten conf would let a regression
@@ -178,10 +160,12 @@ class Fixture:
         env = dict(os.environ)
         env.update(
             REPO_SYNC_PROFILE=self.profile,
-            AUTOCOMMIT_LOG=str(self.autocommit_log),
+            GIT_LOG=str(self.git_log),
+            REAL_GIT=shutil.which("git"),
+            PATH=f"{self.bin}{os.pathsep}{env['PATH']}",
             REPO_SYNC_ROOT=str(self.root),
-            # The confs sit in the copy's folder, as in a private fork that
-            # tracks them, so the commit-step cases still have a scope.
+            # The confs sit in the copy's folder, so a case can write them
+            # without a config directory.
             REPO_SYNC_CONF_DIR=str(self.folder),
             # Must not resolve, or the recorded profile would win over the env.
             MACHINE_SETUP_STATE=str(self.tmp / "no-such-state"),
@@ -196,13 +180,6 @@ class Fixture:
             # network the alternative is a DNS or connect timeout, not a
             # quick error.
             GIT_SSH_COMMAND="false",
-            # The fixture is a throwaway tree with no sibling local-autocommit
-            # and no git repository around it, so nightly's commit step has
-            # nothing to act on. Off explicitly rather than by accident: the
-            # step exits 127 on a real machine when the tool is missing, and a
-            # test that relied on that would pass for the wrong reason.
-            # local-autocommit has its own suite for the step itself.
-            SD_AUTOCOMMIT="0" if not autocommit else "1",
         )
         for key, value in (extra_env or {}).items():
             if value is None:
@@ -240,31 +217,28 @@ class RepoSyncTest(unittest.TestCase):
         self.addCleanup(f.destroy)
         return f
 
-    def test_the_commit_step_scopes_every_conf_the_profile_reads(self):
-        """REGRESSION: the scope was the profile conf alone.
+    def test_nightly_rewrites_the_confs_and_commits_nothing(self):
+        """PIN: the confs keep no git history.
 
-        `remove_entry` loops over $CONF_FILES, so a removal rewrites
-        repos.common.conf too. Committing the profile conf alone left the
-        common one dirty -- and `check` defers on a dirty scope, so it stayed
-        dirty every night after, which is where a real edit hides.
+        A removal rewrites repos.common.conf as well as the profile conf,
+        because `remove_entry` loops over $CONF_FILES. The nightly writes
+        both and stops: no git call stages, commits or pushes them.
         """
         f = self.fixture(profile="personal")
+        (f.folder / "repos.common.conf").write_text("a owner/gone-common\n")
+        f.write_conf("a owner/gone-profile\n")
+        f.checkout("a/kept", "owner/kept")
 
-        f.run("nightly", autocommit=True)
+        f.run("nightly", expect=None)
 
-        want = ["local-repo-sync/repos.common.conf",
-                "local-repo-sync/repos.personal.conf"]
-        self.assertEqual(sorted(f.autocommit_scopes("check")), want)
-        self.assertEqual(sorted(f.autocommit_scopes("commit")), want)
-
-    def test_terra_still_scopes_its_one_conf(self):
-        """PIN: terra reads no common conf, and must not claim one."""
-        f = self.fixture(profile="terra")
-
-        f.run("nightly", autocommit=True)
-
-        self.assertEqual(f.autocommit_scopes("commit"),
-                         ["local-repo-sync/repos.terra.conf"])
+        self.assertEqual((f.folder / "repos.common.conf").read_text().strip(), "")
+        self.assertNotIn("owner/gone-profile",
+                         (f.folder / "repos.personal.conf").read_text())
+        self.assertTrue(f.git_verbs(), "the wrapper saw no git call")
+        for call in f.git_verbs():
+            words = call.split()
+            for verb in ("add", "commit", "push"):
+                self.assertNotIn(verb, words, call)
 
     def test_reconcile_run_twice_adds_the_entry_once(self):
         """PIN. The ordinary path: a checkout whose directory is named after its
@@ -440,8 +414,7 @@ class ConfigDirTest(unittest.TestCase):
     def test_the_confs_default_to_the_shared_config_directory(self):
         """PIN. With no REPO_SYNC_CONF_DIR the confs come from
         $SYSTEM_TOOLS_CONFIG/repo-sync, not from beside the script, and
-        nightly skips the commit step: that directory is outside any
-        checkout."""
+        nightly rewrites them there."""
         f = self.fixture(profile="terra")
         conf_root = f.tmp / "config"
         (conf_root / "repo-sync").mkdir(parents=True)
@@ -454,9 +427,11 @@ class ConfigDirTest(unittest.TestCase):
         self.assertIn("owner/from-config", listed.stdout)
         self.assertNotIn("owner/from-folder", listed.stdout)
 
-        nightly = f.run("nightly", autocommit=True, extra_env=env)
-        self.assertIn("skipping the commit step", nightly.stdout)
-        self.assertEqual([], f.autocommit_calls())
+        f.run("nightly", extra_env=env)
+        self.assertNotIn("owner/from-config",
+                         (conf_root / "repo-sync" / "repos.terra.conf").read_text())
+        self.assertIn("owner/from-folder",
+                      (f.folder / "repos.terra.conf").read_text())
 
     def test_a_missing_conf_names_the_config_path_and_the_example(self):
         """PIN. The error says where the conf belongs and what to copy."""

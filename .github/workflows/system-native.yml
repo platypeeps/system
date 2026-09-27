@@ -313,7 +313,6 @@ jobs:
               run_suite herdr sh local-herdr/herdr.sh test -v
               run_suite adversarial-gate sh local-adversarial-gate/adversarial-gate.sh test -v
               run_suite aws-setup sh local-aws-setup/aws-setup.sh test -v
-              run_suite autocommit sh local-autocommit/autocommit.sh test -v
               run_suite ai-apps sh local-ai-apps/ai-apps.sh test -v
               run_suite jev sh local-jev/jev.sh test -v
               run_suite leak-guard sh local-leak-guard/leak-guard.sh test -v

@@ -56,10 +56,9 @@ names another folder). The profile is auto-detected from
 existing directory, else personal; override with `AI_APPS_PROFILE`. The work
 root is `AI_APPS_WORK_ROOT`, else `SYSTEM_TOOLS_WORK_ROOT`; `local-repo-sync`
 reads the same meaning from `REPO_SYNC_WORK_ROOT`, so the shared name drives
-both. The `.inv` files are a machine's own inventory, so `nightly` skips its
-commit step for them; `profiles/example.inv` in this folder shows the format.
-A private fork that tracks them sets `AI_APPS_PROFILES_DIR` to this folder's
-`profiles/` and keeps the commit. To compare machines, copy the other
+both. The `.inv` files are a machine's own inventory and keep no git history;
+`nightly` writes them and commits nothing. `profiles/example.inv` in this
+folder shows the format. To compare machines, copy the other
 machine's `.inv` into the same folder. Then `compare personal work` shows the drift anywhere,
 and `setup <profile> --apply` pulls a machine toward the chosen manifest.
 

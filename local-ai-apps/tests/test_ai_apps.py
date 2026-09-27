@@ -3,11 +3,12 @@
 The nightly runs unattended and reports by email only when something moved.
 That makes the quiet night the dangerous one: there is no email, so stderr
 and the exit status are the only channels left. A failure that returns 0 on a
-quiet night is invisible until somebody notices the inventory stopped landing.
+quiet night is invisible until somebody notices the inventory went stale.
 
 The fixture is a throwaway tree laid out the way the repository is, because
-the script resolves its siblings as "$DIR/..". `brew`, `notify.sh` and
-`autocommit.sh` are all doubles: nothing upgrades, sends, or commits.
+the script resolves its siblings as "$DIR/..". `brew` and `notify.sh` are
+doubles, and a `git` double records any call: nothing upgrades or sends, and
+the nightly must not touch git at all.
 
 Each case says which kind it is. REGRESSION means it fails against a script
 without the guard it names. PIN means it records a deliberate decision.
@@ -35,11 +36,9 @@ printf '%s\\n' "$@" >> "$NOTIFY_LOG"
 exit 0
 """
 
-AUTOCOMMIT_STUB = """#!/bin/sh
-printf '%s\\n' "$@" >> "$AUTOCOMMIT_LOG"
-verb=$1
-[ "$verb" = commit ] && exit "${AUTOCOMMIT_COMMIT_RC:-0}"
-exit "${AUTOCOMMIT_CHECK_RC:-0}"
+GIT_STUB = """#!/bin/sh
+printf '%s\\n' "$*" >> "$GIT_LOG"
+exit 0
 """
 
 
@@ -60,12 +59,12 @@ class Fixture(unittest.TestCase):
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.notify_log = self.tmp / "notify.log"
-        self.autocommit_log = self.tmp / "autocommit.log"
+        self.git_log = self.tmp / "git.log"
         self._double(self.tmp / "local-notify" / "notify.sh", NOTIFY_STUB)
-        self._double(self.tmp / "local-autocommit" / "autocommit.sh", AUTOCOMMIT_STUB)
 
         self.bin = self.tmp / "bin"
         self._double(self.bin / "brew", BREW_STUB)
+        self._double(self.bin / "git", GIT_STUB)
 
     @staticmethod
     def _double(path, text):
@@ -73,7 +72,7 @@ class Fixture(unittest.TestCase):
         path.write_text(text)
         path.chmod(0o755)
 
-    def run_tool(self, *args, commit_rc=0, extra_env=None):
+    def run_tool(self, *args, extra_env=None):
         env = dict(os.environ)
         env.update(
             AI_APPS_PROFILE="personal",
@@ -84,8 +83,7 @@ class Fixture(unittest.TestCase):
             MACHINE_SETUP_STATE=str(self.tmp / "no-such-state"),
             HOME=str(self.home),
             NOTIFY_LOG=str(self.notify_log),
-            AUTOCOMMIT_LOG=str(self.autocommit_log),
-            AUTOCOMMIT_COMMIT_RC=str(commit_rc),
+            GIT_LOG=str(self.git_log),
             PATH=f"{self.bin}:{env['PATH']}",
         )
         for key, value in (extra_env or {}).items():
@@ -106,7 +104,7 @@ class Fixture(unittest.TestCase):
     def inventory(self):
         return (self.folder / "profiles" / "personal.inv").read_text()
 
-    def quiet_night(self, **kwargs):
+    def quiet_night(self):
         """A night with no upgrade and no inventory change.
 
         The first run writes the inventory, so it is a changed night by
@@ -115,26 +113,11 @@ class Fixture(unittest.TestCase):
         first = self.run_tool("nightly")
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         self.notify_log.unlink(missing_ok=True)
-        self.autocommit_log.unlink(missing_ok=True)
-        return self.run_tool("nightly", **kwargs)
+        return self.run_tool("nightly")
 
 
 class QuietNightTest(Fixture):
-    def test_a_failed_commit_on_a_quiet_night_is_reported(self):
-        """REGRESSION: the quiet-night return sat above the commit_rc check.
-
-        A failed push on a night with nothing else to say exited 0 -- this
-        tool's own failure mode, reporting success having not done the thing,
-        in the one place where nobody is watching.
-        """
-        result = self.quiet_night(commit_rc=1)
-
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("did not land", result.stderr)
-        self.assertFalse(self.notify_log.exists(),
-                         "a quiet night must not email")
-
-    def test_a_quiet_night_that_committed_cleanly_exits_0(self):
+    def test_a_quiet_night_exits_0_without_email(self):
         """PIN: the ordinary quiet night stays silent and green."""
         result = self.quiet_night()
 
@@ -143,32 +126,41 @@ class QuietNightTest(Fixture):
                          self.notify_log.read_text()
                          if self.notify_log.exists() else "")
 
-    def test_the_commit_step_still_runs_on_a_quiet_night(self):
-        """PIN: the inventory is committed whether or not anything changed.
+    def test_a_changed_night_emails_the_report(self):
+        """PIN: the first capture is a change, and a change is mailed."""
+        result = self.run_tool("nightly")
 
-        Without this the regression above could be "fixed" by not committing.
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ai-apps: changes on", self.notify_log.read_text())
+
+    def test_the_nightly_never_touches_git(self):
+        """PIN: the inventory keeps no git history.
+
+        The nightly writes its manifest and stops; nothing stages, commits
+        or pushes it, on a changed night or a quiet one.
         """
         self.quiet_night()
 
-        verbs = [line for line in self.autocommit_log.read_text().splitlines()
-                 if line in ("check", "commit")]
-        self.assertEqual(verbs, ["check", "commit"])
+        self.assertFalse(self.git_log.exists(),
+                         self.git_log.read_text() if self.git_log.exists() else "")
 
 
 class ConfigDirTest(Fixture):
     def test_capture_writes_into_the_shared_config_dir(self):
         """PIN. With no AI_APPS_PROFILES_DIR the manifest goes to
         $SYSTEM_TOOLS_CONFIG/ai-apps/profiles, not beside the script, and
-        nightly skips the commit step: that folder is outside any checkout."""
+        nightly writes it there too."""
         config = self.tmp / "config"
         env = {"AI_APPS_PROFILES_DIR": None, "SYSTEM_TOOLS_CONFIG": str(config)}
         result = self.run_tool("capture", extra_env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((config / "ai-apps" / "profiles" / "personal.inv").is_file())
         self.assertFalse((self.folder / "profiles" / "personal.inv").exists())
+        (config / "ai-apps" / "profiles" / "personal.inv").unlink()
         nightly = self.run_tool("nightly", extra_env=env)
-        self.assertIn("skipping the commit step", nightly.stdout)
-        self.assertFalse(self.autocommit_log.exists())
+        self.assertEqual(nightly.returncode, 0, nightly.stdout + nightly.stderr)
+        self.assertTrue((config / "ai-apps" / "profiles" / "personal.inv").is_file())
+        self.assertFalse((self.folder / "profiles" / "personal.inv").exists())
 
     def test_the_shared_work_root_selects_the_work_profile(self):
         """PIN. SYSTEM_TOOLS_WORK_ROOT stands in for AI_APPS_WORK_ROOT, the
@@ -260,7 +252,7 @@ class ConfigReadingTest(Fixture):
     def test_the_nightly_fails_when_the_capture_could_not_run(self):
         """REGRESSION: `cmd_capture ... || true` discarded the refusal.
 
-        The night then emailed, committed an unchanged file and exited 0,
+        The night then emailed and exited 0,
         leaving the inventory silently a day stale with nothing saying so.
         """
         # Truncated, not merely JSONC: the reader accepts a trailing comma.
@@ -311,7 +303,7 @@ class RowKeyTest(Fixture):
     def test_the_spec_itself_is_never_written(self):
         """REGRESSION: the key was the spec, credentials and all.
 
-        The manifest is committed, pushed and mailed by the nightly, so a
+        The manifest is kept and mailed by the nightly, so a
         spec carrying a URL password or a download token must not reach it.
         Only a digest of the spec is recorded.
         """

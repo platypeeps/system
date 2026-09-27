@@ -71,52 +71,6 @@ else
   CONF_FILES="$COMMON_CONF$NL$PROFILE_CONF"
 fi
 
-# Every conf this profile reads is a commit scope, not just the profile one.
-# `reconcile`'s remove_entry loops over $CONF_FILES, so a removal rewrites
-# repos.common.conf as well. Committing the profile conf alone left the common
-# one dirty after every removal, for good -- and a permanently dirty tracked
-# file is where a real edit hides.
-conf_scopes_phrase() {
-  ( old=$IFS; out=""
-    IFS=$NL
-    for f in $CONF_FILES; do
-      IFS=$old
-      out="${out:+$out }local-repo-sync/$(basename "$f")"
-      IFS=$NL
-    done
-    IFS=$old
-    printf '%s' "$out" )
-}
-
-# Run autocommit.sh with one --scope per conf. The scopes are appended after
-# the caller's own arguments, which parse_options accepts in any order, so the
-# caller's "$@" survives intact -- a POSIX shell has no arrays to rebuild it.
-autocommit_confs() {
-  verb=$1; shift
-  ( old=$IFS
-    IFS=$NL
-    for f in $CONF_FILES; do
-      IFS=$old
-      set -- "$@" --scope "local-repo-sync/$(basename "$f")"
-      IFS=$NL
-    done
-    IFS=$old
-    sh "$AUTOCOMMIT" "$verb" "$@" )
-}
-
-# The confs normally live in the config directory, outside the checkout, and a
-# file outside the checkout (or a gitignored one inside it) has no commit to
-# land in. `nightly` then skips the commit step instead of asking autocommit
-# to stage a path it cannot. A private fork that keeps tracked confs in this
-# folder (REPO_SYNC_CONF_DIR=<this folder>) keeps the commit.
-confs_gitignored() {
-  [ "$(cd "$CONF_DIR" 2>/dev/null && pwd)" = "$DIR" ] || return 0
-  ( IFS=$NL
-    for f in $CONF_FILES; do
-      git -C "$DIR" check-ignore -q "$f" 2>/dev/null || exit 1
-    done )
-}
-
 # `test` and `help` read no conf, so a fresh checkout without its local
 # confs can still run the suite and print usage.
 case "${1:-}" in
@@ -427,54 +381,10 @@ case "$1" in
     EMAIL_FAILED=0
     SYNC_FAILED=0
 
-    # Asked before reconcile writes. `reconcile` appends to and removes lines
-    # from $PROFILE_CONF, so a hand edit sitting there would be swept into an
-    # unattended commit -- and unlike a wholesale regeneration it survives,
-    # which makes the sweep silent rather than merely destructive.
-    # SD_AUTOCOMMIT=0 turns both calls off. Set by this script's own test
-    # fixture, which is a throwaway tree with no sibling tool and no git
-    # repository around it, and available to anyone rehearsing nightly by
-    # hand. It is an explicit opt-out and not a fallback: a missing
-    # local-autocommit/autocommit.sh on a real machine is a broken install,
-    # and this exits 127 saying so rather than skipping quietly. A lane that
-    # silently stops running is the failure this whole change is about.
-    AUTOCOMMIT="$DIR/../local-autocommit/autocommit.sh"
-    CONF_SCOPE=$(conf_scopes_phrase)
-    CHECK_RC=0
-    COMMIT_RC=0
-    if [ "${SD_AUTOCOMMIT:-1}" != "0" ] && confs_gitignored; then
-      echo "repo-sync: $CONF_SCOPE is outside the checkout or gitignored; skipping the commit step."
-      SD_AUTOCOMMIT=0
-    fi
-    if [ "${SD_AUTOCOMMIT:-1}" != "0" ]; then
-      autocommit_confs check --author repo-sync || CHECK_RC=$?
-      if [ "$CHECK_RC" -ne 0 ]; then
-        echo "repo-sync: reconcile skipped; $CONF_SCOPE was not safe to write." >&2
-        exit "$CHECK_RC"
-      fi
-    fi
-
     RECON="$TMPD/recon"
     reconcile > "$RECON" 2>&1
     cat "$RECON"
 
-    # The conf is this job's own output and belongs in the repository. Left
-    # dirty it makes `git status` permanently noisy, which is how a real edit
-    # hides, and it rides onto whatever branch somebody switches to next.
-    # Captured rather than let to fail the case: a push that could not land
-    # must not also cost the list-change email below.
-    # An `if`, not `[ ... ] && sh ... || COMMIT_RC=$?`. In that form a false
-    # test short-circuits the `&&` and falls straight into the `||`, which
-    # records the *test's* exit status as the commit's and fails the job for
-    # being switched off. Same AND-OR trap the tool's own push guard is about.
-    if [ "${SD_AUTOCOMMIT:-1}" != "0" ]; then
-    autocommit_confs commit --author repo-sync --empty-ok \
-      --message "chore(repo-sync): reconcile $PROFILE repo list" \
-      --body "Written by local-repo-sync/repo-sync.sh nightly on $(hostname -s).
-Checkouts added or removed on disk, recorded in the profile conf. Scoped to
-$CONF_SCOPE and nothing else." \
-      || COMMIT_RC=$?
-    fi
     # A MISMATCH notifies too. Before this path existed, such a checkout made
     # $ADDED non-empty every night and so emailed every night -- badly, as a
     # spurious list change, but the operator did hear about it. Reporting it
@@ -534,12 +444,6 @@ $CONF_SCOPE and nothing else." \
       echo "sync failed $n_failed of $n_total repos — exiting 1 so the cron failure push fires" >&2
       exit 1
     fi
-    # Reported last, so an unpushed conf raises the cron banner without
-    # swallowing the list-change report or the fleet-outage check above.
-    if [ "$COMMIT_RC" -ne 0 ]; then
-      echo "repo-sync: $CONF_SCOPE was not committed and pushed (rc=$COMMIT_RC)" >&2
-      exit "$COMMIT_RC"
-    fi
     ;;
   list)
     list
@@ -568,14 +472,12 @@ usage: repo-sync.sh sync|check|list|reconcile|nightly|test
              are listed as unmanaged and left alone, as are checkouts whose
              directory name differs from their repo name (MISMATCH) — the
              conf format cannot express those.
-  nightly    reconcile (emailing the diff when the repo list changed, then
-             committing and pushing the conf), then sync (emailing the
-             failure summary); this is what the repo-sync-nightly cron job
-             runs. Exits 1 when an email could not be delivered, when half
-             or more of the fleet failed, or when the conf could not be
-             pushed; 3 when the conf was not safe to write and reconcile
-             was skipped. SD_AUTOCOMMIT=0 skips the commit step, and so do confs
-             outside the checkout (the default) or gitignored.
+  nightly    reconcile (emailing the diff when the repo list changed),
+             then sync (emailing the failure summary); this is what the
+             repo-sync-nightly cron job runs. The confs keep no git
+             history: nightly rewrites them and commits nothing. Exits 1
+             when an email could not be delivered or when half or more of
+             the fleet failed.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
              against fixture trees; sync's clone path is not covered,

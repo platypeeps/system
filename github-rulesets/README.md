@@ -48,7 +48,5 @@ The two rulesets:
   bypass.
 - `main required checks` — a pull request (0 approvals, since one maintainer
   cannot approve their own pull request) and the checks `route` plus the four
-  `system-native` legs. A write deploy key bypasses it, for the unattended
-  autocommit jobs that push generated files straight to the default branch.
-  Strict (up-to-date) checks are off, so a landing does not re-stale every
-  open pull request.
+  `system-native` legs; no bypass. Strict (up-to-date) checks are off, so a
+  landing does not re-stale every open pull request.

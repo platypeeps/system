@@ -178,7 +178,7 @@ def check_actor(*, who, reason, session, principal, program) -> None:
 def _snapshot(connection):
     """Every read of one plan from one snapshot, with no write lock (the #350 review).
 
-    The connection is in autocommit mode, so each `SELECT` would otherwise
+    The connection has `isolation_level=None`, so each `SELECT` would otherwise
     read the store as it stood at that statement, and a note, lease or report
     landing between two of them gives a plan whose rows, refusals and
     fingerprint never coexisted. A `SAVEPOINT` outside a transaction opens a

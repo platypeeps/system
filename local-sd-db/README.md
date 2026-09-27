@@ -542,8 +542,8 @@ rather than a second script beside it.
 ### A broken source is exit 3, and is not a failed backup
 
 `backup` runs `PRAGMA foreign_key_check` on the snapshot it just wrote.
-On the copy and not on the live source, because the source connection is
-autocommit and holds no read transaction across the check and the
+On the copy and not on the live source, because the source connection has
+`isolation_level=None` and holds no read transaction across the check and the
 `VACUUM INTO`: a writer landing between the two would orphan a row the check
 never saw, while the table counts `verify` compares stayed equal. The copy
 cannot move, and it is the image `restore` would consume.

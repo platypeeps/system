@@ -68,9 +68,7 @@ cp repos.personal.conf.example ~/.config/system/repo-sync/repos.personal.conf
 | `repos.work.conf` | work machine — for example `work` and the toolbox itself |
 | `repos.terra.conf` | terra machine — the toolbox repo and nothing else |
 
-Because the confs sit outside the checkout, `nightly` skips its commit step
-for them. A private fork that tracks its confs in this folder sets
-`REPO_SYNC_CONF_DIR` to it and keeps the commit.
+The confs keep no git history: `nightly` rewrites them and commits nothing.
 
 Format is `<subdir> <owner/repo>`; `#` comments and blank lines are ignored.
 `<subdir>` is the folder under the checkout root, so `ai jomjol/AI-on-the-edge-device`

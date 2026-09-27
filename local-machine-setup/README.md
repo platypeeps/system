@@ -87,8 +87,8 @@ cp -R local-machine-setup/examples/. ~/.config/system/machine-setup/
 `machine-setup.env` in the config folder.
 
 The config folder can be a git checkout of its own. `capture` then refuses to
-write from a checkout behind its upstream, and `profile-autocapture.sh`
-commits there. Without git, both simply write the files.
+write from a checkout behind its upstream. Without git, it simply writes the
+files. `profile-autocapture.sh` never commits either way.
 
 LaunchAgent labels start with `$SYSTEM_TOOLS_LABEL_PREFIX` (default
 `local.system-tools`). A template in `launchagents/` may use `@LABEL@`,
@@ -305,7 +305,7 @@ missing before offering to fix it.
 every machine installs it) runs that nightly — drift triggers the cron failure
 notification (banner + ntfy push). A clean machine stays silent.
 
-### Additive capture, and the nightly commit
+### Additive capture, unattended
 
 `capture` is a **mirror**: it rebuilds each roster from live machine state and
 `write_manifest` ends with `mv "$wm_new" "$wm_target"`, so an entry that is no
@@ -324,27 +324,16 @@ plist copy — where "additive" has no meaning; a file is replaced or it is not.
 So additive mode is rosters only, by construction. It skips the Spotlight
 list too, a roster that only sudo can read.
 
-That is what makes an unattended commit defensible. `profile-autocapture.sh`
+That is what makes an unattended write defensible. `profile-autocapture.sh`
 wraps it:
 
     sh profile-autocapture.sh
 
-It refuses to run if `profiles/` is already dirty (exit 1) rather than sweeping
-somebody's in-progress edit into its commit; **fast-forwards onto the remote
-before capture when the incoming commits leave `profiles/` alone**, because
-`capture --apply` refuses on a checkout that is behind and nothing pulls
-`main` on a timer — and **refuses when they do not**, since an entry removed
-on another machine is still installed on this one, and an additive capture
-would push it straight back; stages with an **explicit
-pathspec**, never `git add -A`; then verifies nothing outside the profile
-directory ended up staged and resets if it did. The verification is not
-paranoia about a hypothetical: a commit once followed `git add -A` after a
-`git diff --stat` that could not see two untracked files.
-
-The job works in the git checkout that holds the profile directory
-(`$SYSTEM_TOOLS_CONFIG/machine-setup/profiles` by default). When that
-directory is under no version control, it runs `capture --apply --additive`,
-says there is nothing to commit, and exits with capture's code.
+It runs `capture --apply --additive` against the profile directory
+(`$SYSTEM_TOOLS_CONFIG/machine-setup/profiles` by default) and exits with
+capture's code. The rosters keep no git history: the job writes them and
+stages, commits and pushes nothing, even when the config folder is a git
+checkout.
 
 Exit `3` means a removal was held. The nightly job lets that fire the failure
 banner, which is the intended trade: an entry disappearing from a machine is

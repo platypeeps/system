@@ -24,8 +24,8 @@ ROOT="$(cd "$DIR/.." && pwd)"
 # machine's owner's data, not the tool's, so they live outside the checkout:
 # one folder per tool under $SYSTEM_TOOLS_CONFIG (see lib/config.sh), each
 # directory overridable on its own. examples/ shows every shape; copy it there
-# to start. The folder may be a git checkout of its own, and capture and
-# profile-autocapture.sh treat it as one when it is.
+# to start. The folder may be a git checkout of its own, and capture treats it
+# as one when it is.
 SYSTEM_TOOLS_CONFIG="${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}"
 CONFIG_DIR="$SYSTEM_TOOLS_CONFIG/machine-setup"
 PROFILE_DIR="${MACHINE_SETUP_PROFILE_DIR:-$CONFIG_DIR/profiles}"
@@ -3924,7 +3924,7 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    to write one away, exiting 3 if a removal was held. Skips
                    the stages that copy file content, where additive has no
                    meaning. This is what makes an unattended capture safe to
-                   commit: see profile-autocapture.sh
+                   write: see profile-autocapture.sh
                    --apply actually writes; without it capture is a dry run
                    entries are regenerated; the comment block above the first
                    entry is carried across, comments between entries are not
