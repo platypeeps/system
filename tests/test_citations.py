@@ -170,7 +170,6 @@ KNOWN_LINE_INTO_CODE = frozenset({
      1237, "local-herdr/herdr.sh", 36, 36),
     ("docs/work/2026-09-05-one-database-one-front-door/implement.md",
      1239, "local-herdr/herdr_wrap.py", 387, 387),
-    ("local-machine-setup/profile-autocapture.sh", 23, "machine-setup.sh", 14, 14),
     ("local-msgsnap/tests/test_eintr_retry.py", 87, "eintr-retry.sh", 74, 75),
     ("local-project-dashboard/sd_dashboard/markup.py", 81, "charts.py", 150, 150),
     ("local-sd-db/sd-db.sh", 9, "sd_db/backup.py", 45, 45),

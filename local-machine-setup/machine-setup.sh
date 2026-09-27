@@ -3228,7 +3228,7 @@ cmd_doctor() {
     echo "  ok      repo config symlinks resolve"
   else
     for alias_path in $aliases; do
-      echo "  WARN    $alias_path missing — local-claude/local-zed symlinks dangle; run: sudo ln -s $(basename "$HOME") $alias_path"
+      echo "  WARN    $alias_path missing — config symlinks that name it dangle; run: sudo ln -s $(basename "$HOME") $alias_path"
     done
   fi
 
@@ -3339,13 +3339,13 @@ cmd_doctor() {
   fi
 
   # The MCP server set is a decision like any other, and the live configs are
-  # untrackable (tokens inline). local-claude keeps a sanitized snapshot; this
+  # untrackable (tokens inline). local-claude keeps a sanitized snapshot in the config folder; this
   # is the drift check for it. Output is server names only — claude.sh status
   # never prints a value.
   claude_sh="$ROOT/local-claude/claude.sh"
   if [ -x "$claude_sh" ]; then
     if mcp_out=$("$claude_sh" status 2>&1); then
-      echo "  ok      MCP server set matches local-claude/mcp snapshots"
+      echo "  ok      MCP server set matches the local-claude snapshots"
     else
       echo "$mcp_out" | grep -E '^  (added|removed|changed|WARN|FAIL)' \
         | sed 's/^  /  WARN    MCP /'
