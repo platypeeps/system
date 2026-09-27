@@ -907,7 +907,6 @@ stage_agents() {
 container_for() {
   case "$1" in
     local-milvus)                  echo zilliz ;;
-    local-n8n)                     echo n8n-task-runner ;;
     local-opentelemetry-collector) echo local-opentelemetry-collector ;;
     local-graphiti-mcp)            echo local-graphiti-mcp-graphiti-falkordb-1 ;;
     *)                             echo "${1#local-}" ;;
@@ -2784,8 +2783,8 @@ cmd_profiles() {
 # working machine depends on. Safe anywhere, ignores --apply, needs no
 # recorded profile (agent/cron checks are skipped without one).
 # Doctor runs outside the setup/update path, so nothing has resolved PROFILE
-# for it. Checks that apply to one machine only (the n8n TLS pair, the sd
-# pieces) need it, and an unset PROFILE would silently skip them everywhere —
+# for it. Checks that apply to one machine only (the sd pieces) need it,
+# and an unset PROFILE would silently skip them everywhere —
 # including on the machine that does want them. Same precedence as the rest
 # of the script, without load_profile's die: a fresh machine gets a report.
 doctor_profile() {
@@ -3186,7 +3185,7 @@ cmd_doctor() {
   if command -v fnm >/dev/null 2>&1; then
     echo "  ok      fnm ($(fnm current 2>/dev/null || echo no default node))"
   else
-    echo "  WARN    fnm missing (local-n8n needs it)"
+    echo "  WARN    fnm missing (the tooling stage installs node versions with it)"
   fi
 
   # Key material no stage installs: copied by hand, never through git.
@@ -3207,23 +3206,6 @@ cmd_doctor() {
     else
       echo "  WARN    no ssh identity key (used by local-mac-utils; copy one of ~/$(echo "$MACHINE_SETUP_SSH_KEYS" | sed 's| | or ~/|g') by hand — never in git)"
     fi
-  fi
-  # local-n8n runs on some profiles only, so its TLS pair is expected to be
-  # absent everywhere else. Checking for it unconditionally turned every
-  # other machine's report into two findings nothing could ever clear, which is
-  # how a report teaches you to stop reading it.
-  if printf '%s\n' ${MACHINE_SETUP_N8N_TLS_PROFILES:-} | grep -qxF "$PROFILE"; then
-    for spec in "$HOME/.ssh/ssl/n8n_self_signed.pem|local-n8n" \
-                "$HOME/.ssh/ssl/n8n_self_signed.key|local-n8n"; do
-      kpath=${spec%|*}; kuser=${spec#*|}
-      if [ -e "$kpath" ]; then
-        echo "  ok      $kpath"
-      else
-        echo "  WARN    $kpath missing (used by $kuser; copy by hand — never in git)"
-      fi
-    done
-  else
-    echo "  --      n8n TLS pair not checked (profile $PROFILE is not in MACHINE_SETUP_N8N_TLS_PROFILES)"
   fi
 
   # See HARDEN_DIRS: agent and cloud CLIs drop credentials into these in the
@@ -4056,8 +4038,6 @@ environment:
                           beyond <prefix>.* (space-separated)
   MACHINE_SETUP_SSH_KEYS  doctor: ssh identity files under ~, any one of which
                           counts (space-separated); unset means not checked
-  MACHINE_SETUP_N8N_TLS_PROFILES  doctor: profiles that expect the local-n8n
-                          TLS pair (space-separated)
   MACHINE_SETUP_PLACEHOLDER_EXPECTED  doctor: folders whose .env may keep
                           placeholder values (space-separated)
   OBSIDIAN_VAULT          vault path for the obsidian stage; unset skips it

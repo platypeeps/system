@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- A template. The agents stage replaces @LABEL@ with the label (this
+     file's name), @HOME@ with $HOME and @ROOT@ with the checkout root. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>@LABEL@</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@ROOT@/local-project-dashboard/dashboard.sh</string>
+		<string>serve</string>
+		<string>--port</string>
+		<string>8767</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/@LABEL@.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/@LABEL@.err</string>
+</dict>
+</plist>

@@ -77,3 +77,7 @@ local-ai-apps/profiles/*.inv
 !local-ai-apps/profiles/example.inv
 # LaunchAgent plists rendered from *.plist.template at install
 *.plist
+# machine-setup's templates are placeholders only (@LABEL@, @HOME@, @ROOT@),
+# and its suite reads them.
+!local-machine-setup/examples/launchagents/*.plist
+!local-machine-setup/tests/fixtures/config/machine-setup/launchagents/*.plist

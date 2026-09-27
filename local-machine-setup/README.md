@@ -82,9 +82,9 @@ cp -R local-machine-setup/examples/. ~/.config/system/machine-setup/
 ```
 
 `machine-setup.env.example` lists the optional settings: `OBSIDIAN_VAULT`,
-`MACHINE_SETUP_SSH_KEYS`, `MACHINE_SETUP_N8N_TLS_PROFILES`,
-`MACHINE_SETUP_AGENT_GLOBS`, `MACHINE_SETUP_PLACEHOLDER_EXPECTED` and
-`MACHINE_SETUP_PROFILES`. Copy it to `machine-setup.env` in the config folder.
+`MACHINE_SETUP_SSH_KEYS`, `MACHINE_SETUP_AGENT_GLOBS`,
+`MACHINE_SETUP_PLACEHOLDER_EXPECTED` and `MACHINE_SETUP_PROFILES`. Copy it to
+`machine-setup.env` in the config folder.
 
 The config folder can be a git checkout of its own. `capture` then refuses to
 write from a checkout behind its upstream, and `profile-autocapture.sh`
@@ -416,8 +416,8 @@ machine that has broken in a way worth knowing about tonight.
   list and the port list are read from the files on every run rather than kept
   as tables in the script — a hand-maintained copy is what goes stale when a
   service is added. Container names that differ from the folder suffix
-  (`local-milvus` → `zilliz`, `local-n8n` → `n8n-task-runner`) come from
-  `container_for()`, the same mapping the `services` stage uses.
+  (`local-milvus` → `zilliz`) come from `container_for()`, the same mapping the
+  `services` stage uses.
 
 ## macOS settings
 
