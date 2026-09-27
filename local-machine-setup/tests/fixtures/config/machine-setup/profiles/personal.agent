@@ -1,0 +1,3 @@
+# Fixture profile: the two sd agents.
+local.system-tools.sd-dashboard
+local.system-tools.sd-runner

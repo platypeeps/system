@@ -1,0 +1,7 @@
+# personal machine Spotlight privacy exclusions. Captured by machine-setup.sh capture.
+# One absolute path per line; a leading ~ is this account's home. The system
+# stage adds a missing path and restarts mds. It never removes one.
+
+/private/tmp/fixture-cache
+~/Library/Caches/fixture
+~/repos

@@ -1,0 +1,3 @@
+# Cron jobs (local-cron-jobs) this profile installs.
+health-check-nightly
+repo-sync-nightly

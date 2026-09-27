@@ -1,0 +1,399 @@
+# Overrides for the opentelemetry-demo chart (v0.40.10, app 2.2.0) on the local
+# kind cluster.
+#
+# Deliberately NOT on 0.41.0 (app 3.0.0): that release drops the Load Generator
+# UI from frontend-proxy (load-generator moves from Locust to k6, no web UI),
+# bumps flagd v0.12.9 -> v0.16.0 and rolls the flagd-ui sidecar to the 3.0.0
+# app image (either of which could invalidate the memory floor documented under
+# `flagd` below), and swaps seven components in (agent, chatbot, mcp,
+# telemetry-docs, opamp-server, firepit, astronomy-db -- chart-sized, but none
+# of them measured by this file's sizing pass) for three out (product-reviews,
+# llm, postgresql). Moving to it is a deliberate migration, not a version
+# bump -- re-copy the flagd sidecarContainers block from `helm show values` at
+# that version when you do.
+#
+# The chart sizes every container for CI, where the demo runs for minutes. On a
+# laptop cluster that stays up for hours the working sets grow past those limits
+# and containers get OOMKilled (exit 137) in restart loops. The node itself is
+# nowhere near full -- these are per-container caps, not node pressure -- so the
+# fix is to spend some of the 31GB the VM already has.
+#
+# Measured usage vs. the chart default at the time these were chosen (crictl
+# workingSetBytes, ~3h uptime). Limits below are roughly 2x measured.
+#
+# Only `limits` are set. Kubernetes copies each memory limit into the matching
+# request when the request is omitted, so these pods run with memory requests
+# equal to their limits -- under memory pressure the kubelet evicts pods that
+# exceed their requests first, and these never do. (No CPU requests are set, so
+# the pods are Burstable, not Guaranteed; the memory protection is what matters
+# for a demo you are trying to investigate against.)
+#
+# Usage -- pass -f on EVERY upgrade, a bare `helm upgrade` reverts to defaults.
+# The lifecycle is scripted in ./opentelemetry-demo.sh (start | stop | upgrade | status |
+# mcp-install | open | register | aura | cleanup); the invocations below are the
+# ones it actually runs, plus the one-time setup from the runbook.
+#
+# One-time tool install (macOS; then start Docker Desktop, give it >=12GB / 4 CPUs):
+#   brew install --cask docker
+#   brew install kind kubectl helm jq
+#
+# Cluster + demo chart (= ./opentelemetry-demo.sh start):
+#   kind create cluster --name otel-demo
+#   kubectl config use-context kind-otel-demo
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update open-telemetry
+#   # The collector reads the OTLP/HTTP export URL and auth from this secret at
+#   # startup; without it the collector crashloops and `helm --wait` fails.
+#   # Create it before the install (opentelemetry-demo.sh does this from its
+#   # config .env):
+#   kubectl --context kind-otel-demo create namespace otel-demo
+#   kubectl --context kind-otel-demo -n otel-demo create secret generic otlp-export \
+#     --from-literal=url=https://otlp.example.test/otel \
+#     --from-literal=auth=YOUR_AUTHORIZATION_VALUE \
+#     --from-literal=auth-header=Authorization
+#   helm --kube-context kind-otel-demo upgrade --install otel-demo \
+#     open-telemetry/opentelemetry-demo --version 0.40.10 \
+#     --namespace otel-demo --create-namespace \
+#     -f collector-values.yaml \
+#     --set-string 'opentelemetry-collector.config.exporters.otlphttp/export.headers.Authorization=${env:OTLP_EXPORT_AUTH}' \
+#     --wait --timeout 10m
+#   kubectl --context kind-otel-demo -n otel-demo port-forward svc/frontend-proxy 8080:8080 &
+#   # UIs behind the forward: store / , jaeger /jaeger/ui/ , grafana /grafana/ ,
+#   # loadgen /loadgen/ , flagd-ui /feature
+#
+# MCP servers + AURA into namespace default (= ./opentelemetry-demo.sh mcp-install; needs
+# OPENAI_API_KEY exported, and AURA_CHART_DIR / AURA_VALUES_FILE naming a local
+# aura checkout's chart and values file):
+#   helm --kube-context kind-otel-demo upgrade --install kubernetes-mcp-server \
+#     oci://ghcr.io/containers/charts/kubernetes-mcp-server \
+#     --namespace default \
+#     --set ingress.enabled=false --set config.read_only=true \
+#     --set 'rbac.extraClusterRoleBindings[0].name=view' \
+#     --set 'rbac.extraClusterRoleBindings[0].roleRef.name=view' \
+#     --set 'rbac.extraClusterRoleBindings[0].roleRef.external=true'
+#   helm --kube-context kind-otel-demo upgrade --install prometheus-mcp-server \
+#     oci://ghcr.io/pab1it0/charts/prometheus-mcp-server \
+#     --namespace default \
+#     --set prometheus.url="http://prometheus.otel-demo.svc.cluster.local:9090" \
+#     --set livenessProbe.httpGet=null --set 'livenessProbe.tcpSocket.port=http' \
+#     --set readinessProbe.httpGet=null --set 'readinessProbe.tcpSocket.port=http'
+#   helm --kube-context kind-otel-demo upgrade --install aura \
+#     "$AURA_CHART_DIR" \
+#     --namespace default \
+#     -f "$AURA_VALUES_FILE" \
+#     --set secrets.openaiApiKey="$OPENAI_API_KEY"
+#   kubectl --context kind-otel-demo -n default exec -it deploy/aura -- \
+#     ./aura --api-url http://localhost:8080          # REPL; /exit leaves
+#
+# Break something on purpose (runbook step 7; this chart era names the flag
+# recommendationCacheFailure -- current demo docs call it
+# recommendationServiceCacheFailure, so match the name to the chart version):
+#   kubectl --context kind-otel-demo -n otel-demo get configmap flagd-config -o json | \
+#     jq '.data."demo.flagd.json" |= (fromjson | .flags.recommendationCacheFailure.defaultVariant = "on" | tojson)' | \
+#     kubectl --context kind-otel-demo -n otel-demo apply -f -
+#   kubectl --context kind-otel-demo -n otel-demo delete pod -l app.kubernetes.io/component=flagd
+#   # flagd serves an init-container copy of the ConfigMap -- restarting the app
+#   # service does nothing; restart flagd itself. Verify what it actually serves:
+#   kubectl --context kind-otel-demo -n otel-demo logs deploy/flagd -c init-config | \
+#     jq '.flags.recommendationCacheFailure.defaultVariant'   # want "on"
+#
+# Teardown (= ./opentelemetry-demo.sh cleanup):
+#   kind delete cluster --name otel-demo
+
+# Each override notes the value it replaced: "was X (Y used, Z%)". That prior
+# value is usually the chart 0.40.10 default, but not always -- some entries had
+# already been adjusted in earlier tuning rounds (flagd-ui's "was 700Mi" vs the
+# chart's 250Mi, the collector's "was 400Mi" vs its 200Mi), and three priors
+# match 0.41.0-era numbers rather than the pinned chart's defaults:
+# load-generator (0.40.10 ships 1500Mi), accounting (120Mi), frontend-proxy
+# (65Mi). The usage figures and restart counts are from this cluster as it
+# actually ran; diff against `helm show values` at 0.40.10 before treating any
+# "was" as a chart default.
+components:
+  # --- confirmed OOMKilled ---
+  recommendation:
+    resources:
+      limits:
+        memory: 1Gi          # was 500Mi, 5 restarts
+  checkout:
+    resources:
+      limits:
+        memory: 64Mi         # was 20Mi (17Mi used, 86%), 3 restarts
+  load-generator:
+    resources:
+      limits:
+        memory: 1Gi          # was 512Mi (377Mi used), 3 restarts -- below the
+                             # 0.40.10 default of 1500Mi, still ~2.7x measured
+
+  # --- >=90% of limit, had not OOMed yet ---
+  accounting:
+    resources:
+      limits:
+        memory: 320Mi        # was 160Mi (154Mi used, 96%)
+  ad:
+    resources:
+      limits:
+        memory: 640Mi        # was 300Mi (289Mi used, 96%)
+  fraud-detection:
+    resources:
+      limits:
+        memory: 640Mi        # was 300Mi (282Mi used, 94%)
+  frontend-proxy:
+    resources:
+      limits:
+        memory: 192Mi        # was 90Mi (84Mi used, 94%)
+  payment:
+    resources:
+      limits:
+        memory: 288Mi        # was 140Mi (130Mi used, 93%)
+  flagd:
+    # flagd-ui sidecar OOMKilled at the chart default of 250Mi (and every
+    # limit tried up to 1500Mi). Root cause: /proc/meminfo in this kind
+    # cluster reports the full Docker Desktop VM (~23GB/14 cores), not the
+    # pod's cgroup memory limit, and BEAM's scheduler count + mseg
+    # super-carrier sizing default to that host-wide view.
+    #
+    # ELIXIR_ERL_OPTIONS caps schedulers and the super-carrier reservation so
+    # BEAM stops sizing itself off the host. Tried both +S 2:2 +MMscs 256 and
+    # a much more aggressive +S 1:1 +MMscs 64 -- RSS plateaus at ~2.3GB either
+    # way (confirmed stable/flat over 15s+, not still growing), so scheduler
+    # count/carrier size aren't the actual driver of the floor; on-disk image
+    # size was also ruled out (34MB total). True cause of the ~2.3GB floor is
+    # unidentified. The limit below just needs headroom above that plateau.
+    # Everything else here mirrors the chart default since sidecarContainers
+    # is replaced wholesale, not merged.
+    sidecarContainers:
+      - name: flagd-ui
+        useDefault:
+          env: true
+        service:
+          port: 4000
+        env:
+          - name: FLAGD_METRICS_EXPORTER
+            value: otel
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: http://$(OTEL_COLLECTOR_NAME):4318
+          - name: FLAGD_UI_PORT
+            value: "4000"
+          - name: SECRET_KEY_BASE
+            value: yYrECL4qbNwleYInGJYvVnSkwJuSQJ4ijPTx5tirGUXrbznFIBFVJdPl5t6O9ASw
+          - name: PHX_HOST
+            value: localhost
+          - name: ELIXIR_ERL_OPTIONS
+            value: "+S 1:1 +MMscs 64"
+        resources:
+          limits:
+            memory: 2560Mi
+        volumeMounts:
+          - name: config-rw
+            mountPath: /app/data
+  product-catalog:
+    resources:
+      limits:
+        memory: 64Mi         # was 20Mi (18Mi used, 92%)
+
+  # --- 70-90%, headroom too thin to survive a traffic spike ---
+  kafka:
+    resources:
+      limits:
+        memory: 1200Mi       # was 700Mi (621Mi used, 89%)
+  valkey-cart:
+    resources:
+      limits:
+        memory: 64Mi         # was 20Mi (16Mi used, 78%)
+  cart:
+    resources:
+      limits:
+        memory: 320Mi        # was 160Mi (123Mi used, 77%)
+  frontend:
+    resources:
+      limits:
+        memory: 500Mi        # was 250Mi (180Mi used, 72%)
+  quote:
+    resources:
+      limits:
+        memory: 96Mi         # was 40Mi (28Mi used, 71%)
+
+# Deliberately NOT raised -- measured well clear of their caps:
+#   shipping 9Mi/20Mi (45%), currency 9Mi/20Mi (43%), coredns 79Mi/170Mi (47%),
+#   grafana 185Mi/300Mi (62%), email 61Mi/100Mi (61%), image-provider 31Mi/50Mi.
+# (An earlier astronomy-db 68Mi/100Mi measurement is dropped: that component
+#  only exists in chart 0.41.0 / app 3.0.0, so it was measured on a different
+#  chart than this file targets.)
+# shipping's restart count comes from a flagd startup race (Rust panic, exit 101
+# at src/main.rs:55), NOT memory -- raising its limit would fix nothing.
+#
+# kindnet-cni (44Mi/50Mi, 88%) is kind's own CNI DaemonSet in kube-system. It is
+# not part of this chart and must be patched separately -- see setup notes.
+
+# OpenSearch was the closest to death: 1065Mi against an 1100Mi cap (97%), 4
+# OOMKills. The JVM heap (-Xms/-Xmx 400m) is NOT the problem -- the growth is
+# off-heap (Lucene mmap, thread stacks, direct buffers), so raising the container
+# limit is the fix and the heap opts are deliberately left alone. Changing heap
+# size here would alter GC behaviour and muddy any investigation run against it.
+opensearch:
+  resources:
+    limits:
+      memory: 2Gi
+
+# NOTE the double nesting: the `jaeger` subchart has its own `jaeger` key, so the
+# path is jaeger.jaeger.resources -- NOT jaeger.resources, which helm accepts
+# silently and then ignores, leaving the 600Mi default in place.
+jaeger:
+  jaeger:
+    resources:
+      limits:
+        memory: 1Gi          # was 600Mi (419Mi used, 70%)
+
+prometheus:
+  server:
+    resources:
+      requests:
+        memory: 1Gi
+      limits:
+        memory: 3Gi          # was 400Mi -- OOMKilled ~35s after reporting ready,
+                             # which dropped the `prometheus` Service endpoint and
+                             # made prometheus-mcp-server fail every query with
+                             # "connection refused".
+    # 7d of retention is pointless on a cluster that gets recreated constantly,
+    # and the head block it grows is what drove the OOM in the first place.
+    retention: 2h
+
+opentelemetry-collector:
+  # The chart default is 200Mi. The benchmark traffic plus the OTLP/HTTP export
+  # overlay can push the memory_limiter over its soft limit and make services
+  # log OTLP export failures, so size the collector for a quiet baseline. The
+  # collector subchart derives GOMEMLIMIT from the container memory limit, so
+  # this also raises GOMEMLIMIT to 400MiB.
+  resources:
+    requests:
+      memory: 1Gi            # was 400Mi
+    limits:
+      memory: 1Gi            # was 400Mi
+
+  # The otlphttp/export exporter below resolves ${env:OTLP_EXPORT_URL} and
+  # ${env:OTLP_EXPORT_AUTH} at collector startup. Without these two entries
+  # the collector exits at boot with
+  #   "invalid configuration: exporters::otlphttp/export: at least one endpoint
+  #    must be specified"
+  # and the DaemonSet never becomes ready, which fails `helm install --wait`.
+  # opentelemetry-demo.sh creates the secret from its config .env before every
+  # install/upgrade.
+  extraEnvs:
+    - name: OTLP_EXPORT_URL
+      valueFrom:
+        secretKeyRef: { name: otlp-export, key: url }
+    - name: OTLP_EXPORT_AUTH
+      valueFrom:
+        secretKeyRef: { name: otlp-export, key: auth }
+    # The header name, for inspection in the pod; the exporter's header key
+    # itself comes from helm --set-string (see the exporter below).
+    - name: OTLP_EXPORT_AUTH_HEADER
+      valueFrom:
+        secretKeyRef: { name: otlp-export, key: auth-header }
+
+  config:
+    receivers:
+      # Kubernetes events as log records: OOMKilled, BackOff, FailedScheduling,
+      # image pull failures. Nothing else in this stack carries them -- the
+      # k8s_cluster receiver reports desired-vs-ready counts but never says why
+      # a pod is unhealthy, which is exactly the gap that made the flagd-ui
+      # OOMKill and the collector crashloop take a kubectl session to find.
+      #
+      # The clusterMetrics preset's ClusterRole already grants events
+      # get/list/watch, so this needs no RBAC change (verified against
+      # clusterrole/otel-collector).
+      #
+      # Caveat: this is a DaemonSet, so on a multi-node cluster every collector
+      # would watch and duplicate the same events. Fine on single-node kind.
+      # Core-group ("") events, NOT events.k8s.io: the preset ClusterRole grants
+      #   [""] ["events"] get/list/watch
+      # and nothing for the events.k8s.io group. Verified with
+      #   kubectl auth can-i watch events.events.k8s.io --as=system:serviceaccount:otel-demo:otel-collector
+      #     -> no
+      #   kubectl auth can-i watch events --as=...  -> yes
+      # Naming the newer group here makes the receiver silently emit nothing
+      # rather than fail loudly, so leave the group unset.
+      k8sobjects:
+        objects:
+          - name: events
+            mode: watch
+
+    processors:
+      # Batch and memory_limiter pinned to values commonly recommended next to
+      # an OTLP/HTTP exporter to a hosted backend. The chart defines both already; this tightens memory_limiter's check
+      # interval (chart default 5s) and makes the batch size/timeout explicit.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      batch:
+        send_batch_size: 8192
+        timeout: 5s
+
+    # The export destination is any OTLP/HTTP backend. The URL and the auth
+    # header value come from the otlp-export secret above, so no credential
+    # sits in this file. The header NAME is OTLP_EXPORT_AUTH_HEADER (default
+    # Authorization; one example: Mezmo's OTel endpoint reads `apikey`).
+    # The collector does not expand ${env:...} in map keys, so
+    # opentelemetry-demo.sh adds the header with
+    #   --set-string opentelemetry-collector.config.exporters.otlphttp/export.headers.<name>=${env:OTLP_EXPORT_AUTH}
+    # A plain `helm -f collector-values.yaml` without that flag sends no auth.
+    exporters:
+      debug:
+        verbosity: detailed
+        # Debug-exporter sampling: first 5 items, then 1 in
+        # 200, so it stops flooding the collector logs. Drop these two lines to
+        # get the full firehose back.
+        sampling_initial: 5
+        sampling_thereafter: 200
+
+      otlphttp/export:
+        endpoint: "${env:OTLP_EXPORT_URL}"
+        # proto is the wire default; json also works, gzip applies to both.
+        encoding: proto
+        compression: gzip
+        # headers: set by opentelemetry-demo.sh from OTLP_EXPORT_AUTH_HEADER.
+
+    # Pipeline lists REPLACE the chart's, they do not merge -- so anything the
+    # chart wires up and this block omits is silently dropped. An earlier
+    # revision of this file listed only [otlphttp/export, debug] and that alone
+    # emptied Jaeger (0 services), Prometheus (0 app metrics) and OpenSearch
+    # (no otel-logs index) while every UI still returned 200.
+    #
+    # Every component named below is already DEFINED by the chart's own values;
+    # only the pipeline membership is ours. Nothing here needs a matching
+    # receivers:/exporters:/processors: block above.
+    #
+    # Receiver lists are the exception to the replace rule: the subchart presets
+    # (hostMetrics, kubeletMetrics, clusterMetrics, annotationDiscovery,
+    # kubernetesAttributes) append their receivers and the k8sattributes
+    # processor to whatever is listed here, so hostmetrics / kubeletstats /
+    # k8s_cluster / receiver_creator arrive without being named.
+    service:
+      pipelines:
+        logs:
+          receivers:  [otlp, k8sobjects]
+          # opensearch backs the Grafana/Jaeger log views; without it the demo's
+          # log UI is empty even though logs are reaching the export backend fine.
+          processors: [memory_limiter, resourcedetection, resource, batch]
+          exporters:  [opensearch, otlphttp/export, debug]
+        metrics:
+          # kafkametrics: broker/topic/consumer-lag metrics for the kafka pod.
+          # spanmetrics: RED metrics derived from the traces pipeline below --
+          #   this connector is what the demo's Grafana dashboards read, and it
+          #   produces nothing at all unless it is BOTH a traces exporter and a
+          #   metrics receiver.
+          receivers:  [otlp, kafkametrics, spanmetrics]
+          processors: [memory_limiter, resourcedetection, resource, batch]
+          exporters:  [otlphttp/prometheus, otlphttp/export, debug]
+        traces:
+          receivers:  [otlp]
+          # transform is NOT optional once spanmetrics is on: it fills in
+          # http.route for the frontend's Next.js spans and normalizes span
+          # names. Without it every unique URL becomes its own span name and
+          # spanmetrics cardinality explodes, which is a fast route back to the
+          # collector OOM this file's memory sizing exists to avoid.
+          processors: [memory_limiter, resourcedetection, resource, transform, batch]
+          exporters:  [otlp/jaeger, spanmetrics, otlphttp/export, debug]

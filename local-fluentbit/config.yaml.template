@@ -1,0 +1,55 @@
+pipeline:
+  inputs:
+    - name: random
+      tag: test-tag
+      interval_sec: 1
+      processors:
+        logs:
+          - name: modify
+            add: hostname fluentbit-demo
+          - name: lua
+            call: append_tag
+            code: |
+              function append_tag(tag, timestamp, record)
+                 new_record = record
+                 new_record["tag"] = tag
+                 return 1, timestamp, new_record
+              end
+
+  outputs:
+    - name: http
+      match: '*'
+      host: '${EXPORT_HOST_1}'
+      uri: '${EXPORT_URI_1}'
+      header: 'Authorization: ${FLUENTBIT_EXPORT_AUTH_1}'
+      tls: '${EXPORT_TLS_1}'
+      port: ${EXPORT_PORT_1}
+      format: 'json_lines'
+      processors:
+        logs:
+          - name: lua
+            call: add_field
+            code: |
+              function add_field(tag, timestamp, record)
+                 new_record = record
+                 new_record["output"] = "new data shared"
+                 return 1, timestamp, new_record
+              end
+    - name: http
+      match: '*'
+      host: '${EXPORT_HOST_2}'
+      uri: '${EXPORT_URI_2}'
+      header: 'Authorization: ${FLUENTBIT_EXPORT_AUTH_2}'
+      tls: '${EXPORT_TLS_2}'
+      port: ${EXPORT_PORT_2}
+      format: 'json_lines'
+      processors:
+        logs:
+          - name: lua
+            call: add_field
+            code: |
+              function add_field(tag, timestamp, record)
+                 new_record = record
+                 new_record["output"] = "new data single"
+                 return 1, timestamp, new_record
+              end

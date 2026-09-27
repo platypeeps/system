@@ -1,0 +1,5 @@
+# Spotlight privacy exclusions. One absolute path per line; a leading ~ is
+# this account's home. The system stage adds a missing path and restarts
+# mds. It never removes one.
+
+~/Library/Caches

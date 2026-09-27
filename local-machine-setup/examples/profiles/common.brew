@@ -1,0 +1,5 @@
+# Homebrew formulae every machine gets. mas is here because the appstore
+# stage cannot run without it.
+git
+jq
+mas

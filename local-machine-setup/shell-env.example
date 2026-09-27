@@ -1,0 +1,53 @@
+# Example for ~/.config/shell/env.sh — the environment layer that both a
+# login shell and every LaunchAgent load. Copy it there, fill in the values,
+# and chmod 600.
+#
+#   cp local-machine-setup/shell-env.example ~/.config/shell/env.sh
+#   chmod 600 ~/.config/shell/env.sh
+#
+# It used to live inline in ~/.bash_profile, which only login shells read —
+# launchd starts jobs from launchd, so every cron job ran without any of it and
+# any MCP server authenticating by ${VAR} resolved empty. ~/.bash_profile,
+# ~/.zshenv and local-cron-jobs/cron-jobs.sh all source this file now. (zsh
+# never reads .bash_profile, so .zshenv is what makes the set visible there —
+# every invocation, not just login ones.)
+#
+# Names only: the real file holds live credentials and is never committed.
+# machine-setup.sh doctor reports which of these this machine has not set.
+# This list is a generic starting point. Keep your own full list at
+# $SYSTEM_TOOLS_CONFIG/machine-setup/shell-env.example; doctor reads that one
+# instead when it exists.
+#
+# An exported name with an EMPTY value is fine and deliberate — not a
+# half-finished edit to go hunting for, and doctor does not report it. The set
+# of names can stay the same everywhere so the file stays diffable across
+# machines; a machine that has no business holding a given credential carries
+# the name with nothing after the `=`. Code reading one of these should test
+# for a non-empty value ([ -n "$FOO" ]) rather than assume the variable is
+# absent.
+#
+# So an empty name needs nothing from you: it does not have to be listed here,
+# filled in, or removed. Only a name carrying a real VALUE that this file does
+# not list is worth a word from doctor, because that is the one a rebuild would
+# come up short on.
+
+GITHUB_PERSONAL_ACCESS_TOKEN=change-me
+HF_TOKEN=change-me
+ANTHROPIC_API_KEY=change-me
+OPENAI_API_KEY=change-me
+GEMINI_API_KEY=change-me
+OPENROUTER_API_KEY=change-me
+OBSIDIAN_API_KEY=change-me
+OBSIDIAN_VAULT=change-me
+LLAMA_MODEL_SEARCH_DEPTH=change-me
+LLAMA_CPP_DIR=change-me
+LLAMA_SERVER_BIN=change-me
+CLICKHOUSE_USER=change-me
+CLICKHOUSE_PASSWORD=change-me
+POSTGRES_USER=change-me
+POSTGRES_PASSWORD=change-me
+FALKORDB_USER=change-me
+FALKORDB_PASSWORD=change-me
+HA_TOKEN=change-me
+NTFY_TOPIC=change-me
+__SHELL_ENV_LOADED=change-me

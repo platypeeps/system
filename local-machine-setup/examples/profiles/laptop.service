@@ -1,0 +1,2 @@
+# Docker services (local-* folders) this profile starts.
+local-redis

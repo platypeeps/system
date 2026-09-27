@@ -1,0 +1,2 @@
+# LaunchAgent labels this profile installs from launchagents/<label>.plist.
+local.system-tools.sd-dashboard

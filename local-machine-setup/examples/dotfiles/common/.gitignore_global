@@ -1,0 +1,3 @@
+# Global gitignore, installed to ~/.gitignore_global.
+.DS_Store
+*.swp
