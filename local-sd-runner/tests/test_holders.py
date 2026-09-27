@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -147,39 +148,59 @@ class NativeLsof(unittest.TestCase):
             self.assertIn(holder.pid, processes.holders(clone))
 
 
-def unreadable_environ(path):
-    """A /proc entry whose environ belongs to a process that is not dumpable."""
+class FakeProc:
+    """A /proc whose environ is unreadable (not dumpable) and whose boot time is fixed."""
 
-    class Entry:
-        def read_bytes(self):
-            raise PermissionError(13, "Permission denied", path)
+    BOOTED = 1_790_000_000
 
-    return Entry()
+    def __call__(self, path):
+        class Entry:
+            def read_bytes(self):
+                raise PermissionError(13, "Permission denied", path)
+
+            def read_text(self):
+                return f"cpu 1 2 3\nbtime {FakeProc.BOOTED}\n"
+
+        return Entry()
 
 
 class UnreadableEnviron(unittest.TestCase):
-    SUPERVISOR = "linux:boot-a:5000"
+    SUPERVISED = {"supervisor_start": "linux:boot-a:5000"}
 
-    def marked(self, started, since=SUPERVISOR):
+    def marked(self, started, run):
         with patch.object(processes.sys, "platform", "linux"), \
-                patch.object(processes, "Path", unreadable_environ), \
-                patch.object(processes, "start_identity", return_value=started):
-            return processes.marked(4242, "run-1", since)
+                patch.object(processes, "Path", FakeProc()), \
+                patch.object(processes, "start_identity", return_value=started), \
+                patch.object(processes.os, "sysconf", return_value=100):
+            return processes.marked(4242, "run-1", run)
+
+    def refuses(self, started, run):
+        with self.assertRaisesRegex(RunnerRefused, "cannot inspect owned user process 4242"):
+            self.marked(started, run)
+
+    def created(self, seconds_after_boot):
+        stamp = datetime.fromtimestamp(FakeProc.BOOTED + seconds_after_boot, timezone.utc)
+        return {"created_at": stamp.isoformat()}
 
     def test_process_older_than_the_supervisor_reads_as_unmarked(self):
         # GitHub's Ubuntu runner: a same-user process from boot, not dumpable.
-        self.assertFalse(self.marked("linux:boot-a:120"))
+        self.assertFalse(self.marked("linux:boot-a:120", self.SUPERVISED))
 
     def test_process_younger_than_the_supervisor_still_refuses(self):
-        with self.assertRaisesRegex(RunnerRefused, "cannot inspect owned user process 4242"):
-            self.marked("linux:boot-a:5001")
+        self.refuses("linux:boot-a:5001", self.SUPERVISED)
 
-    def test_other_boot_unknown_start_or_no_supervisor_still_refuses(self):
-        for started, since in (("linux:boot-b:120", self.SUPERVISOR), (None, self.SUPERVISOR),
-                               ("linux:boot-a:120", None), ("linux:boot-a:x", self.SUPERVISOR)):
-            with self.subTest(started=started, since=since):
-                with self.assertRaisesRegex(RunnerRefused, "cannot inspect owned user process 4242"):
-                    self.marked(started, since)
+    def test_without_a_supervisor_the_run_row_creation_decides(self):
+        # 120 ticks at 100 Hz is 1.2 s after boot.
+        self.assertFalse(self.marked("linux:boot-a:120", self.created(60)))
+        self.refuses("linux:boot-a:120", self.created(3))
+        self.refuses("linux:boot-a:6000", self.created(60))
+
+    def test_other_boot_unknown_start_or_no_reference_still_refuses(self):
+        for started, run in (("linux:boot-b:120", self.SUPERVISED), (None, self.SUPERVISED),
+                             ("linux:boot-a:120", {}), ("linux:boot-a:x", self.SUPERVISED),
+                             ("linux:boot-a:120", None)):
+            with self.subTest(started=started, run=run):
+                self.refuses(started, run)
 
 
 if __name__ == "__main__":
