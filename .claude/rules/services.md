@@ -15,7 +15,7 @@ paths:
   - jaeger's OTLP on **4327/4328** (the collector keeps 4317/4318);
   - the clickhouse MCP on **8002** (redisinsight keeps 8001).
 - Remaining overlaps are with software outside this repo:
-  - `8080-8083`: jaeger HotROD, host google_workspace_mcp on 8083;
+  - `8080-8083`: jaeger HotROD;
   - `8084`: llama-cpp, overridable via `PORT`;
   - `8766`: task-actions, overridable via `TASK_ACTIONS_PORT`.
 - graphiti's MCP HTTP sits on `8085` to avoid 8083/8084.

@@ -12,6 +12,9 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 - Put them in the config folder (convention 3), and commit a `.env.example` or `<name>.conf.example` with `change-me` values.
 - Use `example.test` names and TEST-NET addresses (`192.0.2.x`, `198.51.100.x`, `203.0.113.x`) in tests and docs.
 - Run `local-scan-for-secrets/scan-for-secrets.sh` from the root before a commit that adds configuration.
+- Install the pre-push leak guard once per clone: `sh local-leak-guard/leak-guard.sh install`.
+  - It reads `<config>/privacy-patterns`, one ERE per line; never commit that file or its contents.
+  - Test with synthetic patterns; CI cannot read the real ones, so no CI step may need them.
 
 ## Tests and CI
 
@@ -53,6 +56,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - On a missing variable, fail with its name and both remedies: export it, or copy the `.example` to the config path.
    - Keep the root `.gitignore` lines for in-folder config files as a safety net.
    - Cron jobs are config too: `local-cron-jobs` reads `<root>/cron-jobs/jobs/`; `local-cron-jobs/examples/` is a catalogue only.
+   - A job for one machine goes in `<root>/cron-jobs/jobs/<host>/`, `<host>` being the lower-cased `hostname -s`.
 4. **Data and log folders** (`storage/`, `volumes/`, `logs/`, `falkordb_data/`, `mcp_logs/`) are gitignored contents-only, kept by `.gitkeep`; use the same pattern for new stateful services.
 5. Docker services use `--rm` and named containers; `update` removes images by IMAGE ID (`awk '{print $3}'` on `docker images`; `$2` is the tag).
 6. **A `status` subcommand answers with an exit code**: `0` healthy, `3` nothing to check (not configured or not running), `1` up and broken.
@@ -110,6 +114,7 @@ These files load when you touch matching paths.
 | Topic | File |
 | --- | --- |
 | Services, ports, launchd plists, wrappers | `.claude/rules/services.md` |
+| `local-machine-setup` stages that remediate | `.claude/rules/machine-setup.md` |
 | `local-bin-links` and the research kit | `.claude/rules/bin-links.md` |
 | macOS TCC under launchd | `.claude/rules/macos-tcc.md` |
 | The 02:xx cron slot needs a scheduled wake | `.claude/rules/cron-wake.md` |

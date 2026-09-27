@@ -68,7 +68,14 @@ copy the `.example` file to the config path it prints.
 
 Scheduled jobs are configuration too. `local-cron-jobs` installs the jobs in
 `$SYSTEM_TOOLS_CONFIG/cron-jobs/jobs/`; `local-cron-jobs/examples/` holds
-examples to copy from, and none is installed by default.
+examples to copy from, and none is installed by default. A job for one machine
+goes in `$SYSTEM_TOOLS_CONFIG/cron-jobs/jobs/<host>/`, where `<host>` is the
+lower-cased `hostname -s`; other hosts' folders are ignored, so one config
+folder can serve several machines.
+
+Before pushing, install the leak guard once per clone:
+`sh local-leak-guard/leak-guard.sh install`. It refuses a push that adds a line
+matching a pattern in `$SYSTEM_TOOLS_CONFIG/privacy-patterns`.
 
 ## Ports
 
