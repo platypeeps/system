@@ -1,0 +1,21 @@
+-- `shadow` is keyed by `(tracker, url)`, not by `url` alone (sd:603).
+--
+-- The url-alone key was never a statement about urls. It was a statement
+-- that this database holds one tracker, and it stopped being true the
+-- moment a second one could write: `upsert_shadow`'s `ON CONFLICT(url)`
+-- reassigned the row's `tracker` column to whoever wrote last. No error, no
+-- constraint violation, just a row that changed owner. The pack's own store
+-- already keys on both and says why in a comment; this makes the library
+-- agree with it rather than being the weaker of the two on exactly the
+-- property that comment protects.
+--
+-- This is a precondition for moving the pack's rows into this table, not a
+-- consequence of it. A composite-keyed store must not become a url-keyed
+-- one on the way in.
+--
+-- Index-only, so no table is rebuilt and no row moves: the reverse is this
+-- file's two statements in the other order. It applies cleanly to any
+-- database that reached version 1, because the index it drops guaranteed
+-- there are no duplicate urls to collide on the way up.
+DROP INDEX shadow_by_url;
+CREATE UNIQUE INDEX shadow_by_tracker_url ON shadow (tracker, url);

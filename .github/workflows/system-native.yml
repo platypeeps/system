@@ -1,0 +1,297 @@
+name: System native tests
+
+on:
+  pull_request:
+    # `edited` as well as the defaults: rule 5 reads the pull request body,
+    # and a re-run replays the old body, so fixing a `Work:` line has to
+    # start a fresh run. Editing the title reruns the legs too.
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: system-native-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  system-native:
+    # One leg per long suite and one for the short ones, in parallel. The
+    # serial job took six and a half minutes on every pull request and push:
+    # sd-db about two, the dashboard and the runner under two each, the other
+    # seven under ten seconds together. Each leg repeats the preflight -- the
+    # fixture check, the lint, the unwired-suite guard, the library install --
+    # because it costs under half a minute and needs no artifact handed
+    # between jobs. The trade is billed macOS minutes: eight checkout steps
+    # and four venvs instead of two and one, roughly ten minutes a run
+    # instead of seven, for a wall clock of about three (sd:558).
+    name: system-native (${{ matrix.leg }})
+    runs-on: macos-15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [shared, dashboard, runner, tools]
+    steps:
+      - name: Check out system
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: system
+          persist-credentials: false
+
+      - name: Check out the public pack for ship acceptance
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: platypeeps/sd-ai-command-pack
+          # sd:1439: schema 14 stores repository paths as `~/` keys, and a
+          # pack older than pack #1166 writes the absolute path, so
+          # local-sd-plan's registration failed its foreign key. Pack #1166
+          # merged as 6d6214f6.
+          ref: 6d6214f6a9151d8cea36cfbf5b4ae695789eb9b6
+          path: pack
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # One leg, not four. The manifest is identical in every leg, so
+      # checking it in each buys nothing and bills four macOS runners for the
+      # same answer. `sd-plugin.lock` is committed here and nothing read it:
+      # the cron job that runs `plugin lock --check` gates the `print` plugin
+      # on the 3D-printer volume, not this repository's own manifest.
+      - name: Check the plugin manifest against its lock
+        if: matrix.leg == 'shared'
+        run: python3 pack/bin/sd plugin lock --check system
+
+      - name: Verify the pinned writing manifest fixture
+        run: |
+          python3 - <<'PY_VERIFY'
+          import hashlib
+          import json
+          from pathlib import Path
+          fixture = Path("system/.github/fixtures/writing-sd-plugin.json")
+          source = json.loads(fixture.with_suffix(".source.json").read_text())
+          if hashlib.sha256(fixture.read_bytes()).hexdigest() != source["sha256"]:
+              raise SystemExit("writing manifest fixture differs from its pinned source digest")
+          json.loads(fixture.read_text())
+          print("Verified writing manifest from " + source["repository"] + "@" + source["commit"])
+          PY_VERIFY
+
+      - name: Run the native suites in an isolated home
+        shell: bash
+        env:
+          # Through the environment, never through ${{ }} inside the script:
+          # a pull request body is attacker-controlled text, and interpolating
+          # it into the shell would run whatever it contains.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          SUITE_LEG: ${{ matrix.leg }}
+        run: |
+          set -euo pipefail
+          ci_root="$(mktemp -d "$RUNNER_TEMP/system-native.XXXXXX")"
+          # `.noindex` keeps Spotlight off the suites' temp files: a fixture
+          # clone rewritten mid-test and then indexed reads as a process holder
+          # to local-sd-runner's `survivors`, which is how run 34700878618
+          # failed test_archive_refresh on a PR that touched only sd-db.sh
+          # (sd:554). mktemp wants its X's last, so the suffix goes on tmp.
+          mkdir -p "$ci_root/home" "$ci_root/tmp.noindex"
+          # Rule 5 reads the body from a file. A push to main has no pull
+          # request, so the variable stays empty and the flag is not passed --
+          # the rule then reports itself not run, which is what it did here
+          # every run until now.
+          pr_body=""
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            pr_body="$ci_root/pr-body.md"
+            printf '%s' "${PR_BODY:-}" > "$pr_body"
+          fi
+          # Test subprocesses inherit only this environment, never checkout tokens.
+          # Leave XDG overrides unset so nested fixture homes select their own state.
+          env -i PATH="$PATH" HOME="$ci_root/home" TMPDIR="$ci_root/tmp.noindex" \
+            CI_WORK_ROOT="$ci_root" CI_SYSTEM_ROOT="$GITHUB_WORKSPACE/system" \
+            SD_ACCEPTANCE_PACK="$GITHUB_WORKSPACE/pack" \
+            SD_WRITING_MANIFEST="$GITHUB_WORKSPACE/system/.github/fixtures/writing-sd-plugin.json" \
+            SD_PR_BODY="$pr_body" SUITE_LEG="$SUITE_LEG" \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 \
+            LANG=en_US.UTF-8 PYTHONDONTWRITEBYTECODE=1 NO_PROXY='*' no_proxy='*' \
+            /bin/bash --noprofile --norc <<'CI'
+          set -euo pipefail
+          cd "$CI_SYSTEM_ROOT"
+          test "$(uname -s)" = Darwin
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 14), sys.version'
+          test -f "$SD_ACCEPTANCE_PACK/bin/sd-ship"
+          test -f "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
+          test -f "$SD_WRITING_MANIFEST"
+
+          # The docs/work gate, which nothing ran before #238. After #230 main
+          # carried 165 rule 6 failures for five days with every check green;
+          # a human running this by hand is what found them. It takes no
+          # flags on purpose: since R10-D6 the working directory selects the
+          # repository, and --work-dir defaults to docs/work and is
+          # repo-relative. Passing an absolute path here would leave rule 7
+          # matching nothing and reporting a pass (sd-ai-command-pack#809).
+          # It runs before the suites because it takes under a second and the
+          # suites take minutes. It cannot go through run_suite, which
+          # requires a unittest summary; `set -e` is the gate.
+          #
+          # --pr-body is the one flag it does take, and only on a pull
+          # request. It is rule 5: exactly one `Work:` line, naming either a
+          # docs/work item or a database row as `sd:<positive integer>`. A
+          # body with no Work: line is a note and not a failure, so this can
+          # be true of every PR before it is true of every author.
+          #
+          # The lint refuses a repository without docs/work, and this one keeps
+          # planning documents only when a change needs them. So it runs when
+          # the folder exists and is skipped, with a note, when it does not.
+          if [ ! -d docs/work ]; then
+            echo "sd-docs-lint: no docs/work in this repository; not run"
+          elif [ -n "${SD_PR_BODY:-}" ]; then
+            "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint" --pr-body "$SD_PR_BODY"
+          else
+            "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
+          fi
+
+          # The other half of the citation gate (sd:828): a `path:line` into
+          # code, in a tracked .md, .py or .sh outside docs/work/archive/,
+          # fails unless it is carried in the ratchet; an anchor is cited
+          # instead. Stdlib and
+          # git only, so it runs here before the venv exists, and it is at
+          # the repository root, so the unwired-suite guard below demands a
+          # python3 line for it -- delete this one and the guard fails.
+          python3 tests/test_citations.py
+
+          # Who calls Jev, and whether each one degrades. Two layers: the
+          # folder inventory is read from the filesystem, so a twelfth caller
+          # cannot be added silently; the rules then ban a fallback that reads
+          # as a judgment -- the shape that put `--fallback unsure` next to
+          # what `--unsure-below` itself prints. Stdlib and git only, so it
+          # runs here before the venv, and the guard below demands this line.
+          python3 tests/test_jev_contract.py
+
+          # The run_suite lines at the bottom are a hand-maintained list, and
+          # a folder that grows a suite without a line here is never run --
+          # it stays green, which is the failure mode this repository already
+          # knows (sd:404). So enumerate the filesystem instead of trusting
+          # the list: every folder holding tests/test_*.py must be named by a
+          # run_suite line, and this fails naming each one that is not. It
+          # keys on the tests directory and not on a subcommand, because no
+          # verb is common to all of them: local-sd-db answers `check` and
+          # local-repo-sync answers `test` because `check` was already taken.
+          # Like the lint, it belongs in the preflight and not behind
+          # run_suite, which asserts a unittest summary this prints none of.
+          workflow=.github/workflows/system-native.yml
+          # A folder or file name is a literal inside the patterns below, so
+          # escape what an extended regular expression would read: `c+d/`
+          # would otherwise miss its own line, and `a.b/` match `axb/`.
+          ere_literal() { printf '%s' "$1" | sed 's/[][\\.*^$+?(){}|]/\\&/g'; }
+          seen=" "
+          unwired=""
+          for test_file in */tests/test_*.py; do
+            [ -e "$test_file" ] || continue
+            folder="${test_file%%/*}"
+            case "$seen" in *" $folder "*) continue ;; esac
+            seen="$seen$folder "
+            if ! grep -Eq "^[[:space:]]*run_suite .*[[:space:]]$(ere_literal "$folder")/" "$workflow"; then
+              unwired="$unwired $folder"
+            fi
+          done
+          # A suite at the repository root has no folder and no run_suite
+          # line: it runs here in the preflight as a bare `python3 <file>`
+          # line, so demand that line for each one, or the file above could
+          # be deleted from this step and its own wiring test would go with
+          # it.
+          for test_file in tests/test_*.py; do
+            [ -e "$test_file" ] || continue
+            if ! grep -Eq "^[[:space:]]*python3 $(ere_literal "$test_file")([[:space:]]|$)" "$workflow"; then
+              unwired="$unwired $test_file"
+            fi
+          done
+          if [ -n "$unwired" ]; then
+            for entry in $unwired; do
+              case "$entry" in
+                tests/*) echo "$entry: a root suite but no python3 line in $workflow runs it" >&2 ;;
+                *) echo "$entry: holds tests/test_*.py but no run_suite line in $workflow names it" >&2 ;;
+              esac
+            done
+            exit 1
+          fi
+
+          python3 -m venv --copies "$CI_WORK_ROOT/venv"
+          export PYTHON="$CI_WORK_ROOT/venv/bin/python"
+          "$PYTHON" -m pip install --no-index ./local-sd-db
+          # Ship acceptance needs an installed copy, not source on PYTHONPATH.
+          "$PYTHON" -I -c 'import pathlib, sd_db, sys; assert pathlib.Path(sd_db.__file__).is_relative_to(pathlib.Path(sys.prefix))'
+
+          run_suite() {
+            suite="$1"
+            shift
+            "$@" 2>&1 | tee "$CI_WORK_ROOT/$suite.log"
+            if grep -Eq 'skipped=[1-9][0-9]*' "$CI_WORK_ROOT/$suite.log"; then
+              echo "$suite: skipped tests are not permitted in native CI" >&2
+              return 1
+            fi
+            if ! grep -Eq '^Ran [1-9][0-9]* tests? in ' "$CI_WORK_ROOT/$suite.log"; then
+              echo "$suite: no unittest execution summary" >&2
+              return 1
+            fi
+          }
+
+          # The run_suite lines stay literal, one per folder, inside a case on
+          # the leg: the unwired-suite guard above greps for them, and a suite
+          # named in a variable or a loop would be one it cannot see. A leg
+          # that names nothing is a typo in the matrix, and fails as one.
+          case "$SUITE_LEG" in
+            shared)
+              run_suite shared sh local-sd-db/sd-db.sh check
+              ;;
+            dashboard)
+              run_suite dashboard sh local-project-dashboard/dashboard.sh test
+              ;;
+            runner)
+              run_suite runner sh local-sd-runner/runner.sh test -v
+              ;;
+            tools)
+              run_suite repo-sync sh local-repo-sync/repo-sync.sh test -v
+              run_suite bin-links sh local-bin-links/bin-links.sh test -v
+              run_suite agent-prompt sh local-agent-prompt/agent-prompt.sh test -v
+              run_suite sd-plan sh local-sd-plan/sd-plan.sh test -v
+              run_suite health-check sh local-health-check/health-check.sh test -v
+              run_suite cron-jobs sh local-cron-jobs/cron-jobs.sh test -v
+              run_suite dependabot sh local-dependabot/dependabot.sh test -v
+              run_suite herdr sh local-herdr/herdr.sh test -v
+              run_suite adversarial-gate sh local-adversarial-gate/adversarial-gate.sh test -v
+              run_suite aws-setup sh local-aws-setup/aws-setup.sh test -v
+              run_suite msgsnap sh local-msgsnap/msgsnap.sh test -v
+              run_suite autocommit sh local-autocommit/autocommit.sh test -v
+              run_suite ai-apps sh local-ai-apps/ai-apps.sh test -v
+              run_suite jev sh local-jev/jev.sh test -v
+              run_suite maintenance sh local-maintenance/maintenance.sh test -v
+              run_suite opentelemetry-collector sh local-opentelemetry-collector/opentelemetry-collector.sh test -v
+              # local-mirror-sync has no test verb of its own: mirror-sync.sh
+              # takes sync|plan|list and adding a fourth would change what a
+              # pair list means. The suite is named directly, like notify
+              # above, and the unwired-suite guard only asks that a run_suite
+              # line name the folder -- which this does.
+              run_suite mirror-sync "$PYTHON" local-mirror-sync/tests/test_mirror_sync.py -v
+              # notify.sh takes a message, not a subcommand: adding a
+              # `test` verb would change what `notify.sh test` does today,
+              # which is send a notification whose body reads "test". So this
+              # one line names the suite directly instead of an entrypoint.
+              # The guard above only asks that a run_suite line name the
+              # folder, which this does.
+              run_suite notify "$PYTHON" local-notify/tests/test_notify.py -v
+              run_suite notify-email "$PYTHON" local-notify/tests/test_email_retry.py -v
+              run_suite obsidian-tasks sh local-obsidian-tasks/obsidian-tasks.sh test
+              run_suite obsidian-review sh local-obsidian-review/obsidian-review.sh test
+              run_suite weekly-digest sh local-weekly-digest/weekly-digest.sh test -v
+              run_suite workspace-mcp sh local-workspace-mcp/workspace-mcp.sh test -v
+              run_suite network-testing sh network-testing/network-testing.sh test -v
+              ;;
+            *)
+              echo "system-native: no suites are wired for leg '$SUITE_LEG'" >&2
+              exit 1
+              ;;
+          esac
+          CI

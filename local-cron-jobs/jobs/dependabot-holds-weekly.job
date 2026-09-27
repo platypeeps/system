@@ -1,0 +1,39 @@
+# Weekly held-bump watcher across the repo fleet: evaluate every `sd-hold:`
+# record on a Dependabot pull request and say on the pull request when its
+# blocker has lifted. The daily sweep *holds*; this *watches*. It never
+# merges. The contract is the second half of `local-dependabot/ROUTINE.md`
+# (`# dependabot-holds-weekly`); this file only says when and how to start it.
+#
+# JOB_COMMAND rather than JOB_PROMPT, unlike dependabot-daily, because this
+# verb needs no judgement: discovery through the two gates, the writer check,
+# the three probes, the lift sequence and supersession are all mechanical,
+# and `dependabot.sh holds` is their executable reference, pinned by
+# `dependabot.sh test` against a GitHub double and a registry double. The
+# script prints the contract's own vocabulary -- HELD, LIFTED, LIFTED-EARLIER,
+# CARRIED, UNKNOWN, MALFORMED, IGNORED, SKIP, one TOTAL -- and an agent between
+# the script and the log could only paraphrase it or widen it. Writing a hold
+# in the first place stays the daily sweep's judgement.
+#
+# On a lift: the record is edited to `lifting`, one `sd-hold-lifted` comment,
+# `@dependabot rebase`, the record edited to `lifted`, a LIFTED line. On no
+# change: one HELD line per record and nothing on the pull request. A record
+# already `lifted` is inert (LIFTED-EARLIER), which is what makes a weekly run
+# idempotent against a probe that stays true.
+#
+# Exit 0 whether or not anything lifted, for the daily sweep's reason: finding
+# nothing lifted is the job working, and a banner every week on that would
+# drain the banner. Non-zero only when it cannot run at all -- no gh, no
+# authentication, no fleet -- which is what notify_failure is for.
+#
+# Monday 05:45: weekly matches the cadence of upstream releases and keeps the
+# pull request threads quiet. Before dependabot-daily (06:20), so a rebase
+# asked for here is swept the same morning; clear of repo-sync-nightly
+# (02:45), which fast-forwards the checkouts this enumerates from, of
+# maintenance-nightly (03:45) and of the 03:15-04:50 slots the nightly jobs
+# hold. Output in logs/dependabot-holds-weekly.log.
+#
+# NB gh and npm live in the Homebrew prefix, which launchd's own PATH does
+# not carry; cron-jobs.sh builds JOB_PATH with it. Python 3.11+ is resolved
+# by dependabot.sh itself (the pack's venv, then Homebrew, then PATH).
+JOB_SCHEDULE="45 5 * * 1"
+JOB_COMMAND="sh \"$ROOT/../local-dependabot/dependabot.sh\" holds"

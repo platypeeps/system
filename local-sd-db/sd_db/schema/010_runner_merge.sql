@@ -1,0 +1,18 @@
+-- `repo.merge_policy` becomes `repo.runner_merge`. The values are unchanged:
+-- `manual` and `auto`, defaulting to `manual`.
+--
+-- The old name said what the column held, not who reads it, and it sat beside
+-- the pack's `sd.assistant_merge`, which is the assistant's grant. Two names
+-- that both read as "the merge setting" hid which side each one binds. This
+-- column binds the runner, so it says so.
+--
+-- `RENAME COLUMN` and not 007's rebuild. 007 rebuilt `state` because SQLite
+-- cannot edit a CHECK constraint, and that is still true; a rename is the one
+-- case it does handle, rewriting the column inside the CHECK with the
+-- declaration. The rebuild would also have been the wrong tool here:
+-- `item.repo`, `runner_run.repo`, `runner_lease.repo` and
+-- `repo_protection.repo` reference `repo(path)`, `migrate` wraps every file
+-- in a transaction, and `PRAGMA foreign_keys` does not take effect inside
+-- one -- so dropping the old copy fails on a foreign key. `RENAME COLUMN`
+-- touches no other table and moves no row.
+ALTER TABLE repo RENAME COLUMN merge_policy TO runner_merge;

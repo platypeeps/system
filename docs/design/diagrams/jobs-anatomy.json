@@ -1,0 +1,315 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "What a scheduled job is made of",
+    "subtitle": "A profile picks it, a plist fires it, and every run leaves three records",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1200,
+      700
+    ]
+  },
+  "components": [
+    {
+      "id": "profile",
+      "type": "external",
+      "label": "Profile manifest",
+      "sublabel": "common + <profile>.cron",
+      "pos": [
+        60,
+        40
+      ],
+      "size": [
+        150,
+        58
+      ],
+      "tag": "per machine"
+    },
+    {
+      "id": "jobfile",
+      "type": "backend",
+      "label": "<job>.job",
+      "sublabel": "schedule + one verb",
+      "pos": [
+        60,
+        140
+      ],
+      "size": [
+        150,
+        58
+      ]
+    },
+    {
+      "id": "install",
+      "type": "backend",
+      "label": "cron-jobs.sh install",
+      "sublabel": "renders the plist",
+      "pos": [
+        280,
+        90
+      ],
+      "size": [
+        160,
+        58
+      ]
+    },
+    {
+      "id": "plist",
+      "type": "database",
+      "label": "LaunchAgent",
+      "sublabel": "<prefix>.cron.<job>",
+      "pos": [
+        500,
+        90
+      ],
+      "size": [
+        160,
+        58
+      ]
+    },
+    {
+      "id": "launchd",
+      "type": "cloud",
+      "label": "launchd",
+      "sublabel": "fires on the calendar",
+      "pos": [
+        720,
+        90
+      ],
+      "size": [
+        150,
+        58
+      ]
+    },
+    {
+      "id": "verify",
+      "type": "security",
+      "label": "verify",
+      "sublabel": "installed vs generated",
+      "pos": [
+        500,
+        190
+      ],
+      "size": [
+        160,
+        58
+      ],
+      "tag": "STALE"
+    },
+    {
+      "id": "exec",
+      "type": "backend",
+      "label": "cron-jobs.sh exec",
+      "sublabel": "lock, ulimit, tee",
+      "pos": [
+        715,
+        270
+      ],
+      "size": [
+        160,
+        58
+      ]
+    },
+    {
+      "id": "cmd",
+      "type": "backend",
+      "label": "JOB_COMMAND",
+      "sublabel": "bash -c",
+      "pos": [
+        940,
+        200
+      ],
+      "size": [
+        140,
+        58
+      ]
+    },
+    {
+      "id": "prompt",
+      "type": "external",
+      "label": "JOB_PROMPT",
+      "sublabel": "claude -p, no permissions",
+      "pos": [
+        940,
+        300
+      ],
+      "size": [
+        140,
+        58
+      ]
+    },
+    {
+      "id": "log",
+      "type": "database",
+      "label": "logs/<job>.log",
+      "sublabel": "appended, offset kept",
+      "pos": [
+        500,
+        420
+      ],
+      "size": [
+        160,
+        58
+      ]
+    },
+    {
+      "id": "row",
+      "type": "database",
+      "label": "sd reports ingest",
+      "sublabel": "one run row",
+      "pos": [
+        715,
+        420
+      ],
+      "size": [
+        160,
+        58
+      ]
+    },
+    {
+      "id": "fail",
+      "type": "security",
+      "label": "failures.log",
+      "sublabel": "notification, optional push",
+      "pos": [
+        940,
+        420
+      ],
+      "size": [
+        160,
+        58
+      ]
+    },
+    {
+      "id": "watchdog",
+      "type": "security",
+      "label": "watchdog-daily",
+      "sublabel": "stale means it missed a window",
+      "pos": [
+        500,
+        530
+      ],
+      "size": [
+        160,
+        58
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Definition, in the repository",
+      "wraps": [
+        "profile",
+        "jobfile",
+        "install"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Every run leaves these",
+      "wraps": [
+        "log",
+        "row",
+        "fail",
+        "watchdog"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "picks",
+      "from": "profile",
+      "to": "install",
+      "label": "selects"
+    },
+    {
+      "id": "defines",
+      "from": "jobfile",
+      "to": "install",
+      "label": "defines"
+    },
+    {
+      "id": "renders",
+      "from": "install",
+      "to": "plist",
+      "label": "renders",
+      "variant": "emphasis"
+    },
+    {
+      "id": "loads",
+      "from": "plist",
+      "to": "launchd",
+      "label": "loaded",
+      "variant": "emphasis"
+    },
+    {
+      "id": "compare",
+      "from": "plist",
+      "to": "verify",
+      "label": "compared",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 26
+    },
+    {
+      "id": "fires",
+      "from": "launchd",
+      "to": "exec",
+      "label": "fires",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 26
+    },
+    {
+      "id": "runcmd",
+      "from": "exec",
+      "to": "cmd",
+      "label": "shell"
+    },
+    {
+      "id": "runprompt",
+      "from": "exec",
+      "to": "prompt",
+      "label": "agent"
+    },
+    {
+      "id": "writes",
+      "from": "exec",
+      "to": "log",
+      "label": "stdout",
+      "variant": "emphasis"
+    },
+    {
+      "id": "records",
+      "from": "exec",
+      "to": "row",
+      "label": "exit + offset",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 26
+    },
+    {
+      "id": "raises",
+      "from": "exec",
+      "to": "fail",
+      "label": "non-zero only",
+      "variant": "security"
+    },
+    {
+      "id": "reads",
+      "from": "log",
+      "to": "watchdog",
+      "label": "mtime",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 26
+    }
+  ]
+}

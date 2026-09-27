@@ -1,0 +1,677 @@
+"""What a call writes down, and what it may never write down.
+
+The stub from `test_jev` answers, and a database of this suite's own receives
+the rows, so nothing here touches the operator's store. Three promises are
+checked as promises and not as comments:
+
+* the token counts and the confidence come out of the response, and are not
+  defaulted to numbers that happen to match;
+* no part of what was submitted reaches the ledger, in any column or anywhere
+  in the file;
+* a missing or unwritable database changes neither the answer nor the exit
+  code.
+"""
+
+import json
+import os
+import stat
+import sys
+import tempfile
+import urllib.error
+from pathlib import Path
+
+import jev
+import jev_meter
+
+from .test_jev import Stub, StubServer
+
+# `sd_db` is installed into the environment that runs this suite in CI, the
+# same install the library's own tests use. A checkout with no install reads
+# the package from the folder beside this one, because a suite that skipped
+# here would be a green that measured nothing -- and skips fail this repo's CI.
+try:  # pragma: no cover - one branch per machine
+    import sd_db  # noqa: F401
+except ImportError:  # pragma: no cover - one branch per machine
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "local-sd-db"))
+
+from sd_db.database import connect  # noqa: E402
+from sd_db.judgment import by_stage  # noqa: E402
+from sd_db.migrate import initialise  # noqa: E402
+
+#: A string that appears in the question and in the state and nowhere else, so
+#: a single grep of the whole database file settles whether content leaked.
+SENTINEL = "zqx-quarterly-severance-terms-9f31"
+
+
+class MeteringCase(StubServer):
+    def setUp(self):
+        super().setUp()
+        self.store = Path(tempfile.mkdtemp()) / "sd.db"
+        initialise(self.store)
+
+    def env(self, **extra):
+        settings = {"JEV_METER": "1", "JEV_METER_DB": str(self.store)}
+        settings.update(extra)
+        return super().env(**settings)
+
+    def rows(self):
+        connection = connect(self.store, write=False)
+        try:
+            return list(connection.execute(
+                "SELECT * FROM judgment ORDER BY id"))
+        finally:
+            connection.close()
+
+    def only(self):
+        found = self.rows()
+        self.assertEqual(len(found), 1, f"expected one row, got {len(found)}")
+        return found[0]
+
+
+class TheCounts(MeteringCase):
+    """Fixture responses prove the extraction. The counts and the confidence
+    were in every response from the first call and were dropped on the floor,
+    so the failure this guards against is precisely `None`."""
+
+    def test_the_token_counts_come_out_of_the_response(self):
+        Stub.input_tokens = 412
+        Stub.output_tokens = 9
+        self.run_main(["noul", "is it?", "--caller", "local-adversarial-gate",
+                       "--stage", "JEV_ADVERSARIAL_GATE"])
+        row = self.only()
+        self.assertEqual((row["tokens_in"], row["tokens_out"]), (412, 9))
+
+    def test_the_confidence_comes_out_of_the_response(self):
+        Stub.confidence = 0.62
+        self.run_main(["score", "how urgent?", "--levels", "low,high"])
+        self.assertAlmostEqual(self.only()["confidence"], 0.62)
+
+    def test_a_choice_records_which_criterion_won_and_not_its_name(self):
+        """The position, counting from 1, into the criteria the caller passed.
+
+        A criterion key is text the caller wrote, so it can be a path or a
+        subject; the caller already holds the list, so a position is the same
+        fact without the string.
+        """
+        Stub.confidence = 0.91
+        Stub.choice_value = "phone"
+        self.run_main(["choice", "which route?", "--criteria", "desk,phone"])
+        row = self.only()
+        self.assertEqual(row["answer"], "2")
+        self.assertAlmostEqual(row["confidence"], 0.91)
+
+    def test_a_choice_the_model_invented_is_a_position_into_nothing(self):
+        """A key that is not one of the caller's criteria is not a position,
+        and is dropped rather than stored under a number it does not have."""
+        Stub.choice_value = "somewhere-else"
+        self.run_main(["choice", "which route?", "--criteria", "desk,phone"])
+        self.assertIsNone(self.only()["answer"])
+
+    def test_a_noul_records_the_probability_and_no_confidence(self):
+        """A noul is the probability. There is no second number beside it, and
+        inventing one would put a value in the report that nothing measured."""
+        Stub.noul_value = 0.83
+        self.run_main(["noul", "is it?"])
+        row = self.only()
+        self.assertEqual(row["answer"], "0.83")
+        self.assertIsNone(row["confidence"])
+
+    def test_the_model_and_the_duration_are_recorded(self):
+        self.run_main(["noul", "is it?"])
+        row = self.only()
+        self.assertEqual(row["model"], "jev-stub")
+        self.assertIsNotNone(row["duration_ms"])
+        self.assertGreaterEqual(row["duration_ms"], 0)
+
+    def test_a_response_with_no_usage_records_no_counts_rather_than_zero(self):
+        Stub.input_tokens = "many"
+        self.run_main(["noul", "is it?"])
+        row = self.only()
+        self.assertIsNone(row["tokens_in"])
+        self.assertEqual(row["tokens_out"], 1)
+
+    def test_a_batch_records_its_size_and_no_single_judgment(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            fh.write('{"a": {"type": "noul", "instructions": "x"}, '
+                     '"b": {"type": "noul", "instructions": "y"}}')
+        self.addCleanup(os.unlink, fh.name)
+        self.run_main(["ask", "--questions", fh.name, "--state", fh.name])
+        row = self.only()
+        self.assertEqual((row["primitive"], row["questions"]), ("ask", 2))
+        self.assertIsNone(row["answer"])
+        self.assertIsNone(row["question_id"])
+
+
+class NoContent(MeteringCase):
+    """The hard promise: identifiers and counts, and nothing that was
+    submitted. Checked against the columns and against the bytes of the file,
+    because a column-by-column check cannot see an index or a freelist page."""
+
+    def test_the_question_and_the_state_reach_no_column(self):
+        self.run_main(["noul", f"Does this mention {SENTINEL}?"],
+                      stdin=f"the state also says {SENTINEL}")
+        row = self.only()
+        for column in row.keys():
+            with self.subTest(column=column):
+                self.assertNotIn(SENTINEL, str(row[column]))
+
+    def test_the_question_and_the_state_reach_no_byte_of_the_file(self):
+        self.run_main(["noul", f"Does this mention {SENTINEL}?"],
+                      stdin=f"the state also says {SENTINEL}")
+        found = self.store.read_bytes()
+        self.assertNotIn(SENTINEL.encode(), found)
+        # The stub did see it, so the test is proving a filter and not an
+        # absence: a run that never sent the sentinel would pass vacuously.
+        self.assertIn(SENTINEL, str(Stub.seen))
+
+    def test_a_criterion_key_never_reaches_the_file_even_as_the_answer(self):
+        """The first review of this table found the hole: a key short enough
+        passed the length cap, so `/Users/someone/private.txt` stored cleanly.
+        Now the answer is a position and a key cannot arrive at all."""
+        self.run_main(["choice", "which route?",
+                       "--criteria", f"{SENTINEL}=x,phone=elsewhere"])
+        self.assertEqual(self.only()["answer"], "1")
+        self.assertNotIn(SENTINEL.encode(), self.store.read_bytes())
+        # The stub did see it, so this proves a filter rather than an absence.
+        self.assertIn(SENTINEL, str(Stub.seen))
+
+    def test_a_caller_that_names_itself_with_content_is_filed_under_unknown(self):
+        """REGRESSION (the #489 Copilot review). The ledger refuses a name
+        that is content, and a refusal loses the stage, the arm and the
+        timing over the one field. `jev` drops the name first, so the
+        measurement survives and the content still reaches no byte."""
+        self.run_main(["noul", "is it?", "--stage", SENTINEL * 4])
+        self.assertEqual(self.only()["stage"], "unknown")
+        self.assertNotIn(SENTINEL.encode(), self.store.read_bytes())
+
+    def test_a_question_id_that_is_a_subject_line_is_dropped(self):
+        """`--id` is caller-controlled and a length cap passes a short
+        subject. The grammar is the guarantee: the row keeps everything
+        else."""
+        self.run_main(["noul", "is it?", "--id", f"the {SENTINEL} numbers",
+                       "--caller", "local-notify", "--stage", "JEV_NOTIFY"])
+        row = self.only()
+        self.assertIsNone(row["question_id"])
+        self.assertEqual((row["caller"], row["stage"], row["outcome"]),
+                         ("local-notify", "JEV_NOTIFY", "ok"))
+        self.assertNotIn(SENTINEL.encode(), self.store.read_bytes())
+
+    def test_a_stage_that_is_a_path_reaches_no_byte_of_the_file(self):
+        self.run_main(["noul", "is it?", "--stage", f"/Users/someone/{SENTINEL}.txt"])
+        self.assertEqual(self.only()["stage"], "unknown")
+        self.assertNotIn(SENTINEL.encode(), self.store.read_bytes())
+
+    def test_an_identifier_shaped_id_is_kept(self):
+        """The filter has to pass what the callers actually record, or it is
+        a filter that drops every measurement."""
+        self.run_main(["noul", "is it?", "--id", "notify-route"])
+        self.assertEqual(self.only()["question_id"], "notify-route")
+
+
+class WhenTheStoreIsGone(MeteringCase):
+    """A missing or unwritable database degrades to no recording, never to a
+    failed or slowed judgment."""
+
+    def baseline(self):
+        return self.run_verbose(["noul", "is it?"], JEV_METER="0")
+
+    def test_a_missing_database_changes_neither_the_answer_nor_the_exit_code(self):
+        missing = Path(tempfile.mkdtemp()) / "not-here" / "sd.db"
+        self.assertEqual(self.run_verbose(["noul", "is it?"],
+                                          JEV_METER_DB=str(missing)),
+                         self.baseline())
+
+    def test_an_unwritable_database_changes_neither_the_answer_nor_the_code(self):
+        self.store.chmod(stat.S_IRUSR)
+        self.addCleanup(self.store.chmod, stat.S_IRUSR | stat.S_IWUSR)
+        self.assertEqual(self.run_verbose(["noul", "is it?"]), self.baseline())
+
+    def test_a_database_that_is_a_directory_is_no_recording_and_no_failure(self):
+        folder = Path(tempfile.mkdtemp())
+        self.assertEqual(self.run_verbose(["noul", "is it?"],
+                                          JEV_METER_DB=str(folder)),
+                         self.baseline())
+
+    def test_the_recorder_says_what_it_did_and_never_raises(self):
+        folder = Path(tempfile.mkdtemp())
+        # A directory is not a database. SQLite reports the failed open as
+        # `unable to open database file`, an OperationalError, so the word is
+        # the busy one; either way nothing is recorded and nothing raises.
+        self.assertIn(
+            jev_meter.record({"caller": "c"}, {"JEV_METER_DB": str(folder)}),
+            (jev_meter.NO_STORE, jev_meter.CONTENDED),
+        )
+        self.assertEqual(jev_meter.record({}, {"JEV_METER": "off"}),
+                         jev_meter.SWITCHED_OFF)
+
+    def test_a_refused_row_is_not_a_failed_call(self):
+        """A stage over the cap no longer reaches the ledger -- `named` drops
+        it and the row is filed under `unknown` -- so the refusal is driven
+        through `--provider`, which is deliberately free metadata and is the
+        one name this tool does not filter."""
+        code, out = self.run_main(
+            ["record", "--caller", "c", "--stage", "s",
+             "--provider", "p" * 200, "--outcome", "ok"])
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(self.rows(), [])
+
+    def test_a_judgment_still_answers_when_its_own_row_is_refused(self):
+        Stub.noul_value = 0.5
+        code, out = self.run_main(["noul", "is it?", "--stage", "s" * 200])
+        self.assertEqual((code, out), (0, "0.5\n"))
+        self.assertEqual(self.only()["stage"], "unknown")
+
+
+class TheOutcomes(MeteringCase):
+    def test_an_answered_call_is_ok(self):
+        self.run_main(["noul", "is it?"])
+        row = self.only()
+        self.assertEqual((row["outcome"], row["cause"]), ("ok", None))
+
+    def test_a_switched_off_machine_with_a_fallback_is_a_fallback(self):
+        self.write_switch("off")
+        code, out = self.run_main(["noul", "is it?", "--fallback", "yes"])
+        self.assertEqual((code, out), (0, "yes\n"))
+        row = self.only()
+        self.assertEqual((row["outcome"], row["cause"]),
+                         ("fallback", "switched-off"))
+
+    def test_a_declined_judgment_writes_an_event_rather_than_silence(self):
+        self.write_switch("off")
+        self.run_main(["noul", "is it?", "--caller", "local-notify",
+                       "--stage", "JEV_NOTIFY"])
+        row = self.only()
+        self.assertEqual(
+            (row["caller"], row["stage"], row["outcome"], row["cause"]),
+            ("local-notify", "JEV_NOTIFY", "unavailable", "switched-off"),
+        )
+
+    def test_an_unkeyed_machine_says_unkeyed_and_not_switched_off(self):
+        self.run_main(["noul", "is it?", "--fallback", "yes"],
+                      TYPESAFE_API_KEY="")
+        self.assertEqual(self.only()["cause"], "unkeyed")
+
+    def test_a_placeholder_key_is_unkeyed_too(self):
+        self.run_main(["noul", "is it?", "--fallback", "yes"],
+                      TYPESAFE_API_KEY="change-me")
+        self.assertEqual(self.only()["cause"], "unkeyed")
+
+    def test_a_response_with_no_answer_is_invalid_and_not_unavailable(self):
+        Stub.drop_answers = True
+        self.run_main(["noul", "is it?", "--fallback", "yes"])
+        row = self.only()
+        self.assertEqual((row["outcome"], row["cause"]), ("fallback", "invalid"))
+
+    def test_a_body_that_is_not_json_is_invalid_and_not_unavailable(self):
+        """REGRESSION (the #489 Copilot review). An endpoint that answered
+        with something that is not JSON answered, so recording it as an
+        outage loses the one distinction this column exists to keep."""
+
+        class Answered:
+            def read(self):
+                return b"<html>maintenance</html>"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+        def garbage(_request, timeout=None):
+            return Answered()
+
+        with tempfile.TemporaryFile("w+") as out:
+            code = jev.main(["noul", "is it?", "--fallback", "yes"], out=out,
+                            env=self.env(JEV_RETRIES="0"), opener=garbage,
+                            sleep=lambda _s: None)
+        self.assertEqual(code, 0)
+        row = self.only()
+        self.assertEqual((row["outcome"], row["cause"]), ("fallback", "invalid"))
+
+    def test_an_endpoint_that_refuses_is_unavailable(self):
+        Stub.status = 500
+        self.run_main(["noul", "is it?", "--fallback", "yes"], JEV_RETRIES="0")
+        self.assertEqual(self.only()["cause"], "unavailable")
+
+    def test_a_timeout_is_its_own_class(self):
+        """Driven through an injected opener, because a stub that really
+        hangs would put the timeout in the suite's own runtime."""
+
+        def slow(_request, timeout=None):
+            raise urllib.error.URLError(TimeoutError("timed out"))
+
+        with tempfile.TemporaryFile("w+") as out:
+            code = jev.main(["noul", "is it?", "--fallback", "yes"], out=out,
+                            env=self.env(JEV_RETRIES="0"), opener=slow,
+                            sleep=lambda _s: None)
+        self.assertEqual(code, 0)
+        row = self.only()
+        self.assertEqual((row["outcome"], row["cause"]), ("fallback", "timeout"))
+
+    def test_every_decline_reason_this_tool_can_see_is_its_own_value(self):
+        seen = set()
+        for extra, expected in (({"TYPESAFE_API_KEY": ""}, "unkeyed"),
+                                ({"JEV_ENABLED": "0"}, "switched-off"),
+                                ({"JEV_TIMEOUT": "soon"}, "unavailable")):
+            with self.subTest(expected=expected):
+                self.run_main(["noul", "is it?", "--fallback", "y"], **extra)
+                seen.add(self.rows()[-1]["cause"])
+        self.assertEqual(seen, {"unkeyed", "switched-off", "unavailable"})
+
+
+class TheControlArm(MeteringCase):
+    """The old mechanism is the control arm and is measured with the same
+    fields, under the same stage key, in the same table."""
+
+    def test_enabled_records_its_decline_when_asked(self):
+        self.write_switch("off")
+        code, _out = self.run_main(["enabled", "JEV_NOTIFY", "--record",
+                                    "--caller", "local-notify"])
+        self.assertEqual(code, 3)
+        row = self.only()
+        self.assertEqual(
+            (row["arm"], row["caller"], row["stage"], row["outcome"],
+             row["cause"], row["primitive"]),
+            ("baseline", "local-notify", "JEV_NOTIFY", "fallback",
+             "switched-off", "gate"),
+        )
+
+    def test_enabled_records_nothing_unless_asked(self):
+        """The verb promises to cost nothing and every caller asks it on every
+        run, including runs where it then does nothing at all."""
+        self.write_switch("off")
+        self.assertEqual(self.run_main(["enabled", "JEV_NOTIFY"])[0], 3)
+        self.assertEqual(self.rows(), [])
+
+    def test_enabled_records_nothing_when_the_answer_is_yes(self):
+        self.assertEqual(self.run_main(["enabled", "JEV_NOTIFY", "--record"])[0], 0)
+        self.assertEqual(self.rows(), [])
+
+    def test_record_writes_what_the_old_path_did(self):
+        code, out = self.run_main([
+            "record", "--caller", "local-weekly-digest",
+            "--stage", "JEV_WEEKLY_DIGEST", "--decline", "no-path",
+            "--answer", "2", "--positions", "0,1,2",
+            "--duration-ms", "17",
+        ])
+        self.assertEqual((code, out), (0, ""))
+        row = self.only()
+        self.assertEqual(
+            (row["arm"], row["provider"], row["primitive"], row["outcome"],
+             row["cause"], row["answer"], row["ordering"], row["duration_ms"]),
+            ("baseline", "local", "baseline", "fallback", "no-path",
+             "2", "0,1,2", 17),
+        )
+
+    def test_record_refuses_an_ordering_that_is_not_positions(self):
+        self.run_main(["record", "--caller", "c", "--stage", "s",
+                       "--positions", SENTINEL])
+        self.assertEqual(self.rows(), [])
+
+    def test_a_fallback_run_is_countable_against_a_judgment_on_one_stage(self):
+        self.run_main(["noul", "is it?", "--caller", "local-adversarial-gate",
+                       "--stage", "JEV_ADVERSARIAL_GATE"])
+        self.run_main(["record", "--caller", "local-adversarial-gate",
+                       "--stage", "JEV_ADVERSARIAL_GATE", "--decline", "timeout",
+                       "--answer", "unknown"])
+        arms = [(row["stage"], row["arm"]) for row in self.rows()]
+        self.assertEqual(arms, [("JEV_ADVERSARIAL_GATE", "jev"),
+                                ("JEV_ADVERSARIAL_GATE", "baseline")])
+
+    def test_every_decline_word_the_vocabulary_holds_is_accepted(self):
+        for word in jev.DECLINES:
+            with self.subTest(word=word):
+                self.run_main(["record", "--caller", "c", "--stage", "s",
+                               "--decline", word])
+        self.assertEqual(sorted({row["cause"] for row in self.rows()}),
+                         sorted(jev.DECLINES))
+
+
+class ShadowMode(MeteringCase):
+    """Both arms on the same input, the old answer used, a paired sample
+    produced, and nothing about the stage's behaviour changed."""
+
+    def test_it_returns_the_old_answer_and_records_both(self):
+        Stub.noul_value = 0.97
+        code, out = self.run_main(["noul", "is it?", "--gate", "0.5",
+                                   "--shadow", "no", "--shadow-ms", "4",
+                                   "--caller", "local-notify",
+                                   "--stage", "JEV_NOTIFY"])
+        self.assertEqual((code, out), (0, "no\n"))
+        judged, baseline = self.rows()
+        self.assertEqual((judged["arm"], judged["answer"], judged["shadow"]),
+                         ("jev", "0.97", 1))
+        # The caller's own answer is the caller's own text, so it is not
+        # stored. `changed` carries what the comparison needs, and it is
+        # computed in the process that held both answers.
+        self.assertEqual(
+            (baseline["arm"], baseline["answer"], baseline["shadow"],
+             baseline["duration_ms"], baseline["provider"]),
+            ("baseline", None, 1, 4, "local"),
+        )
+        self.assertEqual(judged["changed"], "yes")
+        self.assertEqual(judged["pair"], baseline["pair"])
+        self.assertIsNotNone(judged["pair"])
+
+    def test_the_pair_carries_the_delta_between_the_two_answers(self):
+        Stub.noul_value = 0.97
+        self.run_main(["noul", "is it?", "--gate", "0.5", "--shadow", "no"])
+        self.assertEqual(self.rows()[0]["changed"], "yes")
+        self.run_main(["noul", "is it?", "--gate", "0.5", "--shadow", "yes"])
+        self.assertEqual(self.rows()[2]["changed"], "no")
+
+    def test_a_failing_call_still_returns_the_old_answer_and_exits_zero(self):
+        Stub.status = 500
+        code, out = self.run_main(["noul", "is it?", "--shadow", "keep"],
+                                  JEV_RETRIES="0")
+        self.assertEqual((code, out), (0, "keep\n"))
+        judged, baseline = self.rows()
+        self.assertEqual(judged["cause"], "unavailable")
+        self.assertIsNone(baseline["answer"])
+        self.assertEqual(baseline["arm"], "baseline")
+
+    def test_shadow_is_off_unless_asked(self):
+        self.run_main(["noul", "is it?"])
+        self.assertEqual(self.only()["shadow"], 0)
+
+    def test_shadow_refuses_to_share_a_call_with_json(self):
+        code, out = self.run_main(["noul", "is it?", "--shadow", "no", "--json"])
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(self.rows(), [])
+
+
+class WhoAsked(MeteringCase):
+    def test_the_flags_name_the_caller_and_the_stage(self):
+        self.run_main(["noul", "is it?", "--caller", "local-sd-plan",
+                       "--stage", "JEV_SD_PLAN"])
+        row = self.only()
+        self.assertEqual((row["caller"], row["stage"]),
+                         ("local-sd-plan", "JEV_SD_PLAN"))
+
+    def test_the_environment_names_them_for_a_caller_that_is_a_shell(self):
+        self.run_main(["noul", "is it?"], JEV_CALLER="local-notify",
+                      JEV_STAGE="JEV_NOTIFY")
+        row = self.only()
+        self.assertEqual((row["caller"], row["stage"]),
+                         ("local-notify", "JEV_NOTIFY"))
+
+    def test_a_caller_that_names_nothing_is_recorded_as_unknown(self):
+        self.run_main(["noul", "is it?"])
+        row = self.only()
+        self.assertEqual((row["caller"], row["stage"]), ("unknown", "unknown"))
+        self.assertEqual(row["provider"], "typesafe")
+
+    def test_switching_the_meter_off_records_nothing(self):
+        self.assertEqual(self.run_main(["noul", "is it?"], JEV_METER="0")[1],
+                         "0.97\n")
+        self.assertEqual(self.rows(), [])
+
+
+class DidItChangeAnything(MeteringCase):
+    def test_a_fallback_the_judgment_agrees_with_changed_nothing(self):
+        Stub.noul_value = 0.97
+        self.run_main(["noul", "is it?", "--gate", "0.5", "--fallback", "yes"])
+        self.assertEqual(self.only()["changed"], "no")
+
+    def test_a_fallback_the_judgment_disagrees_with_changed_something(self):
+        Stub.noul_value = 0.97
+        self.run_main(["noul", "is it?", "--gate", "0.5", "--fallback", "no"])
+        self.assertEqual(self.only()["changed"], "yes")
+
+    def test_a_caller_that_hands_over_nothing_is_recorded_as_unknown(self):
+        self.run_main(["noul", "is it?"])
+        self.assertEqual(self.only()["changed"], "unknown")
+
+    def test_a_caller_that_knows_may_say_so(self):
+        self.run_main(["noul", "is it?", "--changed", "yes"])
+        self.assertEqual(self.only()["changed"], "yes")
+
+    def test_a_taken_fallback_changed_nothing_because_nothing_was_used(self):
+        self.write_switch("off")
+        self.run_main(["noul", "is it?", "--fallback", "yes"])
+        self.assertEqual(self.only()["changed"], "no")
+
+
+class OneDecisionIsOneDecision(MeteringCase):
+    """`enabled --record` then `record` is one decision, not two.
+
+    Both rows are the control arm on the same stage, and both used to count
+    as a call and as a decline with nothing tying them together, so a single
+    decline read as two. The gate row is a gate event now, which the decision
+    aggregates leave out and count on their own.
+    """
+
+    def stage(self):
+        connection = connect(self.store)
+        self.addCleanup(connection.close)
+        return {entry["stage"]: entry
+                for entry in by_stage(connection)}["JEV_NOTIFY"]
+
+    def test_a_decline_and_the_decision_behind_it_count_once_each(self):
+        self.write_switch("off")
+        self.run_main(["enabled", "JEV_NOTIFY", "--record",
+                       "--caller", "local-notify"])
+        self.run_main(["record", "--caller", "local-notify",
+                       "--stage", "JEV_NOTIFY", "--decline", "switched-off"])
+        self.assertEqual(len(self.rows()), 2)
+        entry = self.stage()
+        self.assertEqual(entry["arms"]["baseline"]["calls"], 1)
+        self.assertEqual(entry["declines"], {"switched-off": 1})
+        self.assertEqual(entry["gates"], {"switched-off": 1})
+
+    def test_a_caller_that_only_declines_still_has_a_number(self):
+        """The gate row is the only fact those stages ever had, and leaving it
+        out of the decision counts must not leave the stage out."""
+        self.write_switch("off")
+        self.run_main(["enabled", "JEV_NOTIFY", "--record",
+                       "--caller", "local-notify"])
+        entry = self.stage()
+        self.assertEqual(entry["gates"], {"switched-off": 1})
+        self.assertEqual(entry["arms"], {})
+
+
+class TheCauseIsWrittenOnce(MeteringCase):
+    """A failed call and the old path that followed it are one decline.
+
+    `OneDecisionIsOneDecision` above covers the gate: no call was made, so
+    the gate row carries the cause and `GATE_PRIMITIVE` keeps it out of the
+    decision counts. This is the other half, and it was found in review of
+    the caller wiring. When a call *is* made and fails, `flush` writes the
+    cause on the judgment's own row. The caller then records that its old
+    mechanism ran -- and `DECLINES` groups by stage and cause across both
+    arms, with no deduplication, so a cause named twice is a decline counted
+    twice.
+
+    The fix is on the writer and not on the aggregate: the caller's row says
+    the control arm completed, which nothing else records, and says nothing
+    about why, which something else already did. Changing `DECLINES` instead
+    would change what every row already in the ledger means.
+    """
+
+    def ask_and_fail(self):
+        """One `ask` that is made, fails at the endpoint, and is recorded.
+
+        A real call and not a synthesised row: what is being checked is that
+        `flush` puts the cause on this row, so a test that wrote the row
+        itself would assert its own fixture.
+        """
+        Stub.status = 500
+        with tempfile.NamedTemporaryFile("w", suffix=".json",
+                                         delete=False) as state:
+            state.write(json.dumps({"subject": "a thread"}))
+        self.addCleanup(os.unlink, state.name)
+        self.run_main(
+            ["ask", "--questions", "-", "--state", state.name,
+             "--state-format", "json", "--fallback", "{}",
+             "--caller", "local-sd-plan", "--stage", "JEV_SD_PLAN"],
+            stdin=json.dumps({"q1": {"type": "noul", "instructions": "is it?"}}),
+            JEV_RETRIES="0",
+        )
+
+    def stage(self):
+        connection = connect(self.store)
+        self.addCleanup(connection.close)
+        return {entry["stage"]: entry
+                for entry in by_stage(connection)}["JEV_SD_PLAN"]
+
+    def test_a_failed_ask_and_the_old_path_behind_it_are_one_decline(self):
+        self.ask_and_fail()
+        cause = self.rows()[0]["cause"]
+        self.assertIsNotNone(cause, "the failed ask recorded no cause at all, "
+                                    "so this measures nothing")
+        # What every wired caller writes on the branch its own mechanism took.
+        self.run_main(["record", "--caller", "local-sd-plan",
+                       "--stage", "JEV_SD_PLAN", "--arm", "baseline",
+                       "--outcome", "ok"])
+        entry = self.stage()
+        self.assertEqual(entry["declines"], {cause: 1})
+        # And the row still says the control arm ran, which is its whole job.
+        self.assertEqual(entry["arms"]["baseline"]["calls"], 1)
+        self.assertEqual(entry["arms"]["baseline"]["ok"], 1)
+
+    def test_repeating_the_cause_on_that_row_is_what_made_it_two(self):
+        """The defect, pinned, so the rule banning `--decline` has a number.
+
+        `tests/test_jev_contract.py` refuses a `--decline` from any caller.
+        This is why: the same decision, recorded with one, counts twice --
+        and it is `DECLINES` doing the counting, so no caller can see it.
+        """
+        self.ask_and_fail()
+        cause = self.rows()[0]["cause"]
+        self.run_main(["record", "--caller", "local-sd-plan",
+                       "--stage", "JEV_SD_PLAN", "--arm", "baseline",
+                       "--outcome", "ok", "--decline", cause])
+        self.assertEqual(self.stage()["declines"], {cause: 2})
+
+
+class TheMeterNeverWaits(MeteringCase):
+    """Metering runs after the answer is printed, but a subprocess caller
+    waits for this process to exit, so a lock it waited on would be time
+    added to a decision that already finished."""
+
+    def test_a_locked_ledger_drops_the_measurement_instead_of_waiting(self):
+        import time
+
+        holder = connect(self.store)
+        self.addCleanup(holder.close)
+        holder.execute("BEGIN IMMEDIATE")
+        started = time.monotonic()
+        said = jev_meter.record(
+            {"caller": "c", "stage": "s", "provider": "p",
+             "primitive": "noul", "outcome": "ok"},
+            {"JEV_METER_DB": str(self.store)})
+        waited = time.monotonic() - started
+        holder.execute("ROLLBACK")
+        self.assertEqual(said, jev_meter.CONTENDED)
+        self.assertLess(waited, 1.0, f"waited {waited:.2f}s on a locked ledger")
+
+    def test_a_locked_ledger_changes_neither_the_answer_nor_the_exit_code(self):
+        holder = connect(self.store)
+        self.addCleanup(holder.close)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            self.assertEqual(self.run_verbose(["noul", "is it?"]),
+                             self.run_verbose(["noul", "is it?"],
+                                              JEV_METER="0"))
+        finally:
+            holder.execute("ROLLBACK")

@@ -1,0 +1,55 @@
+receivers:
+  otlp:
+    protocols:
+      # Bind inside the container to every interface, not the collector's
+      # default of localhost: that default is the container's own loopback, so
+      # the published ports reach nothing and the receiver is unreachable from
+      # the host. Exposure is controlled where it belongs — the run script
+      # publishes these on 127.0.0.1 only.
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 10s
+  resourcedetection:
+    detectors: [system]
+    system:
+      resource_attributes:
+        host.name:
+          enabled: true
+        host.id:
+          enabled: true
+
+exporters:
+ otlphttp/export:
+   # Any OTLP/HTTP backend. Endpoint and Authorization header both come from
+   # the environment — see .env.example — so no live credential sits in a
+   # tracked file.
+   endpoint: "${env:OTLP_EXPORT_URL}"
+   headers:
+     Authorization: "${env:OTLP_EXPORT_AUTH}"
+
+extensions:
+  health_check:
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers:
+      - otlp
+      processors:
+      - batch
+      exporters:
+      - otlphttp/export
+    logs:
+      processors:
+      - resourcedetection
+      exporters:
+      - otlphttp/export
+      receivers:
+      - otlp
+ 

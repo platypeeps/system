@@ -1,0 +1,14 @@
+# Nightly planning-document trigger (local-sd-plan): for each repository that
+# opts in, take the best unplanned task row and enqueue a planning run through
+# the runner. Selection is deterministic and happens here; the agent itself
+# runs in the runner's isolated clone, which is why this is JOB_COMMAND and
+# not JOB_PROMPT -- cron picks the work, the runner does it.
+#
+# Inert until a machine has a participation list. `repos.<profile>.conf` is
+# not committed, so installing this job on a machine that has never opted a
+# repository in selects nothing and exits 0.
+#
+# 04:45 keeps it clear of the 02:xx slot, which a laptop answers inside a
+# DarkWake window where networking is maintenance-only.
+JOB_SCHEDULE="45 4 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-sd-plan/sd-plan.sh\" nightly"

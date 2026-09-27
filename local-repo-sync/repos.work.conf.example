@@ -1,0 +1,7 @@
+# Work machine. Format: <subdir> <owner/repo>
+#
+# Copy to repos.work.conf (gitignored) and list your own repos.
+
+.  platypeeps/system-tools
+
+work  example-org/example-service

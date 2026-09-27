@@ -1,0 +1,8 @@
+# Daily review digest: vault decision-queue notes (Blog Ideas, Skill
+# Proposals, Tips and Tricks, Topics, Market Watch) emailed with signed
+# accept/decline/track/adopt buttons. Runs after the nightly generators
+# that fill those queues, so the queues are fresh.
+# Nothing pending = no email. Exits 1 only when the email could not be
+# delivered.
+JOB_SCHEDULE="30 7 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-obsidian-review/obsidian-review.sh\" run"

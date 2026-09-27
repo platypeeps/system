@@ -1,0 +1,55 @@
+#!/bin/sh
+# Stub curl: journals its arguments, then answers per $FAKE_DIR/curl_mode:
+# ok (200 with a session id), hang (exit 28, as --max-time does), 500, nosid.
+printf 'curl %s\n' "$*" >> "$FAKE_DIR/journal"
+hdr=""; body=""; method=POST; data=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -D) hdr="$2"; shift ;;
+    -o) body="$2"; shift ;;
+    -X) method="$2"; shift ;;
+    -d) data="$2"; shift ;;
+  esac
+  shift
+done
+# The calls after initialize answer as the live server did on 2026-09-26:
+# 202 for notifications/initialized, 200 for the session DELETE. They do not
+# consume curl_seq or read curl_mode, so a sequence counts initializes only.
+# $FAKE_DIR/delete_code overrides the DELETE answer; `fail` exits 7, as a
+# refused connection does. $FAKE_DIR/note_delay: seconds the notification takes.
+if [ "$method" = DELETE ]; then
+  dc=$(cat "$FAKE_DIR/delete_code" 2>/dev/null || echo 200)
+  if [ "$dc" = fail ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi
+  printf '%s' "$dc"; exit 0
+fi
+case "$data" in *notifications/initialized*)
+  [ -s "$FAKE_DIR/note_delay" ] && sleep "$(cat "$FAKE_DIR/note_delay")"
+  [ -n "$body" ] && : > "$body"; printf 202; exit 0 ;;
+esac
+# $FAKE_DIR/curl_seq, when present, answers one line per call before
+# curl_mode takes over: a server that stalls once and then answers.
+mode=""
+if [ -s "$FAKE_DIR/curl_seq" ]; then
+  mode=$(head -1 "$FAKE_DIR/curl_seq")
+  tail -n +2 "$FAKE_DIR/curl_seq" > "$FAKE_DIR/curl_seq.next"
+  mv "$FAKE_DIR/curl_seq.next" "$FAKE_DIR/curl_seq"
+fi
+[ -n "$mode" ] || mode=$(cat "$FAKE_DIR/curl_mode" 2>/dev/null || echo ok)
+# $FAKE_DIR/curl_delay: seconds an initialize takes before it answers.
+[ -s "$FAKE_DIR/curl_delay" ] && sleep "$(cat "$FAKE_DIR/curl_delay")"
+case "$mode" in
+  hang)
+    echo "curl: (28) Operation timed out after 10002 milliseconds with 0 bytes received" >&2
+    exit 28 ;;
+  500)
+    printf 'HTTP/1.1 500 Internal Server Error\r\n\r\n' > "$hdr"
+    : > "$body"; printf 500 ;;
+  nosid)
+    printf 'HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n' > "$hdr"
+    : > "$body"; printf 200 ;;
+  *)
+    printf 'HTTP/1.1 200 OK\r\nmcp-session-id: abc123\r\n\r\n' > "$hdr"
+    printf 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n' > "$body"
+    printf 200 ;;
+esac
+exit 0

@@ -1,0 +1,4 @@
+# Nightly read-only GitHub collection into local shadow rows. Collection errors
+# retain the old watermark; cron's failure channel reports a nonzero exit.
+JOB_SCHEDULE="20 2 * * *"
+JOB_COMMAND="\"${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}/bin/sd\" shadow sync --strict"

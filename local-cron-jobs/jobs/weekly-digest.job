@@ -1,0 +1,6 @@
+# Sunday summary of the automation fleet (local-weekly-digest): job
+# run/failure counts, drift, pending updates, disk. Always emails — the
+# digest is the report and doubles as a weekly heartbeat. Exits 1 only
+# when the email could not be delivered.
+JOB_SCHEDULE="0 7 * * 0"
+JOB_COMMAND="sh \"$ROOT/../local-weekly-digest/weekly-digest.sh\" run"

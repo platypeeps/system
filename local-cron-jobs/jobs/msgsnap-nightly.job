@@ -1,0 +1,20 @@
+# Nightly snapshot of the Messages database to ~/.local/state/msgsnap/chat.db.
+#
+# Runs the FDA-holding binary from local-msgsnap directly rather than through
+# msgsnap.sh. The wrapper's job is to fall back to a one-shot launchd run when a
+# terminal or agent shell shadows the TCC grant; under launchd that fallback
+# would only nest launchd inside launchd, so call the binary and let it be its
+# own responsible process.
+#
+# Install it only on the machine that holds the Messages history.
+#
+# Exit codes that count as failure here and page you: 2 means TCC refused, which
+# after a rebuild means the cdhash changed and Full Disk Access needs regranting
+# (local-msgsnap/README.md, "Gotchas"). 3 means SQLite could not read or write.
+# 4 means the source could not be opened for a reason that is not TCC — absent,
+# an I/O error, or open(2) interrupted ten times in a row — and a regrant will
+# not help; read the line above the FAILED marker. A single EINTR is retried
+# and never reaches the log (sd:935). Each run overwrites the same file, so
+# this does not grow.
+JOB_SCHEDULE="30 5 * * *"
+JOB_COMMAND="\"$ROOT/../local-msgsnap/bin/msgsnap\""

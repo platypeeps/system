@@ -1,0 +1,110 @@
+# Writing style: STE-Concise
+
+Use STE-Concise for replies and authored prose unless the user requests another style.
+Use active voice and simple tenses: infinitive, imperative, simple present, past, and future.
+Limit prose sentences to 20 words.
+Express one idea or instruction per sentence.
+Lead with the answer or outcome.
+Omit filler, conversational preambles, and closing summaries.
+Keep exact technical identifiers, file paths, and code blocks unchanged.
+Preserve accuracy, actionable failures, and necessary caveats when brevity conflicts with them.
+
+# Diagrams
+
+Use Archify when available for architecture, workflow, sequence, data-flow, and state diagrams.
+Create a diagram only when it clarifies an important relationship.
+Use a short table or prose when either explains the relationship clearly.
+Do not add decorative artifacts.
+If Archify is unavailable, name the limitation and use a suitable available format.
+
+# RTK - Rust Token Killer
+
+**Usage**: Token-optimized CLI proxy (60-90% savings on dev operations)
+
+## Meta Commands (always use rtk directly)
+
+```bash
+rtk gain              # Show token savings analytics
+rtk gain --history    # Show command usage history with savings
+rtk discover          # Analyze Claude Code history for missed opportunities
+rtk proxy <cmd>       # Execute raw command without filtering (for debugging)
+```
+
+## Installation Verification
+
+```bash
+rtk --version         # Should show: rtk X.Y.Z
+rtk gain              # Should work (not "command not found")
+which rtk             # Verify correct binary
+```
+
+⚠️ **Name collision**: If `rtk gain` fails, you may have reachingforthejack/rtk (Rust Type Kit) installed instead.
+
+## Hook-Based Usage
+
+All other commands are automatically rewritten by the Claude Code hook.
+Example: `git status` → `rtk git status` (transparent, 0 tokens overhead)
+
+If `rtk` misbehaves, re-run the command through `rtk proxy <cmd>` — that
+bypasses the filtering, so identical output means the wrapper is at fault and
+different output means the command itself is. If the wrapper is at fault, fall
+back to the bare command and say so; do not keep retrying through `rtk`.
+
+# GitHub: MCP before `gh`
+
+For GitHub work — PRs, reviews, issues, commits, repo contents, releases — use the `mcp__github__*` tools, not `gh` via Bash.
+
+These tools are usually **deferred**: only their names are loaded, so they look unavailable and `gh` looks like the only option. It isn't. Load schemas first, batching everything the task needs into one call:
+
+`ToolSearch("select:mcp__github__pull_request_read,mcp__github__list_pull_requests,mcp__github__issue_read")`
+
+Then call them normally. One extra round-trip buys structured JSON and field selection instead of parsing CLI text.
+
+Use `gh` when no MCP equivalent exists, or when the MCP server is disconnected or unavailable.
+Examples include `gh run watch`, `gh pr checkout`, and workflow dispatch without an equivalent loaded MCP tool.
+Check available tools and connection status before declaring MCP unavailable; Claude Code provides `claude mcp list`.
+Use Git for local repository state.
+Private repositories follow the same MCP-first rule as public repositories.
+
+**Token changes need a Claude Code restart.** The server authenticates with `Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}`, interpolated from the process env inherited at launch — editing your shell env file does not reach a running session, and `/mcp` reconnect reuses the same stale value. Tell-tale: MCP 404s on a repo that `curl` with the same token reads fine. Quick health check: `search_repositories("is:private")` — `total_count: 0` means the session is holding a stale or under-scoped token.
+
+# Verification
+
+Applies to work that produces or changes something — code, files, config, or a factual claim about the state of a system. Not to conversation, opinions, or questions answered from what is already on screen.
+
+## Before starting: name the check
+
+State the specific check that would catch you being wrong, and what result means failure. Before the work, not after — a check chosen afterward is chosen to pass.
+
+Falsifiable: *"`pytest tests/auth` — 3 failing tests should pass, 0 new failures."* / *"`grep -c` the pattern vault-wide — expect 0; any hit means a case was missed."*
+
+Not: *"I'll review the code"*, *"make sure it works"*, *"check the output looks right."*
+
+**If you cannot verify it — it depends on an external service, a human decision, or the user's eyes — say so instead of inventing a check.** Name what you can verify, what you cannot, and what would settle the rest. A stated gap is useful; a fabricated verification is worse than none.
+
+## After finishing: run it and report
+
+Run the check you named. Quote the shortest decisive line of actual output. A partial pass is not a pass.
+
+- Check changed mid-task: say why. One swapped for an easier one after the fact verified nothing.
+- Never ran it: say that. *"Not verified"* is a legitimate report. *"Verified"* when nothing ran is not.
+
+## Scope the check to the blast radius, not to what you edited
+
+The most common way a check passes while the work is wrong: it covers the files you touched
+instead of everywhere the thing you changed appears. **Enumerate first, then check.**
+
+- **Renaming or replacing a name** — grep every repo that writes it, not the directory you are
+  in. A rename that stops at a repo boundary leaves the old name live somewhere that reads it.
+- **Swapping a tool, library, or transport** — three things change, not one: what it is
+  *called*, what *authorizes* it (grants, config, allow-lists), and what it can *do*. The third
+  is the one nobody looks for: check what the docs still claim is impossible.
+- **Adding or removing a thing that gets listed** — find the inventories. Anything reciting a
+  list drifts silently; prefer making it enumerate at runtime over correcting the list.
+- **Correcting a stored fact** — find every store that derives from it. A row, its search
+  index, a sync queue, a vector embedding: fixing one and asserting "corrected" is wrong three
+  times over.
+
+The passing form of the check enumerates from the filesystem or the database — `ls`, a schema
+query, a repo-wide grep — rather than searching for the string you just typed. A check built
+from what you already know cannot find what you did not know about.

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stub sleep, first on PATH: runs /bin/sleep, except that a sleep for the
+# number in $FAKE_DIR/sleep_killed dies by SIGTERM at once, as the watchdog's
+# sleep does when notify_bounded cancels it.
+if [ -e "$FAKE_DIR/sleep_killed" ] && [ "$1" = "$(cat "$FAKE_DIR/sleep_killed")" ]; then
+  kill -TERM $$
+fi
+exec /bin/sleep "$@"

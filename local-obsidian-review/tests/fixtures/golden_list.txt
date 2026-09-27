@@ -1,0 +1,25 @@
+20 awaiting decisions
+Blog Ideas: 14 awaiting a decision
+- blog-14 (score 14.0)
+- blog-13 (score 13.0)
+- blog-12 (score 12.0)
+- blog-11 (score 11.0)
+- blog-10 (score 10.0)
+- blog-09 (score 9.0)
+- blog-08 (score 8.0)
+- blog-07 (score 7.0)
+- blog-06 (score 6.0)
+- blog-05 (score 5.0)
+- blog-04 (score 4.0)
+- blog-03 (score 3.0)
+Skill Proposals: 2 awaiting a decision
+- skill-two (score 7.0)
+- skill-one (score 5.0)
+Tips and Tricks: 1 awaiting a decision
+- tip-new (score 4.0)
+Topics: 2 awaiting a decision
+- topic-two (score 9.0)
+- topic-one (score 3.0)
+Market Watch: 1 awaiting a decision
+- watch-one (score 2.0)
+email sent

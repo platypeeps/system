@@ -1,0 +1,7 @@
+# Nightly computer health review (local-health-check): crashes, panics,
+# launchd exits, SMART, memory/load, log-fault spikes, new persistence,
+# network sanity. Findings are emailed by health-check.sh itself; this job
+# only exits 1 when that email could not be delivered, so the failure
+# notification (banner + ntfy push) covers a lost report.
+JOB_SCHEDULE="15 4 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-health-check/health-check.sh\" run"

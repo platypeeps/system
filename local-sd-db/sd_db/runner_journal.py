@@ -1,0 +1,188 @@
+"""Out-of-database ownership evidence survives restoring an older sd.db.
+
+This directory is backed up beside the database, but restoring sd.db must
+never roll this directory backwards. A run absent from the DB is a hold,
+not permission to dispatch or to reconstruct invented progress.
+"""
+
+from __future__ import annotations
+
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+from contextlib import contextmanager
+from pathlib import Path
+
+from . import paths
+from .runner import RunnerRefused
+
+
+def directory(database: Path) -> Path:
+    return database.parent / "runner-journal"
+
+
+def restore_pending(database: Path) -> bool:
+    return (database.parent / "runner-restore-intent.json").exists()
+
+
+def canonical(record: dict) -> dict:
+    """The record with `repo` in the form migration 014 gives the row (sd:1447).
+
+    014 rewrote `runner_run.repo` to the `~/` key and left this journal as
+    history, so a record written before it names the absolute path of the
+    same repository. Every comparison of a record with a row, or with another
+    record, passes both sides through here, so two spellings of one
+    repository agree and a different repository still differs. The file is
+    not rewritten here: the next `persist` writes the row, which holds the
+    key. The conversion is `paths.home_relative`, the function 014 ran, so
+    both sides agree byte for byte; a path outside the home, or a record
+    compared without `$HOME`, is kept as it is.
+    """
+    repo = record.get("repo")
+    try:
+        keyed = paths.home_relative(repo) if isinstance(repo, str) else repo
+    except paths.PathRefused:
+        return record
+    return record if keyed == repo else {**record, "repo": keyed}
+
+
+def _bytes(value: dict) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRefused):
+    """Take the lock at `path`, never through a link at its final component.
+
+    The one lock opener both packages share. The file is opened without
+    following a link at the last component, checked on the open descriptor (a
+    regular file owned by this user, with one link), and the flock is taken on
+    that same descriptor, so nothing can be swapped in between the check and
+    the flock. Three things this does not promise. A symlinked parent
+    directory is still followed: O_NOFOLLOW guards the final component alone.
+    Renaming the path after the open does not break the flock, so two holders
+    exist if anything moves the file; the guarantee covers the open-to-flock
+    window, not the whole body. And a file this opener inherits keeps the mode
+    it has, which is what makes the private 0o600 of a file it creates safe to
+    add: an existing lock is never chmodded under a live holder.
+
+    `noun` names the lock in a refusal; `held` is the message when another
+    holder owns it; `error` is the exception raised for every refusal. Only a
+    link or a foreign file is reported as unsafe ownership or type. Any other
+    failure to open names the system error instead, because an unwritable, a
+    read-only or a full lock directory is not a verdict about the file's
+    owner.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError as cause:
+        # Two spellings of the same refusal: this machine and CI answer
+        # O_NOFOLLOW on a symlink with ELOOP, a BSD kernel with EMLINK. Only a
+        # mocked open can reach the second here, and one does (sd:857) --
+        # without it, deleting EMLINK left the whole suite green.
+        if cause.errno not in (errno.ELOOP, errno.EMLINK):
+            raise error(f"{noun} lock cannot be opened: {path}: {cause.strerror}") from cause
+        raise error(f"{noun} lock has unsafe ownership or type: {path}") from cause
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or details.st_nlink != 1:
+            raise error(f"{noun} lock has unsafe ownership or type: {path}")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError as cause:
+            # The cause is kept: a caller that relabels contention (control_gate)
+            # reads it to tell a held lock from a lock it could not open.
+            raise error(held or f"runner ownership lock held: {path}") from cause
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def read(path: Path) -> dict:
+    try:
+        if path.is_symlink() or not re.fullmatch(r"[a-f0-9]{32}\.json", path.name):
+            raise ValueError("unsafe run journal filename")
+        envelope = json.loads(path.read_text())
+        record = envelope["record"]
+        if not isinstance(record, dict) or type(record.get("journal_version")) is not int or record["journal_version"] < 0:
+            raise ValueError("invalid journal version")
+        for name in ("id", "repo", "branch", "work_path", "retained_path", "owner", "created_at"):
+            if not isinstance(record.get(name), str) or not record[name]:
+                raise ValueError(f"invalid {name}")
+        if type(record.get("assignment")) is not int or type(record.get("run")) is not int:
+            raise ValueError("invalid assignment/run counter")
+        if envelope["sha256"] != hashlib.sha256(_bytes(record)).hexdigest():
+            raise ValueError("checksum mismatch")
+        if record["id"] != path.stem:
+            raise ValueError("run identity mismatch")
+        return record
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RunnerRefused(f"runner journal is unreadable: {path}: {error}") from None
+
+
+def persist(database: Path, record: dict) -> Path:
+    ident = record.get("id", "")
+    if not re.fullmatch(r"[a-f0-9]{32}", ident):
+        raise RunnerRefused("invalid durable run identity")
+    root = directory(database)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = root / f"{ident}.json"
+    with lock(root / f"{ident}.lock"):
+        if target.exists():
+            previous = read(target)
+            # Both sides keyed: a record written before migration 014 names
+            # the same repository by its absolute path (sd:1447).
+            keyed, previous = canonical(record), canonical(previous)
+            for name in ("id", "assignment", "run", "repo", "branch", "work_path", "retained_path"):
+                if previous[name] != keyed[name]:
+                    raise RunnerRefused(f"run journal identity changed: {name}")
+            if previous.get("released_at") and not record.get("released_at"):
+                raise RunnerRefused("database is older than released run journal; reconcile restore first")
+            if record["journal_version"] < previous["journal_version"]:
+                raise RunnerRefused("database is older than durable run journal; reconcile restore first")
+            if record["journal_version"] == previous["journal_version"] and keyed != previous:
+                raise RunnerRefused("same-version run journal conflict; reconcile restore first")
+        temporary = target.with_suffix(".partial")
+        envelope = {"record": record, "sha256": hashlib.sha256(_bytes(record)).hexdigest()}
+        with temporary.open("wb") as handle:
+            handle.write(_bytes(envelope) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        fsync_directory(root)
+    return target
+
+
+def records(database: Path) -> list[dict]:
+    root = directory(database)
+    return validate_path(root) if root.exists() else []
+
+
+def validate_path(path: Path) -> list[dict]:
+    """Validate a copied journal directory without opening or modifying sd.db."""
+    if path.is_symlink() or not path.is_dir():
+        raise RunnerRefused(f"runner journal directory is absent: {path}")
+    for candidate in path.iterdir():
+        if candidate.is_symlink() or not candidate.is_file():
+            raise RunnerRefused(f"unsafe run journal entry: {candidate}")
+        if not re.fullmatch(r"[a-f0-9]{32}\.(json|lock|partial)", candidate.name):
+            raise RunnerRefused(f"unknown run journal entry: {candidate}")
+        if candidate.suffix == ".partial":
+            raise RunnerRefused(f"interrupted journal write requires reconciliation: {candidate}")
+    return [read(candidate) for candidate in sorted(path.glob("*.json"))]

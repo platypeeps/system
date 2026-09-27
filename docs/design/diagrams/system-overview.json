@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "How the pieces fit together",
+    "subtitle": "Two repositories, one database, and the surfaces that read it",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      560
+    ]
+  },
+  "components": [
+    {
+      "id": "system",
+      "type": "backend",
+      "label": "~/repos/system",
+      "sublabel": "tools, wrappers, jobs",
+      "pos": [
+        60,
+        40
+      ],
+      "size": [
+        180,
+        58
+      ],
+      "tag": "private"
+    },
+    {
+      "id": "pack",
+      "type": "backend",
+      "label": "sd-ai-command-pack",
+      "sublabel": "sd, sd-review, sd-ship",
+      "pos": [
+        60,
+        150
+      ],
+      "size": [
+        180,
+        58
+      ],
+      "tag": "public"
+    },
+    {
+      "id": "cron",
+      "type": "cloud",
+      "label": "cron-jobs",
+      "sublabel": "launchd, per profile",
+      "pos": [
+        60,
+        290
+      ],
+      "size": [
+        180,
+        58
+      ]
+    },
+    {
+      "id": "runner",
+      "type": "backend",
+      "label": "sd runner",
+      "sublabel": "isolated clones",
+      "pos": [
+        60,
+        400
+      ],
+      "size": [
+        180,
+        58
+      ]
+    },
+    {
+      "id": "binlinks",
+      "type": "cloud",
+      "label": "~/bin/common",
+      "sublabel": "PATH, linked not copied",
+      "pos": [
+        320,
+        95
+      ],
+      "size": [
+        170,
+        58
+      ]
+    },
+    {
+      "id": "dash",
+      "type": "frontend",
+      "label": "Dashboard :8767",
+      "sublabel": "loopback, private Tailscale",
+      "pos": [
+        560,
+        60
+      ],
+      "size": [
+        180,
+        58
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "sd_db",
+      "sublabel": "one SQLite database",
+      "pos": [
+        560,
+        210
+      ],
+      "size": [
+        180,
+        58
+      ],
+      "tag": "the tracker"
+    },
+    {
+      "id": "research",
+      "type": "external",
+      "label": "Research repos",
+      "sublabel": "docs/dashboard HTML",
+      "pos": [
+        820,
+        60
+      ],
+      "size": [
+        170,
+        58
+      ]
+    },
+    {
+      "id": "vault",
+      "type": "external",
+      "label": "Obsidian vault",
+      "sublabel": "~/Documents, behind TCC",
+      "pos": [
+        820,
+        150
+      ],
+      "size": [
+        170,
+        58
+      ]
+    },
+    {
+      "id": "writing",
+      "type": "external",
+      "label": "Writing pieces",
+      "sublabel": "drafts and gate files",
+      "pos": [
+        820,
+        250
+      ],
+      "size": [
+        170,
+        58
+      ]
+    },
+    {
+      "id": "github",
+      "type": "external",
+      "label": "GitHub",
+      "sublabel": "pull requests and CI",
+      "pos": [
+        820,
+        400
+      ],
+      "size": [
+        170,
+        58
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "On this machine",
+      "wraps": [
+        "system",
+        "pack",
+        "cron",
+        "runner",
+        "binlinks",
+        "dash",
+        "db"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "sys-path",
+      "from": "system",
+      "to": "binlinks",
+      "label": "links"
+    },
+    {
+      "id": "pack-path",
+      "from": "pack",
+      "to": "binlinks",
+      "label": "links"
+    },
+    {
+      "id": "cmd-db",
+      "from": "binlinks",
+      "to": "db",
+      "label": "every command reads it",
+      "variant": "emphasis"
+    },
+    {
+      "id": "cron-db",
+      "from": "cron",
+      "to": "db",
+      "label": "run rows",
+      "labelSegment": 0,
+      "labelDx": -36,
+      "labelDy": -24
+    },
+    {
+      "id": "runner-db",
+      "from": "runner",
+      "to": "db",
+      "label": "assignments",
+      "labelSegment": 1,
+      "labelDx": 52
+    },
+    {
+      "id": "db-dash",
+      "from": "db",
+      "to": "dash",
+      "label": "renders",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "dash-research",
+      "from": "dash",
+      "to": "research",
+      "label": "serves"
+    },
+    {
+      "id": "db-vault",
+      "from": "db",
+      "to": "vault",
+      "label": "queues"
+    },
+    {
+      "id": "db-writing",
+      "from": "db",
+      "to": "writing",
+      "label": "stages"
+    },
+    {
+      "id": "runner-gh",
+      "from": "runner",
+      "to": "github",
+      "label": "branches and pull requests",
+      "variant": "emphasis",
+      "route": "straight"
+    }
+  ]
+}

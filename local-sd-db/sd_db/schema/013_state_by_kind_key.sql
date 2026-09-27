@@ -1,0 +1,19 @@
+-- The latest `state` row for one kind and key, by index (sd:1433).
+--
+-- Every reader of a checkpoint or a heartbeat asks the same question:
+-- `WHERE kind = ? AND key = ? ORDER BY id DESC LIMIT 1`. The only index
+-- that could answer it was `state_by_kind (kind, timestamp)`, so each
+-- lookup scanned every row of the kind and sorted them in a temporary
+-- B-tree. The dashboard's Today page asks it twice per contribution, about
+-- 2100 times per render, against about 2800 checkpoint rows: 1.5 s per
+-- render. With this index the same render took 0.07 s.
+--
+-- `id` is the last column, so the newest row for a kind and key is the
+-- last entry of its range and SQLite reads one entry instead of sorting.
+--
+-- `state_by_kind` stays. Its second column is `timestamp`, not `key`, and
+-- it serves the reads that filter by kind and order or range by time:
+-- `unresolved_state` in writes.py, the watermark read in shadow_sync.py and
+-- the operator-action count in reporting.py. On a copy of the live
+-- database all three still chose it after this index existed.
+CREATE INDEX state_by_kind_key ON state (kind, key, id);

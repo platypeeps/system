@@ -1,0 +1,18 @@
+# The build backend is in this folder, not on PyPI. `_build.py` explains why:
+# a pure-Python package with no dependencies does not need setuptools, and
+# fetching setuptools would make an offline install fail for a reason that has
+# nothing to do with this library.
+[build-system]
+requires = []
+build-backend = "_build"
+backend-path = ["."]
+
+[project]
+name = "sd-db"
+version = "0.1.0"
+description = "The one database and its fixture harness."
+requires-python = ">=3.13"
+dependencies = []
+
+# Note: the metadata above is the declaration; `_build.py` carries the copy
+# that reaches the wheel, and `tests/test_installed.py` asserts they agree.

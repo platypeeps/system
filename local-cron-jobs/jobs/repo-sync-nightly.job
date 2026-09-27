@@ -1,0 +1,17 @@
+# Nightly repo fleet sync: reconcile the repo list against the checkouts on
+# disk (added/removed repos update the conf, which this job then commits and
+# pushes, and are emailed as a diff), then
+# clone missing and fast-forward existing repos. Failures are emailed as a
+# summary by repo-sync.sh nightly itself. It exits 1 when an email could not
+# be delivered, so the failure notification (banner + ntfy push) covers a lost
+# report — and, since 2026-09-01, when half or more of the fleet failed to
+# sync. A handful of unreachable repos stays a finding; losing the fleet is an
+# outage, and used to exit 0 and leave failures.log empty.
+JOB_SCHEDULE="45 2 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-repo-sync/repo-sync.sh\" nightly"
+#
+# The commit is part of this job because the conf is this job's own output.
+# It exits 3 when the conf was already dirty or the checkout sits on a feature
+# branch; reconcile is skipped in that case rather than sweeping someone's
+# edit into an unattended commit, and the non-zero exit raises the banner so a
+# skipped night is visible.

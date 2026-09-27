@@ -1,0 +1,28 @@
+{
+  "prefix": "sys",
+  "interface": 1,
+  "dashboard": {
+    "actions": [
+      {
+        "id": "queue-blog",
+        "label": "open Blog Ideas in Obsidian",
+        "run": "./local-project-dashboard/dashboard.sh queue-open blog"
+      },
+      {
+        "id": "queue-tip",
+        "label": "open Tips and Tricks in Obsidian",
+        "run": "./local-project-dashboard/dashboard.sh queue-open tip"
+      },
+      {
+        "id": "queue-topic",
+        "label": "open Topics in Obsidian",
+        "run": "./local-project-dashboard/dashboard.sh queue-open topic"
+      },
+      {
+        "id": "queue-watch",
+        "label": "open Market Watch in Obsidian",
+        "run": "./local-project-dashboard/dashboard.sh queue-open watch"
+      }
+    ]
+  }
+}

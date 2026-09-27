@@ -1,0 +1,268 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "A research repo, from sources to published pages",
+    "subtitle": "One standard, one renderer, three destinations \u2014 and gates that refuse to pass quietly",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "gather",
+        "label": "Gather",
+        "focus": [
+          "upstream",
+          "registry",
+          "docs"
+        ],
+        "note": "Every claim names its source; a repo survey names the commit."
+      },
+      {
+        "id": "check",
+        "label": "Check",
+        "focus": [
+          "review",
+          "checklinks",
+          "pins"
+        ],
+        "note": "Three mechanical checks. A gate that cannot run has not passed."
+      },
+      {
+        "id": "publish",
+        "label": "Publish",
+        "focus": [
+          "render",
+          "dashboard",
+          "vault",
+          "mirrors"
+        ],
+        "note": "One render writes all three. Every step is idempotent."
+      }
+    ],
+    "viewBox": [
+      1100,
+      800
+    ]
+  },
+  "stages": [
+    {
+      "label": "Sources"
+    },
+    {
+      "label": "The repo"
+    },
+    {
+      "label": "Mechanical gates"
+    },
+    {
+      "label": "Render"
+    },
+    {
+      "label": "Destinations"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "upstream",
+      "type": "external",
+      "label": "Upstream systems",
+      "sublabel": "repos, services, papers",
+      "stage": 0,
+      "row": 0,
+      "tag": "pinned @ sha"
+    },
+    {
+      "id": "registry",
+      "type": "database",
+      "label": "registry.md",
+      "sublabel": "10-sources: what was read",
+      "stage": 0,
+      "row": 2
+    },
+    {
+      "id": "docs",
+      "type": "frontend",
+      "label": "Markdown documents",
+      "sublabel": "00-overview to 40-docs",
+      "stage": 1,
+      "row": 0,
+      "tag": "one START HERE"
+    },
+    {
+      "id": "conf",
+      "type": "backend",
+      "label": "research.conf.py",
+      "sublabel": "PROJECT and DOCS bindings",
+      "stage": 1,
+      "row": 2
+    },
+    {
+      "id": "review",
+      "type": "security",
+      "label": "review",
+      "sublabel": "provenance, Status, freshness",
+      "stage": 2,
+      "row": 0,
+      "tag": "exit 1 blocks"
+    },
+    {
+      "id": "checklinks",
+      "type": "security",
+      "label": "checklinks",
+      "sublabel": "every relative link resolves",
+      "stage": 2,
+      "row": 1
+    },
+    {
+      "id": "pins",
+      "type": "security",
+      "label": "pins",
+      "sublabel": "has upstream moved past the sha?",
+      "stage": 2,
+      "row": 2
+    },
+    {
+      "id": "render",
+      "type": "backend",
+      "label": "render",
+      "sublabel": "sd-research-kit, one identity",
+      "stage": 3,
+      "row": 1,
+      "tag": "idempotent"
+    },
+    {
+      "id": "dashboard",
+      "type": "cloud",
+      "label": "docs/dashboard/",
+      "sublabel": "standalone HTML, served",
+      "stage": 4,
+      "row": 0
+    },
+    {
+      "id": "vault",
+      "type": "database",
+      "label": "Obsidian vault",
+      "sublabel": "the markdown copy",
+      "stage": 4,
+      "row": 1
+    },
+    {
+      "id": "mirrors",
+      "type": "external",
+      "label": "Outward mirrors",
+      "sublabel": "queued per designated document",
+      "stage": 4,
+      "row": 2
+    }
+  ],
+  "flows": [
+    {
+      "from": "upstream",
+      "to": "docs",
+      "variant": "emphasis",
+      "route": "straight",
+      "label": "claims",
+      "labelDy": -26
+    },
+    {
+      "from": "registry",
+      "to": "docs",
+      "variant": "emphasis",
+      "route": "vertical-channel",
+      "label": "record",
+      "labelDy": 26
+    },
+    {
+      "from": "docs",
+      "to": "review",
+      "variant": "emphasis",
+      "route": "straight",
+      "label": "documents",
+      "labelDy": -34
+    },
+    {
+      "from": "docs",
+      "to": "checklinks",
+      "route": "vertical-channel",
+      "label": "links",
+      "labelSegment": 2
+    },
+    {
+      "from": "docs",
+      "to": "pins",
+      "route": "vertical-channel",
+      "label": "shas",
+      "labelDy": 34
+    },
+    {
+      "from": "review",
+      "to": "render",
+      "variant": "security",
+      "route": "vertical-channel",
+      "label": "must pass",
+      "labelDy": -26
+    },
+    {
+      "from": "conf",
+      "to": "render",
+      "variant": "emphasis",
+      "route": "bottom-channel",
+      "label": "bindings",
+      "labelDy": 40
+    },
+    {
+      "from": "render",
+      "to": "dashboard",
+      "variant": "emphasis",
+      "route": "vertical-channel",
+      "label": "HTML",
+      "labelDy": -34
+    },
+    {
+      "from": "render",
+      "to": "vault",
+      "variant": "emphasis",
+      "route": "straight",
+      "label": "markdown",
+      "labelDy": -46,
+      "labelDx": 62
+    },
+    {
+      "from": "render",
+      "to": "mirrors",
+      "variant": "dashed",
+      "route": "vertical-channel",
+      "label": "queued",
+      "labelDy": 34
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "The standard lives in one place",
+      "items": [
+        "The conventions are a pack document, not six copies",
+        "Each repo's CLAUDE.md is laid once and then checked, never re-laid",
+        "Deliberate differences are declared, with a reason, or they fail review"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "What the gates actually decide",
+      "items": [
+        "review checks provenance, a Status section and build freshness",
+        "checklinks resolves every relative link and in-repo path",
+        "pins reads the asserted shas out of the documents each run"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "The half no script can do",
+      "items": [
+        "Default to refuted: a claim stands only if the source says it",
+        "Check the unit, the date and the denominator, not the digits",
+        "Say what you could not check \u2014 a silent gap is a defect"
+      ]
+    }
+  ]
+}

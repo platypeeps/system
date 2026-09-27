@@ -1,0 +1,52 @@
+# Daily Dependabot sweep across the repo fleet: merge the bumps that can be
+# justified, report the ones that cannot. The contract is
+# `local-dependabot/ROUTINE.md`; this file only says when and how to start it.
+#
+# Prompt-driven rather than a shell script because the work needs judgement a
+# script cannot supply. Classifying a grouped bump by its widest member means
+# reading Dependabot's prose, not its title. Deciding whether CI actually ran
+# means understanding that a green aggregate over an all-skipped second run
+# certifies nothing. On the first manual sweep, three of four holds came from
+# repo-specific tripwires an agent had to read and understand -- a naive
+# `if major then skip` script would have merged straight through them.
+#
+# Fans out one subagent per repository, in parallel, because repositories are
+# independent. Within a repository the merges stay serial: Dependabot PRs
+# share a base branch, so merging the first can leave the second conflicted.
+# Readers fan out, one writer per repository.
+#
+# Two gates decide which repositories it touches, and they answer different
+# questions. Write access says a merge would succeed; the owner gate says one
+# is wanted. Both must pass, because this account holds MAINTAIN on employer
+# repositories whose dependency decisions are not its owner's alone to make
+# unattended. Measured when the gates were written: of twelve repositories
+# with open Dependabot PRs, nine failed the first gate and one the second.
+#
+# Merges only patch and minor bumps whose checks are proven to have actually
+# run, and only when GitHub reports the PR CLEAN. Majors are never
+# auto-merged -- a breaking change is the owner's call. Nor are Docker image
+# digest bumps, which carry no version arithmetic that could call them safe. A
+# repository with no CI configured gets its PRs listed and never merged: "no
+# checks reported" is not "checks passed".
+#
+# Exit 0 whether or not anything merged. Finding PRs it could not merge is the
+# job working, and failing on that would fire the banner every morning until
+# the signal meant nothing. notify_failure stays for the job being unable to
+# run at all -- no gh, no auth, no fleet.
+#
+# 06:20 daily: before the working day, and clear of maintenance-nightly
+# (03:45) and repo-sync-nightly (02:45), which fast-forwards the checkouts
+# this enumerates from. Output in logs/dependabot-daily.log.
+#
+# NB gh lives in the Homebrew prefix, which launchd's own PATH does not carry.
+# cron-jobs.sh builds JOB_PATH with it; that is what makes `gh` resolvable.
+#
+# NB the installed plist runs `cron-jobs.sh exec dependabot-daily`, which
+# sources this file at run time rather than embedding it. So this file has to
+# be on whatever branch the checkout is sitting on at 06:20 -- installing a job
+# from an unmerged branch produces one that breaks the moment you switch away.
+JOB_SCHEDULE="20 6 * * *"
+JOB_DIR="$HOME/repos"
+JOB_PROMPT="You are an unattended scheduled run of the 'dependabot-daily' routine. Read '$ROOT/../local-dependabot/ROUTINE.md' and carry it out exactly as written. It is a contract, not a suggestion: the four merge conditions are all required, both repository gates are required, and anything failing one of them is reported rather than merged. You are running with permissions skipped and nobody is watching, so do not widen any rule to cover a case it does not name."
+JOB_MODEL=""
+JOB_CLAUDE_ARGS=""

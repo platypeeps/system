@@ -1,0 +1,14 @@
+# Off-machine pair: the USB disk's Backup folder to a NAS, once a day.
+# Copy to mirrors-nas.conf (gitignored) and set your own paths.
+# /Volumes/Offsite is a NAS share mounted over SMB; it is the only
+# destination here not on this Mac, so it is the copy that survives theft,
+# fire or a dead Mac.
+#
+# Format matches mirrors.conf. Run this list ADDITIVE (MIRROR_SYNC_ADDITIVE=1):
+# the NAS Backup folder may already hold history the USB disk does not have,
+# such as older sd-db snapshots in sd-backups/. An exact mirror would delete
+# that history on its first pass.
+#
+# /Volumes/local/Backup carries the nightly sd-db snapshot in sd-backups/,
+# so this pair is also how that snapshot leaves the machine.
+/Volumes/local/Backup|/Volumes/Offsite/Backup

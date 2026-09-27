@@ -1,0 +1,7 @@
+# Nightly machine upkeep (local-maintenance): pending macOS/App Store
+# updates, backup freshness, cert expiry, disk space, log rotation, and a
+# Sunday docker prune. Findings are emailed by maintenance.sh itself; this
+# job only exits 1 when that email could not be delivered, so the failure
+# notification (banner + ntfy push) covers a lost report.
+JOB_SCHEDULE="45 3 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-maintenance/maintenance.sh\" run"

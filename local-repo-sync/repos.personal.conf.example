@@ -1,0 +1,7 @@
+# Personal machine (~/repos). Format: <subdir> <owner/repo>
+#
+# Copy to repos.personal.conf (gitignored) and list your own repos.
+
+ha  python-kasa/python-kasa
+
+platypeeps  platypeeps/system-tools

@@ -1,0 +1,11 @@
+# Probe the host google_workspace_mcp server (its LaunchAgent label is
+# WORKSPACE_MCP_LABEL in local-workspace-mcp; 127.0.0.1:8083) with an MCP initialize bounded at 10s. launchd's KeepAlive
+# only restarts a process that exits; on 2026-09-25 the server hung while its
+# process lived, and Gmail/Drive stayed down until a hand kickstart. On no
+# answer it keeps probing for 90s (a starting server needs about that long),
+# then restarts the agent once, waits up to 150s, and notifies once per
+# outage (banner + ntfy; the email channel runs through this server).
+# Exits 1 when the restart did not bring it back.
+#   cron-jobs.sh status workspace-mcp-watch
+JOB_SCHEDULE="*/10 * * * *"
+JOB_COMMAND="sh \"$ROOT/../local-workspace-mcp/workspace-mcp.sh\" watch"

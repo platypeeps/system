@@ -1,0 +1,6 @@
+# Nightly Obsidian task digest: open TaskNotes tasks scheduled today or
+# earlier, emailed with obsidian:// links. No due tasks = no email. Exits 1
+# only when the email could not be delivered, so the failure notification
+# (banner + ntfy push) covers a lost digest, not mere findings.
+JOB_SCHEDULE="0 3 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-obsidian-tasks/obsidian-tasks.sh\" run"

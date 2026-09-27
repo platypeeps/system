@@ -1,0 +1,21 @@
+#!/bin/sh
+# Stub launchctl: `print` answers from $FAKE_DIR/loaded, `kickstart` is
+# journalled and, when $FAKE_DIR/heal_on_kickstart exists, makes the stub
+# curl answer from then on. Nothing here reaches the real launchd.
+printf 'launchctl %s\n' "$*" >> "$FAKE_DIR/journal"
+case "$1" in
+  print)
+    # $FAKE_DIR/print_seq, when present, answers one line per call (loaded
+    # or gone) before $FAKE_DIR/loaded takes over: an agent booted out
+    # mid-run, as local-maintenance does for a uv prune.
+    if [ -s "$FAKE_DIR/print_seq" ]; then
+      state=$(head -1 "$FAKE_DIR/print_seq")
+      tail -n +2 "$FAKE_DIR/print_seq" > "$FAKE_DIR/print_seq.next"
+      mv "$FAKE_DIR/print_seq.next" "$FAKE_DIR/print_seq"
+      [ "$state" = loaded ] || exit 113
+    else
+      [ -e "$FAKE_DIR/loaded" ] || exit 113
+    fi ;;
+  kickstart) [ -e "$FAKE_DIR/heal_on_kickstart" ] && echo ok > "$FAKE_DIR/curl_mode" ;;
+esac
+exit 0

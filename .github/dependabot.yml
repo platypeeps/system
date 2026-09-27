@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      # The sd-ai-command-pack pin is set by hand, not by Dependabot. The action
+      # runs the pack's own code out of the pinned checkout, so a bump is a
+      # behaviour change across the whole pack, not a version number. Bump it
+      # deliberately, in its own commit, with
+      # `sd-review setup-github --pin <sha> --force`. Why the guard exists is
+      # recorded in the pack at actions/review-route/README.md; this comment
+      # names no incident, pull request or SHA on purpose, so that it does not
+      # go stale the next time the pin moves.
+      - dependency-name: "platypeeps/sd-ai-command-pack/actions/review-route"

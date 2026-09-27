@@ -1,0 +1,21 @@
+# The repo fleet, every 12 hours, to /Volumes/local -- a portable USB disk.
+# Copy to mirrors-repos.conf (gitignored) and set your own paths.
+# The nightly list is mirrors.conf; this one runs on its own schedule because
+# ~/repos is too large for a nightly pass that also writes to iCloud.
+#
+# Format matches mirrors.conf, plus the optional third field: comma-separated
+# rsync exclude patterns for that pair alone.
+#
+# The destination is under "Backup Local", which mirrors.conf does NOT copy to
+# iCloud -- unlike /Volumes/local/Backup.
+#
+# Run this list ADDITIVE (MIRROR_SYNC_ADDITIVE=1, no --delete), with
+# overwrites preserved under MIRROR_SYNC_BACKUP_ROOT. An exact mirror would
+# propagate a `git reset --hard` into the only other copy and then report
+# success, and uncommitted work lost that way exists nowhere else. So this
+# mirrors working trees, not just remotes.
+#
+# The excludes are regenerable trees only. `dist/` and `build/` are
+# deliberately NOT excluded: both names are also used for hand-written files,
+# and excluding a directory that can hold uncommitted work would lose it.
+/Users/example/repos|/Volumes/local/Backup Local/repos|node_modules/,.venv/,venv/,target/,__pycache__/,*.pyc,.mypy_cache/,.pytest_cache/,.ruff_cache/,.next/,.turbo/,.gradle/,.tox/,*.egg-info/

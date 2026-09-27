@@ -1,0 +1,9 @@
+# Repos synced on the personal and work profiles; terra reads no common conf.
+# Format: <subdir> <owner/repo>   — blank lines and # comments ignored.
+#
+# Copy to repos.common.conf (gitignored) and list your own repos.
+
+ai  modelcontextprotocol/python-sdk
+ai  ggerganov/llama.cpp
+
+platypeeps  platypeeps/sd-ai-command-pack

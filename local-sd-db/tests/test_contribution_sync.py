@@ -1,0 +1,599 @@
+"""Real temporary checkpoint stores; API and notification calls are canned."""
+
+import copy
+import hashlib
+import json
+import subprocess
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+from sd_db import connect, initialise, upsert_repo
+from sd_db import contribution_sync as adapter
+from sd_db import contributions as core
+from sd_db import protection
+from sd_db.database import transaction
+from sd_db.contribution_github import Client
+from sd_db.shadow_sync import _SearchBudget, read_watermark, sync
+
+from tests import test_contribution_github as fixtures
+from tests.test_contribution_github import AT, BASE, ISSUE_URL, ROOT, URL, Api, IssueApi, Response
+
+
+class SyncCase(unittest.TestCase):
+    """One temporary store, a canned transport and a recording notifier per test."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "sd.db"
+        initialise(self.path)
+        self.db = connect(self.path)
+        self.addCleanup(self.db.close)
+        self.api = Api()
+        self.now = datetime(2026, 9, 10, 1, tzinfo=timezone.utc)
+        self.sent = []
+
+    def notify(self, claim):
+        self.assertFalse(self.db.in_transaction)
+        other = connect(self.path)
+        try:
+            with transaction(other):
+                self.assertEqual(core.snapshot(other, claim["key"])["notifications"][claim["event_id"]]["status"], "sending")
+        finally:
+            other.close()
+        self.sent.append(claim)
+        return "sent"
+
+    def search(self, urls=(), *, contexts=()):
+        def runner(argv):
+            if argv == ["gh", "auth", "status"]:
+                return 0, "", ""
+            author_bucket = any(value.startswith("q=author:@me ") for value in argv)
+            context_bucket = any(value.startswith(f"q={context} ") for value in argv for context in contexts)
+            rows = [{"__typename": "PullRequest", "url": url, "number": int(url.rsplit("/", 1)[1]),
+                     "title": "Contribution", "state": "OPEN", "updatedAt": self.now.isoformat(),
+                     "author": {"login": "operator"}, "repository": {"nameWithOwner": "example/project"}} for url in urls if author_bucket or context_bucket]
+            return 0, json.dumps({"data": {"search": {"issueCount": len(rows), "nodes": rows,
+                                                       "pageInfo": {"hasNextPage": False, "endCursor": None}}}}), ""
+        return runner
+
+    def run_sync(self, urls=(), *, contexts=(), **options):
+        runner = self.search(urls, contexts=contexts) if contexts else self.search(urls)
+        result = sync(self.db, now=self.now, runner=runner, contribution_client=self.api.client(),
+                      notifier=self.notify, **options)
+        self.now += timedelta(minutes=1)
+        return result
+
+    def add_comment(self):
+        self.api.rows[ROOT + "/issues/7/comments?per_page=100"] = [{"id": 19, "user": {"id": 2, "login": "maintainer"},
+            "body": "Please address this", "author_association": "MEMBER", "updated_at": AT}]
+
+    def observe_heartbeat(self, key):
+        row = self.db.execute("SELECT body FROM state WHERE kind='heartbeat' AND key=? ORDER BY id DESC LIMIT 1",
+                              ("contribution-observe:" + key,)).fetchone()
+        return json.loads(row["body"])
+
+    def tracker_heartbeat(self):
+        row = self.db.execute("SELECT body FROM state WHERE kind='heartbeat' AND key='tracker-sync:github' "
+                              "ORDER BY id DESC LIMIT 1").fetchone()
+        return json.loads(row["body"])
+
+
+class ContributionSync(SyncCase):
+    def test_search_collects_and_notifies_once_outside_lock(self):
+        self.add_comment()
+        first = self.run_sync([URL])
+        self.assertTrue(first.ok, first.reason)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.run_sync().ok, True)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM item").fetchone()[0], 0)
+
+    def test_projected_context_survives_quiet_and_matching_search_refreshes(self):
+        contexts = ("assignee:@me", "review-requested:@me")
+        self.assertTrue(self.run_sync([URL], contexts=contexts).ok)
+        key = "github:" + URL
+        first = core.snapshot(self.db, key)
+        self.assertEqual(set(first["observation"]["why"]), {"author", "assigned", "review-requested"})
+        self.assertEqual({event["id"] for event in first["attention"]}, {"context:assigned", "context:review-requested"})
+        for urls in ([], [URL]):
+            with self.subTest(urls=urls):
+                self.assertTrue(self.run_sync(urls, contexts=contexts).ok)
+                current = core.snapshot(self.db, key)
+                self.assertEqual(current["observation"]["why"], first["observation"]["why"])
+                self.assertEqual(current["attention"], first["attention"])
+        self.assertEqual(len(self.sent), 2)
+
+    def test_fresh_search_updates_context_without_replacing_registered_policy(self):
+        core.capture(self.db, title="Registered", changes={"pull_url": URL, "blocking_labels": ["needs-work"]}, who="operator")
+        self.assertTrue(self.run_sync([URL]).ok)
+        key = "github:" + URL
+        event_ids = []
+        for contexts, expected in ((("assignee:@me",), {"author", "assigned"}),
+                                   ((), {"author"}), (("assignee:@me",), {"author", "assigned"})):
+            with self.subTest(contexts=contexts):
+                self.assertTrue(self.run_sync([URL], contexts=contexts).ok)
+                current = core.snapshot(self.db, key)
+                self.assertEqual(set(current["observation"]["why"]), expected)
+                self.assertEqual(bool(current["attention"]), "assigned" in expected)
+                if "assigned" in expected:
+                    event_ids.append(current["attention"][0]["id"])
+                queued = adapter._queue(self.db)["pending"][0]
+                self.assertEqual(queued["blocking_labels"], ["needs-work"])
+                self.assertTrue(queued["explicit"])
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(event_ids), 2)
+        self.assertNotEqual(event_ids[0], event_ids[1])
+
+    def test_projected_observation_restores_context_without_a_queue_entry(self):
+        self.api.detail["user"] = {"id": 2, "login": "maintainer"}
+        observation = self.api.observation()
+        observation["why"] = ["review-requested"]
+        key = "github:" + URL
+        before = core.observe_pull(self.db, URL, observation, expected_revision=core.snapshot(self.db, key)["revision"])
+        self.assertEqual(adapter._queue(self.db)["pending"], [])
+        self.assertEqual(adapter.plan(self.db)["pending"][0]["why"], ["review-requested"])
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(core.snapshot(self.db, key)["attention"], before["attention"])
+
+    def test_incomplete_detail_preserves_new_search_context_for_retry(self):
+        self.assertTrue(self.run_sync([URL]).ok)
+        self.api.rows[ROOT + "/pulls/7/reviews?per_page=100"] = Response(503, {}, "")
+        result = self.run_sync([URL], contexts=("assignee:@me",))
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.incomplete, [f"github:{URL}: API HTTP 503; retry on a later collection"])
+        self.assertEqual(core.snapshot(self.db, "github:" + URL)["observation"]["why"], ["author"])
+        self.assertEqual(set(adapter.plan(self.db)["pending"][0]["why"]), {"author", "assigned"})
+        self.api.rows[ROOT + "/pulls/7/reviews?per_page=100"] = []
+        self.assertTrue(self.run_sync().ok)
+        current = core.snapshot(self.db, "github:" + URL)
+        self.assertEqual(current["attention"][0]["id"], "context:assigned")
+        self.assertEqual(len(self.sent), 1)
+
+    def test_partial_search_preserves_prior_context_until_complete_search(self):
+        self.assertTrue(self.run_sync([URL], contexts=("assignee:@me",)).ok)
+        key = "github:" + URL
+        before = core.snapshot(self.db, key)
+        runner = self.search([URL])
+
+        def partial(argv):
+            if any(value.startswith("q=assignee:@me ") for value in argv):
+                return 1, "", "fixture assignment search unavailable"
+            return runner(argv)
+
+        result = sync(self.db, now=self.now, runner=partial, contribution_client=self.api.client(), notifier=self.notify)
+        self.now += timedelta(minutes=1)
+        self.assertFalse(result.ok)
+        held = core.snapshot(self.db, key)
+        self.assertEqual(held["observation"]["why"], before["observation"]["why"])
+        self.assertEqual(held["attention"], before["attention"])
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.run_sync([URL]).ok)
+        self.assertEqual(core.snapshot(self.db, key)["attention"], [])
+        self.assertEqual(len(self.sent), 1)
+
+    def test_quiet_pr_green_own_push_pending_then_failed_current_head(self):
+        self.assertTrue(self.run_sync([URL]).ok)
+        self.api.detail["head"] = {"sha": BASE}
+        self.api.rows[ROOT + f"/commits/{BASE}/check-runs?filter=latest&per_page=100"] = {"total_count": 1, "check_runs": [
+            {"id": 92, "head_sha": BASE, "status": "in_progress", "conclusion": None}]}
+        self.api.rows[ROOT + f"/commits/{BASE}/status?per_page=100"] = {"total_count": 0, "sha": BASE, "statuses": []}
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(self.sent, [])
+        check = self.api.rows[ROOT + f"/commits/{BASE}/check-runs?filter=latest&per_page=100"]["check_runs"][0]
+        check.update(status="completed", conclusion="failure")
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_incomplete_detail_preserves_checkpoint_and_does_not_advance_attention(self):
+        self.run_sync([URL])
+        key = "github:" + URL
+        before = core.snapshot(self.db, key)
+        self.api.rows[ROOT + "/pulls/7/reviews?per_page=100"] = Response(503, {}, "")
+        result = self.run_sync()
+        # One contribution's failed read is held on that contribution, not on
+        # the collect: the cursor moves, the tracker stays healthy, and the
+        # hold heartbeat says what failed rather than just that something did.
+        self.assertTrue(result.ok, result.reason)
+        self.assertTrue(result.watermark_moved)
+        self.assertEqual(result.incomplete, [f"{key}: API HTTP 503; retry on a later collection"])
+        self.assertEqual(core.snapshot(self.db, key), before)
+        self.assertEqual(self.observe_heartbeat(key),
+                         {"ok": False, "reason": "Incomplete GitHub observation: API HTTP 503; retry on a later collection"})
+        self.assertEqual(core.projection(self.db)[0]["freshness"]["reason"],
+                         "Incomplete GitHub observation: API HTTP 503; retry on a later collection")
+        self.assertTrue(self.tracker_heartbeat()["ok"])
+        self.assertEqual(self.tracker_heartbeat()["incomplete"], result.incomplete)
+        self.assertIn("shadow sync: contribution observation incomplete: " + result.incomplete[0], result.report())
+        self.assertEqual(self.sent, [])
+
+    def test_release_dependency_without_a_tag_is_held_on_the_item_not_the_collect(self):
+        # Item 245 on 2026-09-12: a release dependency configured without a
+        # `tag`, whose pull then merged. The proof cannot be read, so the
+        # dependency stays unknown -- by contract -- and until this change
+        # that one item failed every strict run and read the tracker
+        # `degraded` while the cursor had in fact moved.
+        self.api.detail.update(merged=True, merge_commit_sha=fixtures.MERGED)
+        dependency = {"kind": "release", "repo": "example/project", "contains_pull": URL,
+                      "package": {"name": "aiounifi", "version": "96"}}
+        clone = Path(self.temp.name) / "clone"
+        clone.mkdir()
+        for argv in (["init", "-q", "-b", "feat/unifi-wan3-latency"], ["config", "user.name", "Fixture"],
+                     ["config", "user.email", "fixture@example.invalid"], ["commit", "--allow-empty", "-qm", "fixture"]):
+            subprocess.run(["git", *argv], cwd=clone, check=True)
+        item = core.capture(self.db, title="Unfiled", changes={
+            "local_clone": str(clone), "local_branch": "feat/unifi-wan3-latency", "depends_on": [dependency]}, who="operator")["item"]["id"]
+        key = f"item:{item}"
+        result = self.run_sync()
+        self.assertTrue(result.ok, result.reason)
+        self.assertTrue(result.watermark_moved)
+        self.assertEqual(result.incomplete, [f"{key}: {URL}: exact release repository/tag is required"])
+        self.assertEqual(self.observe_heartbeat(key)["reason"],
+                         f"Incomplete dependency observation: {URL}: exact release repository/tag is required")
+        self.assertEqual(core.projection(self.db)[0]["freshness"]["reason"], self.observe_heartbeat(key)["reason"])
+        self.assertTrue(self.tracker_heartbeat()["ok"])
+        self.assertEqual(self.tracker_heartbeat()["reason"], "")
+        # Still queued, so configuring the tag is picked up by the next run.
+        self.assertEqual([row["key"] for row in adapter._queue(self.db)["pending"]], [key])
+        self.assertEqual(self.sent, [])
+
+    def test_revision_read_before_network_refuses_concurrent_observer(self):
+        self.run_sync([URL])
+        before = core.snapshot(self.db, "github:" + URL)
+        transport = self.api.__call__
+        changed = []
+        def concurrent(path, fields, timeout):
+            if not changed:
+                changed.append(True)
+                core.observe_pull(self.db, URL, {**before["observation"], "observed_at": (self.now + timedelta(minutes=1)).isoformat()},
+                                  expected_revision=before["revision"])
+            return transport(path, fields, timeout)
+        client = self.api.client()
+        client.transport = concurrent
+        result = sync(self.db, now=self.now, runner=self.search(), contribution_client=client, notifier=self.notify)
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(len(result.incomplete), 1)
+        self.assertIn("refused", result.incomplete[0])
+        self.assertEqual(self.sent, [])
+
+    def clone_pull(self, numbers):
+        urls = [URL.rsplit("/", 1)[0] + f"/{number}" for number in numbers]
+        original = list(self.api.rows.items())
+        for number in numbers[1:]:
+            for path, value in original:
+                if "/7" in path:
+                    self.api.rows[path.replace("/7", f"/{number}")] = copy.deepcopy(value)
+        return urls
+
+    def test_details_run_until_the_request_budget_and_the_rest_stage_durably(self):
+        urls = self.clone_pull(range(7, 15))
+        # 40 requests: the search spends 4, the identity 1, and a pull 8, so
+        # four details fit and the fifth is stopped before it starts.
+        first = self.run_sync(urls, max_requests=40)
+        self.assertTrue(first.ok, first.reason)
+        self.assertEqual(first.queued, 4)
+        self.assertEqual(first.incomplete, [])
+        self.assertIn("shadow sync: contribution detail backlog: 4 queued", first.report())
+        self.assertTrue(first.watermark_moved)
+        self.assertEqual(len(core.projection(self.db)), 4)
+        saved = adapter._queue(self.db)
+        self.assertEqual(saved["pending"][0]["url"], urls[4])
+        self.assertLessEqual(first.requests, 40)
+        second = self.run_sync(max_requests=40)
+        self.assertEqual(second.queued, 4)
+        self.assertEqual(len(core.projection(self.db)), 8)
+        self.assertEqual(len(adapter._queue(self.db)["pending"]), 8)
+        self.assertIsNotNone(read_watermark(self.db))
+        # The default budget clears the same backlog in one run.
+        self.assertEqual(self.run_sync().queued, 0)
+
+    def test_details_stop_short_of_the_reserve_for_the_collectors_that_follow(self):
+        urls = self.clone_pull(range(7, 10))
+        self.assertTrue(self.run_sync(urls, max_requests=100).ok)
+        planned = adapter.plan(self.db)
+        client = self.api.client(requests=20)
+        result = adapter.refresh(self.db, planned, [], client=client, observed_at=self.now.isoformat(), reserve=3)
+        self.assertEqual((result["attempted"], result["queued"], result["errors"]), (2, 1, []))
+        self.assertEqual(client.budget.remaining, 3)
+
+    def test_the_detail_backlog_leaves_the_protection_collector_its_requests(self):
+        upsert_repo(self.db, str(Path(self.temp.name) / "fleet"), remote="git@github.com:example/fleet.git")
+        upsert_repo(self.db, str(Path(self.temp.name) / "local"), remote="/srv/git/local.git")
+        self.assertEqual(protection.reserve(self.db), 4)
+        self.api.rows["repos/example/fleet"] = {"default_branch": "main", "permissions": {"admin": True}}
+        self.api.rows["repos/example/fleet/branches/main/protection"] = Response(404, {}, "")
+        self.api.rows[protection.rules_path("example", "fleet", "main")] = []
+        urls = self.clone_pull(range(7, 10))
+        # 29 requests: the search spends 4 and the identity 1, two pulls 16,
+        # and 8 are left -- enough for a third pull on its own, not with the
+        # four protection requests reserved behind it. The pull waits;
+        # protection is read.
+        result = self.run_sync(urls, max_requests=29)
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual((result.queued, result.incomplete), (1, []))
+        self.assertEqual(len(core.projection(self.db)), 2)
+        row = self.db.execute("SELECT status, reason FROM repo_protection").fetchone()
+        self.assertEqual((row["status"], row["reason"]), ("unprotected", None))
+        mine = self.db.execute("SELECT body FROM state WHERE kind='heartbeat' AND key=? ORDER BY id DESC LIMIT 1",
+                               (protection.HEARTBEAT_KEY,)).fetchone()
+        self.assertEqual(json.loads(mine["body"])["requests"], 3)
+        self.assertEqual(result.requests, 4 + 1 + 16 + 3)
+
+    def test_a_detail_backlog_that_spends_the_clock_still_leaves_the_fleet_observed(self):
+        """sd:1663: the nightly's detail backlog ran the budget to its
+        deadline with requests to spare, and the protection sweep, which
+        reads the clock before each GET, filed every repository `budget
+        exhausted` on zero requests. A stubbed GitHub that answers in the
+        measured ~0.5 s a request, 40 queued pulls (320 requests, 160 s) and
+        a 19-repository fleet on a 120 s run: every repository is observed."""
+        fleet = []
+        for index in range(19):
+            name = f"repo{index:02d}"
+            path = str(Path(self.temp.name) / name)
+            upsert_repo(self.db, path, remote=f"git@github.com:example/{name}.git")
+            fleet.append(path)
+            self.api.rows[f"repos/example/{name}"] = {"default_branch": "main", "permissions": {"admin": True}}
+            self.api.rows[f"repos/example/{name}/branches/main/protection"] = {
+                "enforce_admins": {"enabled": True},
+                "required_status_checks": {"strict": True, "contexts": ["CI Result"]},
+                "required_pull_request_reviews": {"required_approving_review_count": 1}}
+            self.api.rows[protection.rules_path("example", name, "main")] = []
+        urls = self.clone_pull(range(7, 47))
+        clock = [1000.0]
+
+        def ticking(path, fields, timeout):
+            clock[0] += 0.5
+            return self.api(path, fields, timeout)
+
+        client = Client(_SearchBudget(1000, clock[0] + 120), transport=ticking)
+        with patch("time.monotonic", lambda: clock[0]):
+            result = sync(self.db, now=self.now, runner=self.search(urls), contribution_client=client,
+                          notifier=self.notify, max_seconds=120)
+        self.assertTrue(result.ok, result.reason)
+        stored = {row["repo"]: (row["status"], row["reason"])
+                  for row in self.db.execute("SELECT repo, status, reason FROM repo_protection")}
+        self.assertEqual(stored, {path: ("protected", None) for path in fleet})
+        mine = json.loads(self.db.execute(
+            "SELECT body FROM state WHERE kind='heartbeat' AND key=? ORDER BY id DESC LIMIT 1",
+            (protection.HEARTBEAT_KEY,)).fetchone()["body"])
+        self.assertEqual((mine["protected"], mine["unknown"], mine["requests"]), (19, 0, 57))
+        # The details that did not fit wait in the queue for the next run.
+        self.assertGreater(result.queued, 0)
+
+    def test_failed_first_record_rotates_and_explicit_work_retains_fairness(self):
+        pending = [{"key": f"item:{n}", "explicit": True} for n in range(5)]
+        pending += [{"key": f"github:{n}", "explicit": False} for n in range(5)]
+        ordered = adapter._order(pending)
+        self.assertEqual([row["explicit"] for row in ordered[:5]], [True, True, True, False, False])
+        self.assertEqual(len(ordered), 10)
+        self.api.rows[ROOT + "/pulls/7"] = Response(503, {}, "")
+        self.run_sync([URL])
+        self.assertEqual(adapter._queue(self.db)["pending"][0]["url"], URL)
+        self.assertEqual(core.projection(self.db), [])
+
+    def test_registered_work_refreshes_without_search_match(self):
+        item = core.capture(self.db, title="Filed", changes={"pull_url": URL}, who="operator")["item"]["id"]
+        self.add_comment()
+        self.assertTrue(self.run_sync().ok)
+        projected = core.projection(self.db)
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(projected[0]["item_id"], item)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_notification_error_and_crash_hold_without_blind_resend(self):
+        self.add_comment()
+        self.run_sync([URL])
+        state = core.snapshot(self.db, "github:" + URL)
+        event = state["attention"][0]["id"]
+        # Use a second real event, keeping the successful first receipt intact.
+        self.api.rows[ROOT + "/issues/7/comments?per_page=100"][0]["id"] = 20
+        sync(self.db, now=self.now, runner=self.search(), contribution_client=self.api.client(), notifier=lambda claim: "uncertain")
+        self.now += timedelta(minutes=1)
+        self.run_sync()
+        self.assertEqual(len(self.sent), 1)
+        notices = core.snapshot(self.db, "github:" + URL)["notifications"]
+        self.assertEqual(notices[event]["status"], "sent")
+        self.assertIn("uncertain", [row["status"] for row in notices.values()])
+        self.api.rows[ROOT + "/issues/7/comments?per_page=100"][0]["id"] = 21
+        with self.assertRaises(SystemExit):
+            sync(self.db, now=self.now, runner=self.search(), contribution_client=self.api.client(),
+                 notifier=lambda claim: (_ for _ in ()).throw(SystemExit("fixture crash")))
+        self.now += timedelta(minutes=1)
+        self.run_sync()
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("sending", [row["status"] for row in core.snapshot(self.db, "github:" + URL)["notifications"].values()])
+
+    def test_proved_no_process_start_can_retry_but_nonzero_timeout_are_uncertain(self):
+        claim = {"title": "Attention", "message": "Fix", "url": URL}
+        with patch("sd_db.contribution_sync.subprocess.run", side_effect=FileNotFoundError):
+            self.assertEqual(adapter._notify(claim), "not_started")
+        with patch("sd_db.contribution_sync.subprocess.run", side_effect=subprocess.TimeoutExpired("notify", 60)):
+            self.assertEqual(adapter._notify(claim), "uncertain")
+        with patch("sd_db.contribution_sync.subprocess.run", return_value=subprocess.CompletedProcess([], 1)):
+            self.assertEqual(adapter._notify(claim), "uncertain")
+
+    def test_collection_and_notifier_refuse_inside_writer_transaction(self):
+        with transaction(self.db):
+            with self.assertRaisesRegex(ValueError, "active transaction"):
+                adapter.plan(self.db)
+            with self.assertRaisesRegex(ValueError, "writer transaction"):
+                adapter.dispatch_pending(self.db, notifier=self.notify)
+
+    def test_search_and_detail_reads_share_the_request_ceiling(self):
+        result = self.run_sync([URL], max_requests=5)
+        # The four bucket searches leave one request, fewer than one detail
+        # needs, so no detail is started -- and nothing is held for a read
+        # that could never have finished. The pull is staged for the next run.
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.requests, 4)
+        self.assertEqual(self.api.calls, [])
+        self.assertEqual((result.queued, result.incomplete), (1, []))
+        self.assertEqual(adapter._queue(self.db)["pending"][0]["url"], URL)
+
+    def test_complete_release_proof_reaches_core_and_unblocks_once(self):
+        fixture = fixtures.Dependencies()
+        fixture.setUp()
+        self.api = fixture.api
+        merge = {"kind": "merge", "url": URL}
+        task = core.capture(self.db, title="Package dependency", changes={"pull_url": URL, "depends_on": [merge, fixture.dep]}, who="operator")
+        item = task["item"]["id"]
+        self.assertTrue(self.run_sync().ok)
+        observation = core.snapshot(self.db, f"item:{item}")["observation"]
+        self.assertTrue(observation["satisfied"])
+        self.assertEqual(len(observation["dependencies"]), 2)
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(core.projection(self.db)[0]["local_status"], "planning")
+
+    def test_queue_revision_conflict_does_not_overwrite_pending_work(self):
+        self.run_sync([URL])
+        planned = adapter.plan(self.db)
+        queue = adapter._queue(self.db)
+        adapter._save_queue(self.db, queue["pending"], queue["revision"])
+        result = adapter.refresh(self.db, planned, [], client=self.api.client(), observed_at=self.now.isoformat())
+        self.assertFalse(result["staged"])
+        self.assertEqual(result["completed_keys"], [])
+        self.assertIn("checkpoint changed", result["errors"][0])
+
+    def test_closed_pull_pending_notices_drain_across_bounded_dispatches(self):
+        self.add_comment()
+        row = self.api.rows[ROOT + "/issues/7/comments?per_page=100"][0]
+        self.api.rows[ROOT + "/issues/7/comments?per_page=100"] = [{**row, "id": n} for n in range(10, 17)]
+        self.api.detail["state"] = "closed"
+        self.assertTrue(self.run_sync([URL]).ok)
+        self.assertEqual(len(self.sent), adapter.MAX_NOTIFICATIONS)
+        self.assertEqual(len(adapter._queue(self.db)["pending"]), 1)
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(len(self.sent), 7)
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(adapter._queue(self.db)["pending"], [])
+
+    def test_pending_work_receives_reserved_budget_even_when_search_fails(self):
+        self.run_sync([URL])
+        self.add_comment()
+        def unavailable_search(argv):
+            if argv == ["gh", "auth", "status"]:
+                return 0, "", ""
+            return 1, "", "fixture search unavailable"
+        result = sync(self.db, now=self.now, runner=unavailable_search,
+                      contribution_client=self.api.client(), notifier=self.notify, max_requests=20)
+        self.assertFalse(result.ok)
+        self.assertFalse(result.watermark_moved)
+        self.assertEqual(len(self.sent), 1)
+        self.assertLessEqual(result.requests, 20)
+
+
+class IssueSync(SyncCase):
+    """An `issue:` entry is routed by its key prefix, never by the presence of a URL."""
+
+    def setUp(self):
+        super().setUp()
+        self.api = IssueApi()
+
+    def draft(self, **changes):
+        body = Path(self.temp.name) / "draft.md"
+        body.write_text("# Bug\n")
+        return {"target_repo": "example/project", "draft_title": "Bug", "draft_path": {
+            "path": str(body), "sha256": hashlib.sha256(body.read_bytes()).hexdigest()}, **changes}
+
+    def test_plan_queues_an_open_registered_issue_and_drops_a_closed_one(self):
+        core.capture(self.db, title="Filed", changes={"issue_url": ISSUE_URL, "blocking_labels": ["needs-work"]}, who="operator")
+        core.capture(self.db, title="Draft", changes=self.draft(), who="operator")
+        planned = adapter.plan(self.db)
+        key = "issue:" + ISSUE_URL
+        self.assertEqual(planned["pending"], [{"key": key, "url": ISSUE_URL, "why": ["author"], "explicit": True,
+                                               "blocking_labels": ["needs-work"]}])
+        self.assertEqual(set(planned["snapshots"]), {key})
+        alias = "https://github.com/Example/Project/issues/9/"
+        self.assertEqual(adapter._merge(planned["pending"], [{"key": "issue:" + alias, "url": alias, "why": ["author"]}]),
+                         [{"key": key, "url": ISSUE_URL, "why": ["author"]}])
+        observation = self.api.observation()
+        core.observe_issue(self.db, ISSUE_URL, {**observation, "state": "closed", "state_reason": "completed", "blocking_labels": ["needs-work"]},
+                           expected_revision=core.snapshot(self.db, key)["revision"])
+        self.assertEqual(core.projection(self.db)[1]["lane"], "closed")
+        self.assertEqual(adapter.plan(self.db)["pending"], [])
+
+    def test_refresh_routes_an_issue_entry_to_the_issue_collector_and_observe_issue(self):
+        core.capture(self.db, title="Filed", changes={"issue_url": ISSUE_URL}, who="operator")
+        self.api.rows[ROOT + "/issues/9/comments?per_page=100"] = [{"id": 19, "user": {"id": 2, "login": "maintainer"},
+            "body": "Please address this", "author_association": "MEMBER", "updated_at": AT}]
+        result = self.run_sync()
+        self.assertTrue(result.ok, result.reason)
+        key = "issue:" + ISSUE_URL
+        self.assertEqual(result.incomplete, [])
+        paths = [call[0] for call in self.api.calls]
+        self.assertEqual(paths.count("/user"), 1)
+        self.assertEqual(paths.count(ROOT + "/issues/9"), 2)
+        self.assertFalse(any("/pulls/" in path for path in paths))
+        state = core.snapshot(self.db, key)
+        self.assertEqual((state["observation"]["state"], state["observation"]["repo"]), ("open", "example/project"))
+        self.assertEqual([event["reason"] for event in state["attention"]], ["Maintainer comment"])
+        self.assertEqual([claim["key"] for claim in self.sent], [key])
+        self.assertEqual(self.sent[0]["url"], ISSUE_URL)
+        self.assertEqual(self.observe_heartbeat(key), {"ok": True})
+        self.assertEqual([row["key"] for row in adapter._queue(self.db)["pending"]], [key])
+        # Closing it as completed is one more event; once its notice is sent the entry is terminal.
+        self.api.issue.update(state="closed", state_reason="completed")
+        self.api.timeline["nodes"] = [self.api.closed("COMPLETED")]
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual([claim["message"] for claim in self.sent], ["Maintainer comment", "Closed as completed"])
+        self.assertEqual([row["key"] for row in adapter._queue(self.db)["pending"]], [key])
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(adapter._queue(self.db)["pending"], [])
+        self.assertEqual(len(self.sent), 2)
+        row = core.projection(self.db)[0]
+        self.assertEqual((row["lane"], row["external_state"], row["needs_you"]), ("awaiting_you", "closed", True))
+
+    def test_incomplete_issue_read_is_held_on_the_issue_not_the_collect(self):
+        core.capture(self.db, title="Filed", changes={"issue_url": ISSUE_URL}, who="operator")
+        self.api.rows[ROOT + "/issues/9/comments?per_page=100"] = Response(503, {}, "")
+        result = self.run_sync()
+        key = "issue:" + ISSUE_URL
+        self.assertTrue(result.ok, result.reason)
+        self.assertTrue(result.watermark_moved)
+        self.assertEqual(result.incomplete, [f"{key}: API HTTP 503; retry on a later collection"])
+        self.assertEqual(self.observe_heartbeat(key)["reason"], "Incomplete GitHub observation: API HTTP 503; retry on a later collection")
+        self.assertIsNone(core.snapshot(self.db, key)["observation"])
+        self.assertEqual(self.sent, [])
+
+    def test_issue_dependency_reaches_the_collector_and_unblocks_the_item(self):
+        dependency = {"kind": "issue", "url": ISSUE_URL}
+        item = core.capture(self.db, title="Draft", changes=self.draft(depends_on=[dependency]), who="operator")["item"]["id"]
+        key = f"item:{item}"
+        self.api.rows["graphql"] = {"data": {"repository": {"issue": {"timelineItems": {
+            "nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "next"}}}}}}
+        result = self.run_sync()
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.incomplete, [f"{key}: {ISSUE_URL}: issue cross-references exceed one page"])
+        self.assertEqual(core.projection(self.db)[0]["lane"], "awaiting_them")
+        self.api.issue.update(state="closed", state_reason="completed")
+        self.api.calls.clear()
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual([call[0] for call in self.api.calls], [ROOT + "/issues/9"])
+        observation = core.snapshot(self.db, key)["observation"]
+        self.assertTrue(observation["satisfied"])
+        self.assertEqual(observation["dependencies"][0]["proof"], {"url": ISSUE_URL, "closed": True, "state_reason": "completed"})
+        self.assertEqual(core.projection(self.db)[0]["lane"], "newly_unblocked")
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.run_sync().ok)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_cost_prices_each_key_kind_from_measurement_and_refuses_an_unpriced_dependency(self):
+        self.assertEqual(adapter._cost({"key": "issue:" + ISSUE_URL, "url": ISSUE_URL}), adapter.ISSUE_REQUESTS)
+        self.assertEqual(adapter._cost({"key": "github:" + URL, "url": URL}), adapter.PULL_REQUESTS)
+        self.api.observation()
+        self.assertEqual(len(self.api.calls), adapter.ISSUE_REQUESTS)
+        self.api.calls.clear()
+        self.assertEqual(fixtures.dependency(self.api.client(), {"kind": "issue", "url": ISSUE_URL})["state"], "pending")
+        self.assertEqual(len(self.api.calls), adapter.DEPENDENCY_REQUESTS["issue"])
+        entry = {"key": "item:1", "depends_on": [{"kind": "item", "item": 2}, {"kind": "issue", "url": ISSUE_URL}, {"kind": "merge", "url": URL}]}
+        self.assertEqual(adapter._cost(entry), adapter.DEPENDENCY_REQUESTS["issue"] + adapter.DEPENDENCY_REQUESTS["merge"])
+        with self.assertRaisesRegex(ValueError, "unpriced dependency kind"):
+            adapter._cost({"key": "item:1", "depends_on": [{"kind": "merge", "url": URL}, {"kind": "closed", "url": URL}]})
+        self.assertEqual(set(adapter.DEPENDENCY_REQUESTS), {"item", "merge", "release", "issue"})

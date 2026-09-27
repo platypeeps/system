@@ -1,0 +1,35 @@
+# Hourly verified SQLite snapshot to /Volumes/local, a disk attached to this
+# Mac. It is the same verb as the nightly `sd-db-backup`; this one bounds how
+# much work a bad hour can lose, not what a lost Mac takes with it. Unless
+# another job copies "Backup Local" elsewhere, this copy lives only on that
+# disk.
+#
+# `--require-mount /Volumes/local` is asked before anything is written: with
+# the disk detached, /Volumes/local is an ordinary directory on the boot disk,
+# and a snapshot written there restores and compares perfectly on the disk it
+# was meant to leave. The refusal exits 1 and mails through sd-db.sh, so a
+# detached drive is reported every hour until it is reattached.
+#
+# Retention is by age, one rolling week: `--keep-days 7` deletes verified
+# owned snapshots whose day lies wholly more than 7 days back. A count
+# (`--keep 168`) would hold a week only while every hourly run happens, and a
+# Mac asleep overnight misses runs. Only directories the backup wrote and
+# still verifies are deleted; nothing else in "Backup Local" is touched.
+#
+# `--no-row-prune`: the row prune files one report item per run, which is
+# right once a night and 24 items a day here. The nightly job keeps it.
+#
+# :50 keeps clear of the nightly job at 02:10 and of the mirror passes that
+# write to this disk at 03:30, 04:30 and 16:30. The two backups write to
+# different roots, and cron-jobs.sh's lock stops an hourly run overlapping
+# the one before it.
+#
+# SD_DB_BACKUP_HOURLY_DESTINATION overrides the root for a machine whose disk
+# is mounted elsewhere or for a test; an operator who names the destination
+# has answered the mount question, so the check stands aside, as it does for
+# the nightly job.
+JOB_SCHEDULE="50 * * * *"
+SD_DB_BACKUP_HOURLY_MOUNT=""
+[ -n "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || SD_DB_BACKUP_HOURLY_MOUNT=" --require-mount /Volumes/local"
+JOB_COMMAND="\"$ROOT/../local-sd-db/sd-db.sh\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep-days 7 --no-row-prune"
+unset SD_DB_BACKUP_HOURLY_MOUNT

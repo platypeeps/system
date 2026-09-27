@@ -1,0 +1,60 @@
+services:
+  graphiti-falkordb:
+    image: zepai/knowledge-graph-mcp:latest
+    # Upstream /start-services.sh starts the embedded FalkorDB without auth and
+    # FALKORDB_PASSWORD only configures the MCP client, so patch the server args
+    # in at container start. If upstream renames these lines the seds no-op and
+    # the client's AUTH fails loudly on startup.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        if [ -n "$$FALKORDB_PASSWORD" ]; then
+          sed -i "s|--daemonize yes|--requirepass $$FALKORDB_PASSWORD --daemonize yes|" /start-services.sh
+          sed -i "s|redis-cli -h localhost -p 6379 ping|redis-cli -h localhost -p 6379 -a $$FALKORDB_PASSWORD --no-auth-warning ping|" /start-services.sh
+        fi
+        exec /start-services.sh
+    env_file:
+      - path: ./.env
+        required: true
+    environment:
+      # FalkorDB configuration
+      - FALKORDB_PASSWORD=${FALKORDB_PASSWORD:-}
+      - BROWSER=${BROWSER:-1}  # Enable FalkorDB Browser UI (set to 0 to disable)
+      # MCP Server configuration
+      - FALKORDB_URI=redis://localhost:6379
+      - FALKORDB_DATABASE=${FALKORDB_DATABASE:-default_db}
+      - GRAPHITI_GROUP_ID=${GRAPHITI_GROUP_ID:-main}
+      - SEMAPHORE_LIMIT=${SEMAPHORE_LIMIT:-10}
+      - CONFIG_PATH=/app/mcp/config/config.yaml
+      - PATH=/root/.local/bin:${PATH}
+
+      # LLM — keys come from ./.env (gitignored), see .env.example
+      - GRAPHITI_LLM_PROVIDER=${GRAPHITI_LLM_PROVIDER:-gemini}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - ./falkordb_data:/var/lib/falkordb/data
+      - ./mcp_logs:/var/log/graphiti
+    ports:
+      # Overridable so this stack can coexist with a standalone local-falkordb
+      # Host side only. This stack bundles its own FalkorDB, so it must not
+      # land on local-falkordb's 6380/3003 or local-redis's 6379 — hence 6381
+      # and 3004. The container-internal 6379/3000 below never change.
+      # 127.0.0.1: FalkorDB here carries FALKORDB_PASSWORD from .env and the
+      # MCP server speaks for the whole graph. Neither belongs on the LAN.
+      - "127.0.0.1:${GRAPHITI_FALKORDB_PORT:-6381}:6379"  # FalkorDB/Redis
+      - "127.0.0.1:${GRAPHITI_UI_PORT:-3004}:3000"        # FalkorDB web UI
+      - "127.0.0.1:${GRAPHITI_MCP_PORT:-8085}:8000"       # MCP server HTTP (8083: google_workspace_mcp on the host; 8084: local-llama-cpp)
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 6379 -a \"$$FALKORDB_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+#volumes:
+#  falkordb_data:
+#    driver: local
+#  mcp_logs:
+#    driver: local

@@ -1,0 +1,8 @@
+# ai-apps inventory, profile: example — the format `capture` writes to profiles/<profile>.inv
+# format: app|kind|name[|key]  (names only — no secrets)
+# The real profiles/<profile>.inv files are local and gitignored.
+claude-code|mcp|context7
+claude-code|plugin|claude-hud@claude-hud
+claude-code|skill|find-skills
+codex|mcp|context7
+opencode|mcp|github

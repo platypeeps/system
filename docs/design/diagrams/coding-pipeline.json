@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "A change, from folder to merged commit",
+    "subtitle": "docs/work, a database row, the gates, and a squash-merge",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "plan",
+        "label": "Plan it",
+        "focus": [
+          "prd",
+          "row",
+          "unreadable"
+        ],
+        "note": "A folder on disk is not tracked work until a row exists."
+      },
+      {
+        "id": "build",
+        "label": "Build it",
+        "focus": [
+          "branch",
+          "gates",
+          "blocked"
+        ],
+        "note": "The local gates run before anything is pushed."
+      },
+      {
+        "id": "land",
+        "label": "Land it",
+        "focus": [
+          "pr",
+          "ci",
+          "done"
+        ],
+        "note": "done is reachable only through a confirmed remote merge."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "author",
+      "label": "Author"
+    },
+    {
+      "id": "state",
+      "label": "sd database"
+    },
+    {
+      "id": "gates",
+      "label": "Gates"
+    },
+    {
+      "id": "github",
+      "label": "GitHub"
+    },
+    {
+      "id": "stop",
+      "label": "Stops",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "plan",
+      "label": "Plan",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "build",
+      "label": "Build",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "land",
+      "label": "Land",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "prd",
+    "row",
+    "branch",
+    "gates",
+    "pr",
+    "ci",
+    "done"
+  ],
+  "nodes": [
+    {
+      "id": "prd",
+      "lane": "author",
+      "col": 0,
+      "type": "frontend",
+      "label": "prd.md",
+      "sublabel": "docs/work item"
+    },
+    {
+      "id": "row",
+      "lane": "state",
+      "col": 1,
+      "type": "database",
+      "label": "item row",
+      "sublabel": "sd work register",
+      "tag": "the tracker"
+    },
+    {
+      "id": "branch",
+      "lane": "author",
+      "col": 2,
+      "type": "frontend",
+      "label": "branch",
+      "sublabel": "in_progress"
+    },
+    {
+      "id": "gates",
+      "lane": "gates",
+      "col": 3,
+      "type": "security",
+      "label": "local gates",
+      "sublabel": "sd-check, sd-review",
+      "tag": "blocking"
+    },
+    {
+      "id": "pr",
+      "lane": "github",
+      "col": 4,
+      "type": "external",
+      "label": "Pull request",
+      "sublabel": "Work: sd:<id>"
+    },
+    {
+      "id": "ci",
+      "lane": "gates",
+      "col": 5,
+      "type": "security",
+      "label": "system-native",
+      "sublabel": "preflight, 4 legs",
+      "tag": "every push"
+    },
+    {
+      "id": "done",
+      "lane": "state",
+      "col": 5,
+      "type": "database",
+      "label": "done",
+      "sublabel": "squash-merge, verified"
+    },
+    {
+      "id": "unreadable",
+      "lane": "stop",
+      "col": 1,
+      "type": "security",
+      "label": "unreadable",
+      "sublabel": "no row was made"
+    },
+    {
+      "id": "blocked",
+      "lane": "stop",
+      "col": 3,
+      "type": "security",
+      "label": "blocked",
+      "sublabel": "evidence named"
+    }
+  ],
+  "edges": [
+    {
+      "from": "prd",
+      "to": "row",
+      "variant": "emphasis",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "row",
+      "to": "branch",
+      "variant": "emphasis",
+      "route": "return-left",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "branch",
+      "to": "gates",
+      "variant": "emphasis",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "gates",
+      "to": "pr",
+      "variant": "emphasis",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "pr",
+      "to": "ci",
+      "variant": "emphasis"
+    },
+    {
+      "from": "ci",
+      "to": "done",
+      "variant": "security",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "prd",
+      "to": "unreadable",
+      "variant": "dashed",
+      "role": "error",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "gates",
+      "to": "blocked",
+      "variant": "security",
+      "role": "error",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Two things track one change",
+      "items": [
+        "A folder under docs/work holds the thinking",
+        "A database row holds the status",
+        "Writing the folder does not create the row"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Where it stops",
+      "items": [
+        "A failing repo check is never handed to a reviewer",
+        "A hard stop names its evidence and leaves the branch pushed",
+        "done is reachable only through verified delivery"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Two separate permissions",
+      "items": [
+        "sd.merge_authorization gates the assistant",
+        "repo.merge_policy gates the unattended runner",
+        "Branch protection overrides neither"
+      ]
+    }
+  ]
+}

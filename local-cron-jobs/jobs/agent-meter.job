@@ -1,0 +1,12 @@
+# Four-hourly agent-usage reading -> a monthly usage ledger,
+# and one `meter` cost row per provider per window in the sd database (sd:234).
+# The pack's interpreter, not Homebrew's: it is the one with `sd_db` installed,
+# the same build the dashboard serves under (RUNTIME_PYTHON_DEFAULT in
+# local-project-dashboard/dashboard.sh). Under any other python3 the script
+# still appends the JSONL line and records the missing import as an error.
+JOB_SCHEDULE="0 */4 * * *"
+JOB_COMMAND="\"${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}/.venv/bin/python\" \"$ROOT/../local-agent-meter/agent-meter.py\""
+JOB_DIR="$ROOT/../local-agent-meter"
+JOB_PROMPT=""
+JOB_MODEL=""
+JOB_CLAUDE_ARGS=""

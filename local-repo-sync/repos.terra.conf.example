@@ -1,0 +1,9 @@
+# terra: this machine carries no repo fleet — only the toolbox itself.
+#
+# Unlike every other kind in the repo, terra does NOT layer on top of
+# repos.common.conf: that file lists the shared `ai` checkouts, and a machine
+# on the terra profile is one that deliberately holds nothing but this toolbox.
+# repo-sync.sh special-cases the concatenation for this profile.
+#
+# Copy to repos.terra.conf (gitignored).
+. platypeeps/system-tools

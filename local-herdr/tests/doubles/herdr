@@ -1,0 +1,119 @@
+#!/bin/sh
+# A stand-in for the herdr 0.9.0 CLI. Journals every argv line (tab-separated,
+# prefixed with the HERDR_SESSION it was called under) to
+# $HERDR_DOUBLE_JOURNAL and answers the control commands the wrapper uses
+# from files under $HERDR_DOUBLE_FIXTURE:
+#   session-list.json         answer to `session list --json`
+#                             (absent: no sessions at all)
+#   agent-list.json           answer to `agent list`
+#   panes/<id>.json           answer to `pane get <id>`, ':' in the id
+#                             spelled '_'; absent: pane_not_found on stderr,
+#                             exit 1, as herdr documents its errors
+#   panes/<id>.process.json   answer to `pane process-info --pane <id>`;
+#                             absent: the shell alone in the foreground
+#   workspace-create.json     answer to `workspace create`
+#   agent-start-fail          when present, `agent start` answers an error
+#   on-agent-start            when present, `agent start` runs it first, as
+#                             the started agent's own startup hook would
+# Never the real binary: the suite prepends this directory to PATH.
+set -e
+
+journal() {
+  if [ -n "${HERDR_DOUBLE_JOURNAL:-}" ]; then
+    line="${HERDR_SESSION:-}	${HERDR_SOCKET_PATH:-}"
+    for a in "$@"; do line="$line	$a"; done
+    printf '%s\n' "$line" >> "$HERDR_DOUBLE_JOURNAL"
+  fi
+}
+
+journal "$@"
+FIX="${HERDR_DOUBLE_FIXTURE:-/nonexistent}"
+
+case "${1:-}" in
+  --version|-V)
+    echo "herdr 0.9.0"
+    ;;
+  --help|-h)
+    echo "herdr — terminal workspace manager for AI coding agents (double)"
+    ;;
+  --session)
+    # The real binary starts the session's server and attaches the TUI here;
+    # the double returns so a test can read the journal.
+    exit 0
+    ;;
+  session)
+    case "${2:-}" in
+      list)
+        if [ -f "$FIX/session-list.json" ]; then
+          cat "$FIX/session-list.json"
+        else
+          echo '{"sessions":[]}'
+        fi
+        ;;
+      *) echo '{"error":{"code":"unsupported","message":"double: session '"${2:-}"'"}}' >&2; exit 1 ;;
+    esac
+    ;;
+  agent)
+    case "${2:-}" in
+      list)
+        if [ -f "$FIX/agent-list.json" ]; then
+          cat "$FIX/agent-list.json"
+        else
+          echo '{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}'
+        fi
+        ;;
+      start)
+        if [ -f "$FIX/agent-start-fail" ]; then
+          echo '{"error":{"code":"agent_not_ready","message":"double: refused"},"id":"cli:agent:start"}' >&2
+          exit 1
+        fi
+        if [ -x "$FIX/on-agent-start" ]; then
+          "$FIX/on-agent-start" >/dev/null
+        fi
+        echo '{"id":"cli:agent:start","result":{"agent":{"name":"'"${3:-}"'"},"type":"agent_started"}}'
+        ;;
+      *) echo '{"error":{"code":"unsupported","message":"double: agent '"${2:-}"'"}}' >&2; exit 1 ;;
+    esac
+    ;;
+  pane)
+    case "${2:-}" in
+      get)
+        id=$(printf '%s' "${3:-}" | tr ':' '_')
+        if [ -f "$FIX/panes/$id.json" ]; then
+          cat "$FIX/panes/$id.json"
+        else
+          echo '{"error":{"code":"pane_not_found","message":"pane '"${3:-}"' not found"},"id":"cli:pane:get"}' >&2
+          exit 1
+        fi
+        ;;
+      process-info)
+        id=$(printf '%s' "${4:-}" | tr ':' '_')
+        if [ -f "$FIX/panes/$id.process.json" ]; then
+          cat "$FIX/panes/$id.process.json"
+        else
+          echo '{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":100,"foreground_processes":[{"name":"zsh","pid":100}],"pane_id":"'"${4:-}"'","shell_pid":100,"tty":"/dev/ttys009"},"type":"pane_process_info"}}'
+        fi
+        ;;
+      run)
+        echo '{"id":"cli:pane:run","result":{"pane_id":"'"${3:-}"'","type":"pane_run"}}'
+        ;;
+      *) echo '{"error":{"code":"unsupported","message":"double: pane '"${2:-}"'"}}' >&2; exit 1 ;;
+    esac
+    ;;
+  workspace)
+    case "${2:-}" in
+      create)
+        if [ -f "$FIX/workspace-create.json" ]; then
+          cat "$FIX/workspace-create.json"
+        else
+          echo '{"id":"cli:workspace:create","result":{"root_pane":{"pane_id":"w9:p1"},"tab":{"tab_id":"w9:t1"},"workspace":{"workspace_id":"w9"}}}'
+        fi
+        ;;
+      *) echo '{"error":{"code":"unsupported","message":"double: workspace '"${2:-}"'"}}' >&2; exit 1 ;;
+    esac
+    ;;
+  *)
+    echo '{"error":{"code":"unsupported","message":"double: '"${1:-}"'"}}' >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,183 @@
+{
+  "prefix": "sdw",
+  "config": {
+    "google_account": {
+      "description": "Google account the workspace-mcp tools authenticate as; passed as `user_google_email` on every call",
+      "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    },
+    "drive_publishing_folder": {
+      "description": "Drive folder the blog reads from. `sdw-publish` pushes a finished piece here, and sitting in this folder is what says the piece cleared every gate",
+      "pattern": "^[A-Za-z0-9_-]{10,}$"
+    },
+    "drive_writing_folder": {
+      "description": "Drive folder for drafts and review copies. Private, implies no gates",
+      "pattern": "^[A-Za-z0-9_-]{10,}$"
+    }
+  },
+  "store": {
+    "driver": "vault",
+    "root": "$OBSIDIAN_VAULT",
+    "bases": {
+      "tip": "System/Databases/Tips and Tricks",
+      "blog-idea": "System/Databases/Blog Ideas",
+      "topic": "System/Databases/Topics"
+    }
+  },
+  "kinds": {
+    "tip": {
+      "fields": [
+        "contexts",
+        "area",
+        "content-type",
+        "status",
+        "score",
+        "my-rating",
+        "dateCreated",
+        "acted-on",
+        "description",
+        "topics",
+        "used-by",
+        "url",
+        "tags"
+      ],
+      "protected-fields": [
+        "my-rating"
+      ],
+      "initial-status": "inbox",
+      "transitions": {
+        "inbox": [
+          "accepted",
+          "declined"
+        ],
+        "accepted": [
+          "ready",
+          "declined"
+        ],
+        "ready": [
+          "approved",
+          "declined"
+        ],
+        "approved": [
+          "published",
+          "declined"
+        ]
+      },
+      "human-only": {
+        "accept": "accepted",
+        "approve": "approved",
+        "decline": "declined"
+      },
+      "floor": {
+        "score": 6
+      },
+      "sections": {
+        "order": [
+          "Tip",
+          "Score",
+          "Provenance"
+        ],
+        "template": "templates/tip.md"
+      }
+    },
+    "blog-idea": {
+      "fields": [
+        "contexts",
+        "area",
+        "content-type",
+        "status",
+        "score",
+        "my-rating",
+        "dateCreated",
+        "description",
+        "acted-on",
+        "topics",
+        "source-brief",
+        "brief-item",
+        "url",
+        "tags"
+      ],
+      "protected-fields": [
+        "my-rating"
+      ],
+      "initial-status": "inbox",
+      "transitions": {
+        "inbox": [
+          "accepted",
+          "declined"
+        ],
+        "accepted": [
+          "drafting",
+          "declined"
+        ],
+        "drafting": [
+          "published",
+          "declined"
+        ]
+      },
+      "human-only": {
+        "accept": "accepted",
+        "decline": "declined"
+      },
+      "floor": {
+        "score": 6
+      },
+      "sections": {
+        "order": [
+          "Thesis",
+          "Score",
+          "Argument",
+          "Drive docs",
+          "Provenance"
+        ],
+        "template": "templates/blog-idea.md"
+      }
+    },
+    "topic": {
+      "fields": [
+        "contexts",
+        "area",
+        "content-type",
+        "status",
+        "slug",
+        "dateCreated",
+        "description",
+        "tags"
+      ],
+      "initial-status": "candidate",
+      "transitions": {
+        "candidate": [
+          "active",
+          "parked",
+          "retired"
+        ],
+        "active": [
+          "parked",
+          "retired"
+        ],
+        "parked": [
+          "active",
+          "retired"
+        ]
+      },
+      "human-only": {
+        "activate": "active",
+        "park": "parked",
+        "retire": "retired"
+      },
+      "unique-fields": [
+        "slug"
+      ],
+      "sections": {
+        "order": [
+          "Covers",
+          "Boundaries",
+          "Sweep notes",
+          "Ground truth",
+          "Feeds",
+          "Provenance"
+        ],
+        "template": "templates/topic.md"
+      }
+    }
+  }
+}

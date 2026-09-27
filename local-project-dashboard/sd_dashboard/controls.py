@@ -1,0 +1,323 @@
+"""Small forms over the workflow library; no status rules live in the UI."""
+
+from __future__ import annotations
+
+import json
+
+from sd_db import reads, repos, workflow
+
+from .markup import Markup, join, tag
+
+
+def field(label, name, value="", *, type="text", required=False, **attributes):
+    identifier = attributes.pop("id", f"field-{name}")
+    return tag("div", tag("label", label, for_=identifier),
+               tag("input", name=name, id=identifier, value=value or "",
+               type=type, required=required, **attributes), class_="field")
+
+
+def select(label, name, choices, selected=None, *, id=None):
+    identifier = id or f"field-{name}"
+    return tag("div", tag("label", label, for_=identifier), tag("select", join(
+        tag("option", label, value=value, selected=str(value) == str(selected))
+        for value, label in choices), name=name, id=identifier), class_="field")
+
+
+def textarea(label, name, value="", *, id=None, rows=4, required=False):
+    identifier = id or f"field-{name}"
+    return tag("div", tag("label", label, for_=identifier),
+        tag("textarea", value, id=identifier, name=name, rows=rows,
+            required=required, maxlength=50000), class_="field")
+
+
+def form(action, *fields, label, command, revision=None, compact=False, changed_fields=False, reload_label=None):
+    # `reload_label` names the link the form script adds to a 409 answer,
+    # for a form whose reload is not "the current item": the bulk-acknowledge
+    # apply reloads its preview (sd:755). Omitted, the attribute is omitted,
+    # and the script keeps its own text.
+    return tag("form",
+        tag("input", type="hidden", name="revision", value=revision) if revision else Markup(""),
+        join(fields),
+        tag("div", tag("button", label, type="submit", class_="primary"), class_="form-actions"),
+        tag("p", "", class_="form-result", role="status", aria_live="polite"),
+        method="post", action=action, data_workflow_form=True,
+        data_cli=command,
+        data_changed_fields=changed_fields,
+        data_reload_label=reload_label,
+        class_="workflow-form compact-form" if compact else "workflow-form")
+
+
+def capture(connection):
+    choices = [("", "Choose an item…")]
+    for row in reads.capture_items(connection):
+        status = "completed" if row["status"] == "done" else row["status"].replace("_", " ")
+        if row["parked_at"]:
+            status += "; parked"
+        choices.append((row["id"], f"#{row['id']} · {row['title']} · {row['kind']} · "
+                        f"{row['repo'] or 'No repository'} [{status}]"))
+    # Two controls for one word (sd:719 step 6a). "Followup item" files an
+    # item of kind `followup`, what `sd task add --kind followup` creates and
+    # what stands on its own; "Followup note" attaches a `followup` note to
+    # the related item, as the form always did. The value `followup_item` is
+    # the form's and never reaches the store: the script posts `kind:
+    # "followup"` to `/api/items`, and the note path posts `followup` as the
+    # note kind, so each side of the store sees its own word.
+    kinds = [("task", "Task"), ("followup_item", "Followup item"), ("followup", "Followup note"),
+             ("comment", "Comment"), ("question", "Question"), ("decision", "Decision"),
+             ("proposal", "Proposal")]
+    related = tag("div", tag("label", "Related item", for_="capture-related"),
+        tag("select", join(tag("option", label, value=value) for value, label in choices),
+            name="related_item", id="capture-related", disabled=True), class_="field")
+    return tag("section", tag("h2", "Capture"),
+        tag("p", "Get it out of your head. Add the details when you need them. CLI: ",
+            tag("code", 'sd task add "Title"', data_capture_cli=True), ".", class_="hint"),
+        tag("form", tag("div", select("Type", "capture_type", kinds, "task", id="capture-type"),
+                tag("p", "A task or a followup item stands alone. A note attaches to an item.", class_="hint"),
+                class_="capture-type-row"),
+            tag("div", field("What needs doing?", "title", id="capture-title", required=True, maxlength=500,
+                             placeholder="Something to finish…"), data_capture_task=True),
+            tag("div", related,
+                tag("p", "Notes keep the item's status. Parked items stay out of Today.", class_="hint"),
+                tag("p", "Choose an item to attach this note." if len(choices) > 1 else
+                    "No related items yet. Capture a task first.", class_="hint", data_capture_context=True,
+                    role="status", aria_live="polite"),
+                tag("button", "Refresh related item", type="button", class_="listing-go",
+                    data_capture_refresh=True, disabled=True, hidden=True),
+                tag("div", tag("label", "Note", for_="capture-body"),
+                    tag("textarea", "", name="body", id="capture-body", rows=4, maxlength=50000,
+                        disabled=True), class_="field"),
+                hidden=True, data_capture_note=True),
+            tag("input", type="hidden", name="revision", value="", disabled=True),
+            tag("div", tag("button", "Add task", type="submit", class_="primary"), class_="form-actions"),
+            tag("p", "", class_="form-result", role="status", aria_live="polite"),
+            method="post", action="/api/items", data_workflow_form=True, data_capture_form=True,
+            data_cli='sd task add "Title"', class_="workflow-form"),
+        class_="capture-panel", id="capture")
+
+
+def _checkouts(connection):
+    """The repositories a task may belong to, as `select()` choices.
+
+    `repos.registered` -- every row the `repo` table holds. That is exactly
+    the domain `workflow._fields` validates `repo` against: a bare existence
+    check on `repo.path`, with no condition on the remote. The runner screen
+    offers the narrower remote-only set because a run has to clone from one;
+    belonging to a checkout does not, so a task may sit in a checkout that has
+    no remote and this field has to be able to say so.
+
+    The blank choice is the clear. It is first, so a task with no repository
+    gets it as the browser's default selection and `data-changed-fields` reads
+    the field as unchanged -- an omitted key, which is not a null.
+
+    There is deliberately no counterpart to the `Existing priority` option
+    above. That one exists because `item.priority` carries no constraint, so
+    the column holds values the form never offered. `item.repo` is a foreign
+    key onto `repo.path` whose removal rule is `RESTRICT`, so a stored path is
+    always a registered path: this list already holds every value the column
+    can carry, and the function needs no "current value" argument.
+    """
+    choices = [("", "No repository")]
+    choices.extend((row["path"], row["path"]) for row in repos.registered(connection))
+    return choices
+
+
+def _status_control(connection, item_id, row, revision, statuses=None):
+    if statuses is None:
+        statuses = workflow.allowed_statuses(connection, item_id)
+    return (form(f"/api/items/{item_id}/status",
+        select("Status", "status", [(value, value.replace("_", " ")) for value in statuses], row["status"]),
+        field("Reason (optional)", "reason"), label="Change status",
+        command=f"sd task status {item_id} STATUS", revision=revision, compact=True)
+        if statuses else tag("p", "Status is controlled by the active workflow.", class_="hint"))
+
+
+def item_controls(connection, item_id):
+    state = workflow.item_state(connection, item_id)
+    row, revision = state["item"], state["revision"]
+    if row["kind"] not in ("task", "work", *workflow.TASK_STATUS_KINDS):
+        return Markup("")
+    if row["kind"] not in ("task", "work", "followup"):
+        # A personal item takes the task statuses, and the panel holds the
+        # status control alone: `workflow.edit_item` refuses its details, so a
+        # `Save details` form would offer a save the library rejects in its
+        # entirety, title included.
+        # A followup left this branch in sd:816. `edit_item` has accepted its
+        # title, body, priority, due date and repository since sd:809, and the
+        # panel used to name `sd task edit ID` for want of a form of its own.
+        #
+        # "Can finish or reopen here" only while it can: with a queued or
+        # running assignment `allowed_statuses` is empty, `_status_control`
+        # says the workflow owns the status, and a second line offering the
+        # opposite beside it was a contradiction (PR #344 review).
+        statuses = workflow.allowed_statuses(connection, item_id)
+        offered = f"A {row['kind']} item can finish or reopen here. " if statuses else ""
+        return tag("section", tag("h2", "Manage this item"),
+            _status_control(connection, item_id, row, revision, statuses),
+            tag("p", offered + "Its other fields keep their own editing workflow.", class_="hint"),
+            class_="control-panel")
+    if row["kind"] == "work":
+        from sd_db import progress
+
+        if progress.work_controls(connection, item_id)["reason"]:
+            return Markup("")
+    priorities = [("", "Unprioritized"), (1, "1 · Highest"), (2, "2 · High"),
+                  (3, "3 · Normal"), (4, "4 · Low")]
+    if row["priority"] is not None and row["priority"] not in (1, 2, 3, 4):
+        priorities.append((row["priority"], f"{row['priority']} · Existing priority"))
+    inputs = [field("Title", "title", row["title"], required=True, maxlength=500),
+              tag("div", select("Priority", "priority", priorities, row["priority"]),
+                  field("Due", "due", row["due"], type="date"), class_="field-row")]
+    if row["kind"] in ("task", "followup"):
+        # Not for work, exactly like `body` below and for the same reason: a
+        # work item's repository is part of its source identity, and
+        # `workflow.edit_item` refuses to reassign it. Rendering the field for
+        # a work item would offer a choice whose every non-default value the
+        # library rejects -- and rejects the whole save with it, title included.
+        inputs.append(select("Repository", "repo", _checkouts(connection), row["repo"]))
+    if row["kind"] == "task":
+        # Task only. A work row's kind is its source identity and the library
+        # refuses to change it. A followup's is not, but reclassifying one is
+        # not among the details sd:809 opened and sd:816 asked for, so the
+        # select stays off its form; the choices here are the kinds a hand edit
+        # may set, so it offers nothing `edit_item` will refuse by kind.
+        # Its own id: `note_capture` on the same page owns `field-kind`.
+        #
+        # The hand kinds the store's own CHECK admits, not the constant whole.
+        # This page reads through `connect(write=False)`, which accepts a
+        # store older than migration 009, and on one `edit_item` refuses each
+        # of the four kinds that migration added -- by name, from the same
+        # `schema_kinds` read -- so offering them was offering a save the
+        # library rejects (PR #332 review). A CHECK the library cannot read is
+        # a store where every kind change is refused, so the select then
+        # holds the current kind alone.
+        try:
+            admitted = workflow.schema_kinds(connection)
+        except workflow.WorkflowError:
+            admitted = (row["kind"],)
+        inputs.append(select("Kind", "kind", [(kind, kind) for kind in workflow.HAND_KINDS if kind in admitted],
+                             row["kind"], id="item-kind"))
+    if row["kind"] in ("task", "followup"):
+        try:
+            body = json.loads(row["body"] or "{}")
+        except ValueError:
+            # sd:870, the twin of sd:775's hole on the report panel. `item.body`
+            # is plain `TEXT` with no `json_valid` check, so a row this cannot
+            # parse is a row the store permits; unguarded, `json.JSONDecodeError`
+            # raised through `screens.item` and past `do_GET`, which catches
+            # `MissingItem`, `NotFound` and the database errors and not a
+            # `ValueError`, and the reader got no response at all.
+            #
+            # An empty textarea would be worse here than no field: the save
+            # beside it would write that blank over the stored body nothing
+            # could read. Withhold the field -- `data-changed-fields` posts only
+            # what the reader changed, and a field that is not rendered is never
+            # sent -- and say why, so the other details still save.
+            inputs.append(tag("p", "This item's stored body is not valid JSON, so the details "
+                                   "field is withheld and no save here can overwrite it. Repair "
+                                   "the stored text with ",
+                              tag("code", f"sd task edit {item_id}"), ".", class_="notice"))
+        else:
+            value = body.get("text", "") if isinstance(body, dict) else ""
+            inputs.append(textarea("Details", "body", value))
+    return tag("section", tag("h2", "Manage this item"),
+        tag("div", form(f"/api/items/{item_id}", *inputs, label="Save details",
+                        command=f"sd task edit {item_id} --title TITLE", revision=revision, changed_fields=True),
+            tag("div", _status_control(connection, item_id, row, revision),
+                tag("p", "A followup can finish or reopen here." if row["kind"] == "followup" else
+                    "A task can finish here. Code delivery keeps its delivery checks.", class_="hint")),
+            class_="item-controls"), class_="control-panel")
+
+
+def note_capture(connection, item_id):
+    revision = workflow.item_state(connection, item_id)["revision"]
+    return form(f"/api/items/{item_id}/notes",
+        textarea("Add a note", "body", id="note-body", rows=3, required=True),
+        select("Kind", "kind", [(value, value.capitalize()) for value in
+            ("comment", "followup", "question", "decision", "proposal")], "comment"),
+        label="Add note", command=f"sd task note {item_id} --kind comment --body TEXT", revision=revision)
+
+
+def note_resolution(note, revision):
+    if note["resolved_at"]:
+        return tag("span", "Resolved", class_="status status-done")
+    if note["kind"] not in ("comment", "followup", "question", "decision", "proposal"):
+        return tag("span", "Recorded", class_="hint")
+    return form(f"/api/notes/{note['id']}/resolve", label="Resolve",
+                command=f"sd note resolve {note['id']}", revision=revision, compact=True)
+
+
+def progress_controls(connection, item_id):
+    from sd_db import progress
+
+    state = workflow.item_state(connection, item_id)
+    available = progress.work_controls(connection, item_id)
+    row, revision = state["item"], state["revision"]
+    if row["kind"] != "work":
+        return Markup("")
+    controls = []
+    if available["relink"]:
+        controls.append(form(f"/api/items/{item_id}/relink",
+            field("Artifact path within the repository", "path", row["path"], required=True),
+            label="Update artifact link", command=f"sd work relink {item_id} PATH",
+            revision=revision))
+    if available["cancel"]:
+        controls.append(tag("details", tag("summary", "Cancel this work item"),
+            tag("p", "Records why this work stopped. It does not mark code as delivered or remove files.", class_="hint"),
+            form(f"/api/items/{item_id}/cancel",
+                field("Reason for cancelling", "reason", id="cancel-reason", required=True),
+                label="Cancel work", command=f"sd work cancel {item_id} --reason TEXT", revision=revision)))
+    if not controls:
+        return tag("p", available["reason"], class_="hint") if available["reason"] else Markup("")
+    return tag("section", tag("h2", "Work references"), join(controls), class_="control-panel")
+
+
+def writing_controls(connection, row, *, state=None):
+    if row["kind"] != "idea" or not row["piece"]:
+        return Markup("")
+    from sd_db import writing
+
+    state = state or writing.piece_state(connection, row["id"])
+    detail, revision = state["writing"], state["revision"]
+    item_id = row["id"]
+    gates = detail["gates"]
+    body = [tag("h2", "Writing progress"),
+            tag("p", tag("strong", detail["stage"].capitalize()), " · ", row["piece"]),
+            tag("h3", "Review checks pass" if gates["ok"] else "Review needs attention"),
+            tag("ul", join(tag("li", problem) for problem in gates["problems"]))
+            if gates["problems"] else tag("p", "Checks match the current draft.", class_="hint")]
+    for publication in detail.get("publications", []):
+        phase = publication["phase"]
+        status = "Publication needs reconciliation" if publication.get("reconcile_required") else "Publication " + phase
+        body.append(tag("article", tag("h3", status),
+            tag("p", "Claim " + publication["id"], class_="hint"),
+            tag("p", "This receipt covers an earlier draft. Review the current draft before publishing again.", class_="hint")
+            if publication.get("current_draft_published") is False else "",
+            tag("p", tag("a", "Open published document", href=publication["url"], rel="noopener noreferrer")) if publication.get("url") else "",
+            tag("p", "Resume from the saved claim; check the destination before repeating an interrupted operation.", class_="hint") if phase != "published" else "",
+            tag("code", f"sd writing publication-status --piece {row['piece']} --claim {publication['id']}"), class_="operation-card"))
+    if detail["owner"] != "row":
+        body.append(tag("p", "This collection is read-only until its database migration is verified.", class_="hint"))
+    else:
+        parked = detail["parked"]
+        action = "revive" if parked else "park"
+        body.append(tag("details", tag("summary", "Revive this piece" if parked else "Park this piece"),
+            tag("p", "Bring this piece back to the writing list." if parked else
+                "Set this piece aside while preserving its stage and review history.", class_="hint"),
+            form(f"/api/items/{item_id}/{action}", label="Revive piece" if parked else "Park piece",
+                command=f"sd writing park --piece {row['piece']}" + (" --revive" if parked else ""), revision=revision)))
+        stages = detail["available_stages"]
+        if stages:
+            body.append(form(f"/api/items/{item_id}/stage",
+                select("Next stage", "stage", [(value, value.capitalize()) for value in stages]),
+                field("Reason (optional)", "reason", id="writing-reason"),
+                label="Move to stage", command=f"sd writing stage --piece {row['piece']} --stage STAGE", revision=revision))
+        corrections = detail["correction_stages"]
+        if corrections:
+            body.append(tag("details", tag("summary", "Correct an earlier stage"),
+                tag("p", "Record why this piece needs to return to an earlier stage. Its review checks will need to be renewed.", class_="hint"),
+                form(f"/api/items/{item_id}/stage",
+                    tag("input", name="correct", value="true", type="hidden"),
+                    select("Return to stage", "stage", [(value, value.capitalize()) for value in corrections], id="correction-stage"),
+                    field("Reason for correction", "reason", id="correction-reason", required=True),
+                    label="Correct stage", command=f"sd writing stage --piece {row['piece']} --stage STAGE --correct --reason TEXT", revision=revision)))
+    return tag("section", join(body), class_="control-panel writing-controls")

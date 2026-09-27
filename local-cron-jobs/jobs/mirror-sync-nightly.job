@@ -1,0 +1,6 @@
+# Nightly folder mirroring (rsync -a --delete): every destination in
+# Configured directories become exact mirrors; configured files are copied.
+# Any failed or refused pair exits 1, triggering the failure notification
+# (banner + ntfy push). Empty config is a quiet no-op.
+JOB_SCHEDULE="30 3 * * *"
+JOB_COMMAND="sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync"

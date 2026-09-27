@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<!-- A cut-down page in the shape archify renders, for `lift` to work on in
+     CI, where no archify is installed and docs/dashboard/ is never tracked.
+     The real page is about 600 KB; what is kept is every construct `lift`
+     reads or has been caught mishandling. -->
+<html lang="en" data-theme="dark" data-preset="editorial">
+<head>
+  <meta charset="UTF-8">
+  <title>Fixture: editorial</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <style>
+    /* ==========================================================
+       THEME VARIABLES — switch by toggling [data-theme] on <html>
+       ========================================================== */
+    :root,
+    [data-theme="dark"] {
+      --text: #ffffff;
+      --text-muted: #94a3b8;
+      --arrow: #64748b;
+      --mask: #0f172a;
+      --frontend-stroke: #22d3ee;
+      --label: var(--text-muted);
+    }
+    [data-theme="light"] {
+      --text: #0f172a;
+      --text-muted: #475569;
+      --arrow: #94a3b8;
+      --mask: #ffffff;
+      --frontend-stroke: #0891b2;
+    }
+    /* The preset this diagram wears: its palette wins over the plain light one. */
+    [data-preset="editorial"][data-theme="light"] {
+      --text: #2b2118;
+      --mask: #f2eee5;
+    }
+    [data-preset="signal-flow"][data-theme="light"] {
+      --arrow: #0e7490;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--mask); color: var(--text); }
+    html[data-embed="true"] .toolbar,
+    html[data-embed="true"] .header { display: none; }
+    /* Components */
+    .c-mask { fill: var(--mask); stroke: none; }
+    /* Text helpers */
+    .t-primary { fill: var(--text); }
+    .t-muted, .t-label { fill: var(--label); font-family: var(--font-sans, system-ui); }
+    /* Arrows */
+    .a-default { stroke: var(--arrow); fill: none; }
+    /* Arrowhead markers reference these */
+    .m-default { fill: var(--arrow); }
+    svg .s-frontend { color: var(--frontend-stroke); }
+    @media print {
+      :root, [data-theme="dark"], [data-theme="light"] {
+        --text: #000001;
+        --mask: #fffffe;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">toolbar</div>
+  <svg viewBox="0 0 400 200" role="img" data-preset="editorial">
+    <title>Fixture</title>
+    <defs>
+      <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" class="m-default" />
+      </marker>
+    </defs>
+    <rect x="10" y="10" width="120" height="60" class="c-mask" />
+    <g class="s-frontend">
+      <text x="20" y="40" class="t-primary">Dashboard</text>
+      <text x="20" y="60" class="t-muted">reads the database</text>
+    </g>
+    <text x="200" y="40" class="t-label">edge</text>
+    <line x1="130" y1="40" x2="250" y2="40" class="a-default" marker-end="url(#arrowhead)" />
+  </svg>
+  <script type="application/json" id="archify-guided-views-data">[]</script>
+  <script>document.documentElement.dataset.ready = "1";</script>
+  <script>window.archifyFixture = true;</script>
+</body>
+</html>

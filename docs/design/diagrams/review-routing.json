@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "How a change gets reviewed",
+    "subtitle": "Route first, run the repo's own checks, then buy reader time \u2014 and post nothing",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "route",
+        "label": "Route",
+        "focus": [
+          "diff",
+          "route",
+          "skip"
+        ],
+        "note": "The tier is decided from paths and size, before any model is asked."
+      },
+      {
+        "id": "run",
+        "label": "Run",
+        "focus": [
+          "check",
+          "chain",
+          "checkfail"
+        ],
+        "note": "A failing repo check ends the review; no provider is dispatched."
+      },
+      {
+        "id": "dispose",
+        "label": "Dispose",
+        "focus": [
+          "findings",
+          "dispose",
+          "copilot"
+        ],
+        "note": "Findings are labelled locally. Nothing reaches GitHub from here."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "run",
+      "label": "What runs"
+    },
+    {
+      "id": "decide",
+      "label": "What decides"
+    },
+    {
+      "id": "remote",
+      "label": "Remote, on request"
+    },
+    {
+      "id": "stop",
+      "label": "Stops",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "route",
+      "label": "Route",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "run",
+      "label": "Run",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "dispose",
+      "label": "Dispose",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "diff",
+    "route",
+    "check",
+    "chain",
+    "findings",
+    "dispose"
+  ],
+  "nodes": [
+    {
+      "id": "diff",
+      "lane": "run",
+      "col": 0,
+      "type": "frontend",
+      "label": "The diff",
+      "sublabel": "worktree, branch, pr or planning"
+    },
+    {
+      "id": "route",
+      "lane": "decide",
+      "col": 1,
+      "type": "security",
+      "label": "Route",
+      "sublabel": "category, size, sensitivity",
+      "tag": "no model yet"
+    },
+    {
+      "id": "check",
+      "lane": "run",
+      "col": 2,
+      "type": "backend",
+      "label": "sd-check",
+      "sublabel": "this repo's own tests",
+      "tag": "deterministic"
+    },
+    {
+      "id": "chain",
+      "lane": "decide",
+      "col": 3,
+      "type": "external",
+      "label": "Provider chain",
+      "sublabel": "the tier's share of readers"
+    },
+    {
+      "id": "findings",
+      "lane": "run",
+      "col": 4,
+      "type": "database",
+      "label": "Findings",
+      "sublabel": "each with a severity"
+    },
+    {
+      "id": "dispose",
+      "lane": "decide",
+      "col": 5,
+      "type": "security",
+      "label": "Disposition",
+      "sublabel": "blocking or advisory",
+      "tag": "local only"
+    },
+    {
+      "id": "copilot",
+      "lane": "remote",
+      "col": 5,
+      "type": "external",
+      "label": "Copilot",
+      "sublabel": "only when policy selects it"
+    },
+    {
+      "id": "skip",
+      "lane": "stop",
+      "col": 1,
+      "type": "security",
+      "label": "skip tier",
+      "sublabel": "every path is docs"
+    },
+    {
+      "id": "checkfail",
+      "lane": "stop",
+      "col": 3,
+      "type": "security",
+      "label": "check failed",
+      "sublabel": "no provider is called"
+    }
+  ],
+  "edges": [
+    {
+      "from": "diff",
+      "to": "route",
+      "variant": "emphasis",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "route",
+      "to": "check",
+      "variant": "emphasis",
+      "route": "return-left",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "check",
+      "to": "chain",
+      "variant": "emphasis",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "chain",
+      "to": "findings",
+      "variant": "emphasis",
+      "route": "return-left",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "findings",
+      "to": "dispose",
+      "variant": "emphasis",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "dispose",
+      "to": "copilot",
+      "variant": "dashed",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "route",
+      "to": "skip",
+      "variant": "dashed",
+      "role": "error",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "check",
+      "to": "checkfail",
+      "variant": "security",
+      "role": "error"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "The tier is decided first",
+      "items": [
+        "A matched category sets the starting tier",
+        "A sensitive path or an oversized change raises it one step",
+        "A draft pull request drops to the cheapest tier that still reviews"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Deterministic before probabilistic",
+      "items": [
+        "sd-check runs the repo's own tests, lint and build",
+        "A failing check ends the review then and there",
+        "No check configured is reported, not treated as a failure"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Nothing is posted",
+      "items": [
+        "Findings are labelled against a severity floor locally",
+        "The default floor is medium, so low findings advise",
+        "Remote review is a separate, policy-selected request"
+      ]
+    }
+  ]
+}

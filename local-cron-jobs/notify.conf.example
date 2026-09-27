@@ -1,0 +1,5 @@
+# Copy to notify.conf (gitignored) to enable phone push on job failure.
+# Pick a long random topic name — anyone who knows it can read/post to it:
+#   NTFY_TOPIC="cron-jobs-$(uuidgen | tr A-Z a-z)"
+# Then install the ntfy app (iOS/Android) and subscribe to the same topic.
+NTFY_TOPIC=""

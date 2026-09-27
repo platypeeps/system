@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "A piece, from idea to published",
+    "subtitle": "Six stages, three gates, and a readiness decision pinned to one draft",
+    "quality_profile": "showcase",
+    "views": [
+      {"id": "early", "label": "Decide", "focus": ["inbox", "accepted", "parked"],
+       "note": "Only you accept a piece. A piece you drop is parked, never declined."},
+      {"id": "work", "label": "Work", "focus": ["researching", "drafting", "review"],
+       "note": "Stages advance one step at a time; going back needs a stated reason."},
+      {"id": "ship", "label": "Ship", "focus": ["gatefiles", "ready", "published", "stale"],
+       "note": "Readiness is pinned to a draft digest and dies when the draft changes."}
+    ]
+  },
+  "lanes": [
+    {"id": "auto", "label": "Recorded by the tooling"},
+    {"id": "human", "label": "Decided by you"},
+    {"id": "gates", "label": "Gate records"},
+    {"id": "out", "label": "Published"},
+    {"id": "stop", "label": "Refusals", "variant": "exception"}
+  ],
+  "phases": [
+    {"id": "decide", "label": "Decide", "fromCol": 0, "toCol": 1},
+    {"id": "work", "label": "Work", "fromCol": 2, "toCol": 3, "variant": "emphasis"},
+    {"id": "ship", "label": "Ship", "fromCol": 4, "toCol": 5, "variant": "dashed"}
+  ],
+  "mainPath": ["inbox", "accepted", "researching", "drafting", "review", "ready"],
+  "nodes": [
+    {"id": "inbox", "lane": "auto", "col": 0, "type": "frontend",
+     "label": "Inbox", "sublabel": "idea captured"},
+    {"id": "accepted", "lane": "human", "col": 1, "type": "frontend",
+     "label": "Accepted", "sublabel": "worth writing", "tag": "your call"},
+    {"id": "researching", "lane": "auto", "col": 2, "type": "database",
+     "label": "Researching", "sublabel": "research.md stamped"},
+    {"id": "drafting", "lane": "human", "col": 3, "type": "frontend",
+     "label": "Drafting", "sublabel": "the draft moves"},
+    {"id": "review", "lane": "auto", "col": 4, "type": "security",
+     "label": "Review", "sublabel": "gate verdicts recorded"},
+    {"id": "ready", "lane": "human", "col": 5, "type": "database",
+     "label": "Ready", "sublabel": "digest pinned", "tag": "gates must pass"},
+    {"id": "gatefiles", "lane": "gates", "col": 4, "type": "security",
+     "label": "Three gates", "sublabel": "research, fact-check, adversarial"},
+    {"id": "published", "lane": "out", "col": 5, "type": "external",
+     "label": "Published", "sublabel": "a real URL, confirmed"},
+    {"id": "parked", "lane": "stop", "col": 0, "type": "security",
+     "label": "Parked", "sublabel": "never declined"},
+    {"id": "stale", "lane": "stop", "col": 4, "type": "security",
+     "label": "Stale", "sublabel": "draft changed after ready"}
+  ],
+  "edges": [
+    {"from": "inbox", "to": "accepted", "variant": "emphasis", "route": "drop", "fromSide": "bottom", "toSide": "top"},
+    {"from": "accepted", "to": "researching", "variant": "emphasis", "route": "return-left", "fromSide": "top", "toSide": "bottom"},
+    {"from": "researching", "to": "drafting", "variant": "emphasis", "route": "drop", "fromSide": "bottom", "toSide": "top"},
+    {"from": "drafting", "to": "review", "variant": "emphasis", "route": "return-left", "fromSide": "top", "toSide": "bottom"},
+    {"from": "review", "to": "ready", "variant": "emphasis", "route": "drop", "fromSide": "bottom", "toSide": "top"},
+    {"from": "review", "to": "gatefiles", "variant": "security", "route": "drop", "fromSide": "bottom", "toSide": "top"},
+    {"from": "ready", "to": "published", "variant": "security", "route": "drop", "fromSide": "bottom", "toSide": "top"},
+    {"from": "inbox", "to": "parked", "variant": "dashed", "role": "error", "route": "drop", "fromSide": "bottom", "toSide": "top"},
+    {"from": "ready", "to": "stale", "variant": "security", "role": "error"}
+  ],
+  "cards": [
+    {"dot": "emerald", "title": "Stages move one step",
+     "items": ["Each stage has exactly one normal successor",
+               "Going back to an earlier stage needs a stated reason",
+               "Only you may correct a piece backwards, never a session"]},
+    {"dot": "amber", "title": "What the gates check",
+     "items": ["research.md must carry this draft's digest and generation",
+               "fact-check and adversarial need a recorded pass verdict",
+               "Any open fact-check finding blocks, at any confidence"]},
+    {"dot": "rose", "title": "Readiness expires",
+     "items": ["Ready pins the digest of the draft it was granted for",
+               "Editing the draft afterwards invalidates it",
+               "Published needs that same digest plus a recorded URL"]}
+  ]
+}

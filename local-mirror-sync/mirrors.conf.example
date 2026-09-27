@@ -1,0 +1,21 @@
+# mirror-sync pairs: source|destination, one per line, # comments allowed.
+# Copy to mirrors.conf (gitignored) and list your own pairs.
+# The destination becomes an EXACT mirror of the source on every run
+# (rsync -a --delete): extra files in the destination are deleted.
+# Paths are literal; write them out in full (no ~ or $HOME).
+
+# Pairs run one at a time, in this order. The local-drive pairs come first:
+# /Volumes/local/Backup is itself a source below, so Documents and
+# Protected.dmg reach iCloud on the same night they reach the drive.
+# tests/test_mirror_sync.py (PairOrder) fails on a pair listed too late.
+
+# Local Documents. This remains an exact mirror, not a historical archive.
+/Users/example/Documents|/Volumes/local/Backup/Documents
+
+# Encrypted archive file, copied into its dedicated destination directory.
+/Users/example/Protected.dmg|/Volumes/local/Backup/Protected
+
+# Local folders mirrored into their corresponding iCloud Backup folders.
+# The local volume is authoritative, and each pair scopes --delete separately.
+/Volumes/local/Photos|/Users/example/Library/Mobile Documents/com~apple~CloudDocs/Backup/Photos
+/Volumes/local/Backup|/Users/example/Library/Mobile Documents/com~apple~CloudDocs/Backup/Backup

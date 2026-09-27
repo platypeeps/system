@@ -1,0 +1,9 @@
+3 open task(s) need attention (2 overdue, 1 due today)
+
+- Pay the water bill [high] — scheduled {today-3}, 3 day(s) overdue
+  obsidian://open?vault=vault&file=TaskNotes/Tasks/pay-water-bill
+- Book the dentist — scheduled {today-1}, 1 day(s) overdue
+  obsidian://open?vault=vault&file=TaskNotes/Tasks/book-dentist
+- Send the invoice — scheduled {today+0}, due today
+  obsidian://open?vault=vault&file=TaskNotes/Tasks/send-invoice
+email sent

@@ -1,0 +1,45 @@
+# Overrides for the generated documents the dashboard lists and serves.
+#
+# Copy this file to documents.conf (gitignored) and edit it; the lines below
+# are examples. Without a documents.conf the dashboard lists every found root
+# under its directory name and serves nothing outside REPO_ROOT.
+#
+# This file is no longer the inventory. Any checkout under REPO_ROOT (default
+# ~/repos, one group deep at most) that holds `docs/dashboard` is a document
+# root, found on disk. Onboarding a repository is a directory in it, not a
+# line here, so this list cannot drift behind the fleet.
+#
+# What a directory cannot say, this file still says. Pipe-separated, because a
+# path can hold a space and `read -r a b` splits it in the wrong place.
+#
+#   label|<key>|<label>              a found root, better named
+#   skip|<key>                       a found root the dashboard should not list
+#   root|<key>|<label>|<directory>   a root that is somewhere else entirely
+#
+# Reach for `label|` first. The derived label is the directory name and reads
+# badly for an abbreviation -- `mcp-research` becomes `Mcp Research`, and no
+# amount of code recovers `MCP` from it -- but that is a naming complaint and
+# nothing more, so the line says the name and stops.
+#
+# `root|` is for a root that genuinely lives elsewhere, and it wins over a
+# found root of the same key. Do not use it to rename one: repeating the path
+# enumeration already found puts the default location back into this file,
+# where it goes stale the moment the repository moves while still looking
+# authoritative. That is the drift the enumeration was written to remove.
+#
+# Two checkouts of the same name in different groups claim one key, and a key
+# with two owners has no owner: neither is served, the page names the contest,
+# and a `root|` or `skip|` line settles it.
+#
+# `key` appears in the URL, so it is short and lowercase. The directory is
+# read, never written, and only its regular `.html` files are ever served.
+
+# An abbreviation the derived label would spell `Mcp Research`.
+label|mcp-research|MCP
+
+# A found root that should not be listed.
+skip|scratch-notes
+
+# A vault is not a checkout under ~/repos, so nothing finds it; a root| line
+# is the only way its docs/dashboard is served. `~` and spaces both survive.
+root|vault|Vault|~/Documents/My Vault/docs/dashboard

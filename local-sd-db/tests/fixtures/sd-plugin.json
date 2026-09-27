@@ -1,0 +1,32 @@
+{
+  "_comment": "The writing manifest's shape, with blog-idea's seven-target ladder. Item C's own pull request extends the real manifest from four targets to seven; this fixture carries the shape B's mapping table has to be forward-compatible with, so the assertion is not vacuous on a machine without that checkout.",
+  "prefix": "sdw",
+  "store": {
+    "driver": "vault",
+    "bases": {
+      "blog-idea": "System/Databases/Blog Ideas",
+      "topic": "System/Databases/Topics"
+    }
+  },
+  "kinds": {
+    "blog-idea": {
+      "initial-status": "inbox",
+      "transitions": {
+        "inbox": ["accepted", "declined"],
+        "accepted": ["researching", "drafting", "declined"],
+        "researching": ["drafting", "declined"],
+        "drafting": ["review", "declined"],
+        "review": ["ready", "drafting", "declined"],
+        "ready": ["published", "declined"]
+      }
+    },
+    "topic": {
+      "initial-status": "candidate",
+      "transitions": {
+        "candidate": ["active", "parked"],
+        "active": ["parked", "retired"],
+        "parked": ["active", "retired"]
+      }
+    }
+  }
+}

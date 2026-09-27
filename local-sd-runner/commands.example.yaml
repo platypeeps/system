@@ -1,0 +1,17 @@
+# Review entries before creating ~/.local/share/sd/commands.yaml.
+# This example is not installed automatically.
+# Use owned regular files without group/world writes.
+# The lightweight YAML reader uses inline objects at the second level.
+# Add system_item only after selecting the standing item in your database.
+# A worktree entry's argv[0] is an absolute path on THIS machine and is
+# hashed into entry_sha256; edit plan-item's to your own checkout, or the
+# entry is dropped. Native control/supervisor entries name `sd` instead
+# because they never exec a file.
+version: 1
+commands:
+  git-status: {"label": "Inspect checkout status", "argv": ["/usr/bin/git", "status", "--short"], "screens": ["item", "operations"], "mutates": false, "scope": "worktree"}
+  cancel-attempt: {"label": "Cancel selected attempt", "argv": ["sd", "runner", "cancel", "{assignment}"], "screens": ["item", "operations"], "mutates": true, "scope": "control", "operation": "cancel", "placeholders": {"assignment": "assignment"}}
+  resume-checkout: {"label": "Resume kept checkout", "argv": ["sd", "worktree", "resume", "{assignment}"], "screens": ["item", "operations"], "mutates": true, "scope": "supervisor", "operation": "resume", "placeholders": {"assignment": "assignment"}}
+  requeue-attempt: {"label": "Requeue selected attempt", "argv": ["sd", "runner", "requeue", "{assignment}"], "screens": ["item", "operations"], "mutates": true, "scope": "supervisor", "operation": "requeue", "placeholders": {"assignment": "assignment"}}
+  restore-output: {"label": "Restore retained output", "argv": ["sd", "worktree", "restore", "{assignment}", "--destination", "{destination}"], "screens": ["item", "operations"], "mutates": true, "scope": "supervisor", "operation": "restore", "placeholders": {"assignment": "assignment", "destination": "destination"}}
+  plan-item: {"label": "Write the planning documents", "argv": ["/path/to/system-tools/local-sd-plan/sd-plan.sh", "item", "{item}"], "screens": ["item"], "mutates": true, "scope": "worktree", "placeholders": {"item": "item"}}

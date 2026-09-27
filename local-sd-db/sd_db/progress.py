@@ -1,0 +1,388 @@
+"""Stable artifact links, explicit work completion, and tracker freshness.
+
+    Local task progress never requires a tracker call. Delivering code is a
+    different operation: its exact commit is verified against the repository
+    before a completion receipt is written. Cached issue state authorizes none
+    of these writes.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import subprocess
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+
+from . import paths
+from .database import transaction
+from .repos import same_remote
+from .shadow_sync import read_watermark
+from .workflow import WorkflowError, _checked_state, _text, item_state
+from .writes import _transition, add_note, set_item_fields, stamp
+from .writes import now as current_time
+
+
+def _work_guard(connection: sqlite3.Connection, row: dict) -> str:
+    if row["kind"] != "work":
+        return "this operation is for work items; ordinary tasks use task controls"
+    owner = connection.execute("SELECT status_source FROM repo WHERE path = ?", (row["repo"],)).fetchone()
+    if owner is None or owner["status_source"] != "row":
+        return "work belongs to its current source owner until database cutover completes"
+    active = connection.execute(
+        "SELECT id FROM assignment WHERE item = ? AND status IN ('queued', 'running', 'ending') LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+    if active:
+        return f"item {row['id']} has queued, running or ending assignment {active['id']}"
+    return ""
+
+
+def work_controls(connection: sqlite3.Connection, item: int) -> dict:
+    """Render the same availability that the mutation checks under its lock."""
+    row = item_state(connection, item)["item"]
+    reason = _work_guard(connection, row)
+    return {"cancel": not reason and row["status"] != "done", "relink": not reason,
+            "deliver": not reason and row["status"] != "done", "reason": reason}
+
+
+def _work(connection: sqlite3.Connection, item: int, expected_revision: str | None) -> dict:
+    state = _checked_state(connection, item, expected_revision)
+    reason = _work_guard(connection, state["item"])
+    if reason:
+        raise WorkflowError(reason)
+    return state
+
+
+def _relative(path: str) -> str:
+    value = _text(path, "path")
+    parsed = PurePosixPath(value)
+    if parsed.is_absolute() or ".." in parsed.parts or str(parsed) in (".", "") or "\\" in value:
+        raise WorkflowError("artifact path must be relative to its registered repository without '..'")
+    return parsed.as_posix()
+
+
+def item_for_artifact(connection: sqlite3.Connection, repo: str, path: str) -> sqlite3.Row | None:
+    """Resolve exact current links first, retaining original import identity.
+
+    An archive move with the same slug may still be found through its original
+    identity. A renamed artifact is linked explicitly by item ID. Titles are
+    not identities and are never compared.
+    """
+    path = _relative(path)
+    # Every stored form of the repository: the key, and the absolute form a
+    # row written before migration 014 holds (sd:1439).
+    probe = paths.keys(repo)
+    marks = paths.placeholders(probe)
+    rows = list(connection.execute(
+        f"SELECT * FROM item WHERE kind = 'work' AND repo IN ({marks}) AND path = ? ORDER BY id",
+        (*probe, path),
+    ))
+    if len(rows) > 1:
+        raise WorkflowError(f"artifact {path!r} is linked to multiple items; resolve the ambiguity by item ID")
+    if rows:
+        return rows[0]
+    parts = PurePosixPath(path).parts
+    if len(parts) < 4 or parts[:2] != ("docs", "work") or parts[-1] != "prd.md":
+        return None
+    identities = tuple(f"{key}::docs/work/{parts[-2]}/prd.md" for key in probe)
+    rows = list(connection.execute(
+        f"SELECT * FROM item WHERE kind = 'work' AND repo IN ({marks}) AND source = 'docs/work' "
+        f"AND external_id IN ({marks}) ORDER BY id", (*probe, *identities),
+    ))
+    if len(rows) > 1:
+        raise WorkflowError(f"artifact {path!r} has ambiguous original identity")
+    if not rows:
+        return None
+    # An explicit relink is authoritative. The legacy key must not make the
+    # retired old location look like a second current copy of the item.
+    fields = _fields(rows[0]["fields"])
+    if fields.get("artifact_link") and rows[0]["path"] != path:
+        return None
+    return rows[0]
+
+
+def _fields(raw: str | None) -> dict:
+    if raw is None:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        raise WorkflowError("item metadata is malformed; repair it before changing progress") from None
+    if not isinstance(value, dict):
+        raise WorkflowError("item metadata must be an object")
+    return value
+
+
+def _moment(value: str | None) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+
+def completion_record(row) -> dict | None:
+    """A valid local receipt, bound to this completed item and repository.
+
+    This checks the persisted evidence shape, not a second live delivery.
+    Only deliver_work and cancel_work create these through user controls.
+    The receipt's repository is compared in the row's keyed form, so a
+    receipt written before migration 014 still binds; the stored receipt
+    is returned unchanged.
+    """
+    try:
+        value = _fields(row["fields"]).get("completion")
+        if not isinstance(value, dict) or row["kind"] != "work" or row["status"] != "done":
+            return None
+        if (type(value.get("item")) is not int or value["item"] != row["id"]
+                or not paths.same_key(value.get("repo"), row["repo"])):
+            return None
+        if not row["repo"] or _moment(value.get("at")) is None or not isinstance(value.get("who"), str) or not value["who"].strip():
+            return None
+        if value.get("outcome") == "cancelled":
+            return value if isinstance(value.get("reason"), str) and value["reason"].strip() and row["shipped_at"] is None else None
+        if value.get("outcome") != "delivered":
+            return None
+        if any(not isinstance(value.get(key), str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value[key]) is None
+               for key in ("commit", "verified_tip")):
+            return None
+        if not isinstance(value.get("verified_ref"), str) or not value["verified_ref"]:
+            return None
+        return value if _moment(value.get("shipped_at")) is not None and row["shipped_at"] == value["shipped_at"] else None
+    except (KeyError, IndexError, WorkflowError):
+        return None
+
+
+def relink_artifact(
+    connection: sqlite3.Connection, item: int, path: str, *,
+    who: str, expected_revision: str | None = None,
+) -> dict:
+    """Change the current artifact path while keeping the row's source key."""
+    who = _text(who, "who")
+    relative = _relative(path)
+    with transaction(connection):
+        state = _work(connection, item, expected_revision)
+        row = state["item"]
+        root = paths.expand(row["repo"]).resolve()
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            raise WorkflowError("artifact must be an existing file inside its registered repository")
+        other = connection.execute(
+            "SELECT id FROM item WHERE repo = ? AND path = ? AND id != ? LIMIT 1",
+            (row["repo"], relative, item),
+        ).fetchone()
+        if other:
+            raise WorkflowError(f"artifact is already linked to item {other['id']}")
+        if relative == row["path"]:
+            return state
+        fields = _fields(row["fields"])
+        fields["artifact_link"] = {"path": relative, "at": current_time(), "who": who}
+        set_item_fields(connection, item, path=relative, fields=fields)
+        add_note(connection, item, "decision",
+                 f"Relinked artifact from {row['path'] or '(none)'} to {relative} by {who}", session=who)
+        return item_state(connection, item)
+
+
+def cancel_work(
+    connection: sqlite3.Connection, item: int, *, reason: str, who: str,
+    expected_revision: str | None = None,
+) -> dict:
+    """Explicitly cancel local work without pretending it shipped."""
+    who = _text(who, "who")
+    reason = _text(reason, "reason")
+    with transaction(connection):
+        state = _work(connection, item, expected_revision)
+        row = state["item"]
+        fields = _fields(row["fields"])
+        previous = completion_record(row) or {}
+        if row["status"] == "done":
+            if isinstance(previous, dict) and previous.get("outcome") == "cancelled":
+                return state
+            raise WorkflowError("completed work cannot be reclassified as cancelled")
+        fields["completion"] = {
+            "outcome": "cancelled", "item": item, "repo": row["repo"],
+            "at": current_time(), "who": who, "reason": reason,
+        }
+        set_item_fields(connection, item, fields=fields)
+        _transition(connection, item, "done", who=who, reason=f"cancelled: {reason}")
+        return item_state(connection, item)
+
+
+def _git(root: Path, *args: str, input: str | None = None) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args], input=input, capture_output=True,
+            text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise WorkflowError(f"could not verify delivery with git: {error}") from None
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise WorkflowError(f"delivery verification failed: {detail[0] if detail else 'git returned no answer'}")
+    return result.stdout.strip()
+
+
+def _delivery_evidence(row: dict, commit: str, *, verification_root: Path | None = None,
+                       registered_remote: str | None = None) -> dict:
+    root = verification_root or paths.expand(row["repo"])
+    if not root.is_dir():
+        raise WorkflowError("registered repository is unavailable; delivery cannot be verified")
+    if verification_root is not None:
+        origin = _git(root, "remote", "get-url", "origin")
+        if not same_remote(origin, registered_remote):
+            raise WorkflowError("verification clone origin does not match the registered repository")
+    remotes = _git(root, "remote").splitlines()
+    if remotes:
+        remote = "origin" if "origin" in remotes else remotes[0]
+        head = _git(root, "ls-remote", "--symref", remote, "HEAD").splitlines()
+        references = [line.split("\t", 1)[0][5:] for line in head if line.startswith("ref: ")]
+        tips = [line.split("\t", 1)[0] for line in head if not line.startswith("ref: ")]
+        if len(references) != 1 or len(tips) != 1 or not references[0].startswith("refs/heads/"):
+            raise WorkflowError("remote default branch could not be verified")
+        reference, advertised = references[0], tips[0]
+        _git(root, "fetch", "--no-tags", remote, reference)
+        tip = _git(root, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+        if tip != advertised:
+            raise WorkflowError("remote default branch changed during verification; retry against its current tip")
+        verified_ref = f"{remote}/{reference}"
+    else:
+        # A repository without a remote still has a default branch; a feature
+        # branch's unpublished delivery trailer cannot stand in for that tip.
+        branch = _git(root, "symbolic-ref", "--quiet", "HEAD")
+        if branch not in ("refs/heads/main", "refs/heads/master"):
+            raise WorkflowError("local-only delivery must be verified on main or master")
+        tip = _git(root, "rev-parse", "--verify", "HEAD^{commit}")
+        verified_ref = branch
+    actual = _git(root, "rev-parse", "--verify", f"{commit}^{{commit}}")
+    if actual != commit:
+        raise WorkflowError("delivery requires the exact full commit ID")
+    try:
+        _git(root, "merge-base", "--is-ancestor", commit, tip)
+    except WorkflowError:
+        raise WorkflowError("delivery commit is not reachable from the verified default branch") from None
+    message = _git(root, "show", "-s", "--format=%B", commit)
+    trailers = _git(root, "interpret-trailers", "--parse", input=message)
+    wanted = {f"sd:{row['id']}"}
+    external = row["external_id"] or ""
+    if row["source"] == "docs/work" and "::docs/work/" in external:
+        original = PurePosixPath(external.split("::", 1)[1])
+        if original.name == "prd.md":
+            wanted.add(original.parent.name)
+    delivered = {line.partition(":")[2].strip() for line in trailers.splitlines()
+                 if line.partition(":")[0].lower() == "delivers"}
+    if not delivered.intersection(wanted):
+        raise WorkflowError(f"commit carries no Delivers trailer for sd:{row['id']} or its original source slug")
+    return {"commit": commit, "verified_ref": verified_ref, "verified_tip": tip,
+            "shipped_at": stamp(_git(root, "show", "-s", "--format=%cI", commit))}
+
+
+def deliver_work(
+    connection: sqlite3.Connection, item: int, commit: str, *, who: str,
+    expected_revision: str | None = None, verification_root: Path | str | None = None,
+) -> dict:
+    """Verify a delivered commit, then atomically record completion evidence."""
+    who = _text(who, "who")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
+        raise WorkflowError("delivery requires a full lowercase commit ID")
+    # Network latency does not hold SQLite's writer lock. The revision read
+    # here is rechecked after verification even if the CLI supplied no token.
+    initial = _work(connection, item, expected_revision)
+    previous = completion_record(initial["item"]) or {}
+    if initial["item"]["status"] == "done":
+        if isinstance(previous, dict) and previous.get("outcome") == "delivered":
+            return initial
+        raise WorkflowError("cancelled or previously completed work cannot be reclassified as delivered")
+    if verification_root is None:
+        evidence = _delivery_evidence(initial["item"], commit)
+    else:
+        registered = connection.execute("SELECT remote FROM repo WHERE path = ?", (initial["item"]["repo"],)).fetchone()
+        evidence = _delivery_evidence(initial["item"], commit, verification_root=Path(verification_root).resolve(),
+                                      registered_remote=registered["remote"] if registered else None)
+    return _complete_delivery(connection, item, initial["revision"], evidence, who=who)
+
+
+def _complete_delivery(connection: sqlite3.Connection, item: int, revision: str,
+                       evidence: dict, *, who: str) -> dict:
+    """One completion primitive, after live verification or a validated runner proof."""
+    with transaction(connection):
+        state = _work(connection, item, revision)
+        fields = _fields(state["item"]["fields"])
+        fields["completion"] = {"outcome": "delivered", "item": item, "repo": state["item"]["repo"],
+                                "at": current_time(), "who": who, **evidence}
+        set_item_fields(connection, item, fields=fields, shipped_at=evidence["shipped_at"])
+        _transition(connection, item, "done", who=who, reason=f"delivered at {evidence['commit']} on {evidence['verified_ref']}")
+        return item_state(connection, item)
+
+
+def tracker_freshness(
+    connection: sqlite3.Connection, tracker: str = "github", *,
+    now: datetime | None = None, max_age_seconds: int = 86400,
+) -> dict:
+    """Describe collector health; old unchanged shadow rows can still be current."""
+    moment = now or datetime.now(UTC)
+    if moment.tzinfo is None or type(max_age_seconds) is not int or max_age_seconds < 0:
+        raise WorkflowError("freshness needs an aware time and nonnegative maximum age")
+    success = read_watermark(connection, tracker)
+    parsed = _moment(success)
+    age = max(0, int((moment - parsed).total_seconds())) if parsed else None
+    state = "never" if parsed is None else "fresh" if age <= max_age_seconds else "stale"
+    latest = connection.execute(
+        "SELECT timestamp, body FROM state WHERE kind = 'heartbeat' AND key = ? "
+        "ORDER BY timestamp DESC, id DESC LIMIT 1", (f"tracker-sync:{tracker}",),
+    ).fetchone()
+    reason = ""
+    attempted = None
+    if latest:
+        attempted = latest["timestamp"]
+        attempt_time = _moment(attempted)
+        try:
+            body = json.loads(latest["body"] or "{}")
+        except (TypeError, ValueError):
+            body = {}
+        if isinstance(body, dict) and body.get("ok") is False and (
+            parsed is None or attempt_time is not None and attempt_time >= parsed
+        ):
+            state = "degraded"
+            reason = body.get("reason") or "Latest tracker refresh failed"
+    return {"tracker": tracker, "state": state, "last_success_at": success,
+            "last_attempt_at": attempted, "age_seconds": age,
+            "max_age_seconds": max_age_seconds, "reason": reason}
+
+
+def tracker_items(
+    connection: sqlite3.Connection, *, tracker: str = "github",
+    repo: str | None = None, state: str | None = "open",
+) -> list[dict]:
+    """Cached external context, never a source of local task status.
+
+    Complete contribution observations retain match reasons and attention.
+    Older shadow-only entries still have no inferred match reason.
+    """
+    predicates = ["tracker = ?"]
+    values = [tracker]
+    if repo is not None:
+        predicates.append("repo = ?")
+        values.append(repo)
+    if state is not None:
+        predicates.append("LOWER(state) = LOWER(?)")
+        values.append(state)
+    rows = connection.execute(
+        f"SELECT * FROM shadow WHERE {' AND '.join(predicates)} ORDER BY last_seen DESC, id ASC", values,
+    )
+    from .contributions import ISSUE, projection, snapshot
+
+    attention = {value["url"]: value for value in projection(connection, repo=repo) if value["url"]}
+    result = []
+    for row in rows:
+        value = {**dict(row), "why": []}
+        if tracker == "github" and row["url"] in attention:
+            contribution = attention[row["url"]]
+            # An issue's observation lives under `issue:`; `_key` refuses it as `github:`.
+            prefix = "issue:" if ISSUE.fullmatch(row["url"]) else "github:"
+            observed = snapshot(connection, prefix + row["url"])["observation"] or {}
+            value.update(why=observed.get("why", []), needs_you=contribution["needs_you"],
+                         attention=contribution["reasons"], contribution_lane=contribution["lane"])
+        result.append(value)
+    return result

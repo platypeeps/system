@@ -1,0 +1,22 @@
+# Nightly verified SQLite snapshot of the sd workflow database, through the
+# shared backup entrypoint (`sd-db.sh backup`), including its independent
+# failure notification, before other nightly jobs.
+#
+# THE SNAPSHOT goes to /Volumes/local/Backup/sd-backups by default, a disk
+# attached to this Mac. `--require-mount /Volumes/local` is asked before
+# anything is written: with the disk detached, /Volumes/local is an ordinary
+# directory on the boot disk, and a snapshot written there restores and
+# compares perfectly on the disk it was meant to leave. The refusal exits 1
+# and mails through sd-db.sh. SD_DB_BACKUP_DESTINATION overrides the root, for
+# a machine whose disk is mounted elsewhere or a one-off run to a local path;
+# an operator who names the destination has answered the mount question.
+#
+# An off-machine copy is not part of this job. To chain one after the
+# snapshot (so it never reads a half-written snapshot directory), put a
+# same-named sd-db-backup.job in a CRON_JOBS_EXTRA_DIRS directory; it
+# overrides this one.
+JOB_SCHEDULE="10 2 * * *"
+SD_DB_BACKUP_MOUNT=""
+[ -n "${SD_DB_BACKUP_DESTINATION:-}" ] || SD_DB_BACKUP_MOUNT=" --require-mount /Volumes/local"
+JOB_COMMAND="\"$ROOT/../local-sd-db/sd-db.sh\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep all"
+unset SD_DB_BACKUP_MOUNT

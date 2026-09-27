@@ -1,0 +1,149 @@
+"""`sd-db.sh backup`. Prints what it did; raises what it could not do."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+from ..backup import run
+from ..database import connect
+from ..errors import BackupError, SdDbError
+from ..retention import prune
+
+
+#: The job's exit code when the BACKUP PASSED but the SOURCE is referentially
+#: broken. It is not 1, because 1 means the documented failure -- the library
+#: raised, nothing was written, no prune ran -- and `sd-db.sh` mails that as
+#: "sd-db backup FAILED". This run wrote a snapshot and verified it; calling it
+#: a failed backup sends the operator looking for a snapshot that is on disk.
+#: It is not 0 either: 0 is silent, and three silent nights over six orphan
+#: rows is exactly what sd:744 was.
+#:
+#: It claims nothing about the checkpoint or the prune. BOTH returns below can
+#: reach it, and the read-only-before-`migrate` path took neither -- it says
+#: "prune skipped" on the same line. The summary says which ran; the exit code
+#: carries the finding and only the finding.
+#:
+#: It is not 2, and that is the reason for the gap in the numbering.
+#: `argparse` exits 2 for a usage error, so `--keep nope` leaves `main`
+#: unreached, and `sd-db.sh` reads a status and not a traceback. On 2 the two
+#: are indistinguishable and a typo mails "the source is referentially
+#: broken".
+BROKEN_SOURCE = 3
+
+
+def retention(value: str) -> int | None:
+    if value == "all":
+        return None
+    if value.isascii() and value.isdecimal():
+        return int(value)
+    raise argparse.ArgumentTypeError("keep must be 'all' or a nonnegative integer")
+
+
+def days(value: str) -> int:
+    if value.isascii() and value.isdecimal() and int(value) > 0:
+        return int(value)
+    raise argparse.ArgumentTypeError("keep-days must be a positive integer")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Create a verified backup; preserve every backup by default.")
+    parser.add_argument("--destination", type=Path, default=None, metavar="PATH",
+                        help="write backups under PATH instead of /Volumes/local/Backup/sd-backups, "
+                             "which is refused while /Volumes/local is not mounted")
+    kept = parser.add_mutually_exclusive_group()
+    kept.add_argument("--keep", type=retention, default=None, metavar="all|N",
+                      help="all disables deletion; N retains that many verified owned backups")
+    kept.add_argument("--keep-days", type=days, default=None, metavar="N",
+                      help="delete verified owned backups taken more than N days ago")
+    parser.add_argument("--require-mount", type=Path, default=None, metavar="PATH",
+                        help="refuse, writing nothing, unless PATH is a mounted volume "
+                             "and the destination is on it")
+    parser.add_argument("--no-row-prune", action="store_true",
+                        help="skip the nightly row prune and its report item; for a "
+                             "backup taken more often than nightly")
+    arguments = parser.parse_args(argv)
+    home = Path(os.environ.get("HOME", "~")).expanduser()
+    try:
+        snapshot = run(home=home, destination=arguments.destination, keep=arguments.keep,
+                       keep_days=arguments.keep_days, mount=arguments.require_mount)
+    except BackupError as failure:
+        print(f"sd-db backup: {failure}", file=sys.stderr)
+        return 1
+    rows = sum(snapshot.counts.values())
+    beside = ", ".join(snapshot.configuration) or "no configuration files"
+    # A referentially broken source is a finding about the store, not a failed
+    # backup: the snapshot is on disk and is verified. It is NOT the thing to
+    # recover from -- `_check_restore` refuses a candidate carrying orphans,
+    # so the snapshot is a forensic copy until the source is repaired and a
+    # later night copies a clean store. The finding therefore rides on the end
+    # of the normal summary rather than replacing it, and goes to stderr under
+    # `BROKEN_SOURCE`, which is neither the prune failure's 1 nor `argparse`'s
+    # 2. Exit 0 was the actual defect in sd:744: three nightly runs said
+    # "restored and compared" and nobody had a reason to read the log for
+    # three days.
+    broken = ""
+    if snapshot.violations:
+        where = ", ".join(sorted({str(row[0]) for row in snapshot.violations}))
+        broken = (f"; BROKEN: {len(snapshot.violations)} foreign key "
+                  f"violation(s) in the source, in {where}")
+    stream = sys.stderr if snapshot.violations else sys.stdout
+    if not snapshot.checkpointed:
+        # The source could not be written: it waits for `migrate`. The copy
+        # is on disk and compared by counts; the prune is a write and the
+        # retention table would refuse a snapshot no checkpoint row proves,
+        # so neither runs, and `--keep` never counts this directory.
+        print(
+            f"sd-db backup: {snapshot.directory} — {rows} row(s) across "
+            f"{len(snapshot.counts)} table(s), compared by counts; {beside}; taken read-only "
+            f"before `migrate`, so no checkpoint row proves it and retention will not own it; "
+            f"prune skipped{broken}",
+            file=stream,
+        )
+        return BROKEN_SOURCE if snapshot.violations else 0
+    if arguments.no_row_prune:
+        # An hourly backup is not a night. The row prune files one `report`
+        # item per run, so running it every hour would put 24 of them a day
+        # in `planning` -- the accumulation `retention` exists to settle. The
+        # nightly job still runs it; this run only takes and keeps snapshots.
+        print(
+            f"sd-db backup: {snapshot.directory} — {rows} row(s) across "
+            f"{len(snapshot.counts)} table(s), restored and compared; {beside}; "
+            f"{len(snapshot.removed)} old snapshot(s) removed; row prune skipped "
+            f"(--no-row-prune){broken}",
+            file=stream,
+        )
+        return BROKEN_SOURCE if snapshot.violations else 0
+    # The nightly row prune runs here and nowhere earlier: `run` raised on
+    # anything short of a restored-and-compared snapshot, so reaching this
+    # line is the backup having passed. A prune that fails is the job
+    # failing -- the backup is on disk either way, and the mail says which.
+    try:
+        connection = connect(home=home)
+        try:
+            pruned = prune(connection, snapshot)
+        finally:
+            connection.close()
+    except (OSError, SdDbError) as failure:
+        # `{broken}` belongs here as much as on the success line. Without it a
+        # night that both failed to prune AND found orphans reports only the
+        # prune, and the finding this whole change exists to surface is the
+        # one thing the mail does not say.
+        print(f"sd-db backup: the backup passed at {snapshot.directory}; "
+              f"the prune did not run: {failure}{broken}",
+              file=sys.stderr)
+        return 1
+    print(
+        f"sd-db backup: {snapshot.directory} — {rows} row(s) across "
+        f"{len(snapshot.counts)} table(s), restored and compared; {beside}; "
+        f"{len(snapshot.removed)} old snapshot(s) removed; pruned: {pruned} "
+        f"(report #{pruned.report}){broken}",
+        file=stream,
+    )
+    return BROKEN_SOURCE if snapshot.violations else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
