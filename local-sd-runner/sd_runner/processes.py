@@ -111,32 +111,36 @@ def holders(path: Path) -> set[int]:
     return {int(line[1:]) for line in done.stdout.splitlines() if line.startswith("p") and line[1:].isdigit()}
 
 
-def _changed_credentials(pid: int) -> bool:
-    """Whether a Linux process runs with real and effective ids that differ."""
-    try:
-        lines = Path(f"/proc/{pid}/status").read_text().splitlines()
-    except OSError:
+def _started_before(pid: int, since: str | None) -> bool:
+    """Whether a Linux process started before the kernel start identity `since`.
+
+    Both identities are `linux:<boot id>:<start ticks>`, as `start_identity`
+    writes them. A different boot, or an identity that cannot be read,
+    answers False.
+    """
+    own = start_identity(pid)
+    if not own or not since:
         return False
-    for line in lines:
-        name, _, values = line.partition(":")
-        if name in {"Uid", "Gid"} and len(set(values.split()[:3])) > 1:
-            return True
-    return False
+    own_boot, _, own_ticks = own.removeprefix("linux:").rpartition(":")
+    boot, _, ticks = since.removeprefix("linux:").rpartition(":")
+    return own.startswith("linux:") and since.startswith("linux:") and own_boot == boot \
+        and own_ticks.isdigit() and ticks.isdigit() and int(own_ticks) < int(ticks)
 
 
-def marked(pid: int, ident: str) -> bool:
+def marked(pid: int, ident: str, since: str | None = None) -> bool:
     if sys.platform.startswith("linux"):
         try:
             return f"SD_ASSIGNMENT={ident}".encode() in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
         except FileNotFoundError:
             return False
         except PermissionError:
-            # A process that exec'd a setuid or setgid program (ssh-agent is
-            # setgid on Ubuntu) is not dumpable, so its environ is unreadable
-            # even to its own user. macOS `ps eww` hides the same environment
-            # and reads it as unmarked; do the same here. Any other unreadable
-            # environ still refuses.
-            if _changed_credentials(pid):
+            # A process that changed credentials without an exec is not
+            # dumpable, so even its own user cannot read its environ:
+            # GitHub's Ubuntu runner has one from boot. The environment is
+            # fixed when a program starts, so a process that started before
+            # the run's supervisor cannot carry the run's marker. Any other
+            # unreadable environ still refuses.
+            if _started_before(pid, since):
                 return False
             raise RunnerRefused(f"cannot inspect owned user process {pid}") from None
     done = subprocess.run(["ps", "eww", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=10, check=False)
@@ -161,7 +165,7 @@ def survivors(run: dict) -> list[dict]:
         if row["pid"] == os.getpid():
             continue
         group = run.get("supervisor_pgid") and row["pgid"] == run["supervisor_pgid"]
-        tagged = row["uid"] == os.getuid() and (row["pid"] in tagged_pids if sys.platform == "darwin" else marked(row["pid"], run["id"]))
+        tagged = row["uid"] == os.getuid() and (row["pid"] in tagged_pids if sys.platform == "darwin" else marked(row["pid"], run["id"], run.get("supervisor_start")))
         if group or tagged or row["pid"] in held:
             result.append({**row, "ownership": "group" if group else "marker" if tagged else "holder"})
     return result

@@ -147,46 +147,39 @@ class NativeLsof(unittest.TestCase):
             self.assertIn(holder.pid, processes.holders(clone))
 
 
-class FakeProc:
-    """A /proc whose environ files are unreadable and whose status is given."""
+def unreadable_environ(path):
+    """A /proc entry whose environ belongs to a process that is not dumpable."""
 
-    def __init__(self, status):
-        self.status = status
+    class Entry:
+        def read_bytes(self):
+            raise PermissionError(13, "Permission denied", path)
 
-    def __call__(self, path):
-        fake = self
-
-        class Entry:
-            def read_bytes(self):
-                raise PermissionError(13, "Permission denied", path)
-
-            def read_text(self):
-                if fake.status is None:
-                    raise PermissionError(13, "Permission denied", path)
-                return fake.status
-
-        return Entry()
+    return Entry()
 
 
 class UnreadableEnviron(unittest.TestCase):
-    def marked(self, status):
-        with patch.object(processes.sys, "platform", "linux"), patch.object(processes, "Path", FakeProc(status)):
-            return processes.marked(4242, "run-1")
+    SUPERVISOR = "linux:boot-a:5000"
 
-    def test_setgid_process_reads_as_unmarked(self):
-        # ssh-agent on an Ubuntu CI runner: same user, setgid, not dumpable.
-        self.assertFalse(self.marked("Name:\tssh-agent\nUid:\t1001\t1001\t1001\t1001\nGid:\t1001\t111\t111\t111\n"))
+    def marked(self, started, since=SUPERVISOR):
+        with patch.object(processes.sys, "platform", "linux"), \
+                patch.object(processes, "Path", unreadable_environ), \
+                patch.object(processes, "start_identity", return_value=started):
+            return processes.marked(4242, "run-1", since)
 
-    def test_setuid_process_reads_as_unmarked(self):
-        self.assertFalse(self.marked("Uid:\t1001\t0\t0\t0\nGid:\t1001\t1001\t1001\t1001\n"))
+    def test_process_older_than_the_supervisor_reads_as_unmarked(self):
+        # GitHub's Ubuntu runner: a same-user process from boot, not dumpable.
+        self.assertFalse(self.marked("linux:boot-a:120"))
 
-    def test_unchanged_credentials_still_refuse(self):
+    def test_process_younger_than_the_supervisor_still_refuses(self):
         with self.assertRaisesRegex(RunnerRefused, "cannot inspect owned user process 4242"):
-            self.marked("Uid:\t1001\t1001\t1001\t1001\nGid:\t1001\t1001\t1001\t1001\n")
+            self.marked("linux:boot-a:5001")
 
-    def test_unreadable_status_still_refuses(self):
-        with self.assertRaisesRegex(RunnerRefused, "cannot inspect owned user process 4242"):
-            self.marked(None)
+    def test_other_boot_unknown_start_or_no_supervisor_still_refuses(self):
+        for started, since in (("linux:boot-b:120", self.SUPERVISOR), (None, self.SUPERVISOR),
+                               ("linux:boot-a:120", None), ("linux:boot-a:x", self.SUPERVISOR)):
+            with self.subTest(started=started, since=since):
+                with self.assertRaisesRegex(RunnerRefused, "cannot inspect owned user process 4242"):
+                    self.marked(started, since)
 
 
 if __name__ == "__main__":
