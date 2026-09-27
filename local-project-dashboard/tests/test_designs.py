@@ -58,6 +58,11 @@ class Resolve(unittest.TestCase):
         """`../../../foundation/tokens.css` from the page is this path in the tree."""
         self.assertEqual(self.resolve("foundation/tokens.css")[1], "text/css; charset=utf-8")
 
+    def test_a_shared_script_resolves_as_javascript(self):
+        """A v2 mockup loads `../../../../foundation/theme.js` and its shell as scripts."""
+        (self.root / "foundation" / "theme.js").write_text("//", encoding="utf-8")
+        self.assertEqual(self.resolve("foundation/theme.js")[1], "text/javascript; charset=utf-8")
+
     def test_a_screenshot_resolves_as_an_image(self):
         self.assertEqual(self.resolve("products/system/designs/shots/v1.png")[1], "image/png")
 

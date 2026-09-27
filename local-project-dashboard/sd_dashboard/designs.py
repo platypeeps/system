@@ -20,7 +20,9 @@ must still sit under the resolved root; a symlink that points out is a 404.
 **A mockup runs sandboxed.** Its page carries `sandbox allow-scripts`, which
 gives it an opaque origin: its script runs, but it reads no dashboard cookie and
 calls no dashboard endpoint as the operator. `connect-src` and `form-action` are
-closed as well. Because that origin is opaque, the mockup's own stylesheet and
+closed as well, so a mockup that needs data ships it as a script, not a fetch.
+Shared scripts (`foundation/theme.js`, a product's shell) are served like its
+stylesheet: they run inside that sandbox, with the page's policy. Because that origin is opaque, the mockup's own stylesheet and
 images reach it as cross-origin loads, so asset responses carry
 `Cross-Origin-Resource-Policy: cross-origin` instead of the dashboard's
 `same-origin`. They are design assets from one checkout, behind the same host
@@ -52,6 +54,7 @@ PRODUCTS = "products"
 TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
