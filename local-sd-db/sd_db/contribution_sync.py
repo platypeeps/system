@@ -16,19 +16,20 @@ from .writes import record_state, resolve_state
 QUEUE = "contribution-refresh-queue"
 MAX_NOTIFICATIONS = 5
 
-#: The fewest requests one complete observation makes, so the loop stops
-#: before an attempt that cannot finish. A pull reads itself, its reviews,
-#: comments, inline comments, timeline, check runs and statuses, then itself
-#: again; an issue reads itself, its comments and its timeline, then itself
-#: again. A merge dependency reads its pull, a release one adds the release,
+#: The requests one complete, unpaginated observation can make, so the loop
+#: stops before an attempt that cannot finish. A pull reads itself, its
+#: reviews, comments, inline comments, timeline, check runs and statuses,
+#: then itself again, plus its head's workflow runs when its check names
+#: repeat (sd:1776); an issue reads itself, its comments and its timeline,
+#: then itself again. A merge dependency reads its pull, a release one adds the release,
 #: the tag ref, one peel, the comparison, PyPI and the ref again, and an
 #: issue one reads the issue and, unless that is closed as completed, one
 #: page of the pull requests referencing it. An `item` dependency is
 #: resolved in-process and priced so, not left out: `_cost` refuses a kind
 #: this table does not name rather than reserving nothing for it.
-#: Pagination costs more; an attempt the floor underestimates fails on the
+#: Pagination costs more; an attempt the table underestimates fails on the
 #: budget, is held on its own key, and rotates to the next run.
-PULL_REQUESTS = 8
+PULL_REQUESTS = 9
 ISSUE_REQUESTS = 4
 DEPENDENCY_REQUESTS = {"item": 0, "merge": 1, "release": 7, "issue": 2}
 

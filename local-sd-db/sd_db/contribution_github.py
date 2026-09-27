@@ -67,6 +67,10 @@ class Unavailable(ValueError):
     """An observation is incomplete and must not replace the last good state."""
 
 
+class Exhausted(Unavailable):
+    """The collection's request or time budget is spent."""
+
+
 @dataclass
 class Response:
     status: int
@@ -83,7 +87,7 @@ class Client:
     def request(self, path, *, fields=None, missing=False):
         left = self.budget.deadline - time.monotonic()
         if self.budget.remaining <= 0 or left <= 0:
-            raise Unavailable("contribution collection budget exhausted")
+            raise Exhausted("contribution collection budget exhausted")
         self.budget.remaining -= 1
         self.budget.requests += 1
         timeout = min(GH_TIMEOUT_SECONDS, left)
@@ -229,6 +233,11 @@ def _at(value):
     return value
 
 
+#: Events whose run is fixed by the head, branch and pull requests alone, so a
+#: newer run of the same workflow in the same context replaces the older one (sd:1776).
+REPLACED_BY_RERUN = frozenset({"pull_request", "push"})
+
+
 def _ci(client, prefix, head):
     runs = client.pages(f"{prefix}/commits/{head}/check-runs?filter=latest", member="check_runs")
     statuses = client.pages(f"{prefix}/commits/{head}/status", member="statuses", head=head)
@@ -236,6 +245,47 @@ def _ci(client, prefix, head):
     for run in runs:
         if run.get("head_sha") != head:
             raise Unavailable("CI response belongs to a stale head")
+    # `filter=latest` is per check suite, so a rerun on the same head (close
+    # and reopen, a body edit) starts a new suite and leaves the older one
+    # listed too (sd:1776). A rerun is a newer suite of the same workflow on
+    # the same `REPLACED_BY_RERUN` event, branch and pull requests (one head
+    # pushed to two branches, or opened against two bases, runs twice with two
+    # refs; a pull_request run listing no pull request, as from a fork, proves
+    # no context and always counts), so the newest such suite decides,
+    # whole: every job in it counts, two of one name included. Other events
+    # carry inputs or payloads (two dispatches can test two environments),
+    # and one workflow on two events is two executions: all of those count.
+    # A name alone
+    # proves no rerun, so the head's workflow runs are read only when a name
+    # repeats, and a suite no workflow run names (another CI app) keeps every
+    # run it has. The lookup is enrichment: if it fails for any reason but
+    # the spent budget, it names no suite, and every run counts.
+    # Check-suite ids grow with creation.
+    names = [(run.get("name"), (run.get("app") or {}).get("id")) for run in runs]
+    workflow = {}
+    if len(set(names)) < len(names):
+        try:
+            rows = client.pages(f"{prefix}/actions/runs?head_sha={head}", member="workflow_runs")
+        except Exhausted:
+            raise
+        except Unavailable:
+            rows = []
+        for row in rows:
+            event = row.get("event")
+            pulls = tuple(sorted((pull.get("number"), (pull.get("base") or {}).get("ref"))
+                                 for pull in row.get("pull_requests") or []))
+            if event in REPLACED_BY_RERUN and (pulls or event != "pull_request"):
+                workflow[row.get("check_suite_id")] = (
+                    row.get("workflow_id"), event, row.get("head_branch"), pulls)
+    suites = [(run.get("check_suite") or {}).get("id") for run in runs]
+    latest = {}
+    for suite in suites:
+        flow = workflow.get(suite)
+        if flow is not None and (flow not in latest or suite > latest[flow]):
+            latest[flow] = suite
+    newest = {run["id"]: run for run, suite in zip(runs, suites)
+              if workflow.get(suite) is None or latest[workflow[suite]] == suite}
+    for run in newest.values():
         status, conclusion = run.get("status"), run.get("conclusion")
         if status not in {"queued", "in_progress", "completed", "waiting", "requested", "pending"}:
             raise Unavailable("unknown check-run status")

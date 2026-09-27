@@ -123,6 +123,148 @@ class PullCollection(unittest.TestCase):
         api.rows[ROOT + f"/commits/{HEAD}/status?per_page=100"] = {"sha": HEAD, "total_count": 1, "statuses": [{"id": 8, "state": "failure"}]}
         self.assertEqual(api.observation()["ci"], "failure")
 
+    def test_newest_run_of_each_check_decides(self):
+        # Close/reopen or a body edit reruns a check on the same head (sd:1776).
+        api = Api()
+        key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+        def run(id, conclusion, name="tests", app=7, status="completed", suite=None):
+            return {"id": id, "name": name, "app": {"id": app}, "head_sha": HEAD, "status": status,
+                    "conclusion": conclusion, "check_suite": {"id": suite or id}}
+        # Each check suite above is one run of workflow 10.
+        api.rows[ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"] = lambda: {
+            "total_count": 2, "workflow_runs": [{"id": 1, "check_suite_id": 91, "workflow_id": 10, "event": "pull_request", "pull_requests": [{"number": 5, "base": {"ref": "main"}}]},
+                                                {"id": 2, "check_suite_id": 95, "workflow_id": 10, "event": "pull_request", "pull_requests": [{"number": 5, "base": {"ref": "main"}}]}]}
+        api.rows[key] = {"total_count": 2, "check_runs": [run(95, "success"), run(91, "failure")]}
+        self.assertEqual(api.observation()["ci"], "success")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:95"])
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "success"), run(95, "failure")]}
+        self.assertEqual(api.observation()["ci"], "failure")
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure"), run(95, None, status="in_progress")]}
+        self.assertEqual(api.observation()["ci"], "pending")
+        # The suite decides, not the run id: a later run in the older suite
+        # still loses to the newer suite.
+        api.rows[key] = {"total_count": 2, "check_runs": [run(99, "failure", suite=91), run(96, "success", suite=95)]}
+        self.assertEqual(api.observation()["ci"], "success")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:96"])
+        # Another app's check of the same name is its own check, not a rerun.
+        api.rows[key] = {"total_count": 2, "check_runs": [run(95, "success", app=8), run(91, "failure")]}
+        self.assertEqual(api.observation()["ci"], "failure")
+
+    def test_same_named_checks_of_different_workflows_both_count(self):
+        # Two workflows can each publish a job named `tests` through the same app.
+        api = Api()
+        key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+        def run(id, conclusion, suite):
+            return {"id": id, "name": "tests", "app": {"id": 7}, "head_sha": HEAD, "status": "completed",
+                    "conclusion": conclusion, "check_suite": {"id": suite}}
+        runs = ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, "success", 2)]}
+        api.rows[runs] = {"total_count": 2, "workflow_runs": [{"id": 1, "check_suite_id": 1, "workflow_id": 10},
+                                                              {"id": 2, "check_suite_id": 2, "workflow_id": 11}]}
+        self.assertEqual(api.observation()["ci"], "failure")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:91", "check-run:95"])
+        # A suite no workflow run names (another CI app) proves no rerun either.
+        api.rows[runs] = {"total_count": 1, "workflow_runs": [{"id": 1, "check_suite_id": 1, "workflow_id": 10}]}
+        self.assertEqual(api.observation()["ci"], "failure")
+        # A single run per name needs no workflow lookup.
+        api.rows[key] = {"total_count": 1, "check_runs": [run(95, "success", 2)]}
+        del api.rows[runs]
+        self.assertEqual(api.observation()["ci"], "success")
+
+    def test_two_jobs_of_one_name_in_one_workflow_both_count(self):
+        # A workflow can hold two jobs that display one name; neither is a rerun.
+        api = Api()
+        key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+        def run(id, conclusion, suite):
+            return {"id": id, "name": "tests", "app": {"id": 7}, "head_sha": HEAD, "status": "completed",
+                    "conclusion": conclusion, "check_suite": {"id": suite}}
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, "success", 1)]}
+        api.rows[ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"] = {
+            "total_count": 1, "workflow_runs": [{"id": 1, "check_suite_id": 1, "workflow_id": 10}]}
+        self.assertEqual(api.observation()["ci"], "failure")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:91", "check-run:95"])
+
+    def test_one_workflow_on_two_events_keeps_both_results(self):
+        # A push run and a workflow_dispatch run of one workflow on one head
+        # are two executions; the newer does not replace the older.
+        api = Api()
+        key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+        def run(id, conclusion, suite):
+            return {"id": id, "name": "tests", "app": {"id": 7}, "head_sha": HEAD, "status": "completed",
+                    "conclusion": conclusion, "check_suite": {"id": suite}}
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, "success", 2)]}
+        api.rows[ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"] = {"total_count": 2, "workflow_runs": [
+            {"id": 1, "check_suite_id": 1, "workflow_id": 10, "event": "push"},
+            {"id": 2, "check_suite_id": 2, "workflow_id": 10, "event": "workflow_dispatch"}]}
+        self.assertEqual(api.observation()["ci"], "failure")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:91", "check-run:95"])
+
+    def test_two_dispatches_of_one_workflow_keep_both_results(self):
+        # Two workflow_dispatch runs can carry different inputs: neither
+        # replaces the other, whatever their order.
+        api = Api()
+        key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+        def run(id, conclusion, suite):
+            return {"id": id, "name": "tests", "app": {"id": 7}, "head_sha": HEAD, "status": "completed",
+                    "conclusion": conclusion, "check_suite": {"id": suite}}
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, "success", 2)]}
+        api.rows[ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"] = {"total_count": 2, "workflow_runs": [
+            {"id": 1, "check_suite_id": 1, "workflow_id": 10, "event": "workflow_dispatch"},
+            {"id": 2, "check_suite_id": 2, "workflow_id": 10, "event": "workflow_dispatch"}]}
+        self.assertEqual(api.observation()["ci"], "failure")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:91", "check-run:95"])
+
+    def test_one_push_workflow_on_two_branches_keeps_both_results(self):
+        # One head pushed to two branches runs the workflow twice with two
+        # refs; the newer branch's success does not hide the other's failure.
+        api = Api()
+        key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+        def run(id, conclusion, suite):
+            return {"id": id, "name": "tests", "app": {"id": 7}, "head_sha": HEAD, "status": "completed",
+                    "conclusion": conclusion, "check_suite": {"id": suite}}
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, "success", 2)]}
+        api.rows[ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"] = {"total_count": 2, "workflow_runs": [
+            {"id": 1, "check_suite_id": 1, "workflow_id": 10, "event": "push", "head_branch": "release"},
+            {"id": 2, "check_suite_id": 2, "workflow_id": 10, "event": "push", "head_branch": "feature"}]}
+        self.assertEqual(api.observation()["ci"], "failure")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:91", "check-run:95"])
+
+    def _two_pull_request_runs(self, first, second):
+        api = Api()
+        key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+        def run(id, conclusion, suite):
+            return {"id": id, "name": "tests", "app": {"id": 7}, "head_sha": HEAD, "status": "completed",
+                    "conclusion": conclusion, "check_suite": {"id": suite}}
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, "success", 2)]}
+        api.rows[ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"] = {"total_count": 2, "workflow_runs": [
+            {"id": 1, "check_suite_id": 1, "workflow_id": 10, "event": "pull_request", "head_branch": "feature", **first},
+            {"id": 2, "check_suite_id": 2, "workflow_id": 10, "event": "pull_request", "head_branch": "feature", **second}]}
+        return api.observation()
+
+    def test_two_pull_requests_from_one_branch_keep_both_results(self):
+        # One head branch opened against two bases runs twice with two merge
+        # refs; the newer PR's success does not hide the other PR's failure.
+        seen = self._two_pull_request_runs({"pull_requests": [{"number": 5, "base": {"ref": "main"}}]},
+                                           {"pull_requests": [{"number": 6, "base": {"ref": "release"}}]})
+        self.assertEqual((seen["ci"], seen["ci_ids"]), ("failure", ["check-run:91", "check-run:95"]))
+
+    def test_pull_request_runs_without_pull_request_data_keep_both_results(self):
+        # A fork's run lists no pull requests, so nothing proves it replays the other.
+        seen = self._two_pull_request_runs({"pull_requests": []}, {})
+        self.assertEqual((seen["ci"], seen["ci_ids"]), ("failure", ["check-run:91", "check-run:95"]))
+
+    def test_an_unavailable_workflow_lookup_keeps_every_run(self):
+        for status in (403, 503):
+            with self.subTest(status=status):
+                api = Api()
+                key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+                def run(id, conclusion, suite):
+                    return {"id": id, "name": "tests", "app": {"id": 7}, "head_sha": HEAD,
+                            "status": "completed", "conclusion": conclusion, "check_suite": {"id": suite}}
+                api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, "success", 2)]}
+                api.rows[ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"] = Response(status, {}, "{}")
+                self.assertEqual(api.observation()["ci"], "failure")
+
     def test_closed_unmerged_is_collected_without_open_filter(self):
         api = Api()
         api.detail["state"] = "closed"

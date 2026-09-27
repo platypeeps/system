@@ -272,8 +272,9 @@ class ContributionSync(SyncCase):
 
     def test_details_run_until_the_request_budget_and_the_rest_stage_durably(self):
         urls = self.clone_pull(range(7, 15))
-        # 40 requests: the search spends 4, the identity 1, and a pull 8, so
-        # four details fit and the fifth is stopped before it starts.
+        # 40 requests: the search spends 4, the identity 1, and a pull 8 of
+        # the 9 it is priced at, so four details fit and the fifth is stopped
+        # before it starts.
         first = self.run_sync(urls, max_requests=40)
         self.assertTrue(first.ok, first.reason)
         self.assertEqual(first.queued, 4)
@@ -296,10 +297,12 @@ class ContributionSync(SyncCase):
         urls = self.clone_pull(range(7, 10))
         self.assertTrue(self.run_sync(urls, max_requests=100).ok)
         planned = adapter.plan(self.db)
-        client = self.api.client(requests=20)
+        # The identity spends 1 and each pull 8 of its 9; the third pull would
+        # reach into the 3 held back, so it waits with 4 unspent.
+        client = self.api.client(requests=21)
         result = adapter.refresh(self.db, planned, [], client=client, observed_at=self.now.isoformat(), reserve=3)
         self.assertEqual((result["attempted"], result["queued"], result["errors"]), (2, 1, []))
-        self.assertEqual(client.budget.remaining, 3)
+        self.assertEqual(client.budget.remaining, 4)
 
     def test_the_detail_backlog_leaves_the_protection_collector_its_requests(self):
         upsert_repo(self.db, str(Path(self.temp.name) / "fleet"), remote="git@github.com:example/fleet.git")
@@ -309,11 +312,11 @@ class ContributionSync(SyncCase):
         self.api.rows["repos/example/fleet/branches/main/protection"] = Response(404, {}, "")
         self.api.rows[protection.rules_path("example", "fleet", "main")] = []
         urls = self.clone_pull(range(7, 10))
-        # 29 requests: the search spends 4 and the identity 1, two pulls 16,
-        # and 8 are left -- enough for a third pull on its own, not with the
+        # 30 requests: the search spends 4 and the identity 1, two pulls 16,
+        # and 9 are left -- enough for a third pull on its own, not with the
         # four protection requests reserved behind it. The pull waits;
         # protection is read.
-        result = self.run_sync(urls, max_requests=29)
+        result = self.run_sync(urls, max_requests=30)
         self.assertTrue(result.ok, result.reason)
         self.assertEqual((result.queued, result.incomplete), (1, []))
         self.assertEqual(len(core.projection(self.db)), 2)
@@ -434,6 +437,24 @@ class ContributionSync(SyncCase):
         self.assertEqual(self.api.calls, [])
         self.assertEqual((result.queued, result.incomplete), (1, []))
         self.assertEqual(adapter._queue(self.db)["pending"][0]["url"], URL)
+
+    def test_a_pull_whose_check_names_repeat_is_not_started_on_eight_requests(self):
+        # A rerun leaves two `tests` runs, so the pull also reads its head's
+        # workflow runs: nine detail requests (sd:1776). The search spends 4
+        # and the identity 1; with eight left the pull waits, with nine it lands.
+        head = fixtures.HEAD
+        run = {"head_sha": head, "name": "tests", "app": {"id": 7}, "status": "completed"}
+        self.api.rows[ROOT + f"/commits/{head}/check-runs?filter=latest&per_page=100"] = {"total_count": 2, "check_runs": [
+            {**run, "id": 91, "conclusion": "failure", "check_suite": {"id": 1}},
+            {**run, "id": 95, "conclusion": "success", "check_suite": {"id": 2}}]}
+        self.api.rows[ROOT + f"/actions/runs?head_sha={head}&per_page=100"] = {"total_count": 2, "workflow_runs": [
+            {"id": 1, "check_suite_id": 1, "workflow_id": 10, "event": "pull_request", "pull_requests": [{"number": 5, "base": {"ref": "main"}}]}, {"id": 2, "check_suite_id": 2, "workflow_id": 10, "event": "pull_request", "pull_requests": [{"number": 5, "base": {"ref": "main"}}]}]}
+        result = self.run_sync([URL], max_requests=4 + 1 + 8)
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual((result.queued, result.incomplete), (1, []))
+        result = self.run_sync(max_requests=4 + 1 + 9)
+        self.assertEqual((result.queued, result.incomplete), (0, []))
+        self.assertEqual(core.snapshot(self.db, "github:" + URL)["observation"]["ci"], "success")
 
     def test_complete_release_proof_reaches_core_and_unblocks_once(self):
         fixture = fixtures.Dependencies()
