@@ -1,0 +1,74 @@
+# What local-drive-intake walks, and how it sorts what it finds. Copy to
+# ~/.config/system/drive-intake/drive-intake.conf (or
+# $SYSTEM_TOOLS_CONFIG/drive-intake/drive-intake.conf) and fill it in.
+#
+# Pipe-separated, three fields, because a Drive path contains spaces and an
+# `@` and `read -r name value` in the shell would split it in the wrong place.
+#
+#   root |<label>|<path>                 a mount to walk, `~` allowed
+#   route|<route>|<glob on rel path>     first match wins, case-insensitive
+#
+# Routes: data-export, document, correspondence, noise. Anything no rule
+# matches is noise, which is why there is no catch-all row at the bottom.
+#
+# Order is meaning. The rules run top to bottom and stop at the first hit, so
+# the narrow folder rules come before the broad extension rules.
+
+# One row per mounted Drive. The mount name carries the account address.
+root|board|~/My Drive (change-me@example.com)
+root|committee|~/My Drive (change-me@example.com)
+
+
+# --- noise first, so nothing below can claim a sync artefact -------------
+
+# The two `Reference (generated)` folders are this repo's own publish surface.
+# A file appearing there is something we put there, so it is never inbound.
+route|noise|*/reference (generated)/*
+route|noise|reference (generated)/*
+# Google Drive for Desktop's staging and placeholder files.
+route|noise|*.tmp
+route|noise|*.crdownload
+route|noise|icon*
+# Photographs. None is a document that needs reading on the day it lands. They surface through the count, not a list.
+route|noise|*.jpg
+route|noise|*.jpeg
+route|noise|*.png
+route|noise|*.heic
+route|noise|*.mp4
+route|noise|*.avi
+route|noise|*.mov
+route|noise|*.m4a
+
+# --- data export: the machine-readable feeds ----------------------------
+
+# Telemetry exports. A folder rule goes first so a whole export folder rides
+# this route whatever its file types are; an importer consumes this route.
+route|data-export|*/operations/telemetry data/*
+route|data-export|*.csv
+route|data-export|*.xlsx
+route|data-export|*.gsheet
+route|data-export|*.xls
+
+# --- correspondence and minutes -----------------------------------------
+
+# Governance paper. These are the files that carry a date somebody has to act
+# on, so they are named before the generic document rules below.
+route|correspondence|*/meetings/*
+route|correspondence|*/communications/*
+route|correspondence|*minutes*
+route|correspondence|*agenda*
+route|correspondence|*letter*
+route|correspondence|*notice*
+route|correspondence|*.eml
+route|correspondence|*.msg
+
+# --- document: everything else worth opening ----------------------------
+
+route|document|*.pdf
+route|document|*.doc
+route|document|*.docx
+route|document|*.gdoc
+route|document|*.rtf
+route|document|*.txt
+route|document|*.pptx
+route|document|*.gslides

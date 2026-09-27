@@ -1,0 +1,26 @@
+# What local-mail-intake watches. Copy to
+# ~/.config/system/mail-intake/mail-intake.conf (or
+# $SYSTEM_TOOLS_CONFIG/mail-intake/mail-intake.conf) and fill it in.
+#
+# Pipe-separated, same shape as local-drive-intake's conf.
+#
+#   account|<the Google account the workspace MCP server is authorised for>
+#   me|<an address that counts as you, repeatable>
+#   alias|<label>|<address to watch>
+#   window|<days of history a fetch looks back over>
+
+account|change-me@example.com
+
+# Who counts as "us". A thread whose last message came from one of these is
+# waiting on them; anything else is waiting on you. Add an address here and it
+# stops generating "you owe a reply" rows.
+me|change-me@example.com
+
+alias|board|change-me@example.com
+alias|committee|change-me@example.com
+
+# 21 days, not 7. A board thread can sit for a fortnight and still be live, and
+# the window only bounds what a fetch looks at — the thread state remembers
+# what it has already reported, so a wide window costs a little time and never
+# produces a duplicate.
+window|21
