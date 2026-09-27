@@ -87,7 +87,8 @@ class TheInstalledCopy(unittest.TestCase):
 
     def test_the_package_imports_from_the_installed_copy(self):
         result = self.probe()
-        self.assertEqual(result["version"], "0.1.0")
+        declared = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(result["version"], declared["project"]["version"])
 
     def test_what_imported_is_not_the_checkout(self):
         installed = Path(self.probe()["file"]).resolve()

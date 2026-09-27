@@ -154,6 +154,7 @@ So `file` there is correct, and it needs no migration.
     ./sd-db.sh check          # what CI runs: `test`, the whole suite
     ./sd-db.sh build          # a wheel, into ./dist
     ./sd-db.sh install VENV   # install that wheel into a virtual environment
+    ./sd-db.sh release --dry-run   # the tag `release` would cut; see below
 
 From a test:
 
@@ -168,6 +169,35 @@ From a test:
         subprocess.run([...], env=home.environment())
 
     assert [call.door for call in remote.calls] == ["gh"]
+
+## Cutting a release
+
+The pack installs `sd_db` from this repository at an immutable ref.
+It prefers an `sd-db-v*` tag when the checkout stands on one, and falls back to the commit.
+CI in the pack pins one ref too, a full commit or an `sd-db-v*` tag.
+A tag names the library by its version, so a release is the readable pin.
+
+1. Bump the version to one value in three places: `version` in `pyproject.toml`,
+   `VERSION` in `_build.py` and `__version__` in `sd_db/__init__.py`.
+   The wheel takes `_build.py`'s copy; `tests/test_installed.py` holds the three together.
+2. Land the bump on `main` through a pull request, like any change.
+3. Stand a clean checkout on that `main` commit, then preview the tag:
+
+       ./sd-db.sh release --dry-run
+
+4. Cut it:
+
+       ./sd-db.sh release
+
+   This creates the annotated tag `sd-db-v<version>` on `HEAD`, locally only.
+5. Push the tag with the command `release` prints (`git push origin sd-db-v<version>`).
+6. In the pack, move the `ref:` of the `platypeeps/system` checkout in `.github/workflows/tests.yml` to the tag.
+
+`release` refuses a dirty working tree, untracked files included, because the tag names `HEAD` only.
+It refuses a tag that exists; a release is never moved, so bump the version instead.
+It refuses when the three version strings disagree.
+It never pushes; pushing a tag is the operator's step.
+It needs git and no Python.
 
 ## Machine-specific settings
 

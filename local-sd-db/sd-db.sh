@@ -334,6 +334,13 @@ Usage: sd-db.sh <command>
               Never editable: the pack and this repository both install a
               copy, and an editable install would hide a missing file.
   check       What CI runs: `test` with no arguments, the whole suite.
+  release [--dry-run]
+              Cut the annotated tag `sd-db-v<version>` for this commit, with
+              the version from pyproject.toml. Refuses a dirty working tree,
+              a version that __init__.py or _build.py disagrees with, and a
+              tag that exists. --dry-run prints the tag and creates nothing. Never
+              pushes: it prints the push command, which the operator runs.
+              The pack pins sd_db to this tag when the checkout stands on it.
   library     Print which `sd_db` the database verbs would run under $PYTHON
               now, `checkout` or `installed`, by the rule below. For a
               caller that imports `sd_db` itself: `local-sd-plan`'s nightly.
@@ -361,7 +368,7 @@ report_failure() {
 }
 
 case "${1:-}" in
-    ""|-h|--help|help) ;;
+    ""|-h|--help|help|release) ;;
     *) resolve_python ;;
 esac
 
@@ -433,6 +440,56 @@ case "${1:-}" in
             *) PYTHONPATH="$DIR" exec "$PYTHON" -m unittest "$@" ;;
         esac
         PYTHONPATH="$DIR" exec "$PYTHON" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
+        ;;
+    release)
+        # Git only, no interpreter. The tag is what the pack pins `sd_db` to
+        # (`LIBRARY_TAGS` in its installer), so it names a commit whose
+        # library is exactly the version it claims, or it is not cut.
+        shift
+        dry_run=0
+        case "${1:-}" in
+            "") ;;
+            --dry-run) dry_run=1 ;;
+            *)
+                echo "sd-db release: unknown argument $1; the only option is --dry-run" >&2
+                exit 1
+                ;;
+        esac
+        version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$DIR/pyproject.toml")"
+        package="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$DIR/sd_db/__init__.py")"
+        backend="$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' "$DIR/_build.py")"
+        if [ -z "$version" ]; then
+            echo "sd-db release: no version line in $DIR/pyproject.toml" >&2
+            exit 1
+        fi
+        # Three files carry the version; the wheel takes `_build.py`'s.
+        if [ "$version" != "$package" ] || [ "$version" != "$backend" ]; then
+            echo "sd-db release: pyproject.toml says $version, sd_db/__init__.py says ${package:-nothing} and _build.py says ${backend:-nothing}; make them agree first" >&2
+            exit 1
+        fi
+        if ! git -C "$DIR" rev-parse --verify -q HEAD >/dev/null; then
+            echo "sd-db release: $DIR is not in a git checkout with a commit" >&2
+            exit 1
+        fi
+        # The whole tree, untracked files included: a tag names HEAD, and a
+        # file not yet committed is one the operator may think it carries.
+        if [ -n "$(git -C "$DIR" status --porcelain)" ]; then
+            echo "sd-db release: the working tree is dirty; commit or stash first, then tag" >&2
+            exit 1
+        fi
+        tag="sd-db-v$version"
+        if git -C "$DIR" rev-parse --verify -q "refs/tags/$tag" >/dev/null; then
+            echo "sd-db release: tag $tag exists; bump the version in pyproject.toml and sd_db/__init__.py" >&2
+            exit 1
+        fi
+        commit="$(git -C "$DIR" rev-parse HEAD)"
+        if [ "$dry_run" -eq 1 ]; then
+            echo "would tag $commit as $tag"
+        else
+            git -C "$DIR" tag -a "$tag" -m "sd-db $version" "$commit"
+            echo "tagged $commit as $tag"
+        fi
+        echo "push it with: git -C \"$(git -C "$DIR" rev-parse --show-toplevel)\" push origin $tag"
         ;;
     library)
         # The choice alone, so a caller that runs `sd_db` in its own process
