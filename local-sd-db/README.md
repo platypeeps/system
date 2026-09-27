@@ -211,7 +211,7 @@ The library reads these from the environment; each has a default.
 | `REPO_SYNC_PROFILE` | `personal` | which `repos.<profile>.conf` `repo seed` reads beside `repos.common.conf` (terra reads its own alone) |
 | `CRON_JOBS_EXTRA_DIRS` | none | further job-file directories, colon-separated, read after the config jobs dir |
 | `OBSIDIAN_VAULT` | `~/Documents/Obsidian Vault` | vault the `vault` source reads |
-| `SD_REGISTER` | `$SD_REPO_ROOT/research/world-simulator/00-overview/open-questions.md` | register the `register` source reads |
+| `SD_REGISTER` | `$SD_REPO_ROOT/research/register/open-questions.md`, or `SD_REGISTER` in `<config>/sd-db/.env` | register the `register` source reads |
 | `SD_WRITING_DESTINATIONS` | none | extra hand-recorded publication targets beside `blog` and `substack`, comma-separated |
 
 ## `judgments`: what the judgment models cost, by stage

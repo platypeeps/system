@@ -55,6 +55,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import config
 from .. import paths as sdpaths
 from ..repos import row_for
 from ..writes import upsert_item
@@ -65,8 +66,9 @@ SOURCE = "register"
 
 WHO = "register migration"
 
-#: Where the register lives, relative to the checkout root.
-REGISTER_RELATIVE = Path("research/world-simulator/00-overview/open-questions.md")
+#: Where the register lives, relative to the checkout root, unless
+#: `SD_REGISTER` names it in the environment or in `<config>/sd-db/.env`.
+REGISTER_RELATIVE = Path("research/register/open-questions.md")
 
 #: The header sentence that says which entries are open work rather than
 #: decided. Both dash spellings, because the file uses an en dash and a
@@ -87,7 +89,7 @@ STATUS_LINE = re.compile(r"^Status:\s*(.+?)(?=\n\n)", re.MULTILINE | re.DOTALL)
 
 def register_path(environ: dict[str, str] | None = None) -> Path:
     env = os.environ if environ is None else environ
-    named = env.get("SD_REGISTER")
+    named = env.get("SD_REGISTER") or config.read_env("sd-db", env).get("SD_REGISTER")
     if named:
         return Path(os.path.expanduser(named))
     root = Path(os.path.expanduser(env.get("SD_REPO_ROOT") or "~/repos"))

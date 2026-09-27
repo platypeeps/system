@@ -101,8 +101,8 @@ class Enumerated(unittest.TestCase):
     def test_a_repository_that_publishes_is_a_root_without_a_config_line(self):
         """The regression: onboarding is a directory, never a line somebody remembers."""
         self.publish("research/beta-research")
-        self.publish("work/world-simulator")
-        self.assertEqual(self.keys(), ["beta-research", "world-simulator"])
+        self.publish("work/gamma-simulator")
+        self.assertEqual(self.keys(), ["beta-research", "gamma-simulator"])
 
     def test_a_gitignored_directory_is_still_found(self):
         """`docs/dashboard` is built, not tracked. Git must not be consulted."""
