@@ -16,6 +16,7 @@ Import it by path, since the tools are scripts and not a package:
 from __future__ import annotations
 
 import os
+import socket
 from pathlib import Path
 
 
@@ -65,3 +66,25 @@ def missing(what: str, tool: str, file: str, folder: str | None = None,
     folder = folder or f"local-{tool}"
     return (f"{what} is not set. Export it, or copy {folder}/{file}.example to "
             f"{config_dir(tool, environ) / file} and fill it in.")
+
+
+def cron_job_dirs(environ: dict[str, str] | None = None) -> list[Path]:
+    """Where `cron-jobs.sh` finds a job file, in its lookup order.
+
+    Each `CRON_JOBS_EXTRA_DIRS` entry (colon-separated) first, then this
+    host's `<config>/cron-jobs/jobs/<host>`, then the shared
+    `<config>/cron-jobs/jobs`; the first directory holding `<job>.job` defines
+    it. `<host>` is `CRON_JOBS_HOST`, else the short host name, lower-cased;
+    other hosts' folders are never listed. Both variables come from the
+    environment, else from `<config>/cron-jobs/.env`, as in the script.
+    Change this, its twin in local-sd-db's `sd_db/config.py` and `job_dirs` in
+    `local-cron-jobs/cron-jobs.sh` together.
+    """
+    env = os.environ if environ is None else environ
+    saved = read_env("cron-jobs", env)
+    extra = env.get("CRON_JOBS_EXTRA_DIRS") or saved.get("CRON_JOBS_EXTRA_DIRS") or ""
+    host = (env.get("CRON_JOBS_HOST") or saved.get("CRON_JOBS_HOST")
+            or socket.gethostname().split(".")[0]).lower()
+    jobs = config_dir("cron-jobs", env) / "jobs"
+    return ([Path(os.path.expanduser(d)) for d in extra.split(":") if d]
+            + ([jobs / host] if host else []) + [jobs])

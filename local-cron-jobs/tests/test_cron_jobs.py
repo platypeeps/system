@@ -859,6 +859,111 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
             self.assertIn(name, text)
 
 
+class HostJobsTest(unittest.TestCase):
+    """Per-machine job lists: <config>/cron-jobs/jobs/<host>/.
+
+    PIN. The shared jobs folder holds every machine's jobs; jobs/<host>/ holds
+    this machine's, where <host> is CRON_JOBS_HOST or `hostname -s`,
+    lower-cased. A host job overrides a same-named shared one, and another
+    host's folder is never read.
+    """
+
+    JOB = 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="{}"\n'
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.mine = self.fx.jobs / "mini"
+        self.other = self.fx.jobs / "studio"
+
+    def env(self, host="Mini"):
+        env = {"PATH": self.fx.path(stub_bin(self.fx.tmp)),
+               "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "CRON_TEST_HELD": "0"}
+        if host is not None:
+            env["CRON_JOBS_HOST"] = host
+        return env
+
+    def run_script(self, *args, host="Mini"):
+        return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
+                              env=self.env(host), capture_output=True, text=True, timeout=60)
+
+    def rows(self, host="Mini"):
+        result = self.run_script("list", host=host)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return {line.split()[0]: line for line in result.stdout.splitlines()[1:]}
+
+    def installed(self):
+        agents = self.fx.home / "Library" / "LaunchAgents"
+        return sorted(p.name for p in agents.glob("*.plist"))
+
+    def test_a_host_job_overrides_the_shared_one(self):
+        self.fx.write_job("demo", self.JOB.format("exit 7"))
+        self.mine.mkdir()
+        (self.mine / "demo.job").write_text(self.JOB.format("true"))
+        result = self.fx.exec_job("demo", extra_env={"CRON_JOBS_HOST": "MINI"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = self.rows()
+        self.assertEqual(list(rows), ["demo"])
+        self.assertEqual(rows["demo"].split()[7], "jobs/mini")
+
+    def test_another_hosts_folder_is_ignored(self):
+        self.fx.write_job("shared", self.JOB.format("true"))
+        self.mine.mkdir()
+        (self.mine / "local.job").write_text(self.JOB.format("true"))
+        self.other.mkdir()
+        (self.other / "elsewhere.job").write_text(self.JOB.format("true"))
+        (self.other / "shared.job").write_text(self.JOB.format("exit 7"))
+        rows = self.rows()
+        self.assertEqual(sorted(rows), ["local", "shared"])
+        self.assertEqual(rows["shared"].split()[7], "jobs")
+        self.assertEqual(rows["local"].split()[7], "jobs/mini")
+        result = self.fx.exec_job("elsewhere", extra_env={"CRON_JOBS_HOST": "mini"})
+        self.assertIn("no such job 'elsewhere'", result.stdout + result.stderr)
+        self.assertEqual(self.fx.exec_job("shared", extra_env={"CRON_JOBS_HOST": "mini"}).returncode, 0)
+        # The other machine sees its own folder and not this one's.
+        self.assertEqual(sorted(self.rows(host="studio")), ["elsewhere", "shared"])
+
+    def test_no_host_folder_reads_the_shared_jobs(self):
+        self.fx.write_job("demo", self.JOB.format("true"))
+        self.assertEqual(list(self.rows()), ["demo"])
+        self.assertEqual(self.rows()["demo"].split()[7], "jobs")
+        # Without CRON_JOBS_HOST the machine's own name is used; the temp
+        # config has no folder for it, so only the shared job is listed.
+        self.assertEqual(list(self.rows(host=None)), ["demo"])
+
+    def test_install_all_is_shared_plus_this_host(self):
+        self.fx.write_job("shared", self.JOB.format("true"))
+        self.mine.mkdir()
+        (self.mine / "local.job").write_text(self.JOB.format("true"))
+        self.other.mkdir()
+        (self.other / "elsewhere.job").write_text(self.JOB.format("true"))
+        result = self.run_script("install", "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.installed(), [f"{LABEL_PREFIX}.cron.local.plist",
+                                            f"{LABEL_PREFIX}.cron.shared.plist"])
+        verify = self.run_script("verify", "--all")
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        # uninstall --all reaches this host's jobs too, as it did the shared.
+        result = self.run_script("uninstall", "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.installed(), [])
+
+    def test_env_file_supplies_the_host(self):
+        # launchd starts `exec` with only PATH and HOME; .env can pin the
+        # host so a renamed machine keeps its folder.
+        self.mine.mkdir()
+        (self.mine / "local.job").write_text(self.JOB.format("true"))
+        (self.fx.conf_dir / ".env").write_text('CRON_JOBS_HOST="mini"\n')
+        self.assertEqual(self.fx.exec_job("local").returncode, 0)
+        self.assertEqual(sorted(self.rows(host="studio")), [], "an exported host must win over .env")
+
+    def test_help_names_the_host_folder(self):
+        text = self.run_script("help").stdout
+        for name in ("CRON_JOBS_HOST", "<config>/cron-jobs/jobs/<host>/*.job"):
+            self.assertIn(name, text)
+
+
 def stub_bin(tmp):
     """A directory to put in front of PATH, holding the two commands `status`
     asks the machine about. The stubs answer what the test sets: launchd's run

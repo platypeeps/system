@@ -491,14 +491,45 @@ class Operations(unittest.TestCase):
 class JobDirectories(unittest.TestCase):
     """The job files are private config, found where cron-jobs.sh finds them."""
 
-    def test_extra_dirs_come_first_then_the_config_jobs_dir(self):
+    def test_extra_dirs_come_first_then_the_host_then_the_shared_dir(self):
         from sd_db.operations import job_dirs
-        found = job_dirs({"SYSTEM_TOOLS_CONFIG": "/cfg", "CRON_JOBS_EXTRA_DIRS": "/a::/b"})
-        self.assertEqual(found, [Path("/a"), Path("/b"), Path("/cfg/cron-jobs/jobs")])
+        found = job_dirs({"SYSTEM_TOOLS_CONFIG": "/cfg", "CRON_JOBS_EXTRA_DIRS": "/a::/b",
+                          "CRON_JOBS_HOST": "Mini"})
+        self.assertEqual(found, [Path("/a"), Path("/b"), Path("/cfg/cron-jobs/jobs/mini"),
+                                 Path("/cfg/cron-jobs/jobs")])
 
     def test_the_default_is_under_xdg_config_home(self):
         from sd_db.operations import job_dirs
-        self.assertEqual(job_dirs({"HOME": "/h"}), [Path("/h/.config/system/cron-jobs/jobs")])
+        self.assertEqual(job_dirs({"HOME": "/h", "CRON_JOBS_HOST": "mini"}),
+                         [Path("/h/.config/system/cron-jobs/jobs/mini"), Path("/h/.config/system/cron-jobs/jobs")])
+
+    def test_the_host_defaults_to_the_short_host_name(self):
+        from sd_db.operations import job_dirs
+        with patch("socket.gethostname", return_value="Mini.local"):
+            found = job_dirs({"SYSTEM_TOOLS_CONFIG": "/cfg"})
+        self.assertEqual(found, [Path("/cfg/cron-jobs/jobs/mini"), Path("/cfg/cron-jobs/jobs")])
+
+    def test_env_file_supplies_the_host_and_an_exported_value_wins(self):
+        from sd_db.operations import job_dirs
+        with tempfile.TemporaryDirectory() as directory:
+            conf = Path(directory) / "cron-jobs"; conf.mkdir()
+            (conf / ".env").write_text('CRON_JOBS_HOST="mini"\nCRON_JOBS_EXTRA_DIRS=/x\n')
+            env = {"SYSTEM_TOOLS_CONFIG": directory}
+            self.assertEqual(job_dirs(env), [Path("/x"), conf / "jobs/mini", conf / "jobs"])
+            self.assertEqual(job_dirs({**env, "CRON_JOBS_HOST": "studio"})[1], conf / "jobs/studio")
+
+    def test_backend_reads_a_host_job_before_the_shared_one(self):
+        from sd_db.operations import job_dirs
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = Path(directory) / "cron-jobs/jobs"; (jobs / "mini").mkdir(parents=True)
+            (jobs / "studio").mkdir()
+            for folder in (jobs, jobs / "mini", jobs / "studio"):
+                (folder / "demo.job").write_text("x\n")
+            (jobs / "studio" / "other.job").write_text("x\n")
+            dirs = job_dirs({"SYSTEM_TOOLS_CONFIG": directory, "CRON_JOBS_HOST": "mini"})
+            first = next(d for d in dirs if (d / "demo.job").exists())
+            self.assertEqual(first, jobs / "mini")
+            self.assertFalse(any((d / "other.job").exists() for d in dirs))
 
 
 if __name__ == "__main__":

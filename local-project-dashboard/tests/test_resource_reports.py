@@ -202,10 +202,35 @@ class CronJobFiles(unittest.TestCase):
             extra = root / "extra"; extra.mkdir()
             (jobs / "one.job").write_text("A\n"); (jobs / "two.job").write_text("B\n")
             (extra / "two.job").write_text("C\n")
-            env = {"SYSTEM_TOOLS_CONFIG": str(root / "config"), "CRON_JOBS_EXTRA_DIRS": str(extra)}
+            env = {"SYSTEM_TOOLS_CONFIG": str(root / "config"), "CRON_JOBS_EXTRA_DIRS": str(extra),
+                   "CRON_JOBS_HOST": "mini"}
             with patch.dict(os.environ, env):
                 found = collectors.cron_job_files()
             self.assertEqual(found, [jobs / "one.job", extra / "two.job"])
+
+    def test_this_hosts_folder_overrides_and_other_hosts_are_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jobs = root / "config/cron-jobs/jobs"; (jobs / "mini").mkdir(parents=True)
+            (jobs / "studio").mkdir()
+            (jobs / "one.job").write_text("A\n"); (jobs / "mini/one.job").write_text("B\n")
+            (jobs / "mini/mine.job").write_text("C\n"); (jobs / "studio/theirs.job").write_text("D\n")
+            env = {"SYSTEM_TOOLS_CONFIG": str(root / "config"), "CRON_JOBS_HOST": "Mini"}
+            with patch.dict(os.environ, env):
+                os.environ.pop("CRON_JOBS_EXTRA_DIRS", None)
+                found = collectors.cron_job_files()
+            self.assertEqual(found, [jobs / "mini/mine.job", jobs / "mini/one.job"])
+
+    def test_no_host_folder_reads_the_shared_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jobs = root / "config/cron-jobs/jobs"; jobs.mkdir(parents=True)
+            (jobs / "one.job").write_text("A\n")
+            env = {"SYSTEM_TOOLS_CONFIG": str(root / "config"), "CRON_JOBS_HOST": "mini"}
+            with patch.dict(os.environ, env):
+                os.environ.pop("CRON_JOBS_EXTRA_DIRS", None)
+                found = collectors.cron_job_files()
+            self.assertEqual(found, [jobs / "one.job"])
 
 
 class CronReports(unittest.TestCase):

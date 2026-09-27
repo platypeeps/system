@@ -7,7 +7,7 @@ Desktop, no open terminal, no cloud routine required. Each job is a headless
 ## Usage
 
 ```sh
-./cron-jobs.sh list                    # jobs, schedules, installed state
+./cron-jobs.sh list                    # jobs, schedules, installed state, FROM folder
 ./cron-jobs.sh install <job>|--all     # generate plist + load into launchd
 ./cron-jobs.sh verify <job>|--all      # installed plist still matches the generator
 ./cron-jobs.sh uninstall <job>|--all   # unload + remove plist
@@ -18,8 +18,10 @@ Desktop, no open terminal, no cloud routine required. Each job is a headless
 ./cron-jobs.sh test                    # unittest suite in tests/ (CI runs it too)
 ```
 
-`--all` means every job in the job directories: `<config>/cron-jobs/jobs/`
-plus any `CRON_JOBS_EXTRA_DIRS`. Keep only this machine's jobs there.
+`--all` means every job this machine runs: the shared `<config>/cron-jobs/jobs/`,
+this host's `<config>/cron-jobs/jobs/<host>/`, and any `CRON_JOBS_EXTRA_DIRS`.
+Other hosts' folders are never read, so one config directory can serve several
+machines (see [Per-machine jobs](#per-machine-jobs)).
 
 `verify` renders the plist the generator would write now into a scratch
 directory and compares it byte-for-byte with the installed one; it never
@@ -36,7 +38,8 @@ directory outside the checkout:
 ```
 <config> = ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}
 
-<config>/cron-jobs/jobs/*.job     the jobs this machine runs
+<config>/cron-jobs/jobs/*.job         shared jobs: every machine runs them
+<config>/cron-jobs/jobs/<host>/*.job  this machine's own jobs
 <config>/cron-jobs/.env           the variables below (copy .env.example)
 <config>/cron-jobs/notify.conf    NTFY_TOPIC for phone pushes (copy notify.conf.example)
 ```
@@ -49,7 +52,36 @@ An exported value wins over `.env`. All variables are optional.
 | --- | --- |
 | `SYSTEM_TOOLS_CONFIG` | The `<config>` root above. Export it (not in `.env`) to move every tool's config at once. |
 | `CRON_JOBS_EXTRA_DIRS` | Colon-separated extra job directories, searched before `<config>/cron-jobs/jobs/`. A job there overrides a same-named job in the config directory. Keep a schedule in another repository this way. |
+| `CRON_JOBS_HOST` | The host folder's name, default `hostname -s`, lower-cased. Set it in `.env` when the machine's name changes with the network. |
 | `SYSTEM_TOOLS_LABEL_PREFIX` | launchd label prefix, default `local.system-tools`. Labels are `<prefix>.cron.<job>`. |
+
+## Per-machine jobs
+
+A job in `<config>/cron-jobs/jobs/` runs on every machine that reads this
+config directory. A job in `<config>/cron-jobs/jobs/<host>/` runs only on the
+machine whose lower-cased `hostname -s` (or `CRON_JOBS_HOST`) is `<host>`.
+
+- A host job overrides a same-named shared job on that host only.
+- Other hosts' folders are ignored: not listed, installed, or run.
+- No host folder is fine: the machine runs the shared jobs.
+- `list` prints a `FROM` column: `jobs`, `jobs/<host>`, or an extra directory.
+
+The lookup order is: each `CRON_JOBS_EXTRA_DIRS` entry, then `jobs/<host>/`,
+then `jobs/`. The first folder with `<job>.job` defines the job. The dashboard
+Toolbox and `sd-db` read job files in the same order
+(`cron_job_dirs` in `lib/system_tools_config.py` and in `sd_db/config.py`).
+
+Move a job to one machine by moving its file, then reinstall there:
+
+```sh
+host="$(hostname -s | tr '[:upper:]' '[:lower:]')"
+mkdir -p ~/.config/system/cron-jobs/jobs/"$host"
+mv ~/.config/system/cron-jobs/jobs/<job>.job ~/.config/system/cron-jobs/jobs/"$host"/
+./cron-jobs.sh list    # FROM now reads jobs/<host> for that job
+```
+
+The plist does not change, so `verify` stays `ok`. On the other machines,
+`uninstall <job>` before the file leaves the shared folder.
 
 ## Examples
 
@@ -68,7 +100,7 @@ sibling tool from any checkout.
 
 ## Adding a job
 
-Drop `<config>/cron-jobs/jobs/<name>.job` (or a file in a `CRON_JOBS_EXTRA_DIRS` directory; shell vars) and `./cron-jobs.sh install <name>`:
+Drop `<config>/cron-jobs/jobs/<name>.job` (or `jobs/<host>/<name>.job` for this machine only, or a file in a `CRON_JOBS_EXTRA_DIRS` directory; shell vars) and `./cron-jobs.sh install <name>`:
 
 ```sh
 JOB_SCHEDULE="0 7 * * 1"     # 5-field cron, LOCAL time; supports * N a,b,c */N

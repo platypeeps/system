@@ -80,5 +80,48 @@ class EnvFile(unittest.TestCase):
         self.assertIn(f"copy mezmo-pipeline/.env.example to {self.conf}/mezmo-pipeline/.env", done.stderr)
 
 
+SD_DB = LIB.parent / "local-sd-db"
+
+
+class CronJobDirs(unittest.TestCase):
+    """cron_job_dirs here, its sd_db twin and cron-jobs.sh resolve the same folders."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.conf = Path(self.tmp.name) / "c"
+        self.jobs = self.conf / "cron-jobs/jobs"
+        self.jobs.mkdir(parents=True)
+        sys.path.insert(0, str(SD_DB))
+        self.addCleanup(sys.path.remove, str(SD_DB))
+        from sd_db import config as twin
+        self.twin = twin
+
+    def cases(self):
+        base = {"PATH": os.environ["PATH"], "HOME": self.tmp.name, "SYSTEM_TOOLS_CONFIG": str(self.conf)}
+        return [{**base, "CRON_JOBS_HOST": "Mini"},
+                {**base, "CRON_JOBS_HOST": "mini", "CRON_JOBS_EXTRA_DIRS": "/a::/b"},
+                base]
+
+    def test_host_folder_sits_between_the_extra_dirs_and_the_shared_one(self):
+        env = self.cases()[1]
+        self.assertEqual(stc.cron_job_dirs(env), [Path("/a"), Path("/b"), self.jobs / "mini", self.jobs])
+
+    def test_the_twin_agrees(self):
+        for env in self.cases():
+            self.assertEqual(stc.cron_job_dirs(env), self.twin.cron_job_dirs(env), env)
+
+    def test_the_default_host_matches_hostname_s(self):
+        short = subprocess.run(["hostname", "-s"], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(stc.cron_job_dirs(self.cases()[2])[0], self.jobs / short.lower())
+
+    def test_env_file_supplies_the_host_and_an_exported_value_wins(self):
+        (self.conf / "cron-jobs/.env").write_text('CRON_JOBS_HOST="mini"\n')
+        env = self.cases()[2]
+        self.assertEqual(stc.cron_job_dirs(env)[0], self.jobs / "mini")
+        self.assertEqual(self.twin.cron_job_dirs(env)[0], self.jobs / "mini")
+        self.assertEqual(stc.cron_job_dirs({**env, "CRON_JOBS_HOST": "studio"})[0], self.jobs / "studio")
+
+
 if __name__ == "__main__":
     unittest.main()

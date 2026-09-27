@@ -136,12 +136,11 @@ def _boot_token():
 def job_dirs(environ=None) -> list[Path]:
     """Where `cron-jobs.sh` finds a job file, in its lookup order.
 
-    Each `CRON_JOBS_EXTRA_DIRS` entry (colon-separated) first, since a job
-    there overrides a same-named one; then `<config>/cron-jobs/jobs`.
+    Each `CRON_JOBS_EXTRA_DIRS` entry first, then this host's
+    `<config>/cron-jobs/jobs/<host>`, then the shared `<config>/cron-jobs/jobs`
+    (`config.cron_job_dirs` holds the rule).
     """
-    env = os.environ if environ is None else environ
-    extra = [Path(os.path.expanduser(d)) for d in (env.get("CRON_JOBS_EXTRA_DIRS") or "").split(":") if d]
-    return extra + [config.config_dir("cron-jobs", env) / "jobs"]
+    return config.cron_job_dirs(environ)
 
 
 class LaunchdBackend:
@@ -160,7 +159,8 @@ class LaunchdBackend:
         self.cron_root = Path(cron_root) if cron_root is not None else Path(os.path.expanduser(root)) / "local-cron-jobs"
         # The job files are private config, not checkout content: the same
         # directories `cron-jobs.sh` reads, in its order -- each
-        # `CRON_JOBS_EXTRA_DIRS` entry first, then `<config>/cron-jobs/jobs`.
+        # `CRON_JOBS_EXTRA_DIRS` entry first, then this host's
+        # `<config>/cron-jobs/jobs/<host>`, then the shared `<config>/cron-jobs/jobs`.
         self.jobs_dirs = [Path(d) for d in jobs_dirs] if jobs_dirs is not None else job_dirs()
         self.uid = os.getuid() if uid is None else uid
         self.runner = runner or _run

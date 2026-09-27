@@ -3,8 +3,9 @@
 # fully independent of Claude Desktop or any open terminal.
 #
 # Each job is one file <name>.job in the config directory's jobs folder,
-# <config>/cron-jobs/jobs/, or in a directory named by CRON_JOBS_EXTRA_DIRS
-# (see below), as sourced shell vars. <config> is
+# <config>/cron-jobs/jobs/ (every machine), in its host folder
+# <config>/cron-jobs/jobs/<host>/ (this machine only), or in a directory named
+# by CRON_JOBS_EXTRA_DIRS (see below), as sourced shell vars. <config> is
 # ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}.
 # The repository ships no jobs; examples/ holds sample job files to copy.
 #   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N)
@@ -18,7 +19,7 @@
 #                  `RESULT: ` line must match it, or the run fails
 #
 # Usage:
-#   cron-jobs.sh list                     jobs, schedules, installed/loaded state
+#   cron-jobs.sh list                     jobs, schedules, installed/loaded state, folder
 #   cron-jobs.sh install <job>|--all      generate plist, load into launchd
 #                                        (--all = every defined job)
 #   cron-jobs.sh verify [job]|--all       installed plist vs the generator
@@ -39,6 +40,10 @@
 #   CRON_JOBS_EXTRA_DIRS      colon-separated extra job directories, e.g. a
 #                             private repo's jobs folder. A job there overrides
 #                             a same-named job in <config>/cron-jobs/jobs.
+#   CRON_JOBS_HOST            the host folder's name (default `hostname -s`),
+#                             lower-cased. A job in jobs/<host>/ overrides a
+#                             same-named shared one; other hosts' folders are
+#                             not read.
 #   SYSTEM_TOOLS_LABEL_PREFIX launchd label prefix (default local.system-tools);
 #                             labels are <prefix>.cron.<job>.
 set -eu
@@ -55,14 +60,22 @@ CONF_DIR="$(st_config_dir cron-jobs)"
 if [ -f "$CONF_DIR/.env" ]; then
   _cj_extra="${CRON_JOBS_EXTRA_DIRS:-}"
   _cj_prefix="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
+  _cj_host="${CRON_JOBS_HOST:-}"
   # shellcheck source=/dev/null
   . "$CONF_DIR/.env"
   [ -z "$_cj_extra" ] || CRON_JOBS_EXTRA_DIRS="$_cj_extra"
   [ -z "$_cj_prefix" ] || SYSTEM_TOOLS_LABEL_PREFIX="$_cj_prefix"
-  unset _cj_extra _cj_prefix
+  [ -z "$_cj_host" ] || CRON_JOBS_HOST="$_cj_host"
+  unset _cj_extra _cj_prefix _cj_host
 fi
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 JOBS_DIR="$CONF_DIR/jobs"
+# This machine's own jobs: jobs/<host>/, lower-cased so the folder name does
+# not depend on how the machine happens to capitalise itself. The same rule is
+# in lib/system_tools_config.py and local-sd-db's sd_db/config.py
+# (cron_job_dirs); change all three together.
+JOB_HOST="$(printf '%s' "${CRON_JOBS_HOST:-$(hostname -s 2>/dev/null || hostname)}" | tr '[:upper:]' '[:lower:]')"
+HOST_JOBS_DIR="$JOBS_DIR/$JOB_HOST"
 EXTRA_JOB_DIRS="${CRON_JOBS_EXTRA_DIRS:-}"
 LOG_DIR="$ROOT/logs"
 FAIL_LOG="$LOG_DIR/failures.log"
@@ -112,12 +125,6 @@ mkdir -p "$LOG_DIR"
 # location — and when none of them exists, one sentence now rather than an
 # exec error later. Called where the binary is needed; list, verify and help
 # never ask.
-# GNU stat takes -c and does not follow /dev/fd links without -L; BSD stat
-# takes -f. GNU also accepts -f, as a filesystem query that prints the wrong
-# thing without failing, so try -c first. CI runs on Linux.
-file_inode() { stat -L -c %i "$1" 2>/dev/null || stat -L -f %i "$1"; }
-file_mtime() { stat -L -c %Y "$1" 2>/dev/null || stat -L -f %m "$1"; }
-
 claude_binary() {
   local installed="$HOME/.local/bin/claude" found
   if [ -n "${CLAUDE_BIN:-}" ]; then
@@ -154,8 +161,10 @@ label_for()  { echo "$LABEL_PREFIX.cron.$1"; }
 plist_for()  { echo "$AGENT_DIR/$(label_for "$1").plist"; }
 
 # The job directories, one per line: each CRON_JOBS_EXTRA_DIRS entry in order,
-# then <config>/cron-jobs/jobs. The first directory holding <job>.job defines
-# it, so an extra directory can override a job in the config directory.
+# then this host's <config>/cron-jobs/jobs/<host>, then the shared
+# <config>/cron-jobs/jobs. The first directory holding <job>.job defines it, so
+# an extra directory overrides the config directory and a host folder
+# overrides the shared one. Other hosts' folders are never listed.
 job_dirs() {
   local d old_ifs="$IFS"
   IFS=':'
@@ -163,6 +172,7 @@ job_dirs() {
     [ -n "$d" ] && echo "$d"
   done
   IFS="$old_ifs"
+  [ -n "$JOB_HOST" ] && echo "$HOST_JOBS_DIR"
   echo "$JOBS_DIR"
 }
 
@@ -212,6 +222,16 @@ cmd_verify() {
   fi
   rm -rf "$tmp"
   return $rc
+}
+
+# Where a job's file sits, as `list` shows it: `jobs` (shared), `jobs/<host>`,
+# or an extra directory's full path.
+job_origin() {
+  local d; d="$(dirname "$(job_file "$1")")"
+  case "$d" in
+    "$CONF_DIR"/*) echo "${d#"$CONF_DIR"/}" ;;
+    *) echo "$d" ;;
+  esac
 }
 
 all_jobs() {
@@ -404,10 +424,10 @@ start_tee() { # log path
   # Not isatty: `run` redirected into a file or piped to a pager is still a
   # hand-run and still has to reach the log.
   exec 9>&1
-  tee_fd=$(file_inode /dev/fd/9 2>/dev/null || true)
+  tee_fd=$(stat -f '%i' /dev/fd/9 2>/dev/null || true)
   exec 9>&-
   if [ -f "$1" ] && [ -n "$tee_fd" ] &&
-     [ "$tee_fd" = "$(file_inode "$1" 2>/dev/null)" ]; then
+     [ "$tee_fd" = "$(stat -f '%i' "$1" 2>/dev/null)" ]; then
     return 0
   fi
   mkdir -p "$(dirname "$1")"
@@ -1097,13 +1117,13 @@ cmd_uninstall() {
 
 cmd_list() {
   local job state
-  printf "%-28s %-18s %-10s %s\n" "JOB" "SCHEDULE (local)" "INSTALLED" "PROMPT"
+  printf "%-28s %-18s %-10s %-16s %s\n" "JOB" "SCHEDULE (local)" "INSTALLED" "FROM" "PROMPT"
   [ -n "$(all_jobs)" ] ||
-    echo "cron-jobs.sh: no jobs in $JOBS_DIR; copy one from $ROOT/examples/ to start" >&2
+    echo "cron-jobs.sh: no jobs in $JOBS_DIR or $HOST_JOBS_DIR; copy one from $ROOT/examples/ to start" >&2
   for job in $(all_jobs); do
     load_job "$job"
     if is_loaded "$job"; then state="loaded"; elif [ -f "$(plist_for "$job")" ]; then state="stale"; else state="no"; fi
-    printf "%-28s %-18s %-10s %.60s\n" "$job" "$JOB_SCHEDULE" "$state" "${JOB_PROMPT:-$JOB_COMMAND}"
+    printf "%-28s %-18s %-10s %-16s %.60s\n" "$job" "$JOB_SCHEDULE" "$state" "$(job_origin "$job")" "${JOB_PROMPT:-$JOB_COMMAND}"
   done
 }
 
@@ -1279,11 +1299,11 @@ cmd_watchdog() {
     else max=$((26 * 3600)); fi
     log="$LOG_DIR/$job.log"
     if [ -f "$log" ]; then
-      age=$(( now - $(file_mtime "$log") ))
+      age=$(( now - $(stat -f %m "$log") ))
       ref="last log activity"
     else
       # Never produced a log: measure from install time (plist mtime).
-      age=$(( now - $(file_mtime "$(plist_for "$job")") ))
+      age=$(( now - $(stat -f %m "$(plist_for "$job")") ))
       ref="never ran, installed"
     fi
     if [ "$age" -gt "$max" ]; then
@@ -1311,8 +1331,9 @@ cmd_watchdog() {
 each_or_one() { # cmd, target
   local cmd="$1" target="$2" j
   if [ "$target" = "--all" ] || [ "$target" = "--every" ]; then
-    # --all is every defined job: the config directory holds only the jobs
-    # this machine should run. --every is its older spelling, kept working.
+    # --all is every job this machine should run: the shared jobs folder plus
+    # this host's folder (and any extra directory); other hosts' folders are
+    # never read. --every is its older spelling, kept working.
     local rc=0
     for j in $(all_jobs); do "$cmd" "$j" || rc=1; done
     return $rc
@@ -1340,9 +1361,9 @@ case "${1:-}" in
     cat <<'HELPEOF'
 usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|status [job]|logs <job> [lines]|watchdog|test
 
-  list         jobs, schedules, installed state
+  list         jobs, schedules, installed state, the folder each came from
   install      generate plist + load into launchd (<job>, or --all for
-               every job in the job directories)
+               every job in the job directories: shared plus this host's)
   verify       compare each installed plist against what the generator
                produces now (<job> or --all); exits 1 on any STALE. Read
                only — never touches launchd.
@@ -1399,7 +1420,13 @@ usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|
   test         run the unittest suite in tests/ (extra args go to unittest)
 
 configuration: <config> is ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}
-  <config>/cron-jobs/jobs/*.job  the job definitions (examples/ has samples)
+  <config>/cron-jobs/jobs/*.job  the shared job definitions, every machine
+                                 (examples/ has samples)
+  <config>/cron-jobs/jobs/<host>/*.job
+                                 this machine's own jobs; one here overrides
+                                 a same-named shared job. Other hosts'
+                                 folders are ignored. `list` shows the FROM
+                                 folder of each job.
   <config>/cron-jobs/.env        the variables below; an exported value wins
                                  (copy local-cron-jobs/.env.example)
   <config>/cron-jobs/notify.conf NTFY_TOPIC for a phone push on failure
@@ -1407,6 +1434,7 @@ configuration: <config> is ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.conf
   CRON_JOBS_EXTRA_DIRS       colon-separated extra job directories; a job
                              there overrides a same-named one in
                              <config>/cron-jobs/jobs
+  CRON_JOBS_HOST             <host> above (default `hostname -s`), lower-cased
   SYSTEM_TOOLS_LABEL_PREFIX  launchd label prefix (default local.system-tools)
 HELPEOF
     exit 0

@@ -33,11 +33,14 @@ does it.**
 ## Which machine runs which job
 
 The repository ships no installed jobs. `local-cron-jobs/examples/` is a
-*catalogue*: copy the jobs a machine should run into
-`<config>/cron-jobs/jobs/`, and `CRON_JOBS_EXTRA_DIRS` may add more folders.
+*catalogue*: copy the jobs every machine should run into
+`<config>/cron-jobs/jobs/`, and the jobs one machine runs into
+`<config>/cron-jobs/jobs/<host>/`. `<host>` is `hostname -s` lower-cased, or
+`CRON_JOBS_HOST`. `CRON_JOBS_EXTRA_DIRS` may add more folders.
 
-`install --all` installs every job in those folders. The folders belong to one
-machine, so no profile filter sits between them and the install.
+A host job overrides a same-named shared one, and other hosts' folders are
+never read. `install --all` installs the shared jobs plus this host's; no
+profile filter sits between the folders and the install.
 
 ## What the jobs are
 

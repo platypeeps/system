@@ -111,14 +111,13 @@ import system_tools_config  # noqa: E402  (the checkout's shared config rule)
 def cron_job_files():
     """Every job file `cron-jobs.sh` would run, one per name, in name order.
 
-    The same lookup: each `CRON_JOBS_EXTRA_DIRS` entry first (a job there
-    overrides a same-named one), then `<config>/cron-jobs/jobs`.
+    The same lookup (`system_tools_config.cron_job_dirs`): each
+    `CRON_JOBS_EXTRA_DIRS` entry first, then this host's
+    `<config>/cron-jobs/jobs/<host>`, then the shared `<config>/cron-jobs/jobs`;
+    a job in an earlier directory overrides a same-named one in a later one.
     """
-    dirs = [pathlib.Path(os.path.expanduser(d))
-            for d in os.environ.get("CRON_JOBS_EXTRA_DIRS", "").split(":") if d]
-    dirs.append(system_tools_config.config_dir("cron-jobs") / "jobs")
     found = {}
-    for directory in dirs:
+    for directory in system_tools_config.cron_job_dirs():
         for path in sorted(directory.glob("*.job")):
             found.setdefault(path.stem, path)
     return [found[name] for name in sorted(found)]
