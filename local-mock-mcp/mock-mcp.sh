@@ -2,7 +2,7 @@
 # Mock MCP server (a mock-mcp-service checkout named by MOCK_MCP_SRC):
 # build the image, run it, switch which failure scenario it serves, and
 # register it with Claude Code. Listens on :9992, endpoint /mcp.
-# Usage: mock-mcp.sh build|start|stop|restart|status|scenarios|scenario|logs|register|unregister|update
+# Usage: mock-mcp.sh build|start|stop|restart|status|scenarios|scenario|logs|register|unregister|update|test
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -163,9 +163,13 @@ case "$1" in
     need_src
     docker build -t "$IMAGE" "$SRC"
     ;;
+  test)
+    shift
+    exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
+    ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: mock-mcp.sh build|start|stop|restart|status|scenarios|scenario <name>|logs|register|unregister|update
+usage: mock-mcp.sh build|start|stop|restart|status|scenarios|scenario <name>|logs|register|unregister|update|test
 
   build             docker build the image from the mock-mcp-service checkout
   start [scenario]  run the container (docker, --rm, named $MOCK_MCP_NAME);
@@ -180,6 +184,7 @@ usage: mock-mcp.sh build|start|stop|restart|status|scenarios|scenario <name>|log
                     default user), then reconnect with /mcp
   unregister [scope]  remove it from Claude Code (default scope user)
   update            stop, delete the local image by image ID, rebuild
+  test [args]       run this folder's tests (extra args go to unittest)
 
 The scenarios directory is bind-mounted from the checkout, so editing a
 scenario YAML needs a restart, not a rebuild.
@@ -202,7 +207,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") build|start|stop|restart|status|scenarios|scenario <name>|logs|register|unregister|update" >&2
+    echo "usage: $(basename "$0") build|start|stop|restart|status|scenarios|scenario <name>|logs|register|unregister|update|test" >&2
     exit 1
     ;;
 esac

@@ -1,7 +1,7 @@
 #!/bin/sh
 # world-monitor helper — the checkout path comes from WORLDMONITOR_DIR, this
 # folder only holds the wrapper. Vite dev server listens on :3000.
-# Usage: worldmonitor.sh dev [variant]|build|preview|lint
+# Usage: worldmonitor.sh dev [variant]|build|preview|lint|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
@@ -48,9 +48,13 @@ case "$1" in
     cd "$APP_DIR"
     exec npm run lint
     ;;
+  test)
+    shift
+    exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
+    ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: worldmonitor.sh dev [variant]|build|preview|lint
+usage: worldmonitor.sh dev [variant]|build|preview|lint|test
 
   dev [variant]  run the Vite dev server on :3000 (DEV_PORT overrides).
                  variant is one of: full (default) tech finance happy
@@ -59,14 +63,15 @@ usage: worldmonitor.sh dev [variant]|build|preview|lint
                  corpus prebuild steps)
   preview        serve the last production build
   lint           biome lint + the safe-html check
+  test           run this folder's tests (extra args go to unittest)
 
-All subcommands run against the checkout in WORLDMONITOR_DIR, exported or set
+The other subcommands run against the checkout in WORLDMONITOR_DIR, exported or set
 in $SYSTEM_TOOLS_CONFIG/worldmonitor/.env (see .env.example).
 HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") dev [variant]|build|preview|lint" >&2
+    echo "usage: $(basename "$0") dev [variant]|build|preview|lint|test" >&2
     exit 1
     ;;
 esac

@@ -69,11 +69,12 @@ jobs:
       # The runner image carries these today; naming them keeps a suite from
       # passing or failing on what the image happens to ship. sqlite3 is the
       # CLI the sd-db suites shell out to; lsof and ps are the process-holder
-      # probes local-sd-runner and the dashboard read.
+      # probes local-sd-runner and the dashboard read; rsync is what
+      # local-ai-songs-backup mirrors with.
       - name: Install the command-line tools the suites call
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends git sqlite3 lsof procps
+          sudo apt-get install -y -q --no-install-recommends git sqlite3 lsof procps rsync
 
       # One leg, not four. The manifest is identical in every leg, so
       # checking it in each buys nothing and bills four runners for the
@@ -337,6 +338,12 @@ jobs:
               run_suite workspace-mcp sh local-workspace-mcp/workspace-mcp.sh test -v
               run_suite network-testing sh network-testing/network-testing.sh test -v
               run_suite lib "$PYTHON" lib/tests/test_config.py -v
+              run_suite machine-setup sh local-machine-setup/machine-setup.sh test -v
+              run_suite mock-mcp sh local-mock-mcp/mock-mcp.sh test -v
+              run_suite fluentbit sh local-fluentbit/fluentbit.sh test -v
+              run_suite opentelemetry-demo sh local-opentelemetry-demo/opentelemetry-demo.sh test -v
+              run_suite worldmonitor sh local-worldmonitor/worldmonitor.sh test -v
+              run_suite ai-songs-backup sh local-ai-songs-backup/ai-songs-backup.sh test -v
               # mezmo-pipeline's suite is shell with its own tally, not
               # unittest, so run_suite's summary check cannot read it. It
               # stubs curl and makes no network call; the gate is a nonzero

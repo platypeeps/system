@@ -9,13 +9,18 @@ case "${1:-}" in
   sync|plan|list)
     MODE="$1"
     ;;
+  test)
+    shift
+    exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
+    ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: ai-songs-backup.sh sync|plan|list
+usage: ai-songs-backup.sh sync|plan|list|test
 
   list   show the source, destination, and matching-file count
   plan   show a dry run without changing the destination
   sync   create an exact selective mirror of WAV, MP3 and MP4 files
+  test   run this folder's tests (extra args go to unittest)
 
 AI_SONGS_SOURCE and AI_SONGS_DESTINATION come from the environment or from
 $SYSTEM_TOOLS_CONFIG/ai-songs-backup/.env (see .env.example).
@@ -26,7 +31,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") sync|plan|list" >&2
+    echo "usage: $(basename "$0") sync|plan|list|test" >&2
     exit 1
     ;;
 esac

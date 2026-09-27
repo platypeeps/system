@@ -14,6 +14,7 @@ The script refuses to run when no matching source files exist.
 ./ai-songs-backup.sh list
 ./ai-songs-backup.sh plan
 ./ai-songs-backup.sh sync
+./ai-songs-backup.sh test   # the unittest suite in tests/
 ```
 
 A nightly `local-cron-jobs` entry can run `sync`; `local-mirror-sync` can

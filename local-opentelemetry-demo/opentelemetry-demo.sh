@@ -617,6 +617,7 @@ Makefile-based variant (uses OTEL_DEMO_REPO, not this kind cluster)
   repo-start         run "make start" in the demo repo, teeing output here
   repo-stop          run "make stop" in the demo repo
 
+  test               run this folder's tests (extra args go to unittest)
   help               this text
 
 Configuration: \$SYSTEM_TOOLS_CONFIG/opentelemetry-demo/.env or exported
@@ -649,6 +650,7 @@ case "$cmd" in
   cleanup)              cmd_cleanup "$@" ;;
   repo-start)           cmd_repo_start "$@" ;;
   repo-stop)            cmd_repo_stop "$@" ;;
+  test)                 exec "${PYTHON:-python3}" -m unittest discover -s "$BASE/tests" -t "$BASE" "$@" ;;
   help|-h|--help)       cmd_help ;;
   *)                    echo "unknown subcommand: $cmd" >&2; echo >&2; cmd_help >&2; exit 2 ;;
 esac
