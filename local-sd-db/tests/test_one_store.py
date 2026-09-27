@@ -32,11 +32,12 @@ SELF = "local-sd-db/tests/test_one_store.py"
 #: what this rule is about.
 FIXTURES = ("local-sd-db/tests/", "local-sd-db/sd_db/testing/")
 
-#: Files that open a database which is not this store, such as a third-party
-#: tool's own file. Exact paths, never a folder, and a guard below holds that
-#: none names the sd store, so this cannot become a way around the rule. The
-#: two claude-mem pruning files that were here live outside this repository.
-FOREIGN_STORES = ()
+#: Files that open a database which is not this store. They open claude-mem's
+#: own ~/.claude-mem/claude-mem.db, a third-party file, to prune its tool_uses
+#: table (sd:1592), and the test builds a scratch copy of that file. Exact
+#: paths, never a folder, and a guard below holds that neither names the sd
+#: store, so this cannot become a way around the rule.
+FOREIGN_STORES = ("local-claude/claude.sh", "local-claude/tests/test_prune_mem_logs.py")
 
 #: What naming the sd store looks like: the file, the package, the wrapper,
 #: or the directory it lives in.
