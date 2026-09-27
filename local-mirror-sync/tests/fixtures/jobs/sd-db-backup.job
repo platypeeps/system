@@ -8,7 +8,7 @@ JOB_SCHEDULE="10 2 * * *"
 SD_DB_BACKUP_MOUNT=""
 [ -n "${SD_DB_BACKUP_DESTINATION:-}" ] || SD_DB_BACKUP_MOUNT=" --require-mount /Volumes/local"
 SD_DB_BACKUP_SNAPSHOT="\"$ROOT/../local-sd-db/sd-db.sh\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep all"
-SD_DB_BACKUP_NAS="\"${SD_DB_PYTHON:-python3}\" \"$HOME/repos/system-tools/local-mirror-sync/offsite-verify.py\" --preflight-only --destination /Volumes/Offsite/Backup && MIRROR_SYNC_CONF=\"$HOME/repos/system-tools/local-mirror-sync/mirrors-nas.conf\" MIRROR_SYNC_ADDITIVE=1 sh \"$HOME/repos/system-tools/local-mirror-sync/mirror-sync.sh\" sync"
+SD_DB_BACKUP_NAS="\"${SD_DB_PYTHON:-python3}\" \"$HOME/repos/system/local-mirror-sync/offsite-verify.py\" --preflight-only --destination /Volumes/Offsite/Backup && MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_ADDITIVE=1 sh \"$HOME/repos/system/local-mirror-sync/mirror-sync.sh\" sync"
 JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT && $SD_DB_BACKUP_NAS"
 [ -z "${SD_DB_BACKUP_DESTINATION:-}" ] || JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT"
 unset SD_DB_BACKUP_MOUNT SD_DB_BACKUP_SNAPSHOT SD_DB_BACKUP_NAS

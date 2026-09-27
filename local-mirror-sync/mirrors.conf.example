@@ -1,5 +1,5 @@
 # mirror-sync pairs: source|destination, one per line, # comments allowed.
-# Copy to mirrors.conf (gitignored) and list your own pairs.
+# Copy to ~/.config/system/mirror-sync/mirrors.conf ($SYSTEM_TOOLS_CONFIG/mirror-sync) and list your own pairs.
 # The destination becomes an EXACT mirror of the source on every run
 # (rsync -a --delete): extra files in the destination are deleted.
 # Paths are literal; write them out in full (no ~ or $HOME).

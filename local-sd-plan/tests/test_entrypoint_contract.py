@@ -29,10 +29,12 @@ class EntrypointCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
-        # The conf sits beside the script, where a developer's own lists live,
-        # so it is named for this case's temporary folder and nobody else's.
+        # The conf lives in the config directory, pointed at this case's
+        # temporary folder, so no developer's own list is ever in reach.
         self.profile = f"contract-{self.home.name}"
-        self.conf = FOLDER / f"repos.{self.profile}.conf"
+        self.config = self.home / "config"
+        (self.config / "sd-plan").mkdir(parents=True)
+        self.conf = self.config / "sd-plan" / f"repos.{self.profile}.conf"
         self.assertFalse(self.conf.exists(), f"{self.conf} predates the case")
         self.addCleanup(self.remove_conf)
         self.runner = self.home / "runner.sh"
@@ -51,6 +53,7 @@ class EntrypointCase(unittest.TestCase):
         environment.update({
             "HOME": str(self.home),
             "SD_PLAN_PROFILE": self.profile,
+            "SYSTEM_TOOLS_CONFIG": str(self.config),
             "MACHINE_SETUP_STATE": str(self.home / "absent"),
             "SD_PLAN_RUNNER": str(self.runner),
             "PYTHON": sys.executable,

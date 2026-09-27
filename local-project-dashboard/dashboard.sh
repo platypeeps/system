@@ -27,11 +27,14 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # gitignored for a reason that has outlived its cause: it still carries the
 # Jira credentials the deleted server's Issues tab read, which nothing here
 # reads any more. `.env.example` no longer documents them.
-[ -f "$DIR/.env" ] && . "$DIR/.env"
+# The file lives in the config directory: <config>/project-dashboard/.env,
+# where <config> is $SYSTEM_TOOLS_CONFIG (default ~/.config/system).
+. "$DIR/../lib/config.sh"
+st_source_env project-dashboard
 # Personal paths and the label prefix may come from .env. Export the ones set
 # so collectors.py and `install` (which copies them into the LaunchAgent) see
 # the same values this script does.
-for _name in VAULT REPO_ROOT SYSTEM_TOOLS_LABEL_PREFIX; do
+for _name in VAULT REPO_ROOT SYSTEM_TOOLS_LABEL_PREFIX SYSTEM_TOOLS_CONFIG; do
   if eval "[ -n \"\${$_name:-}\" ]"; then export "$_name"; fi
 done
 
@@ -222,8 +225,13 @@ environment:
                               renders -- those run under the server's
                               interpreter, below
   VAULT                       vault path, read by collectors.py itself
-                              (default ~/Documents/Vault; set it in .env)
+                              (default ~/Documents/Vault; set it in
+                              <config>/project-dashboard/.env)
   REPO_ROOT                   checkout root, likewise (default ~/repos)
+  SYSTEM_TOOLS_CONFIG         config root (default ~/.config/system);
+                              .env and documents.conf are read from its
+                              project-dashboard/, cron job files from
+                              cron-jobs/jobs
   SD_DASHBOARD_PYTHON         interpreter containing installed sd_db, for
                               serve, preflight, install and health (default
                               command-pack .venv/bin/python). A Resources view

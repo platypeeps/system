@@ -7,14 +7,16 @@
 # Usage: obsidian-review.sh run|list|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$DIR/../lib/config.sh"
 NOTIFY="$DIR/../local-notify/notify.sh"
 ACTIONS="$DIR/../local-task-actions/task-actions.sh"
 JEV="$DIR/../local-jev/jev.sh"
 
-# .env (gitignored, see .env.example) provides defaults only; an exported
+# <config>/obsidian-review/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
+# default ~/.config/system; see .env.example) provides defaults only; an exported
 # OBSIDIAN_VAULT wins.
 ENV_OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"
-[ -f "$DIR/.env" ] && . "$DIR/.env"
+st_source_env obsidian-review
 [ -n "$ENV_OBSIDIAN_VAULT" ] && OBSIDIAN_VAULT="$ENV_OBSIDIAN_VAULT"
 VAULT="${OBSIDIAN_VAULT:-$HOME/Documents/Obsidian Vault}"
 
@@ -58,7 +60,8 @@ added date leave this machine.
 
 environment:
   OBSIDIAN_VAULT       vault path (default: ~/Documents/Obsidian Vault;
-                       also read from ./.env, see .env.example)
+                       also read from <config>/obsidian-review/.env,
+                          see .env.example)
   JEV_OBSIDIAN_REVIEW  0, off, false, no or disabled switches the digest's Jev ordering off;
                        unset means on
   OBSIDIAN_REVIEW_TODAY  YYYY-MM-DD the digest counts note ages from

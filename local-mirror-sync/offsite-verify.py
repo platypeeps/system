@@ -41,24 +41,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 
-def _load_folder_env(path: Path) -> None:
-    """Read KEY=VALUE lines from this folder's gitignored `.env`, if present.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import system_tools_config  # noqa: E402
+
+#: This tool's settings file, `<config>/mirror-sync/.env`, outside the checkout.
+ENV_FILE = system_tools_config.config_dir("mirror-sync") / ".env"
+
+
+def _load_config_env() -> None:
+    """Read KEY=VALUE lines from `<config>/mirror-sync/.env`, if present.
 
     An exported variable wins over the file, so a job or a test can still
     override a value without editing it.
     """
-    if not path.is_file():
-        return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip().removeprefix("export ").strip()
-        os.environ.setdefault(key, value.strip().strip('"').strip("'"))
+    for key, value in system_tools_config.read_env("mirror-sync").items():
+        os.environ.setdefault(key, value)
 
 
-_load_folder_env(Path(__file__).resolve().parent / ".env")
+_load_config_env()
 
 #: The share root the offsite copies live under. Overridable so the tests can
 #: run against a fixture, and so a second machine can name its own mount.
@@ -73,8 +73,8 @@ NETWORK_FILESYSTEMS = frozenset({"smbfs", "cifs", "nfs", "afpfs", "webdav", "fus
 # NAS this account backs up to. A network filesystem alone says only that some
 # other machine serves the bytes; naming the share says which one, so a
 # different NAS mounted at the same path does not pass for it. It is a local
-# value, so it comes from OFFSITE_VERIFY_EXPECTED_SHARE (exported, or in the
-# folder's gitignored `.env`); there is no built-in default.
+# value, so it comes from OFFSITE_VERIFY_EXPECTED_SHARE (exported, or in
+# `<config>/mirror-sync/.env`); there is no built-in default.
 EXPECTED_SHARE_VARIABLE = "OFFSITE_VERIFY_EXPECTED_SHARE"
 DEFAULT_EXPECTED_SHARE = os.environ.get(EXPECTED_SHARE_VARIABLE)
 
@@ -668,10 +668,11 @@ def main(argv: list[str] | None = None) -> int:
     if not arguments.allow_local_root:
         off_machine = _off_machine(root, arguments.expected_share or "", report)
         if arguments.expected_share is None:
-            report.fail(f"{EXPECTED_SHARE_VARIABLE} is not set: export"
-                        f" {EXPECTED_SHARE_VARIABLE}=<server>/<share>, or copy .env.example"
-                        " to .env in local-mirror-sync and set it there"
-                        " (--expected-share overrides both)")
+            report.fail(system_tools_config.missing(
+                            EXPECTED_SHARE_VARIABLE, "mirror-sync", ".env",
+                            "local-mirror-sync")
+                        + f" Set it as {EXPECTED_SHARE_VARIABLE}=<server>/<share>"
+                        " (--expected-share overrides both).")
             off_machine = False
         if not off_machine:
             for line in report.lines:

@@ -18,9 +18,12 @@ ZPAGES_PORT="${OTELCOL_ZPAGES_PORT:-55679}"
 STARTED="$DIR/state/started"
 
 # config.yaml reads the OTLP/HTTP export destination out of the environment so
-# no live credential sits in a tracked file. A missing .env is fine when the values are
-# already exported.
-[ -f "$DIR/.env" ] && . "$DIR/.env"
+# no live credential sits in a tracked file; the values come from
+# <config>/opentelemetry-collector/.env (lib/config.sh). A missing file is
+# fine when the values are already exported.
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
+st_source_env opentelemetry-collector
 
 require_env() {
   missing=""
@@ -29,8 +32,7 @@ require_env() {
     [ -n "$val" ] || missing="$missing $v"
   done
   [ -z "$missing" ] || {
-    echo "missing:$missing" >&2
-    echo "export them, or copy .env.example to .env and fill it in" >&2
+    for v in $missing; do st_missing "$v" opentelemetry-collector .env; done
     exit 1
   }
   case "$OTLP_EXPORT_URL" in
@@ -139,7 +141,9 @@ environment: OTELCOL_GRPC_PORT (4317), OTELCOL_HTTP_PORT (4318),
              OTELCOL_ZPAGES_PORT (55679)
              OTLP_EXPORT_URL, OTLP_EXPORT_AUTH (required by start: the
              OTLP/HTTP endpoint to forward to and its Authorization header
-             value; from .env or the environment — see .env.example)
+             value; from <config>/opentelemetry-collector/.env, <config> being
+             SYSTEM_TOOLS_CONFIG or ~/.config/system, or the
+             environment — see .env.example)
 HELPEOF
     exit 0
     ;;

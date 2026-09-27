@@ -570,26 +570,6 @@ class StoragePolicy(unittest.TestCase):
                 self.assertEqual(report["dispatch_allowed"], expected)
 
 
-    @unittest.skipUnless(sys.platform == "darwin", "native APFS immutable flags")
-    def test_native_immutable_retention_and_thawed_restore(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            clone = root / "active"
-            clone.mkdir()
-            (clone / "precious").write_text("immutable original")
-            retained = root / "retention/1/1/clone"
-            try:
-                storage.retain(clone, retained)
-                with self.assertRaises(PermissionError):
-                    (retained / "precious").write_text("must be refused")
-                restored = storage.restore({"id": "1" * 32, "retained_path": str(retained)}, root / "restored")
-                (restored / "precious").write_text("operator can edit restored copy")
-                self.assertEqual((retained / "precious").read_text(), "immutable original")
-            finally:
-                if retained.exists():
-                    subprocess.run(["chflags", "-R", "nouchg", str(retained)], check=True)
-
-
 
 class Processes(unittest.TestCase):
     def test_kernel_identity_and_recycled_pid_refusal(self):

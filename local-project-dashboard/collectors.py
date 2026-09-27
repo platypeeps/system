@@ -104,10 +104,28 @@ import urllib.parse
 
 HERE = pathlib.Path(__file__).resolve().parent
 SYSTEM = HERE.parent
+sys.path.insert(0, str(SYSTEM / "lib"))
+import system_tools_config  # noqa: E402  (the checkout's shared config rule)
+
+
+def cron_job_files():
+    """Every job file `cron-jobs.sh` would run, one per name, in name order.
+
+    The same lookup: each `CRON_JOBS_EXTRA_DIRS` entry first (a job there
+    overrides a same-named one), then `<config>/cron-jobs/jobs`.
+    """
+    dirs = [pathlib.Path(os.path.expanduser(d))
+            for d in os.environ.get("CRON_JOBS_EXTRA_DIRS", "").split(":") if d]
+    dirs.append(system_tools_config.config_dir("cron-jobs") / "jobs")
+    found = {}
+    for directory in dirs:
+        for path in sorted(directory.glob("*.job")):
+            found.setdefault(path.stem, path)
+    return [found[name] for name in sorted(found)]
 
 VAULT = pathlib.Path(os.environ.get("VAULT", os.path.expanduser("~/Documents/Vault")))
 REPO_ROOT = pathlib.Path(os.environ.get("REPO_ROOT", os.path.expanduser("~/repos")))
-#: launchd label prefix shared by every system-tools job and service.
+#: launchd label prefix shared by every system job and service.
 LABEL_PREFIX = os.environ.get("SYSTEM_TOOLS_LABEL_PREFIX", "local.system-tools")
 
 
@@ -1098,7 +1116,6 @@ def read_drift(log):
 def collect_toolbox():
     """The local-* fleet: cron health from launchd's own last-exit record,
     docker state, and machine-setup's drift count."""
-    jobs_dir = SYSTEM / "local-cron-jobs" / "jobs"
     logs_dir = SYSTEM / "local-cron-jobs" / "logs"
 
     loaded = {}
@@ -1108,7 +1125,7 @@ def collect_toolbox():
             loaded[parts[2]] = (parts[0], parts[1])
 
     jobs = []
-    for jf in sorted(jobs_dir.glob("*.job")):
+    for jf in cron_job_files():
         text = jf.read_text(errors="replace")
         sched = (re.search(r'JOB_SCHEDULE="([^"]*)"', text) or [None, ""])[1]
         desc = " ".join(l.lstrip("# ").strip() for l in text.split("\n")

@@ -127,6 +127,8 @@ class Nested(unittest.TestCase):
         dashboard.mkdir(parents=True)
         for name in ("dashboard.sh", "sd_tile.py", "collectors.py"):
             shutil.copy2(HERE / name, dashboard / name)
+        # dashboard.sh and collectors.py read the checkout's shared config helpers.
+        shutil.copytree(HERE.parent / "lib", dashboard.parent / "lib")
         environment = {**self.environment(), "HOME": str(self.root), "DASHBOARD_PYTHON": sys.executable}
         process = subprocess.Popen(["./local-project-dashboard/dashboard.sh", "tile", "toolbox"],
             cwd=dashboard.parent, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

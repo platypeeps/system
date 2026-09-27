@@ -61,6 +61,10 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         # The real script, reached by the wrapper for every job the wrapper
         # does not stage itself.
         shutil.copy(CRON_JOBS, folder / "real-cron-jobs.sh")
+        # It sources the shared config resolver from its sibling `lib/`.
+        # Without it the script died before `status`, and that death passed
+        # for the failure verdict under bash and fell through under dash.
+        shutil.copytree(CRON_JOBS.parent.parent / "lib", cls.root / "lib")
         # `demo`'s evidence: a completed run that recorded a failure, with no
         # launchd identity -- which is what a run by hand writes when launchd
         # holds no coalition for the label.

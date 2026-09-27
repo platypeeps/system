@@ -6,7 +6,16 @@
 # Usage: ai-apps.sh status|capture|compare|setup|adopt|update
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-PROFILES="$DIR/profiles"
+. "$DIR/../lib/config.sh"
+# The .inv manifests are a machine's own inventory, so they live in the shared
+# config directory outside the checkout. AI_APPS_PROFILES_DIR points
+# elsewhere; a private fork that tracks them sets it to this folder's
+# profiles/. profiles/example.inv stays in the repository as the format.
+PROFILES="${AI_APPS_PROFILES_DIR:-$(st_config_dir ai-apps)/profiles}"
+
+# The work checkout root. AI_APPS_WORK_ROOT and local-repo-sync's
+# REPO_SYNC_WORK_ROOT mean the same thing; SYSTEM_TOOLS_WORK_ROOT sets both.
+WORK_ROOT="${AI_APPS_WORK_ROOT:-${SYSTEM_TOOLS_WORK_ROOT:-}}"
 
 APPS="claude-code claude-desktop codex copilot opencode antigravity"
 
@@ -26,7 +35,7 @@ if [ -n "${AI_APPS_PROFILE:-}" ]; then
   PROFILE="$AI_APPS_PROFILE"
 elif [ -r "$MACHINE_SETUP_PROFILE_FILE" ]; then
   PROFILE="$(head -1 "$MACHINE_SETUP_PROFILE_FILE" | tr -d '\n\r')"
-elif [ -n "${AI_APPS_WORK_ROOT:-}" ] && [ -d "$AI_APPS_WORK_ROOT" ]; then
+elif [ -n "$WORK_ROOT" ] && [ -d "$WORK_ROOT" ]; then
   PROFILE="work"
 else
   PROFILE="personal"
@@ -438,7 +447,7 @@ cmd_compare() {
     [ -n "$only1" ] && { echo "only in $1:"; echo "$only1" | show_rows | sed 's/^/  /'; }
     [ -n "$only2" ] && { echo "only in $2:"; echo "$only2" | show_rows | sed 's/^/  /'; }
     echo
-    echo "adjust: edit profiles/<p>.inv, or use 'adopt' / 'setup --apply' on the machine that should change"
+    echo "adjust: edit $PROFILES/<p>.inv, or use 'adopt' / 'setup --apply' on the machine that should change"
     return 0
   fi
   INV=$(inventory)
@@ -704,11 +713,13 @@ cmd_nightly() {
   # An `if`, for the same reason the commit call below is one: an AND-OR list
   # whose test is false leaves the list's status at the test's, and the next
   # reader who appends a `|| check_rc=$?` to it records that instead.
-  # The .inv files are local and gitignored in the public checkout; a
-  # gitignored file has no commit to land in, so the commit step is skipped.
+  # The .inv files normally live in the config directory, outside the
+  # checkout, and a file there (or a gitignored one inside it) has no commit
+  # to land in, so the commit step is skipped.
   if [ "${SD_AUTOCOMMIT:-1}" != "0" ] \
-     && git -C "$DIR" check-ignore -q "$PROFILES/$PROFILE.inv" 2>/dev/null; then
-    echo "ai-apps: profiles/$PROFILE.inv is gitignored here; skipping the commit step."
+     && { [ "$(cd "$PROFILES" 2>/dev/null && pwd)" != "$DIR/profiles" ] \
+          || git -C "$DIR" check-ignore -q "$PROFILES/$PROFILE.inv" 2>/dev/null; }; then
+    echo "ai-apps: $PROFILES/$PROFILE.inv is outside the checkout or gitignored; skipping the commit step."
     SD_AUTOCOMMIT=0
   fi
   if [ "${SD_AUTOCOMMIT:-1}" != "0" ]; then
@@ -800,7 +811,8 @@ usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--ap
   status                     which apps are installed and how many MCP
                              servers / skills / agents / plugins each has
   capture [profile]          snapshot the live inventory (names only, no
-                             secrets) into profiles/<profile>.inv; shows the
+                             secrets) into <config>/ai-apps/profiles/
+                             <profile>.inv; shows the
                              diff against the previous capture
   compare                    cross-APP matrix on this machine: every skill,
                              MCP server, agent and plugin vs the apps that
@@ -829,9 +841,13 @@ usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--ap
                              rehearsal by hand.
 
 apps: claude-code, claude-desktop, codex, copilot, opencode, antigravity
+manifests: <config>/ai-apps/profiles/<profile>.inv, where <config> is
+$SYSTEM_TOOLS_CONFIG (default ~/.config/system); AI_APPS_PROFILES_DIR
+names another folder. profiles/example.inv in this folder shows the format.
 profile detection: the profile machine-setup recorded in
 ~/.config/machine-setup/profile; failing that, work if AI_APPS_WORK_ROOT
-names an existing directory, else personal. Override with AI_APPS_PROFILE. An unrecognised profile
+(else SYSTEM_TOOLS_WORK_ROOT, which local-repo-sync reads too) names an
+existing directory, else personal. Override with AI_APPS_PROFILE. An unrecognised profile
 is refused rather than defaulted — capture writes the profile's .inv, so a
 wrong answer overwrites another machine's inventory.
 HELPEOF

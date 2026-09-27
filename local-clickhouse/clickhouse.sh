@@ -12,17 +12,14 @@ HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-8123}"
 NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
 MCP_PORT="${CLICKHOUSE_MCP_PORT:-8002}"
 
-# ./.env provides defaults only — already-exported values win (same
-# precedence rule as local-notify). The file is optional; without it the
+# <config>/clickhouse/.env (see lib/config.sh) provides defaults only —
+# already-exported values win (same precedence rule as local-notify). The file is optional; without it the
 # baked-in local dev values apply.
 ENV_CLICKHOUSE_USER="${CLICKHOUSE_USER:-}"
 ENV_CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-}"
-if [ -f "$DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$DIR/.env"
-  set +a
-fi
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
+st_source_env clickhouse
 if [ -n "$ENV_CLICKHOUSE_USER" ]; then CLICKHOUSE_USER="$ENV_CLICKHOUSE_USER"; fi
 if [ -n "$ENV_CLICKHOUSE_PASSWORD" ]; then CLICKHOUSE_PASSWORD="$ENV_CLICKHOUSE_PASSWORD"; fi
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
@@ -75,7 +72,9 @@ usage: clickhouse.sh start|stop|update|client
   client       open clickhouse-client inside the running container
 
 CLICKHOUSE_USER (default: default) and CLICKHOUSE_PASSWORD (default: a local
-dev value) come from the environment or ./.env (see .env.example; exported
+dev value) come from the environment or
+<config>/clickhouse/.env (copy .env.example there; <config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system; exported
 values win) and are applied to the server, the MCP server, and the client.
 
 environment: CLICKHOUSE_HTTP_PORT (8123), CLICKHOUSE_NATIVE_PORT (9000),

@@ -211,4 +211,5 @@ switched off, or never keyed — stays silent in the sweep and stops nothing.
 A `3` is not a finding, this stage never made it one, and `jev enabled` is
 what decides whether the ordering runs.
 
-The `health-check-nightly` cron job (local-cron-jobs) runs `run` at 04:15.
+The example cron job `local-cron-jobs/examples/health-check-nightly.job` runs
+`run` at 04:15; copy it into `<config>/cron-jobs/jobs/` to schedule it.

@@ -12,11 +12,14 @@ checked as promises and not as comments:
   code.
 """
 
+import io
 import json
 import os
 import stat
 import sys
 import tempfile
+import unittest
+import unittest.mock
 import urllib.error
 from pathlib import Path
 
@@ -320,7 +323,10 @@ class TheOutcomes(MeteringCase):
         def garbage(_request, timeout=None):
             return Answered()
 
-        with tempfile.TemporaryFile("w+") as out:
+        # The state defaults to stdin. Supplied here, or the call blocks on
+        # whatever stdin the runner inherited (an open pipe never reaches EOF).
+        with tempfile.TemporaryFile("w+") as out, \
+                unittest.mock.patch.object(sys, "stdin", io.StringIO("a sentence")):
             code = jev.main(["noul", "is it?", "--fallback", "yes"], out=out,
                             env=self.env(JEV_RETRIES="0"), opener=garbage,
                             sleep=lambda _s: None)
@@ -340,7 +346,10 @@ class TheOutcomes(MeteringCase):
         def slow(_request, timeout=None):
             raise urllib.error.URLError(TimeoutError("timed out"))
 
-        with tempfile.TemporaryFile("w+") as out:
+        # The state defaults to stdin. Supplied here, or the call blocks on
+        # whatever stdin the runner inherited (an open pipe never reaches EOF).
+        with tempfile.TemporaryFile("w+") as out, \
+                unittest.mock.patch.object(sys, "stdin", io.StringIO("a sentence")):
             code = jev.main(["noul", "is it?", "--fallback", "yes"], out=out,
                             env=self.env(JEV_RETRIES="0"), opener=slow,
                             sleep=lambda _s: None)

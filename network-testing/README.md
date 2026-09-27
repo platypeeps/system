@@ -8,7 +8,7 @@ WiFi, and the Thunderbolt bridge). All output lands in `./logs` (gitignored).
 ```sh
 ./network-testing.sh server [port]         # iperf3 server (e.g. 5202 for a second one)
 ./network-testing.sh server-tb <name>      # server bound to a `bridge` record's address
-./network-testing.sh client <preset>       # a `client` record from hosts.conf
+./network-testing.sh client <preset>       # a `client` record from the hosts file
 ./network-testing.sh results               # throughput column from last run
 ./network-testing.sh issues                # intervals that dropped below ~300 Mbit
 ./network-testing.sh ping <name>|<ip>      # a `ping` record (e.g. gateway, dns) or an IP
@@ -18,8 +18,9 @@ WiFi, and the Thunderbolt bridge). All output lands in `./logs` (gitignored).
 
 ## Host map
 
-Presets live in `hosts.conf` beside the scripts (gitignored). Copy
-`hosts.conf.example` and replace its documentation addresses, or point
+Presets live in `~/.config/system/network-testing/hosts.conf` (`$SYSTEM_TOOLS_CONFIG/network-testing/` when that is set),
+outside the checkout. Copy `hosts.conf.example` there and replace its
+documentation addresses, or point
 `NETWORK_TESTING_HOSTS` at another file. Three record kinds:
 
 | Record | Fields | Used by |
@@ -47,12 +48,13 @@ the LAN default route stays). Re-runnable; it
 also deletes the leftover `exo` network location:
 
 ```sh
-sudo ./thunderbolt-bridge.sh <name>  # a `bridge` record in hosts.conf
+sudo ./thunderbolt-bridge.sh <name>  # a `bridge` record in the hosts file
 sudo ./thunderbolt-bridge.sh <ip>    # any address, /24
 ```
 
-`sudo` drops `NETWORK_TESTING_HOSTS`, so under `sudo` the script reads
-`hosts.conf` beside itself.
+`sudo` drops `NETWORK_TESTING_HOSTS` and may reset `HOME`, so under `sudo`
+(with neither `SYSTEM_TOOLS_CONFIG` nor `XDG_CONFIG_HOME` set) the script reads
+`~$SUDO_USER/.config/system/network-testing/hosts.conf`.
 
 It backs up `preferences.plist` next to itself before editing.
 It refuses to run while `io.exo.networksetup` is loaded, because that daemon

@@ -14,7 +14,8 @@ and 5433, so the published port stays clear of both. Override it with
 
 Default local dev credentials are `admin` / `verysecure`; override with
 `POSTGRES_USER` / `POSTGRES_PASSWORD` env vars before `start` or a
-gitignored `./.env` (see `.env.example`; exported values win). Never reuse
+`~/.config/system/postgres/.env` (`$SYSTEM_TOOLS_CONFIG/postgres/` when that is set); copy `.env.example`
+there. Exported values win. Never reuse
 these values anywhere non-local.
 
 ## Gotchas

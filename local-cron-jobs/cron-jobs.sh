@@ -2,8 +2,11 @@
 # cron-jobs — run headless Claude Code jobs on a schedule via macOS launchd,
 # fully independent of Claude Desktop or any open terminal.
 #
-# Each job is one file in ./jobs/<name>.job, or in a directory named by
-# CRON_JOBS_EXTRA_DIRS (see below), as sourced shell vars:
+# Each job is one file <name>.job in the config directory's jobs folder,
+# <config>/cron-jobs/jobs/, or in a directory named by CRON_JOBS_EXTRA_DIRS
+# (see below), as sourced shell vars. <config> is
+# ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}.
+# The repository ships no jobs; examples/ holds sample job files to copy.
 #   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N)
 #   JOB_PROMPT     prompt or /skill invocation passed to `claude -p`
 #   JOB_COMMAND    alternative to JOB_PROMPT: plain shell command run via
@@ -17,7 +20,7 @@
 # Usage:
 #   cron-jobs.sh list                     jobs, schedules, installed/loaded state
 #   cron-jobs.sh install <job>|--all      generate plist, load into launchd
-#                                        (--all = this profile; --every = all)
+#                                        (--all = every defined job)
 #   cron-jobs.sh verify [job]|--all       installed plist vs the generator
 #   cron-jobs.sh uninstall <job>|--all    unload and remove plist
 #   cron-jobs.sh run <job>                run once now, foreground (logs too)
@@ -27,38 +30,39 @@
 #   cron-jobs.sh test                     run the unittest suite in tests/
 #
 # Failure reporting: on a non-zero exit the wrapper posts a macOS notification,
-# appends to logs/failures.log, and — if NTFY_TOPIC is set in notify.conf —
-# pushes to ntfy.sh (reaches your phone). See notify.conf.example.
+# appends to logs/failures.log, and — if NTFY_TOPIC is set in
+# <config>/cron-jobs/notify.conf — pushes to ntfy.sh (reaches your phone).
+# See notify.conf.example.
 #
-# Local configuration (environment, or a gitignored .env beside this script;
-# a value already exported wins over .env). See .env.example.
+# Local configuration (environment, or <config>/cron-jobs/.env; a value
+# already exported wins over .env). See .env.example.
 #   CRON_JOBS_EXTRA_DIRS      colon-separated extra job directories, e.g. a
 #                             private repo's jobs folder. A job there overrides
-#                             a same-named job in ./jobs.
-#   CRON_JOBS_PROFILES_DIR    directory holding common.cron and <profile>.cron
-#                             manifests for `install --all`; unset = every job.
+#                             a same-named job in <config>/cron-jobs/jobs.
 #   SYSTEM_TOOLS_LABEL_PREFIX launchd label prefix (default local.system-tools);
 #                             labels are <prefix>.cron.<job>.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+. "$ROOT/../lib/config.sh"
+CONF_DIR="$(st_config_dir cron-jobs)"
 
 # Read .env here, before anything resolves a job: launchd starts `exec` with
 # only PATH and HOME, so a value exported in a login shell never reaches it.
-# Put the values in .env so install and the scheduled run agree.
-if [ -f "$ROOT/.env" ]; then
+# Put the values in <config>/cron-jobs/.env so install and the scheduled run
+# agree. Not st_source_env: an exported value must win over the file.
+if [ -f "$CONF_DIR/.env" ]; then
   _cj_extra="${CRON_JOBS_EXTRA_DIRS:-}"
-  _cj_profiles="${CRON_JOBS_PROFILES_DIR:-}"
   _cj_prefix="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
   # shellcheck source=/dev/null
-  . "$ROOT/.env"
+  . "$CONF_DIR/.env"
   [ -z "$_cj_extra" ] || CRON_JOBS_EXTRA_DIRS="$_cj_extra"
-  [ -z "$_cj_profiles" ] || CRON_JOBS_PROFILES_DIR="$_cj_profiles"
   [ -z "$_cj_prefix" ] || SYSTEM_TOOLS_LABEL_PREFIX="$_cj_prefix"
-  unset _cj_extra _cj_profiles _cj_prefix
+  unset _cj_extra _cj_prefix
 fi
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
-JOBS_DIR="$ROOT/jobs"
+JOBS_DIR="$CONF_DIR/jobs"
 EXTRA_JOB_DIRS="${CRON_JOBS_EXTRA_DIRS:-}"
 LOG_DIR="$ROOT/logs"
 FAIL_LOG="$LOG_DIR/failures.log"
@@ -92,7 +96,7 @@ JOB_PATH="$JOB_PATH$HOME/.local/bin"
 [ "$BREW_PREFIX" = /usr/local ] || JOB_PATH="$JOB_PATH:/usr/local/bin"
 JOB_PATH="$JOB_PATH:/usr/bin:/bin:/usr/sbin:/sbin"
 
-mkdir -p "$JOBS_DIR" "$LOG_DIR"
+mkdir -p "$LOG_DIR"
 
 # Where the agent is, not what it is called. Same problem as the PATH above,
 # worse consequence: this one is executed, not just listed. The default once
@@ -108,6 +112,12 @@ mkdir -p "$JOBS_DIR" "$LOG_DIR"
 # location — and when none of them exists, one sentence now rather than an
 # exec error later. Called where the binary is needed; list, verify and help
 # never ask.
+# GNU stat takes -c and does not follow /dev/fd links without -L; BSD stat
+# takes -f. GNU also accepts -f, as a filesystem query that prints the wrong
+# thing without failing, so try -c first. CI runs on Linux.
+file_inode() { stat -L -c %i "$1" 2>/dev/null || stat -L -f %i "$1"; }
+file_mtime() { stat -L -c %Y "$1" 2>/dev/null || stat -L -f %m "$1"; }
+
 claude_binary() {
   local installed="$HOME/.local/bin/claude" found
   if [ -n "${CLAUDE_BIN:-}" ]; then
@@ -144,8 +154,8 @@ label_for()  { echo "$LABEL_PREFIX.cron.$1"; }
 plist_for()  { echo "$AGENT_DIR/$(label_for "$1").plist"; }
 
 # The job directories, one per line: each CRON_JOBS_EXTRA_DIRS entry in order,
-# then ./jobs. The first directory holding <job>.job defines it, so a private
-# directory can override a job this folder ships.
+# then <config>/cron-jobs/jobs. The first directory holding <job>.job defines
+# it, so an extra directory can override a job in the config directory.
 job_dirs() {
   local d old_ifs="$IFS"
   IFS=':'
@@ -178,35 +188,6 @@ load_job() {
   if [ -n "$JOB_PROMPT" ] && [ -n "$JOB_COMMAND" ]; then
     echo "ERROR: $f sets both JOB_PROMPT and JOB_COMMAND — pick one" >&2; exit 1
   fi
-}
-
-# The jobs THIS machine's profile asks for, as opposed to every defined job.
-# `install --all` used to mean the latter, which installed one machine's
-# personal jobs on another machine that should never run them. A profile is a
-# pair of manifests in CRON_JOBS_PROFILES_DIR: common.cron plus <profile>.cron,
-# one job name per line (first field), `#` comments allowed. The profile name
-# is CRON_JOBS_PROFILE, else the first line of the machine-setup state file
-# ($MACHINE_SETUP_STATE/profile, default ~/.config/machine-setup/profile).
-# With no profile or no manifests, fall back to every job and say so: a
-# machine that never recorded a profile has no better answer available.
-profile_jobs() {
-  local state_dir profile pdir out
-  state_dir="${MACHINE_SETUP_STATE:-$HOME/.config/machine-setup}"
-  profile="${CRON_JOBS_PROFILE:-}"
-  [ -z "$profile" ] && [ -f "$state_dir/profile" ] && profile="$(head -1 "$state_dir/profile")"
-  pdir="${CRON_JOBS_PROFILES_DIR:-}"
-  if [ -z "$profile" ] || [ -z "$pdir" ] || [ ! -f "$pdir/common.cron" ]; then
-    echo "cron-jobs.sh: no profile recorded — falling back to every defined job" >&2
-    all_jobs
-    return 0
-  fi
-  out=$(cat "$pdir/common.cron" "$pdir/$profile.cron" 2>/dev/null \
-    | grep -v '^#' | grep -v '^[[:space:]]*$' | awk '{print $1}' | sort -u)
-  # Only jobs that actually exist here — a manifest naming a job this repo
-  # does not define should not abort the whole install.
-  echo "$out" | while read -r j; do
-    [ -n "$j" ] && [ -f "$(job_file "$j")" ] && echo "$j"
-  done
 }
 
 # Does the installed plist still match what the generator produces? A setup
@@ -388,10 +369,11 @@ notify_failure() { # job, exit code
   ts="$(date '+%Y-%m-%dT%H:%M:%S%z')"
   echo "$ts $job FAILED rc=$rc (log: logs/$job.log)" >> "$FAIL_LOG"
   osascript -e "display notification \"Job '$job' failed (rc=$rc). See local-cron-jobs/logs.\" with title \"cron-jobs failure\"" 2>/dev/null || true
-  # Optional phone push via ntfy.sh — set NTFY_TOPIC in notify.conf
+  # Optional phone push via ntfy.sh — set NTFY_TOPIC in
+  # <config>/cron-jobs/notify.conf
   local NTFY_TOPIC=""
   # shellcheck source=/dev/null
-  [ -f "$ROOT/notify.conf" ] && . "$ROOT/notify.conf"
+  [ -f "$CONF_DIR/notify.conf" ] && . "$CONF_DIR/notify.conf"
   if [ -n "$NTFY_TOPIC" ]; then
     curl -s -m 10 -H "Title: cron-jobs: $job failed" -H "Priority: high" \
       -d "Exit $rc at $ts on $(hostname -s). Log: local-cron-jobs/logs/$job.log" \
@@ -422,10 +404,10 @@ start_tee() { # log path
   # Not isatty: `run` redirected into a file or piped to a pager is still a
   # hand-run and still has to reach the log.
   exec 9>&1
-  tee_fd=$(stat -f '%i' /dev/fd/9 2>/dev/null || true)
+  tee_fd=$(file_inode /dev/fd/9 2>/dev/null || true)
   exec 9>&-
   if [ -f "$1" ] && [ -n "$tee_fd" ] &&
-     [ "$tee_fd" = "$(stat -f '%i' "$1" 2>/dev/null)" ]; then
+     [ "$tee_fd" = "$(file_inode "$1" 2>/dev/null)" ]; then
     return 0
   fi
   mkdir -p "$(dirname "$1")"
@@ -1116,6 +1098,8 @@ cmd_uninstall() {
 cmd_list() {
   local job state
   printf "%-28s %-18s %-10s %s\n" "JOB" "SCHEDULE (local)" "INSTALLED" "PROMPT"
+  [ -n "$(all_jobs)" ] ||
+    echo "cron-jobs.sh: no jobs in $JOBS_DIR; copy one from $ROOT/examples/ to start" >&2
   for job in $(all_jobs); do
     load_job "$job"
     if is_loaded "$job"; then state="loaded"; elif [ -f "$(plist_for "$job")" ]; then state="stale"; else state="no"; fi
@@ -1295,11 +1279,11 @@ cmd_watchdog() {
     else max=$((26 * 3600)); fi
     log="$LOG_DIR/$job.log"
     if [ -f "$log" ]; then
-      age=$(( now - $(stat -f %m "$log") ))
+      age=$(( now - $(file_mtime "$log") ))
       ref="last log activity"
     else
       # Never produced a log: measure from install time (plist mtime).
-      age=$(( now - $(stat -f %m "$(plist_for "$job")") ))
+      age=$(( now - $(file_mtime "$(plist_for "$job")") ))
       ref="never ran, installed"
     fi
     if [ "$age" -gt "$max" ]; then
@@ -1326,17 +1310,11 @@ cmd_watchdog() {
 
 each_or_one() { # cmd, target
   local cmd="$1" target="$2" j
-  if [ "$target" = "--all" ]; then
-    # Asymmetric on purpose. For install and verify, "all" means the jobs this
-    # profile wants — installing another machine's jobs is the bug being
-    # fixed. For uninstall it stays every defined job: removing more than the
-    # profile lists is exactly what cleaning up a mis-install needs.
-    local list rc=0
-    case "$cmd" in
-      cmd_install|cmd_verify) list="$(profile_jobs)" ;;
-      *)                      list="$(all_jobs)" ;;
-    esac
-    for j in $list; do "$cmd" "$j" || rc=1; done
+  if [ "$target" = "--all" ] || [ "$target" = "--every" ]; then
+    # --all is every defined job: the config directory holds only the jobs
+    # this machine should run. --every is its older spelling, kept working.
+    local rc=0
+    for j in $(all_jobs); do "$cmd" "$j" || rc=1; done
     return $rc
   else
     "$cmd" "$target"
@@ -1346,12 +1324,8 @@ each_or_one() { # cmd, target
 case "${1:-}" in
   list)      cmd_list ;;
   watchdog)  cmd_watchdog ;;
-  install)   [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh install <job>|--all|--every" >&2; exit 1; }
-             if [ "$2" = "--every" ]; then
-               for j in $(all_jobs); do cmd_install "$j"; done
-             else
-               each_or_one cmd_install "$2"
-             fi ;;
+  install)   [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh install <job>|--all" >&2; exit 1; }
+             each_or_one cmd_install "$2" ;;
   verify)    each_or_one cmd_verify "${2:---all}" ;;
   uninstall) [ -n "${2:-}" ] || { echo "usage: cron-jobs.sh uninstall <job>|--all" >&2; exit 1; }
              each_or_one cmd_uninstall "$2" ;;
@@ -1364,11 +1338,11 @@ case "${1:-}" in
              exec "${PYTHON:-python3}" -m unittest discover -s "$ROOT/tests" -t "$ROOT" "$@" ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: cron-jobs.sh list|install <job>|--all|--every|verify [job]|uninstall <job>|--all|run <job>|status [job]|logs <job> [lines]|watchdog|test
+usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|status [job]|logs <job> [lines]|watchdog|test
 
   list         jobs, schedules, installed state
-  install      generate plist + load into launchd (<job>, or --all for the
-               jobs this machine's profile lists; --every for all of them)
+  install      generate plist + load into launchd (<job>, or --all for
+               every job in the job directories)
   verify       compare each installed plist against what the generator
                produces now (<job> or --all); exits 1 on any STALE. Read
                only — never touches launchd.
@@ -1424,11 +1398,15 @@ usage: cron-jobs.sh list|install <job>|--all|--every|verify [job]|uninstall <job
   exec         internal: what the LaunchAgent invokes
   test         run the unittest suite in tests/ (extra args go to unittest)
 
-configuration (environment or a gitignored .env here; see .env.example):
+configuration: <config> is ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}
+  <config>/cron-jobs/jobs/*.job  the job definitions (examples/ has samples)
+  <config>/cron-jobs/.env        the variables below; an exported value wins
+                                 (copy local-cron-jobs/.env.example)
+  <config>/cron-jobs/notify.conf NTFY_TOPIC for a phone push on failure
+                                 (copy local-cron-jobs/notify.conf.example)
   CRON_JOBS_EXTRA_DIRS       colon-separated extra job directories; a job
-                             there overrides a same-named one in jobs/
-  CRON_JOBS_PROFILES_DIR     common.cron + <profile>.cron manifests for
-                             install/verify --all (unset: every job)
+                             there overrides a same-named one in
+                             <config>/cron-jobs/jobs
   SYSTEM_TOOLS_LABEL_PREFIX  launchd label prefix (default local.system-tools)
 HELPEOF
     exit 0

@@ -3,4 +3,4 @@
 # require of it. Mirror of the repo fleet to /Volumes/local every 12 hours,
 # ADDITIVE, with overwrites kept under "Backup Local/replaced".
 JOB_SCHEDULE="30 4,16 * * *"
-JOB_COMMAND="MIRROR_SYNC_CONF=\"$HOME/repos/system-tools/local-mirror-sync/mirrors-repos.conf\" MIRROR_SYNC_BACKUP_ROOT=\"/Volumes/local/Backup Local/replaced\" MIRROR_SYNC_ADDITIVE=1 sh \"$HOME/repos/system-tools/local-mirror-sync/mirror-sync.sh\" sync"
+JOB_COMMAND="MIRROR_SYNC_CONF=mirrors-repos.conf MIRROR_SYNC_BACKUP_ROOT=\"/Volumes/local/Backup Local/replaced\" MIRROR_SYNC_ADDITIVE=1 sh \"$HOME/repos/system/local-mirror-sync/mirror-sync.sh\" sync"

@@ -655,6 +655,8 @@ class TileUnderTheLoader(unittest.TestCase):
         dashboard.mkdir()
         for name in ("dashboard.sh", "sd_tile.py", "collectors.py"):
             shutil.copy2(HERE / name, dashboard / name)
+        # dashboard.sh and collectors.py read the checkout's shared config helpers.
+        shutil.copytree(HERE.parent / "lib", dashboard.parent / "lib")
         self.pids = self.root / "pids"
         machine = self.root / "local-machine-setup/machine-setup.sh"
         machine.parent.mkdir()

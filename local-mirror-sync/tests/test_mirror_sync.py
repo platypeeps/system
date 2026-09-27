@@ -26,6 +26,9 @@ import unittest.mock
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(FOLDER.parent / "lib"))
+import system_tools_config  # noqa: E402
+
 MIRROR_SYNC = FOLDER / "mirror-sync.sh"
 OFFSITE_VERIFY = FOLDER / "offsite-verify.py"
 
@@ -1074,7 +1077,7 @@ class PruneReplaced(Fixture):
     def fake_tools(self, flavour: str, tools: tuple[str, ...] = ("stat", "date")) -> tuple[str, Path]:
         """Put a GNU- or BSD-flavoured `stat` and `date` first on PATH.
 
-        Both are Python fakes, so CI on macOS runs the GNU branch too. Each
+        Both are Python fakes, so every platform runs both branches. Each
         call is logged, one line per call, to the returned file.
         """
         folder = self.work / f"fake-{flavour}"
@@ -1561,15 +1564,46 @@ class SnapshotOrder(unittest.TestCase):
         self.assertEqual(newest.name, "2026-09-22")
 
 
+class ConfigDirTest(Fixture):
+    """The pair lists live in <config>/mirror-sync/, not beside the script."""
+
+    def run_named(self, name: str | None, config: Path) -> subprocess.CompletedProcess:
+        environment = {k: v for k, v in os.environ.items() if k != "MIRROR_SYNC_CONF"}
+        environment["SYSTEM_TOOLS_CONFIG"] = str(config)
+        if name is not None:
+            environment["MIRROR_SYNC_CONF"] = name
+        return subprocess.run(["/bin/sh", str(MIRROR_SYNC), "list"],
+                              capture_output=True, text=True, env=environment)
+
+    def test_the_default_list_and_a_bare_name_resolve_in_the_config_dir(self) -> None:
+        config = self.work / "config"
+        self.write(config / "mirror-sync" / "mirrors.conf", "/src/default|/dst/default\n")
+        self.write(config / "mirror-sync" / "mirrors-repos.conf", "/src/repos|/dst/repos\n")
+        default = self.run_named(None, config)
+        self.assertEqual(default.returncode, 0, default.stderr)
+        self.assertIn("/src/default", default.stdout)
+        named = self.run_named("mirrors-repos.conf", config)
+        self.assertEqual(named.returncode, 0, named.stderr)
+        self.assertIn("/src/repos", named.stdout)
+
+    def test_a_missing_list_names_the_config_path_and_the_example(self) -> None:
+        config = self.work / "config"
+        result = self.run_named(None, config)
+        self.assertEqual(result.returncode, 1)
+        want = config / "mirror-sync" / "mirrors.conf"
+        self.assertIn(f"copy local-mirror-sync/mirrors.conf.example to {want}", result.stderr)
+
+
 FIXTURE_JOBS = FOLDER / "tests" / "fixtures" / "jobs"
 
 
 def _shipped_and_local(name: str) -> list[Path]:
-    """The committed `<name>.example` list, plus the local gitignored `<name>`
-    when this checkout has one: the property holds for both."""
+    """The committed `<name>.example` list, plus this machine's `<name>` in
+    `<config>/mirror-sync/` when it has one: the property holds for both."""
     found = [FOLDER / f"{name}.example"]
-    if (FOLDER / name).is_file():
-        found.append(FOLDER / name)
+    live = system_tools_config.config_dir("mirror-sync") / name
+    if live.is_file():
+        found.append(live)
     return found
 
 
@@ -1683,8 +1717,7 @@ class RepoMirror(unittest.TestCase):
         # overwrites. Both have to be on.
         self.assertIn("MIRROR_SYNC_ADDITIVE=1", self.command)
         self.assertIn('MIRROR_SYNC_BACKUP_ROOT="/Volumes/local/Backup Local/replaced"', self.command)
-        self.assertIn(f'local-mirror-sync/{self.CONF_NAME}"',
-                      self.command)
+        self.assertIn(f"MIRROR_SYNC_CONF={self.CONF_NAME} ", self.command)
 
     def test_a_backup_root_with_a_space_keeps_what_it_overwrites(self) -> None:
         # The real root is "Backup Local/replaced". A path with a space is the
@@ -1755,7 +1788,7 @@ class NasCopy(unittest.TestCase):
         self.assertIn("MIRROR_SYNC_ADDITIVE=1", command)
         self.assertNotIn("MIRROR_SYNC_BACKUP_ROOT", command)
         self.assertNotIn("replaced", command)
-        self.assertIn(f'local-mirror-sync/{self.CONF_NAME}"', command)
+        self.assertIn(f"MIRROR_SYNC_CONF={self.CONF_NAME} ", command)
 
     def test_the_copy_runs_only_after_the_snapshot_succeeded(self) -> None:
         # A separate schedule does not order them: after a night asleep,

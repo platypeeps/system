@@ -30,7 +30,6 @@ __pycache__/
 # Secrets — real values live only locally; commit *.example instead
 .env
 *.secret
-local-cron-jobs/notify.conf
 # Salted hashes of the last gh secret set pushes (scan-for-secrets refresh)
 local-scan-for-secrets/.gh-secrets-state
 
@@ -68,17 +67,12 @@ docs/dashboard/
 local-cron-jobs/notify.conf
 local-dependabot/allowed-repos.conf
 local-maintenance/maintenance.conf
-local-mirror-sync/mirrors-nas.conf
-local-mirror-sync/mirrors-repos.conf
-local-mirror-sync/mirrors.conf
+local-maintenance/maintenance.*.conf
+local-mirror-sync/mirrors*.conf
 local-project-dashboard/documents.conf
-local-repo-sync/repos.common.conf
-local-repo-sync/repos.personal.conf
-local-repo-sync/repos.terra.conf
-local-repo-sync/repos.work.conf
+local-repo-sync/repos.*.conf
 local-scan-for-secrets/scan-for-secrets.conf
-local-sd-plan/repos.personal.conf
-network-testing/hosts.conf
+local-sd-plan/repos.*.conf
 local-ai-apps/profiles/*.inv
 !local-ai-apps/profiles/example.inv
 # LaunchAgent plists rendered from *.plist.template at install

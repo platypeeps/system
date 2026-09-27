@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-#: The launchd label prefix is shared by every system-tools service, so a
+#: The launchd label prefix is shared by every system service, so a
 #: second install under another prefix keeps its own labels.
 LABEL_PREFIX = os.environ.get("SYSTEM_TOOLS_LABEL_PREFIX", "local.system-tools")
 LABEL = f"{LABEL_PREFIX}.sd-dashboard"
@@ -391,8 +391,10 @@ def _plist(config_path, config, home):
 
 
 #: Carried into the LaunchAgent when the installing shell sets them, so the
-#: server reads the same vault, checkout root and labels as `dashboard.sh`.
-PASSED_THROUGH = ("VAULT", "REPO_ROOT", "SYSTEM_TOOLS_LABEL_PREFIX")
+#: server reads the same vault, checkout root, labels, config directory and
+#: extra job directories as `dashboard.sh`.
+PASSED_THROUGH = ("VAULT", "REPO_ROOT", "SYSTEM_TOOLS_LABEL_PREFIX", "SYSTEM_TOOLS_CONFIG",
+                  "CRON_JOBS_EXTRA_DIRS")
 
 
 def _launch_environment():

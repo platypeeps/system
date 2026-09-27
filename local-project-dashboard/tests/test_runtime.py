@@ -783,6 +783,13 @@ class LaunchEnvironment(unittest.TestCase):
         self.assertNotIn("SYSTEM_TOOLS_LABEL_PREFIX", environment)
         self.assertEqual(environment["SD_DASHBOARD_PYTHON"], sys.executable)
 
+    def test_the_config_directory_passes_through(self):
+        values = {"SYSTEM_TOOLS_CONFIG": "/config/system", "CRON_JOBS_EXTRA_DIRS": "/more/jobs"}
+        with patch.dict(os.environ, values, clear=False):
+            environment = runtime._launch_environment()
+        self.assertEqual(environment["SYSTEM_TOOLS_CONFIG"], "/config/system")
+        self.assertEqual(environment["CRON_JOBS_EXTRA_DIRS"], "/more/jobs")
+
 
 if __name__ == "__main__":
     unittest.main()

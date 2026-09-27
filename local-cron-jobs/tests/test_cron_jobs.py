@@ -39,6 +39,7 @@ LABEL_PREFIX = "local.system-tools"
 CRON_LABEL_ARM = re.compile(r"[^\s(]*\.cron\.\*\)")
 CRON_LABEL_ARM_EOL = re.compile(r"[^\s(]*\.cron\.\*\)\n")
 SCRIPT = pathlib.Path(os.environ.get("CRON_JOBS_TEST_SCRIPT") or FOLDER / "cron-jobs.sh")
+LIB_CONFIG = FOLDER.parent / "lib" / "config.sh"
 
 # The fake agent: one file for argv and one for the environment it was
 # started with, NUL-separated so a value holding a newline cannot split. It
@@ -58,18 +59,26 @@ exit "${FAKE_CLAUDE_EXIT:-0}"
 
 
 class Fixture:
-    """A disposable copy of cron-jobs.sh with its own jobs/, logs/ and HOME.
+    """A disposable copy of cron-jobs.sh with its own config dir, logs/ and HOME.
 
-    The script resolves jobs and logs relative to wherever it sits, so the
-    copy is laid out the way the folder is.
+    The script resolves logs relative to wherever it sits and sources
+    ../lib/config.sh, so the copy is laid out the way the tree is. Jobs live
+    in <config>/cron-jobs/jobs, with SYSTEM_TOOLS_CONFIG pointed at a
+    directory of this fixture's own, never the real ~/.config.
     """
 
     def __init__(self, script=SCRIPT):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cron-jobs-test."))
         self.folder = self.tmp / "local-cron-jobs"
-        (self.folder / "jobs").mkdir(parents=True)
+        self.folder.mkdir()
         (self.folder / "logs").mkdir()
         shutil.copy(script, self.folder / "cron-jobs.sh")
+        (self.tmp / "lib").mkdir()
+        shutil.copy(LIB_CONFIG, self.tmp / "lib" / "config.sh")
+        self.config = self.tmp / "config"
+        self.conf_dir = self.config / "cron-jobs"
+        self.jobs = self.conf_dir / "jobs"
+        self.jobs.mkdir(parents=True)
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.claude = self.tmp / "claude"
@@ -167,12 +176,13 @@ class Fixture:
                 if "display notification" in line]
 
     def write_job(self, name, text):
-        (self.folder / "jobs" / f"{name}.job").write_text(text)
+        (self.jobs / f"{name}.job").write_text(text)
 
     def exec_job(self, name, extra_env=None, timeout=60):
         env = {
             "PATH": self.path(),
             "HOME": str(self.home),
+            "SYSTEM_TOOLS_CONFIG": str(self.config),
             "CLAUDE_BIN": str(self.claude),
             "FAKE_CLAUDE_LOG": str(self.claude_log),
             # `true reports ingest ...` exits 0 and records nothing; without
@@ -604,6 +614,7 @@ class StatusExitCodeTest(unittest.TestCase):
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "status", *args],
             env={"PATH": self.fx.path(stub_bin(self.fx.tmp)),
                  "HOME": str(self.fx.home),
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
                  "CRON_TEST_HELD": "0",
                  "CRON_TEST_CALLS": str(self.calls)},
             capture_output=True, text=True, timeout=60)
@@ -703,9 +714,9 @@ LATER_BOOT = "1789999999"
 class JobDirectoriesAndLabelsTest(unittest.TestCase):
     """CRON_JOBS_EXTRA_DIRS and SYSTEM_TOOLS_LABEL_PREFIX.
 
-    PIN. Jobs can live outside ./jobs, in colon-separated extra directories
-    read from the environment or from a .env beside the script, and a job
-    there overrides a same-named one in ./jobs. Labels are
+    PIN. Jobs live in <config>/cron-jobs/jobs and in colon-separated extra
+    directories read from the environment or from <config>/cron-jobs/.env, and
+    a job in an extra directory overrides a same-named one in the config dir. Labels are
     <prefix>.cron.<job>, with the prefix defaulting to local.system-tools.
     """
 
@@ -722,7 +733,8 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
 
     def run_script(self, *args, env=None):
         base = {"PATH": self.fx.path(stub_bin(self.fx.tmp)),
-                "HOME": str(self.fx.home), "CRON_TEST_HELD": "0"}
+                "HOME": str(self.fx.home),
+                "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "CRON_TEST_HELD": "0"}
         base.update(env or {})
         return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
                               env=base, capture_output=True, text=True, timeout=60)
@@ -759,14 +771,14 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
         # launchd starts `exec` with only PATH and HOME, so the scheduled run
         # learns the extra directories from .env.
         (self.extra / "private.job").write_text('JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
-        (self.fx.folder / ".env").write_text(f'CRON_JOBS_EXTRA_DIRS="{self.extra}"\n')
+        (self.fx.conf_dir / ".env").write_text(f'CRON_JOBS_EXTRA_DIRS="{self.extra}"\n')
         result = self.fx.exec_job("private")
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_an_exported_value_wins_over_env_file(self):
         (self.extra / "demo.job").write_text('JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 7"\n')
         (self.extra2 / "demo.job").write_text('JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
-        (self.fx.folder / ".env").write_text(f'CRON_JOBS_EXTRA_DIRS="{self.extra}"\n')
+        (self.fx.conf_dir / ".env").write_text(f'CRON_JOBS_EXTRA_DIRS="{self.extra}"\n')
         result = self.fx.exec_job("demo", extra_env={"CRON_JOBS_EXTRA_DIRS": str(self.extra2)})
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -797,9 +809,53 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
         self.assertIn("<string>example.test.cron.demo</string>", plist.read_text())
         self.assertEqual(self.run_script("verify", "demo", env=env).stdout.split()[0], "ok")
 
+    def test_jobs_come_from_the_config_dir_only(self):
+        # PIN. The repository ships no jobs: a .job beside the script is not
+        # read, and the config directory's jobs folder is.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        (self.fx.folder / "jobs").mkdir()
+        (self.fx.folder / "jobs" / "shipped.job").write_text('JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        (self.fx.folder / "examples").mkdir()
+        (self.fx.folder / "examples" / "sample.job").write_text('JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        out = self.run_script("list").stdout
+        rows = [line.split()[0] for line in out.splitlines()[1:]]
+        self.assertEqual(rows, ["demo"])
+
+    def test_list_with_no_jobs_names_the_config_dir(self):
+        result = self.run_script("list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(self.fx.jobs), result.stderr)
+        self.assertIn("examples/", result.stderr)
+
+    def test_install_all_installs_every_job(self):
+        # PIN. There is no profile filter: --all is every job in the job
+        # directories, including the extra ones.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        (self.extra / "private.job").write_text('JOB_SCHEDULE="0 4 * * *"\nJOB_COMMAND="true"\n')
+        env = {**self.extra_env(), "CRON_JOBS_PROFILE": "other"}
+        result = self.run_script("install", "--all", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agents = self.fx.home / "Library" / "LaunchAgents"
+        self.assertEqual(sorted(p.name for p in agents.glob("*.plist")),
+                         [f"{LABEL_PREFIX}.cron.demo.plist", f"{LABEL_PREFIX}.cron.private.plist"])
+        verify = self.run_script("verify", "--all", env=env)
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+
+    def test_the_examples_parse(self):
+        # The shipped examples are documentation, not installed jobs; each
+        # must still load as a job when copied into the config directory.
+        examples = sorted((FOLDER / "examples").glob("*.job"))
+        self.assertTrue(examples, "local-cron-jobs/examples holds no .job files")
+        for example in examples:
+            shutil.copy(example, self.fx.jobs / example.name)
+        result = self.run_script("list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [line.split()[0] for line in result.stdout.splitlines()[1:]]
+        self.assertEqual(sorted(rows), sorted(e.stem for e in examples))
+
     def test_help_names_the_configuration(self):
         text = self.run_script("help").stdout
-        for name in ("CRON_JOBS_EXTRA_DIRS", "CRON_JOBS_PROFILES_DIR", "SYSTEM_TOOLS_LABEL_PREFIX"):
+        for name in ("CRON_JOBS_EXTRA_DIRS", "SYSTEM_TOOLS_LABEL_PREFIX", "<config>/cron-jobs/jobs"):
             self.assertIn(name, text)
 
 
@@ -873,6 +929,7 @@ def stub_env(fx, folder, runs, lifetime=LIFETIME, state="not running",
     may, and may not, retire it."""
     return {"PATH": fx.path(folder),
             "HOME": str(fx.home),
+            "SYSTEM_TOOLS_CONFIG": str(fx.config),
             # `true reports ingest ...` exits 0 and records nothing, so an
             # `exec` from here cannot file a run in the shared database.
             "SD_REPORT_BIN": "/usr/bin/true",
@@ -1039,6 +1096,7 @@ class EveryRunLeavesAnOutcomeTest(unittest.TestCase):
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "status", *args],
             env={"PATH": self.fx.path(stub_bin(self.fx.tmp)),
                  "HOME": str(self.fx.home),
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
                  "CRON_TEST_HELD": "0",
                  "CRON_TEST_CALLS": str(self.calls)},
             capture_output=True, text=True, timeout=60)
@@ -1097,7 +1155,7 @@ class EveryRunLeavesAnOutcomeTest(unittest.TestCase):
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
         self.assertEqual(self.fx.exec_job("demo").returncode, 0)
         self.assertIn("done", self.log_text())
-        (self.fx.folder / "jobs" / "demo.job").unlink()
+        (self.fx.jobs / "demo.job").unlink()
         self.assertNotEqual(self.fx.exec_job("demo").returncode, 0)
         self.assertRegex(self.log_text(), r"FAILED rc=[0-9]+")
         self.assertEqual(self.status("demo").returncode, 1)

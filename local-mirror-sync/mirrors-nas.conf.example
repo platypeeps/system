@@ -1,5 +1,5 @@
 # Off-machine pair: the USB disk's Backup folder to a NAS, once a day.
-# Copy to mirrors-nas.conf (gitignored) and set your own paths.
+# Copy to ~/.config/system/mirror-sync/mirrors-nas.conf ($SYSTEM_TOOLS_CONFIG/mirror-sync) and set your own paths.
 # /Volumes/Offsite is a NAS share mounted over SMB; it is the only
 # destination here not on this Mac, so it is the copy that survives theft,
 # fire or a dead Mac.

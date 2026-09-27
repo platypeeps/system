@@ -8,7 +8,8 @@ Forwards everything it receives to an OTLP/HTTP backend of your choice.
 ## Usage
 
 ```sh
-cp .env.example .env        # first run: fill in the export URL and auth header
+mkdir -p ~/.config/system/opentelemetry-collector
+cp .env.example ~/.config/system/opentelemetry-collector/.env   # first run: fill in the export URL and auth header
 ./opentelemetry-collector.sh start|stop|status|update
 ```
 
@@ -23,7 +24,7 @@ collector that was running reads as broken until `start` or `stop` runs again.
 
 `start` refuses to run without `OTLP_EXPORT_URL` (the backend's OTLP/HTTP
 base URL) and `OTLP_EXPORT_AUTH` (the `Authorization` header value), from
-`.env` or already exported.
+`~/.config/system/opentelemetry-collector/.env` (`$SYSTEM_TOOLS_CONFIG/opentelemetry-collector/` when that is set) or already exported.
 
 ## Gotchas
 
@@ -39,4 +40,4 @@ base URL) and `OTLP_EXPORT_AUTH` (the `Authorization` header value), from
   loopback — the published ports reach nothing and `curl` to `:4318` returns
   no response at all. Host-side exposure stays loopback-only because the run
   script publishes on `127.0.0.1`.
-- The export credential lives in `.env`, never in `config.yaml`.
+- The export credential lives in the config `.env`, never in `config.yaml`.

@@ -100,8 +100,10 @@ So permission is necessary and not sufficient. Three rules, in order:
    ones join automatically, which is the enumerate-never-recite principle
    still doing its job where it applies.
 3. **Every other owner — only if named in `allowed-repos.conf`.** That file
-   sits beside this one, is local and gitignored (copy
-   `allowed-repos.conf.example`), and lists one `owner/name` per line. It
+   lives outside the checkout in `<config>/dependabot/allowed-repos.conf`
+   (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`;
+   copy `allowed-repos.conf.example` there; `DEPENDABOT_ALLOWED_REPOS_FILE`
+   names another file), and lists one `owner/name` per line. It
    holds the operator's own consent, so it is not published. Missing means
    none.
 

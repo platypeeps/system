@@ -3,7 +3,7 @@
 #
 # There is no unit harness for the Swift source, so this runs the real
 # binary end to end with open(2) stood in by interpose_open.c
-# (DYLD_INSERT_LIBRARIES); the system-native tools leg runs it through
+# (DYLD_INSERT_LIBRARIES); tests/run-macos-only.sh runs it on a Mac through
 # `msgsnap.sh test` (tests/test_eintr_retry.py, sd:946). Each case sets what
 # the source open does — fail with EINTR n times, then succeed or fail with a
 # chosen errno — and checks the exit code, the line printed, and how many

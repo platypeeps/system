@@ -6,6 +6,7 @@ an empty table makes that criterion pass over nothing. These are the two ways
 it fills and the one path it refuses.
 """
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ from unittest import mock
 from sd_db import connect
 from sd_db.migrate import initialise
 from sd_db.repos import (
+    ConfMissing,
     RepoRefusal,
     add,
     checkouts,
@@ -27,6 +29,9 @@ from sd_db.repos import (
 )
 
 from . import support
+
+#: The repo-sync folder of this checkout, which ships the `.example` lists.
+REPO_SYNC = Path(__file__).resolve().parents[2] / "local-repo-sync"
 
 
 class RepoCase(unittest.TestCase):
@@ -51,14 +56,14 @@ class RepoCase(unittest.TestCase):
 
 class ReadingTheConf(RepoCase):
     def test_comments_and_blanks_are_skipped(self):
-        path = self.conf("# a comment\n\nacme  example-org/aura\nha  a/b\n")
+        path = self.conf("# a comment\n\nacme  example-org/anvil\nha  a/b\n")
         self.assertEqual(
-            read_conf(path), [("acme", "example-org/aura"), ("ha", "a/b")]
+            read_conf(path), [("acme", "example-org/anvil"), ("ha", "a/b")]
         )
 
     def test_a_line_it_cannot_parse_is_a_refusal_and_not_a_skip(self):
         """A line nobody parses is a repository nobody syncs."""
-        path = self.conf("acme example-org/aura\nthis is not a line\n")
+        path = self.conf("acme example-org/anvil\nthis is not a line\n")
         with self.assertRaises(RepoRefusal) as caught:
             read_conf(path)
         self.assertIn("not a line", str(caught.exception))
@@ -69,8 +74,8 @@ class Seeding(RepoCase):
     def setUp(self):
         super().setUp()
         (self.checkouts / "acme").mkdir()
-        support.repository(self.checkouts / "acme" / "aura")
-        self.path = self.conf("acme  example-org/aura\nacme  example-org/absent\n")
+        support.repository(self.checkouts / "acme" / "anvil")
+        self.path = self.conf("acme  example-org/anvil\nacme  example-org/absent\n")
 
     def test_only_checkouts_that_exist_are_registered(self):
         result = seed(
@@ -80,7 +85,7 @@ class Seeding(RepoCase):
         self.assertEqual(result.absent, ["example-org/absent"])
         rows = registered(self.connection)
         self.assertEqual(len(rows), 1)
-        self.assertTrue(rows[0]["path"].endswith("/acme/aura"))
+        self.assertTrue(rows[0]["path"].endswith("/acme/anvil"))
 
     def test_a_second_seed_registers_the_same_set(self):
         first = seed(self.connection, self.path, root=self.checkouts, home=self.home)
@@ -93,7 +98,7 @@ class Seeding(RepoCase):
         seed(self.connection, self.path, root=self.checkouts, home=self.home)
         self.assertEqual(
             registered(self.connection)[0]["remote"],
-            "https://github.com/example-org/aura",
+            "https://github.com/example-org/anvil",
         )
 
     def test_a_checkouts_own_origin_outranks_the_confs_rendering(self):
@@ -108,7 +113,7 @@ class Seeding(RepoCase):
         support.repository(checkout, bare=self.root / "ssh.git")
         support.git(checkout, "remote", "set-url", "origin",
                     "git@github.com:example-org/ssh.git")
-        path = self.conf("acme  example-org/aura\nacme  example-org/ssh\n")
+        path = self.conf("acme  example-org/anvil\nacme  example-org/ssh\n")
         seed(self.connection, path, root=self.checkouts, home=self.home)
         rows = {row["path"]: row["remote"] for row in registered(self.connection)}
         self.assertEqual(
@@ -121,7 +126,7 @@ class SeedingTheCommonConf(RepoCase):
     """`repo-sync` reads `repos.common.conf` plus the profile conf on personal.
 
     The seed read `repos.personal.conf` alone, so a checkout listed only in
-    common -- `platypeeps/sd-writing-pack`, `acme/web-supporting-files`
+    common -- `platypeeps/writing-pack`, `acme/web-supporting-files`
     -- was cloned every night and never registered.
     """
 
@@ -130,11 +135,11 @@ class SeedingTheCommonConf(RepoCase):
         (self.checkouts / "platypeeps").mkdir()
         (self.checkouts / "acme").mkdir()
         support.repository(self.checkouts / "platypeeps" / "shared")
-        support.repository(self.checkouts / "acme" / "aura")
-        self.personal = self.conf("acme  example-org/aura\n")
+        support.repository(self.checkouts / "acme" / "anvil")
+        self.personal = self.conf("acme  example-org/anvil\n")
         self.common = self.root / "repos.common.conf"
         self.common.write_text(
-            "platypeeps  platypeeps/shared\nacme  example-org/aura\n", encoding="utf-8"
+            "platypeeps  platypeeps/shared\nacme  example-org/anvil\n", encoding="utf-8"
         )
 
     def seed_default(self):
@@ -144,13 +149,13 @@ class SeedingTheCommonConf(RepoCase):
     def test_the_default_seed_registers_a_checkout_only_common_names(self):
         result = self.seed_default()
         paths = sorted(Path(row["path"]).name for row in registered(self.connection))
-        self.assertEqual(paths, ["aura", "shared"])
+        self.assertEqual(paths, ["anvil", "shared"])
         self.assertEqual(result.counts, {"registered": 2, "absent": 0})
 
     def test_an_entry_in_both_files_is_one_checkout(self):
         with mock.patch("sd_db.repos.conf_path", return_value=self.personal):
             slugs = [checkout.slug for checkout in checkouts(root=self.checkouts)]
-        self.assertEqual(slugs, ["platypeeps/shared", "example-org/aura"])
+        self.assertEqual(slugs, ["platypeeps/shared", "example-org/anvil"])
 
     def test_a_missing_common_conf_leaves_the_personal_one(self):
         self.common.unlink()
@@ -162,16 +167,73 @@ class SeedingTheCommonConf(RepoCase):
         self.assertEqual(result.counts, {"registered": 1, "absent": 0})
 
     def test_the_shipped_pair_is_what_repo_sync_reads_on_personal(self):
-        self.assertEqual(
-            [path.name for path in conf_paths()],
-            ["repos.common.conf", "repos.personal.conf"],
-        )
-        # The real pair is gitignored personal config; the repository ships
-        # each one as a `.example` template the operator copies into place.
+        with mock.patch.dict(os.environ, {"SYSTEM_TOOLS_CONFIG": str(self.root / "cfg")}):
+            os.environ.pop("REPO_SYNC_PROFILE", None)
+            self.assertEqual(
+                [path.name for path in conf_paths()],
+                ["repos.common.conf", "repos.personal.conf"],
+            )
+        # The real pair is private config; the repository ships each one as a
+        # `.example` template in local-repo-sync the operator copies into place.
+        shipped = conf_paths(root=REPO_SYNC)
         self.assertTrue(all(path.with_name(path.name + ".example").is_file()
-                            for path in conf_paths()))
-        for path in conf_paths():
+                            for path in shipped))
+        for path in shipped:
             read_conf(path.with_name(path.name + ".example"))
+
+
+class TheConfigDirectory(RepoCase):
+    """repo-sync's lists live in `<config>/repo-sync/`, not in the checkout."""
+
+    def setUp(self):
+        super().setUp()
+        self.config = self.root / "cfg"
+        self.lists = self.config / "repo-sync"
+        self.lists.mkdir(parents=True)
+        support.repository(self.checkouts / "acme" / "anvil")
+        support.repository(self.checkouts / "platypeeps" / "shared")
+        patcher = mock.patch.dict(os.environ, {"SYSTEM_TOOLS_CONFIG": str(self.config)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("REPO_SYNC_PROFILE", None)
+
+    def test_the_default_pair_is_read_from_the_config_directory(self):
+        self.assertEqual(conf_paths(), [self.lists / "repos.common.conf",
+                                        self.lists / "repos.personal.conf"])
+        (self.lists / "repos.common.conf").write_text("platypeeps  platypeeps/shared\n")
+        (self.lists / "repos.personal.conf").write_text("acme  example-org/anvil\n")
+        result = seed(self.connection, None, root=self.checkouts, home=self.home)
+        self.assertEqual(result.counts, {"registered": 2, "absent": 0})
+
+    def test_the_profile_names_the_list(self):
+        os.environ["REPO_SYNC_PROFILE"] = "work"
+        self.assertEqual(conf_paths()[-1], self.lists / "repos.work.conf")
+        os.environ["REPO_SYNC_PROFILE"] = "terra"
+        self.assertEqual(conf_paths(), [self.lists / "repos.terra.conf"])
+
+    def test_an_absent_profile_list_fails_naming_where_it_goes(self):
+        with self.assertRaises(ConfMissing) as caught:
+            seed(self.connection, None, root=self.checkouts, home=self.home)
+        message = str(caught.exception)
+        self.assertIn(str(self.lists / "repos.personal.conf"), message)
+        self.assertIn("local-repo-sync/repos.personal.conf.example", message)
+        self.assertIsInstance(caught.exception, FileNotFoundError)
+        self.assertEqual(registered(self.connection), [])
+
+    def test_the_command_reports_the_absent_list_and_exits_1(self):
+        import contextlib
+        import io
+
+        from sd_db.jobs import cli
+        err = io.StringIO()
+        with mock.patch.object(cli, "_open_for_write", lambda: connect(self.root / "sd.db")), \
+                mock.patch.object(cli, "_home", lambda: self.home), \
+                contextlib.redirect_stderr(err):
+            rc = cli.command_repo(["seed"])
+        self.assertEqual(rc, 1)
+        self.assertIn("repos.personal.conf is not set", err.getvalue())
+        self.assertIn(str(self.lists / "repos.personal.conf"), err.getvalue())
+
 
 class Adding(RepoCase):
     def test_a_checkout_is_registered_with_the_mode_read_from_it(self):

@@ -1,6 +1,7 @@
 # Host presets for network-testing.sh and thunderbolt-bridge.sh.
-# Copy to hosts.conf (gitignored) and replace the example addresses, or point
-# NETWORK_TESTING_HOSTS at another file. One record per line; `#` comments.
+# Copy to ~/.config/system/network-testing/hosts.conf (or
+# $SYSTEM_TOOLS_CONFIG/network-testing/hosts.conf) and replace the example
+# addresses, or point NETWORK_TESTING_HOSTS at another file. One record per line; `#` comments.
 #
 #   client <preset> <ip> [<bind-ip>]   iperf3 client target; bind-ip is the
 #                                      local address to send from (-B)

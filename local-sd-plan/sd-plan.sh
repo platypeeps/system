@@ -69,8 +69,12 @@ if [ -n "${SD_PLAN_PROFILE:-}" ]; then
 elif [ -r "$PROFILE_FILE" ] && [ -f "$PROFILE_FILE" ]; then
     PROFILE="$(cat "$PROFILE_FILE")"
 fi
+# The list is private config: `<config>/sd-plan/repos.<profile>.conf`, where
+# <config> is $SYSTEM_TOOLS_CONFIG (default ~/.config/system).
+. "$DIR/../lib/config.sh"
+CONF_DIR="$(st_config_dir sd-plan)"
 CONF=""
-[ -z "$PROFILE" ] || CONF="$DIR/repos.$PROFILE.conf"
+[ -z "$PROFILE" ] || CONF="$CONF_DIR/repos.$PROFILE.conf"
 
 # Why the configuration cannot be read, or nothing. Something at a path that
 # is not a readable file is a broken machine, not an unconfigured one.
@@ -119,9 +123,10 @@ Usage: sd-plan.sh <command>
   help        This text.
 
 Participation is a list, and an absent list means nothing participates. The
-file is `repos.<profile>.conf` beside this script, one repository path per
+file is `<config>/sd-plan/repos.<profile>.conf` (<config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system), one repository path per
 line, `#` comments and blank lines ignored. Copy
-`repos.personal.conf.example` to start one; the copy is gitignored. Opt a
+`repos.personal.conf.example` there to start one. Opt a
 repository in deliberately, because what it opts in to is an agent writing
 branches there unattended.
 
@@ -238,7 +243,7 @@ case "${1:-}" in
         fi
         count="$(participants | wc -l | tr -d ' ')"
         if [ ! -e "$CONF" ]; then
-            echo "local-sd-plan: SKIP — no $(basename "$CONF") on this machine"
+            echo "local-sd-plan: SKIP — no $(basename "$CONF") on this machine (copy local-sd-plan/repos.personal.conf.example to $CONF to opt repositories in)"
             exit 3
         fi
         if [ "$count" -eq 0 ]; then

@@ -25,8 +25,8 @@ import SQLite3
 let PROGRAM = "msgsnap"
 
 // Exit codes are part of the interface — msgsnap.sh branches on them, and
-// jobs/msgsnap-nightly.job in local-cron-jobs tells the operator what each one
-// means. 2 is TCC and only TCC: the documented response to it is to regrant
+// <config>/cron-jobs/jobs/msgsnap-nightly.job (examples in
+// local-cron-jobs/examples/) tells the operator what each one means. 2 is TCC and only TCC: the documented response to it is to regrant
 // Full Disk Access, which is the wrong fix for every other way an open can
 // fail, so those exit 4 (sd:935).
 let EXIT_USAGE: Int32 = 1

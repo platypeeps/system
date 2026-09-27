@@ -32,7 +32,8 @@ leaves snapshots alone. `snap` passes extra flags through to the binary
 ### Exit codes
 
 The binary's exit codes are an interface: `msgsnap.sh snap` branches on them
-and `local-cron-jobs/jobs/msgsnap-nightly.job` tells you what each one means.
+and `<config>/cron-jobs/jobs/msgsnap-nightly.job` (examples in `local-cron-jobs/examples/`) tells you what
+each one means.
 
 | Code | Meaning | What to do |
 |---|---|---|

@@ -1,6 +1,6 @@
-# ai-apps inventory, profile: example — the format `capture` writes to profiles/<profile>.inv
+# ai-apps inventory, profile: example — the format `capture` writes to <config>/ai-apps/profiles/<profile>.inv
 # format: app|kind|name[|key]  (names only — no secrets)
-# The real profiles/<profile>.inv files are local and gitignored.
+# The real <profile>.inv files live in <config>/ai-apps/profiles/ ($SYSTEM_TOOLS_CONFIG, default ~/.config/system).
 claude-code|mcp|context7
 claude-code|plugin|claude-hud@claude-hud
 claude-code|skill|find-skills

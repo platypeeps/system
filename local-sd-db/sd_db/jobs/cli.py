@@ -37,7 +37,7 @@ from ..repos import absolute_under_home
 from ..repos import add as add_repo
 from ..repos import registered
 from ..repos import registered_for
-from ..repos import seed as seed_repos
+from ..repos import ConfMissing, seed as seed_repos
 from ..repos import set_managed, set_runner_merge
 from ..schema import SCHEMA_VERSION
 from ..sources import docs_work, index_cache, issues, register
@@ -273,7 +273,11 @@ def command_repo(argv: list[str]) -> int:
             print(f"sd-db: registered {path}")
             return 0
         if verb == "seed":
-            result = seed_repos(connection, rest[0] if rest else None, home=_home())
+            try:
+                result = seed_repos(connection, rest[0] if rest else None, home=_home())
+            except ConfMissing as error:
+                print(f"sd-db repo seed: {error}", file=sys.stderr)
+                return 1
             print(
                 f"sd-db: registered {len(result.registered)} repositor(ies); "
                 f"{len(result.absent)} named by the conf are not cloned here"

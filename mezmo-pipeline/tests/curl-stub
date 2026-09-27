@@ -1,0 +1,36 @@
+#!/bin/sh
+# Stands in for curl on PATH during the offline suite. Records every call and
+# answers from a canned script, so the tests can assert on the exact method,
+# URL and body without a network call ever being made.
+i=$(cat "$MZ_STUB_DIR/counter" 2>/dev/null || echo 0)
+i=$((i + 1))
+echo "$i" > "$MZ_STUB_DIR/counter"
+
+method=""; url=""; body=""; out=/dev/null
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --request) method=$2; shift 2 ;;
+    --url)     url=$2;    shift 2 ;;
+    --data)    body=$2;   shift 2 ;;
+    -o)        out=$2;    shift 2 ;;
+    *)         shift ;;
+  esac
+done
+
+printf '%s %s\n' "$method" "$url" >> "$MZ_STUB_DIR/calls"
+printf '%s' "$body" > "$MZ_STUB_DIR/body.$i"
+
+defbody=${MZ_STUB_DEFAULT_BODY:-}
+[ -n "$defbody" ] || defbody='{}'
+if [ -f "$MZ_STUB_DIR/resp.$i.body" ]; then
+  cat "$MZ_STUB_DIR/resp.$i.body" > "$out"
+else
+  printf '%s' "$defbody" > "$out"
+fi
+
+code=$(cat "$MZ_STUB_DIR/resp.$i.code" 2>/dev/null || echo "${MZ_STUB_DEFAULT_CODE:-200}")
+if [ "$code" = "TRANSPORT_FAIL" ]; then
+  echo "curl: (6) Could not resolve host" >&2
+  exit 6
+fi
+printf '%s' "$code"

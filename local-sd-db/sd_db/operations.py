@@ -21,14 +21,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from xml.parsers.expat import ExpatError
 
-from . import runner_journal
+from . import config, runner_journal
 from .database import transaction
 from .runner import RunnerRefused
 from .workflow import StaleItem, WorkflowError, _identifier, _text
 from .writes import add_note, now, record_state, resolve_state, update_assignment
 
 JOB_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,99}\Z")
-#: The launchd label prefix all system-tools agents share. The operator sets
+#: The launchd label prefix all system agents share. The operator sets
 #: `SYSTEM_TOOLS_LABEL_PREFIX` to keep labels installed under another prefix.
 LABEL_PREFIX = os.environ.get("SYSTEM_TOOLS_LABEL_PREFIX", "local.system-tools")
 PREFIX = LABEL_PREFIX + ".cron."
@@ -133,6 +133,17 @@ def _boot_token():
     return _BOOT[0]
 
 
+def job_dirs(environ=None) -> list[Path]:
+    """Where `cron-jobs.sh` finds a job file, in its lookup order.
+
+    Each `CRON_JOBS_EXTRA_DIRS` entry (colon-separated) first, since a job
+    there overrides a same-named one; then `<config>/cron-jobs/jobs`.
+    """
+    env = os.environ if environ is None else environ
+    extra = [Path(os.path.expanduser(d)) for d in (env.get("CRON_JOBS_EXTRA_DIRS") or "").split(":") if d]
+    return extra + [config.config_dir("cron-jobs", env) / "jobs"]
+
+
 class LaunchdBackend:
     """Default roots are fixed; optional roots/runner support isolated tests.
 
@@ -140,13 +151,17 @@ class LaunchdBackend:
     parameters. No job configuration is sourced or evaluated to inspect it.
     """
 
-    def __init__(self, *, launch_agents=None, cron_root=None, uid=None, runner=None, boot=None):
+    def __init__(self, *, launch_agents=None, cron_root=None, jobs_dirs=None, uid=None, runner=None, boot=None):
         self.launch_agents = Path(launch_agents) if launch_agents is not None else Path.home() / "Library/LaunchAgents"
         # The checkout that holds local-cron-jobs: `$SYSTEM_TOOLS_ROOT`, else
-        # `~/repos/system-tools`. The library runs from a virtualenv, so its own
+        # `~/repos/system`. The library runs from a virtualenv, so its own
         # file path does not locate the checkout.
-        root = os.environ.get("SYSTEM_TOOLS_ROOT") or str(Path.home() / "repos/system-tools")
+        root = os.environ.get("SYSTEM_TOOLS_ROOT") or str(Path.home() / "repos/system")
         self.cron_root = Path(cron_root) if cron_root is not None else Path(os.path.expanduser(root)) / "local-cron-jobs"
+        # The job files are private config, not checkout content: the same
+        # directories `cron-jobs.sh` reads, in its order -- each
+        # `CRON_JOBS_EXTRA_DIRS` entry first, then `<config>/cron-jobs/jobs`.
+        self.jobs_dirs = [Path(d) for d in jobs_dirs] if jobs_dirs is not None else job_dirs()
         self.uid = os.getuid() if uid is None else uid
         self.runner = runner or _run
         self.boot = boot or _boot_token
@@ -162,7 +177,8 @@ class LaunchdBackend:
         label = PREFIX + name
         plist = self.launch_agents / (label + ".plist")
         script = self.cron_root / "cron-jobs.sh"
-        job = self.cron_root / "jobs" / (name + ".job")
+        jobs_dir = next((d for d in self.jobs_dirs if (d / (name + ".job")).exists()), self.jobs_dirs[-1])
+        job = jobs_dir / (name + ".job")
         try:
             raw = self._file(plist, self.launch_agents)
             config = plistlib.loads(raw)
@@ -172,7 +188,7 @@ class LaunchdBackend:
             if config.get("Program", "/bin/bash") != "/bin/bash":
                 raise WorkflowError("job is not supported: alternate executable")
             hashes = [hashlib.sha256(value).hexdigest() for value in
-                      (raw, self._file(script, self.cron_root), self._file(job, self.cron_root))]
+                      (raw, self._file(script, self.cron_root), self._file(job, jobs_dir))]
         except (OSError, ValueError, plistlib.InvalidFileException, ExpatError) as error:
             raise WorkflowError("job is not supported: installed configuration is unavailable or invalid") from error
         schedule = config.get("StartCalendarInterval", [])

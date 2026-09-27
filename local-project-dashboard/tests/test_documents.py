@@ -100,22 +100,22 @@ class Enumerated(unittest.TestCase):
 
     def test_a_repository_that_publishes_is_a_root_without_a_config_line(self):
         """The regression: onboarding is a directory, never a line somebody remembers."""
-        self.publish("research/traces-research")
+        self.publish("research/beta-research")
         self.publish("work/world-simulator")
-        self.assertEqual(self.keys(), ["traces-research", "world-simulator"])
+        self.assertEqual(self.keys(), ["beta-research", "world-simulator"])
 
     def test_a_gitignored_directory_is_still_found(self):
         """`docs/dashboard` is built, not tracked. Git must not be consulted."""
-        self.publish("research/aura-research", gitignored=True)
-        self.assertEqual(self.keys(), ["aura-research"])
+        self.publish("research/alpha-research", gitignored=True)
+        self.assertEqual(self.keys(), ["alpha-research"])
 
     def test_a_checkout_directly_under_the_root_is_found(self):
         self.publish("solo")
         self.assertEqual(self.keys(), ["solo"])
 
     def test_a_repository_without_the_directory_is_not_a_root(self):
-        """trace-classifier has docs/ and no docs/dashboard. It is not onboarded."""
-        (self.repos / "research" / "trace-classifier" / "docs").mkdir(parents=True)
+        """delta-tool has docs/ and no docs/dashboard. It is not onboarded."""
+        (self.repos / "research" / "delta-tool" / "docs").mkdir(parents=True)
         self.assertEqual(self.keys(), [])
 
     def test_a_file_named_like_the_directory_is_not_a_root(self):
@@ -150,7 +150,7 @@ class Enumerated(unittest.TestCase):
     def test_a_label_line_for_nothing_found_is_inert(self):
         """It renames a root. It never invents one, least of all a pathless one."""
         conf = self.dir / "documents.conf"
-        conf.write_text("label|trace-classifier|Trace Classifier\n", encoding="utf-8")
+        conf.write_text("label|delta-tool|Delta Tool\n", encoding="utf-8")
         self.assertEqual(documents.roots(conf, self.repos), [])
 
     def test_a_label_line_does_not_settle_a_contest(self):
@@ -173,11 +173,11 @@ class Enumerated(unittest.TestCase):
 
     def test_a_skip_line_withholds_a_found_root(self):
         self.publish("research/group-research")
-        self.publish("research/aura-research")
+        self.publish("research/alpha-research")
         conf = self.dir / "documents.conf"
         conf.write_text("skip|group-research\n", encoding="utf-8")
         self.assertEqual([r.key for r in documents.roots(conf, self.repos)],
-                         ["aura-research"])
+                         ["alpha-research"])
 
     def test_an_absent_repo_root_is_no_roots_not_a_crash(self):
         self.assertEqual(documents.roots(self.absent, self.dir / "nowhere"), [])
@@ -209,8 +209,8 @@ class Enumerated(unittest.TestCase):
     def test_a_contest_leaves_the_other_roots_alone(self):
         self.publish("org-a/reports")
         self.publish("org-b/reports")
-        self.publish("research/aura-research")
-        self.assertEqual(self.keys(), ["aura-research"])
+        self.publish("research/alpha-research")
+        self.assertEqual(self.keys(), ["alpha-research"])
 
     def test_a_contested_key_is_named_on_the_page_not_dropped_in_silence(self):
         self.publish("org-a/reports")
@@ -279,11 +279,11 @@ class Enumerated(unittest.TestCase):
 
     def test_a_found_root_resolves_a_file(self):
         """Found and declared roots are the same shape, so serving is unchanged."""
-        repo = self.publish("research/prism-research")
+        repo = self.publish("research/gamma-research")
         published = repo / "docs" / "dashboard" / "brief.html"
         published.write_text("<h1>hi</h1>", encoding="utf-8")
         self.assertEqual(
-            documents.resolve("prism-research", "brief.html", self.absent, self.repos),
+            documents.resolve("gamma-research", "brief.html", self.absent, self.repos),
             published)
 
 
@@ -298,7 +298,7 @@ class Shipped(unittest.TestCase):
 
     def test_the_vault_is_a_configured_root(self):
         with tempfile.TemporaryDirectory() as empty:
-            example = documents.CONFIG.with_name("documents.conf.example")
+            example = Path(documents.__file__).resolve().parents[1] / "documents.conf.example"
             found = {r.key: r for r in documents.roots(example, Path(empty))}
         self.assertIn("vault", found)
         self.assertEqual(found["vault"].label, "Vault")

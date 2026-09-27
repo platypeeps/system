@@ -62,6 +62,8 @@ class StatusCase(unittest.TestCase):
         self.folder = self.root / "local-opentelemetry-collector"
         self.folder.mkdir()
         shutil.copy(ENTRYPOINT, self.folder / ENTRYPOINT.name)
+        # The entrypoint sources ../lib/config.sh beside its folder.
+        shutil.copytree(ENTRYPOINT.parents[1] / "lib", self.root / "lib")
         stubs = self.root / "bin"
         stubs.mkdir()
         (stubs / "docker").write_text(DOCKER, encoding="utf-8")
@@ -77,6 +79,8 @@ class StatusCase(unittest.TestCase):
             STUB_RUNNING=str(self.running),
             OTLP_EXPORT_URL="https://otlp.example.invalid/v1/abc",
             OTLP_EXPORT_AUTH="k",
+            # Never read the operator's real config directory.
+            SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
         )
 
     def zpages(self, code, truncate=False):
@@ -157,6 +161,22 @@ class TheExportSettings(StatusCase):
         del self.env["OTLP_EXPORT_AUTH"]
         done = self.run_verb("start", expect=1)
         self.assertIn("OTLP_EXPORT_AUTH", done.stderr)
+
+    def test_start_names_the_config_path_for_a_missing_setting(self):
+        del self.env["OTLP_EXPORT_AUTH"]
+        done = self.run_verb("start", expect=1)
+        self.assertIn(
+            str(self.root / "config" / "opentelemetry-collector" / ".env"),
+            done.stderr,
+        )
+
+    def test_start_reads_the_setting_from_the_config_dir(self):
+        del self.env["OTLP_EXPORT_AUTH"]
+        conf = self.root / "config" / "opentelemetry-collector"
+        conf.mkdir(parents=True)
+        (conf / ".env").write_text("OTLP_EXPORT_AUTH=k\n", encoding="utf-8")
+        done = self.run_verb("start", expect=0)
+        self.assertNotIn("OTLP_EXPORT_AUTH", done.stderr)
 
     def test_start_rejects_a_placeholder_url(self):
         self.env["OTLP_EXPORT_URL"] = "https://undefined/v1/abc"

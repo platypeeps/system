@@ -163,9 +163,13 @@ Usage: sd-db.sh <command>
   repo add P  Register the checkout at P. The `repo` table is what the
               `docs/work` migration enumerates from, so an empty table makes
               its criterion pass over nothing.
-  repo seed   Register every checkout `local-repo-sync/repos.common.conf`
-              and `repos.personal.conf` name that this machine has actually
-              cloned. `repo seed CONF` reads that one file instead.
+  repo seed   Register every checkout repo-sync's `repos.common.conf` and
+              `repos.<profile>.conf` in `<config>/repo-sync/` name that this
+              machine has actually cloned (<config> is $SYSTEM_TOOLS_CONFIG,
+              default ~/.config/system; the profile is
+              $REPO_SYNC_PROFILE, default personal). Fails naming the path
+              when the profile conf is absent. `repo seed CONF` reads that
+              one file instead.
   repo list [--managed]
               The repositories the table holds, which is the enumeration,
               each with its status source, its managed flag (yes|no) and its

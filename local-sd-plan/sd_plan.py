@@ -611,7 +611,7 @@ def pack_entrypoint() -> Path:
 
     `SD_PACK_ROOT` when set, else the checkout path the rest of this
     repository assumes (`local-bin-links/bin-links.sh`,
-    `local-cron-jobs/jobs/shadow-sync-nightly.job`). An environment variable
+    `local-cron-jobs/examples/shadow-sync-nightly.job`). An environment variable
     rather than a config file, because those callers already answer to one.
 
     Asked before the planning run, not at registration: a pack that is not

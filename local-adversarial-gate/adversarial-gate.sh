@@ -1,7 +1,7 @@
 #!/bin/sh
 # adversarial-gate — compose and run the hostile second-reader pass.
 #
-# The shared half of a gate two repos built separately: sd-writing-pack ran it
+# The shared half of a gate two repos built separately: the writing pack ran it
 # from `pack.py review adversarial`, local-research-kit from the Codex plugin,
 # and both carried their own copy of the same careful prose about what the gate
 # can and cannot decide. That prose is `core.md` now, once. What differs per
@@ -28,7 +28,7 @@
 # exit code.
 #
 # `render` is the useful one for a caller that already owns its invocation:
-# sd-writing-pack composes through it and keeps its own `codex exec`, because
+# the writing pack composes through it and keeps its own `codex exec`, because
 # the digest stamping and confidence counting around that call are its own.
 # `run` is for the scripted path a caller does not otherwise have.
 #

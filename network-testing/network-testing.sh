@@ -2,7 +2,8 @@
 # Network throughput / latency testing between the machines here.
 # All output lands in ./logs (gitignored).
 #
-# Host presets come from hosts.conf (gitignored; see hosts.conf.example):
+# Host presets come from <config>/network-testing/hosts.conf (see
+# hosts.conf.example):
 # `client` records are iperf3 targets, `bridge` records are Thunderbolt bridge
 # addresses, `ping` records are named ping targets.
 #
@@ -22,14 +23,17 @@ mkdir -p logs
 
 IPERF_OPTS="--bidir --parallel 3 --time 85000"
 
-# Host presets live in hosts.conf (gitignored; copy hosts.conf.example), or
-# the file NETWORK_TESTING_HOSTS names. hosts_lookup <kind> <name> prints the
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
+
+# Host presets live in <config>/network-testing/hosts.conf (lib/config.sh;
+# copy hosts.conf.example there), or the file NETWORK_TESTING_HOSTS names. hosts_lookup <kind> <name> prints the
 # record's remaining fields; hosts_names <kind> lists the names of one kind.
-HOSTS_FILE="${NETWORK_TESTING_HOSTS:-$DIR/hosts.conf}"
+HOSTS_FILE="${NETWORK_TESTING_HOSTS:-$(st_config_dir network-testing)/hosts.conf}"
 require_hosts() {
   [ -r "$HOSTS_FILE" ] && return 0
   echo "missing host presets: $HOSTS_FILE" >&2
-  echo "copy $DIR/hosts.conf.example to $DIR/hosts.conf and fill it in," >&2
+  echo "copy network-testing/hosts.conf.example to $HOSTS_FILE and fill it in," >&2
   echo "or export NETWORK_TESTING_HOSTS=<file>" >&2
   exit 1
 }
@@ -127,8 +131,9 @@ usage: network-testing.sh server [port]|server-tb <name>|client <preset> [port]|
   ping-issues  show packet loss / anomalies in ping logs
   test         run the thunderbolt-bridge.sh suite against stubbed system tools
 
-Host presets: hosts.conf beside this script (copy hosts.conf.example), or the
-file NETWORK_TESTING_HOSTS names.
+Host presets: <config>/network-testing/hosts.conf, <config> being
+SYSTEM_TOOLS_CONFIG or ~/.config/system (copy hosts.conf.example there),
+or the file NETWORK_TESTING_HOSTS names.
 HELPEOF
     exit 0
     ;;

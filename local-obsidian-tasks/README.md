@@ -11,8 +11,8 @@ and **Postpone 3 days** (signed links served by `local-task-actions`).
 ./obsidian-tasks.sh run    # print, and email the digest when non-empty
 ```
 
-Installed as the `obsidian-tasks-nightly` job in `local-cron-jobs` (03:00,
-listed in machine-setup's `common.cron`).
+Installed as the `obsidian-tasks-nightly` job (03:00), defined in
+`<config>/cron-jobs/jobs/` (examples in `local-cron-jobs/examples/`).
 
 ## How it decides
 
@@ -98,7 +98,7 @@ script in `OBSIDIAN_TASKS_TODAY`, so a run that crosses midnight cannot count
 
 ## Environment
 
-- `OBSIDIAN_VAULT` — vault path (default `~/Documents/Obsidian Vault`; exported, or set in the gitignored `./.env`, see `.env.example`)
+- `OBSIDIAN_VAULT` — vault path (default `~/Documents/Obsidian Vault`; exported, or set in `<config>/obsidian-tasks/.env` outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`), see `.env.example`)
 - `OBSIDIAN_TASKS_SUBDIR` — task folder (default `TaskNotes/Tasks`)
 - `JEV_OBSIDIAN_TASKS` — `0`, `off`, `false`, `no` or `disabled` switches the
   Jev ordering off; unset means on

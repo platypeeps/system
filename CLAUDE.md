@@ -1,4 +1,4 @@
-# system-tools — repo guide for Claude
+# system — repo guide for Claude
 
 Small scripts and wrappers for local infrastructure on a macOS workstation.
 Every top-level folder is one independent tool with a `README.md`. There is no repository-wide build.
@@ -9,15 +9,17 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 ## This repository is public
 
 - Never commit personal values: names, email addresses, hostnames, IP addresses, account ids, private repository names.
-- Put them in a gitignored `.env` or `<name>.conf`, and commit a `.env.example` or `<name>.conf.example` with `change-me` values.
+- Put them in the config folder (convention 3), and commit a `.env.example` or `<name>.conf.example` with `change-me` values.
 - Use `example.test` names and TEST-NET addresses (`192.0.2.x`, `198.51.100.x`, `203.0.113.x`) in tests and docs.
 - Run `local-scan-for-secrets/scan-for-secrets.sh` from the root before a commit that adds configuration.
 
 ## Tests and CI
 
-- `.github/workflows/system-native.yml` runs every suite on macOS, Python 3.14, in four legs (`shared`, `dashboard`, `runner`, `tools`).
+- `.github/workflows/system-native.yml` runs every suite on Linux (`ubuntu-latest`), Python 3.14, in four legs (`shared`, `dashboard`, `runner`, `tools`).
+- A test that needs macOS goes in a suite named in `tests/macos-only-suites.txt`, never behind a skip; CI cannot run it.
+- Run `tests/run-macos-only.sh all` on a Mac before pushing a change to a folder that list names.
 - Do not count suites in prose; the `run_suite` lines are the enumeration, and prose counts go stale.
-- Wire a new `*/tests/test_*.py` folder into a `run_suite` line; the preflight fails naming any unwired folder.
+- Wire a new `*/tests/test_*.py` folder into a `run_suite` line or the macOS-only list; the preflight fails naming any unwired folder.
 - Write shell-script tests as Python `unittest`; the CI wrapper asserts a unittest summary.
 - Skipped tests fail CI; do not add a skip.
 - CI uses an isolated home, an installed library, and the public command pack pinned by SHA.
@@ -30,20 +32,27 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 - `local-project-dashboard` runs the workflow dashboard; `dashboard.sh test` runs its suite, and `preflight`, `install`, `health` manage the server.
 - Read `local-project-dashboard/RUNTIME.md` before changing the service.
 - `local-*` folders run local services or tools; `network-testing` is iperf3/ping tooling.
+- `mezmo-*` folders are helpers for the Mezmo API and its test data; only they may name that product.
+- `lib/` holds the shared config resolver: `lib/config.sh` for shell, `lib/system_tools_config.py` for Python.
 
 ## Conventions — keep these when adding or changing anything
 
-1. **One entrypoint per runnable folder**, named after the folder minus `local-` (`local-redis/redis.sh`).
+1. **One entrypoint per runnable folder**, named after the folder minus `local-`/`mezmo-` (`local-redis/redis.sh`).
    - An unprefixed folder keeps its full name (`network-testing/network-testing.sh`).
    - Multi-action tools take subcommands (`start|stop|update` for docker services); do not add `run-X.sh`/`stop-X.sh`.
    - No-arg invocation prints usage to stderr and exits 1.
    - Every script answers `-h|--help|help` with its subcommands and options, and exits 0.
 2. **POSIX sh** (`#!/bin/sh`, `set -e`); resolve the folder with `DIR="$(cd "$(dirname "$0")" && pwd)"`, never a hardcoded path.
    - A script that `local-bin-links` links must walk `$0` to its real path first (`while [ -L "$SELF" ]` loop, with a comment); through the symlink, sibling files are missing.
-3. **Secrets and personal values never go into tracked files.** Use a gitignored `.env` plus a committed `.env.example` with `change-me` values.
+3. **Secrets and personal values never go into tracked files.** They live in the config folder, outside the checkout.
+   - The root is `SYSTEM_TOOLS_CONFIG`, default `${XDG_CONFIG_HOME:-$HOME/.config}/system`.
+   - Each tool reads `<root>/<tool>/`; `<tool>` is the folder minus `local-`, and a `mezmo-*` folder keeps its full name.
+   - Resolve it with `lib/config.sh` (`st_config_dir`, `st_source_env`, `st_missing`) or `lib/system_tools_config.py`; do not repeat the rule.
+   - Commit `<folder>/.env.example` or `<file>.example` with `change-me` values.
    - Source `.env` only if it exists, then check the needed variables; a missing `.env` is fine when the values are exported.
-   - On a missing variable, fail with its name and both remedies: export it, or copy `.env.example`.
-   - Add every new local config file to `.gitignore`.
+   - On a missing variable, fail with its name and both remedies: export it, or copy the `.example` to the config path.
+   - Keep the root `.gitignore` lines for in-folder config files as a safety net.
+   - Cron jobs are config too: `local-cron-jobs` reads `<root>/cron-jobs/jobs/`; `local-cron-jobs/examples/` is a catalogue only.
 4. **Data and log folders** (`storage/`, `volumes/`, `logs/`, `falkordb_data/`, `mcp_logs/`) are gitignored contents-only, kept by `.gitkeep`; use the same pattern for new stateful services.
 5. Docker services use `--rm` and named containers; `update` removes images by IMAGE ID (`awk '{print $3}'` on `docker images`; `$2` is the tag).
 6. **A `status` subcommand answers with an exit code**: `0` healthy, `3` nothing to check (not configured or not running), `1` up and broken.
@@ -55,11 +64,19 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-cswap` is bash; `local-gito` sources `~/.gito/.env`; `local-cron-jobs` uses `local`.
 
+## Planned work lives in `docs/work/`
+
+- A change with a shape worth agreeing on first gets a folder under `docs/work/` with `prd.md`, `design.md` and `implement.md`.
+- Check with the command pack's `sd-docs-lint` from the repository root, with no `--work-dir`; an absolute value reads zero references and passes silently.
+- Never add `.github/sd-docs-lint.json`; that opt-in sends `docs/work` prose to a third party.
+- Rule 6 checks `path:line` citations into `.md` files from each item's `.citations.tsv` (`--update-citations` writes it).
+
 ## Citations into code
 
 `tests/test_citations.py` runs in the CI preflight: `python3 tests/test_citations.py` from the root.
 
 - Do not cite code as `path:line` (into `.py`, `.sh`, `.js`, `.yml`) in any tracked `.md`, `.py` or `.sh`; nothing checks the line still holds the claim.
+- The `archive/` folder under `docs/work` is exempt; a done page outside it is still scanned.
 - Cite an anchor instead, in one of three forms the gate checks:
   - a snippet: `` `<snippet>`, in `<symbol>` of `<path>` ``, every span word-bounded in the file;
   - `source:<path>::<symbol>`, one declaration in a `.py`, or a `<symbol>() {` / `<symbol>=` line in a `.sh`;

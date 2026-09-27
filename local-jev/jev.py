@@ -39,6 +39,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import system_tools_config  # noqa: E402
 
 try:
     import jev_meter
@@ -743,7 +747,8 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                 if exc.code == 401:
                     raise JevError(
                         "HTTP 401: the API key was rejected "
-                        "(export TYPESAFE_API_KEY, or copy .env.example to .env)"
+                        "(export TYPESAFE_API_KEY, or copy local-jev/.env.example to "
+                        f"{system_tools_config.config_dir('jev') / '.env'})"
                     ) from exc
                 if exc.code not in RETRY_STATUS or attempt == conf["retries"]:
                     raise JevError(last) from exc
@@ -914,7 +919,8 @@ def cmd_status(args, conf, out, env=None, **kw) -> int:
         # not a broken tool, and local-health-check must stay quiet about it.
         out.write("jev: %s\n" % reason)
         if not conf["key"]:
-            out.write("jev: export TYPESAFE_API_KEY, or copy .env.example to .env\n")
+            out.write("jev: %s\n" % system_tools_config.missing(
+                "TYPESAFE_API_KEY", "jev", ".env", environ=env))
         return EXIT_UNCONFIGURED
     probe = dict(conf, timeout=min(conf["timeout"], 10.0), retries=0)
     try:

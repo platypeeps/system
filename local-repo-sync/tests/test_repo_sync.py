@@ -32,9 +32,13 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
+LIB = FOLDER.parent / "lib"
+sys.path.insert(0, str(LIB))
+import system_tools_config  # noqa: E402
 
 # Normally the script next door. The override exists so a regression test can
 # be aimed at the code from before its fix -- a test that has never been seen
@@ -60,7 +64,8 @@ exit 0
 class Fixture:
     """A disposable copy of repo-sync.sh with its own conf, root and notify.
 
-    The script resolves its conf as `$DIR/repos.$PROFILE.conf` and its notifier
+    The script resolves its conf as `$REPO_SYNC_CONF_DIR/repos.$PROFILE.conf`
+    (the fixture aims that at the copy's own folder) and its notifier
     as `$DIR/../local-notify/notify.sh`, both relative to wherever the script
     itself sits, so the copy has to be laid out the way the repo is. The
     profile has to be one of the three the script allows -- `terra` is the one
@@ -73,6 +78,8 @@ class Fixture:
         self.folder = self.tmp / "local-repo-sync"
         self.folder.mkdir()
         shutil.copy(script, self.folder / "repo-sync.sh")
+        (self.tmp / "lib").mkdir()
+        shutil.copy(LIB / "config.sh", self.tmp / "lib" / "config.sh")
         # Every profile but terra layers the profile conf on the common one,
         # and the commit step has to cover both. Written for every profile so
         # a fixture switched to `personal` needs nothing else.
@@ -161,7 +168,7 @@ class Fixture:
 
     # --- running it ---------------------------------------------------------
 
-    def run(self, *args, expect=0, autocommit=False):
+    def run(self, *args, expect=0, autocommit=False, extra_env=None):
         """Run the script and require `expect` as its status.
 
         Checking only stdout and the rewritten conf would let a regression
@@ -173,6 +180,9 @@ class Fixture:
             REPO_SYNC_PROFILE=self.profile,
             AUTOCOMMIT_LOG=str(self.autocommit_log),
             REPO_SYNC_ROOT=str(self.root),
+            # The confs sit in the copy's folder, as in a private fork that
+            # tracks them, so the commit-step cases still have a scope.
+            REPO_SYNC_CONF_DIR=str(self.folder),
             # Must not resolve, or the recorded profile would win over the env.
             MACHINE_SETUP_STATE=str(self.tmp / "no-such-state"),
             HOME=str(self.tmp / "home"),
@@ -194,6 +204,11 @@ class Fixture:
             # local-autocommit has its own suite for the step itself.
             SD_AUTOCOMMIT="0" if not autocommit else "1",
         )
+        for key, value in (extra_env or {}).items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         result = subprocess.run(
             ["sh", str(self.folder / "repo-sync.sh"), *args],
             capture_output=True, text=True, env=env, cwd=str(self.tmp),
@@ -416,6 +431,54 @@ class RepoSyncTest(unittest.TestCase):
         self.assertIn("1 repo(s) failed", f.notify_log.read_text())
 
 
+class ConfigDirTest(unittest.TestCase):
+    def fixture(self, **kwargs):
+        f = Fixture(**kwargs)
+        self.addCleanup(f.destroy)
+        return f
+
+    def test_the_confs_default_to_the_shared_config_directory(self):
+        """PIN. With no REPO_SYNC_CONF_DIR the confs come from
+        $SYSTEM_TOOLS_CONFIG/repo-sync, not from beside the script, and
+        nightly skips the commit step: that directory is outside any
+        checkout."""
+        f = self.fixture(profile="terra")
+        conf_root = f.tmp / "config"
+        (conf_root / "repo-sync").mkdir(parents=True)
+        (conf_root / "repo-sync" / "repos.terra.conf").write_text(
+            "only owner/from-config\n")
+        f.write_conf("beside owner/from-folder\n")
+
+        env = {"REPO_SYNC_CONF_DIR": None, "SYSTEM_TOOLS_CONFIG": str(conf_root)}
+        listed = f.run("list", extra_env=env)
+        self.assertIn("owner/from-config", listed.stdout)
+        self.assertNotIn("owner/from-folder", listed.stdout)
+
+        nightly = f.run("nightly", autocommit=True, extra_env=env)
+        self.assertIn("skipping the commit step", nightly.stdout)
+        self.assertEqual([], f.autocommit_calls())
+
+    def test_a_missing_conf_names_the_config_path_and_the_example(self):
+        """PIN. The error says where the conf belongs and what to copy."""
+        f = self.fixture(profile="terra")
+        conf_root = f.tmp / "config"
+        env = {"REPO_SYNC_CONF_DIR": None, "SYSTEM_TOOLS_CONFIG": str(conf_root)}
+        result = f.run("list", expect=1, extra_env=env)
+        want = conf_root / "repo-sync" / "repos.terra.conf"
+        self.assertIn(f"copy local-repo-sync/repos.terra.conf.example to {want}",
+                      result.stderr)
+
+    def test_the_shared_work_root_selects_the_work_profile(self):
+        """PIN. SYSTEM_TOOLS_WORK_ROOT stands in for REPO_SYNC_WORK_ROOT, the
+        same meaning local-ai-apps reads from AI_APPS_WORK_ROOT."""
+        f = self.fixture(profile="work")
+        (f.folder / "repos.work.conf").write_text("only owner/work-one\n")
+        env = {"REPO_SYNC_PROFILE": None, "REPO_SYNC_WORK_ROOT": None,
+               "SYSTEM_TOOLS_WORK_ROOT": str(f.root)}
+        listed = f.run("list", extra_env=env)
+        self.assertIn("owner/work-one", listed.stdout)
+
+
 class ShippedConfTest(unittest.TestCase):
     """The conf files this repository ships, read from disk rather than built.
 
@@ -456,11 +519,13 @@ class ShippedConfTest(unittest.TestCase):
         return found
 
     def confs(self):
-        """The shipped `.example` confs, plus the local gitignored confs when
-        this checkout has them -- both are what some profile reads."""
+        """The shipped `.example` confs, plus this machine's live confs in
+        <config>/repo-sync when it has them -- both are what some profile
+        reads."""
         found = sorted(FOLDER.glob("repos.*.conf.example"))
         self.assertTrue(found, f"no repos.*.conf.example beside {FOLDER}")
-        return found + sorted(FOLDER.glob("repos.*.conf"))
+        live = system_tools_config.config_dir("repo-sync")
+        return found + sorted(live.glob("repos.*.conf"))
 
     @staticmethod
     def repeated(entries):
@@ -491,7 +556,7 @@ class ShippedConfTest(unittest.TestCase):
                 files = [conf]
                 if profile != "terra":
                     suffix = self.EXAMPLE if conf.name.endswith(self.EXAMPLE) else ""
-                    files.insert(0, FOLDER / (self.COMMON + suffix))
+                    files.insert(0, conf.parent / (self.COMMON + suffix))
                 entries = [e for f in files for e in self.entries(f)]
                 twice = self.repeated(entries)
                 names = " + ".join(f.name for f in files)

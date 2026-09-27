@@ -27,12 +27,16 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import system_tools_config  # noqa: E402
+
 #: The owner gate, as `ROUTINE.md` writes it. The denied list is recited there
 #: on purpose (authorization cannot be enumerated from a filesystem) and copied
 #: here because a runtime parse of prose is a second thing to get wrong; the
 #: suite asserts these two agree with the document, so they cannot drift
 #: silently. Repositories allowed outside ALLOWED_OWNERS are the operator's
-#: own consent, so they live in the local, gitignored `allowed-repos.conf`.
+#: own consent, so they live in `<config>/dependabot/allowed-repos.conf`,
+#: outside the checkout.
 DENIED = (
     "platypeeps/Trellis",
     "platypeeps/google_workspace_mcp",
@@ -46,11 +50,11 @@ ALLOWED_OWNERS = ("platypeeps",)
 
 def _allowed_repos() -> tuple[str, ...]:
     """Repositories outside ALLOWED_OWNERS the owner consented to, read from
-    the gitignored `allowed-repos.conf` beside this file (one `owner/name` per
-    line, `#` comments) or the file DEPENDABOT_ALLOWED_REPOS_FILE names.
-    Missing means none: the gate fails closed."""
+    `<config>/dependabot/allowed-repos.conf` (one `owner/name` per line, `#`
+    comments) or the file DEPENDABOT_ALLOWED_REPOS_FILE names. Missing means
+    none: the gate fails closed."""
     path = Path(os.environ.get("DEPENDABOT_ALLOWED_REPOS_FILE")
-                or Path(__file__).resolve().parent / "allowed-repos.conf")
+                or system_tools_config.config_dir("dependabot") / "allowed-repos.conf")
     if not path.is_file():
         return ()
     slugs = []

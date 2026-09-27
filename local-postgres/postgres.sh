@@ -5,17 +5,14 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# ./.env provides defaults only — already-exported values win (same
-# precedence rule as local-notify). The file is optional; without it the
+# <config>/postgres/.env (see lib/config.sh) provides defaults only —
+# already-exported values win (same precedence rule as local-notify). The file is optional; without it the
 # baked-in local dev values apply.
 ENV_POSTGRES_USER="${POSTGRES_USER:-}"
 ENV_POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
-if [ -f "$DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$DIR/.env"
-  set +a
-fi
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
+st_source_env postgres
 if [ -n "$ENV_POSTGRES_USER" ]; then POSTGRES_USER="$ENV_POSTGRES_USER"; fi
 if [ -n "$ENV_POSTGRES_PASSWORD" ]; then POSTGRES_PASSWORD="$ENV_POSTGRES_PASSWORD"; fi
 POSTGRES_USER="${POSTGRES_USER:-admin}"
@@ -54,7 +51,9 @@ usage: postgres.sh start|stop|update
                (next start pulls the latest)
 
 POSTGRES_USER (default: admin) and POSTGRES_PASSWORD (default: a local dev
-value) come from the environment or ./.env (see .env.example; exported
+value) come from the environment or
+<config>/postgres/.env (copy .env.example there; <config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system; exported
 values win).
 
 POSTGRES_HOST_PORT (default 5434) is the published host port; 5432 and 5433 are

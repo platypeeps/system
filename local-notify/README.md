@@ -103,8 +103,9 @@ Priorities (ntfy): `min|low|default|high|urgent`. Also linked as `notify` in
   buttons — the other channels always get the body as-is). Used by
   the nightly report jobs (brew-doctor, repo-sync, obsidian-tasks).
 
-Configuration comes from exported variables or `./.env` (gitignored, see
-`.env.example`).
+Configuration comes from exported variables or `<config>/notify/.env`,
+outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default
+`~/.config/system`; start from `.env.example`).
 
 ## Jev routing (`JEV_NOTIFY`)
 

@@ -101,9 +101,9 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh restore DIR    # put a dated backup directory back
     ./sd-db.sh backup         # snapshot, then restore the snapshot to prove it
 
-    ./sd-db.sh repo seed      # register what repos.common.conf and
-                              # repos.personal.conf name and this machine
-                              # has actually cloned
+    ./sd-db.sh repo seed      # register what <config>/repo-sync/
+                              # repos.common.conf and repos.<profile>.conf
+                              # name and this machine has actually cloned
     ./sd-db.sh repo add PATH  # register one checkout
     ./sd-db.sh repo list      # the repositories the enumeration is bounded by
     ./sd-db.sh repo list --managed   # only the ones the operator manages
@@ -176,7 +176,10 @@ The library reads these from the environment; each has a default.
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `SYSTEM_TOOLS_LABEL_PREFIX` | `local.system-tools` | launchd label prefix of cron jobs (`<prefix>.cron.<job>`), the runner and the dashboard |
-| `SYSTEM_TOOLS_ROOT` | `~/repos/system-tools` | checkout whose `local-cron-jobs` the Jobs controls run |
+| `SYSTEM_TOOLS_ROOT` | `~/repos/system` | checkout whose `local-cron-jobs/cron-jobs.sh` the Jobs controls run |
+| `SYSTEM_TOOLS_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/system` | private config root: `repo-sync/repos.*.conf` for `repo seed`, `cron-jobs/jobs/*.job` for the Jobs area |
+| `REPO_SYNC_PROFILE` | `personal` | which `repos.<profile>.conf` `repo seed` reads beside `repos.common.conf` (terra reads its own alone) |
+| `CRON_JOBS_EXTRA_DIRS` | none | further job-file directories, colon-separated, read after the config jobs dir |
 | `OBSIDIAN_VAULT` | `~/Documents/Obsidian Vault` | vault the `vault` source reads |
 | `SD_REGISTER` | `$SD_REPO_ROOT/research/world-simulator/00-overview/open-questions.md` | register the `register` source reads |
 | `SD_WRITING_DESTINATIONS` | none | extra hand-recorded publication targets beside `blog` and `substack`, comma-separated |

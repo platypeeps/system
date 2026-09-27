@@ -1,18 +1,18 @@
 #!/bin/sh
 # Scoped AWS access for coding agents, one IAM user per account. Each account
-# is a file in accounts/ naming its id, admin profile, agent profile and access
+# is a file in <config>/aws-setup/accounts/ naming its id, admin profile, agent profile and access
 # level (readonly, operator, sandbox); the level decides the policy rendered
 # for that account's agent user. The IAM policy simulator checks every policy
 # before it is applied and again against the user it was attached to.
 # Usage: aws-setup.sh accounts | render|simulate|apply|keys|rotate|check <account>
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-ACCOUNTS_DIR="$DIR/accounts"
-
-if [ -f "$DIR/.env" ]; then
-  # shellcheck disable=SC1091
-  . "$DIR/.env"
-fi
+. "$DIR/../lib/config.sh"
+# Account files and shared settings are private, so they live outside the
+# checkout: <config>/aws-setup/accounts/<name>.env and <config>/aws-setup/.env.
+# AWS_SETUP_ACCOUNTS_DIR names another accounts folder.
+ACCOUNTS_DIR="${AWS_SETUP_ACCOUNTS_DIR:-$(st_config_dir aws-setup)/accounts}"
+st_source_env aws-setup
 
 POLICY_NAME="${POLICY_NAME:-agent-base}"
 MANAGED_TAG_KEY="${MANAGED_TAG_KEY:-claude-managed}"
@@ -77,7 +77,9 @@ Levels:
   public access block changes, KMS key deletion, changing the managed tag,
   and acting on an instance that does not carry it.
 
-Account file accounts/<name>.env (see accounts/example.env.example):
+Account file <config>/aws-setup/accounts/<name>.env, where <config> is
+$SYSTEM_TOOLS_CONFIG (default ~/.config/system); AWS_SETUP_ACCOUNTS_DIR
+names another folder. Start from local-aws-setup/accounts/example.env.example:
   ACCOUNT_ID     12-digit account id                         (required)
   LEVEL          readonly | operator | sandbox               (required)
   ADMIN_PROFILE  profile with IAM admin rights in the account (required)
@@ -86,7 +88,7 @@ Account file accounts/<name>.env (see accounts/example.env.example):
   AGENT_REGION   region written to AGENT_PROFILE             (default: us-east-1)
   S3_BUCKETS     space-separated bucket names                (default: none)
 
-Shared settings (environment, or ./.env — see .env.example):
+Shared settings (environment, or <config>/aws-setup/.env — see .env.example):
   POLICY_NAME       managed policy name            (default: agent-base)
   MANAGED_TAG_KEY   tag marking agent-managed EC2  (default: claude-managed)
   SIMULATE_PROFILE  profile used by simulate       (default: default)
@@ -101,7 +103,7 @@ load_account() {
     ""|*[!a-z0-9-]*) die "account name must be lowercase letters, digits or dashes: '$ACCOUNT'" ;;
   esac
   file="$ACCOUNTS_DIR/$ACCOUNT.env"
-  [ -f "$file" ] || die "no account file $file (copy accounts/example.env.example)"
+  [ -f "$file" ] || die "no account file $file (copy local-aws-setup/accounts/example.env.example to $file)"
   ACCOUNT_ID="" LEVEL="" ADMIN_PROFILE="" AGENT_USER="" AGENT_PROFILE=""
   AGENT_REGION="" S3_BUCKETS="" AGENT_USER_ARN=""
   # shellcheck disable=SC1090
@@ -151,7 +153,7 @@ cmd_accounts() {
      printf '%-12s %s  %-9s profile=%s user=%s\n' \
        "$ACCOUNT" "$ACCOUNT_ID" "$LEVEL" "$AGENT_PROFILE" "$AGENT_USER")
   done
-  [ "$found" = 1 ] || echo "no accounts yet; copy accounts/example.env.example to accounts/<name>.env"
+  [ "$found" = 1 ] || echo "no accounts yet; copy local-aws-setup/accounts/example.env.example to $ACCOUNTS_DIR/<name>.env"
 }
 
 # --- policy rendering --------------------------------------------------------

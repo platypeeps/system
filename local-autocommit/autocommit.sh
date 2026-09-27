@@ -402,7 +402,9 @@ cmd_commit() {
 # file: this one named `repos.personal.conf` alone while `repos.common.conf`,
 # `repos.work.conf` and `repos.laptop.conf` sat beside it, so `status` reported
 # clean on three files it never looked at. Each job still passes its own
-# --scope; this decides nothing and is a report.
+# --scope; this decides nothing and is a report. The files are here only when
+# their tool keeps its config in the checkout; by default it lives under
+# ${SYSTEM_TOOLS_CONFIG:-~/.config/system}, and the list is empty.
 autocommitted_scopes() {
   for candidate in \
     "$ROOT"/local-ai-apps/profiles \

@@ -60,9 +60,10 @@ deleting it just brought it back. `-a` still scans both.
 
 Third-party checkouts and test fixtures full of sample keys are excluded
 in this mode — the generic defaults are `CRITICAL_EXCLUDE_PATHS` in the
-script. Your own additions (and extra sanctioned secrets globs) go in a
-gitignored `scan-for-secrets.conf` beside the script: copy
-`scan-for-secrets.conf.example` and set `S4S_EXTRA_CRITICAL_EXCLUDE_PATHS`
+script. Your own additions (and extra sanctioned secrets globs) go in
+`<config>/scan-for-secrets/scan-for-secrets.conf`, outside the checkout
+(`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`): copy
+`scan-for-secrets.conf.example` there and set `S4S_EXTRA_CRITICAL_EXCLUDE_PATHS`
 and `S4S_EXTRA_SECRETS_GLOBS`, or point `S4S_CONF` at another file. Rule for adding: not your remote AND no local files of yours
 inside (check gitignored files too — `git status` does not show a
 dropped-in `.env`). ripgrep only, the grep fallback cannot path-exclude.
@@ -103,8 +104,8 @@ Caveats: quit vim before masking `.viminfo` (vim rewrites it
 on exit from memory), same idea for open shells and history files, and
 masking is cleanup, not un-leaking — rotate any key that sat in these
 files. A weekly automated `critical` scan runs via
-`local-cron-jobs/jobs/secret-scan-weekly.job` (Mon 07:00, findings push
-to ntfy).
+`<config>/cron-jobs/jobs/secret-scan-weekly.job` (examples in `local-cron-jobs/examples/`) (Mon 07:00,
+findings push to ntfy).
 
 `prune` mode is the half of `mask` that is safe to run unattended: it deletes
 AI session log files past their directory's retention and does nothing else —
@@ -283,7 +284,7 @@ skipped, plus excludes for `.git`, `node_modules`, `.venv`, data/log dirs,
 lockfiles, archives, and media. `mask` shares the glob excludes and skips
 vendored/derived trees too, but keeps the data/log dirs in scope — see
 `MASK_EXCLUDE_DIRS` above. Gitignored files and dotfiles ARE scanned —
-that's where secrets live. Whole `~/repos/system-tools` scans in ~0.3s.
+that's where secrets live. Whole `~/repos/system` scans in ~0.3s.
 
 ## Accepted exposure (2026-09-21, sd:1254)
 

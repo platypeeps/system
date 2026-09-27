@@ -17,8 +17,8 @@ The server starts with `--requirepass`. Environment variables (defaults match
   meaning no extra user — just password auth on the `default` user)
 - `FALKORDB_PASSWORD` — password (default: `verysecure`)
 
-Both can also live in a gitignored `./.env` (see `.env.example`); exported
-values win over the file.
+Both can also live in `~/.config/system/falkordb/.env` (`$SYSTEM_TOOLS_CONFIG/falkordb/` when that is set);
+copy `.env.example` there. Exported values win over the file.
 
 Connect with `redis://default:$FALKORDB_PASSWORD@localhost:6380`; the browser UI on
 `:3003` takes the same credentials.
@@ -32,4 +32,4 @@ Connect with `redis://default:$FALKORDB_PASSWORD@localhost:6380`; the browser UI
 - The server is on `6380`, not Redis's `6379`, so `local-redis` can run
   alongside it; `local-graphiti-mcp` bundles its own FalkorDB on `6381`/`3004`
   for the same reason. Override with `FALKORDB_PORT` / `FALKORDB_UI_PORT`.
-- No volume mount: data is gone when the container stops. `local-graphiti-mcp` runs its own persistent FalkorDB (whose credentials live in its own `.env`, independent of these).
+- No volume mount: data is gone when the container stops. `local-graphiti-mcp` runs its own persistent FalkorDB (whose credentials live in its own `graphiti-mcp/.env`, independent of these).

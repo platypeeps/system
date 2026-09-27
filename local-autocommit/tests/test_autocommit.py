@@ -518,7 +518,7 @@ class DeployKeyTest(Fixture):
         self.load_job()
         self.make_key()
         git(self.work, "remote", "set-url", "origin",
-            "ssh://git@ssh.github.com:443/platypeeps/system-tools.git")
+            "ssh://git@ssh.github.com:443/platypeeps/system.git")
 
     def ssh_calls(self):
         path = pathlib.Path(self.ssh_log)
@@ -631,11 +631,11 @@ class DeployKeyTest(Fixture):
         """PIN: the key is 0600, and the printed command names this
         repository and reads the public key from its file."""
         git(self.work, "remote", "set-url", "origin",
-            "ssh://git@ssh.github.com:443/platypeeps/system-tools.git")
+            "ssh://git@ssh.github.com:443/platypeeps/system.git")
         result = self.run_tool("key", "create")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(oct(os.stat(self.key).st_mode & 0o777), "0o600")
-        self.assertIn("gh api repos/platypeeps/system-tools/keys", result.stdout)
+        self.assertIn("gh api repos/platypeeps/system/keys", result.stdout)
         self.assertIn(f"-F key=@'{self.key}.pub'", result.stdout)
         again = self.run_tool("key", "create")
         self.assertEqual(again.returncode, 1, again.stdout + again.stderr)

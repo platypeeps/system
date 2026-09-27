@@ -1,4 +1,5 @@
 # Repositories outside platypeeps/* the Dependabot sweep may merge into.
-# Copy to allowed-repos.conf (gitignored). One owner/name per line.
+# Copy to ~/.config/system/dependabot/allowed-repos.conf
+# ($SYSTEM_TOOLS_CONFIG/dependabot). One owner/name per line.
 # Missing file or no lines: nothing outside platypeeps/* is swept.
 example-org/example-service

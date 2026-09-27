@@ -4,7 +4,7 @@ n8n run via `npx` (Node v22 through fnm, sqlite backend in `~/.n8n`) plus the
 external task-runner container on `:5680`, managed as a macOS LaunchAgent
 (`$SYSTEM_TOOLS_LABEL_PREFIX.n8n`, prefix default `local.system-tools`) that starts at login, restarts if it dies, and logs to
 `./logs/` — same pattern as `local-cswap`. The editor/webhook base URL comes
-from `N8N_PUBLIC_HOST` (`.env`); a tunnel must front the webhook path before
+from `N8N_PUBLIC_HOST` (`~/.config/system/n8n/.env`); a tunnel must front the webhook path before
 use. Only the **webhook path** is funnelled to
 the internet — the editor and REST API stay on the tailnet, so the public and
 editor base URLs are deliberately different hosts.
@@ -12,7 +12,8 @@ editor base URLs are deliberately different hosts.
 ## Usage
 
 ```sh
-cp .env.example .env   # once, fill in encryption key, runner token, public host
+mkdir -p ~/.config/system/n8n
+cp .env.example ~/.config/system/n8n/.env   # once, fill in encryption key, runner token, public host
 ./n8n.sh start         # install + load the LaunchAgent
 ./n8n.sh status        # agent state + log tail
 ./n8n.sh stop          # unload agent, stop the task-runner container
@@ -21,7 +22,7 @@ cp .env.example .env   # once, fill in encryption key, runner token, public host
 ```
 
 `N8N_ENCRYPTION_KEY`, `N8N_RUNNERS_AUTH_TOKEN` and `N8N_PUBLIC_HOST` may
-come from `.env` or straight from the environment; `N8N_EDITOR_HOST` and
+come from `~/.config/system/n8n/.env` (`$SYSTEM_TOOLS_CONFIG/n8n/` when that is set) or straight from the environment; `N8N_EDITOR_HOST` and
 `N8N_ENDPOINT_WEBHOOK` are optional overrides — `.env` is optional when they are already exported. When both
 are present, `.env` wins.
 
@@ -61,7 +62,7 @@ are present, `.env` wins.
 
 ```sh
 tailscale funnel --bg --https=8443 --set-path /webhook https+insecure://localhost:5678/webhook
-echo 'N8N_PUBLIC_HOST=<machine>.<tailnet>.ts.net:8443' >> .env
+echo 'N8N_PUBLIC_HOST=<machine>.<tailnet>.ts.net:8443' >> ~/.config/system/n8n/.env
 ./n8n.sh start && ./n8n.sh status
 ```
 
@@ -95,7 +96,7 @@ can rebuild the others by hand.
 
 ### Loose ends
 
-- An old `./.env` may still carry `N8N_BASIC_AUTH_USER` /
+- An old `.env` may still carry `N8N_BASIC_AUTH_USER` /
   `N8N_BASIC_AUTH_PASSWORD`. Both are dead (see Gotchas) — prunable any time.
 - Serving plain HTTP on loopback is an option, since Funnel terminates TLS
   anyway; that drops the cert dependency for everything except direct tailnet

@@ -70,17 +70,16 @@ class NightlyCase(ItemCase):
         return path
 
     def nightly(self, *args, expect=0, runner=None, conf=None):
-        """Run the verb through the entrypoint, with the conf staged beside it.
+        """Run the verb through the entrypoint, with the conf staged in place.
 
-        The conf has to sit next to the script -- that is where the entrypoint
-        looks -- so it is written and removed around the call rather than
-        committed, which `TheExampleList` would fail.
+        The entrypoint reads `<config>/sd-plan/repos.<profile>.conf`, and the
+        config directory here is this case's temporary folder, so staging
+        never touches a developer's own list (sd:1235).
         """
-        # A profile named after this case's temporary folder, so staging
-        # the conf beside the script never overwrites or removes a
-        # developer's own `repos.fixture.conf` (sd:1235).
         profile = f"fixture-{self.home.name}"
-        staged = FOLDER / f"repos.{profile}.conf"
+        config = self.home / "config"
+        (config / "sd-plan").mkdir(parents=True, exist_ok=True)
+        staged = config / "sd-plan" / f"repos.{profile}.conf"
         if conf is not None:
             # A case that runs several nights stages over its own file.
             if not getattr(self, "staged", None):
@@ -91,6 +90,7 @@ class NightlyCase(ItemCase):
         environment = dict(os.environ)
         environment["HOME"] = str(self.home)
         environment["SD_PLAN_PROFILE"] = profile
+        environment["SYSTEM_TOOLS_CONFIG"] = str(config)
         environment["MACHINE_SETUP_STATE"] = str(self.home / "absent")
         environment["SD_PLAN_RUNNER"] = str(runner if runner is not None else self.runner())
         environment.pop("PYTHONPATH", None)
@@ -299,18 +299,15 @@ class WhatItRefuses(NightlyCase):
 class WhatItLeavesBesideTheScript(unittest.TestCase):
     def test_a_night_leaves_a_conf_it_did_not_write_alone(self):
         """sd:1235. `nightly()` staged its conf as `repos.fixture.conf` and
-        unlinked it afterwards, whoever's it was. A staged one is removed
-        afterwards; a developer's is only read."""
-        mine = FOLDER / "repos.fixture.conf"
-        if not mine.exists():
-            mine.write_text("/Users/somebody/repos/theirs\n", encoding="utf-8")
-            self.addCleanup(mine.unlink, missing_ok=True)
-        before = mine.read_bytes()
+        unlinked it afterwards, whoever's it was. It now stages in a config
+        directory inside the case's temporary folder, so the script's folder
+        must come back unchanged."""
+        before = sorted(path.name for path in FOLDER.iterdir())
         result = unittest.TestResult()
         WhatItRefuses("test_an_empty_participation_list_is_not_a_failure").run(result)
         self.assertEqual([], [text for _, text in result.errors + result.failures])
-        self.assertTrue(mine.exists(), "the night deleted a conf it did not write")
-        self.assertEqual(before, mine.read_bytes(), "the night overwrote a conf it did not write")
+        self.assertEqual(before, sorted(path.name for path in FOLDER.iterdir()),
+                         "the night wrote beside the script")
 
 
 class WhatItQueues(NightlyCase):

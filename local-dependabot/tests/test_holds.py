@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent.parent
@@ -469,6 +470,27 @@ class Ranges(unittest.TestCase):
         self.assertTrue(holds.compare("7.1.0", ">", "7.0.1"))
         self.assertFalse(holds.compare("7.1.0-rc.1", ">=", "7.1.0"))
         self.assertTrue(holds.compare("v7.1.0", "=", "7.1.0"))
+
+
+class AllowedReposFile(unittest.TestCase):
+    """The consent list lives in <config>/dependabot/, outside the checkout."""
+
+    def test_the_default_file_is_in_the_config_dir_and_the_override_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "dependabot"
+            conf.mkdir()
+            (conf / "allowed-repos.conf").write_text("example-org/one # note\n\nexample-org/one\n")
+            other = Path(tmp) / "other.conf"
+            other.write_text("example-org/two\n")
+            env = {k: v for k, v in os.environ.items() if k != "DEPENDABOT_ALLOWED_REPOS_FILE"}
+            env["SYSTEM_TOOLS_CONFIG"] = tmp
+            with unittest.mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(holds._allowed_repos(), ("example-org/one",))
+                os.environ["DEPENDABOT_ALLOWED_REPOS_FILE"] = str(other)
+                self.assertEqual(holds._allowed_repos(), ("example-org/two",))
+                del os.environ["DEPENDABOT_ALLOWED_REPOS_FILE"]
+                os.environ["SYSTEM_TOOLS_CONFIG"] = str(Path(tmp) / "absent")
+                self.assertEqual(holds._allowed_repos(), ())
 
 
 class Parsing(unittest.TestCase):

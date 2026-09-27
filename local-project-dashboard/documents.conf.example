@@ -1,6 +1,7 @@
 # Overrides for the generated documents the dashboard lists and serves.
 #
-# Copy this file to documents.conf (gitignored) and edit it; the lines below
+# Copy this file to <config>/project-dashboard/documents.conf and edit it
+# (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system); the lines below
 # are examples. Without a documents.conf the dashboard lists every found root
 # under its directory name and serves nothing outside REPO_ROOT.
 #

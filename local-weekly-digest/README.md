@@ -19,7 +19,8 @@ exists), pending brew/mas updates, root disk usage.
 Unlike the other jobs this one **always emails** — the digest is the
 report, and its weekly arrival doubles as a heartbeat that the automation
 layer is alive. `run` exits 1 only when the email could not be delivered.
-The `weekly-digest` cron job runs Sundays 07:00.
+The example cron job `local-cron-jobs/examples/weekly-digest.job` runs it
+Sundays 07:00; copy it into `<config>/cron-jobs/jobs/` to schedule it.
 
 ## Failure order
 

@@ -54,7 +54,7 @@ class Operations(unittest.TestCase):
         self.action_error = None
         self.inspect_hook = None
         self.backend = LaunchdBackend(launch_agents=self.agents, cron_root=self.cron,
-                                     uid=501, runner=self.run_launchctl)
+                                     jobs_dirs=[self.cron / "jobs"], uid=501, runner=self.run_launchctl)
         self.backend.boot = lambda: self.boot
         initialise(self.root / "sd.db")
         self.db = connect(self.root / "sd.db")
@@ -486,6 +486,19 @@ class Operations(unittest.TestCase):
         with self.assertRaisesRegex(SdDbError, "not queued"):
             update_assignment(self.db, aid, status="running")
         self.assertEqual(assignment_state(self.db, aid), claimed)
+
+
+class JobDirectories(unittest.TestCase):
+    """The job files are private config, found where cron-jobs.sh finds them."""
+
+    def test_extra_dirs_come_first_then_the_config_jobs_dir(self):
+        from sd_db.operations import job_dirs
+        found = job_dirs({"SYSTEM_TOOLS_CONFIG": "/cfg", "CRON_JOBS_EXTRA_DIRS": "/a::/b"})
+        self.assertEqual(found, [Path("/a"), Path("/b"), Path("/cfg/cron-jobs/jobs")])
+
+    def test_the_default_is_under_xdg_config_home(self):
+        from sd_db.operations import job_dirs
+        self.assertEqual(job_dirs({"HOME": "/h"}), [Path("/h/.config/system/cron-jobs/jobs")])
 
 
 if __name__ == "__main__":

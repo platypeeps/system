@@ -27,12 +27,21 @@ class ScheduledRecovery(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.fixture = FixtureHome(self.root)
         self.cron = self.root / "system/local-cron-jobs"
-        (self.cron / "jobs").mkdir(parents=True)
+        self.cron.mkdir(parents=True)
         shutil.copy2(SYSTEM / "local-cron-jobs/cron-jobs.sh", self.cron / "cron-jobs.sh")
+        # cron-jobs.sh sources the shared config helper from its checkout.
+        (self.cron.parent / "lib").mkdir()
+        shutil.copy2(SYSTEM / "lib/config.sh", self.cron.parent / "lib/config.sh")
+        # The job files are private config: cron-jobs.sh reads them from
+        # <config>/cron-jobs/jobs, and the repository ships them as examples.
+        self.config = self.root / "config"
+        self.jobs = self.config / "cron-jobs/jobs"
+        self.jobs.mkdir(parents=True)
         for job in ("sd-db-backup", "sd-db-backup-hourly", "shadow-sync-nightly"):
-            shutil.copy2(SYSTEM / f"local-cron-jobs/jobs/{job}.job", self.cron / f"jobs/{job}.job")
+            shutil.copy2(SYSTEM / f"local-cron-jobs/examples/{job}.job", self.jobs / f"{job}.job")
         (self.cron.parent / "local-sd-db").symlink_to(SYSTEM / "local-sd-db", target_is_directory=True)
         self.env = self.fixture.environment({"PATH": os.environ["PATH"], "PYTHON": sys.executable})
+        self.env["SYSTEM_TOOLS_CONFIG"] = str(self.config)
         # cron-jobs.sh names its plists with the same prefix the library reads.
         self.env["SYSTEM_TOOLS_LABEL_PREFIX"] = LABEL_PREFIX
         self.env["SD_DB_BACKUP_DESTINATION"] = str(self.fixture.backups)
@@ -74,7 +83,7 @@ class ScheduledRecovery(unittest.TestCase):
                if key != "SD_DB_BACKUP_HOURLY_DESTINATION"}
         result = subprocess.run(
             ["/bin/bash", "-c", '. "$1"; printf "%s" "$JOB_COMMAND"', "job",
-             str(self.cron / "jobs/sd-db-backup-hourly.job")],
+             str(self.jobs / "sd-db-backup-hourly.job")],
             env=dict(env, ROOT=str(self.cron), **environment), capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout

@@ -676,21 +676,15 @@ def jobs_table(root: Path) -> str:
 
     A table of jobs written by hand is one more inventory that goes stale the
     first time one is added -- the same failure this repository's guide keeps
-    warning about. This enumerates `local-cron-jobs/jobs/*.job` and the profile
-    manifests on every build, so a new job appears without anyone editing prose.
+    warning about. This enumerates `local-cron-jobs/examples/*.job` and the
+    profile manifests on every build, so a new job appears without anyone
+    editing prose. The examples are the catalogue the checkout ships; the jobs a
+    machine runs are private config in `<config>/cron-jobs/jobs`, copied from
+    them, and a design document does not render one machine's private list.
     """
-    jobs_dir = root / "local-cron-jobs" / "jobs"
+    jobs_dir = root / "local-cron-jobs" / "examples"
     if not jobs_dir.is_dir():
-        raise Skip("local-cron-jobs/jobs is not in this checkout")
-
-    profiles: dict[str, list[str]] = {}
-    manifests = sorted((root / "local-machine-setup" / "profiles").glob("*.cron"))
-    for manifest in manifests:
-        for line in manifest.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            profiles.setdefault(line.split()[0], []).append(manifest.stem)
+        raise Skip("local-cron-jobs/examples is not in this checkout")
 
     rows = []
     for job in sorted(jobs_dir.glob("*.job")):
@@ -717,17 +711,16 @@ def jobs_table(root: Path) -> str:
         # to something). Reading the key alone called every shell job that
         # clears `JOB_PROMPT` an agent job -- `agent-meter` is one.
         kind = "shell" if "JOB_COMMAND" in verbs else "agent" if verbs else ""
-        where = ", ".join(sorted(profiles.get(job.stem, []))) or "—"
-        rows.append((job.stem, schedule or "—", kind or "—", where, blurb))
+        rows.append((job.stem, schedule or "—", kind or "—", blurb))
 
-    head = ("| Job | Schedule | Runs | Profiles | What it does |\n"
-            "|---|---|---|---|---|\n")
+    head = ("| Job | Schedule | Runs | What it does |\n"
+            "|---|---|---|---|\n")
     body = "".join(
-        "| `{}` | `{}` | {} | {} | {} |\n".format(
-            name, schedule, kind, where, blurb.replace("|", "\\|"))
-        for name, schedule, kind, where, blurb in rows)
-    count = "\n*{} job files, {} profile manifests, read from the filesystem at build time.*\n".format(
-        len(rows), len(manifests))
+        "| `{}` | `{}` | {} | {} |\n".format(
+            name, schedule, kind, blurb.replace("|", "\\|"))
+        for name, schedule, kind, blurb in rows)
+    count = "\n*{} example job files, read from the filesystem at build time.*\n".format(
+        len(rows))
     return head + body + count
 
 
@@ -834,8 +827,7 @@ def dependencies(source: Path, root: Path) -> list[Path]:
         if named:
             deps.append(root / SOURCES / "diagrams" / f"{named.group(1)}.json")
         elif JOBS.match(line):
-            deps += sorted((root / "local-cron-jobs" / "jobs").glob("*.job"))
-            deps += sorted((root / "local-machine-setup" / "profiles").glob("*.cron"))
+            deps += sorted((root / "local-cron-jobs" / "examples").glob("*.job"))
     # No existence filter on what the document names. A named input that is
     # gone is the thing `--check` most needs to see, and filtering it out is
     # what made a deleted job file invisible to it. The shared inputs are

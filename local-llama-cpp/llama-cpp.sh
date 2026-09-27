@@ -15,9 +15,10 @@
 # Local Network Privacy denies the unsigned launchd-run llama-server access to
 # the directly-connected bridge subnet, and a bare launchd executable cannot
 # show a consent prompt. Tailscale traffic (100.x on utun) is not classified
-# as local network, so it is exempt. Node addresses come from ./.env (see
-# .env.example): LLAMA_PERSONAL_ADDR and LLAMA_WORK_ADDR are the two nodes'
-# Tailscale IPv4 addresses, and each profile's peer is the other one.
+# as local network, so it is exempt. Node addresses come from
+# <config>/llama-cpp/.env (lib/config.sh; see .env.example):
+# LLAMA_PERSONAL_ADDR and LLAMA_WORK_ADDR are the two nodes' Tailscale IPv4
+# addresses, and each profile's peer is the other one.
 # The local bind is derived at runtime from `tailscale ip -4`, so it follows
 # the node if Tailscale reassigns. Override with LLAMA_RPC_BIND / LLAMA_RPC_PEER.
 # The profile comes from the same rule repo-sync uses: REPO_SYNC_PROFILE,
@@ -25,7 +26,7 @@
 # is set and exists, else `personal`.
 set -e
 # Linked onto PATH by local-bin-links: walk the symlink to the real script so
-# the sibling .env is found.
+# the sibling ../lib/config.sh is found.
 SELF="$0"
 while [ -L "$SELF" ]; do
   link=$(readlink "$SELF")
@@ -35,12 +36,9 @@ while [ -L "$SELF" ]; do
   esac
 done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
-if [ -f "$DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$DIR/.env"
-  set +a
-fi
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
+st_source_env llama-cpp
 LLAMA_DIR=~/repos/ai/llama.cpp
 BIN="$LLAMA_DIR/build/bin"
 PORT="${PORT:-8084}"
@@ -72,8 +70,8 @@ node_addr() {
   eval "addr=\${$1:-}"
   case "$addr" in
     ""|change-me)
-      echo "missing required value: $1 (the peer node's Tailscale IPv4)" >&2
-      echo "export it, or copy .env.example to $DIR/.env and fill it in" >&2
+      st_missing "$1" llama-cpp .env
+      echo "  ($1 is the peer node's Tailscale IPv4)" >&2
       return 1 ;;
   esac
   echo "$addr:$RPC_PORT"
@@ -342,7 +340,8 @@ usage: llama-cpp.sh build|download <repo>[:quant] [file]|serve [preset]|cluster 
   peer         print the rpc peer this profile ($PROFILE) offloads to
   test         smoke-test chat completion against :8084
 
-Peer addresses come from $DIR/.env (see .env.example) or the environment:
+Peer addresses come from $SYSTEM_TOOLS_CONFIG/llama-cpp/.env
+(copy .env.example there) or the environment:
 LLAMA_PERSONAL_ADDR, LLAMA_WORK_ADDR (Tailscale IPv4 of each node),
 LLAMA_WORK_MARKER_DIR (optional; its existence selects the work profile).
 Overrides: LLAMA_RPC_PEER, LLAMA_RPC_BIND, LLAMA_RPC_PORT, REPO_SYNC_PROFILE.

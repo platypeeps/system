@@ -1,4 +1,4 @@
-# system-tools
+# system
 
 Small scripts, wrappers, and mini apps that run local infrastructure on a
 macOS workstation. Each top-level folder is one self-contained tool with its
@@ -9,7 +9,10 @@ own README. There is no repository-wide build.
 | Prefix | Meaning |
 |---|---|
 | `local-*` | Run a service or tool locally (mostly docker or launchd) |
+| `mezmo-*` | Helpers and test data for the Mezmo pipeline API |
 | `network-testing` | iperf3/ping testing between machines on a LAN |
+| `lib` | The shared config resolver the tools source |
+| `docs` | Design documents and planned work (`docs/work/`) |
 
 The larger pieces are `local-sd-db` (a Python package holding the workflow
 database), `local-project-dashboard` (the dashboard over it), `local-sd-runner`
@@ -19,12 +22,12 @@ with the public command pack
 
 ## Conventions
 
-- One entrypoint per folder, named after the folder minus `local-`:
+- One entrypoint per folder, named after the folder minus `local-`/`mezmo-`:
   `local-redis/redis.sh`. Multi-action tools use subcommands
   (`start|stop|update`, etc.); run without arguments for usage (exit 1);
   `-h|--help|help` answers and exits 0.
-- Secrets and personal values never live in tracked files. Each folder that
-  needs them has a gitignored `.env` (or `<name>.conf`) plus a committed
+- Secrets and personal values never live in tracked files. They live in a
+  config folder outside the checkout (see below); each folder commits a
   `.env.example` (or `<name>.conf.example`) with `change-me` values.
 - Data and log directories (`storage/`, `volumes/`, `logs/`, …) are gitignored
   but kept in the tree via `.gitkeep`.
@@ -37,15 +40,34 @@ with the public command pack
 ## Getting started
 
 ```sh
-git clone https://github.com/platypeeps/system-tools ~/repos/system-tools
-cd ~/repos/system-tools
+git clone https://github.com/platypeeps/system ~/repos/system
+cd ~/repos/system
 sh local-bin-links/bin-links.sh help      # put the tools on PATH
 sh local-redis/redis.sh help              # every entrypoint answers help
 ```
 
-Copy a folder's `.env.example` to `.env` (or `*.conf.example` to `*.conf`)
-before running a tool that needs personal values. A tool that misses a value
-names the variable and both remedies.
+## Configuration
+
+Private and per-machine values live in one folder outside the checkout:
+
+```sh
+SYSTEM_TOOLS_CONFIG="${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}"
+```
+
+Each tool reads `$SYSTEM_TOOLS_CONFIG/<tool>/`, where `<tool>` is the folder
+name minus `local-` (a `mezmo-*` folder keeps its full name). For example:
+
+```sh
+mkdir -p ~/.config/system/notify
+cp local-notify/.env.example ~/.config/system/notify/.env   # then fill it in
+```
+
+A tool that misses a value names the variable and both remedies: export it, or
+copy the `.example` file to the config path it prints.
+
+Scheduled jobs are configuration too. `local-cron-jobs` installs the jobs in
+`$SYSTEM_TOOLS_CONFIG/cron-jobs/jobs/`; `local-cron-jobs/examples/` holds
+examples to copy from, and none is installed by default.
 
 ## Ports
 
@@ -70,9 +92,17 @@ Other fixed ports:
 
 ## Tests
 
-`.github/workflows/system-native.yml` runs every suite on macOS with Python
-3.14. Its `run_suite` lines are the list of suites; the preflight fails on a
-`*/tests/test_*.py` folder that no line names.
+`.github/workflows/system-native.yml` runs every suite on Linux
+(`ubuntu-latest`) with Python 3.14. Its `run_suite` lines are the list of
+suites; the preflight fails on a `*/tests/test_*.py` folder that no line names.
+
+Some tests need macOS: APFS immutable retention, clonefile copies and diskutil
+in `local-sd-runner`, and the Swift build and dyld shim in `local-msgsnap`.
+CI cannot run them, and a skipped test fails CI, so they live in separate
+suites named in `tests/macos-only-suites.txt`. Run them on a Mac before pushing
+a change to a folder that file names:
+
+    tests/run-macos-only.sh all
 
 ## License
 

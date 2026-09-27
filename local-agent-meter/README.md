@@ -3,15 +3,13 @@
 Appends one agent-usage reading to a JSONL ledger every four hours: `codexbar usage`
 per provider (claude, codex) and `rtk gain` for token-proxy savings.
 
-The data feeds the `month-on-the-meter` piece in `sd-writing-pack`, so the ledger lives
-in that checkout — `content/2026/month-on-the-meter/data/meter.jsonl` — and this module
-writes across the repo boundary. That is deliberate: the piece owns its data, and the
-schedule that fills it is a machine concern like every other job here.
-
-It ran as `pack.py meter collect` in `sd-writing-pack` from 2026-08-10 and moved here on
-2026-09-03, at step 10c of the `sd` plugin split. Nothing in that repo's skills ever
-called it; only launchd did, which is what makes it a `system` job rather than a
-pipeline step. The series is continuous across the move — same file, same record shape.
+The ledger is, in order: `--out`, else `AGENT_METER_FILE` (exported, or set in
+`<config>/agent-meter/.env`; copy `.env.example`), else
+`<config>/agent-meter/meter.jsonl`. `<config>` is
+`${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}`. The default
+ledger's directory is created on first use; a ledger named by `AGENT_METER_FILE` or
+`--out` must already have its directory, so a moved target fails loudly instead of
+starting a new series nobody reads.
 
 Since sd:234 every reading is written twice: the JSONL line, and one `meter` cost
 row per provider per window in the sd database (`~/.local/share/sd/sd.db`), through
@@ -53,21 +51,14 @@ Installed through the job framework, not a hand-written plist:
     ../local-cron-jobs/cron-jobs.sh install agent-meter
     ../local-cron-jobs/cron-jobs.sh status agent-meter
 
-`jobs/agent-meter.job` sets `0 */4 * * *`, matching the four-hour `StartInterval` of the
-`com.platypeeps.sdw-meter` LaunchAgent it replaced, and runs the script under the pack's
-`.venv/bin/python`, the interpreter that has `sd_db` installed (the same one
+Copy `../local-cron-jobs/examples/agent-meter.job` into `<config>/cron-jobs/jobs/`
+first. It sets `0 */4 * * *` and runs the script under the pack's `.venv/bin/python`,
+the interpreter that has `sd_db` installed (the same one
 `local-project-dashboard/dashboard.sh` serves under). After a change to the job file,
 `cron-jobs.sh verify agent-meter` says STALE until `cron-jobs.sh install agent-meter`
-rewrites the plist. Moving to the framework is what adds
-failure notification and `logs/failures.log`; the old plist reported nothing when a
-meter broke.
-
-That LaunchAgent is retired: its plist and its machine-setup manifest entry were
-removed on 2026-09-03. It had gone on firing the whole time, calling a `pack.py meter
-collect` that no longer existed, and the only place that showed was its own log. The
-repair that misses the point is to fix its command -- which is what happened first, and
-it produced two collectors appending to one ledger for a few hours. There is one
-schedule for this now, and it is the job.
+rewrites the plist. The framework adds failure notification and `logs/failures.log`.
+Keep this job as the one schedule for the collector: a second one appends duplicate
+readings to the same ledger.
 
 ## Duplicate collectors
 
@@ -82,5 +73,6 @@ backwards, from data already collected.
 
 A meter that fails is recorded as an `errors` entry on the record and the run still exits
 0 — a gap in the series is worse than a noisy one, and a collector must not page anyone at
-04:00. The one hard failure is a missing target directory, which means the
-`sd-writing-pack` checkout moved; that exits 1 so the framework reports it.
+04:00. The one hard failure is a missing directory for a ledger named by
+`AGENT_METER_FILE` or `--out`, which means its location moved; that exits 1 so the
+framework reports it.

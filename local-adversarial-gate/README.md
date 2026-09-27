@@ -6,7 +6,7 @@ two copies of the same careful prose in sync by hand.
 
 ## Why it is here
 
-`sd-writing-pack` ran a Codex hostile read from `pack.py review adversarial`, against
+The writing pack ran a Codex hostile read from `pack.py review adversarial`, against
 `templates/adversarial-review.md`. `local-research-kit` ran one through the Codex
 plugin, with the framing spelled out in `CONVENTIONS.md` and again in `reviewcheck.py`.
 (That kit left this repo on 2026-09-03; it is `sd-research-repo` and `bin/sd-research-kit`
@@ -43,7 +43,7 @@ fake `codex` on a private PATH, so no test reaches the real CLI; the `tools` leg
 `system-native` runs it.
 
 **`render` is the one most callers want.** A caller that already owns its invocation
-should compose through `render` and keep its own `codex` call: `sd-writing-pack` does,
+should compose through `render` and keep its own `codex` call: the writing pack does,
 because the draft-digest stamping and confidence-tag counting wrapped around that call
 are its own business and do not belong here. `run` exists for the scripted path a caller
 does not otherwise have.
@@ -139,5 +139,5 @@ human, not an answer. Whoever calls it is responsible for saying so wherever the
 lands — `pack.py` stamps that sentence into the head of every `adversarial.md` it writes.
 
 It is also not a gate by itself: nothing here blocks a publish. The calling repo decides
-what an unresolved finding means. In `sd-writing-pack` it blocks `review -> ready`; in the
+what an unresolved finding means. In the writing pack it blocks `review -> ready`; in the
 research repos it is a line in the document's Status section.

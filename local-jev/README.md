@@ -209,8 +209,9 @@ if [ "$(jev noul 'Is this a real defect?' --state finding.txt --gate 0.8)" = yes
 `~/.config/shell/env.sh`. A machine without it is not broken, it is
 unconfigured, and `status` says `3`.
 
-A folder-local `.env` works too — copy `.env.example` — but it provides
-defaults only: a value already in the environment wins, so
+A `.env` in `<config>/jev/` works too — copy `.env.example` there;
+`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system` — but it
+provides defaults only: a value already in the environment wins, so
 `JEV_MODEL=jev-1.13.0 jev noul ...` pins a model for one call.
 
 `JEV_URL`, `JEV_MODEL`, `JEV_TIMEOUT` and `JEV_RETRIES` override the endpoint,

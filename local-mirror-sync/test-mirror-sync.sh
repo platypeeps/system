@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
 
-cp "$SCRIPT_DIR/mirror-sync.sh" "$WORK_DIR/mirror-sync.sh"
 mkdir -p "$WORK_DIR/directory-source" "$WORK_DIR/directory-destination"
 mkdir -p "$WORK_DIR/file-destination"
 printf 'directory source\n' > "$WORK_DIR/directory-source/keep.txt"
@@ -18,7 +17,7 @@ printf '%s|%s\n%s|%s\n' \
   "$WORK_DIR/source.dmg" "$WORK_DIR/file-destination" \
   > "$WORK_DIR/mirrors.conf"
 
-sh "$WORK_DIR/mirror-sync.sh" sync >/dev/null
+MIRROR_SYNC_CONF="$WORK_DIR/mirrors.conf" sh "$SCRIPT_DIR/mirror-sync.sh" sync >/dev/null
 cmp "$WORK_DIR/directory-source/keep.txt" \
   "$WORK_DIR/directory-destination/keep.txt"
 test ! -e "$WORK_DIR/directory-destination/extra.txt"
@@ -28,7 +27,7 @@ test -e "$WORK_DIR/file-destination/unrelated.txt"
 : > "$WORK_DIR/empty.dmg"
 printf '%s|%s\n' "$WORK_DIR/empty.dmg" "$WORK_DIR/file-destination" \
   > "$WORK_DIR/mirrors.conf"
-if sh "$WORK_DIR/mirror-sync.sh" plan >/dev/null 2>&1; then
+if MIRROR_SYNC_CONF="$WORK_DIR/mirrors.conf" sh "$SCRIPT_DIR/mirror-sync.sh" plan >/dev/null 2>&1; then
   echo "expected empty file source to be refused" >&2
   exit 1
 fi

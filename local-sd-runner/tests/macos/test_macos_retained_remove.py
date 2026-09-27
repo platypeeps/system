@@ -1,8 +1,9 @@
 """`retained-remove` removes one released assignment's retained copy early, with the operator's name (sd:1780).
 
 Every test runs against a temporary retention root and a fixture database.
-Nothing here reaches the live retention volume or the live store. CI runs on
-macOS, so the user immutable flag is real in every test; none is skipped.
+Nothing here reaches the live retention volume or the live store. The user
+immutable flag is real in every test, so this module is macOS-only: CI runs on
+Linux, and tests/run-macos-only.sh runs it on a Mac; none is skipped.
 """
 
 import contextlib
@@ -20,7 +21,7 @@ from sd_db import runner as store
 from sd_db import runner_journal as journal
 from sd_runner import cli, maintenance, storage
 
-from . import test_runtime as fixtures
+from tests import test_runtime as fixtures
 
 ACTOR = {"who", "principal", "program", "pid", "ppid", "session"}
 

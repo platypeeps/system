@@ -65,11 +65,11 @@ def run_suite(script):
 class EintrRetrySuite(unittest.TestCase):
 
     def setUp(self):
-        # The suite builds with `swiftc` and `xcrun --sdk macosx clang`. The
-        # runner is macos-15, which ships Xcode, but that is asserted here and
-        # not assumed: a missing tool is a failure that names itself, never a
-        # skip, because a skip would let the leg go green on a runner that
-        # ran nothing. Per test and not per class, so the summary still reads
+        # The suite builds with `swiftc` and `xcrun --sdk macosx clang`, so it
+        # is macOS-only: tests/run-macos-only.sh runs it, never Linux CI. A
+        # missing tool is asserted, not assumed: a failure that names itself,
+        # never a skip, because a skip would let the run go green having run
+        # nothing. Per test and not per class, so the summary still reads
         # `Ran 2 tests` and the CI wrapper reports the named error rather
         # than the absence of a summary.
         for tool in ("swiftc", "xcrun"):

@@ -14,14 +14,15 @@
 # Running the connection as a stdio server fixes it structurally: the client
 # launches this as a child process, so the handshake is fresh every time.
 #
-# Settings come from ./.env (gitignored) -- see .env.example. HA_TOKEN is
+# Settings come from <config>/ha-mcp/.env (lib/config.sh) -- see .env.example.
+# HA_TOKEN is
 # normally already exported by ~/.config/shell/env.sh.
 set -e
 
 # Resolve symlinks with relative targets against the link's own directory --
 # a bare readlink walk breaks for the relative links bin-links installs. This
-# script reads .env from beside itself, so without the walk it would find
-# nothing when invoked through ~/bin/common/ha-mcp.
+# script sources ../lib/config.sh from beside itself, so without the walk it
+# would find nothing when invoked through ~/bin/common/ha-mcp.
 SELF="$0"
 while [ -L "$SELF" ]; do
   target="$(readlink "$SELF")"
@@ -32,14 +33,16 @@ while [ -L "$SELF" ]; do
 done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
-# .env provides defaults only -- values already in the environment win.
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
+
+# <config>/ha-mcp/.env provides defaults only -- values already in the
+# environment win.
 ENV_HA_TOKEN="${HA_TOKEN:-}"
 ENV_HA_MCP_URL="${HA_MCP_URL:-}"
 ENV_MCP_REMOTE_VERSION="${MCP_REMOTE_VERSION:-}"
 ENV_HA_MCP_NODE="${HA_MCP_NODE:-}"
-if [ -f "$DIR/.env" ]; then
-  . "$DIR/.env"
-fi
+st_source_env ha-mcp
 [ -n "$ENV_HA_TOKEN" ] && HA_TOKEN="$ENV_HA_TOKEN"
 [ -n "$ENV_HA_MCP_URL" ] && HA_MCP_URL="$ENV_HA_MCP_URL"
 [ -n "$ENV_MCP_REMOTE_VERSION" ] && MCP_REMOTE_VERSION="$ENV_MCP_REMOTE_VERSION"
@@ -62,7 +65,8 @@ print usage and exit 1: an MCP client runs the command with no arguments and
 expects a live stdio server on the other end. `serve` is spelled out only so
 `check` has something to contrast with.
 
-environment (./.env, or already exported; the environment wins):
+environment (<config>/ha-mcp/.env, or already exported; the environment wins;
+<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system):
   HA_TOKEN             required. Home Assistant long-lived access token.
                        Normally exported by ~/.config/shell/env.sh.
   HA_MCP_URL           required. The SSE endpoint, e.g.
@@ -127,9 +131,8 @@ resolve_node() {
 
 require_token() {
   if [ -z "${HA_TOKEN:-}" ]; then
-    echo "ha-mcp.sh: HA_TOKEN is not set." >&2
-    echo "  export it (normally done by ~/.config/shell/env.sh), or" >&2
-    echo "  cp $DIR/.env.example $DIR/.env and fill it in" >&2
+    st_missing HA_TOKEN ha-mcp .env
+    echo "  (the export is normally done by ~/.config/shell/env.sh)" >&2
     exit 1
   fi
 }
@@ -137,9 +140,8 @@ require_token() {
 require_url() {
   case "${HA_MCP_URL:-}" in *change-me*) HA_MCP_URL="" ;; esac
   if [ -z "${HA_MCP_URL:-}" ]; then
-    echo "ha-mcp.sh: HA_MCP_URL is not set (the Home Assistant SSE endpoint)." >&2
-    echo "  export it, or" >&2
-    echo "  cp $DIR/.env.example $DIR/.env and fill it in" >&2
+    st_missing HA_MCP_URL ha-mcp .env
+    echo "  (HA_MCP_URL is the Home Assistant SSE endpoint)" >&2
     exit 1
   fi
 }

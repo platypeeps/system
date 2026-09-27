@@ -63,16 +63,16 @@ row, `research-kit`, left in sd:1156.
 ## Setting up a new machine
 
 1. **Clone the repo.** The tools resolve their own location, so any path works;
-   `~/repos/system-tools` is used below.
+   `~/repos/system` is used below.
 
    ```sh
-   git clone git@github.com:platypeeps/system-tools.git ~/repos/system-tools
+   git clone git@github.com:platypeeps/system.git ~/repos/system
    ```
 
 2. **Link the tools.**
 
    ```sh
-   ~/repos/system-tools/local-bin-links/bin-links.sh install
+   ~/repos/system/local-bin-links/bin-links.sh install
    ```
 
 3. **Put `~/bin/common` on PATH** if `install` says it is not. In `~/.zshrc`:
@@ -94,7 +94,7 @@ row, `research-kit`, left in sd:1156.
 5. **Wire the statusline** (optional, not a `~/bin` link):
 
    ```sh
-   ~/repos/system-tools/local-statusline/statusline.sh install
+   ~/repos/system/local-statusline/statusline.sh install
    ```
 
 ## Per-tool prerequisites
@@ -114,8 +114,12 @@ row, `research-kit`, left in sd:1156.
 - Secrets stay out of this repo: `~/.gito/.env` and `~/.prism/.env` are read at
   runtime from `$HOME` and are never tracked here.
 - `repo-sync` picks its profile automatically — the profile machine-setup
-  recorded, else `work` if `REPO_SYNC_WORK_ROOT` names an existing directory,
-  else `personal`. On a new machine that is neither, set
-  `REPO_SYNC_PROFILE` and `REPO_SYNC_ROOT`, or add a new `repos.<profile>.conf`.
+  recorded, else `work` if `REPO_SYNC_WORK_ROOT` (or `SYSTEM_TOOLS_WORK_ROOT`)
+  names an existing directory, else `personal`. On a new machine that is
+  neither, set `REPO_SYNC_PROFILE` and `REPO_SYNC_ROOT`, or add a new
+  `~/.config/system/repo-sync/repos.<profile>.conf`.
+- Private config for every linked tool lives in `$SYSTEM_TOOLS_CONFIG/<tool>/`
+  (default `~/.config/system/<tool>/`), not beside the script, so a link needs
+  nothing copied next to it.
 - The link names deliberately have no `.sh` suffix, matching what these tools
   were called when they lived loose in `~/bin/common`.

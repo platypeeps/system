@@ -25,7 +25,7 @@ from sd_db.writes import create_item, upsert_repo
 from sd_runner import processes, storage
 from sd_runner.runtime import Runner
 
-from . import test_runtime
+from tests import test_runtime
 
 PACK = Path(os.environ.get("SD_ACCEPTANCE_PACK", test_runtime.ROOT.parents[1] / "pack"))
 
@@ -41,7 +41,6 @@ class ExistingRemote(FixtureRemote):
 
 
 @unittest.skipUnless((PACK / "bin/sd-ship").is_file(), "cross-repository sd-ship checkout is required")
-@unittest.skipUnless(sys.platform == "darwin", "native immutable retention requires macOS")
 class ShipLifecycle(unittest.TestCase):
     def setUp(self):
         # Composition reuses setup without discovering every runtime test twice.

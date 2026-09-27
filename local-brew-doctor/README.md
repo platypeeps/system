@@ -9,8 +9,8 @@ human decision, and emails a summary of the rest.
 ./brew-doctor.sh run
 ```
 
-Installed as the `brew-doctor-nightly` job in `local-cron-jobs` (02:15,
-listed in machine-setup's `common.cron` so every machine gets it).
+Scheduled by `local-cron-jobs/examples/brew-doctor-nightly.job` (02:15); copy it
+into `<config>/cron-jobs/jobs/` and run `cron-jobs.sh install brew-doctor-nightly`.
 
 ## What it fixes vs reports
 
@@ -23,7 +23,8 @@ listed in machine-setup's `common.cron` so every machine gets it).
 
 Email goes through `local-notify`'s `email` channel (Gmail via the local
 `google_workspace_mcp` server; `NOTIFY_EMAIL_TO`/`EMAIL_FROM` in
-`local-notify/.env`). If the email cannot be sent the job exits 1, which
+`<config>/notify/.env`, where `<config>` is
+`${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}`). If the email cannot be sent the job exits 1, which
 triggers `local-cron-jobs`' failure notification (banner + ntfy push), so a
 report never disappears silently.
 

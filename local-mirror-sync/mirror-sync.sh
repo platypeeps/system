@@ -3,14 +3,22 @@
 # Directory destinations become exact copies, including deletions
 # (rsync -a --delete). File sources are copied into destination directories.
 # Pairs live in the list MIRROR_SYNC_CONF names, and default to
-# mirrors.conf beside this script -- not beside the caller's cwd.
+# mirrors.conf in <config>/mirror-sync -- not beside the caller's cwd.
 # Usage: mirror-sync.sh sync|plan|list
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$DIR/../lib/config.sh"
 # One script, several schedules: MIRROR_SYNC_CONF names the pair list to
-# run. The nightly job takes the default; the weekly repos mirror passes
-# its own, so a 118G tree does not ride the nightly pass.
-CONF="${MIRROR_SYNC_CONF:-$DIR/mirrors.conf}"
+# run. The nightly job takes the default; the repos mirror passes its own,
+# so a 118G tree does not ride the nightly pass. The lists are private,
+# per-machine paths, so they live in <config>/mirror-sync/; a bare file name
+# (no slash) resolves there, a path is used as given.
+CONF_DIR="$(st_config_dir mirror-sync)"
+CONF="${MIRROR_SYNC_CONF:-mirrors.conf}"
+case "$CONF" in
+  */*) ;;
+  *) CONF="$CONF_DIR/$CONF" ;;
+esac
 
 case "${1:-}" in
   sync|plan|list)
@@ -27,8 +35,11 @@ usage: mirror-sync.sh sync|plan|list
          job runs
 
 MIRROR_SYNC_CONF names the pair list to read. It defaults to mirrors.conf
-beside this script, whatever the working directory, which is the list the
-nightly job runs. The weekly repos mirror passes its own list.
+in <config>/mirror-sync/ (<config> is $SYSTEM_TOOLS_CONFIG, default
+~/.config/system), whatever the working directory; that is the list
+the nightly job runs. A bare file name (mirrors-repos.conf) resolves in that
+folder too; a value with a slash is a path. The repos mirror and the NAS copy
+pass their own lists. Copy local-mirror-sync/<list>.example there to start.
 
 The pair-list format, one pair per line ('|' separated, # comments ok):
   /path/to/source-directory|/path/to/destination-directory
@@ -88,7 +99,7 @@ HELPEOF
     ;;
 esac
 
-[ -f "$CONF" ] || { echo "mirror-sync.sh: missing $CONF (copy $(basename "$CONF").example beside it, or see help for the format)" >&2; exit 1; }
+[ -f "$CONF" ] || { echo "mirror-sync.sh: missing $CONF (copy local-mirror-sync/$(basename "$CONF").example to $CONF, or see help for the format)" >&2; exit 1; }
 
 pairs() {
   sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$CONF" | grep -v '^$' || :

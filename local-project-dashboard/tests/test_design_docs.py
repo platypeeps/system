@@ -165,7 +165,7 @@ class JobsTable(unittest.TestCase):
 
     def setUp(self):
         self.root = design_docs.repo_root()
-        self.jobs = sorted((self.root / "local-cron-jobs" / "jobs").glob("*.job"))
+        self.jobs = sorted((self.root / "local-cron-jobs" / "examples").glob("*.job"))
 
     def test_every_job_file_gets_a_row(self):
         table = design_docs.jobs_table(self.root)
@@ -177,7 +177,7 @@ class JobsTable(unittest.TestCase):
 
     def test_the_stated_count_matches_the_directory(self):
         table = design_docs.jobs_table(self.root)
-        self.assertIn(f"*{len(self.jobs)} job files,", table)
+        self.assertIn(f"*{len(self.jobs)} example job files,", table)
 
     def test_each_row_names_its_verb(self):
         table = design_docs.jobs_table(self.root)
@@ -220,9 +220,8 @@ class JobVerb(unittest.TestCase):
     def rows(self, text):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "local-cron-jobs" / "jobs").mkdir(parents=True)
-            (root / "local-machine-setup" / "profiles").mkdir(parents=True)
-            (root / "local-cron-jobs" / "jobs" / "one.job").write_text(text)
+            (root / "local-cron-jobs" / "examples").mkdir(parents=True)
+            (root / "local-cron-jobs" / "examples" / "one.job").write_text(text)
             return [line for line in design_docs.jobs_table(root).splitlines()
                     if line.startswith("| `one`")]
 
@@ -552,8 +551,7 @@ class Freshness(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.base = time.time()
         (self.root / design_docs.SOURCES / "diagrams").mkdir(parents=True)
-        (self.root / "local-cron-jobs" / "jobs").mkdir(parents=True)
-        (self.root / "local-machine-setup" / "profiles").mkdir(parents=True)
+        (self.root / "local-cron-jobs" / "examples").mkdir(parents=True)
         (self.root / design_docs.PUBLISHED).mkdir(parents=True)
 
     def write(self, rel, text=""):
@@ -592,11 +590,9 @@ class Freshness(unittest.TestCase):
 
     def test_the_jobs_directive_depends_on_the_files_it_enumerates(self):
         page = self.source("jobs", "@jobs")
-        job = self.write("local-cron-jobs/jobs/nightly.job", "JOB_SCHEDULE=1\n")
-        cron = self.write("local-machine-setup/profiles/personal.cron", "nightly\n")
+        job = self.write("local-cron-jobs/examples/nightly.job", "JOB_SCHEDULE=1\n")
         deps = design_docs.dependencies(page, self.root)
         self.assertIn(job, deps)
-        self.assertIn(cron, deps)
 
     def test_a_page_whose_diagram_spec_moved_ahead_of_it_is_stale(self):
         page = self.source("one", "@diagram shape")
@@ -646,17 +642,17 @@ class Freshness(unittest.TestCase):
         # The case no comparison of surviving files can reach: the page still
         # lists a job nobody runs, and nothing on disk is newer than the page.
         page = self.source("jobs", "@jobs")
-        job = self.write("local-cron-jobs/jobs/nightly.job", "JOB_SCHEDULE=1\n")
-        self.write("local-cron-jobs/jobs/weekly.job", "JOB_SCHEDULE=2\n")
+        job = self.write("local-cron-jobs/examples/nightly.job", "JOB_SCHEDULE=1\n")
+        self.write("local-cron-jobs/examples/weekly.job", "JOB_SCHEDULE=2\n")
         self.build([page])
         job.unlink()
         self.assertEqual(design_docs.render(self.root, check=True), 1)
 
     def test_a_new_job_file_is_stale_too(self):
         page = self.source("jobs", "@jobs")
-        self.write("local-cron-jobs/jobs/nightly.job", "JOB_SCHEDULE=1\n")
+        self.write("local-cron-jobs/examples/nightly.job", "JOB_SCHEDULE=1\n")
         self.build([page])
-        self.touch(self.write("local-cron-jobs/jobs/weekly.job", "JOB_SCHEDULE=2\n"), 1000)
+        self.touch(self.write("local-cron-jobs/examples/weekly.job", "JOB_SCHEDULE=2\n"), 1000)
         self.assertEqual(design_docs.render(self.root, check=True), 1)
 
     def test_a_build_with_no_manifest_is_stale_rather_than_assumed_fresh(self):

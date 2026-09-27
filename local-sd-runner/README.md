@@ -345,7 +345,11 @@ progress while keeping the item open.
 
 Run `runner.sh test -v` for real bare Git repositories, controlled native process
 groups, crash checkpoints, recycled PID refusal, escaped children, ignored output,
-archive/restore, APFS immutable retention, queue controls, and storage policy tests.
+archive/restore, queue controls, and storage policy tests. CI runs this on Linux.
+Run `runner.sh test-macos -v` on a Mac for what only macOS has: APFS immutable
+retention (`chflags uchg`), clonefile cargo seeds (`cp -c`), `retained-remove`,
+`prune-apply` and the ship lifecycle. Those modules live in `tests/macos/`, and
+`tests/run-macos-only.sh` at the repository root runs them.
 The native process checks need host permission to run `ps`/`lsof` and inspect or
 signal those fixture groups. A denied inventory holds cleanup; it is not treated
 as evidence that no process exists.
@@ -408,7 +412,7 @@ an attempt this command never touches, and anything left is listed as `left`.
 It prints the assignment, path, bytes freed and actor. It leaves the
 repository's Cargo seed under `<work>/.cargo-seed` in place. The command is narrow
 enough to allow-list in Claude Code:
-`Bash(~/repos/system-tools/local-sd-runner/runner.sh retained-remove:*)`.
+`Bash(~/repos/system/local-sd-runner/runner.sh retained-remove:*)`.
 That one rule covers both scopes below.
 
 `runner.sh retained-remove --clone-only --assignment N --who NAME` removes less

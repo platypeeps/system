@@ -77,12 +77,12 @@ class EmailRetryTest(unittest.TestCase):
             "WORKSPACE_MCP_URL": stub.url,
             "NOTIFY_MCP_RETRY_WAIT": "0",
         }
-        # A copy in a temp folder, so a real .env beside notify.sh cannot
+        # An empty config directory, so a real <config>/notify/.env cannot
         # supply the recipient (or anything else) behind the test's back.
         folder = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, folder, True)
-        script = folder / "notify.sh"
-        shutil.copy(NOTIFY, script)
+        env["SYSTEM_TOOLS_CONFIG"] = str(folder / "config")
+        script = NOTIFY
         if recipient:
             env["NOTIFY_EMAIL_TO"] = recipient
         return subprocess.run(["sh", str(script), "-t", "t", "-c", "email", "body"],

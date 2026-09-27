@@ -10,9 +10,10 @@ So the table is populated two ways, and only two:
 
 * **By hand**, `sd-db.sh repo add <path>`. One repository, deliberately, with
   its remote read from the checkout rather than typed.
-* **From `local-repo-sync/repos.common.conf` and `repos.personal.conf`**,
-  `sd-db.sh repo seed`. That pair is what `repo-sync` clones on the personal
-  profile, one `<subdir> <owner/repo>` per line, and it is maintained because
+* **From repo-sync's `repos.common.conf` and `repos.<profile>.conf`**,
+  `sd-db.sh repo seed`. That pair lives in `<config>/repo-sync/` (see
+  `config.py`) and is what `repo-sync` clones on this machine's profile,
+  one `<subdir> <owner/repo>` per line, and it is maintained because
   the sync breaks when it is wrong. Deriving from it beats a second list that
   only drifts. Reading the personal file alone missed every entry that lives
   in common.
@@ -41,7 +42,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import paths
+from . import config, paths
 from .errors import SdDbError
 from .writes import upsert_repo
 
@@ -49,12 +50,15 @@ from .writes import upsert_repo
 #: the first line of the file itself, and this is the whole grammar.
 CONF_LINE = re.compile(r"^(?P<group>[A-Za-z0-9._-]+)\s+(?P<slug>[^\s/]+/[^\s/]+)\s*$")
 
-#: Where `local-repo-sync` keeps the personal fleet, relative to the
-#: repository this library lives in.
-CONF_RELATIVE = Path("local-repo-sync/repos.personal.conf")
+#: The config folder `repo-sync` reads its lists from, under the config root.
+CONF_TOOL = "repo-sync"
+
+#: The profile `repo-sync` falls back to, and the one read here unless
+#: `REPO_SYNC_PROFILE` names another.
+DEFAULT_PROFILE = "personal"
 
 #: The file `repo-sync` layers under every profile but terra. It sits next to
-#: the personal conf, and is found from it rather than from here.
+#: the profile conf, and is found from it rather than from here.
 COMMON_CONF_NAME = "repos.common.conf"
 
 #: Where item D's runner puts a clone. Not read to exclude anything -- the
@@ -64,6 +68,14 @@ WORKTREES_RELATIVE = Path(".local/share/sd/worktrees")
 
 class RepoRefusal(SdDbError):
     """A path that cannot be a registered repository, and why."""
+
+
+class ConfMissing(FileNotFoundError):
+    """The profile conf a default seed reads is not in the config folder.
+
+    A `FileNotFoundError`, so a caller that already treats an absent conf as
+    "nothing to seed" keeps doing so; the message names the remedy.
+    """
 
 
 @dataclass(frozen=True)
@@ -95,25 +107,44 @@ def worktrees_root(home: Path | str | None = None) -> Path:
     return base / WORKTREES_RELATIVE
 
 
-def conf_path(root: Path | None = None) -> Path:
-    """`local-repo-sync/repos.personal.conf`, found from this file.
+def profile(environ: dict[str, str] | None = None) -> str:
+    """`REPO_SYNC_PROFILE`, else `personal`: the list `repo-sync` clones here."""
+    env = os.environ if environ is None else environ
+    return env.get("REPO_SYNC_PROFILE") or DEFAULT_PROFILE
 
-    `conf_paths` adds the common conf beside it; this names the personal one.
 
-    Resolved from the package rather than from the working directory: the
-    seed runs from cron, whose working directory is the operator's home.
+def conf_path(root: Path | None = None, environ: dict[str, str] | None = None) -> Path:
+    """`<config>/repo-sync/repos.<profile>.conf`.
+
+    `conf_paths` adds the common conf beside it; this names the profile one.
+    `root` names the folder that holds the lists instead of the config dir.
+
+    Resolved from the environment rather than from the working directory:
+    the seed runs from cron, whose working directory is the operator's home.
     """
-    base = Path(root) if root is not None else Path(__file__).resolve().parents[2]
-    return base / CONF_RELATIVE
+    base = Path(root) if root is not None else config.config_dir(CONF_TOOL, environ)
+    return base / f"repos.{profile(environ)}.conf"
 
 
-def conf_paths(root: Path | None = None) -> list[Path]:
-    """The pair `repo-sync` reads on personal: common first, then personal.
+def conf_paths(root: Path | None = None, environ: dict[str, str] | None = None) -> list[Path]:
+    """The pair `repo-sync` reads: common first, then the profile conf.
 
     The same order `repo-sync.sh` iterates, so a list reads in conf order.
+    Terra reads its profile conf alone, as `repo-sync.sh` does.
     """
-    personal = conf_path(root)
-    return [personal.with_name(COMMON_CONF_NAME), personal]
+    chosen = conf_path(root, environ)
+    if profile(environ) == "terra":
+        return [chosen]
+    return [chosen.with_name(COMMON_CONF_NAME), chosen]
+
+
+def missing_conf(path: Path) -> ConfMissing:
+    """The st_missing-style refusal for an absent profile conf."""
+    return ConfMissing(
+        f"{path.name} is not set. Copy local-repo-sync/{path.name}.example "
+        f"(or another profile's example) to {path} and fill it in, or name a "
+        f"conf: `sd-db.sh repo seed <conf>`."
+    )
 
 
 def read_conf(path: Path | str) -> list[tuple[str, str]]:
@@ -150,15 +181,18 @@ def checkouts(
 
     A named `path` is read alone. Without one it is the common and personal
     pair; an entry both name is one checkout, and a missing common file is
-    read as empty -- the personal file is the one a seed cannot do without.
+    read as empty -- the profile file is the one a seed cannot do without,
+    and its absence raises `ConfMissing` naming where to put it.
     """
     base = Path(root) if root is not None else repo_root(environ)
     if path is not None:
         entries = read_conf(path)
     else:
-        common, personal = conf_paths()
-        entries = read_conf(common) if common.is_file() else []
-        entries = list(dict.fromkeys(entries + read_conf(personal)))
+        *common, chosen = conf_paths(environ=environ)
+        if not chosen.exists():
+            raise missing_conf(chosen)
+        entries = [entry for extra in common if extra.is_file() for entry in read_conf(extra)]
+        entries = list(dict.fromkeys(entries + read_conf(chosen)))
     found = []
     for group, slug in entries:
         name = slug.split("/", 1)[1]

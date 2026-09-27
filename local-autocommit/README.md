@@ -19,6 +19,12 @@ one, and they land in a single commit:
                            --scope local-repo-sync/repos.personal.conf \
                            --message "chore(repo-sync): reconcile repo list"
 
+These scopes exist in the checkout only when a tool keeps its generated file
+there. By default `local-repo-sync` and `local-ai-apps` keep theirs under
+`${SYSTEM_TOOLS_CONFIG:-~/.config/system}/`, outside the checkout, and have
+nothing to commit; pointing a tool back at its repository folder brings the
+commit back.
+
 A file the caller leaves out is a file left dirty. `check` then defers on it
 every run after, which is how repo-sync left `repos.common.conf` dirty for
 good: `remove_entry` rewrites every conf the profile reads, and the commit

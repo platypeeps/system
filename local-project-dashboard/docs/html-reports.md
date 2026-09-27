@@ -65,14 +65,16 @@ under `REPO_ROOT` (default `~/repos`, at the root or one group deep) that
 holds `docs/dashboard`. The key is the checkout's directory name, and the
 folder must resolve inside that checkout. A symlink out of it is refused.
 
-`local-project-dashboard/documents.conf` still says what a directory cannot.
+`<config>/project-dashboard/documents.conf` still says what a directory cannot
+(`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`).
 A `label|<key>|<label>` line names a found root better than its directory
 name does, for example `label|mcp-research|MCP`. A
 `root|<key>|<label>|<directory>` line is for a root that lives outside any
 checkout's `docs/dashboard`. A report built to this convention never needs
 one. The vault is the one such root today, because it is not a checkout under
 `~/repos`: `root|vault|Vault|~/Documents/My Vault/docs/dashboard`.
-`documents.conf` is gitignored; copy `documents.conf.example` to start one.
+`documents.conf` is private config outside the checkout; copy
+`local-project-dashboard/documents.conf.example` there to start one.
 
 ## The markdown twin publishes
 
@@ -135,7 +137,7 @@ repository's builder. Extracting a callable chart library is a separate item.
    a 404.
 2. `docs/dashboard/` is in the repository's `.gitignore`. Commit nothing the
    build wrote.
-3. Optionally, add a `label|` line to `local-project-dashboard/documents.conf`,
+3. Optionally, add a `label|` line to `<config>/project-dashboard/documents.conf`,
    once per repository, when the directory name reads badly.
 4. Open the dashboard's Documents screen. The page is listed under the
    checkout's name or its label and served at `/documents/<key>/<name>.html`,

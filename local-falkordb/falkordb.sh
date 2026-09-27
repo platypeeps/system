@@ -10,17 +10,14 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT="${FALKORDB_PORT:-6380}"
 UI_PORT="${FALKORDB_UI_PORT:-3003}"
 
-# ./.env provides defaults only — already-exported values win (same
-# precedence rule as local-notify). The file is optional; without it the
+# <config>/falkordb/.env (see lib/config.sh) provides defaults only —
+# already-exported values win (same precedence rule as local-notify). The file is optional; without it the
 # baked-in local dev values apply.
 ENV_FALKORDB_USER="${FALKORDB_USER:-}"
 ENV_FALKORDB_PASSWORD="${FALKORDB_PASSWORD:-}"
-if [ -f "$DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$DIR/.env"
-  set +a
-fi
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
+st_source_env falkordb
 if [ -n "$ENV_FALKORDB_USER" ]; then FALKORDB_USER="$ENV_FALKORDB_USER"; fi
 if [ -n "$ENV_FALKORDB_PASSWORD" ]; then FALKORDB_PASSWORD="$ENV_FALKORDB_PASSWORD"; fi
 FALKORDB_USER="${FALKORDB_USER:-default}"
@@ -58,7 +55,9 @@ environment:
                      no extra user, just password auth)
   FALKORDB_PASSWORD  password for that user and for "default" (default: verysecure)
 
-Both come from the environment or ./.env (see .env.example; exported values
+Both come from the environment or
+<config>/falkordb/.env (copy .env.example there; <config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system; exported values
 win).
 
 environment: FALKORDB_PORT (default 6380), FALKORDB_UI_PORT (default 3003)

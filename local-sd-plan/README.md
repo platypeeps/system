@@ -352,8 +352,9 @@ consumers first, and this branch does not make it.
 
 ## Participation is a list, and an absent list means nobody
 
-`repos.<profile>.conf` beside the script, one absolute repository path per
-line, `#` comments and blank lines ignored. The profile is the one
+`<config>/sd-plan/repos.<profile>.conf`, where `<config>` is
+`$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`), one absolute
+repository path per line, `#` comments and blank lines ignored. The profile is the one
 `machine-setup` recorded in `~/.config/machine-setup/profile`, overridable
 with `SD_PLAN_PROFILE`; the same resolution `local-repo-sync` uses, for the
 same reason it documents at length. Unlike `local-repo-sync`, no recorded
@@ -361,8 +362,9 @@ profile means no list, not `personal`'s: `status` exits 3 and `nightly`
 queues nothing. A path listed twice participates once. A list or profile that
 exists but cannot be read is a broken machine: `status` and `nightly` exit 1.
 
-**The file is local and gitignored, and opting a repository in is deliberate.**
-It names the operator's own repositories, so it never ships. What it opts in
+**The file is private config outside the checkout, and opting a repository in
+is deliberate.** It names the operator's own repositories, so it never ships;
+copy `repos.personal.conf.example` into `<config>/sd-plan/` to start one. What it opts in
 to is an agent writing a branch in that checkout, unattended, nightly, with
 nobody watching. `repos.personal.conf.example` ships entirely commented
 out, and a test asserts it stays that way: an example that participates when

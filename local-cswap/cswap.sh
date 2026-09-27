@@ -12,7 +12,7 @@
 # Flags for `cswap auto` live in cswap-auto.conf; restart to apply.
 set -euo pipefail
 
-# launchd label prefix shared by every system-tools agent; override per machine.
+# launchd label prefix shared by every agent from this repository; override per machine.
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="$LABEL_PREFIX.cswap-auto"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

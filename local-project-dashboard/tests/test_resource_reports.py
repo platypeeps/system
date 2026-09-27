@@ -192,17 +192,37 @@ class Resources(unittest.TestCase):
         self.assertNotIn("javascript:", result); self.assertNotIn("<img", result)
         self.assertIn("Text", result)
 
+class CronJobFiles(unittest.TestCase):
+    """Toolbox reads job files where cron-jobs.sh does, not from the checkout."""
+
+    def test_the_config_jobs_dir_is_read_and_an_extra_dir_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jobs = root / "config/cron-jobs/jobs"; jobs.mkdir(parents=True)
+            extra = root / "extra"; extra.mkdir()
+            (jobs / "one.job").write_text("A\n"); (jobs / "two.job").write_text("B\n")
+            (extra / "two.job").write_text("C\n")
+            env = {"SYSTEM_TOOLS_CONFIG": str(root / "config"), "CRON_JOBS_EXTRA_DIRS": str(extra)}
+            with patch.dict(os.environ, env):
+                found = collectors.cron_job_files()
+            self.assertEqual(found, [jobs / "one.job", extra / "two.job"])
+
+
 class CronReports(unittest.TestCase):
     def test_report_hook_preserves_single_run_and_exit_when_database_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); cron = root / "cron"; (cron / "jobs").mkdir(parents=True); (cron / "logs").mkdir()
+            root = Path(directory); cron = root / "cron"; (cron / "logs").mkdir(parents=True)
             shutil.copy2(HERE.parent / "local-cron-jobs/cron-jobs.sh", cron / "cron-jobs.sh")
-            (cron / "jobs/fixture.job").write_text('JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="printf \'REPORT BODY\\n\'"\nJOB_DIR=' + str(root) + "\n")
+            # cron-jobs.sh sources the shared config helper beside it, and reads
+            # job files from <config>/cron-jobs/jobs.
+            (root / "lib").mkdir(); shutil.copy2(HERE.parent / "lib/config.sh", root / "lib/config.sh")
+            jobs = root / "config/cron-jobs/jobs"; jobs.mkdir(parents=True)
+            (jobs / "fixture.job").write_text('JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="printf \'REPORT BODY\\n\'"\nJOB_DIR=' + str(root) + "\n")
             (cron / "logs/fixture.log").write_text("PREVIOUS RUN\n")
             fake = root / "sd"; calls = root / "calls.jsonl"
             fake.write_text("#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ['REPORT_CALLS'],'a') as stream: stream.write(json.dumps(sys.argv[1:])+'\\n')\nsys.exit(int(os.environ.get('REPORT_EXIT','0')))\n")
             fake.chmod(0o755)
-            env = {**os.environ, "HOME": str(root), "SD_REPORT_BIN": str(fake), "REPORT_CALLS": str(calls), "REPORT_EXIT": "1"}
+            env = {**os.environ, "HOME": str(root), "SYSTEM_TOOLS_CONFIG": str(root / "config"), "SD_REPORT_BIN": str(fake), "REPORT_CALLS": str(calls), "REPORT_EXIT": "1"}
             result = subprocess.run(["sh", str(cron / "cron-jobs.sh"), "exec", "fixture"], env=env, capture_output=True, text=True, timeout=10, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             log = (cron / "logs/fixture.log").read_text()
@@ -215,7 +235,7 @@ class CronReports(unittest.TestCase):
             self.assertFalse((cron / "logs/failures.log").exists())
             notification = root / "osascript"
             notification.write_text("#!/bin/sh\nexit 0\n"); notification.chmod(0o755)
-            (cron / "jobs/fixture.job").write_text('JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="exit 7"\nJOB_DIR=' + str(root) + "\n")
+            (jobs / "fixture.job").write_text('JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="exit 7"\nJOB_DIR=' + str(root) + "\n")
             env["PATH"] = str(root) + os.pathsep + env["PATH"]
             result = subprocess.run(["sh", str(cron / "cron-jobs.sh"), "exec", "fixture"], env=env, capture_output=True, text=True, timeout=10, check=False)
             self.assertEqual(result.returncode, 7, result.stderr)

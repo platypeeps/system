@@ -10,7 +10,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 URL="${WORKSPACE_MCP_URL:-http://127.0.0.1:8083/mcp}"
-# launchd label prefix shared by every system-tools agent; override per machine.
+# launchd label prefix shared by every agent from this repository; override per machine.
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="${WORKSPACE_MCP_LABEL:-$LABEL_PREFIX.google-workspace-mcp}"
 TIMEOUT="${WORKSPACE_MCP_TIMEOUT:-10}"

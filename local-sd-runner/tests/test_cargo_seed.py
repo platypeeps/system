@@ -5,6 +5,8 @@ into an empty `target/`. The runner now copies the repository's seed into a
 Rust clone's own `target/`, touches every tracked file so the clone's own
 crates rebuild, and replaces the seed after a check passes. These tests hold
 the file-level rules; a real two-clone Cargo build is in the PR's evidence.
+The cases that need a real `cp -c` clonefile copy are macOS-only and live in
+tests/macos/test_macos_cargo_seed.py.
 """
 
 import json
@@ -30,7 +32,7 @@ def git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout
 
 
-class SeedAndRefresh(unittest.TestCase):
+class SeedAndRefreshFixture:
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -51,16 +53,8 @@ class SeedAndRefresh(unittest.TestCase):
             os.utime(path, (OLD, OLD))
         os.utime(self.fingerprint, (OLD + 60, OLD + 60))
 
-    def test_the_clone_gets_its_own_copy_and_every_tracked_file_is_newer_than_it(self):
-        self.assertTrue(cargo_seed.seed(self.clone, self.seed))
-        copied = self.clone / "target/debug/.fingerprint/app"
-        self.assertEqual(copied.read_text(), "built elsewhere")
-        self.assertEqual(int(copied.stat().st_mtime), int(OLD + 60))
-        self.assertNotEqual(copied.stat().st_ino, self.fingerprint.stat().st_ino)
-        for path in (self.clone / "Cargo.toml", self.clone / "src/main.rs"):
-            self.assertGreater(path.stat().st_mtime, copied.stat().st_mtime, path)
-        self.assertEqual(git(self.clone, "status", "--porcelain", "--untracked-files=no"), "")
 
+class SeedAndRefresh(SeedAndRefreshFixture, unittest.TestCase):
     def test_a_clone_without_cargo_toml_or_with_a_target_is_not_seeded(self):
         (self.clone / "target").mkdir()
         self.assertFalse(cargo_seed.seed(self.clone, self.seed))
@@ -87,48 +81,6 @@ class SeedAndRefresh(unittest.TestCase):
             self.assertFalse(cargo_seed.seed(self.clone, self.seed))
         self.assertFalse((self.clone / "target").exists())
 
-    def test_refresh_renames_a_new_copy_into_place(self):
-        (self.clone / "target/debug/deps").mkdir(parents=True)
-        (self.clone / "target/debug/.fingerprint").mkdir()
-        (self.clone / "target/debug/deps/libdep-1.rlib").write_text("passing build")
-        self.assertTrue(cargo_seed.refresh(self.clone, self.seed))
-        self.assertEqual((self.seed / "debug/deps/libdep-1.rlib").read_text(), "passing build")
-        self.assertFalse((self.seed / "debug/.fingerprint/app").exists())
-        self.assertEqual(sorted(p.name for p in self.seed.parent.iterdir()), [self.seed.name])
-
-    def test_the_seed_keeps_dependency_artifacts_and_no_final_output(self):
-        # A seed holding a binary its branch later removes would let a clone
-        # run that binary after a build that no longer makes it.
-        target = self.clone / "target"
-        kept = ["debug/.fingerprint/dep-1/lib-dep", "debug/build/dep-1/build-script-build",
-                "debug/deps/libdep-1.rlib", "debug/deps/libdep-1.rmeta", "debug/deps/dep-1.d",
-                "aarch64-apple-darwin/release/.fingerprint/dep-2/lib-dep",
-                "aarch64-apple-darwin/release/deps/libdep-2.rlib"]
-        dropped = ["debug/tool", "debug/tool.d", "debug/deps/tool-1", "debug/deps/app-1",
-                   "debug/deps/tool-1.dSYM/Contents/Info.plist", "debug/examples/demo",
-                   "debug/incremental/app-1/s-1/dep-graph.bin", "aarch64-apple-darwin/release/tool",
-                   "doc/app/index.html", ".rustc_info.json", "CACHEDIR.TAG"]
-        for name in kept + dropped:
-            (target / name).parent.mkdir(parents=True, exist_ok=True)
-            (target / name).write_text(name)
-        self.assertTrue(cargo_seed.refresh(self.clone, self.seed))
-        self.assertEqual([n for n in kept if not (self.seed / n).is_file()], [])
-        self.assertEqual([n for n in dropped if os.path.lexists(self.seed / n)], [])
-        self.assertTrue((target / "debug/tool").is_file(), "the clone's own target/ is untouched")
-
-    def test_a_seed_written_before_pruning_is_pruned_in_the_clone(self):
-        # A seed that an older runner wrote whole still holds final outputs;
-        # the clone's copy drops them before any build can run them.
-        for name in ("debug/tool", "debug/deps/tool-1", "debug/deps/libdep-1.rlib"):
-            (self.seed / name).parent.mkdir(parents=True, exist_ok=True)
-            (self.seed / name).write_text(name)
-        self.assertTrue(cargo_seed.seed(self.clone, self.seed))
-        target = self.clone / "target"
-        self.assertFalse(os.path.lexists(target / "debug/tool"))
-        self.assertFalse(os.path.lexists(target / "debug/deps/tool-1"))
-        self.assertTrue((target / "debug/deps/libdep-1.rlib").is_file())
-        self.assertTrue((self.seed / "debug/tool").is_file(), "the seed itself is read, not changed")
-
     def test_a_failed_refresh_keeps_the_old_seed(self):
         (self.clone / "target").mkdir()
         with patch("sd_runner.cargo_seed._copy", return_value=False):
@@ -144,7 +96,7 @@ class SeedAndRefresh(unittest.TestCase):
         self.assertEqual(one.parent, work / cargo_seed.SEEDS)
 
 
-class RunnerSeeds(unittest.TestCase):
+class RunnerSeedsFixture:
     """Through the runner: a passing check seeds, the next clone starts from it, a failing one never seeds."""
 
     def setUp(self):
@@ -187,16 +139,8 @@ class RunnerSeeds(unittest.TestCase):
         return create_item(self.fixture.db, kind="task", title="more fixture work", repo=str(self.fixture.checkout),
                            branch="work/item", status="ready")
 
-    def test_a_passing_check_seeds_the_next_clone_of_the_repository(self):
-        first, seen = self.run_with("one.rs")
-        self.assertIsNone(seen["before"])
-        self.assertNotIn("CARGO_TARGET_DIR", seen["env"])
-        seed = cargo_seed.seed_path(self.config.work, first["repo"])
-        self.assertEqual((seed / "debug/deps" / f"lib{first['id']}.rlib").read_text(), "built")
-        second, again = self.run_with("two.rs", item=self.another())
-        self.assertEqual(again["before"], [f"debug/deps/lib{first['id']}.rlib"])
-        self.assertEqual(sorted(p.name for p in (seed / "debug/deps").iterdir()), sorted([f"lib{first['id']}.rlib", f"lib{second['id']}.rlib"]))
 
+class RunnerSeeds(RunnerSeedsFixture, unittest.TestCase):
     def test_a_failing_check_never_seeds(self):
         result, _ = self.run_with("one.rs", fail=True)
         self.assertEqual(result["outcome"], "blocked", result)

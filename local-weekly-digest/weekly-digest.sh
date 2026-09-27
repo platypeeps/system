@@ -63,7 +63,8 @@ FAILURES="$TMPD/failures"
 NOTES="$TMPD/notes"
 : > "$FAILURES"; : > "$NOTES"
 
-cutoff=$(date -v-7d '+%Y-%m-%d')
+# BSD date takes -v, GNU date takes -d; the CI runner is Linux.
+cutoff=$(date -v-7d '+%Y-%m-%d' 2>/dev/null || date -d '7 days ago' '+%Y-%m-%d')
 
 note() { printf -- '%s\n' "$1" >> "$NOTES"; }
 

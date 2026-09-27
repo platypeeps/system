@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,8 +56,19 @@ from pathlib import Path
 from .markup import join, tag
 from .pages import empty, page
 
-#: Beside the package, owned by this checkout, never supplied by a request.
-CONFIG = Path(__file__).resolve().parents[1] / "documents.conf"
+def _config_dir() -> Path:
+    """`<config>/project-dashboard`, by the checkout's shared rule."""
+    lib = str(Path(__file__).resolve().parents[2] / "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    import system_tools_config
+    return system_tools_config.config_dir("project-dashboard")
+
+
+#: In this machine's config directory (`$SYSTEM_TOOLS_CONFIG`, default
+#: `~/.config/system`), never supplied by a request. The checkout ships
+#: `documents.conf.example` only.
+CONFIG = _config_dir() / "documents.conf"
 
 #: Where checkouts live. Same name and same default as the collectors use, so
 #: one variable moves the collectors and the `docs/dashboard` scan to another
@@ -403,7 +415,7 @@ def render(parameters=None, *, config_path: Path | None = None,
             tag("h2", _label(key)),
             tag("p", "%d checkouts claim the key %s, so none of them is served. "
                      "Name the one you mean with a root| line in "
-                     "local-project-dashboard/documents.conf." % (len(paths), key),
+                     "%s." % (len(paths), key, CONFIG),
                 class_="notice"),
             tag("ul", join([tag("li", str(path)) for path in paths]),
                 class_="documents"),

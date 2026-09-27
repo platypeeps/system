@@ -376,7 +376,10 @@ class ProbeHolds(unittest.TestCase):
         work = {"device": 2, "free": 100000000000, "total": 1000000000000}
         self.capacity.side_effect = [database, work, work, database]
         self.preflight.side_effect = self.real_preflight
-        with patch.object(runtime.storage.subprocess, "run", side_effect=subprocess.TimeoutExpired(["diskutil", "info"], 20)):
+        # diskutil runs only on macOS; the platform is patched so the same
+        # path runs on the Linux CI runner, with diskutil stood in below.
+        with patch("sd_runner.storage.sys.platform", "darwin"), \
+             patch.object(runtime.storage.subprocess, "run", side_effect=subprocess.TimeoutExpired(["diskutil", "info"], 20)):
             heartbeat = self.runner.pulse(self.db)
         self.assertIs(heartbeat["healthy"], False)
         self.assertEqual(heartbeat["storage"]["database"], database)

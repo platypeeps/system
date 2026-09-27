@@ -9,7 +9,6 @@ Desktop, no open terminal, no cloud routine required. Each job is a headless
 ```sh
 ./cron-jobs.sh list                    # jobs, schedules, installed state
 ./cron-jobs.sh install <job>|--all     # generate plist + load into launchd
-./cron-jobs.sh install --every         # every defined job, ignoring the profile
 ./cron-jobs.sh verify <job>|--all      # installed plist still matches the generator
 ./cron-jobs.sh uninstall <job>|--all   # unload + remove plist
 ./cron-jobs.sh run <job>               # run once now, foreground (also writes the job log)
@@ -19,14 +18,8 @@ Desktop, no open terminal, no cloud routine required. Each job is a headless
 ./cron-jobs.sh test                    # unittest suite in tests/ (CI runs it too)
 ```
 
-`--all` is not symmetric. For `install` and `verify` it means *the jobs this
-machine's profile asks for* — the union of `common.cron` and `<profile>.cron`
-in `CRON_JOBS_PROFILES_DIR` (see Configuration). With no profile or no
-manifests it means every defined job. Installing another machine's jobs was
-the bug that made it asymmetric. For
-`uninstall` it stays every defined job, because removing more than the profile
-lists is exactly what cleaning up a mis-install needs. `install --every` is the
-escape hatch when you really do want all of them.
+`--all` means every job in the job directories: `<config>/cron-jobs/jobs/`
+plus any `CRON_JOBS_EXTRA_DIRS`. Keep only this machine's jobs there.
 
 `verify` renders the plist the generator would write now into a scratch
 directory and compares it byte-for-byte with the installed one; it never
@@ -37,24 +30,45 @@ healthy purely because the file exists.
 
 ## Configuration
 
-Optional, from the environment or a gitignored `.env` beside the script (copy
-`.env.example`). The script reads `.env` on every call, including the runs
-launchd starts with only `PATH` and `HOME`, so put values there rather than
-only in a login shell. An exported value wins over `.env`.
+The repository ships no job definitions. Everything per-machine lives in one
+directory outside the checkout:
+
+```
+<config> = ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}
+
+<config>/cron-jobs/jobs/*.job     the jobs this machine runs
+<config>/cron-jobs/.env           the variables below (copy .env.example)
+<config>/cron-jobs/notify.conf    NTFY_TOPIC for phone pushes (copy notify.conf.example)
+```
+
+The script reads `.env` on every call, including the runs launchd starts with
+only `PATH` and `HOME`, so put values there rather than only in a login shell.
+An exported value wins over `.env`. All variables are optional.
 
 | Variable | Meaning |
 | --- | --- |
-| `CRON_JOBS_EXTRA_DIRS` | Colon-separated extra job directories, searched before `jobs/`. A job there overrides a same-named job in `jobs/`. Keep a private schedule in another repository this way. |
-| `CRON_JOBS_PROFILES_DIR` | Directory with `common.cron` and `<profile>.cron` manifests for `install --all` / `verify --all`. The profile name is `CRON_JOBS_PROFILE`, else the first line of `~/.config/machine-setup/profile`. |
+| `SYSTEM_TOOLS_CONFIG` | The `<config>` root above. Export it (not in `.env`) to move every tool's config at once. |
+| `CRON_JOBS_EXTRA_DIRS` | Colon-separated extra job directories, searched before `<config>/cron-jobs/jobs/`. A job there overrides a same-named job in the config directory. Keep a schedule in another repository this way. |
 | `SYSTEM_TOOLS_LABEL_PREFIX` | launchd label prefix, default `local.system-tools`. Labels are `<prefix>.cron.<job>`. |
 
-The jobs in `jobs/` are examples that run tools in this repository. Job files
-are sourced by `cron-jobs.sh`, so `$ROOT` (this folder) is available to them:
-`"$ROOT/../local-<tool>/<tool>.sh"` reaches a sibling tool from any checkout.
+## Examples
+
+`examples/` holds sample jobs that run tools in this repository. They are
+documentation: nothing installs them. Copy the ones you want:
+
+```sh
+mkdir -p ~/.config/system/cron-jobs/jobs
+cp examples/health-check-nightly.job ~/.config/system/cron-jobs/jobs/
+./cron-jobs.sh install health-check-nightly
+```
+
+Job files are sourced by `cron-jobs.sh` wherever they live, so `$ROOT` (this
+folder) is available to them: `"$ROOT/../local-<tool>/<tool>.sh"` reaches a
+sibling tool from any checkout.
 
 ## Adding a job
 
-Drop `jobs/<name>.job` (or a file in a `CRON_JOBS_EXTRA_DIRS` directory; shell vars) and `./cron-jobs.sh install <name>`:
+Drop `<config>/cron-jobs/jobs/<name>.job` (or a file in a `CRON_JOBS_EXTRA_DIRS` directory; shell vars) and `./cron-jobs.sh install <name>`:
 
 ```sh
 JOB_SCHEDULE="0 7 * * 1"     # 5-field cron, LOCAL time; supports * N a,b,c */N
@@ -74,7 +88,7 @@ a job fills at the end rather than live. Example:
 
 Jobs that don't need Claude set `JOB_COMMAND` instead of `JOB_PROMPT` — a
 plain shell command run via `bash -c` (exactly one of the two, never both).
-Example: `secret-scan-weekly` runs
+Example: `examples/secret-scan-weekly.job` runs
 `local-scan-for-secrets/scan-for-secrets.sh critical` every Monday 07:00;
 the scanner's exit 2 on findings counts as a failure on purpose, so leaks
 trigger the failure notifications below.
@@ -90,7 +104,7 @@ On non-zero exit the wrapper:
 1. posts a macOS Notification Center alert,
 2. appends to `logs/failures.log`,
 3. pushes to [ntfy.sh](https://ntfy.sh) if `NTFY_TOPIC` is set in
-   `notify.conf` (gitignored — see `notify.conf.example`). That is the best
+   `<config>/cron-jobs/notify.conf` (copy `notify.conf.example`). That is the best
    channel for reaching your phone with zero infrastructure; the macOS
    notification only helps while you're at this machine.
 

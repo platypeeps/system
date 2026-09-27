@@ -37,12 +37,13 @@ class PlanCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
-        # The conf has to sit beside the script, where a developer's own
-        # `repos.<profile>.conf` lives too. A profile named after this case's
-        # temporary folder is one nobody else holds, so the cleanup below can
-        # only ever remove a file this case wrote (sd:1235).
+        # The conf lives in `<config>/sd-plan/`, and the config directory is
+        # this case's temporary folder, so a developer's own
+        # `repos.<profile>.conf` is never in reach (sd:1235).
         self.profile = f"fixture-{self.home.name}"
-        self.conf = FOLDER / f"repos.{self.profile}.conf"
+        self.config = self.home / "config"
+        (self.config / "sd-plan").mkdir(parents=True)
+        self.conf = self.config / "sd-plan" / f"repos.{self.profile}.conf"
         self.assertFalse(self.conf.exists(), f"{self.conf} predates the case")
         self.addCleanup(lambda: self.conf.unlink(missing_ok=True))
 
@@ -65,6 +66,7 @@ class PlanCase(unittest.TestCase):
         # The profile selects the conf file; pinning it keeps the suite off
         # whatever this machine happens to be.
         environment["SD_PLAN_PROFILE"] = self.profile
+        environment["SYSTEM_TOOLS_CONFIG"] = str(self.config)
         environment["MACHINE_SETUP_STATE"] = str(self.home / "absent")
         if runner is not None:
             environment["SD_PLAN_RUNNER"] = str(runner)
@@ -208,20 +210,16 @@ class TheDevelopersOwnList(unittest.TestCase):
         """sd:1235. Every case once wrote and then unlinked
         `repos.fixture.conf` beside the script, whoever's it was.
 
-        One is staged here if none is there, and a whole case that writes a
-        participation list runs against it. The file must come back byte for
-        byte; a staged one is removed afterwards, a developer's is not.
+        The list now lives in the config directory, and a case points that at
+        its own temporary folder. A whole case that writes a participation
+        list runs here, and the script's folder must come back unchanged.
         """
-        mine = FOLDER / "repos.fixture.conf"
-        if not mine.exists():
-            mine.write_text("/Users/somebody/repos/theirs\n", encoding="utf-8")
-            self.addCleanup(mine.unlink, missing_ok=True)
-        before = mine.read_bytes()
+        before = sorted(path.name for path in FOLDER.iterdir())
         result = unittest.TestResult()
         WhatStatusMeans("test_participants_and_a_dispatching_runner_is_healthy").run(result)
         self.assertEqual([], [text for _, text in result.errors + result.failures])
-        self.assertTrue(mine.exists(), "the case deleted a conf it did not write")
-        self.assertEqual(before, mine.read_bytes(), "the case overwrote a conf it did not write")
+        self.assertEqual(before, sorted(path.name for path in FOLDER.iterdir()),
+                         "the case wrote beside the script")
 
 
 class TheExampleList(unittest.TestCase):

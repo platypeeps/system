@@ -15,7 +15,8 @@ services:
         fi
         exec /start-services.sh
     env_file:
-      - path: ./.env
+      # graphiti-mcp.sh sets this to <config>/graphiti-mcp/.env.
+      - path: ${GRAPHITI_ENV_FILE:?run through graphiti-mcp.sh, which sets GRAPHITI_ENV_FILE}
         required: true
     environment:
       # FalkorDB configuration
@@ -29,7 +30,7 @@ services:
       - CONFIG_PATH=/app/mcp/config/config.yaml
       - PATH=/root/.local/bin:${PATH}
 
-      # LLM — keys come from ./.env (gitignored), see .env.example
+      # LLM — keys come from <config>/graphiti-mcp/.env, see .env.example
       - GRAPHITI_LLM_PROVIDER=${GRAPHITI_LLM_PROVIDER:-gemini}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -41,7 +42,7 @@ services:
       # Host side only. This stack bundles its own FalkorDB, so it must not
       # land on local-falkordb's 6380/3003 or local-redis's 6379 — hence 6381
       # and 3004. The container-internal 6379/3000 below never change.
-      # 127.0.0.1: FalkorDB here carries FALKORDB_PASSWORD from .env and the
+      # 127.0.0.1: FalkorDB here carries FALKORDB_PASSWORD from the config .env and the
       # MCP server speaks for the whole graph. Neither belongs on the LAN.
       - "127.0.0.1:${GRAPHITI_FALKORDB_PORT:-6381}:6379"  # FalkorDB/Redis
       - "127.0.0.1:${GRAPHITI_UI_PORT:-3004}:3000"        # FalkorDB web UI

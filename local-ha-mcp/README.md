@@ -71,8 +71,9 @@ no arguments and expects a live stdio server; printing usage would break it.
   direct SSE client config this replaced sent the same token the same way, as
   does any REST call to the same host. Revisit if Home Assistant is ever given
   a certificate.
-- `HA_TOKEN` and `HA_MCP_URL` come from `.env` (copy `.env.example`) or the
-  environment; `serve` and `check` fail naming whichever is missing.
+- `HA_TOKEN` and `HA_MCP_URL` come from `~/.config/system/ha-mcp/.env`
+  (`$SYSTEM_TOOLS_CONFIG/ha-mcp/` when that is set; copy `.env.example` there)
+  or the environment; `serve` and `check` fail naming whichever is missing.
 - `npx -y` re-resolves the package on each launch. It is cached after the first
   run; install `mcp-remote` globally if start-up latency ever matters.
 - `mcp-proxy` was tried first and did not work: its cached

@@ -41,20 +41,25 @@ when half or more of the fleet failed to sync — one unreachable repo is a
 report, the cron failure push is for a lost report or an outage. The
 threshold is not "all": a dead network still lets the odd repo through, so
 an equality test would have gone on reporting success. After a reconcile the
-updated conf sits uncommitted in this repo; the email is the reminder to
-commit it.
+updated conf sits in `<config>/repo-sync/`; the email is the record of what
+changed.
 
 ## Profiles
 
 The work and personal machines carry different repo lists, so the list lives in
-config instead of an `if` in the script. The conf files are local and
-gitignored; the repository ships a `.example` for each. Copy the ones your
-profile reads and list your own repos:
+config instead of an `if` in the script. The conf files are private and
+per-machine, so they live outside the checkout in
+`<config>/repo-sync/`, where `<config>` is `$SYSTEM_TOOLS_CONFIG` (default
+`~/.config/system`). The repository ships a `.example` for each. Copy
+the ones your profile reads and list your own repos:
 
 ```sh
-cp repos.common.conf.example repos.common.conf
-cp repos.personal.conf.example repos.personal.conf
+mkdir -p ~/.config/system/repo-sync
+cp repos.common.conf.example ~/.config/system/repo-sync/repos.common.conf
+cp repos.personal.conf.example ~/.config/system/repo-sync/repos.personal.conf
 ```
+
+`REPO_SYNC_CONF_DIR` points the script at another folder.
 
 | File | Contents |
 | --- | --- |
@@ -63,8 +68,9 @@ cp repos.personal.conf.example repos.personal.conf
 | `repos.work.conf` | work machine — for example `work` and the toolbox itself |
 | `repos.terra.conf` | terra machine — the toolbox repo and nothing else |
 
-Because the confs are gitignored, `nightly` skips its commit step for them.
-A checkout that tracks its confs (a private fork) keeps the commit.
+Because the confs sit outside the checkout, `nightly` skips its commit step
+for them. A private fork that tracks its confs in this folder sets
+`REPO_SYNC_CONF_DIR` to it and keeps the commit.
 
 Format is `<subdir> <owner/repo>`; `#` comments and blank lines are ignored.
 `<subdir>` is the folder under the checkout root, so `ai jomjol/AI-on-the-edge-device`
@@ -90,10 +96,14 @@ the toolbox, and inheriting common's `ai` group would contradict that.
 
 Profile selection follows the profile `machine-setup` recorded in
 `~/.config/machine-setup/profile`. Without that file it falls back to the old
-condition — `work` if `REPO_SYNC_WORK_ROOT` names an existing directory, else
+condition — `work` if the work root names an existing directory, else
 `personal`. Override with `REPO_SYNC_PROFILE`, and the checkout root with
-`REPO_SYNC_ROOT`. The work profile's default root is `REPO_SYNC_WORK_ROOT`,
-else `~/repos`.
+`REPO_SYNC_ROOT`. The work profile's default root is the work root, else
+`~/repos`.
+
+The work root is `REPO_SYNC_WORK_ROOT`, else `SYSTEM_TOOLS_WORK_ROOT`.
+`local-ai-apps` reads the same meaning from `AI_APPS_WORK_ROOT`, with the same
+`SYSTEM_TOOLS_WORK_ROOT` fallback; set the shared name once to drive both.
 
 Deferring to the recorded profile matters: the fallback calls any machine
 without a work root `personal`, so on a terra machine `reconcile` would see

@@ -7,7 +7,8 @@ FalkorDB on `:6381` + UI on `:3004`, MCP server HTTP on `:8085` (8083 is google_
 ## Usage
 
 ```sh
-cp .env.example .env   # once, fill in GOOGLE_API_KEY / OPENAI_API_KEY
+mkdir -p ~/.config/system/graphiti-mcp
+cp .env.example ~/.config/system/graphiti-mcp/.env   # once, fill in GOOGLE_API_KEY / OPENAI_API_KEY
 ./graphiti-mcp.sh start|stop|update
 ```
 
@@ -21,11 +22,13 @@ cp .env.example .env   # once, fill in GOOGLE_API_KEY / OPENAI_API_KEY
   stay clear of `local-redis` (`6379`) and `local-falkordb` (`6380`/`3003`).
   Container-internal ports are still `6379`/`3000`. Override the host side
   with `GRAPHITI_FALKORDB_PORT` / `GRAPHITI_UI_PORT`.
-- API keys live only in `.env` (gitignored); compose refuses to start without it.
+- API keys live only in `~/.config/system/graphiti-mcp/.env` (`$SYSTEM_TOOLS_CONFIG/graphiti-mcp/` when that is set), outside the
+  checkout. The script passes that path to compose (`--env-file` and
+  `GRAPHITI_ENV_FILE`) and refuses to start without it; a `./.env` here is ignored.
 
 ## Auth
 
-`FALKORDB_PASSWORD` in `.env` protects the embedded FalkorDB (published on
+`FALKORDB_PASSWORD` in that `.env` protects the embedded FalkorDB (published on
 host `:6381`). The upstream image only feeds it to the MCP client, so
 `docker-compose.yml` overrides the entrypoint to patch `--requirepass` into
 the server at container start. Empty password = no auth. Connect with

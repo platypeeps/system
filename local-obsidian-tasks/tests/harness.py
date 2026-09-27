@@ -108,6 +108,8 @@ def build_root(tmp: str, today: datetime.date = TODAY) -> pathlib.Path:
     root = pathlib.Path(tmp)
     (root / "local-obsidian-tasks").mkdir()
     shutil.copy(TOOL, root / "local-obsidian-tasks" / TOOL.name)
+    (root / "lib").mkdir()
+    shutil.copy(TOOL.parents[1] / "lib" / "config.sh", root / "lib" / "config.sh")
     for folder, name, text in (
         ("local-notify", "notify.sh", STUB_NOTIFY),
         ("local-task-actions", "task-actions.sh", STUB_ACTIONS),
@@ -141,6 +143,7 @@ def run(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
     env = dict(os.environ)
     env.update({
         "OBSIDIAN_VAULT": str(root / "vault"),
+        "SYSTEM_TOOLS_CONFIG": str(root / "config"),
         "NOTIFY_RECORD": str(root / "notify.args"),
         "OBSIDIAN_TASKS_TODAY": today.isoformat(),
     })

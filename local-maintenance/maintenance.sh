@@ -1,28 +1,31 @@
 #!/bin/sh
 # Nightly machine maintenance: pending OS/App Store updates, docker prune
 # (Sundays), backup freshness, certificate expiry, log rotation, disk space.
-# Checks come from ./maintenance.conf plus ./maintenance.<profile>.conf;
+# Checks come from maintenance.conf plus maintenance.<profile>.conf in
+# <config>/maintenance/ (outside the checkout);
 # findings are emailed via local-notify.
 # Usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$DIR/../lib/config.sh"
 
-CONF="$DIR/maintenance.conf"
+CONF_DIR="$(st_config_dir maintenance)"
+CONF="$CONF_DIR/maintenance.conf"
 NOTIFY="$DIR/../local-notify/notify.sh"
 
 # Some checks only make sense on one machine, so they live in
 # maintenance.<profile>.conf, read after the common file. The profile comes from
 # the same state file machine-setup records, so there is one answer per machine
-# and nothing new to keep in sync. Both conf files are gitignored; the
-# committed maintenance.conf.example is the starting point.
+# and nothing new to keep in sync. Both conf files live in <config>/maintenance/;
+# the committed maintenance.conf.example is the starting point.
 STATE_DIR="${MACHINE_SETUP_STATE:-$HOME/.config/machine-setup}"
 PROFILE="${MAINTENANCE_PROFILE:-}"
 if [ -z "$PROFILE" ] && [ -f "$STATE_DIR/profile" ]; then
   PROFILE=$(head -1 "$STATE_DIR/profile")
 fi
 PROFILE_CONF=""
-if [ -n "$PROFILE" ] && [ -f "$DIR/maintenance.$PROFILE.conf" ]; then
-  PROFILE_CONF="$DIR/maintenance.$PROFILE.conf"
+if [ -n "$PROFILE" ] && [ -f "$CONF_DIR/maintenance.$PROFILE.conf" ]; then
+  PROFILE_CONF="$CONF_DIR/maintenance.$PROFILE.conf"
 fi
 
 usage() { echo "usage: $(basename "$0") run|check|uv-prune|uv-prune-plist|test" >&2; exit 1; }
@@ -173,9 +176,10 @@ usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
          uv-cache-prune.plist.template for this checkout and $HOME.
   test   run this tool's unit tests.
 
-Checks are configured in ./maintenance.conf (gitignored; copy
-maintenance.conf.example), plus
-./maintenance.<profile>.conf for the ones only one machine wants (profile as
+Checks are configured in <config>/maintenance/maintenance.conf (<config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system; copy
+local-maintenance/maintenance.conf.example there), plus
+<config>/maintenance/maintenance.<profile>.conf for the ones only one machine wants (profile as
 recorded by machine-setup; override with MAINTENANCE_PROFILE). Pipe-separated
 directives, # comments allowed; a leading ~/ expands to $HOME:
 
@@ -201,7 +205,7 @@ HELPEOF
 esac
 
 if [ ! -f "$CONF" ]; then
-  echo "maintenance.sh: missing $CONF (copy maintenance.conf.example to maintenance.conf)" >&2
+  echo "maintenance.sh: missing $CONF (copy local-maintenance/maintenance.conf.example to $CONF)" >&2
   exit 1
 fi
 

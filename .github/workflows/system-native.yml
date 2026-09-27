@@ -24,11 +24,19 @@ jobs:
     # seven under ten seconds together. Each leg repeats the preflight -- the
     # fixture check, the lint, the unwired-suite guard, the library install --
     # because it costs under half a minute and needs no artifact handed
-    # between jobs. The trade is billed macOS minutes: eight checkout steps
-    # and four venvs instead of two and one, roughly ten minutes a run
-    # instead of seven, for a wall clock of about three (sd:558).
+    # between jobs. The trade is billed minutes: eight checkout steps and
+    # four venvs instead of two and one, roughly ten minutes a run instead of
+    # seven, for a wall clock of about three (sd:558).
+    #
+    # Every leg runs on Linux. What only macOS has -- APFS immutable
+    # retention (`chflags uchg`), clonefile seeds (`cp -c`), diskutil, and
+    # msgsnap's swiftc build and DYLD_INSERT_LIBRARIES shim -- lives in
+    # suites named in tests/macos-only-suites.txt, which
+    # tests/run-macos-only.sh runs on a Mac. A skip here would fail the leg,
+    # so those suites are split out rather than skipped. The job name and the
+    # four leg names are unchanged, so the required checks stay the same.
     name: system-native (${{ matrix.leg }})
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -58,8 +66,17 @@ jobs:
         with:
           python-version: "3.14"
 
+      # The runner image carries these today; naming them keeps a suite from
+      # passing or failing on what the image happens to ship. sqlite3 is the
+      # CLI the sd-db suites shell out to; lsof and ps are the process-holder
+      # probes local-sd-runner and the dashboard read.
+      - name: Install the command-line tools the suites call
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends git sqlite3 lsof procps
+
       # One leg, not four. The manifest is identical in every leg, so
-      # checking it in each buys nothing and bills four macOS runners for the
+      # checking it in each buys nothing and bills four runners for the
       # same answer. `sd-plugin.lock` is committed here and nothing read it:
       # the cron job that runs `plugin lock --check` gates the `print` plugin
       # on the 3D-printer volume, not this repository's own manifest.
@@ -92,7 +109,9 @@ jobs:
         run: |
           set -euo pipefail
           ci_root="$(mktemp -d "$RUNNER_TEMP/system-native.XXXXXX")"
-          # `.noindex` keeps Spotlight off the suites' temp files: a fixture
+          # `.noindex` kept Spotlight off the suites' temp files when CI ran on
+          # macOS, and still does on a Mac that runs this body by hand; Linux
+          # ignores it. A fixture
           # clone rewritten mid-test and then indexed reads as a process holder
           # to local-sd-runner's `survivors`, which is how run 34700878618
           # failed test_archive_refresh on a PR that touched only sd-db.sh
@@ -119,7 +138,8 @@ jobs:
             /bin/bash --noprofile --norc <<'CI'
           set -euo pipefail
           cd "$CI_SYSTEM_ROOT"
-          test "$(uname -s)" = Darwin
+          # Every leg runs on Linux; the macOS-only suites never run here.
+          test "$(uname -s)" = Linux
           python3 -c 'import sys; assert sys.version_info[:2] == (3, 14), sys.version'
           test -f "$SD_ACCEPTANCE_PACK/bin/sd-ship"
           test -f "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
@@ -181,7 +201,15 @@ jobs:
           # local-repo-sync answers `test` because `check` was already taken.
           # Like the lint, it belongs in the preflight and not behind
           # run_suite, which asserts a unittest summary this prints none of.
+          #
+          # A macOS-only suite cannot run here, so tests/macos-only-suites.txt
+          # names it instead, in the same `<folder>/` form, and
+          # tests/run-macos-only.sh runs it on a Mac. That list is the one
+          # other place a folder counts as wired. A tests/macos/ folder of
+          # test_*.py is never discovered by its folder's suite, so it must be
+          # named there too.
           workflow=.github/workflows/system-native.yml
+          macos_only=tests/macos-only-suites.txt
           # A folder or file name is a literal inside the patterns below, so
           # escape what an extended regular expression would read: `c+d/`
           # would otherwise miss its own line, and `a.b/` match `axb/`.
@@ -193,10 +221,30 @@ jobs:
             folder="${test_file%%/*}"
             case "$seen" in *" $folder "*) continue ;; esac
             seen="$seen$folder "
-            if ! grep -Eq "^[[:space:]]*run_suite .*[[:space:]]$(ere_literal "$folder")/" "$workflow"; then
+            if ! grep -Eq "^[[:space:]]*run_suite .*[[:space:]]$(ere_literal "$folder")/" "$workflow" &&
+               ! grep -Eq "^[^#[:space:]]+ .*[[:space:]]$(ere_literal "$folder")/" "$macos_only"; then
               unwired="$unwired $folder"
             fi
           done
+          for test_file in */tests/macos/test_*.py; do
+            [ -e "$test_file" ] || continue
+            folder="${test_file%%/*}"
+            case "$seen" in *" $folder/macos "*) continue ;; esac
+            seen="$seen$folder/macos "
+            if ! grep -Eq "^[^#[:space:]]+ .*[[:space:]]$(ere_literal "$folder")/" "$macos_only"; then
+              unwired="$unwired $folder/tests/macos"
+            fi
+          done
+          # A stale line would count a folder as wired that runs nothing, so
+          # every path a macOS-only command names must exist.
+          while read -r suite command; do
+            case "$suite" in ''|'#'*) continue ;; esac
+            for word in $command; do
+              case "$word" in
+                */*) [ -e "$word" ] || { echo "$macos_only: $suite names $word, which does not exist" >&2; exit 1; } ;;
+              esac
+            done
+          done < "$macos_only"
           # A suite at the repository root has no folder and no run_suite
           # line: it runs here in the preflight as a bare `python3 <file>`
           # line, so demand that line for each one, or the file above could
@@ -212,7 +260,8 @@ jobs:
             for entry in $unwired; do
               case "$entry" in
                 tests/*) echo "$entry: a root suite but no python3 line in $workflow runs it" >&2 ;;
-                *) echo "$entry: holds tests/test_*.py but no run_suite line in $workflow names it" >&2 ;;
+                */tests/macos) echo "$entry: holds test_*.py but no line in $macos_only names its folder" >&2 ;;
+                *) echo "$entry: holds tests/test_*.py but no run_suite line in $workflow or line in $macos_only names it" >&2 ;;
               esac
             done
             exit 1
@@ -263,7 +312,6 @@ jobs:
               run_suite herdr sh local-herdr/herdr.sh test -v
               run_suite adversarial-gate sh local-adversarial-gate/adversarial-gate.sh test -v
               run_suite aws-setup sh local-aws-setup/aws-setup.sh test -v
-              run_suite msgsnap sh local-msgsnap/msgsnap.sh test -v
               run_suite autocommit sh local-autocommit/autocommit.sh test -v
               run_suite ai-apps sh local-ai-apps/ai-apps.sh test -v
               run_suite jev sh local-jev/jev.sh test -v
@@ -288,6 +336,13 @@ jobs:
               run_suite weekly-digest sh local-weekly-digest/weekly-digest.sh test -v
               run_suite workspace-mcp sh local-workspace-mcp/workspace-mcp.sh test -v
               run_suite network-testing sh network-testing/network-testing.sh test -v
+              run_suite lib "$PYTHON" lib/tests/test_config.py -v
+              # mezmo-pipeline's suite is shell with its own tally, not
+              # unittest, so run_suite's summary check cannot read it. It
+              # stubs curl and makes no network call; the gate is a nonzero
+              # pass count and zero failures on its last line.
+              sh mezmo-pipeline/pipeline.sh test 2>&1 | tee "$CI_WORK_ROOT/mezmo-pipeline.log"
+              grep -Eq '^[1-9][0-9]* passed, 0 failed$' "$CI_WORK_ROOT/mezmo-pipeline.log"
               ;;
             *)
               echo "system-native: no suites are wired for leg '$SUITE_LEG'" >&2

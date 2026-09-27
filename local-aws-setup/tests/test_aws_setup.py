@@ -52,16 +52,17 @@ def render(level, buckets="", tag_key="claude-managed"):
     """The policy document for a level, parsed."""
     with tempfile.TemporaryDirectory() as home:
         root = pathlib.Path(home)
-        shutil.copy(SCRIPT, root / "aws-setup.sh")
-        (root / "accounts").mkdir()
-        (root / "accounts" / "x.env").write_text(
+        accounts = root / "config" / "aws-setup" / "accounts"
+        accounts.mkdir(parents=True)
+        (accounts / "x.env").write_text(
             "ACCOUNT_ID=%s\nLEVEL=%s\nADMIN_PROFILE=admin-x\n"
             "AGENT_PROFILE=agent-x\nS3_BUCKETS='%s'\n" % (ACCOUNT_ID, level, buckets)
         )
         done = subprocess.run(
-            ["/bin/sh", str(root / "aws-setup.sh"), "render", "x"],
+            ["/bin/sh", str(SCRIPT), "render", "x"],
             capture_output=True, text=True,
-            env={**os.environ, "MANAGED_TAG_KEY": tag_key},
+            env={**os.environ, "MANAGED_TAG_KEY": tag_key,
+                 "SYSTEM_TOOLS_CONFIG": str(root / "config")},
         )
         if done.returncode != 0:
             raise AssertionError("render failed: " + done.stderr)
@@ -81,12 +82,14 @@ def actions_of(item):
 
 
 class Sandbox:
-    """A copy of the script beside a fake `aws`, an account file and a log."""
+    """The script with a fake `aws`, an account file in its own config
+    directory, and a log."""
 
     def __init__(self, level="operator", buckets="", **account):
         self.dir = pathlib.Path(tempfile.mkdtemp())
-        shutil.copy(SCRIPT, self.dir / "aws-setup.sh")
-        (self.dir / "accounts").mkdir()
+        self.config = self.dir / "config"
+        self.accounts = self.config / "aws-setup" / "accounts"
+        self.accounts.mkdir(parents=True)
         fields = {
             "ACCOUNT_ID": ACCOUNT_ID,
             "LEVEL": level,
@@ -96,7 +99,7 @@ class Sandbox:
             "S3_BUCKETS": buckets,
         }
         fields.update(account)
-        (self.dir / "accounts" / "x.env").write_text(
+        (self.accounts / "x.env").write_text(
             "".join("%s='%s'\n" % pair for pair in fields.items())
         )
         binaries = self.dir / "bin"
@@ -144,7 +147,7 @@ class Sandbox:
         self.state_path.write_text(json.dumps(self.state))
         self.scenario_path.write_text(json.dumps(self.scenario))
         return subprocess.Popen(
-            ["/bin/sh", str(self.dir / "aws-setup.sh"), *args],
+            ["/bin/sh", str(SCRIPT), *args],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             # Its own session, so a test can signal the whole group the way a
             # terminal does. The probe runs in a command substitution, which
@@ -154,6 +157,7 @@ class Sandbox:
             env={
                 "PATH": "%s:%s" % (self.dir / "bin", os.environ["PATH"]),
                 "HOME": str(self.dir),
+                "SYSTEM_TOOLS_CONFIG": str(self.config),
                 "FAKE_AWS_LOG": str(self.log),
                 "FAKE_AWS_STATE": str(self.state_path),
                 "FAKE_AWS_SCENARIO": str(self.scenario_path),
@@ -167,11 +171,12 @@ class Sandbox:
         self.state_path.write_text(json.dumps(self.state))
         self.scenario_path.write_text(json.dumps(self.scenario))
         done = subprocess.run(
-            ["/bin/sh", str(self.dir / "aws-setup.sh"), *args],
+            ["/bin/sh", str(SCRIPT), *args],
             capture_output=True, text=True,
             env={
                 "PATH": "%s:%s" % (self.dir / "bin", os.environ["PATH"]),
                 "HOME": str(self.dir),
+                "SYSTEM_TOOLS_CONFIG": str(self.config),
                 "FAKE_AWS_LOG": str(self.log),
                 "FAKE_AWS_STATE": str(self.state_path),
                 "FAKE_AWS_SCENARIO": str(self.scenario_path),
@@ -654,6 +659,39 @@ class CommandCase(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("names no bucket to check", done.stderr)
 
+
+
+class ConfigLocation(unittest.TestCase):
+    """Account files and shared settings live in <config>/aws-setup/."""
+
+    def test_no_accounts_names_the_config_folder_and_the_example(self):
+        with tempfile.TemporaryDirectory() as home:
+            config = pathlib.Path(home) / "config"
+            done = subprocess.run(
+                ["/bin/sh", str(SCRIPT), "accounts"], capture_output=True, text=True,
+                env={"PATH": os.environ["PATH"], "HOME": home,
+                     "SYSTEM_TOOLS_CONFIG": str(config)})
+            want = config / "aws-setup" / "accounts"
+            self.assertIn("copy local-aws-setup/accounts/example.env.example to %s/<name>.env" % want,
+                          done.stdout + done.stderr)
+
+    def test_the_accounts_dir_override_and_the_shared_env_are_read(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = pathlib.Path(home)
+            config = root / "config"
+            (config / "aws-setup").mkdir(parents=True)
+            (config / "aws-setup" / ".env").write_text("MANAGED_TAG_KEY=from-config-env\n")
+            accounts = root / "elsewhere"
+            accounts.mkdir()
+            (accounts / "x.env").write_text(
+                "ACCOUNT_ID=%s\nLEVEL=operator\nADMIN_PROFILE=admin-x\n" % ACCOUNT_ID)
+            done = subprocess.run(
+                ["/bin/sh", str(SCRIPT), "render", "x"], capture_output=True, text=True,
+                env={"PATH": os.environ["PATH"], "HOME": home,
+                     "SYSTEM_TOOLS_CONFIG": str(config),
+                     "AWS_SETUP_ACCOUNTS_DIR": str(accounts)})
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("from-config-env", done.stdout)
 
 if __name__ == "__main__":
     unittest.main()

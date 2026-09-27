@@ -242,5 +242,19 @@ class UvPrune(unittest.TestCase):
         self.assertIn("uv-prune", result.stdout)
 
 
+
+class ConfigLocation(unittest.TestCase):
+    def test_a_missing_conf_names_the_config_path_and_the_example(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"PATH": os.environ["PATH"], "HOME": tmp,
+                   "SYSTEM_TOOLS_CONFIG": str(Path(tmp) / "config"),
+                   "MACHINE_SETUP_STATE": str(Path(tmp) / "no-state")}
+            result = subprocess.run(["sh", str(ENTRYPOINT), "check"], env=env,
+                                    capture_output=True, text=True, timeout=60)
+            want = Path(tmp) / "config" / "maintenance" / "maintenance.conf"
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn(f"copy local-maintenance/maintenance.conf.example to {want}",
+                          result.stderr)
+
 if __name__ == "__main__":
     unittest.main()

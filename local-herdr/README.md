@@ -93,7 +93,7 @@ keys, one entry per pane:
   "panes": [
     {
       "agent": "claude",
-      "cwd": "/Users/example/repos/system-tools",
+      "cwd": "/Users/example/repos/system",
       "name": "sd-w4-p2",
       "pane": "w4:p2",
       "recorded_at": "2026-09-12T07:15:17Z",
@@ -150,7 +150,7 @@ machine with `herdr` and both agents installed:
 1. `herdr integration status` — `claude` and `codex` must read `current`;
    `herdr --version` — note it.
 2. `./local-herdr/herdr.sh start` — creates and attaches the `sd` session.
-3. In it, two panes: in one, `cd ~/repos/system-tools && claude`; split, and in
+3. In it, two panes: in one, `cd ~/repos/system && claude`; split, and in
    the other, `cd ~/repos/platypeeps/sd-ai-command-pack && codex`. Give each
    one prompt so the session has content to recognise it by.
 4. From a third pane (or any terminal with `HERDR_SESSION=sd` exported):
@@ -181,7 +181,7 @@ list --json`, `pane get`, `agent list`, `agent start`, `pane run` and
 `workspace create` and `pane process-info` from files the tests write under a
 fixture directory. The
 suite prepends that directory to PATH and asserts the double is the `herdr`
-it resolves, so the installed binary is never called — CI's macOS runner has
+it resolves, so the installed binary is never called — the CI runner has
 no herdr and needs none. Wired into `.github/workflows/system-native.yml` as
 `run_suite herdr`.
 

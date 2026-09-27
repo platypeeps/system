@@ -363,6 +363,8 @@ class ThroughTheScript(unittest.TestCase):
         self.dashboard.mkdir(parents=True)
         for name in ("dashboard.sh", "sd_tile.py", "collectors.py"):
             shutil.copy2(HERE / name, self.dashboard / name)
+        # dashboard.sh and collectors.py read the checkout's shared config helpers.
+        shutil.copytree(HERE.parent / "lib", self.dashboard.parent / "lib")
 
     def grants(self, *arguments, **environment):
         base = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "VAULT": str(self.vault)}

@@ -1,5 +1,5 @@
 # The repo fleet, every 12 hours, to /Volumes/local -- a portable USB disk.
-# Copy to mirrors-repos.conf (gitignored) and set your own paths.
+# Copy to ~/.config/system/mirror-sync/mirrors-repos.conf ($SYSTEM_TOOLS_CONFIG/mirror-sync) and set your own paths.
 # The nightly list is mirrors.conf; this one runs on its own schedule because
 # ~/repos is too large for a nightly pass that also writes to iCloud.
 #

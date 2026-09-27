@@ -69,7 +69,8 @@ class NightlyFollowsTheLibraryChoice(unittest.TestCase):
         # No profile: no participation list, so no runner probe, and the
         # night goes straight to `sd_plan.py`, which imports `sd_db` first.
         environment.update(HOME=str(self.home), PYTHON=str(self.newer),
-                           MACHINE_SETUP_STATE=str(self.home / "absent"), **extra)
+                           MACHINE_SETUP_STATE=str(self.home / "absent"),
+                           SYSTEM_TOOLS_CONFIG=str(self.home / "config"), **extra)
         return subprocess.run(["/bin/sh", str(ENTRYPOINT), "nightly", "--dry-run"],
                               capture_output=True, text=True, input="", env=environment,
                               check=False, timeout=60)

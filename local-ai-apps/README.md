@@ -9,7 +9,7 @@ captured manifests are safe to commit; secrets stay in each app's own config.
 
 ```sh
 ./ai-apps.sh status              # apps installed + per-kind counts
-./ai-apps.sh capture [profile]   # snapshot inventory to profiles/<p>.inv
+./ai-apps.sh capture [profile]   # snapshot inventory to <config>/ai-apps/profiles/<p>.inv
 ./ai-apps.sh compare             # cross-APP matrix on this machine
 ./ai-apps.sh compare personal work   # cross-PROFILE diff
 ./ai-apps.sh setup [profile] [--apply]  # align machine to a manifest
@@ -48,21 +48,27 @@ The reports print it as `(old key withheld)`; the next capture replaces it.
 
 ## Cross-machine flow
 
-`capture` on each machine writes `profiles/personal.inv` / `profiles/work.inv`
-(profile auto-detected from `~/.config/machine-setup/profile`, else work if
-`AI_APPS_WORK_ROOT` names an existing directory, else personal; override with
-`AI_APPS_PROFILE`). The `.inv` files are a machine's own inventory, so they are
-gitignored here and `nightly` skips its commit step for them;
-`profiles/example.inv` shows the format. A private fork that tracks them keeps
-the commit. Then `compare personal work` shows the drift anywhere,
+`capture` on each machine writes `personal.inv` / `work.inv` into
+`<config>/ai-apps/profiles/`, outside the checkout (`<config>` is
+`$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`; `AI_APPS_PROFILES_DIR`
+names another folder). The profile is auto-detected from
+`~/.config/machine-setup/profile`, else work if the work root names an
+existing directory, else personal; override with `AI_APPS_PROFILE`. The work
+root is `AI_APPS_WORK_ROOT`, else `SYSTEM_TOOLS_WORK_ROOT`; `local-repo-sync`
+reads the same meaning from `REPO_SYNC_WORK_ROOT`, so the shared name drives
+both. The `.inv` files are a machine's own inventory, so `nightly` skips its
+commit step for them; `profiles/example.inv` in this folder shows the format.
+A private fork that tracks them sets `AI_APPS_PROFILES_DIR` to this folder's
+`profiles/` and keeps the commit. To compare machines, copy the other
+machine's `.inv` into the same folder. Then `compare personal work` shows the drift anywhere,
 and `setup <profile> --apply` pulls a machine toward the chosen manifest.
 
 ## Cron
 
-`ai-apps-nightly` (04:30, both machines via common.cron) runs `nightly`:
+`ai-apps-nightly` (04:30, a job in `<config>/cron-jobs/jobs/`; examples in `local-cron-jobs/examples/`) runs `nightly`:
 upgrades the six apps through brew and re-captures the inventory, emailing
 via local-notify only when an app was upgraded or the inventory moved.
-The `.inv` diff lands in the repo working tree — commit it when it looks right.
+The `.inv` diff lands in `<config>/ai-apps/profiles/`.
 
 ## Where inventories come from
 

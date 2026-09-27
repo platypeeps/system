@@ -30,7 +30,7 @@ Usage: msgsnap.sh <subcommand>
   test     run tests/ as a unittest suite: tests/eintr-retry.sh, the end-to-end
            open(2) retry and exit-code check, on a copy of the binary built
            into a temp dir. Never touches bin/msgsnap or the grant. This is
-           what the system-native CI tools leg runs.
+           what tests/run-macos-only.sh runs; CI (Linux) cannot.
 
 The binary reads one compiled-in path and copies it. It takes no source
 path argument, by design.

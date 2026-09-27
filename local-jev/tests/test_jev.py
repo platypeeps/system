@@ -448,7 +448,8 @@ class TestEntrypoint(StubServer):
 
 
 class TestEnvFile(StubServer):
-    """A copy of the tool, reached through a symlink, with a .env beside it."""
+    """A copy of the tool, reached through a symlink, with its .env in the
+    config directory the copy resolves."""
 
     def copy(self, env_text):
         home = Path(tempfile.mkdtemp())
@@ -458,7 +459,12 @@ class TestEnvFile(StubServer):
         for name in ("jev.sh", "jev.py"):
             (folder / name).write_bytes((FOLDER / name).read_bytes())
         (folder / "jev.sh").chmod(0o755)
-        (folder / ".env").write_text(env_text)
+        (home / "lib").mkdir()
+        for name in ("config.sh", "system_tools_config.py"):
+            (home / "lib" / name).write_bytes((FOLDER.parent / "lib" / name).read_bytes())
+        self.config = home / "config"
+        (self.config / "jev").mkdir(parents=True)
+        (self.config / "jev" / ".env").write_text(env_text)
         bindir = home / "bin"
         bindir.mkdir()
         (bindir / "jev").symlink_to(folder / "jev.sh")
@@ -471,11 +477,12 @@ class TestEnvFile(StubServer):
         environ["JEV_URL"] = self.url
         environ["JEV_FLAG_FILE"] = self.switch
         environ["JEV_METER"] = "0"
+        environ["SYSTEM_TOOLS_CONFIG"] = str(self.config)
         environ.update(env)
         return subprocess.run([str(link)] + args, capture_output=True,
                               text=True, env=environ, input="a sentence")
 
-    def test_env_beside_the_real_script_is_found_through_the_symlink(self):
+    def test_the_config_env_is_found_through_the_symlink(self):
         link = self.copy("TYPESAFE_API_KEY=from-env-file\n")
         done = self.run_link(link, ["noul", "q"], {})
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -492,6 +499,13 @@ class TestEnvFile(StubServer):
     def test_without_a_key_anywhere_the_link_exits_three(self):
         link = self.copy("#JEV_MODEL=unset\n")
         self.assertEqual(self.run_link(link, ["noul", "q"], {}).returncode, 3)
+
+    def test_status_without_a_key_names_the_config_path(self):
+        link = self.copy("#JEV_MODEL=unset\n")
+        done = self.run_link(link, ["status"], {})
+        self.assertEqual(done.returncode, 3)
+        self.assertIn("copy local-jev/.env.example to %s" % (self.config / "jev" / ".env"),
+                      done.stdout + done.stderr)
 
 
 class TestSwitch(StubServer):

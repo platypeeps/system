@@ -109,6 +109,10 @@ class Fixture:
         (self.root / "local-jev").mkdir()
         self.script = self.root / "local-notify" / "notify.sh"
         shutil.copy(SCRIPT, self.script)
+        (self.root / "lib").mkdir()
+        shutil.copy(FOLDER.parent / "lib" / "config.sh", self.root / "lib" / "config.sh")
+        self.config = self.root / "config"
+        (self.config / "notify").mkdir(parents=True)
         self.script.chmod(0o755)
         self.jev = self.root / "local-jev" / "jev.sh"
         self._write(self.jev, JEV_STUB)
@@ -132,6 +136,7 @@ class Fixture:
         environ = {
             "PATH": f"{self.bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "HOME": str(self.root),
+            "SYSTEM_TOOLS_CONFIG": str(self.config),
             "JEV_LOG": str(self.jev_log),
             "JEV_STATE_LOG": str(self.jev_state_log),
             "OSASCRIPT_LOG": str(self.osascript_log),
@@ -242,16 +247,22 @@ class DefaultBehaviourTest(NotifyTestCase):
         wire lost to whatever the file said. That is the wrong way for a kill
         switch to fail.
         """
-        (self.fx.root / "local-notify" / ".env").write_text("JEV_NOTIFY=1\n")
+        (self.fx.config / "notify" / ".env").write_text("JEV_NOTIFY=1\n")
         r = self.fx.run(["msg"], env={"JEV_NOTIFY": "0"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual([ln for ln in self.jev_calls()
                           if not ln.startswith("ARGV\tenabled")], [],
                          "a .env value overrode the caller's kill switch")
 
+    def test_a_missing_topic_names_the_config_file_to_copy_to(self):
+        """The settings live in <config>/notify/.env, and the error says so."""
+        r = self.fx.run(["-c", "ntfy", "msg"], env={"NTFY_TOPIC": "", "JEV_NOTIFY": "0"})
+        want = self.fx.config / "notify" / ".env"
+        self.assertIn(f"copy local-notify/.env.example to {want}", r.stderr)
+
     def test_a_dotenv_still_supplies_the_stage_when_the_caller_says_nothing(self):
         """Defaults-only means the file is still read when nothing overrides."""
-        (self.fx.root / "local-notify" / ".env").write_text("JEV_NOTIFY=0\n")
+        (self.fx.config / "notify" / ".env").write_text("JEV_NOTIFY=0\n")
         r = self.fx.run(["msg"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual([ln for ln in self.jev_calls()

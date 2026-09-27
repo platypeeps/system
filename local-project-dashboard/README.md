@@ -235,9 +235,11 @@ belongs to whatever generates it, and a fleet dashboard carrying the path to
 one association's reports in its source would be wrong in a way that is
 awkward to undo.
 
-`documents.conf` remains, for the things a directory cannot say. It is
-gitignored because it names the operator's own repositories and paths; copy
-`documents.conf.example` to start one, and without it every found root is
+`documents.conf` remains, for the things a directory cannot say. It lives in
+`<config>/project-dashboard/documents.conf` (`<config>` is
+`$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`), outside the
+checkout, because it names the operator's own repositories and paths; copy
+`documents.conf.example` there to start one, and without it every found root is
 listed under its directory name:
 
 ```
@@ -382,7 +384,7 @@ The manifest now declares only the four queue actions.
 | File | What it is |
 | --- | --- |
 | `sd-plugin.json` (repo root) | the manifest: `prefix` and one declared action per decision queue |
-| `dashboard.sh` | collector verbs, workflow server, runtime installer and tests; `.env` selects the legacy collector interpreter |
+| `dashboard.sh` | collector verbs, workflow server, runtime installer and tests; `<config>/project-dashboard/.env` selects the legacy collector interpreter |
 | `sd_tile.py` | one tab per invocation — the part that turns a collector's output into a table |
 | `collectors.py` | the collectors themselves. A library with no entry point: everything that started something went with the server |
 
@@ -477,7 +479,7 @@ first two learned the hard way on 2026-08-28 when the page sat on
   `sys.executable` — `SD_DASHBOARD_PYTHON`, the command pack's
   `.venv/bin/python`, which is Homebrew python@3.13 and execs that framework's
   `Python.app/Contents/MacOS/Python`. `dashboard.sh tile` and
-  `dashboard.sh queue-open` run it under `DASHBOARD_PYTHON` from `.env`, today
+  `dashboard.sh queue-open` run it under `DASHBOARD_PYTHON` from `<config>/project-dashboard/.env`, today
   `/opt/homebrew/bin/python3`, which is Homebrew python@3.14 and execs a
   different `Python.app`. `DASHBOARD_PYTHON` therefore does not govern what the
   dashboard's own pages read. The Resources path is the one the dashboard
@@ -512,15 +514,18 @@ first two learned the hard way on 2026-08-28 when the page sat on
 
 | Variable | Default |
 | --- | --- |
-| `DASHBOARD_PYTHON` | PATH `python3` (set to Homebrew in `.env`); the interpreter for `tile` and `queue-open`, and one of the two paths `grants` probes |
+| `SYSTEM_TOOLS_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/system` — config root: `project-dashboard/.env`, `project-dashboard/documents.conf`, and the cron job files Toolbox reads from `cron-jobs/jobs` |
+| `CRON_JOBS_EXTRA_DIRS` | none — further job directories Toolbox reads, as `cron-jobs.sh` does |
+| `DASHBOARD_PYTHON` | PATH `python3` (set to Homebrew in `<config>/project-dashboard/.env`); the interpreter for `tile` and `queue-open`, and one of the two paths `grants` probes |
 | `SD_DASHBOARD_PYTHON` | command pack `.venv/bin/python`; runs `serve`, `preflight`, `install`, `health` and `grants`, and so the tiles a Resources view renders |
-| `VAULT` | `~/Documents/Vault` — read by `collectors.py` itself; set it in `.env` |
+| `VAULT` | `~/Documents/Vault` — read by `collectors.py` itself; set it in `<config>/project-dashboard/.env` |
 | `REPO_ROOT` | `~/repos` — likewise |
 | `SYSTEM_TOOLS_LABEL_PREFIX` | `local.system-tools` — launchd label prefix; the dashboard's LaunchAgent is `<prefix>.sd-dashboard`, and Toolbox reads cron jobs as `<prefix>.cron.<job>` |
 
-`dashboard.sh` exports whichever of `VAULT`, `REPO_ROOT` and
-`SYSTEM_TOOLS_LABEL_PREFIX` are set after sourcing `.env`, and `install`
-copies them into the LaunchAgent, so the server reads the same values. The
+`dashboard.sh` exports whichever of `VAULT`, `REPO_ROOT`,
+`SYSTEM_TOOLS_LABEL_PREFIX` and `SYSTEM_TOOLS_CONFIG` are set after sourcing
+`<config>/project-dashboard/.env`, and `install` copies them (and
+`CRON_JOBS_EXTRA_DIRS`) into the LaunchAgent, so the server reads the same values. The
 Vault tile lists the vault's top-level `<Area> Home` folders, found on disk.
 
 The earlier server's knobs went with it: the port, the refresh interval, the

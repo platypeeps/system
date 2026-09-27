@@ -33,6 +33,8 @@
         <string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>@HOME@</string>
+        <key>SYSTEM_TOOLS_CONFIG</key>
+        <string>@CONFIG@</string>
     </dict>
 
     <key>ProcessType</key>

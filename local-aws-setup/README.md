@@ -15,8 +15,12 @@ broader policy is attached later.
 
 ## Accounts
 
-Each account is a gitignored file, `accounts/<name>.env`; `<name>` is what
-every command takes. Start from `accounts/example.env.example`.
+Each account is a file outside the checkout,
+`<config>/aws-setup/accounts/<name>.env`; `<name>` is what every command
+takes. `<config>` is `$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`);
+`AWS_SETUP_ACCOUNTS_DIR` names another folder. Start from
+`accounts/example.env.example`. Shared settings go in `<config>/aws-setup/.env`
+(start from `.env.example`).
 
 ```sh
 ./aws-setup.sh accounts     # list what is configured
@@ -88,7 +92,8 @@ Prerequisites: `aws` CLI v2 and an admin login for the account.
 3. **Write the account file**:
 
    ```sh
-   cp accounts/example.env.example accounts/sandbox.env   # then edit
+   mkdir -p ~/.config/system/aws-setup/accounts
+   cp accounts/example.env.example ~/.config/system/aws-setup/accounts/sandbox.env   # then edit
    ```
 
 4. **Preview and simulate** before touching IAM:

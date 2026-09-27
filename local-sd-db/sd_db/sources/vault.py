@@ -73,7 +73,7 @@ DEFAULT_VAULT = "~/Documents/Obsidian Vault"
 #: Where the writing manifest is, for the test that asserts this table covers
 #: it. Nothing at runtime reads the manifest: the library installs into two
 #: virtualenvs and the manifest is a third repository's file.
-MANIFEST_RELATIVE = "platypeeps/sd-writing-pack/sd-plugin.json"
+MANIFEST_RELATIVE = "writing-pack/sd-plugin.json"
 
 #: `(manifest kind, ladder word) -> item status`. The one place a ladder word
 #: becomes a status. Every word a kind can hold, including its initial one,

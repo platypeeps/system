@@ -21,8 +21,9 @@ email itself is the report.
 
 ## Checks
 
-Configured in `maintenance.conf` (gitignored; start from
-`cp maintenance.conf.example maintenance.conf`). Pipe-separated, `~/` expands
+Configured in `<config>/maintenance/maintenance.conf`, outside the checkout
+(`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`; start from
+`cp maintenance.conf.example ~/.config/system/maintenance/maintenance.conf`). Pipe-separated, `~/` expands
 to `$HOME`:
 
 | Directive | Meaning |
@@ -34,7 +35,7 @@ to `$HOME`:
 | `age\|<file>\|<days>\|<label>` | file modified within `<days>` |
 | `logs\|<dir-or-file>\|<mb>` | rotate `.log` files above `<mb>` |
 
-Checks only one machine wants go in `maintenance.<profile>.conf`, read after
+Checks only one machine wants go in `<config>/maintenance/maintenance.<profile>.conf`, read after
 the common file. The profile is whatever machine-setup recorded for this
 machine (`~/.config/machine-setup/profile`); `MAINTENANCE_PROFILE` overrides
 it, and an absent file is not an error. Profile files are gitignored too.

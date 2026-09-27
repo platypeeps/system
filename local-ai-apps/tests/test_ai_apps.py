@@ -52,6 +52,8 @@ class Fixture(unittest.TestCase):
         self.folder.mkdir()
         self.script = self.folder / "ai-apps.sh"
         shutil.copy(SCRIPT, self.script)
+        (self.tmp / "lib").mkdir()
+        shutil.copy(FOLDER.parent / "lib" / "config.sh", self.tmp / "lib" / "config.sh")
         self.script.chmod(0o755)
         (self.folder / "profiles").mkdir()
 
@@ -71,10 +73,13 @@ class Fixture(unittest.TestCase):
         path.write_text(text)
         path.chmod(0o755)
 
-    def run_tool(self, *args, commit_rc=0):
+    def run_tool(self, *args, commit_rc=0, extra_env=None):
         env = dict(os.environ)
         env.update(
             AI_APPS_PROFILE="personal",
+            # The manifests sit in the copy's own folder, as in a private
+            # fork that tracks them.
+            AI_APPS_PROFILES_DIR=str(self.folder / "profiles"),
             # Must not resolve, or the recorded profile would beat the env.
             MACHINE_SETUP_STATE=str(self.tmp / "no-such-state"),
             HOME=str(self.home),
@@ -83,6 +88,11 @@ class Fixture(unittest.TestCase):
             AUTOCOMMIT_COMMIT_RC=str(commit_rc),
             PATH=f"{self.bin}:{env['PATH']}",
         )
+        for key, value in (extra_env or {}).items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         return subprocess.run(
             ["sh", str(self.script), *args],
             capture_output=True, text=True, env=env, cwd=str(self.tmp),
@@ -143,6 +153,31 @@ class QuietNightTest(Fixture):
         verbs = [line for line in self.autocommit_log.read_text().splitlines()
                  if line in ("check", "commit")]
         self.assertEqual(verbs, ["check", "commit"])
+
+
+class ConfigDirTest(Fixture):
+    def test_capture_writes_into_the_shared_config_dir(self):
+        """PIN. With no AI_APPS_PROFILES_DIR the manifest goes to
+        $SYSTEM_TOOLS_CONFIG/ai-apps/profiles, not beside the script, and
+        nightly skips the commit step: that folder is outside any checkout."""
+        config = self.tmp / "config"
+        env = {"AI_APPS_PROFILES_DIR": None, "SYSTEM_TOOLS_CONFIG": str(config)}
+        result = self.run_tool("capture", extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((config / "ai-apps" / "profiles" / "personal.inv").is_file())
+        self.assertFalse((self.folder / "profiles" / "personal.inv").exists())
+        nightly = self.run_tool("nightly", extra_env=env)
+        self.assertIn("skipping the commit step", nightly.stdout)
+        self.assertFalse(self.autocommit_log.exists())
+
+    def test_the_shared_work_root_selects_the_work_profile(self):
+        """PIN. SYSTEM_TOOLS_WORK_ROOT stands in for AI_APPS_WORK_ROOT, the
+        same meaning local-repo-sync reads from REPO_SYNC_WORK_ROOT."""
+        env = {"AI_APPS_PROFILE": None, "AI_APPS_WORK_ROOT": None,
+               "SYSTEM_TOOLS_WORK_ROOT": str(self.tmp)}
+        result = self.run_tool("capture", extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.folder / "profiles" / "work.inv").is_file())
 
 
 class ConfigReadingTest(Fixture):

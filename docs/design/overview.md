@@ -6,7 +6,7 @@ stand: Two repositories, one database, and five workflows that share them. This 
 
 ## The two repositories
 
-**`platypeeps/system-tools`** holds the tools: one folder per tool, each
+**`platypeeps/system`** holds the tools: one folder per tool, each
 with its own entrypoint and `README.md`. Local services, scheduled jobs, the
 dashboard, the runner.
 

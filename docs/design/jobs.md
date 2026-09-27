@@ -6,12 +6,13 @@ stand: A job is a schedule plus one verb. launchd fires it, a lock keeps it sing
 
 ## The shape of a job
 
-A job is one file: `local-cron-jobs/jobs/<name>.job`. It sets `JOB_SCHEDULE`
+A job is one file: `<config>/cron-jobs/jobs/<name>.job`, where `<config>` is
+`$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`). It sets `JOB_SCHEDULE`
 and **exactly one** of two verbs.
 
 ```sh
 JOB_SCHEDULE="45 4 * * *"
-JOB_COMMAND="sh \"$HOME/repos/system-tools/local-sd-plan/sd-plan.sh\" nightly"
+JOB_COMMAND="sh \"$HOME/repos/system/local-sd-plan/sd-plan.sh\" nightly"
 ```
 
 - **`JOB_COMMAND`** runs a shell command under `bash -c`.
@@ -31,17 +32,12 @@ does it.**
 
 ## Which machine runs which job
 
-`.job` files in this repository are the *catalogue*, not the installed set.
-Each machine can record a profile, and the installed set is then
-`common.cron` plus `<profile>.cron` from a per-machine manifest directory.
+The repository ships no installed jobs. `local-cron-jobs/examples/` is a
+*catalogue*: copy the jobs a machine should run into
+`<config>/cron-jobs/jobs/`, and `CRON_JOBS_EXTRA_DIRS` may add more folders.
 
-This exists because `install --all` once meant *every file in the repo*, which
-installed personal jobs on a machine that should never run them.
-
-A manifest may name a job this repository does not define; that is skipped
-rather than aborting the install. With **no** profile recorded, every defined
-job is installed and the script says so on stderr — a machine without a
-recorded profile has no better answer available.
+`install --all` installs every job in those folders. The folders belong to one
+machine, so no profile filter sits between them and the install.
 
 ## What the jobs are
 
@@ -152,12 +148,12 @@ exactly the kind of green that hides the bug.
 ## Status
 
 **Verified in this build.** The two verbs and the refusal of both or neither;
-the profile-based install set and the no-profile fallback; the six steps of one
+the install set read from the config jobs folder; the six steps of one
 run and the reasons recorded for the lock trap, the descriptor limit and the
 FIFO; the binary resolution order; the three records a run leaves and that only
 failure notifies; the debug-trace retention; what `verify` compares and what
-`watchdog-daily` measures. The job table is generated from the job files and
-profile manifests at build time.
+`watchdog-daily` measures. The job table is generated from the example job files
+at build time.
 
 **Not verified here.** Whether this machine has the 02:40 wake configured, and
 which jobs are currently installed — both are per-machine. Run `pmset -g sched`

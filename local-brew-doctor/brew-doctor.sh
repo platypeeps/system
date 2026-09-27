@@ -27,7 +27,8 @@ usage: brew-doctor.sh run
         summary could not be delivered, so the cron failure push fires.
 
 The email goes through local-notify's email channel (NOTIFY_EMAIL_TO/EMAIL_FROM in
-local-notify/.env or the environment).
+<config>/notify/.env or the environment; <config> is
+${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}).
 HELPEOF
     exit 0
     ;;

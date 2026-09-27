@@ -88,6 +88,23 @@ class ThunderboltBridgeCase(unittest.TestCase):
         self.assertEqual(0, proc.returncode, proc.stderr)
         self.assertIn("networksetup -setmanual Thunderbolt Bridge 198.51.100.11 255.255.255.0 198.51.100.1", calls)
 
+    def test_the_hosts_file_defaults_to_the_config_dir(self):
+        conf = Path(tempfile.mkdtemp())
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(conf)])
+        (conf / "network-testing").mkdir()
+        (conf / "network-testing" / "hosts.conf").write_text(HOSTS_CONF)
+        proc, calls = self.run_script(target="host-b", NETWORK_TESTING_HOSTS="",
+                                      SYSTEM_TOOLS_CONFIG=str(conf))
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("networksetup -setmanual Thunderbolt Bridge 198.51.100.11 255.255.255.0 198.51.100.1", calls)
+
+    def test_a_missing_hosts_file_names_the_config_path(self):
+        proc, calls = self.run_script(target="host-b", NETWORK_TESTING_HOSTS="",
+                                      SYSTEM_TOOLS_CONFIG="/nonexistent-config")
+        self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("/nonexistent-config/network-testing/hosts.conf", proc.stderr)
+        self.assertEqual([], calls)
+
     def test_an_unknown_bridge_name_stops_before_any_change(self):
         proc, calls = self.run_script(target="nope")
         self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)

@@ -6,6 +6,7 @@
 # Usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <action> [days]
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$DIR/../lib/config.sh"
 
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="$LABEL_PREFIX.task-actions"
@@ -17,10 +18,11 @@ SERVICE="$DOMAIN/$LABEL"
 OUT_LOG="$DIR/logs/task-actions.log"
 
 PORT="${TASK_ACTIONS_PORT:-8766}"
-# .env (gitignored, see .env.example) provides defaults only; an exported
+# <config>/task-actions/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
+# default ~/.config/system; see .env.example) provides defaults only; an exported
 # OBSIDIAN_VAULT wins.
 ENV_OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"
-[ -f "$DIR/.env" ] && . "$DIR/.env"
+st_source_env task-actions
 [ -n "$ENV_OBSIDIAN_VAULT" ] && OBSIDIAN_VAULT="$ENV_OBSIDIAN_VAULT"
 VAULT="${OBSIDIAN_VAULT:-$HOME/Documents/Obsidian Vault}"
 TASKS_SUBDIR="${OBSIDIAN_TASKS_SUBDIR:-TaskNotes/Tasks}"
@@ -57,7 +59,8 @@ is_loaded() { launchctl print "$SERVICE" >/dev/null 2>&1; }
 FUNNEL_TIMEOUT="${TASK_ACTIONS_FUNNEL_TIMEOUT:-3}"
 
 funnel_url() {
-  tmp="$(mktemp -t task-actions-funnel)"
+  # A full template, not `-t`: GNU mktemp wants X's in a -t prefix.
+  tmp="$(mktemp "${TMPDIR:-/tmp}/task-actions-funnel.XXXXXX")"
   killed="$tmp.killed"
   tailscale funnel status >"$tmp" 2>/dev/null & pid=$!
   # The watchdog records that it fired, and only when the kill lands: a daemon
@@ -505,7 +508,8 @@ The HMAC secret lives in ~/.config/task-actions/secret (auto-generated,
 Funnel fronts it for other devices (tailscale funnel --bg 8766 — the
 serve config persists across restarts, no extra LaunchAgent needed).
 
-environment (exported, or in ./.env; see .env.example): TASK_ACTIONS_PORT
+environment (exported, or in <config>/task-actions/.env, where <config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system; see .env.example): TASK_ACTIONS_PORT
 (8766), OBSIDIAN_VAULT (~/Documents/Obsidian Vault), OBSIDIAN_TASKS_SUBDIR,
 TASK_ACTIONS_SECRET_FILE, TASK_ACTIONS_BASE_URL, SYSTEM_TOOLS_LABEL_PREFIX
 HELPEOF

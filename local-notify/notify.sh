@@ -1,6 +1,7 @@
 #!/bin/sh
 # General-purpose notification: local macOS banner + ntfy push to phone.
-# ntfy settings come from ./.env (gitignored) — see .env.example.
+# ntfy settings come from <config>/notify/.env (outside the checkout; <config>
+# is $SYSTEM_TOOLS_CONFIG, default ~/.config/system) — see .env.example.
 # Replaces the old ~/bin/common/sendalert.sh (iMessage-only, hardcoded number).
 set -e
 
@@ -15,8 +16,10 @@ while [ -L "$SELF" ]; do
   esac
 done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
+. "$DIR/../lib/config.sh"
+NOTIFY_ENV_FILE="$(st_config_dir notify)/.env"
 
-# .env provides defaults only — values already in the environment win, so
+# <config>/notify/.env provides defaults only — values already in the environment win, so
 # `NTFY_TOPIC=other notify.sh ...` targets a different topic as expected.
 ENV_NTFY_TOPIC="${NTFY_TOPIC:-}"
 ENV_NTFY_SERVER="${NTFY_SERVER:-}"
@@ -30,7 +33,7 @@ ENV_WORKSPACE_MCP_URL="${WORKSPACE_MCP_URL:-}"
 # writes `JEV_NOTIFY=0 notify.sh ...` to keep one message off the wire must
 # win over whatever .env says, exactly as an explicit NTFY_TOPIC does.
 ENV_JEV_NOTIFY="${JEV_NOTIFY:-}"
-[ -f "$DIR/.env" ] && . "$DIR/.env"
+[ -f "$NOTIFY_ENV_FILE" ] && . "$NOTIFY_ENV_FILE"
 [ -n "$ENV_JEV_NOTIFY" ] && JEV_NOTIFY="$ENV_JEV_NOTIFY"
 # Exported, not just set: `jev enabled JEV_NOTIFY` is a subprocess and reads
 # the environment. Sourcing .env above sets a shell variable only, so without
@@ -102,7 +105,8 @@ channels:
                 WORKSPACE_MCP_URL overrides http://127.0.0.1:8083/mcp.
                 Title becomes the subject, the message the body.
 
-configuration: export the variables or copy .env.example to .env.
+configuration: export the variables or copy local-notify/.env.example to
+<config>/notify/.env (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system).
 
 Jev routing (experimental, on unless JEV_NOTIFY switches it off):
   JEV_NOTIFY=0  do not ask the sibling local-jev/jev.sh to pick the channel set and
@@ -420,7 +424,7 @@ send_local() {
 
 send_ntfy() {
   if [ -z "${NTFY_TOPIC:-}" ]; then
-    echo "notify.sh: NTFY_TOPIC not set (export it, or copy .env.example to .env)" >&2
+    echo "notify.sh: NTFY_TOPIC not set (export it, or copy local-notify/.env.example to $NOTIFY_ENV_FILE)" >&2
     return 2
   fi
   server="${NTFY_SERVER:-https://ntfy.sh}"
@@ -467,7 +471,7 @@ send_email() {
   # The pinned address is NOTIFY_EMAIL_TO, set once per machine in .env; to
   # retarget deliberately, change it there.
   if [ -z "${NOTIFY_EMAIL_TO:-}" ]; then
-    echo "notify.sh: NOTIFY_EMAIL_TO not set: the one address the email channel may mail (export it, or copy .env.example to .env)" >&2
+    echo "notify.sh: NOTIFY_EMAIL_TO not set: the one address the email channel may mail (export it, or copy local-notify/.env.example to $NOTIFY_ENV_FILE)" >&2
     return 2
   fi
   EMAIL_TO_ONLY="$NOTIFY_EMAIL_TO"
@@ -481,7 +485,7 @@ send_email() {
     return 1
   fi
   if [ -z "${EMAIL_FROM:-}" ]; then
-    echo "notify.sh: EMAIL_FROM not set (export it, or copy .env.example to .env)" >&2
+    echo "notify.sh: EMAIL_FROM not set (export it, or copy local-notify/.env.example to $NOTIFY_ENV_FILE)" >&2
     return 2
   fi
   url="${WORKSPACE_MCP_URL:-http://127.0.0.1:8083/mcp}"
@@ -568,7 +572,7 @@ print(json.dumps({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
 
 send_imessage() {
   if [ -z "${IMESSAGE_TO:-}" ]; then
-    echo "notify.sh: IMESSAGE_TO not set (export it, or copy .env.example to .env)" >&2
+    echo "notify.sh: IMESSAGE_TO not set (export it, or copy local-notify/.env.example to $NOTIFY_ENV_FILE)" >&2
     return 2
   fi
   osascript \

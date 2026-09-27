@@ -40,7 +40,8 @@ The model holds 16.5 GB with mlock while it runs.
 Both profiles (`personal`, `work`) can run `llama-cpp rpc` as a launch agent
 (`<prefix>.llama-rpc`). Each worker binds its own Tailscale address, and
 `cluster` on either machine points `--rpc` at the other. The two addresses
-live in `.env` (copy `.env.example`):
+live in `~/.config/system/llama-cpp/.env` (`$SYSTEM_TOOLS_CONFIG/llama-cpp/` when that is set); copy
+`.env.example` there:
 
 | profile | worker binds | `cluster` offloads to |
 | --- | --- | --- |

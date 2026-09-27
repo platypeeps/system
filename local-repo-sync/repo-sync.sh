@@ -15,6 +15,11 @@ while [ -L "$SELF" ]; do
   esac
 done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
+. "$DIR/../lib/config.sh"
+
+# The work checkout root. REPO_SYNC_WORK_ROOT and local-ai-apps'
+# AI_APPS_WORK_ROOT mean the same thing; SYSTEM_TOOLS_WORK_ROOT sets both.
+WORK_ROOT="${REPO_SYNC_WORK_ROOT:-${SYSTEM_TOOLS_WORK_ROOT:-}}"
 
 # Machines carry different repo lists, so the profile picks the config file.
 # machine-setup already records what this machine is, and that answer beats
@@ -22,21 +27,21 @@ DIR="$(cd "$(dirname "$SELF")" && pwd)"
 # checkout root "personal", which on a terra machine resolved a 68-repo
 # fleet and made `nightly` reconcile 67 absent checkouts out of the tracked
 # confs. The heuristic stays as the fallback for a machine that predates the
-# state file: it calls the machine `work` when REPO_SYNC_WORK_ROOT names an
+# state file: it calls the machine `work` when the work root names an
 # existing directory, else `personal`.
 MACHINE_SETUP_PROFILE_FILE="${MACHINE_SETUP_STATE:-$HOME/.config/machine-setup}/profile"
 if [ -n "${REPO_SYNC_PROFILE:-}" ]; then
   PROFILE="$REPO_SYNC_PROFILE"
 elif [ -r "$MACHINE_SETUP_PROFILE_FILE" ]; then
   PROFILE="$(cat "$MACHINE_SETUP_PROFILE_FILE")"
-elif [ -n "${REPO_SYNC_WORK_ROOT:-}" ] && [ -d "$REPO_SYNC_WORK_ROOT" ]; then
+elif [ -n "$WORK_ROOT" ] && [ -d "$WORK_ROOT" ]; then
   PROFILE="work"
 else
   PROFILE="personal"
 fi
 
 case "$PROFILE" in
-  work)     DEFAULT_ROOT="${REPO_SYNC_WORK_ROOT:-$HOME/repos}" ;;
+  work)     DEFAULT_ROOT="${WORK_ROOT:-$HOME/repos}" ;;
   personal) DEFAULT_ROOT="$HOME/repos" ;;
   terra)  DEFAULT_ROOT="$HOME/repos" ;;
   *)
@@ -46,8 +51,12 @@ case "$PROFILE" in
 esac
 
 ROOT="${REPO_SYNC_ROOT:-$DEFAULT_ROOT}"
-COMMON_CONF="$DIR/repos.common.conf"
-PROFILE_CONF="$DIR/repos.$PROFILE.conf"
+# The confs are private, per-machine lists, so they live in the shared config
+# directory outside the checkout. REPO_SYNC_CONF_DIR points elsewhere; a
+# private fork that tracks its confs sets it to this folder.
+CONF_DIR="${REPO_SYNC_CONF_DIR:-$(st_config_dir repo-sync)}"
+COMMON_CONF="$CONF_DIR/repos.common.conf"
+PROFILE_CONF="$CONF_DIR/repos.$PROFILE.conf"
 
 # Which conf files this profile reads, newline-separated (paths may contain
 # spaces, so consumers iterate with IFS=$NL rather than plain word splitting).
@@ -95,11 +104,13 @@ autocommit_confs() {
     sh "$AUTOCOMMIT" "$verb" "$@" )
 }
 
-# The confs are local, gitignored files in the public checkout, and a
-# gitignored file has no commit to land in. `nightly` then skips the commit
-# step instead of asking autocommit to stage an ignored path. A checkout that
-# tracks its confs (a private fork) keeps the commit.
+# The confs normally live in the config directory, outside the checkout, and a
+# file outside the checkout (or a gitignored one inside it) has no commit to
+# land in. `nightly` then skips the commit step instead of asking autocommit
+# to stage a path it cannot. A private fork that keeps tracked confs in this
+# folder (REPO_SYNC_CONF_DIR=<this folder>) keeps the commit.
 confs_gitignored() {
+  [ "$(cd "$CONF_DIR" 2>/dev/null && pwd)" = "$DIR" ] || return 0
   ( IFS=$NL
     for f in $CONF_FILES; do
       git -C "$DIR" check-ignore -q "$f" 2>/dev/null || exit 1
@@ -116,7 +127,7 @@ case "${1:-}" in
     for conf in $CONF_FILES; do
       if [ ! -f "$conf" ]; then
         echo "repo-sync.sh: missing config $conf" >&2
-        echo "  copy $(basename "$conf").example to $(basename "$conf") and list your repos" >&2
+        echo "  copy local-repo-sync/$(basename "$conf").example to $conf and list your repos" >&2
         exit 1
       fi
     done
@@ -432,7 +443,7 @@ case "$1" in
     CHECK_RC=0
     COMMIT_RC=0
     if [ "${SD_AUTOCOMMIT:-1}" != "0" ] && confs_gitignored; then
-      echo "repo-sync: $CONF_SCOPE is gitignored here; skipping the commit step."
+      echo "repo-sync: $CONF_SCOPE is outside the checkout or gitignored; skipping the commit step."
       SD_AUTOCOMMIT=0
     fi
     if [ "${SD_AUTOCOMMIT:-1}" != "0" ]; then
@@ -563,15 +574,17 @@ usage: repo-sync.sh sync|check|list|reconcile|nightly|test
              runs. Exits 1 when an email could not be delivered, when half
              or more of the fleet failed, or when the conf could not be
              pushed; 3 when the conf was not safe to write and reconcile
-             was skipped. SD_AUTOCOMMIT=0 skips the commit step, and so do gitignored confs.
+             was skipped. SD_AUTOCOMMIT=0 skips the commit step, and so do confs
+             outside the checkout (the default) or gitignored.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
              against fixture trees; sync's clone path is not covered,
              because it clones over SSH — the suite reaches it only through
              nightly, with the transport stubbed dead.
 
-The repo fleet lives in repos.common.conf plus repos.<profile>.conf. Both are
-local, gitignored files: copy the committed repos.<profile>.conf.example. Format
+The repo fleet lives in repos.common.conf plus repos.<profile>.conf, in
+<config>/repo-sync/ (<config> is $SYSTEM_TOOLS_CONFIG, default
+~/.config/system). Copy the committed repos.<profile>.conf.example there. Format
 is "<subdir> <owner/repo>", with # comments and blank lines ignored; subdir
 "." means the repo sits directly in the root.
 
@@ -584,12 +597,15 @@ environment:
   REPO_SYNC_PROFILE   personal | work | terra (default: the profile
                       machine-setup recorded in
                       ~/.config/machine-setup/profile, else work if
-                      REPO_SYNC_WORK_ROOT names an existing directory,
+                      the work root names an existing directory,
                       else personal)
-  REPO_SYNC_ROOT      checkout root (default: ~/repos, or REPO_SYNC_WORK_ROOT
+  REPO_SYNC_ROOT      checkout root (default: ~/repos, or the work root
                       on the work profile)
   REPO_SYNC_WORK_ROOT work checkout root; also selects the work profile
-                      when no profile is recorded (default: unset)
+                      when no profile is recorded (default:
+                      SYSTEM_TOOLS_WORK_ROOT, which local-ai-apps reads too)
+  REPO_SYNC_CONF_DIR  where the confs live (default: <config>/repo-sync)
+  SYSTEM_TOOLS_CONFIG shared config root (default: ~/.config/system)
   MACHINE_SETUP_STATE where to look for the recorded profile
                       (default: ~/.config/machine-setup)
 HELPEOF

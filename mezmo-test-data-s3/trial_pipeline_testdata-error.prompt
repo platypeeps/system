@@ -1,0 +1,64 @@
+May 22 00:15:02 Mac syslogd[348]: ASL Sender Statistics
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.cdscheduler" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.install" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.authd" sharing output destination "/var/log/asl" with ASL Module "com.apple.asl".
+	Output parameters from ASL Module "com.apple.asl" override any specified in ASL Module "com.apple.authd".
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.authd" sharing output destination "/var/log/system.log" with ASL Module "com.apple.asl".
+	Output parameters from ASL Module "com.apple.asl" override any specified in ASL Module "com.apple.authd".
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.authd" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.eventmonitor" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.mail" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.performance" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.iokit.power" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.contacts.ContactsAutocomplete" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.mkb" sharing output destination "/private/var/log/keybagd.log" with ASL Module "com.apple.mkb.internal".
+	Output parameters from ASL Module "com.apple.mkb.internal" override any specified in ASL Module "com.apple.mkb".
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.mkb" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:30:04 Mac syslogd[348]: Configuration Notice:
+	ASL Module "com.apple.MessageTracer" claims selected messages.
+	Those messages may not appear in standard system log files or in the ASL database.
+May 22 00:52:22 Mac syslogd[348]: ASL Sender Statistics
+May 22 01:04:58 Mac syslogd[348]: ASL Sender Statistics
+May 22 01:45:20 Mac syslogd[348]: ASL Sender Statistics
+May 22 01:57:47 Mac syslogd[348]: ASL Sender Statistics
+May 22 02:18:58 Mac syslogd[348]: ASL Sender Statistics
+May 22 02:57:51 Mac syslogd[348]: ASL Sender Statistics
+May 22 03:34:58 Mac syslogd[348]: ASL Sender Statistics
+May 22 03:52:04 Mac syslogd[348]: ASL Sender Statistics
+May 22 04:49:58 Mac syslogd[348]: ASL Sender Statistics
+May 22 05:45:20 Mac syslogd[348]: ASL Sender Statistics
+May 22 05:58:21 Mac syslogd[348]: ASL Sender Statistics
+May 22 06:19:59 Mac syslogd[348]: ASL Sender Statistics
+May 22 06:34:59 Mac syslogd[348]: ASL Sender Statistics
+May 22 06:57:48 Mac syslogd[348]: ASL Sender Statistics
+May 22 07:49:59 Mac syslogd[348]: ASL Sender Statistics
+May 22 08:18:36 Mac syslogd[348]: ASL Sender Statistics
+May 22 08:40:10 Mac syslogd[348]: ASL Sender Statistics
+May 22 08:58:52 Mac syslogd[348]: ASL Sender Statistics
+May 22 09:19:59 Mac syslogd[348]: ASL Sender Statistics
+May 22 09:31:25 Mac syslogd[348]: ASL Sender Statistics
+May 22 09:43:00 Mac syslogd[348]: ASL Sender Statistics
+May 22 09:57:55 Mac syslogd[348]: ASL Sender Statistics
+May 22 10:18:14 Mac syslogd[348]: ASL Sender Statistics
+May 22 10:29:58 Mac syslogd[348]: ASL Sender Statistics

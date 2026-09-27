@@ -7,7 +7,7 @@
 set -e
 
 # `local-bin-links` links this onto PATH as `jev`, so $0 is then the symlink in
-# ~/bin/common and the .env sitting beside the real script is not beside $0.
+# ~/bin/common and ../lib beside the real script is not beside $0.
 # Walk $0 to where the file actually lives before resolving anything.
 SELF="$0"
 while [ -L "$SELF" ]; do
@@ -18,10 +18,13 @@ while [ -L "$SELF" ]; do
   esac
 done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
+. "$DIR/../lib/config.sh"
 
-# .env provides defaults only — values already in the environment win, so
+# <config>/jev/.env provides defaults only — values already in the environment win, so
 # `JEV_MODEL=jev-1.13.0 jev noul ...` pins a model for one call as expected.
 # The key normally comes from ~/.config/shell/env.sh and not from .env at all.
+# The .env lives outside the checkout, in <config>/jev/ (<config> is
+# $SYSTEM_TOOLS_CONFIG, default ~/.config/system).
 ENV_TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-}"
 ENV_JEV_URL="${JEV_URL:-}"
 ENV_JEV_MODEL="${JEV_MODEL:-}"
@@ -29,7 +32,7 @@ ENV_JEV_TIMEOUT="${JEV_TIMEOUT:-}"
 ENV_JEV_RETRIES="${JEV_RETRIES:-}"
 ENV_JEV_ENABLED="${JEV_ENABLED:-}"
 ENV_JEV_FLAG_FILE="${JEV_FLAG_FILE:-}"
-[ -f "$DIR/.env" ] && . "$DIR/.env"
+st_source_env jev
 [ -n "$ENV_TYPESAFE_API_KEY" ] && TYPESAFE_API_KEY="$ENV_TYPESAFE_API_KEY"
 [ -n "$ENV_JEV_URL" ]     && JEV_URL="$ENV_JEV_URL"
 [ -n "$ENV_JEV_MODEL" ]   && JEV_MODEL="$ENV_JEV_MODEL"
@@ -159,6 +162,9 @@ environment:
   JEV_RETRIES        retries for 429/529/5xx, doubling backoff (default 3)
   JEV_ENABLED        1/0 for one call or one session; beats the switch file
   JEV_FLAG_FILE      switch file (default ~/.config/jev/enabled)
+Defaults for these may also sit in <config>/jev/.env (<config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system; copy local-jev/.env.example);
+an exported value wins over the file.
 HELPEOF
     exit 0
     ;;

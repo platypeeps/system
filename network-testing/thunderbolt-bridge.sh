@@ -5,7 +5,7 @@
 # configuration, which is global, not per network location.
 #
 # Usage (root):
-#   sudo ./thunderbolt-bridge.sh <name>  # a `bridge` record in hosts.conf
+#   sudo ./thunderbolt-bridge.sh <name>  # a `bridge` record in the hosts file
 #   sudo ./thunderbolt-bridge.sh <ip>    # any other address, /24
 #
 # Members are every "Thunderbolt N" hardware port. IPv4 is manual, /24, no
@@ -13,14 +13,23 @@
 set -eu
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Host presets live in hosts.conf (gitignored; copy hosts.conf.example), or
-# the file NETWORK_TESTING_HOSTS names. hosts_lookup <kind> <name> prints the
+# Run under sudo, HOME may be root's; resolve the config directory against
+# the invoking user's home instead, unless one is set explicitly.
+if [ -n "${SUDO_USER:-}" ] && [ -z "${SYSTEM_TOOLS_CONFIG:-}" ] && [ -z "${XDG_CONFIG_HOME:-}" ]; then
+  SUDO_HOME="$(eval echo "~$SUDO_USER")"
+  SYSTEM_TOOLS_CONFIG="$SUDO_HOME/.config/system"
+fi
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
+
+# Host presets live in <config>/network-testing/hosts.conf (lib/config.sh;
+# copy hosts.conf.example there), or the file NETWORK_TESTING_HOSTS names. hosts_lookup <kind> <name> prints the
 # record's remaining fields; hosts_names <kind> lists the names of one kind.
-HOSTS_FILE="${NETWORK_TESTING_HOSTS:-$DIR/hosts.conf}"
+HOSTS_FILE="${NETWORK_TESTING_HOSTS:-$(st_config_dir network-testing)/hosts.conf}"
 require_hosts() {
   [ -r "$HOSTS_FILE" ] && return 0
   echo "missing host presets: $HOSTS_FILE" >&2
-  echo "copy $DIR/hosts.conf.example to $DIR/hosts.conf and fill it in," >&2
+  echo "copy network-testing/hosts.conf.example to $HOSTS_FILE and fill it in," >&2
   echo "or export NETWORK_TESTING_HOSTS=<file>" >&2
   exit 1
 }

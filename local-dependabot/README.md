@@ -38,7 +38,8 @@ tail -f ../local-cron-jobs/logs/dependabot-daily.log       # watch it work
 ../local-cron-jobs/cron-jobs.sh run dependabot-holds-weekly      # one pass over the fleet, now
 ```
 
-Schedule and prompt live in `../local-cron-jobs/jobs/dependabot-daily.job`.
+Schedule and prompt live in `<config>/cron-jobs/jobs/dependabot-daily.job`
+(examples in `local-cron-jobs/examples/`).
 Runs 06:20 daily — before the working day, clear of `maintenance-nightly`
 (03:45) and `repo-sync-nightly` (02:45), which fast-forwards the checkouts the
 job enumerates from.

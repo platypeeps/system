@@ -1,4 +1,5 @@
-# Copy to maintenance.conf (gitignored) and edit for this machine.
+# Copy to <config>/maintenance/maintenance.conf (<config> is $SYSTEM_TOOLS_CONFIG,
+# default ~/.config/system) and edit for this machine.
 # Maintenance checks every machine wants: pipe-separated directives,
 # # comments allowed. A leading ~/ expands to $HOME. See maintenance.sh --help
 # for the format.
@@ -27,6 +28,6 @@ disk|~/|10
 
 # log rotation caps (MB). Only .log files directly in these locations;
 # milvus volumes hold RocksDB .log DATA files and must never be listed here.
-logs|~/repos/system-tools/local-cron-jobs/logs|5
-logs|~/repos/system-tools/local-cswap/logs|10
-logs|~/repos/system-tools/network-testing/logs|5
+logs|~/repos/system/local-cron-jobs/logs|5
+logs|~/repos/system/local-cswap/logs|10
+logs|~/repos/system/network-testing/logs|5

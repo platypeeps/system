@@ -6,7 +6,6 @@ import json
 import os
 import stat
 import subprocess
-import sys
 import threading
 import time
 import unittest
@@ -21,7 +20,7 @@ from sd_db import runner_journal as journal
 from sd_db.database import connect
 from sd_runner import cli, maintenance, storage
 
-from . import test_runtime as fixtures
+from tests import test_runtime as fixtures
 
 
 def immutable(path):
@@ -45,7 +44,6 @@ def mounted(*paths):
         yield
 
 
-@unittest.skipUnless(sys.platform == "darwin", "retained clones are frozen with the macOS user immutable flag")
 class PruneApply(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.Fixture()

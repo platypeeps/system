@@ -4,11 +4,10 @@
 Reads the meters and changes nothing else: `codexbar usage` per provider, and
 `rtk gain` for the token-proxy savings. One JSON object per line, appended.
 
-It lives here rather than in sd-writing-pack because it is a scheduled data
-collector, not a step in that repo's writing pipeline: no skill ever called it,
-only launchd did. It was `pack.py meter collect` there until step 10c
-(2026-09-03) and still writes to the same file, so the series is continuous --
-`--out` defaults to the piece that consumes it, in the other checkout.
+The ledger is `--out`, else AGENT_METER_FILE (exported, or set in
+<config>/agent-meter/.env), else <config>/agent-meter/meter.jsonl, where
+<config> is ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}.
+Point AGENT_METER_FILE at wherever the consumer of the series reads it.
 
 Cron-safe by design: a meter that fails is recorded as an `errors` entry and
 the process still exits 0, because a gap in the series is worse than a noisy
@@ -20,7 +19,7 @@ a second collector appending to the same ledger is visible in the data itself.
 Since sd:234 the reading is written twice: the JSONL line above, and one
 `meter` cost row per provider per window in the sd database, through
 `sd_db.sample`, so the later Usage-screen slice (8d) reads the same sample
-the blog piece does. The rows go in first, in one transaction on one connection, and
+the JSONL ledger does. The rows go in first, in one transaction on one connection, and
 the JSONL line carries what happened: `sd_db.rows` when rows were written,
 `errors.sd_db` when the library could not be imported or the database could
 not be opened, `errors.sd_db.<provider>.<window>` when one sample was refused.
@@ -41,9 +40,23 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
-DEFAULT_OUT = os.path.expanduser(
-    "~/repos/platypeeps/sd-writing-pack/content/2026/month-on-the-meter/data/meter.jsonl")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import system_tools_config  # noqa: E402
+
+TOOL = "agent-meter"
+# The config directory's own ledger. Created on first use; a ledger named by
+# AGENT_METER_FILE or --out is not, because a missing parent there means the
+# place it points at moved.
+DEFAULT_OUT = str(system_tools_config.config_dir(TOOL) / "meter.jsonl")
+
+
+def default_out():
+    """AGENT_METER_FILE, exported or from <config>/agent-meter/.env, else DEFAULT_OUT."""
+    return (os.environ.get("AGENT_METER_FILE")
+            or system_tools_config.read_env(TOOL).get("AGENT_METER_FILE")
+            or DEFAULT_OUT)
 PROVIDERS = ["claude", "codex"]
 # launchd runs with a minimal PATH that finds neither Homebrew nor ~/.local
 BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
@@ -228,11 +241,16 @@ def collect(a) -> None:
 
     out = os.path.expanduser(a.out)
     parent = os.path.dirname(out)
-    # The ledger lives in another checkout, which may simply not be there. Say
-    # so instead of creating a lookalike tree that nothing will ever read.
+    if out == DEFAULT_OUT:
+        os.makedirs(parent, exist_ok=True)
+    # A ledger named elsewhere may live in another checkout, which may simply
+    # not be there. Say so instead of creating a lookalike tree that nothing
+    # will ever read.
     if not os.path.isdir(parent):
-        print("agent-meter: %s does not exist; is the sd-writing-pack checkout "
-              "missing or moved?" % parent, file=sys.stderr)
+        print("agent-meter: %s does not exist; did the ledger's location move? "
+              "Set AGENT_METER_FILE, or copy local-agent-meter/.env.example to %s "
+              "and fill it in." % (parent, system_tools_config.config_dir(TOOL) / ".env"),
+              file=sys.stderr)
         sys.exit(1)
     # The rows first, so a JSONL line never says less than the database holds.
     write_rows(record, a)
@@ -261,7 +279,7 @@ def collect(a) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-meter.py", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--out", default=os.environ.get("AGENT_METER_FILE", DEFAULT_OUT),
+    p.add_argument("--out", default=default_out(),
                    help="JSONL ledger to append to (default: %(default)s)")
     p.add_argument("--providers", default=",".join(PROVIDERS),
                    help="comma-separated codexbar providers (default: %(default)s)")

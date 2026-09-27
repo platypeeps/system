@@ -12,8 +12,8 @@ logs in `./logs`, both gitignored) plus the ClickHouse MCP server (SSE on `:8002
 
 User/password default to `default` / the local dev value `verysecure`
 (matches local-postgres); override with `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD`
-in the environment or in a gitignored `./.env` (see `.env.example`). Exported
-values win over `.env`.
+in the environment or in `~/.config/system/clickhouse/.env` (`$SYSTEM_TOOLS_CONFIG/clickhouse/` when that is set);
+copy `.env.example` there. Exported values win over the file.
 
 ## Gotchas
 

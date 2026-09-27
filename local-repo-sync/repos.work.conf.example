@@ -1,7 +1,7 @@
 # Work machine. Format: <subdir> <owner/repo>
 #
-# Copy to repos.work.conf (gitignored) and list your own repos.
+# Copy to ~/.config/system/repo-sync/repos.work.conf ($SYSTEM_TOOLS_CONFIG/repo-sync) and list your own repos.
 
-.  platypeeps/system-tools
+.  platypeeps/system
 
 work  example-org/example-service

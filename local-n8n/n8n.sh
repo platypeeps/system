@@ -2,14 +2,16 @@
 # n8n (npx, sqlite backend) plus external task-runner container, run as a
 # macOS LaunchAgent that starts at login, restarts if it dies, and logs to
 # ./logs — same pattern as local-cswap.
-# Secrets (encryption key, runner token) come from ./.env
-# (gitignored, see .env.example) or from the environment — the file is optional
+# Secrets (encryption key, runner token) come from <config>/n8n/.env
+# (lib/config.sh; see .env.example) or from the environment — the file is optional
 # when the values are already exported. Needs N8N_PUBLIC_HOST for its URLs.
 # Usage: n8n.sh run|start|stop|status|update
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
 
-# launchd label prefix shared by every system-tools agent; override per machine.
+# launchd label prefix shared by every agent from this repository; override per machine.
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="$LABEL_PREFIX.n8n"
 
@@ -37,20 +39,14 @@ wait_until_unloaded() {
 }
 
 cmd_run() {
-  if [ -f "$DIR/.env" ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . "$DIR/.env"
-    set +a
-  fi
+  st_source_env n8n
   MISSING=""
   for v in N8N_ENCRYPTION_KEY N8N_RUNNERS_AUTH_TOKEN; do
     eval "val=\${$v:-}"
     [ -n "$val" ] || MISSING="$MISSING $v"
   done
   if [ -n "$MISSING" ]; then
-    echo "missing required value(s):$MISSING" >&2
-    echo "export them, or copy .env.example to $DIR/.env and fill it in" >&2
+    for v in $MISSING; do st_missing "$v" n8n .env; done
     exit 78 # EX_CONFIG - do not hot-loop on a broken install
   fi
 
@@ -78,7 +74,7 @@ cmd_run() {
   export N8N_MFA_ENABLED=true
 
   # Webhook path prefix. Default `webhook` keeps existing workflow URLs
-  # working; set N8N_ENDPOINT_WEBHOOK to something unguessable in ./.env to
+  # working; set N8N_ENDPOINT_WEBHOOK to something unguessable in the config .env to
   # make path-guessing useless -- that changes every webhook URL, so any
   # already registered with a third party has to be re-registered.
   export N8N_ENDPOINT_WEBHOOK="${N8N_ENDPOINT_WEBHOOK:-webhook}"
@@ -91,8 +87,8 @@ cmd_run() {
   # the two base URLs are deliberately different. Pointing the editor at
   # the public host would break the UI, since that host serves no /rest.
   if [ -z "${N8N_PUBLIC_HOST:-}" ]; then
-    echo "N8N_PUBLIC_HOST not set (public host[:port] for webhook URLs;" >&2
-    echo "export it or add it to $DIR/.env — see README)" >&2
+    st_missing N8N_PUBLIC_HOST n8n .env
+    echo "  (public host[:port] for webhook URLs — see README)" >&2
     exit 78
   fi
   export WEBHOOK_URL="https://$N8N_PUBLIC_HOST/"
@@ -137,6 +133,7 @@ render_plist() {
   sed -e "s|@LABEL@|$(sed_escape "$LABEL")|g" \
       -e "s|@DIR@|$(sed_escape "$DIR")|g" \
       -e "s|@HOME@|$(sed_escape "$HOME")|g" \
+      -e "s|@CONFIG@|$(sed_escape "$SYSTEM_TOOLS_CONFIG")|g" \
       "$PLIST_TEMPLATE"
 }
 
@@ -270,7 +267,9 @@ usage: n8n.sh run|start|stop|status [lines]|update
                pulls the latest); refuses while the agent is loaded
 
 N8N_ENCRYPTION_KEY, N8N_RUNNERS_AUTH_TOKEN and N8N_PUBLIC_HOST come from
-./.env (see .env.example) or from the environment; ./.env is optional when
+<config>/n8n/.env (copy .env.example there; <config> is SYSTEM_TOOLS_CONFIG,
+default ~/.config/system, fixed into the agent at start) or from the
+environment; the file is optional when
 they are already exported. N8N_PUBLIC_HOST is host[:port] with no scheme --
 the tunnel fronting :5678 -- and `run` exits 78 when it is unset.
 

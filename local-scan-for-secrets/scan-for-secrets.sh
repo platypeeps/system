@@ -40,7 +40,8 @@ with the provider they identify.
                excluded in this mode (it is the key source, it would
                match itself), as are third-party checkouts and test
                fixtures (see CRITICAL_EXCLUDE_PATHS in this script, plus
-               S4S_EXTRA_CRITICAL_EXCLUDE_PATHS in scan-for-secrets.conf;
+               S4S_EXTRA_CRITICAL_EXCLUDE_PATHS in
+               <config>/scan-for-secrets/scan-for-secrets.conf;
                rg only — the grep fallback cannot path-exclude).
                File-size cap raised to 20M for the logs.
   mask         replace YOUR key values (shell env exports) with
@@ -243,15 +244,16 @@ CRITICAL_EXCLUDE_PATHS="
 .codex/process_manager
 repos/platypeeps/sd-ai-command-pack/tests
 "
-# Per-user additions live in a gitignored scan-for-secrets.conf beside this
-# script (copy scan-for-secrets.conf.example), or the file S4S_CONF names.
+# Per-user additions live in <config>/scan-for-secrets/scan-for-secrets.conf
+# (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system; copy
+# scan-for-secrets.conf.example there), or the file S4S_CONF names.
 # It is sourced as shell and may set:
 #   S4S_EXTRA_SECRETS_GLOBS         more sanctioned secrets files (-a scans them)
 #   S4S_EXTRA_CRITICAL_EXCLUDE_PATHS more third-party trees, one per line,
 #                                   relative to $HOME, skipped in critical mode
 # Missing is fine: the generic defaults above apply.
 S4S_SELF="$0"
-# Walk a symlink (e.g. from ~/bin) to the real script so the conf beside it is found.
+# Walk a symlink (e.g. from ~/bin) to the real script so ../lib is found.
 while [ -L "$S4S_SELF" ]; do
   s4s_link=$(readlink "$S4S_SELF")
   case "$s4s_link" in
@@ -259,7 +261,8 @@ while [ -L "$S4S_SELF" ]; do
     *)  S4S_SELF="$(dirname "$S4S_SELF")/$s4s_link" ;;
   esac
 done
-S4S_CONF="${S4S_CONF:-$(cd "$(dirname "$S4S_SELF")" && pwd)/scan-for-secrets.conf}"
+. "$(cd "$(dirname "$S4S_SELF")" && pwd)/../lib/config.sh"
+S4S_CONF="${S4S_CONF:-$(st_config_dir scan-for-secrets)/scan-for-secrets.conf}"
 S4S_EXTRA_SECRETS_GLOBS=""
 S4S_EXTRA_CRITICAL_EXCLUDE_PATHS=""
 if [ -f "$S4S_CONF" ]; then
