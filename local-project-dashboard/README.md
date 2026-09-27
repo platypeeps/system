@@ -77,7 +77,10 @@ Acknowledgement leaves notification delivery history and local task status separ
 what its default branch enforces, gap by gap, with the ids and sentences
 `sd-status` prints for one repository — `enforce_admins`, `required_checks`,
 `strict`, `required_not_produced`, `produced_not_required`, `reviews` — and
-the two merge-settings flags beside them. Nothing on the page calls GitHub: the
+the two merge-settings flags beside them. Two baseline flags follow (sd:1741):
+"Rulesets only" (`protection_source`) and "Requires ci" (`required_check`).
+A repository outside the operator's owners carries neither, and both cells
+read as not applicable. Nothing on the page calls GitHub: the
 rows are a nightly observation written by the shadow collector (`sd shadow
 sync`, through `sd_db.protection`), and the page reads them. Unprotected
 repositories sort first, then unknown, then protected. Unknown is not

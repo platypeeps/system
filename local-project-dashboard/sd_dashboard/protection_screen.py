@@ -23,7 +23,11 @@ GAPS = (
     ("reviews", "Reviews"),
     ("bypass", "Bypass"),
 )
-FLAGS = (("squash_message", "Squash message"), ("rebase_merge", "Rebase merge"))
+#: Read from the row's `merge_settings` list. The last two are the fleet
+#: baseline (sd:1741): a repository another owner holds carries neither, so
+#: its two cells read as not applicable.
+FLAGS = (("squash_message", "Squash message"), ("rebase_merge", "Rebase merge"),
+         ("protection_source", "Rulesets only"), ("required_check", "Requires ci"))
 
 #: Which gap columns a status can answer. `unprotected` has no admins rule to
 #: be exempt from, no checks to be strict about, no contexts to compare and

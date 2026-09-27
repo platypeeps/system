@@ -981,9 +981,26 @@ then names the rulesets still binding administrators and the ones not known
 either way, and says "every rule below" only when neither is left; the
 detail's `bypass` and `admin_bypass` lists carry the same scope — plus the
 `squash_message` and
-`rebase_merge` merge-settings flags; `produced_contexts` reads the registered
+`rebase_merge` merge-settings flags, and, for repositories whose owner is in
+`BASELINE_OWNERS`, the two baseline flags of sd:1741: `protection_source`,
+raised unless rulesets alone protect the branch, and `required_check`,
+raised unless `ci` is among the required contexts (other names may stand
+beside it); `produced_contexts` reads the registered
 checkout's `.github/workflows/*.yml` (files only, never git) for the checks
-it produces. A 200 protection object makes a row `protected`, and so does a
+it produces, and a job that a required job gates through `needs` in the
+same file is not `produced_not_required`. Gating needs more than `needs`,
+since a skipped required check passes. Only the aggregate that the
+sd:1741 plan's `design.md` prescribes gates, and it gates every need. Its
+whole `if:` is `!cancelled()` or `always()`. It has one `run: |` step with
+the `RESULTS` join of `needs.*.result` in that step's own `env:`, the
+job's only `RESULTS` assignment, and that step holds exactly the
+failing loop. It has no other `if:`, `uses:` or `shell:`, no
+`continue-on-error` other than `false`. The workflow's top-level keys are
+only `name`, `run-name`, `on`, `permissions`, `concurrency`, `env` and
+`jobs`, so no `defaults:` in any spelling. Any
+other shape reads as not gating, so the reader reports a gap rather than
+hide one. A name that several jobs produce is covered only by a required
+job that gates every one of them. A 200 protection object makes a row `protected`, and so does a
 ruleset whose rules gate a merge (`pull_request`, `required_status_checks`),
 read before the classic 404 is interpreted at all, since a ruleset-protected
 branch answers 404 there to its admin too. The rules are read beside a 200

@@ -15,15 +15,19 @@ UNPROTECTED_GAPS = [
     {"id": "required_checks", "gap": "no required status checks on main: a red PR still merges"},
     {"id": "reviews", "gap": "no pull-request review is required on main"},
 ]
+BASELINE_CLEAN = [
+    {"id": "protection_source", "value": "ruleset", "flagged": False, "gap": "the default branch is protected by ruleset"},
+    {"id": "required_check", "value": "ci", "flagged": False, "gap": "`ci` is not a required check"},
+]
 FLAGS_CLEAN = [
     {"id": "squash_message", "value": "PR_TITLE / PR_BODY", "flagged": False, "gap": "squash commits are built from PR_TITLE / PR_BODY"},
     {"id": "rebase_merge", "value": "disallowed", "flagged": False, "gap": "rebase merging is allowed"},
-]
+] + BASELINE_CLEAN
 FLAGS_FLAGGED = [
     {"id": "squash_message", "value": "COMMIT_OR_PR_TITLE / COMMIT_MESSAGES", "flagged": True,
      "gap": "squash commits are built from COMMIT_OR_PR_TITLE / COMMIT_MESSAGES, so a carrier branch's `wip:` subjects land"},
     {"id": "rebase_merge", "value": "allowed", "flagged": True, "gap": "rebase merging is allowed, which replays every branch commit"},
-]
+] + BASELINE_CLEAN
 
 
 class ProtectionScreen(ScreenCase):
@@ -95,15 +99,38 @@ class ProtectionScreen(ScreenCase):
         guarded = next(row for row in rows if "platypeeps/guarded" in row)
         self.assertIn("required checks are not strict", guarded)
         self.assertEqual(guarded.count(">GAP<"), 3)  # strict, and both merge flags
-        self.assertEqual(guarded.count(">ok<"), len(GAPS) - 1)  # every gap but strict
+        self.assertEqual(guarded.count(">ok<"), len(GAPS) - 1 + len(BASELINE_CLEAN))  # every gap but strict, the clean baseline
         self.assertIn("COMMIT_OR_PR_TITLE / COMMIT_MESSAGES", guarded)
         bare = next(row for row in rows if "platypeeps/bare" in row)
         self.assertIn("no branch protection at all", bare)
         self.assertEqual(bare.count(">GAP<"), 2)  # required_checks and reviews
-        self.assertEqual(bare.count(">ok<"), 2)  # the two clean merge flags
+        self.assertEqual(bare.count(">ok<"), len(FLAGS))  # every flag, each clean
         self.assertEqual(bare.count("protection-na"), len(GAPS) - len(APPLICABLE["unprotected"]))  # the gaps unprotected cannot answer
         # No hover-only affordance: the sentence is in a details element, not a title.
         self.assertNotIn("title=", guarded)
+
+    def test_the_two_baseline_flags_are_columns_and_another_owner_reads_not_applicable(self):
+        """sd:1741, S3: one column each, read from `merge_settings`."""
+        labels = dict(FLAGS)
+        self.assertEqual((labels["protection_source"], labels["required_check"]), ("Rulesets only", "Requires ci"))
+        upsert_repo(self.connection, "/repos/classic", remote="git@github.com:platypeeps/classic.git")
+        upsert_repo(self.connection, "/repos/product", remote="git@github.com:example-corp/product.git")
+        self.observe("/repos/classic", "protected", flags=FLAGS_CLEAN[:2] + [
+            {"id": "protection_source", "value": "classic", "flagged": True,
+             "gap": "the default branch is protected by classic, not by rulesets alone"},
+            {"id": "required_check", "value": "CI Result", "flagged": True, "gap": "`ci` is not a required check"}])
+        self.observe("/repos/product", "protected", flags=FLAGS_CLEAN[:2])
+        body = self.render("/protection")
+        self.assertIn(">Rulesets only<", body)
+        self.assertIn(">Requires ci<", body)
+        rows = self.rows(body)
+        classic = next(row for row in rows if "platypeeps/classic" in row)
+        self.assertEqual(classic.count(">GAP<"), 2)
+        self.assertIn("<code>classic</code> the default branch is protected by classic", classic)
+        self.assertIn("<code>CI Result</code>", classic)
+        product = next(row for row in rows if "example-corp/product" in row)
+        self.assertEqual(product.count("protection-na"), 2)
+        self.assertEqual(product.count(">ok<"), len(GAPS) + 2)  # every gap, both merge flags
 
     def test_reason_and_gap_text_are_escaped(self):
         upsert_repo(self.connection, "/repos/odd", remote="git@github.com:platypeeps/odd.git")

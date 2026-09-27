@@ -350,3 +350,28 @@ jobs:
               ;;
           esac
           CI
+
+  ci:
+    # The one check name the fleet baseline requires (sd:1741). An
+    # aggregate: its `needs` are exactly the legs the ruleset requires today,
+    # so it gates what they gate and nothing more. `route` stays required
+    # beside it (decision D2): it runs in another workflow, which `needs`
+    # cannot reach. The ruleset still requires the four legs by name until
+    # the plan's phase 2 swaps the list; adding this job changes no gate.
+    # `!cancelled()`, not `always()`, and never an `if:` that skips: GitHub
+    # counts a skipped required check as passing, so the step decides.
+    # Keep the step exactly as design.md writes it: `sd_db.protection`
+    # credits that shape only, and a test reads this job.
+    name: ci
+    needs: [system-native]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            [ "$result" = success ] || { echo "a needed job ended: $result"; exit 1; }
+          done

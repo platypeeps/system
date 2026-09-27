@@ -167,8 +167,8 @@ All four must hold. Any one failing means report, not merge.
    second, a path-filter or `changes` job can skip everything, after which the
    aggregate roll-up check passes having executed nothing. On at least one
    repository in this fleet that aggregate is the *only required check*, so
-   `gh pr checks` showed almost every job as `skipping` beside one green
-   `CI Result` and the PR read as fully tested. It was not.
+   `gh pr checks` showed almost every job as `skipping` beside the one green
+   aggregate check and the PR read as fully tested. It was not.
 
    So before merging, confirm at least one **substantive** job actually
    succeeded — a real lint, typecheck, test, or scan job, not an aggregate

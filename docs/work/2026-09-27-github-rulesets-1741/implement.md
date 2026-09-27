@@ -132,6 +132,15 @@ Named before the work. Each is a command whose failing output is stated.
 
 Decisions D1 to D5 in `prd.md`. Step 1 can start before them; steps 4 on cannot.
 
+## Progress
+
+- [x] S1 — `protection_source` and `required_check` in `sd_db.protection`
+- [x] S2 — the `needs` closure in `produced_contexts`
+- [x] S3 — two columns on the dashboard's Protection screen
+- [x] S4 — the `ci` aggregate in `system-native.yml`; no required check changed
+- [x] S5 — prose: `local-dependabot/ROUTINE.md`, `CLAUDE.md`, both READMEs
+- [ ] Step 2 onwards: pack tasks, preconditions, phases 1 and 2
+
 ## Log
 
 2026-09-27 — planned from sd:1741 and the consistency review of 2026-09-26.
@@ -149,3 +158,68 @@ checks the file under `~/repos/system`, so it cannot run before merge. After
 merge, from `~/repos/system`, run
 `sd work relink 1798 docs/work/2026-09-27-github-rulesets-1741/prd.md`.
 sd:1741, the task row, points here.
+
+2026-09-27 — S1 to S5 on branch `feat/rulesets-baseline-1741`. The operator
+accepted D1 to D5. No GitHub setting changed.
+
+- S1: `baseline_flags` in `sd_db.protection` appends the two flags to
+  `merge_settings`. The owner comes from the repository object, else the
+  remote. `BASELINE_OWNERS` holds `platypeeps` (`SD_BASELINE_OWNERS` adds more); another
+  owner's row carries neither flag (D1). Two readings go past the design's
+  words. An unprotected branch raises `protection_source` with value
+  `none`, because R7 asks for "not protected by rulesets alone". A classic
+  object that gates nothing reads `ruleset` after layering, yet still
+  stands; `observe` passes `classic_present`, so the flag stays raised.
+  `enrich` now rewrites `merge_settings` too, beside the gaps.
+- S2: `produced_contexts` returns a `Produced` set with `needed_by`.
+  `Partial` is its subclass. A plain set covers nothing, so callers that
+  pass one read as before. The local review (Codex, round 1) found that
+  `needs` alone proves nothing: `ci: needs: test` skips when `test` fails,
+  and a skipped required check passes. Accepted: a job now gates its needs
+  only when its `if:` runs it after a failure and it reads a need's result.
+  The walk continues only through such jobs. Any other `needs` edge is a
+  workflow note. Round 2 found that one result read covered every need.
+  Accepted: `needs.*.result` covers every need, `needs.x.result` covers
+  `x` alone. Round 3 found that `always() && needs.test.result ==
+  'success'` passed the search yet skips on failure. Accepted: the whole
+  `if:` must be `!cancelled()` or `always()`, and a read inside any `if:`
+  line proves nothing. This errs toward reporting the gap. Round 4
+  (advisory) found `run: echo ${{ needs.test.result }}`, which passes
+  whatever it prints. Accepted in part: the job must also hold a nonzero
+  `exit`. The reader parses YAML, not shell, so a job with every sign that
+  still never fails stays a known false negative. Round 5 (advisory) found
+  two more. A `continue-on-error: true` step or job swallows the failure.
+  Accepted: any `continue-on-error` other than `false` ends the gating. A
+  name produced in two workflows lost which job was gated. Accepted: a name
+  is covered only by a job that gates every producer of it. Round 6 found
+  `echo "${{ needs.test.result }}; exit 1"`, which shows both signs and
+  passes. Accepted, as the reviewer proposed: textual signs are dropped.
+  Only the design's `ci` template gates, matched line by line, and it gates
+  every need. The per-need reading of round 2 is gone with them. Another
+  aggregate shape, such as a G2 repository's today, reads as not gating
+  until phase 2 replaces it with the template. That errs toward a reported
+  gap. Round 7 put the join at job level and overrode `RESULTS` in the
+  step. Accepted: the join must be the job's only `RESULTS` assignment, in
+  the step's own `env:`.
+  The operator-approved extra pass wrote `"continue-on-error": true`,
+  a quoted key that YAML reads as the plain one and the line match missed.
+  Accepted, as the reviewer proposed: every line outside the loop must be
+  a template key in plain form, with no flow mapping, anchor, alias or tag.
+  Any other spelling reads as not gating, a reported gap.
+  That pass, on dd81109, also wrote a quoted `"defaults":` that sets every
+  step's shell to `bash -n`. Accepted: a workflow's top-level lines must be
+  known keys (`name`, `run-name`, `on`, `permissions`, `concurrency`,
+  `env`, `jobs`), plain or quoted, or `---`. Any other line reads as not
+  gating. The re-review of 923fdcf indented the whole workflow two spaces,
+  which YAML reads the same. Accepted: the top level is the smallest
+  indent in the file, not column 0.
+- S3: `FLAGS` gains "Rulesets only" and "Requires ci".
+- S4: the brief moved S4 into this pull request. `ci` needs
+  `system-native` and runs on `ubuntu-latest`. The ruleset still requires
+  `route` and the four legs; the swap is phase 2. Until then this repository
+  reports `ci` as `produced_not_required`.
+- S5: the `CI Result` example in `local-dependabot/ROUTINE.md` became "the
+  aggregate check".
+- Package: no version change. The pack installs `sd_db` at a pinned tag or
+  commit, so the nightly collector files the flags only after that pin
+  moves to this change's merge commit.

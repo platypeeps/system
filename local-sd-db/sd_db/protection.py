@@ -11,8 +11,9 @@ them. Nothing here is called from a request.
 **Same doctrine, same names.** The gaps are the ones `sd-status` names, with
 the same ids and, where practical, the same sentences: `enforce_admins`,
 `required_checks`, `strict`, `required_not_produced`,
-`produced_not_required`, `reviews`, `bypass`, and the two merge-settings
-flags `squash_message` and `rebase_merge`. `enforce_admins` is the classic
+`produced_not_required`, `reviews`, `bypass`, the two merge-settings
+flags `squash_message` and `rebase_merge`, and the two baseline flags
+`protection_source` and `required_check` (sd:1741, below). `enforce_admins` is the classic
 question -- are administrators themselves subject to the rules -- and a
 ruleset answers it only through the bypass actors that reach
 administrators: `OrganizationAdmin`, or the `RepositoryRole` that is admin.
@@ -76,6 +77,20 @@ it had. A rules read that fails beside a 200 keeps the classic result and
 names the fault in `rules_read_error`: layering can only add requirements,
 so classic alone is never reported stronger than it is.
 
+**The fleet baseline (sd:1741).** Two more flags ride in the same
+`merge_settings` list, for the repositories the operator owns
+(`BASELINE_OWNERS`): `protection_source`, raised unless rulesets alone
+protect the branch, and `required_check`, raised unless `ci` is among the
+required contexts -- present, not sole, so `route` or `body-lint` may stand
+beside it. Like the merge flags they are not gaps an acknowledgement can
+silence. A repository another owner holds carries neither, and the screen
+shows the two cells as not applicable. A job that a required job gates
+through `needs` in the same workflow file is covered by it, so an
+aggregate's inner jobs are not `produced_not_required`. `needs` alone does
+not gate: a failed need skips the job, and a skipped required check passes,
+so only the aggregate `design.md` prescribes counts, exactly as written
+there; it gates every need (`_gated_needs`).
+
 **A side observation, not the tracker.** `shadow_sync.sync` calls `sync`
 here after the contribution refresh and before it writes its own heartbeat.
 A failure here becomes `unknown` rows and its own heartbeat; it never fails
@@ -85,6 +100,7 @@ the tracker and never holds the watermark.
 from __future__ import annotations
 
 import itertools
+import os
 import json
 import re
 import sqlite3
@@ -106,6 +122,17 @@ GAP_IDS = (
     "bypass",
 )
 MERGE_FLAG_IDS = ("squash_message", "rebase_merge")
+#: The two fleet-baseline flags (sd:1741), reported in `merge_settings`
+#: beside the merge flags and, like them, never acknowledgeable.
+BASELINE_FLAG_IDS = ("protection_source", "required_check")
+#: The owners whose repositories the baseline applies to: the pack stamp's
+#: `OWNERS`. Another owner's repository (an employer's, decision D1 of
+#: sd:1741) carries neither baseline flag. `SD_BASELINE_OWNERS` replaces the
+#: set, space-separated, so a personal account can join it from the config.
+BASELINE_OWNERS = frozenset(
+    os.environ.get("SD_BASELINE_OWNERS", "platypeeps").lower().split())
+#: The one check name every owned repository requires (sd:1741, R3).
+BASELINE_CHECK = "ci"
 STATUSES = ("protected", "unprotected", "unknown")
 
 NOT_OBSERVED = "not yet observed"
@@ -246,7 +273,19 @@ _ITEM_RE = re.compile(r"^(?P<indent>\s*)-\s*(?P<rest>.*?)\s*$")
 PR_TRIGGERS = ("pull_request", "pull_request_target")
 
 
-class Partial(set):
+class Produced(set):
+    """The check names a repository produces, with `needed_by`: for each
+    name, the names of the jobs in the same workflow file that reach its job
+    through `needs` (sd:1741, S2). A required name among them covers it: an
+    aggregate such as `ci` gates its inner jobs, so they are not
+    `produced_not_required`. A plain set has no such map and covers nothing."""
+
+    def __init__(self, names=(), needed_by: dict[str, set[str]] | None = None):
+        super().__init__(names)
+        self.needed_by: dict[str, set[str]] = {name: set(by) for name, by in (needed_by or {}).items()}
+
+
+class Partial(Produced):
     """Produced names from workflows with a job whose names were not derived:
     a reusable workflow, an expression, an approximate matrix, an unreadable
     file. A required context missing from it may still be produced, so
@@ -424,6 +463,142 @@ def _jobs(lines: list[str]) -> list[tuple[str, list[str]]]:
     return []
 
 
+def _needs(body: list[str]) -> list[str]:
+    """The job ids a job's `needs` names: a scalar, an inline list or a block list."""
+    for offset, key, inline in _entries(body):
+        if key == "needs":
+            listed = _sequence(_children(body, offset), inline)
+            if listed:
+                return listed
+            value = _scalar(inline)
+            return [value] if value and _inline_list(inline) is None else []
+    return []
+
+
+#: The whole job conditions that still run the job after a job it needs
+#: failed. Exact, not searched: `always() && needs.x.result == 'success'`
+#: skips on the failure it names (review round 3), and a condition this
+#: cannot evaluate is not taken as proof.
+_RUNS_AFTER_FAILURE = frozenset({"!cancelled()", "always()"})
+#: A line that is a condition, a job's or a step's.
+_CONDITION_LINE = re.compile(r"^\s*(?:-\s*)?if:")
+#: A job or step that lets a failure pass; its value, unless `false`.
+_TOLERATES = re.compile(r"^\s*(?:-\s*)?continue-on-error:\s*(.*)$")
+#: The aggregate step `design.md` ("The `ci` job") prescribes, the only
+#: one this reader credits (review round 6): the results of every need,
+#: then a loop that fails on the first that is not `success`. Lines are
+#: compared with runs of whitespace collapsed; the echo text may vary.
+_AGGREGATE_ENV = re.compile(r"""^\s*(?:-\s*)?RESULTS:\s*\$\{\{\s*join\(\s*needs\.\*\.result\s*,\s*'\s'\s*\)\s*\}\}$""")
+_AGGREGATE_LOOP = (
+    re.compile(r"^for result in \$RESULTS; do$"),
+    re.compile(r"""^\[ "\$result" = success \] \|\| \{ echo "[^"`$\\;]*(?:\$result)?"; exit 1; \}$"""),
+    re.compile(r"^done$"),
+)
+_ASSIGNS_RESULTS = re.compile(r"\bRESULTS\s*[:=]")
+_RUN_BLOCK = re.compile(r"^\s*(?:-\s*)?run:\s*\|\s*$")
+#: The only line shapes the aggregate job may hold outside its loop: a
+#: template key in plain form, or an item of a block `needs:` list. A line
+#: match cannot follow YAML's other spellings of a key -- quoted
+#: (`"continue-on-error": true`, the extra review pass), explicit (`? k`),
+#: a flow mapping, a merge key -- so they are not read, they are refused.
+_TEMPLATE_LINE = re.compile(
+    r"^\s*(?:-\s+)?(?:(?:name|needs|if|runs-on|timeout-minutes|steps|env|run|continue-on-error|RESULTS):(?:\s.*)?"
+    r"|[A-Za-z0-9_.-]+)$")
+#: `${{ }}` spans, whose text GitHub evaluates and YAML does not read.
+_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+#: YAML syntax that can add or alias a key once expressions are removed:
+#: flow mappings, anchors, aliases, tags.
+_YAML_SYNTAX = re.compile(r"[{}&*!]")
+#: The workflow keys that leave the aggregate as written, plain or quoted
+#: (`"on":` is common), and a document start. Any other top-level line --
+#: `defaults:` in any spelling (quoted, the extra pass on dd81109), an
+#: explicit or merge key -- can change what every step runs, so it is
+#: refused, not read.
+_WORKFLOW_LINE = re.compile(
+    r"""^(?:---|(?P<q>["']?)(?:name|run-name|on|permissions|concurrency|env|jobs)(?P=q):(?:\s.*)?)$""")
+#: Keys that change what a step runs or which steps run.
+_STEP_KEYS = re.compile(r"^\s*(?:-\s*)?(run|uses|shell):")
+
+
+def _condition(value: str | None) -> str:
+    """A job's `if:` without quotes, `${{ }}` and whitespace."""
+    text = _scalar(value or "")
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2]
+    return "".join(text.split())
+
+
+def _gated_needs(body: list[str], needs: list[str]) -> list[str]:
+    """The jobs among `needs` whose failure this job makes its own.
+
+    `needs` alone does not: a failed need skips the job, and GitHub counts a
+    skipped required check as passing (sd:1741 review). Textual signs of a
+    result check -- a result read, an `exit` -- did not hold either: `echo
+    "${{ needs.x.result }}; exit 1"` shows both and passes (review rounds
+    1 to 6). So only the design's aggregate is credited, and then for every
+    need: the whole job `if:` is `!cancelled()` or `always()`, no other
+    `if:` and no `continue-on-error` other than `false` in the job, one
+    step that is a `run: |` block, no `uses:` or `shell:`, the
+    `RESULTS` join of `needs.*.result` in its own `env:` (round 7), every
+    other line a template key in plain form (the extra pass), and the block is exactly the loop
+    `_AGGREGATE_LOOP` matches. Any other aggregate reads as not gating,
+    which reports a gap that is not there rather than hide one that is. A
+    workflow-level `defaults:` is refused by the caller.
+    """
+    if _condition(_field(body, "if")) not in _RUNS_AFTER_FAILURE:
+        return []
+    loop = {child for start, line in enumerate(body) if _RUN_BLOCK.match(line)
+            for child in range(start + 1, start + 1 + len(_children(body, start)))}
+    for index, line in enumerate(body):
+        if index in loop:
+            continue
+        if not _TEMPLATE_LINE.match(line) or _YAML_SYNTAX.search(_EXPRESSION.sub("", line)):
+            return []
+    if sum(1 for line in body if _CONDITION_LINE.match(line)) != 1:
+        return []
+    if any((match := _TOLERATES.match(line)) and _scalar(match.group(1)).lower() != "false" for line in body):
+        return []
+    keys = [index for index, line in enumerate(body) if _STEP_KEYS.match(line)]
+    if len(keys) != 1 or not _RUN_BLOCK.match(body[keys[0]]):
+        return []
+    # One assignment of RESULTS in the job, the join, in the step's own
+    # `env:` (deeper than its `run:`), so no job-level value or override
+    # replaces it (review round 7). A step's env wins over a workflow's.
+    assigns = [line for line in body if _ASSIGNS_RESULTS.search(line)]
+    if len(assigns) != 1 or not _AGGREGATE_ENV.match(assigns[0]):
+        return []
+    if _indent(assigns[0]) <= _indent(body[keys[0]]):
+        return []
+    block = [" ".join(line.split()) for line in _children(body, keys[0])]
+    if len(block) != len(_AGGREGATE_LOOP):
+        return []
+    if not all(pattern.match(line) for pattern, line in zip(_AGGREGATE_LOOP, block)):
+        return []
+    return list(needs)
+
+
+def _needed_by(jobs: dict[str, list[str]], names: dict[str, set[str]]) -> dict[str, set[str]]:
+    """For each job id, the names of the jobs that gate it through
+    `needs`, transitively, within one workflow file. `jobs` maps
+    each job to the needs `_gated_needs` accepts, so a walk follows only
+    those edges: a job that merely needs another is skipped by its
+    failure, and that skip hides it. A cycle, which GitHub rejects anyway,
+    ends the walk rather than looping."""
+    found: dict[str, set[str]] = {}
+    for outer, direct in jobs.items():
+        seen: set[str] = set()
+        stack = list(direct)
+        while stack:
+            inner = stack.pop()
+            if inner in seen or inner == outer:
+                continue
+            seen.add(inner)
+            stack.extend(jobs.get(inner, []))
+        for inner in seen:
+            found.setdefault(inner, set()).update(names.get(outer, set()))
+    return found
+
+
 def _job_names(
     filename: str, job_id: str, body: list[str], produced: set[str], notes: list[str]
 ) -> bool:
@@ -489,6 +664,9 @@ def produced_contexts(root: Path | str) -> tuple[set[str] | None, list[str]]:
     except OSError as error:
         return None, [f".github/workflows is unreadable ({error})"]
     complete = True
+    # Per name, one set of gating names per job that produces it: a name
+    # two jobs produce is covered only by what gates both (review round 5).
+    producers: dict[str, list[set[str]]] = {}
     for path in paths:
         try:
             lines = _significant(path.read_text(encoding="utf-8", errors="replace"))
@@ -499,9 +677,37 @@ def produced_contexts(root: Path | str) -> tuple[set[str] | None, list[str]]:
         triggers = _triggers(lines)
         if triggers and not triggers & set(PR_TRIGGERS):
             continue
-        for job_id, body in _jobs(lines):
-            complete = _job_names(path.name, job_id, body, produced, notes) and complete
-    return (produced if complete else Partial(produced)), notes
+        jobs = _jobs(lines)
+        names: dict[str, set[str]] = {}
+        for job_id, body in jobs:
+            names[job_id] = set()
+            complete = _job_names(path.name, job_id, body, names[job_id], notes) and complete
+            produced |= names[job_id]
+        gating: dict[str, list[str]] = {}
+        # A workflow-level `defaults:` can change every step's shell, which
+        # the aggregate template does not survive (review round 6). Only
+        # plain known keys pass, so no other spelling of it gets through.
+        # The top level is the smallest indent, not column 0: YAML reads a
+        # workflow indented as a whole the same (re-review of 923fdcf).
+        base = min((_indent(line) for line in lines), default=0)
+        defaults = any(_indent(line) == base and not _WORKFLOW_LINE.match(line[base:])
+                       for line in lines)
+        for job_id, body in jobs:
+            needs = _needs(body)
+            gating[job_id] = [] if defaults else _gated_needs(body, needs)
+            ungated = [need for need in needs if need not in gating[job_id]]
+            if ungated:
+                notes.append(
+                    f"{path.name}: job {job_id} needs {', '.join(ungated)} but is not the aggregate "
+                    "design.md prescribes, so it is not counted as gating them"
+                )
+        gated_by = _needed_by(gating, names)
+        for job_id, job_names in names.items():
+            for name in job_names:
+                producers.setdefault(name, []).append(gated_by.get(job_id, set()))
+    needed_by = {name: set.intersection(*sets) for name, sets in producers.items()}
+    needed_by = {name: by for name, by in needed_by.items() if by}
+    return (Produced if complete else Partial)(produced, needed_by), notes
 
 
 # ---------------------------------------------------------- the classification
@@ -600,7 +806,10 @@ def _protection_gaps(
     else:
         # A partial set cannot say a context is produced nowhere (sd:1204).
         missing = [] if isinstance(produced, Partial) else sorted(set(contexts) - produced)
-        extra = sorted(produced - set(contexts))
+        # A job a required job needs is gated through it (sd:1741, S2).
+        needed_by = getattr(produced, "needed_by", {})
+        extra = sorted(name for name in produced - set(contexts)
+                       if not needed_by.get(name, set()) & set(contexts))
     if missing:
         gaps.append(
             {
@@ -704,12 +913,65 @@ def merge_settings(repo: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _owner(repo: dict[str, Any], fallback: str | None) -> str | None:
+    """The repository's owner as GitHub names it, else the remote's."""
+    owner = repo.get("owner")
+    login = owner.get("login") if isinstance(owner, dict) else None
+    return str(login) if login else fallback
+
+
+def baseline_flags(protection: dict[str, Any] | None, owner: str | None,
+                   classic_present: bool | None) -> list[dict[str, Any]]:
+    """The two fleet-baseline flags (sd:1741, S1), or none for a repository
+    outside `BASELINE_OWNERS`: its baseline is not this fleet's to set.
+
+    `protection_source` is raised unless rulesets alone protect the branch:
+    classic, combined, none at all, or a classic object that `_combine`
+    left out because it gates nothing but that still stands. `required_check`
+    is raised unless `BASELINE_CHECK` is among the required contexts; other
+    names may stand beside it (decision D5).
+    """
+    if (owner or "").lower() not in BASELINE_OWNERS:
+        return []
+    if protection is None:
+        source = "none"
+    else:
+        source = str(protection.get("source") or CLASSIC_SOURCE)
+        if source == RULESET_SOURCE and classic_present:
+            source = f"{RULESET_SOURCE}, beside a classic object"
+    checks = (protection or {}).get("required_status_checks")
+    contexts = [str(name) for name in checks.get("contexts") or []] if isinstance(checks, dict) else []
+    return [
+        {
+            "id": "protection_source",
+            "value": source,
+            "flagged": source != RULESET_SOURCE,
+            "gap": (
+                f"the default branch is protected by {source}, not by rulesets alone; "
+                "the fleet baseline is one repository ruleset and no classic protection"
+            ),
+        },
+        {
+            "id": "required_check",
+            "value": ", ".join(contexts) or "none",
+            "flagged": BASELINE_CHECK not in contexts,
+            "gap": (
+                f"`{BASELINE_CHECK}` is not a required check; the fleet baseline requires "
+                f"one aggregate check named `{BASELINE_CHECK}`, and other names may stand beside it"
+            ),
+        },
+    ]
+
+
 def classify(
     protection: dict[str, Any] | None,
     repo: dict[str, Any],
     default_branch: str,
     produced: set[str] | None,
     notes: list[str],
+    *,
+    owner: str | None = None,
+    classic_present: bool | None = None,
 ) -> dict[str, Any]:
     """Pure. `protection` is the protection object, or None for a 404.
 
@@ -721,8 +983,13 @@ def classify(
     `strict` are not gaps there -- there is no rule for admins to be exempt
     from and no check to be strict about -- and the screen shows them as not
     applicable rather than as passing.
+
+    `merge_settings` also carries `baseline_flags`, judged for the owner the
+    repository object names, else `owner` (the remote's). `classic_present`
+    says a classic object stood even where the layered result reads
+    `ruleset`.
     """
-    settings = merge_settings(repo)
+    settings = merge_settings(repo) + baseline_flags(protection, _owner(repo, owner), classic_present)
     if protection is None:
         gaps = [
             {
@@ -1406,7 +1673,8 @@ def observe(client, path: str, owner: str, name: str, *, observed_at: str) -> di
         # right type can still carry a nested value classify cannot read,
         # and that is the malformed body the module docstring files as
         # unknown (sd:1359). Outside, it raised through `sync`.
-        result = classify(protection, repo, default_branch, produced, notes)
+        result = classify(protection, repo, default_branch, produced, notes,
+                          owner=owner, classic_present=classic is not None)
     except MALFORMED as error:
         return _unknown(path, observed_at, _malformed(error),
                         default_branch=default_branch, requests=client.budget.requests - before)
@@ -1445,10 +1713,12 @@ def enrich(client, row: dict[str, Any]) -> None:
     entries = {ruleset_id: _ruleset_entry(client, pending["owner"], pending["name"], ruleset_id)
                for ruleset_id in _cited(pending["rules"])}
     protection = _layered(pending["classic"], pending["rules"], entries)
-    result = classify(protection, pending["repo"], pending["default_branch"], pending["produced"], pending["notes"])
+    result = classify(protection, pending["repo"], pending["default_branch"], pending["produced"], pending["notes"],
+                      owner=pending["owner"], classic_present=pending["classic"] is not None)
     row["status"] = result["status"]
     row["body"]["gaps"] = result["gaps"]
     row["body"]["detail"] = result["detail"]
+    row["body"]["merge_settings"] = result["merge_settings"]
     row["body"]["requests"] += client.budget.requests - before
 
 

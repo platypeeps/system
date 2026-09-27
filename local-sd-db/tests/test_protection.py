@@ -962,6 +962,339 @@ class ClassicAndRulesets(SyncCase):
         self.assertEqual(body["detail"]["rules_read_error"], "API HTTP 403; retry on a later collection")
 
 
+#: The fleet baseline's ruleset (sd:1741, design "Target rulesets"): the four
+#: rules, `ci` pinned to GitHub Actions, strict, no bypass.
+CI_RULES = [
+    {"type": "deletion", "ruleset_id": 42},
+    {"type": "non_fast_forward", "ruleset_id": 42},
+    {"type": "pull_request", "ruleset_id": 42, "parameters": {"required_approving_review_count": 0}},
+    {"type": "required_status_checks", "ruleset_id": 42,
+     "parameters": {"strict_required_status_checks_policy": True,
+                    "required_status_checks": [{"context": "ci", "integration_id": 15368}]}},
+]
+#: The step of the design's `ci` template: fail unless every need succeeded.
+PROPAGATE = ("    steps:\n      - name: Every needed job succeeded\n        env:\n"
+             "          RESULTS: ${{ join(needs.*.result, ' ') }}\n        run: |\n"
+             "          for result in $RESULTS; do\n"
+             "            [ \"$result\" = success ] || { echo \"a needed job ended: $result\"; exit 1; }\n"
+             "          done\n")
+#: An aggregate `ci` that needs every other job in its file.
+CI_WORKFLOW = ("on: [pull_request]\njobs:\n  lint:\n    runs-on: x\n"
+               "  unittest:\n    strategy:\n      matrix:\n        py: ['3.14']\n    runs-on: x\n"
+               "  ci:\n    name: ci\n    needs: [lint, unittest]\n    if: ${{ !cancelled() }}\n    runs-on: x\n"
+               + PROPAGATE)
+NO_CLASSIC = Response(404, {}, '{"message": "Branch not protected"}')
+
+
+class Baseline(SyncCase):
+    """The two fleet-baseline flags and the `needs` closure (sd:1741, S1 and S2)."""
+
+    def observe(self, name, classic, rules, *, owner="platypeeps", workflow=CI_WORKFLOW):
+        path = self.register(name, f"https://github.com/{owner}/{name}.git", workflow)
+        rows = {f"repos/{owner}/{name}": repo_payload(owner={"login": owner}),
+                f"repos/{owner}/{name}/branches/{MAIN}/protection": classic,
+                protection.rules_path(owner, name, MAIN): rules,
+                f"repos/{owner}/{name}/rulesets/42": RULESET_42}
+        client, _ = self.client(rows)
+        protection.sync(self.db, client=client, observed_at=AT)
+        row = self.stored()[path]
+        body = json.loads(row["body"])
+        return row, body, {flag["id"]: flag for flag in body["merge_settings"]}
+
+    def test_a_ruleset_only_branch_requiring_ci_clears_both_flags(self):
+        row, body, flags = self.observe("target", NO_CLASSIC, CI_RULES)
+        self.assertEqual(row["status"], "protected")
+        self.assertEqual(body["detail"]["source"], "ruleset")
+        self.assertEqual((flags["protection_source"]["flagged"], flags["protection_source"]["value"]),
+                         (False, "ruleset"))
+        self.assertEqual((flags["required_check"]["flagged"], flags["required_check"]["value"]), (False, "ci"))
+
+    def test_classic_and_combined_protection_flag_the_source(self):
+        classic = full_protection(required_status_checks={"strict": True, "contexts": ["ci"]})
+        for name, rules, source in (("classic", [], "classic"), ("combined", CI_RULES, "combined")):
+            with self.subTest(source=source):
+                _, _, flags = self.observe(name, classic, rules)
+                self.assertTrue(flags["protection_source"]["flagged"])
+                self.assertEqual(flags["protection_source"]["value"], source)
+                self.assertFalse(flags["required_check"]["flagged"])
+
+    def test_a_classic_object_that_gates_nothing_still_flags_the_source(self):
+        """`_combine` reads such a branch as `ruleset`; the classic object
+        still stands, and the baseline is rulesets alone."""
+        _, body, flags = self.observe("leftover", {"url": "x", "allow_deletions": {"enabled": False}}, CI_RULES)
+        self.assertEqual(body["detail"]["source"], "ruleset")
+        self.assertTrue(flags["protection_source"]["flagged"])
+        self.assertEqual(flags["protection_source"]["value"], "ruleset, beside a classic object")
+
+    def test_required_ci_result_flags_the_check_and_ci_beside_route_does_not(self):
+        """Decision D5: `ci` present, not sole."""
+        result = [dict(rule) for rule in CI_RULES]
+        result[3] = {"type": "required_status_checks", "ruleset_id": 42,
+                     "parameters": {"strict_required_status_checks_policy": True,
+                                    "required_status_checks": [{"context": "CI Result"}]}}
+        _, _, flags = self.observe("aggregate", NO_CLASSIC, result)
+        self.assertTrue(flags["required_check"]["flagged"])
+        self.assertEqual(flags["required_check"]["value"], "CI Result")
+        both = [dict(rule) for rule in CI_RULES]
+        both[3] = {"type": "required_status_checks", "ruleset_id": 42,
+                   "parameters": {"strict_required_status_checks_policy": False,
+                                  "required_status_checks": [{"context": "ci"}, {"context": "route"}]}}
+        _, _, flags = self.observe("system", NO_CLASSIC, both)
+        self.assertFalse(flags["required_check"]["flagged"])
+        self.assertEqual(flags["required_check"]["value"], "ci, route")
+
+    def test_an_unprotected_branch_flags_both(self):
+        _, _, flags = self.observe("bare", NO_CLASSIC, [])
+        self.assertEqual({key: (flag["flagged"], flag["value"]) for key, flag in flags.items()
+                          if key in protection.BASELINE_FLAG_IDS},
+                         {"protection_source": (True, "none"), "required_check": (True, "none")})
+
+    def test_another_owners_repository_carries_neither_flag(self):
+        """Decision D1: the example-corp repositories are an exception."""
+        _, _, flags = self.observe("corp_benchmark", full_protection(), [], owner="example-corp")
+        self.assertEqual(sorted(flags), ["rebase_merge", "squash_message"])
+
+    def test_the_repository_objects_owner_wins_over_the_remotes(self):
+        result = protection.classify(full_protection(), repo_payload(owner={"login": "example-corp"}), MAIN,
+                                     {"CI Result"}, [], owner="platypeeps")
+        self.assertEqual([flag["id"] for flag in result["merge_settings"]], ["squash_message", "rebase_merge"])
+        owned = protection.classify(full_protection(), repo_payload(), MAIN, {"CI Result"}, [], owner="Platypeeps")
+        self.assertEqual([flag["id"] for flag in owned["merge_settings"]],
+                         ["squash_message", "rebase_merge", "protection_source", "required_check"])
+
+    def test_an_aggregate_whose_needs_cover_every_job_reports_no_produced_not_required(self):
+        _, body, _ = self.observe("covered", NO_CLASSIC, CI_RULES)
+        self.assertEqual(body["detail"]["produced_contexts"], ["ci", "lint", "unittest (3.14)"])
+        self.assertEqual(body["detail"]["produced_not_required"], [])
+        self.assertNotIn("produced_not_required", [gap["id"] for gap in body["gaps"]])
+
+    def test_a_job_outside_the_closure_still_reports_it(self):
+        workflow = CI_WORKFLOW + "  docs:\n    runs-on: x\n"
+        _, body, _ = self.observe("outside", NO_CLASSIC, CI_RULES, workflow=workflow)
+        self.assertEqual(body["detail"]["produced_not_required"], ["docs"])
+
+
+class NeedsClosure(unittest.TestCase):
+    """`produced_contexts` records which jobs reach each name through `needs`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / ".github" / "workflows").mkdir(parents=True)
+
+    def produced(self, **files):
+        for name, text in files.items():
+            (self.root / ".github" / "workflows" / f"{name}.yml").write_text(text, encoding="utf-8")
+        return protection.produced_contexts(self.root)[0]
+
+    def classify(self, produced, notes=()):
+        return protection.classify(full_protection(required_status_checks={"strict": True, "contexts": ["ci"]}),
+                                   repo_payload(), MAIN, produced, list(notes))
+
+    def test_scalar_block_and_transitive_needs_and_no_reach_across_files(self):
+        produced = self.produced(
+            a="on: [pull_request]\njobs:\n  build:\n    runs-on: x\n"
+              "  test:\n    needs: build\n    if: always()\n    runs-on: x\n" + PROPAGATE +
+              "  gate:\n    name: ci\n    needs:\n      - test\n    if: ${{ !cancelled() }}\n    runs-on: x\n"
+              + PROPAGATE,
+            b="on: [pull_request]\njobs:\n  other:\n    runs-on: x\n")
+        self.assertEqual(produced.needed_by, {"build": {"test", "ci"}, "test": {"ci"}})
+        self.assertEqual(self.classify(produced)["detail"]["produced_not_required"], ["other"])
+
+    def test_a_job_that_only_needs_another_does_not_gate_it(self):
+        """sd:1741 review: `ci: needs: test` skips when `test` fails, and a
+        skipped required check passes, so `test` is not gated by `ci`. Nor
+        is a job that runs after the failure but never reads the result."""
+        for name, extra in (("plain", ""), ("ignores", "    if: ${{ !cancelled() }}\n    steps:\n      - run: 'true'\n")):
+            with self.subTest(name=name):
+                (self.root / ".github" / "workflows" / "a.yml").write_text(
+                    "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n"
+                    "  ci:\n    needs: test\n    runs-on: x\n" + extra, encoding="utf-8")
+                produced, notes = protection.produced_contexts(self.root)
+                self.assertEqual(produced.needed_by, {})
+                self.assertEqual(self.classify(produced, notes)["detail"]["produced_not_required"], ["test"])
+                self.assertIn("a.yml: job ci needs test but is not the aggregate", " ".join(notes))
+
+    def test_a_per_need_result_check_is_not_the_aggregate(self):
+        """sd:1741 review rounds 2 and 6: a step that checks `needs.lint.result`
+        says nothing of `test`, and no textual check is taken as proof."""
+        (self.root / ".github" / "workflows" / "a.yml").write_text(
+            "on: [pull_request]\njobs:\n  lint:\n    runs-on: x\n  test:\n    runs-on: x\n"
+            "  ci:\n    needs: [lint, test]\n    if: always()\n    runs-on: x\n"
+            "    steps:\n      - run: test ${{ needs.lint.result }} = success || exit 1\n", encoding="utf-8")
+        produced, notes = protection.produced_contexts(self.root)
+        self.assertEqual(produced.needed_by, {})
+        self.assertEqual(self.classify(produced, notes)["detail"]["produced_not_required"], ["lint", "test"])
+        self.assertIn("a.yml: job ci needs lint, test but is not the aggregate", " ".join(notes))
+
+    def test_a_condition_that_skips_on_the_failure_does_not_gate(self):
+        """sd:1741 review round 3: `always() && needs.test.result == 'success'`
+        skips `ci` when `test` fails. Only a whole `!cancelled()` or
+        `always()` runs it, and a step's `if:` reading a result proves nothing."""
+        step_if = PROPAGATE.replace("      - name:", "      - if: needs.test.result == 'failure'\n        name:")
+        for name, condition, steps in (
+                ("conjunction", "${{ always() && needs.test.result == 'success' }}", PROPAGATE),
+                ("failure", "failure()", PROPAGATE),
+                ("step-if", "${{ !cancelled() }}", step_if)):
+            with self.subTest(name=name):
+                (self.root / ".github" / "workflows" / "a.yml").write_text(
+                    "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n"
+                    f"  ci:\n    needs: test\n    if: {condition}\n    runs-on: x\n" + steps, encoding="utf-8")
+                produced, notes = protection.produced_contexts(self.root)
+                self.assertEqual(produced.needed_by, {})
+                self.assertEqual(self.classify(produced, notes)["detail"]["produced_not_required"], ["test"])
+        for condition in ("always()", "'${{ always() }}'", "${{ ! cancelled() }}"):
+            with self.subTest(condition=condition):
+                (self.root / ".github" / "workflows" / "a.yml").write_text(
+                    "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n"
+                    f"  ci:\n    needs: test\n    if: {condition}\n    runs-on: x\n" + PROPAGATE, encoding="utf-8")
+                self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {"test": {"ci"}})
+
+    def test_a_job_with_no_step_that_can_fail_does_not_gate(self):
+        """sd:1741 review round 4: `echo ${{ needs.test.result }}` reads the
+        result and passes whatever it prints."""
+        produced = self.produced(a="on: [pull_request]\njobs:\n  test:\n    runs-on: x\n"
+                                   "  ci:\n    needs: test\n    if: always()\n    runs-on: x\n"
+                                   "    steps:\n      - run: echo ${{ needs.test.result }}\n")
+        self.assertEqual(produced.needed_by, {})
+        self.assertEqual(self.classify(produced)["detail"]["produced_not_required"], ["test"])
+
+    def test_continue_on_error_gates_nothing(self):
+        """sd:1741 review round 5: a tolerated failure passes the job."""
+        for name, job_level, step_level in (("step", "", "        continue-on-error: true\n"),
+                                            ("job", "    continue-on-error: ${{ true }}\n", "")):
+            with self.subTest(name=name):
+                (self.root / ".github" / "workflows" / "a.yml").write_text(
+                    "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n"
+                    "  ci:\n    needs: test\n    if: always()\n    runs-on: x\n" + job_level
+                    + PROPAGATE + step_level, encoding="utf-8")
+                self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {})
+        (self.root / ".github" / "workflows" / "a.yml").write_text(
+            "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n"
+            "  ci:\n    needs: test\n    if: always()\n    runs-on: x\n" + PROPAGATE
+            + "        continue-on-error: false\n", encoding="utf-8")
+        self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {"test": {"ci"}})
+
+    def test_only_the_design_aggregate_gates(self):
+        """sd:1741 review round 6: `echo "${{ needs.test.result }}; exit 1"`
+        shows a result read and an exit, and passes. Textual signs are not
+        proof; only the aggregate `design.md` prescribes is credited."""
+        head = "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n  ci:\n    needs: test\n    if: always()\n    runs-on: x\n"
+        loop = '[ "$result" = success ] || { echo "a needed job ended: $result"; exit 1; }'
+        cases = {
+            "echoed exit": head + '    steps:\n      - run: echo "${{ needs.test.result }}; exit 1"\n',
+            "loop that exits 0": head + PROPAGATE.replace("exit 1;", "exit 0;"),
+            "loop then true": head + PROPAGATE + "          true\n",
+            "one-line run": head + PROPAGATE.replace("run: |", "run: exit 1").replace(loop, "echo"),
+            "another shell": head + PROPAGATE + "        shell: python\n",
+            "another step": head + PROPAGATE + "      - uses: actions/checkout@v4\n",
+            "one need's result": head + PROPAGATE.replace("needs.*.result", "needs.test.result"),
+            "workflow defaults": "defaults:\n  run:\n    shell: python\n" + head + PROPAGATE,
+            # Round 7: the join at job level, overridden in the step.
+            "overridden in the step": head + "    env:\n      RESULTS: ${{ join(needs.*.result, ' ') }}\n"
+            + PROPAGATE.replace("RESULTS: ${{ join(needs.*.result, ' ') }}", "RESULTS: success"),
+            "join at job level only": head + "    env:\n      RESULTS: ${{ join(needs.*.result, ' ') }}\n"
+            + PROPAGATE.replace("        env:\n          RESULTS: ${{ join(needs.*.result, ' ') }}\n", ""),
+        }
+        for name, workflow in cases.items():
+            with self.subTest(name=name):
+                (self.root / ".github" / "workflows" / "a.yml").write_text(workflow, encoding="utf-8")
+                produced, notes = protection.produced_contexts(self.root)
+                self.assertEqual(produced.needed_by, {})
+                self.assertEqual(self.classify(produced, notes)["detail"]["produced_not_required"], ["test"])
+        (self.root / ".github" / "workflows" / "a.yml").write_text(head + PROPAGATE, encoding="utf-8")
+        self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {"test": {"ci"}})
+
+    def test_only_plain_workflow_keys_leave_the_aggregate_gating(self):
+        """sd:1741 extra review pass on dd81109: a quoted `"defaults":` sets
+        every step's shell, and the `defaults:` line match missed it. A
+        workflow's top-level keys must each be a known key, plain or quoted."""
+        head = "jobs:\n  test:\n    runs-on: x\n  ci:\n    needs: test\n    if: always()\n    runs-on: x\n"
+        shell = "\n  run:\n    shell: bash -n {0}\n"
+        cases = {
+            "double-quoted defaults": '"defaults":' + shell,
+            "single-quoted defaults": "'defaults':" + shell,
+            "explicit key": "? defaults\n:" + shell,
+            "merge key": "<<: *base\n",
+            "unknown key": "x-defaults:" + shell,
+            # The re-review of 923fdcf: the whole workflow indented two spaces.
+            "indented workflow": "  defaults:" + shell.replace("\n", "\n  ").rstrip(" "),
+        }
+        for name, prefix in cases.items():
+            with self.subTest(name=name):
+                text = "on: [pull_request]\n" + prefix + head + PROPAGATE
+                if name == "indented workflow":
+                    text = "".join("  " + line for line in ("on: [pull_request]\n" + head + PROPAGATE)
+                                   .splitlines(keepends=True))
+                    text = prefix + text
+                (self.root / ".github" / "workflows" / "a.yml").write_text(text, encoding="utf-8")
+                produced, notes = protection.produced_contexts(self.root)
+                self.assertEqual(produced.needed_by, {})
+                self.assertEqual(self.classify(produced, notes)["detail"]["produced_not_required"], ["test"])
+        plain = ("---\nname: CI\nrun-name: ci\n\"on\":\n  pull_request:\npermissions: {}\n"
+                 "concurrency: ci\nenv:\n  A: 1\n")
+        (self.root / ".github" / "workflows" / "a.yml").write_text(plain + head + PROPAGATE, encoding="utf-8")
+        self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {"test": {"ci"}})
+
+    def test_only_the_template_keys_in_plain_form_gate(self):
+        """sd:1741 extra review pass: `"continue-on-error": true` is the key
+        a line match for `continue-on-error:` misses, and YAML reads it as
+        the plain key. Every line outside the loop must be a template key in
+        plain form, so any other spelling reads as not gating."""
+        head = "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n  ci:\n    needs: test\n    if: always()\n    runs-on: x\n"
+        cases = {
+            "double-quoted key": head + PROPAGATE + '        "continue-on-error": true\n',
+            "single-quoted key": head + PROPAGATE + "        'continue-on-error': true\n",
+            "quoted key at job level": head + "    \"continue-on-error\": true\n" + PROPAGATE,
+            "flow mapping": head + PROPAGATE + "      - {run: 'true', continue-on-error: true}\n",
+            "merge key": head + "    <<: *tolerant\n" + PROPAGATE,
+            "anchor": head + "    runs-on: &os x\n" + PROPAGATE,
+            "tag": head + PROPAGATE.replace("RESULTS: ${{", "RESULTS: !!str ${{"),
+            "unknown job key": head + "    strategy:\n      fail-fast: false\n" + PROPAGATE,
+            "explicit key": head + PROPAGATE + "        ? continue-on-error\n        : true\n",
+        }
+        for name, workflow in cases.items():
+            with self.subTest(name=name):
+                (self.root / ".github" / "workflows" / "a.yml").write_text(workflow, encoding="utf-8")
+                produced, notes = protection.produced_contexts(self.root)
+                self.assertEqual(produced.needed_by, {})
+                self.assertEqual(self.classify(produced, notes)["detail"]["produced_not_required"], ["test"])
+        allowed = head.replace("    runs-on: x\n  ci:", "    runs-on: x\n  ci:\n    name: ci") + "    timeout-minutes: 5\n" + PROPAGATE
+        (self.root / ".github" / "workflows" / "a.yml").write_text(allowed, encoding="utf-8")
+        self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {"test": {"ci"}})
+
+    def test_this_repositorys_ci_job_is_the_aggregate(self):
+        """The `ci` job S4 adds must be the shape this reader credits."""
+        workflow = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "system-native.yml"
+        jobs = dict(protection._jobs(protection._significant(workflow.read_text(encoding="utf-8"))))
+        self.assertEqual(protection._gated_needs(jobs["ci"], protection._needs(jobs["ci"])), ["system-native"])
+
+    def test_a_name_two_jobs_produce_is_covered_only_when_both_are(self):
+        """sd:1741 review round 5: `test` gated by `ci` in a.yml says nothing
+        of another `test` in b.yml."""
+        gated = "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n  ci:\n    needs: test\n    if: always()\n    runs-on: x\n" + PROPAGATE
+        produced = self.produced(a=gated, b="on: [pull_request]\njobs:\n  test:\n    runs-on: x\n")
+        self.assertEqual(produced.needed_by, {})
+        self.assertEqual(self.classify(produced)["detail"]["produced_not_required"], ["test"])
+        produced = self.produced(b=gated)
+        self.assertEqual(produced.needed_by, {"test": {"ci"}})
+
+    def test_a_walk_stops_at_a_job_that_does_not_propagate(self):
+        """`mid` skips when `build` fails; `ci` then sees `mid` skipped, not
+        `build` failed, so only `mid` is gated."""
+        produced = self.produced(a="on: [pull_request]\njobs:\n  build:\n    runs-on: x\n"
+                                   "  mid:\n    needs: build\n    runs-on: x\n"
+                                   "  ci:\n    needs: [mid]\n    if: always()\n    runs-on: x\n" + PROPAGATE)
+        self.assertEqual(produced.needed_by, {"mid": {"ci"}})
+        self.assertEqual(self.classify(produced)["detail"]["produced_not_required"], ["build"])
+
+    def test_a_cycle_ends_the_walk(self):
+        produced = self.produced(a="on: [pull_request]\njobs:\n  x:\n    needs: [y]\n    if: always()\n    runs-on: r\n"
+                                   + PROPAGATE + "  y:\n    needs: [x]\n    if: always()\n    runs-on: r\n" + PROPAGATE)
+        self.assertEqual(produced.needed_by, {"x": {"y"}, "y": {"x"}})
+
+
 class Rows(SyncCase):
     def test_a_never_observed_repository_is_unknown_and_not_yet_observed(self):
         path = self.register("new", "git@github.com:platypeeps/new.git")
@@ -985,8 +1318,11 @@ class Rows(SyncCase):
         row = {row["repo"]: row for row in protection.rows(self.db)}[path]
         self.assertEqual(row["status"], "protected")
         self.assertEqual([gap["id"] for gap in row["gaps"]], ["enforce_admins"])
+        # A platypeeps remote carries the two baseline flags (sd:1741): classic
+        # protection requiring `CI Result` raises both.
         self.assertEqual({flag["id"]: flag["flagged"] for flag in row["merge_settings"]},
-                         {"squash_message": False, "rebase_merge": True})
+                         {"squash_message": False, "rebase_merge": True,
+                          "protection_source": True, "required_check": True})
         self.assertEqual(row["requests"], 3)
         self.assertIsNone(row["reason"])
 
