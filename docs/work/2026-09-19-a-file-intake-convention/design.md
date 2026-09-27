@@ -57,12 +57,12 @@ the state, so a look-only verb is the only safe way to ask what is new. The
 design asked for confirmation against a second instance. `local-mail-intake`
 is one: its README says its verbs, exit codes, state layout and log are
 deliberately identical to `local-drive-intake`, and it carries `peek` with the
-same meaning on a source that is not a folder. `local-mission` remains the
-test of the export-directory variation.
+same meaning on a source that is not a folder. An export-directory importer,
+built later outside this repo, remains the test of that variation.
 
 ## Rejected
 
 A shared library. Two instances is too few to know what is common, and a
-premature base class would force `local-mission`'s export-directory walk into a
+premature base class would force an export-directory walk into a
 mount-shaped hole. Write the convention first; extract code when a third
 instance repeats the same twenty lines.

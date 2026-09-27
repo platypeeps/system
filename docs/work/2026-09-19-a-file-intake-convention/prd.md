@@ -49,7 +49,7 @@ responsibility sits is a convention decision, not an implementation detail.
 
 ## Why now
 
-`local-mission` is the next instance and is scheduled for step 7 of the
+An export-directory importer is the next instance, scheduled for step 7 of the
 fold-in plan. It will walk an export directory rather than a Drive mount, which
 is exactly the variation that shows whether the convention generalises or
 whether `local-drive-intake` merely works.
@@ -104,5 +104,5 @@ does not yet.
 
 ## Not verified
 
-Whether `local-mission` will in fact reuse the convention, since it is unbuilt.
-That is the test of this item and cannot be run yet.
+Whether the export-directory importer reuses the convention; it was built
+outside this repo. That is the test of this item, and it cannot be run here.
