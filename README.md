@@ -107,4 +107,4 @@ a change to a folder that file names:
 
 ## License
 
-No license file is present yet. Until one is added, all rights are reserved.
+MIT; see `LICENSE`.
