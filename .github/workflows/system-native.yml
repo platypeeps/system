@@ -316,6 +316,7 @@ jobs:
               run_suite autocommit sh local-autocommit/autocommit.sh test -v
               run_suite ai-apps sh local-ai-apps/ai-apps.sh test -v
               run_suite jev sh local-jev/jev.sh test -v
+              run_suite leak-guard sh local-leak-guard/leak-guard.sh test -v
               run_suite maintenance sh local-maintenance/maintenance.sh test -v
               run_suite opentelemetry-collector sh local-opentelemetry-collector/opentelemetry-collector.sh test -v
               # local-mirror-sync has no test verb of its own: mirror-sync.sh

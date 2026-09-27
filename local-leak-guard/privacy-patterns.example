@@ -1,0 +1,10 @@
+# Copy to <config>/privacy-patterns and replace these comments with your own
+# patterns. <config> is SYSTEM_TOOLS_CONFIG, default ~/.config/system.
+# One extended regular expression per line, as `grep -E -f` reads them.
+# Blank lines and lines starting with `#` are ignored.
+#
+# Examples of the shape, not values to keep:
+#   your-hostname
+#   you@your-domain\.example
+#   /home/your-login/
+#   [0-9]{12}
