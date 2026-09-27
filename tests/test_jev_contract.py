@@ -71,7 +71,9 @@ RESERVED = ("yes", "no", "unsure")
 #: it landed. Adding a caller means adding a row and reading the rules below.
 KNOWN_CALLERS = frozenset({
     "local-adversarial-gate",
+    "local-drive-intake",
     "local-health-check",
+    "local-mail-intake",
     "local-notify",
     "local-obsidian-review",
     "local-obsidian-tasks",
@@ -85,9 +87,11 @@ KNOWN_CALLERS = frozenset({
 #: Folders whose `--criteria` is built at runtime, so no literal exists for
 #: `test_no_fallback_token_is_a_name_its_own_criteria_offers` to compare a
 #: fallback against. Each is a place that rule cannot see, written down so it
-#: cannot grow silently. No caller in this repository builds its criteria at
-#: runtime today.
-RUNTIME_CRITERIA = frozenset()
+#: cannot grow silently. `drive_intake.py` reads its route names from the
+#: user's conf on purpose -- a hand-kept list would offer a route the conf no
+#: longer defines -- so the collision it risks is a runtime one, and
+#: `jev_route` refuses it there instead.
+RUNTIME_CRITERIA = frozenset({"local-drive-intake"})
 
 #: This file names `jev` on nearly every line, so discovery finds it and
 #: reports `tests` as a twelfth caller. `test_one_double.py` has the same
@@ -770,8 +774,11 @@ class EveryCallerNamesItselfInTheLedger(unittest.TestCase):
         branch a timeout fires on, only that one exists; the per-branch facts
         are pinned in each caller's own suite, where the argv is visible.
 
-        A caller that writes no control-arm row anywhere is skipped by
-        `records_baseline`.
+        `local-drive-intake` is in neither case and is skipped by
+        `records_baseline`: it writes no control-arm row anywhere, because
+        `jev_route` runs once per unmatched path and a `jev record`
+        subprocess per path is the cost that shape exists to avoid. Its
+        timeouts are unrecorded, which is a known gap and not this rule's.
         """
         wrong = []
         for folder in sorted(KNOWN_CALLERS):
