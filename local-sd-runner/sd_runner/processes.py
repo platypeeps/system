@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from sd_db.runner import RunnerRefused
@@ -111,13 +112,49 @@ def holders(path: Path) -> set[int]:
     return {int(line[1:]) for line in done.stdout.splitlines() if line.startswith("p") and line[1:].isdigit()}
 
 
-def marked(pid: int, ident: str) -> bool:
+def _started_before(pid: int, run: dict) -> bool:
+    """Whether a Linux process started before `run` could mark any process.
+
+    The marker is set only in processes the runner starts after it writes the
+    run row, and first in the supervisor. With a recorded supervisor, compare
+    kernel start ticks on the same boot. Without one, compare the process's
+    wall-clock start with the row's `created_at`, with a margin for the
+    second-granular boot time. Anything that cannot be read answers False.
+    """
+    own = start_identity(pid)
+    if not own or not own.startswith("linux:"):
+        return False
+    own_boot, _, own_ticks = own.removeprefix("linux:").rpartition(":")
+    if not own_ticks.isdigit():
+        return False
+    since = run.get("supervisor_start") or ""
+    if since:
+        boot, _, ticks = since.removeprefix("linux:").rpartition(":")
+        return since.startswith("linux:") and own_boot == boot and ticks.isdigit() and int(own_ticks) < int(ticks)
+    try:
+        created = datetime.fromisoformat(run["created_at"]).timestamp()
+        booted = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
+        started = booted + int(own_ticks) / os.sysconf("SC_CLK_TCK")
+    except (KeyError, TypeError, ValueError, OSError, StopIteration, IndexError):
+        return False
+    return started + 2 < created
+
+
+def marked(pid: int, ident: str, run: dict | None = None) -> bool:
     if sys.platform.startswith("linux"):
         try:
             return f"SD_ASSIGNMENT={ident}".encode() in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
         except FileNotFoundError:
             return False
         except PermissionError:
+            # A process that changed credentials without an exec is not
+            # dumpable, so even its own user cannot read its environ:
+            # GitHub's Ubuntu runner has one from boot. The environment is
+            # fixed when a program starts, so a process that started before
+            # the run existed cannot carry the run's marker. Any other
+            # unreadable environ still refuses.
+            if run is not None and _started_before(pid, run):
+                return False
             raise RunnerRefused(f"cannot inspect owned user process {pid}") from None
     done = subprocess.run(["ps", "eww", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=10, check=False)
     # Never expose this output: it can contain unrelated credentials.
@@ -141,7 +178,7 @@ def survivors(run: dict) -> list[dict]:
         if row["pid"] == os.getpid():
             continue
         group = run.get("supervisor_pgid") and row["pgid"] == run["supervisor_pgid"]
-        tagged = row["uid"] == os.getuid() and (row["pid"] in tagged_pids if sys.platform == "darwin" else marked(row["pid"], run["id"]))
+        tagged = row["uid"] == os.getuid() and (row["pid"] in tagged_pids if sys.platform == "darwin" else marked(row["pid"], run["id"], run))
         if group or tagged or row["pid"] in held:
             result.append({**row, "ownership": "group" if group else "marker" if tagged else "holder"})
     return result
