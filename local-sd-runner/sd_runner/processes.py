@@ -111,6 +111,19 @@ def holders(path: Path) -> set[int]:
     return {int(line[1:]) for line in done.stdout.splitlines() if line.startswith("p") and line[1:].isdigit()}
 
 
+def _changed_credentials(pid: int) -> bool:
+    """Whether a Linux process runs with real and effective ids that differ."""
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        name, _, values = line.partition(":")
+        if name in {"Uid", "Gid"} and len(set(values.split()[:3])) > 1:
+            return True
+    return False
+
+
 def marked(pid: int, ident: str) -> bool:
     if sys.platform.startswith("linux"):
         try:
@@ -118,6 +131,13 @@ def marked(pid: int, ident: str) -> bool:
         except FileNotFoundError:
             return False
         except PermissionError:
+            # A process that exec'd a setuid or setgid program (ssh-agent is
+            # setgid on Ubuntu) is not dumpable, so its environ is unreadable
+            # even to its own user. macOS `ps eww` hides the same environment
+            # and reads it as unmarked; do the same here. Any other unreadable
+            # environ still refuses.
+            if _changed_credentials(pid):
+                return False
             raise RunnerRefused(f"cannot inspect owned user process {pid}") from None
     done = subprocess.run(["ps", "eww", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=10, check=False)
     # Never expose this output: it can contain unrelated credentials.
