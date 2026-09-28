@@ -277,6 +277,7 @@ case "$SUITE_LEG" in
     run_suite notify-email "$PYTHON" local-notify/tests/test_email_retry.py -v
     run_suite obsidian-tasks sh local-obsidian-tasks/obsidian-tasks.sh test
     run_suite obsidian-review sh local-obsidian-review/obsidian-review.sh test
+    run_suite task-actions sh local-task-actions/task-actions.sh test -v
     run_suite weekly-digest sh local-weekly-digest/weekly-digest.sh test -v
     run_suite workspace-mcp sh local-workspace-mcp/workspace-mcp.sh test -v
     run_suite network-testing sh network-testing/network-testing.sh test -v

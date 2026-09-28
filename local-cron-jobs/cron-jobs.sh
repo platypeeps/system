@@ -56,18 +56,18 @@ CONF_DIR="$(st_config_dir cron-jobs)"
 # Read .env here, before anything resolves a job: launchd starts `exec` with
 # only PATH and HOME, so a value exported in a login shell never reaches it.
 # Put the values in <config>/cron-jobs/.env so install and the scheduled run
-# agree. Not st_source_env: an exported value must win over the file.
-if [ -f "$CONF_DIR/.env" ]; then
-  _cj_extra="${CRON_JOBS_EXTRA_DIRS:-}"
-  _cj_prefix="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
-  _cj_host="${CRON_JOBS_HOST:-}"
-  # shellcheck source=/dev/null
-  . "$CONF_DIR/.env"
-  [ -z "$_cj_extra" ] || CRON_JOBS_EXTRA_DIRS="$_cj_extra"
-  [ -z "$_cj_prefix" ] || SYSTEM_TOOLS_LABEL_PREFIX="$_cj_prefix"
-  [ -z "$_cj_host" ] || CRON_JOBS_HOST="$_cj_host"
-  unset _cj_extra _cj_prefix _cj_host
-fi
+# agree. st_source_env exports what it reads, so a job inherits the values
+# too: a health check or runner status a job calls needs the same label
+# prefix as this script. The three named here are put back afterwards,
+# because an exported value must win over the file.
+_cj_extra="${CRON_JOBS_EXTRA_DIRS:-}"
+_cj_prefix="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
+_cj_host="${CRON_JOBS_HOST:-}"
+st_source_env cron-jobs
+[ -z "$_cj_extra" ] || CRON_JOBS_EXTRA_DIRS="$_cj_extra"
+[ -z "$_cj_prefix" ] || SYSTEM_TOOLS_LABEL_PREFIX="$_cj_prefix"
+[ -z "$_cj_host" ] || CRON_JOBS_HOST="$_cj_host"
+unset _cj_extra _cj_prefix _cj_host
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 JOBS_DIR="$CONF_DIR/jobs"
 # This machine's own jobs: jobs/<host>/, lower-cased so the folder name does
