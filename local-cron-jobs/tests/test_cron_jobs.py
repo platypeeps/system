@@ -782,6 +782,49 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
         result = self.fx.exec_job("demo", extra_env={"CRON_JOBS_EXTRA_DIRS": str(self.extra2)})
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def job_env(self, extra_env=None):
+        """Run a JOB_COMMAND job that writes its environment; return it as a dict.
+
+        launchctl is the stub on PATH, so nothing reaches the real launchd.
+        """
+        marker = self.fx.tmp / "job-env"
+        self.fx.write_job("envdump", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="env -0 > \'{marker}\'"\n')
+        env = {"PATH": self.fx.path(stub_bin(self.fx.tmp))}
+        env.update(extra_env or {})
+        result = self.fx.exec_job("envdump", extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        raw = marker.read_bytes().decode()
+        return dict(item.split("=", 1) for item in raw.split("\0") if "=" in item)
+
+    def test_env_file_values_reach_the_job(self):
+        # REGRESSION (sd:1943). .env was sourced without being exported, so a
+        # job never saw SYSTEM_TOOLS_LABEL_PREFIX: the health check or runner
+        # status it called looked up local.system-tools labels instead.
+        (self.fx.conf_dir / ".env").write_text(
+            'SYSTEM_TOOLS_LABEL_PREFIX="example.test"\nCRON_TEST_FROM_ENV_FILE="yes"\n')
+        env = self.job_env()
+        self.assertEqual(env.get("SYSTEM_TOOLS_LABEL_PREFIX"), "example.test")
+        self.assertEqual(env.get("CRON_TEST_FROM_ENV_FILE"), "yes")
+
+    def test_an_exported_prefix_wins_over_env_file_in_the_job(self):
+        # PIN. The exported value wins for the script, and the job sees the
+        # same value the script used.
+        (self.fx.conf_dir / ".env").write_text('SYSTEM_TOOLS_LABEL_PREFIX="example.test"\n')
+        env = self.job_env({"SYSTEM_TOOLS_LABEL_PREFIX": "other.example.test"})
+        self.assertEqual(env.get("SYSTEM_TOOLS_LABEL_PREFIX"), "other.example.test")
+
+    def test_an_exported_prefix_wins_over_env_file_for_the_script(self):
+        # PIN. The script's own labels use the exported prefix, not .env's.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        (self.fx.conf_dir / ".env").write_text('SYSTEM_TOOLS_LABEL_PREFIX="example.test"\n')
+        agents = self.fx.home / "Library" / "LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / "other.example.test.cron.demo.plist").write_text("<plist/>\n")
+        self.assertEqual(self.run_script("verify", "demo").stdout.split()[0], "missing")
+        out = self.run_script("verify", "demo",
+                              env={"SYSTEM_TOOLS_LABEL_PREFIX": "other.example.test"}).stdout
+        self.assertEqual(out.split()[0], "STALE")
+
     def test_default_label_prefix(self):
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
         agents = self.fx.home / "Library" / "LaunchAgents"
