@@ -57,14 +57,19 @@ A merge done outside `sd-ship` never gets that status, so it cannot pass protect
 
 ## How to switch a repository, or switch it back
 
-The command pack's `sd ci local` verb (sd:1914) switches the database mode and the required check together.
-Until it lands, the switch is manual:
+To switch a repository, first add a `check` entrypoint and prove it with `sd-check`.
+Then run the command pack's `sd ci local` (sd:1914) from its checkout.
+It is a dry run; `--apply` writes. It needs `admin` on the repository.
+It makes three changes together, each skipped when it already holds:
 
-1. Add a `check` entrypoint and prove it with `sd-check`.
-2. Set the mode with `sd-db.sh repo ci <path> local`.
-3. Require `sd/local-gate` in branch protection or the ruleset, in place of the old checks.
-4. Disable the CI workflows, or Actions as a whole on a private repository.
+1. It sets `repo.ci` to `local`, as `sd-db.sh repo ci <path> local` does.
+2. It makes `sd/local-gate` the one required check, in branch protection or the ruleset.
+3. It disables Actions on a private repository, or only the declared CI workflows on a public one.
 
+It refuses when a requirement it cannot rewrite names another context.
+Examples are an organization ruleset, or a ruleset shared with another protected branch.
+
+No verb switches back.
 To go back to GitHub CI, reverse each step.
 Set the mode to `github`, restore the old required checks, and re-enable the workflows.
 Re-enable Actions only once billing allows it again.
