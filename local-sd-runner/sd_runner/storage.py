@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -253,6 +254,10 @@ def capacity(path: Path) -> dict:
 
 
 DISKUTIL_TIMEOUT = 20
+#: Seconds a verified work volume is trusted before `diskutil` is asked again (sd:1941).
+VERIFY_INTERVAL = 900
+#: Seconds after which a verification with no successful refresh is forgotten.
+VERIFY_STALE = 3600
 
 
 def _diskutil(*argv: str) -> subprocess.CompletedProcess | None:
@@ -268,12 +273,85 @@ def _diskutil(*argv: str) -> subprocess.CompletedProcess | None:
         return None
 
 
-def preflight(database: Path, work: Path, retained: Path, *, floor_gb=40) -> dict:
+def _verify_volume(mount: Path, floor_gb) -> tuple[str | None, bool, int | None]:
+    """Ask `diskutil` whether `mount` is APFS under a quota: (problem, answered, quota).
+
+    `answered` is False when `diskutil` gave no answer (a timeout or a
+    non-zero exit) and True when it did, whether or not the answer is a
+    problem. `quota` is the observed CapacityQuota when the inventory read.
+    """
+    timed_out = f"diskutil timed out after {DISKUTIL_TIMEOUT}s"
+    done = _diskutil("info", "-plist", str(mount))
+    if done is None:
+        return f"cannot verify work volume is APFS ({timed_out})", False, None
+    if done.returncode:
+        return "cannot verify work volume is APFS", False, None
+    import plistlib
+    info = plistlib.loads(done.stdout)
+    if str(info.get("FilesystemType", "")).lower() != "apfs":
+        return "work volume must be APFS for immutable clone retention", True, None
+    inventory = _diskutil("apfs", "list", "-plist")
+    if inventory is None:
+        return f"cannot verify configured APFS capacity quota ({timed_out})", False, None
+    if inventory.returncode:
+        return "cannot verify configured APFS capacity quota", False, None
+    volumes = [volume for container in plistlib.loads(inventory.stdout).get("Containers", [])
+               for volume in container.get("Volumes", []) if volume.get("DeviceIdentifier") == info.get("DeviceIdentifier")]
+    quota = volumes[0].get("CapacityQuota") if len(volumes) == 1 else None
+    if type(quota) is not int or quota <= floor_gb * 1e9:
+        return f"APFS CapacityQuota must be configured and exceed {floor_gb} GB; observed {quota}", True, quota
+    return None, True, quota
+
+
+def _verified_volume(mount: Path, device: int, floor_gb, verified: dict | None, clock) -> tuple[str | None, int | None, dict]:
+    """`_verify_volume`, remembered per mount identity: (problem, quota, verification) (sd:1941).
+
+    `verified` is the runtime's dict of answers by `(mount, device)`, which is
+    what a mounted volume keeps while it stays mounted. An answer younger
+    than VERIFY_INTERVAL is repeated without `diskutil`; an older one is
+    refreshed. A refresh with no answer keeps the last one and names the
+    failure, so a stalled `diskutil` does not stop dispatch for a pulse; an
+    answer that names a problem replaces the cache, so a removed quota is
+    seen at the next refresh; and an answer VERIFY_STALE seconds old with no
+    successful refresh is forgotten, so a stall that lasts is the problem it
+    was. Without a dict (`serve`'s first preflight before it, the CLI verbs)
+    every call asks, and no answer is the problem it always was (sd:970).
+    """
+    identity = (str(mount), device)
+    now = clock()
+    entry = verified.get(identity) if verified is not None else None
+    if entry is not None and now - entry["verified_at"] >= VERIFY_STALE:
+        verified.pop(identity)
+        entry = None
+    if entry is not None and now - entry["checked_at"] < VERIFY_INTERVAL:
+        return None, entry["quota"], _repeated(entry, now)
+    problem, answered, quota = _verify_volume(mount, floor_gb)
+    if problem is None:
+        entry = {"verified_at": now, "checked_at": now, "quota": quota, "refresh_problem": None}
+        if verified is not None:
+            verified[identity] = entry
+        return None, quota, _repeated(entry, now, cached=False)
+    if answered or entry is None:
+        if verified is not None:
+            verified.pop(identity, None)
+        return problem, quota, {"cached": False, "age_seconds": None, "refresh_problem": None}
+    entry["checked_at"] = now
+    entry["refresh_problem"] = problem
+    return None, entry["quota"], _repeated(entry, now)
+
+
+def _repeated(entry: dict, now: float, *, cached=True) -> dict:
+    return {"cached": cached, "age_seconds": round(now - entry["verified_at"], 3), "refresh_problem": entry["refresh_problem"]}
+
+
+def preflight(database: Path, work: Path, retained: Path, *, floor_gb=40, verified: dict | None = None, clock=time.monotonic) -> dict:
+    """The storage report; `verified` is the caller's cache of `diskutil` answers, see `_verified_volume`."""
     if floor_gb <= 0:
         raise RunnerRefused("free-space floor must be positive")
     db, active, backup = capacity(database), capacity(work), capacity(retained)
     problems = []
     quota = None
+    verification = None
     if not work.is_dir() or not retained.is_dir():
         problems.append("worktrees and retained-clone directories must exist on the provisioned work volume")
     if active["device"] == db["device"]:
@@ -287,34 +365,15 @@ def preflight(database: Path, work: Path, retained: Path, *, floor_gb=40) -> dic
         mount = work.resolve()
         while not mount.is_mount() and mount.parent != mount:
             mount = mount.parent
-        timed_out = f"diskutil timed out after {DISKUTIL_TIMEOUT}s"
-        done = _diskutil("info", "-plist", str(mount))
-        if done is None:
-            problems.append(f"cannot verify work volume is APFS ({timed_out})")
-        elif done.returncode:
-            problems.append("cannot verify work volume is APFS")
-        else:
-            import plistlib
-            info = plistlib.loads(done.stdout)
-            if str(info.get("FilesystemType", "")).lower() != "apfs":
-                problems.append("work volume must be APFS for immutable clone retention")
-            else:
-                inventory = _diskutil("apfs", "list", "-plist")
-                if inventory is None:
-                    problems.append(f"cannot verify configured APFS capacity quota ({timed_out})")
-                elif inventory.returncode:
-                    problems.append("cannot verify configured APFS capacity quota")
-                else:
-                    volumes = [volume for container in plistlib.loads(inventory.stdout).get("Containers", [])
-                               for volume in container.get("Volumes", []) if volume.get("DeviceIdentifier") == info.get("DeviceIdentifier")]
-                    quota = volumes[0].get("CapacityQuota") if len(volumes) == 1 else None
-                    if type(quota) is not int or quota <= floor_gb * 1e9:
-                        problems.append(f"APFS CapacityQuota must be configured and exceed {floor_gb} GB; observed {quota}")
+        problem, quota, verification = _verified_volume(mount, active["device"], floor_gb, verified, clock)
+        if problem is not None:
+            problems.append(problem)
     elif sys.platform != "darwin":
         problems.append("production runner storage requires macOS APFS")
     return {"ok": not problems, "problems": problems, "database": db, "work": active, "retention": backup,
             "dispatch_allowed": not problems and active["free"] >= floor_gb * 1e9 and db["free"] >= floor_gb * 1e9,
-            "database_below_floor": db["free"] < floor_gb * 1e9, "free_floor_gb": floor_gb, "quota_bytes": quota}
+            "database_below_floor": db["free"] < floor_gb * 1e9, "free_floor_gb": floor_gb, "quota_bytes": quota,
+            "verification": verification}
 
 
 def walk(path: Path, *, skip=None) -> dict:
