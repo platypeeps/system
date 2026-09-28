@@ -43,6 +43,7 @@ NOT_LOADED_2 = "local.system-tools.cron.birthday-plans"
 CRON_FAILED = "local.system-tools.cron.club-morning-digest"
 LAST_EXIT = "local.system-tools.market-watch"
 CRASHED_APP = "PrivateDiaryApp"
+HOST_APP = "AaaHostOnlyApp"
 FAULTING = "SecretProcName"
 PRIVATE_WORDS = ("diary-reminders", "birthday-plans", "club-morning-digest", "market-watch",
                  "local.system-tools", CRASHED_APP, FAULTING)
@@ -155,6 +156,13 @@ esac
         agents.mkdir(parents=True)
         for label in (NOT_LOADED, NOT_LOADED_2, CRON_FAILED, LAST_EXIT):
             (agents / (label + ".plist")).write_text("<plist/>\n")
+        # The machine-wide folder is a fixture too: an empty one by default,
+        # so a real crash on the host cannot reach a fixture report.
+        cls.system_reports = cls.tmp / "system-reports"
+        cls.system_reports.mkdir()
+        cls.host_reports = cls.tmp / "host-reports"
+        cls.host_reports.mkdir()
+        (cls.host_reports / (HOST_APP + "-2026-01-01-000000.ips")).write_text("{}\n")
         reports = cls.home / "Library" / "Logs" / "DiagnosticReports"
         reports.mkdir(parents=True)
         (reports / (CRASHED_APP + "-2026-01-01-000000.ips")).write_text("{}\n")
@@ -264,6 +272,9 @@ esac
         # it -- is the run that sets it to 0, and `unset` is the run that
         # proves a machine nobody configured now gets the ordering.
         cls.runs["baseline"] = cls.run_check("baseline", {"JEV_HEALTH_CHECK": "0"})
+        cls.runs["system-reports"] = cls.run_check(
+            "system-reports", {"JEV_HEALTH_CHECK": "0",
+                               "HEALTH_CHECK_SYSTEM_REPORTS": str(cls.host_reports)})
         cls.runs["off"] = cls.run_check(
             "off", {"JEV_HEALTH_CHECK": "0", "JEV_STUB_MODE": "answer"})
         cls.runs["unset"] = cls.run_check("unset", {"JEV_STUB_MODE": "answer"})
@@ -324,6 +335,7 @@ esac
             "HEALTH_CHECK_TOOLS_ROOT": str(root or cls.root),
             "HEALTH_CHECK_STATE": str(d / "state"),
             "HEALTH_CHECK_STATUS_BOUND": "5",
+            "HEALTH_CHECK_SYSTEM_REPORTS": str(cls.system_reports),
             "HEALTH_CHECK_JEV": str(cls.jev),
             "JEV_STUB_LOG": str(d / "calls"),
             "JEV_STUB_DIR": str(d / "payload"),
@@ -490,6 +502,16 @@ esac
                       "new launch daemon(s)/agent(s) since last run: ",
                       "local-cron-jobs: FAIL"):
             self.assertTrue(any(h.startswith(start) for h in heads), (start, heads))
+
+    def test_the_machine_wide_crash_folder_is_the_one_named(self):
+        # The baseline reads only the fixture home and an empty machine-wide
+        # folder; a crash on the host running the suite stays out of it.
+        crash = [h for h in self.headlines(self.runs["baseline"])
+                 if h.startswith("app crash report(s) in the last day: ")]
+        self.assertEqual(crash, ["app crash report(s) in the last day: %s(1) " % CRASHED_APP])
+        out = self.runs["system-reports"]["out"]
+        self.assertIn(HOST_APP + "(1)", out)
+        self.assertIn(CRASHED_APP + "(1)", out)
 
     def sent(self, run):
         """Everything one run handed to jev: argv, stdin and both files."""
