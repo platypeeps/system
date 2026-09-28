@@ -124,6 +124,24 @@ class ConfigCheckTest(unittest.TestCase):
         self.assertNotIn("TILDE_DIR", proc.stdout)
         self.assertNotIn("/nonexistent", proc.stdout)
 
+    def test_marker_dir_may_be_absent(self):
+        # A *_MARKER_DIR names a directory whose existence tells machines apart.
+        real = self.tmp / "exists"
+        real.mkdir()
+        self.folder("local-alpha", {".env.example": "# WORK_MARKER_DIR=x\n# HOME_MARKER_DIR=x\n"})
+        self.conf("alpha", ".env", f"WORK_MARKER_DIR=/nonexistent/a\nHOME_MARKER_DIR={real}\n")
+        proc = self.run_cc("check")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("alpha: ok", proc.stdout)
+        self.assertNotIn("MARKER_DIR", proc.stdout)
+
+    def test_marker_dir_placeholder_still_counts(self):
+        self.folder("local-alpha", {".env.example": "# WORK_MARKER_DIR=x\n"})
+        self.conf("alpha", ".env", "WORK_MARKER_DIR=/path/to/marker\n")
+        proc = self.run_cc("check")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("  placeholder: WORK_MARKER_DIR", proc.stdout)
+
     def test_sd_key_checked_through_sd_config_get(self):
         self.folder("local-alpha", {".env.example": "GOOD_SD_KEY=x\nBAD_SD_KEY=x\n"})
         self.conf("alpha", ".env", "GOOD_SD_KEY=known.key\nBAD_SD_KEY=unknown.key\n")
@@ -168,6 +186,18 @@ class ConfigCheckTest(unittest.TestCase):
         self.assertIn("delta: ok (no .env.example)", proc.stdout)
         self.assertIn("  conf: hosts.conf present", proc.stdout)
         self.assertIn("  conf: repos.one.conf absent", proc.stdout)
+
+    def test_privacy_patterns_map_to_the_config_root(self):
+        # leak-guard reads <config>/privacy-patterns, not <config>/leak-guard/.
+        self.folder("local-leak-guard", {"privacy-patterns.example": "# x\n"})
+        (self.config / "privacy-patterns").write_text(f"{SECRET}\n")
+        proc = self.run_cc("check")
+        self.assertIn("leak-guard: ok (no .env.example)", proc.stdout)
+        self.assertIn("  conf: privacy-patterns present", proc.stdout)
+        self.assertNoSecret(proc)
+        proc = self.run_cc("list")
+        self.assertIn(f"leak-guard\tlocal-leak-guard/privacy-patterns.example -> "
+                      f"{self.config}/privacy-patterns", proc.stdout.splitlines())
 
     def test_tool_names_strip_local_and_keep_other_prefixes(self):
         self.folder("vendor-thing", {".env.example": "# X=1\n"})
@@ -249,6 +279,8 @@ class ConfigCheckTest(unittest.TestCase):
         listed = [line.split("\t")[1].split(" -> ")[0] for line in proc.stdout.splitlines()]
         self.assertEqual(sorted(listed), sorted(set(expected)))
         self.assertTrue(listed, "the tree commits at least one example")
+        self.assertIn(f"leak-guard\tlocal-leak-guard/privacy-patterns.example -> "
+                      f"{self.config}/privacy-patterns", proc.stdout.splitlines())
 
 
 if __name__ == "__main__":
