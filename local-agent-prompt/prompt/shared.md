@@ -123,6 +123,7 @@ from what you already know cannot find what you did not know about.
 GitHub Actions CI is off on purpose since 2026-09-27: billing blocked every run.
 Do not re-enable Actions or CI workflows to get a missing check; `sd/local-gate` is the required check.
 Read `repo.ci` with `~/repos/system/local-sd-db/sd-db.sh repo list`; `local` means `sd-ship merge` runs `sd-check`.
+Dependabot stays on; land its pull requests through `sd-ship` like any other, since GitHub cannot post `sd/local-gate`.
 Who, why, scope, and how to revert: `~/repos/system/docs/local-ci-rollout.md`.
 
 # sd lane commands: `-C <dir>`, not `cd <dir> &&`
