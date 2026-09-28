@@ -13,6 +13,7 @@ one subfolder per tool, named after the folder minus `local-`
 from __future__ import annotations
 
 import os
+import re
 import socket
 from pathlib import Path
 
@@ -40,12 +41,19 @@ def missing(what: str, tool: str, file: str, folder: str | None = None,
             f"{config_dir(tool, environ) / file} and fill it in.")
 
 
+_HOME = re.compile(r"\$\{HOME\}|\$HOME(?![A-Za-z0-9_])")
+
+
 def read_env(tool: str, environ: dict[str, str] | None = None) -> dict[str, str]:
     """`KEY=value` lines from <config>/<tool>/.env; `{}` when it is absent.
 
     Blank lines, comments and an `export ` prefix are allowed; one layer of
-    matching quotes is removed. Nothing is expanded.
+    matching quotes is removed. `$HOME`, `${HOME}` and a leading `~/` expand
+    as they do when `st_source_env` sources the file, except inside single
+    quotes; no other variable expands (sd:1868).
     """
+    env = os.environ if environ is None else environ
+    home = env.get("HOME") or os.path.expanduser("~")
     path = config_dir(tool, environ) / ".env"
     values: dict[str, str] = {}
     if not path.is_file():
@@ -60,8 +68,13 @@ def read_env(tool: str, environ: dict[str, str] | None = None) -> dict[str, str]
         if not sep or not key.strip().isidentifier():
             continue
         value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        quote = value[0] if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"" else ""
+        if quote:
             value = value[1:-1]
+        if quote != "'":
+            value = _HOME.sub(lambda _: home, value)
+            if not quote and (value == "~" or value.startswith("~/")):
+                value = home + value[1:]
         values[key.strip()] = value
     return values
 
