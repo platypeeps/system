@@ -66,7 +66,7 @@ ydc-server=YDC_API_KEY"
 
 usage() {
   cat <<'EOF'
-usage: claude.sh capture|status|restore|prune-plugin-cache|prune-mem-logs|mem-pro-watchdog|test [--apply] [-h|--help]
+usage: claude.sh capture|status|restore|prune-plugin-cache|prune-mem-logs|test [--apply] [-h|--help]
 
 Version the MCP server list of Claude Code and Claude Desktop with the
 credentials stripped. Dry run by default; --apply writes.
@@ -108,8 +108,7 @@ MACHINE_SETUP_PROFILE overrides it for one run.
 
   prune-mem-logs
             delete claude-mem's daily logs/claude-mem-YYYY-MM-DD.log files
-            older than CLAUDE_MEM_LOG_KEEP_DAYS (default 14) days, and trim
-            logs/pro-watchdog.log to its last 5000 lines. Today's and
+            older than CLAUDE_MEM_LOG_KEEP_DAYS (default 14) days. Today's and
             yesterday's files always stay, and no other name is touched;
             claude-mem has no retention setting of its own. Prints the
             bytes reclaimed. Run daily by the claude-mem-log-prune cron job.
@@ -126,41 +125,13 @@ MACHINE_SETUP_PROFILE overrides it for one run.
             database that is a symlink, or a missing table is skipped the
             same way.
 
-  mem-pro-watchdog
-            move claude-mem's observer along an ordered provider chain:
-            down when the current provider runs out, back up once a
-            higher one answers again. Run every 15 minutes by the
-            claude-mem-pro-watchdog cron job. The chain is
-            CLAUDE_MEM_PROVIDER_CHAIN in ~/.claude-mem/settings.json,
-            highest priority first, from openrouter (the cmem Pro
-            gateway), gemini and claude (the subscription); absent, it is
-            "openrouter,claude". A provider counts when the chain lists it
-            and it holds what the worker needs: a cm_pro_ token, the
-            gateway URL and a matching OPENROUTER key for openrouter; a
-            key in CLAUDE_MEM_GEMINI_API_KEY or GEMINI_API_KEY in
-            ~/.claude-mem/.env for gemini (the worker reads no other
-            place). This flips exactly one key, CLAUDE_MEM_PROVIDER, and
-            writes no key anywhere; the worker re-reads settings at every
-            generator start, so no restart. It moves down when the
-            worker reports quota_exhausted AND a 1-token probe confirms it
-            (openrouter, gemini) or when the worker still enforces
-            claude's quota cooldown (30 minutes from arming), to the next
-            provider below that answers, or else at once to one above
-            that answers. A provider in that 30-minute cooldown is never
-            a target. While the current provider works, it moves up once
-            a higher provider has answered for
-            CLAUDE_MEM_PRO_RETURN_DELAY_MIN (default 60) minutes running.
-            Stuck with nothing to move to, it notifies once. A CLAUDE_MEM_PROVIDER the chain does not
-            list is left alone (exit 0). State and a log live in
-            ~/.claude-mem/pro-watchdog.json and logs/pro-watchdog.log.
-
-  test      run the unittest suite in tests/. It drives mem-pro-watchdog
-            against a scratch CLAUDE_MEM_DATA_DIR, so it reads and writes
-            nothing under ~/.claude-mem and asks no remote anything.
+  test      run the unittest suite in tests/. It runs against a scratch
+            CLAUDE_MEM_DATA_DIR, so it reads and writes nothing under
+            ~/.claude-mem.
 
 options:
   --apply   perform the write (capture, restore, prune-plugin-cache,
-            prune-mem-logs, mem-pro-watchdog). Without
+            prune-mem-logs). Without
             it, print the plan.
 EOF
 }
@@ -605,499 +576,10 @@ elif failed:
 PYEOF
 }
 
-mem_pro_watchdog() {
-  APPLY="$APPLY" python3 - <<'PYEOF'
-import json, os, pathlib, re, subprocess, sys, tempfile, time, urllib.request, urllib.error
-
-APPLY = os.environ.get("APPLY") == "1"
-DATA = pathlib.Path(os.environ.get("CLAUDE_MEM_DATA_DIR") or pathlib.Path.home() / ".claude-mem")
-SETTINGS = DATA / "settings.json"
-STATE = DATA / "pro-watchdog.json"
-LOG = DATA / "logs" / "pro-watchdog.log"
-HEALTH = DATA / "observer-health.json"
-COOLDOWN = DATA / "quota-cooldown.json"
-# The worker reads GEMINI_API_KEY from this file and never from its own
-# environment, so neither does the watchdog.
-ENV_FILE = DATA / ".env"
-# Both overridable so the test harness can point them at a local stub server.
-GATEWAY = (os.environ.get("CLAUDE_MEM_PRO_GATEWAY") or "https://cmem.ai/api/inference/v1").rstrip("/")
-GEMINI_API = (os.environ.get("CLAUDE_MEM_GEMINI_ENDPOINT")
-              or "https://generativelanguage.googleapis.com/v1beta/models").rstrip("/")
-# The models claude-mem 13.25.3 accepts; it replaces any other with the first.
-GEMINI_MODELS = ("gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.5-flash",
-                 "gemini-3.1-flash-lite", "gemini-3-flash-preview")
-# The gateway's observer alias, probed when CLAUDE_MEM_OPENROUTER_MODEL names none.
-OPENROUTER_MODEL = "cmem-observer"
-# How many of the worker's configured models one gateway probe tries.
-OPENROUTER_PROBE_MODELS = 3
-PROVIDERS = ("openrouter", "gemini", "claude")
-# Absent CLAUDE_MEM_PROVIDER_CHAIN means the two-provider toggle this watchdog
-# was before the chain existed.
-DEFAULT_CHAIN = "openrouter,claude"
-LABEL = {"openrouter": "the cmem Pro gateway", "gemini": "Gemini",
-         "claude": "the Claude subscription"}
-RETURN_DELAY = 60 * int(os.environ.get("CLAUDE_MEM_PRO_RETURN_DELAY_MIN") or "60")
-NOTIFY = os.environ.get("CLAUDE_MEM_PRO_WATCHDOG_NOTIFY", "1") == "1"
-now = time.time()
-stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now))
-
-def log(msg):
-    line = "[pro-watchdog] %s %s" % (stamp, msg)
-    print(line)
-    if APPLY:
-        try:
-            LOG.parent.mkdir(parents=True, exist_ok=True)
-            import fcntl
-            # prune-mem-logs trims this file under the same lock and renames
-            # the trimmed copy over it. A writer that waited on the lock then
-            # holds the old inode, so it reopens the path before appending.
-            for _ in range(5):
-                with LOG.open("a") as fh:
-                    fcntl.flock(fh, fcntl.LOCK_EX)
-                    if os.fstat(fh.fileno()).st_ino == os.stat(LOG).st_ino:
-                        fh.write(line + "\n")
-                        break
-        except OSError as exc:
-            print("cannot append %s: %s" % (LOG, exc), file=sys.stderr)
-
-def notify(text):
-    log("notify: " + text)
-    if not (APPLY and NOTIFY):
-        return
-    try:
-        subprocess.run(["notify", "-b", "-t", "claude-mem", text], check=False, timeout=60)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        log("notify failed: %s" % exc)
-
-def load(path, default):
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return default
-
-def write_json(path, data):
-    # Same directory, temp + rename, and mode 600 before the rename: the
-    # settings file holds API keys, and a reader that sees a half-written
-    # file would treat every key as unset.
-    if not APPLY:
-        return
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".")
-    with os.fdopen(fd, "w") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-
-def env_file_value(name):
-    """One variable from ~/.claude-mem/.env, read as dotenv: `KEY=value`,
-    optional `export `, optional quotes, `#` comments."""
-    try:
-        text = ENV_FILE.read_text()
-    except OSError:
-        return ""
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        if k.strip() != name:
-            continue
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-            v = v[1:-1]
-        elif " #" in v:
-            v = v.split(" #", 1)[0].rstrip()
-        return v.strip()
-    return ""
-
-def http_post(url, payload, headers):
-    """(status, body text); status None when no HTTP answer came back."""
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
-                                 headers=dict(headers, **{"Content-Type": "application/json",
-                                                          "User-Agent": "claude-mem-pro-watchdog"}))
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            resp.read()
-            return resp.status, ""
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", "replace")
-    except (urllib.error.URLError, OSError) as exc:
-        return None, str(exc)
-
-def error_field(text, field):
-    try:
-        value = json.loads(text).get("error", {}).get(field, "")
-        return value if isinstance(value, str) else ""
-    except (ValueError, AttributeError):
-        return ""
-
-# Each probe returns (verdict, detail) with verdict in ok|exhausted|inactive|
-# unknown. Unknown never moves state, so a Wi-Fi blip cannot flip the
-# provider. No detail ever carries a key.
-def openrouter_models():
-    """The models the worker tries, in order: CLAUDE_MEM_OPENROUTER_MODEL read
-    as a comma or space separated list, whose first entry is the model and
-    the rest its fallbacks. Nothing usable there means the gateway's observer
-    alias, the value cmem's Pro setup writes. At most OPENROUTER_PROBE_MODELS,
-    so one run makes a bounded number of 30-second requests."""
-    raw = settings.get("CLAUDE_MEM_OPENROUTER_MODEL")
-    names = re.split(r"[\s,]+", raw.strip()) if isinstance(raw, str) else []
-    names = [n for n in dict.fromkeys(names) if n]
-    return names[:OPENROUTER_PROBE_MODELS] or [OPENROUTER_MODEL]
-
-def probe_openrouter():
-    # One max_tokens=1 completion per model: a 402 costs nothing, a 200 costs
-    # ~$0.001 of allowance. The worker falls back to its next model, so a
-    # refusal of one model moves on to the next; only an answer about the key
-    # or the allowance speaks for the whole provider.
-    tried = []
-    for model in openrouter_models():
-        status, text = http_post(GATEWAY + "/chat/completions",
-                                 {"model": model, "max_tokens": 1,
-                                  "messages": [{"role": "user", "content": "ping"}]},
-                                 {"Authorization": "Bearer " + pro_key})
-        if status is None:
-            # No answer at all is not about the model; another would fare the same.
-            return "unknown", "; ".join(tried + [text])
-        if 200 <= status < 300:
-            return "ok", "HTTP %d %s" % (status, model)
-        # The gateway's error code names the cause, so it decides before the
-        # status. A 403 without one can be a model or endpoint the key may
-        # not use, which says nothing about the subscription.
-        code = error_field(text, "code")
-        if code == "allowance_exhausted":
-            return "exhausted", "HTTP %d %s" % (status, code)
-        if code in ("key_invalid", "subscription_inactive"):
-            return "inactive", "HTTP %d %s" % (status, code)
-        if status == 402:
-            return "exhausted", "HTTP %d %s" % (status, code)
-        if status == 401:
-            return "inactive", "HTTP %d %s" % (status, code)
-        tried.append("HTTP %d %s %s" % (status, model, code or text[:120]))
-    return "unknown", "; ".join(tried)
-
-def probe_gemini():
-    # One maxOutputTokens=1 generateContent with the model the worker would
-    # use. The key goes in a header, not in the URL the worker builds, so no
-    # proxy or error message can echo it. The worker files a body saying
-    # RESOURCE_EXHAUSTED or "quota exceeded" as quota_exhausted.
-    model = settings.get("CLAUDE_MEM_GEMINI_MODEL") or GEMINI_MODELS[0]
-    if model not in GEMINI_MODELS:
-        model = GEMINI_MODELS[0]
-    status, text = http_post("%s/%s:generateContent" % (GEMINI_API, model),
-                             {"contents": [{"role": "user", "parts": [{"text": "ping"}]}],
-                              "generationConfig": {"maxOutputTokens": 1}},
-                             {"x-goog-api-key": gemini_key})
-    if status is None:
-        return "unknown", text
-    if 200 <= status < 300:
-        return "ok", "HTTP %d %s" % (status, model)
-    low = text.lower()
-    reason = error_field(text, "status")
-    if status == 429 or "resource_exhausted" in low or "quota exceeded" in low:
-        return "exhausted", "HTTP %d %s" % (status, reason or "quota")
-    if status in (401, 403) or (status == 400 and any(
-            s in low for s in ("api key not valid", "api_key_invalid", "api key expired"))):
-        return "inactive", "HTTP %d %s" % (status, reason or "key rejected")
-    return "unknown", "HTTP %d %s" % (status, reason or text[:120])
-
-def unmanaged(why):
-    """Say why there is nothing to do, and exit 0 rather than 1.
-
-    Every condition that calls this says one thing: the claude-mem on this
-    machine is not a configuration this watchdog manages. That is a state
-    somebody chose, not a fault. cron-jobs.sh reads any non-zero exit as
-    FAILED and calls `notify_failure "$job" "$rc"`, in `cmd_exec` of
-    `local-cron-jobs/cron-jobs.sh`, and the run report it records then opens
-    a report item through `sd reports ingest`. On a */15 schedule one
-    deliberate setting became ninety-six report items a day, each with an
-    unresolved followup note, which `sd reports acknowledge` refuses to close
-    (sd:880).
-
-    Two conditions keep a non-zero exit, because nobody sets them on purpose:
-    settings.json present but unreadable, and a cm_pro_ token beside an
-    OPENROUTER key that is a different string. They are worth a page.
-    """
-    log("not managing claude-mem here: " + why)
-    sys.exit(0)
-
-settings = load(SETTINGS, None)
-if settings is None and not SETTINGS.exists() and not SETTINGS.is_symlink():
-    # `load` answers a missing file and an unparsable one the same way, so the
-    # existence test is what separates "claude-mem is not installed" from
-    # "claude-mem's settings are broken". Only the second is a fault.
-    #
-    # `exists()` follows the link, so a settings.json that is a symlink to
-    # nothing answers False and would be filed as absent. It is not absent, it
-    # is broken, and pointing it somewhere wrong is a way to break it that
-    # config snapshots kept as symlinks invite. So the
-    # no-follow test decides, and a dangling link falls through to the fault
-    # below.
-    unmanaged("%s does not exist" % SETTINGS)
-if not isinstance(settings, dict):
-    sys.exit("claude.sh: cannot read %s" % SETTINGS)
-
-# The chain, highest priority first. A name claude-mem does not know is
-# dropped with a log line rather than failing the job every 15 minutes.
-raw_chain = settings.get("CLAUDE_MEM_PROVIDER_CHAIN")
-if not (isinstance(raw_chain, str) and raw_chain.strip()):
-    raw_chain = DEFAULT_CHAIN
-chain = []
-for name in raw_chain.split(","):
-    name = name.strip().lower()
-    if name and name not in PROVIDERS:
-        log("CLAUDE_MEM_PROVIDER_CHAIN names %r, which is not one of %s; ignoring it"
-            % (name, "|".join(PROVIDERS)))
-    elif name and name not in chain:
-        chain.append(name)
-
-# A provider is enabled when the chain lists it and it holds the credentials
-# the worker would use. Every reason one is not goes into `off`.
-off = {}
-pro_key = (settings.get("CLAUDE_MEM_CLOUD_SYNC_TOKEN") or "").strip()
-gemini_key = ""
-if "openrouter" in chain:
-    if not pro_key.startswith("cm_pro_"):
-        off["openrouter"] = "CLAUDE_MEM_CLOUD_SYNC_TOKEN is not a cm_pro_ key; nothing to watch"
-    elif (settings.get("CLAUDE_MEM_OPENROUTER_BASE_URL") or "").rstrip("/") != GATEWAY:
-        off["openrouter"] = ("CLAUDE_MEM_OPENROUTER_BASE_URL is not the cmem gateway (%s); "
-                             "the watchdog only toggles CLAUDE_MEM_PROVIDER and expects the Pro "
-                             "gateway config to stay in settings.json" % GATEWAY)
-    elif (settings.get("CLAUDE_MEM_OPENROUTER_API_KEY") or "").strip() != pro_key:
-        sys.exit("claude.sh: CLAUDE_MEM_OPENROUTER_API_KEY differs from the Pro token; refusing to guess")
-if "gemini" in chain:
-    gemini_key = ((settings.get("CLAUDE_MEM_GEMINI_API_KEY") or "").strip()
-                  or env_file_value("GEMINI_API_KEY"))
-    if not gemini_key:
-        off["gemini"] = ("no Gemini key in CLAUDE_MEM_GEMINI_API_KEY or GEMINI_API_KEY in %s; "
-                         "the worker reads no other place" % ENV_FILE)
-enabled = [p for p in chain if p not in off]
-
-current = settings.get("CLAUDE_MEM_PROVIDER")
-if current not in chain:
-    unmanaged("CLAUDE_MEM_PROVIDER is %r, which the chain %s does not list, so it is the "
-              "operator's to manage" % (current, ",".join(chain)))
-if len(enabled) < 2:
-    unmanaged("the chain %s leaves %s to switch between: %s"
-              % (",".join(chain), "only " + enabled[0] if enabled else "nothing",
-                 "; ".join("%s: %s" % kv for kv in off.items())))
-
-state = load(STATE, {})
-if not isinstance(state, dict):
-    state = {}
-if "mode" in state:
-    # The first shape: mode pro|fallback and one scalar okSince, which
-    # counted the gateway's streak while on the Claude subscription.
-    old = state.pop("mode")
-    prev = {"pro": "openrouter", "fallback": "claude"}.get(old)
-    streak = state.get("okSince")
-    state["okSince"] = ({"openrouter": streak}
-                        if prev == "claude" and isinstance(streak, (int, float)) else {})
-    if "lastProbe" in state:
-        state["probes"] = {"openrouter": {"at": state.pop("lastProbe"),
-                                          "verdict": state.pop("lastProbeVerdict", None),
-                                          "detail": state.pop("lastProbeDetail", None)}}
-    state["provider"] = prev
-    log("state: migrated %s from mode=%s to provider=%s" % (STATE.name, old, prev))
-for key in ("okSince", "probes"):
-    if not isinstance(state.get(key), dict):
-        state[key] = {}
-state.setdefault("provider", current)
-if state["provider"] != current:
-    # settings.json is the truth; a hand edit resets the watchdog's memory.
-    log("settings say %s but state said %s; following settings" % (current, state["provider"]))
-    state.update({"provider": current, "since": stamp, "okSince": {}, "stuck": None})
-state.setdefault("since", stamp)
-state.setdefault("stuck", None)
-ok_since = state["okSince"]
-
-# The worker refuses a provider for 30 minutes after it arms a cooldown and
-# then admits one probe (claude-mem 13.25.3). The entry itself stays in the
-# file until a success with that provider clears it, which never happens
-# while another provider runs. So an entry older than that window is history,
-# not a refusal.
-WORKER_COOLDOWN_MS = 30 * 60 * 1000
-
-def cooldown_entries(provider):
-    cd = load(COOLDOWN, [])
-    if not isinstance(cd, list):
-        return []
-    return [e for e in cd if isinstance(e, dict) and e.get("provider") == provider]
-
-def cooldown_armed(provider):
-    return bool(cooldown_entries(provider))
-
-def cooldown_fresh(provider):
-    for e in cooldown_entries(provider):
-        armed = e.get("armedAtMs")
-        if not isinstance(armed, (int, float)) or now * 1000 - armed < WORKER_COOLDOWN_MS:
-            return True
-    return False
-
-def worker_reports_exhausted(provider):
-    if cooldown_armed(provider):
-        return "quota-cooldown.json armed for %s" % provider
-    h = load(HEALTH, {})
-    if (isinstance(h, dict) and h.get("lastErrorKind") == "quota_exhausted"
-            and h.get("lastErrorProvider") == provider
-            and (h.get("lastErrorAt") or 0) > (h.get("lastSuccessAt") or 0)):
-        return "observer-health.json lastErrorKind=quota_exhausted for %s after last success" % provider
-    return None
-
-def check(provider, candidate=True):
-    """Can `provider` take the observer now? A candidate the worker still
-    refuses cannot, however its probe would answer, so a cooldown under 30
-    minutes old decides without a probe. The Claude subscription has no cheap
-    probe, so that cooldown is its only answer. The current provider's own
-    check (candidate=False) probes: there the cooldown is the signal the
-    probe must confirm.
-
-    Any answer but ok ends the provider's success streak, whichever step
-    asked: a failure seen while looking down the chain counts as much as one
-    seen while looking up it."""
-    if provider == "claude":
-        if cooldown_fresh("claude"):
-            verdict, detail = "exhausted", "quota-cooldown.json armed for claude"
-        else:
-            verdict, detail = "ok", "no quota cooldown the worker still enforces for claude"
-    elif candidate and cooldown_fresh(provider):
-        verdict, detail = "exhausted", ("quota-cooldown.json armed for %s under 30 min ago; "
-                                        "the worker still refuses it" % provider)
-    else:
-        verdict, detail = probe_openrouter() if provider == "openrouter" else probe_gemini()
-        state["probes"][provider] = {"at": stamp, "verdict": verdict, "detail": detail}
-    if verdict != "ok" and ok_since.get(provider):
-        log("%s: %s streak broken by %s (%s); restarting the delay"
-            % (current, provider, verdict, detail))
-        ok_since[provider] = None
-    return verdict, detail
-
-def flip(to, why):
-    settings["CLAUDE_MEM_PROVIDER"] = to
-    if to == "openrouter":
-        # An unparsable non-empty stamp makes the plugin's own fallback
-        # permanent (mbe() returns truthy on NaN); clear it on every return.
-        settings["CLAUDE_MEM_PRO_FALLBACK_AT"] = ""
-    write_json(SETTINGS, settings)
-    ok_since.pop(to, None)
-    ok_since[current] = None
-    state.update({"provider": to, "since": stamp, "stuck": None,
-                  "lastFlip": stamp, "lastFlipWhy": why})
-    log("%s -> %s: %s" % (current, to, why) + ("" if APPLY else " (dry run, nothing written)"))
-
-def down_message(verdict, detail, to):
-    target = LABEL[to]
-    if verdict == "unusable":
-        # No probe ran: the settings themselves disable the provider.
-        return ("%s is not usable with this configuration (%s); observer switched to %s. "
-                "Fix the setting or drop it from CLAUDE_MEM_PROVIDER_CHAIN."
-                % (LABEL[current], detail, target))
-    if current == "openrouter" and verdict == "inactive":
-        return ("cmem Pro key rejected (%s); observer switched to %s. This is a lapsed "
-                "subscription, not a monthly reset -- check cmem.ai/pro." % (detail, target))
-    if current == "openrouter":
-        return ("cmem Pro allowance exhausted; observer switched to %s. It returns to Pro "
-                "on its own once the allowance resets." % target)
-    if current == "gemini" and verdict == "inactive":
-        return ("Gemini key rejected (%s); observer switched to %s. Check GEMINI_API_KEY in "
-                "~/.claude-mem/.env." % (detail, target))
-    if current == "gemini":
-        return ("Gemini quota exhausted (%s); observer switched to %s. It returns to Gemini "
-                "once probes succeed for %d min." % (detail, target, RETURN_DELAY // 60))
-    return "%s unavailable (%s); observer switched to %s." % (LABEL[current], detail, target)
-
-# Fail down: the current provider is out when the worker says so and a probe
-# agrees, or when it lacks the credentials the worker needs (the worker then
-# runs the Claude subscription without saying so).
-down = None
-if current not in enabled:
-    down = ("unusable", off[current])
-    log("%s: not usable here (%s)" % (current, off[current]))
-else:
-    signal = worker_reports_exhausted(current)
-    if not signal:
-        log("%s: worker healthy, no probe" % current)
-    else:
-        verdict, detail = check(current, candidate=False)
-        if verdict in ("exhausted", "inactive"):
-            down = (verdict, "%s; %s" % (signal, detail) if detail != signal else signal)
-        else:
-            log("%s: worker reports %s but the check says %s (%s); leaving it to the worker's "
-                "own cooldown" % (current, signal, verdict, detail))
-
-# The chain's order below comes first. When nothing below can take over, a
-# provider above that answers now takes the observer at once: the return
-# delay guards a preference while the current provider works, not the way
-# out of one that cannot.
-moved = False
-if down:
-    tried = []
-    below = [p for p in enabled if chain.index(p) > chain.index(current)]
-    above = [p for p in enabled if chain.index(p) < chain.index(current)]
-    for candidate in below + above:
-        verdict, detail = check(candidate)
-        tried.append("%s %s (%s)" % (candidate, verdict, detail))
-        if verdict == "ok":
-            flip(candidate, "%s; %s ok (%s)" % (down[1], candidate, detail))
-            if candidate in below:
-                notify(down_message(down[0], down[1], candidate))
-            else:
-                notify("%s is out (%s) and nothing below it can take over; observer moved up "
-                       "to %s, which answers now." % (LABEL[current], down[1], LABEL[candidate]))
-            moved = True
-            break
-    if not moved:
-        text = ("%s is out (%s) and no other provider in the chain can take over: %s"
-                % (current, down[1], "; ".join(tried) or "no other enabled provider"))
-        stuck = state.get("stuck")
-        if isinstance(stuck, dict) and stuck.get("provider") == current:
-            log("still stuck since %s: %s" % (stuck.get("since"), text))
-        else:
-            state["stuck"] = {"provider": current, "since": stamp}
-            notify("claude-mem observer stuck on %s: %s. It moves on its own once a "
-                   "provider in the chain answers again." % (LABEL[current], text))
-elif state.get("stuck"):
-    log("%s: no longer reported out; clearing the stuck flag" % current)
-    state["stuck"] = None
-
-# Fail up: while the current provider works, every enabled provider above it
-# is checked each run, and the observer returns to the highest one that has
-# answered ok continuously for RETURN_DELAY. Neither cmem.ai nor Google
-# publishes a reset time, so the streak is the only evidence a reset
-# happened. A current provider that is out already had every provider above
-# it checked in the step before.
-if not down:
-    for higher in [p for p in enabled if chain.index(p) < chain.index(current)]:
-        verdict, detail = check(higher)
-        if verdict == "ok":
-            if not ok_since.get(higher):
-                ok_since[higher] = now
-                log("%s: %s answering again (%s); returning after %d min of that"
-                    % (current, higher, detail, RETURN_DELAY // 60))
-            elif now - float(ok_since[higher]) >= RETURN_DELAY:
-                flip(higher, "%s ok for %d min (%s)"
-                     % (higher, (now - float(ok_since[higher])) // 60, detail))
-                notify("%s is back; observer returned to it." % LABEL[higher])
-                break
-            else:
-                log("%s: %s ok for %d of %d min" % (current, higher,
-                    (now - float(ok_since[higher])) // 60, RETURN_DELAY // 60))
-        else:
-            ok_since[higher] = None
-            log("%s: %s still %s (%s)" % (current, higher, verdict, detail))
-
-state["lastRun"] = stamp
-write_json(STATE, state)
-PYEOF
-}
-
 # claude-mem writes one logs/claude-mem-YYYY-MM-DD.log a day and never deletes
 # one; 13.25.3 has CLAUDE_MEM_LOG_LEVEL and no retention setting. Measured
 # 2026-09-25: 41 files, 997M, the daily files 16-56 MB each. This deletes the
-# dated files older than CLAUDE_MEM_LOG_KEEP_DAYS and trims the watchdog's own
-# log.
+# dated files older than CLAUDE_MEM_LOG_KEEP_DAYS.
 #
 # The date in the name is the worker's, which is UTC: in the evening west of
 # Greenwich the worker already writes tomorrow's file. So age is counted from
@@ -1113,14 +595,12 @@ PYEOF
 # timeout, short batched transactions, and never a full VACUUM or a restart.
 prune_mem_logs() {
   APPLY="$APPLY" python3 - <<'PYEOF'
-import datetime, fcntl, math, os, pathlib, re, sqlite3, stat, sys, tempfile, time, urllib.parse
+import datetime, math, os, pathlib, re, sqlite3, stat, sys, time, urllib.parse
 
 APPLY = os.environ.get("APPLY") == "1"
 DATA = pathlib.Path(os.environ.get("CLAUDE_MEM_DATA_DIR") or pathlib.Path.home() / ".claude-mem")
 LOGS = DATA / "logs"
 DB = DATA / "claude-mem.db"
-WATCHDOG_LOG = LOGS / "pro-watchdog.log"
-WATCHDOG_KEEP_LINES = 5000
 DAILY = re.compile(r"^claude-mem-(\d{4})-(\d{2})-(\d{2})\.log$")
 # Rows per delete transaction and pages per incremental_vacuum step: each
 # holds the write lock for milliseconds, so the worker's inserts queue briefly.
@@ -1196,61 +676,6 @@ for path, size in old:
     print("  %s %-32s %s" % ("removed" if APPLY else "would remove", path.name, human(size)))
 if logs_present:
     print("%d dated log(s) older than %d day(s)" % (len(old), keep_days))
-
-
-def locked_watchdog_log():
-    """Open the watchdog log and hold its exclusive flock, or return None.
-
-    The watchdog's log() appends under the same lock, so holding it from the
-    read to the rename means no line lands in the copy being replaced. Anyone
-    who queued on the lock meanwhile, a writer or a second trim, holds an
-    inode no longer at the path, so this reopens until the two agree.
-    """
-    for _ in range(5):
-        try:
-            src = WATCHDOG_LOG.open("rb")
-        except FileNotFoundError:
-            return None
-        fcntl.flock(src, fcntl.LOCK_EX)
-        try:
-            if os.fstat(src.fileno()).st_ino == os.stat(WATCHDOG_LOG).st_ino:
-                return src
-        except FileNotFoundError:
-            pass
-        src.close()
-    print("  %s kept being replaced; not trimmed" % WATCHDOG_LOG.name)
-    return None
-
-
-# The watchdog appends a few lines every 15 minutes and never trims. Keep the
-# tail, written to a temp file beside it and renamed over it, so a reader
-# never sees half a file; the mode is carried over.
-try:
-    st = WATCHDOG_LOG.lstat()
-except OSError:
-    st = None
-src = locked_watchdog_log() if st is not None and stat.S_ISREG(st.st_mode) else None
-if src is not None:
-    with src:
-        held = os.fstat(src.fileno())
-        lines = src.readlines()
-        trim = len(lines) > WATCHDOG_KEEP_LINES
-        if trim:
-            tail = b"".join(lines[-WATCHDOG_KEEP_LINES:])
-            saved = held.st_size - len(tail)
-            if APPLY:
-                fd, tmp = tempfile.mkstemp(dir=str(LOGS), prefix=WATCHDOG_LOG.name + ".")
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(tail)
-                os.chmod(tmp, stat.S_IMODE(held.st_mode))
-                os.replace(tmp, WATCHDOG_LOG)
-    if trim:
-        freed += saved
-        print("  %s %s from %d to %d lines, %s" % (
-            "trimmed" if APPLY else "would trim", WATCHDOG_LOG.name, len(lines),
-            WATCHDOG_KEEP_LINES, human(saved)))
-
-if logs_present:
     print("%s %d bytes (%s)" % ("reclaimed" if APPLY else "would reclaim", freed, human(freed)))
 
 
@@ -1375,7 +800,7 @@ for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
     -h|--help|help) usage; exit 0 ;;
-    capture|status|restore|prune-plugin-cache|prune-mem-logs|mem-pro-watchdog) cmd="$arg" ;;
+    capture|status|restore|prune-plugin-cache|prune-mem-logs) cmd="$arg" ;;
     *) echo "claude.sh: unknown argument: $arg" >&2; usage >&2; exit 1 ;;
   esac
 done
@@ -1389,8 +814,6 @@ if [ "$cmd" = "prune-plugin-cache" ]; then
   prune_plugin_cache
 elif [ "$cmd" = "prune-mem-logs" ]; then
   prune_mem_logs
-elif [ "$cmd" = "mem-pro-watchdog" ]; then
-  mem_pro_watchdog
 else
   py "$cmd"
 fi
