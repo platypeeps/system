@@ -25,10 +25,14 @@ store and an endpoint, not an `sd` verb.
    of tags, keyed by a stable root identity and the file name. The root key
    is not that identity: it is the checkout's basename, and a machine-local
    `root|` line can point it elsewhere, so two roots that both hold
-   `index.html` would share one row. The identity is the checkout's origin
-   remote when it has one; a root without a remote is keyed by its resolved
-   directory and stays local to that machine. The sd database is the store,
-   so a second machine that resolves the same remote sees the same pins.
+   `index.html` would share one row. The identity has two parts: the
+   checkout's origin remote, and the root directory relative to that checkout,
+   because a `root|` line can name several directories in one checkout. A
+   root without a remote is keyed by a persistent installation id plus its
+   resolved directory, because a path alone carries no machine identity, and
+   it stays local to that installation. The sd database is the store, so a
+   second machine that resolves the same remote and directory sees the same
+   pins.
 2. One write endpoint sets or clears any of the three and returns the changed
    row, per the build rule "return the changed row from each write"
    (ui-design `products/system/commands.md`, "Fixes the build needs").
@@ -49,8 +53,10 @@ store and an endpoint, not an `sd` verb.
 - [ ] Delete the file on disk, reload: no error, and the row is absent.
 - [ ] Two roots that both hold `index.html` keep separate state, including
       when a `root|` line redirects one of the keys.
+- [ ] Two `root|` directories inside one checkout keep separate state.
+- [ ] Two installations with the same remote-less path keep separate state.
 - [ ] `local-project-dashboard` tests cover the three fields, the fold and
-      the two-root case.
+      the three identity cases.
 
 ## References
 
@@ -65,3 +71,7 @@ store and an endpoint, not an `sd` verb.
 - 2026-09-28 review pass 1 (codex, advisory, addressed): keying by root key
   let two roots with the same file name share state; requirement 1 now names a
   stable root identity, requirement 4 and the criteria follow.
+- 2026-09-28 review pass 2 (codex, two advisories, addressed): a remote names
+  a repository, not a root, and a path names no machine; the identity now
+  carries the root's directory relative to the checkout, and the remote-less
+  fallback carries an installation id. Two criteria added.
