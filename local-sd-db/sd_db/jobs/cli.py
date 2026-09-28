@@ -253,8 +253,9 @@ def command_repo(argv: list[str]) -> int:
     each row. `ci` is the same shape again for `repo.ci` (sd:1843): whether
     the pack waits for GitHub Actions or runs `sd-check` locally.
 
-    `list` prints `managed`, then `runner_merge`, then `ci` as the last
-    field. `ci` is appended so the fields before it keep their positions.
+    `list` prints `managed`, then `ci`, then `runner_merge`, so the merge
+    setting stays the last field of each row, where the operator's
+    instructions read it.
     """
     verbs = ("add", "seed", "list", "runner-merge", "managed", "ci", "remove")
     if not argv or argv[0] not in verbs:
@@ -329,7 +330,7 @@ def command_repo(argv: list[str]) -> int:
         for row in rows:
             print(f"sd-db: {row['path']}  {row['remote'] or '-'}  "
                   f"{row['status_source']}  {'yes' if row['managed'] else 'no'}  "
-                  f"{row['runner_merge']}  {row['ci']}")
+                  f"{row['ci']}  {row['runner_merge']}")
         return 0
     finally:
         connection.close()

@@ -117,14 +117,13 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh repo managed PATH yes|no   # does the operator manage it
     ./sd-db.sh repo ci PATH github|local  # where its checks run
 
-A `repo list` row reads `path remote status_source managed runner_merge ci`.
+A `repo list` row reads `path remote status_source managed ci runner_merge`.
 `remote` is the checkout's origin URL as written, ssh or https: the runner clones over it, so it is not respelled.
 Rows are compared by repository identity, so the two spellings of one GitHub repository match.
 `repo add` on a registered path rereads the checkout, so it refreshes a row whose repository moved to a new owner.
 The `mode` column is the checkout's shape, `work` or `bare`, which the runner reads.
 It is not the pack's `full`, `minimal` or `guest` mode; that lives in the repository's `CLAUDE.local.md`, and the table does not copy it.
-`ci` is the last field, appended so the fields before it keep their positions.
-A reader that took `runner_merge` as the last field reads it second from last now.
+`runner_merge` stays the last field, because instructions read it there.
 `managed` is `yes` or `no`, and every row starts at `no`.
 No rule derives the flag: the GitHub owner does not decide it, so the operator sets each row.
 `ci` is `github` or `local`, and every row starts at `github`.
