@@ -77,7 +77,12 @@ WRITE_ROLES = {"admin", "maintain", "write"}
 DEPENDABOT = "dependabot[bot]"
 PAGE = 100
 
-FENCE_RE = re.compile(r"```yaml[ \t]*\n(sd-hold:\n(?:[ \t]+[^\n]*\n?)*)```", re.MULTILINE)
+# Each block line is one indent character, the rest of the line, and its
+# newline, so a line can be split only one way. The older `[ \t]+[^\n]*\n?`
+# let tabs go to either part and let one line span iterations: a comment of
+# `sd-hold:` and some 30 tabs, which any commenter on a public repo can post,
+# held a sweep for days before the write-access check ever ran.
+FENCE_RE = re.compile(r"```yaml[ \t]*\n(sd-hold:\n(?:[ \t][^\n]*\n)*)```", re.MULTILINE)
 SUPERSEDED_RE = re.compile(r"^\s*Superseded by #(\d+)\.?\s*$", re.MULTILINE)
 ISSUE_RE = re.compile(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)$")
 VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
