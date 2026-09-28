@@ -9,6 +9,13 @@ Omit filler, conversational preambles, and closing summaries.
 Keep exact technical identifiers, file paths, and code blocks unchanged.
 Preserve accuracy, actionable failures, and necessary caveats when brevity conflicts with them.
 
+# Instruction files
+
+CLAUDE.md, AGENTS.md and `.claude/rules/` hold rules, not history.
+Record incidents, findings and migration stories in `docs/`.
+Keep a rule to one line with a short reason.
+Keep a CLAUDE.md under 200 lines; move area rules to `.claude/rules/` with `paths:`.
+
 # Diagrams
 
 Use Archify when available for architecture, workflow, sequence, data-flow, and state diagrams.
@@ -65,6 +72,8 @@ Examples include `gh run watch`, `gh pr checkout`, and workflow dispatch without
 Check available tools and connection status before declaring MCP unavailable; Claude Code provides `claude mcp list`.
 Use Git for local repository state.
 Private repositories follow the same MCP-first rule as public repositories.
+
+**Use a classic PAT with `repo` scope for the MCP server.** A fine-grained PAT is scoped per owner and per repository, so private repositories in other organizations return 404. A classic PAT reaches every SSO-authorized organization.
 
 **Token changes need a Claude Code restart.** The server authenticates with `Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}`, interpolated from the process env inherited at launch — editing your shell env file does not reach a running session, and `/mcp` reconnect reuses the same stale value. Tell-tale: MCP 404s on a repo that `curl` with the same token reads fine. Quick health check: `search_repositories("is:private")` — `total_count: 0` means the session is holding a stale or under-scoped token.
 
