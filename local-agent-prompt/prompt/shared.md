@@ -59,11 +59,14 @@ back to the bare command and say so; do not keep retrying through `rtk`.
 
 # GitHub: MCP before `gh`
 
-For GitHub work — PRs, reviews, issues, commits, repo contents, releases — use the `mcp__github__*` tools, not `gh` via Bash.
+For GitHub work — PRs, reviews, commits, repo contents, releases — use the `mcp__github__*` tools, not `gh` via Bash.
+
+**We do not use GitHub issues.** Track work in the `sd` tracker: `sd task add`, `sd task note`, `sd task status`.
+Never open, search or cite a GitHub issue as the work record; pack repos have issues disabled.
 
 These tools are usually **deferred**: only their names are loaded, so they look unavailable and `gh` looks like the only option. It isn't. Load schemas first, batching everything the task needs into one call:
 
-`ToolSearch("select:mcp__github__pull_request_read,mcp__github__list_pull_requests,mcp__github__issue_read")`
+`ToolSearch("select:mcp__github__pull_request_read,mcp__github__list_pull_requests,mcp__github__get_commit")`
 
 Then call them normally. One extra round-trip buys structured JSON and field selection instead of parsing CLI text.
 
