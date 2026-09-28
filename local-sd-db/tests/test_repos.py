@@ -15,6 +15,7 @@ from unittest import mock
 from sd_db import connect
 from sd_db.migrate import initialise
 from sd_db.repos import (
+    CI_MODES,
     ConfMissing,
     RepoRefusal,
     add,
@@ -22,7 +23,9 @@ from sd_db.repos import (
     conf_paths,
     read_conf,
     registered,
+    repo_ci,
     seed,
+    set_ci,
     set_managed,
     set_runner_merge,
     worktrees_root,
@@ -368,4 +371,65 @@ class TheRunnerMergeWriter(RepoCase):
         with self.assertRaises(RepoRefusal) as caught:
             set_runner_merge(self.connection, checkout, "auto")
         self.assertIn("not a registered repository", str(caught.exception))
+        self.assertEqual(registered(self.connection), [])
+
+
+class TheCiWriter(RepoCase):
+    """sd:1843. `repo.ci` says whether a repository's checks run in GitHub
+    Actions or as a local `sd-check`.
+
+    The writer mirrors `set_runner_merge`; the reader answers `github` for a
+    path the table does not hold, so a caller never treats an unregistered
+    repository as switched to local checks.
+    """
+
+    def _registered(self) -> str:
+        checkout = support.repository(self.checkouts / "one")
+        return add(self.connection, checkout, home=self.home)
+
+    def test_the_modes_are_the_two_the_check_lists_default_first(self):
+        self.assertEqual(CI_MODES, ("github", "local"))
+
+    def test_it_sets_the_column_names_what_it_replaced_and_reads_back(self):
+        path = self._registered()
+        self.assertEqual(repo_ci(self.connection, path), "github")
+        self.assertEqual(set_ci(self.connection, path, "local"), (path, "github"))
+        self.assertEqual(repo_ci(self.connection, path), "local")
+        self.assertEqual(set_ci(self.connection, path, "github"), (path, "local"))
+        self.assertEqual(repo_ci(self.connection, path), "github")
+
+    def test_the_reader_resolves_an_absolute_checkout_path_to_its_row(self):
+        checkout = support.repository(self.checkouts / "one")
+        path = add(self.connection, checkout, home=self.home)
+        set_ci(self.connection, path, "local")
+        self.assertEqual(repo_ci(self.connection, checkout), "local")
+
+    def test_it_changes_no_other_field_on_the_row(self):
+        path = self._registered()
+        before = dict(self.connection.execute(
+            "SELECT * FROM repo WHERE path = ?", (path,)).fetchone())
+        set_ci(self.connection, path, "local")
+        after = dict(self.connection.execute(
+            "SELECT * FROM repo WHERE path = ?", (path,)).fetchone())
+        moved = {key for key in before if before[key] != after[key]}
+        self.assertEqual(moved - {"updated_at"}, {"ci"})
+
+    def test_a_value_the_check_would_reject_is_refused_in_a_sentence(self):
+        path = self._registered()
+        for value in ("actions", "GitHub", ""):
+            with self.subTest(value=value), self.assertRaises(RepoRefusal) as caught:
+                set_ci(self.connection, path, value)
+            self.assertIn("github or local", str(caught.exception))
+        self.assertEqual(repo_ci(self.connection, path), "github")
+
+    def test_an_unregistered_path_is_refused_rather_than_registered(self):
+        checkout = support.repository(self.checkouts / "two")
+        with self.assertRaises(RepoRefusal) as caught:
+            set_ci(self.connection, checkout, "local")
+        self.assertIn("not a registered repository", str(caught.exception))
+        self.assertEqual(registered(self.connection), [])
+
+    def test_the_reader_answers_github_for_an_unregistered_path(self):
+        checkout = support.repository(self.checkouts / "two")
+        self.assertEqual(repo_ci(self.connection, checkout), "github")
         self.assertEqual(registered(self.connection), [])

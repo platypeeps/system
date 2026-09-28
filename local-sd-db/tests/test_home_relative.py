@@ -56,7 +56,7 @@ COLUMNS = {
     "provider": {"none": "name enabled reason author_rank reviewer_rank"},
     "publication_claim": {"history": "payload",
                           "none": "id item active_item state created_at updated_at"},
-    "repo": {"key": "path", "none": "remote mode runner_merge managed status_source pieces_source created_at updated_at"},
+    "repo": {"key": "path", "none": "remote mode runner_merge managed ci status_source pieces_source created_at updated_at"},
     "repo_protection": {"key": "repo", "history": "body reason",
                         "none": "observed_at status default_branch"},
     "runner_lease": {"key": "repo", "none": "run branch exclusive acquired_at released_at"},
@@ -233,8 +233,10 @@ class TheMigration(AThirteenStore):
         connection = sqlite3.connect(self.database, isolation_level=None)
         paths.install(connection)
         connection.execute("PRAGMA foreign_keys = ON")
-        # 015 came after 014 and is reversed first: 014's reverse is written
-        # against the table at 14, without `repo.managed`.
+        # 016 and 015 came after 014 and are reversed first, newest first:
+        # 014's reverse is written against the table at 14, without
+        # `repo.managed` or `repo.ci`.
+        connection.executescript(reverse_script("016_repo_ci.sql"))
         connection.executescript(reverse_script("015_repo_managed.sql"))
         connection.executescript(reverse_script())
         self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])

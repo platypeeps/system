@@ -523,3 +523,51 @@ def set_managed(
     upsert_repo(connection, target, managed=MANAGED_VALUES[value])
     return target, before
 
+
+
+#: What `repo.ci` accepts, in the order the CHECK constraint lists them:
+#: `github` runs checks in GitHub Actions, `local` runs `sd-check` on this
+#: machine and posts an `sd/local-gate` status instead (sd:1843).
+CI_MODES = ("github", "local")
+
+
+def set_ci(
+    connection: sqlite3.Connection,
+    path: Path | str,
+    value: str,
+) -> tuple[str, str]:
+    """Set one registered repository's `ci`. Returns `(path, before)`.
+
+    Same refusals as `set_runner_merge`: a value that is not one of
+    `CI_MODES`, and a path no row holds.
+    """
+    if value not in CI_MODES:
+        accepted = " or ".join(CI_MODES)
+        raise RepoRefusal(f"{value!r} is not a ci setting; expected {accepted}")
+    given = str(Path(path).expanduser().resolve())
+    probe = paths.keys(given)
+    row = connection.execute(
+        f"SELECT path, ci FROM repo WHERE path IN ({paths.placeholders(probe)})",
+        probe).fetchone()
+    if row is None:
+        raise RepoRefusal(
+            f"{given} is not a registered repository; run `sd-db.sh repo add {given}`")
+    target = row["path"]
+    before = row["ci"]
+    upsert_repo(connection, target, ci=value)
+    return target, before
+
+
+def repo_ci(connection: sqlite3.Connection, path: Path | str) -> str:
+    """Where one repository's checks run: `github` or `local`.
+
+    An unregistered path reads `github`, the column default: a repository
+    the table does not hold has not been switched to local checks, so a
+    caller that ships it keeps waiting for GitHub Actions.
+    """
+    given = str(Path(path).expanduser().resolve())
+    probe = paths.keys(given)
+    row = connection.execute(
+        f"SELECT ci FROM repo WHERE path IN ({paths.placeholders(probe)})",
+        probe).fetchone()
+    return CI_MODES[0] if row is None else row["ci"]

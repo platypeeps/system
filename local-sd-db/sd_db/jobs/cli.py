@@ -38,7 +38,7 @@ from ..repos import add as add_repo
 from ..repos import registered
 from ..repos import registered_for
 from ..repos import ConfMissing, seed as seed_repos
-from ..repos import set_managed, set_runner_merge
+from ..repos import set_ci, set_managed, set_runner_merge
 from ..schema import SCHEMA_VERSION
 from ..sources import docs_work, index_cache, issues, register
 from ..sources import retire as retire_source
@@ -239,7 +239,7 @@ def _open_for_read() -> sqlite3.Connection:
 def command_repo(argv: list[str]) -> int:
     """`repo add <path>`, `repo seed [conf]`, `repo list [--managed]`,
     `repo runner-merge <path> <manual|auto>`, `repo managed <path> <yes|no>`,
-    `repo remove <path> ...`.
+    `repo ci <path> <github|local>`, `repo remove <path> ...`.
 
     The `repo` table is what criterion 6 enumerates from, so an empty one
     makes that criterion pass over nothing. `add` and `seed` are the two ways
@@ -250,12 +250,13 @@ def command_repo(argv: list[str]) -> int:
     (sd:1131). It changes no other field, so it is a write to a row the two
     registering verbs already made. `managed` is the same shape for
     `repo.managed` (sd:1619). Nothing derives that flag; the operator sets
-    each row.
+    each row. `ci` is the same shape again for `repo.ci` (sd:1843): whether
+    the pack waits for GitHub Actions or runs `sd-check` locally.
 
-    `list` prints `managed` before `runner_merge`, so the merge setting stays
-    the last field of each row, where the operator's instructions read it.
+    `list` prints `managed`, then `runner_merge`, then `ci` as the last
+    field. `ci` is appended so the fields before it keep their positions.
     """
-    verbs = ("add", "seed", "list", "runner-merge", "managed", "remove")
+    verbs = ("add", "seed", "list", "runner-merge", "managed", "ci", "remove")
     if not argv or argv[0] not in verbs:
         print(f"sd-db repo: expected {', '.join(verbs[:-1])} or {verbs[-1]}",
               file=sys.stderr)
@@ -301,6 +302,14 @@ def command_repo(argv: list[str]) -> int:
             path, before = set_managed(connection, rest[0], rest[1])
             print(f"sd-db: {path} managed {before} -> {rest[1]}")
             return 0
+        if verb == "ci":
+            if len(rest) != 2:
+                print("sd-db repo ci: needs a path and github or local",
+                      file=sys.stderr)
+                return 1
+            path, before = set_ci(connection, rest[0], rest[1])
+            print(f"sd-db: {path} ci {before} -> {rest[1]}")
+            return 0
         if rest not in ([], ["--managed"]):
             print(f"sd-db repo list: unknown argument {' '.join(rest)}; "
                   f"expected nothing or --managed", file=sys.stderr)
@@ -320,7 +329,7 @@ def command_repo(argv: list[str]) -> int:
         for row in rows:
             print(f"sd-db: {row['path']}  {row['remote'] or '-'}  "
                   f"{row['status_source']}  {'yes' if row['managed'] else 'no'}  "
-                  f"{row['runner_merge']}")
+                  f"{row['runner_merge']}  {row['ci']}")
         return 0
     finally:
         connection.close()

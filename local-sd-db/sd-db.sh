@@ -172,9 +172,9 @@ Usage: sd-db.sh <command>
               one file instead.
   repo list [--managed]
               The repositories the table holds, which is the enumeration,
-              each with its status source, its managed flag (yes|no) and its
-              runner merge setting, which stays the last field. `--managed`
-              prints only the rows marked managed.
+              each with its status source, its managed flag (yes|no), its
+              runner merge setting and, as the last field, its ci setting
+              (github|local). `--managed` prints only the rows marked managed.
   repo runner-merge PATH manual|auto
               Set whether the runner may merge this repository's work by
               itself. `auto` lets it open the exclusive merge lane; `manual`
@@ -185,6 +185,12 @@ Usage: sd-db.sh <command>
               Mark whether the operator manages this repository. Every row
               starts at `no`. The path must already be registered; this
               writes no new row.
+  repo ci PATH github|local
+              Set where this repository's checks run. `github` waits for
+              GitHub Actions, the default every row starts at; `local` makes
+              sd-ship run sd-check in a clean worktree and post an
+              `sd/local-gate` status. The path must already be registered;
+              this writes no new row.
   repo remove PATH [--with-items] --who NAME --reason TEXT
               [--apply --if-fingerprint HEX]
               Preview what retiring the repository row at PATH would take,
