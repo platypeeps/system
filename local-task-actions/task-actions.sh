@@ -3,10 +3,18 @@
 # digest email carry "mark done" / "postpone" buttons. Links are HMAC-signed
 # and expire; the server binds 127.0.0.1 only and edits TaskNote frontmatter
 # in the vault. LaunchAgent pattern as in local-cswap.
-# Usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <action> [days]
+# Usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <action> [days]|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
+
+# <config>/task-actions/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
+# default ~/.config/system; see .env.example) provides defaults only; an exported
+# OBSIDIAN_VAULT wins. Read it before anything below uses a value it may set,
+# the label prefix and the port included.
+ENV_OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"
+st_source_env task-actions
+[ -n "$ENV_OBSIDIAN_VAULT" ] && OBSIDIAN_VAULT="$ENV_OBSIDIAN_VAULT"
 
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="$LABEL_PREFIX.task-actions"
@@ -18,12 +26,6 @@ SERVICE="$DOMAIN/$LABEL"
 OUT_LOG="$DIR/logs/task-actions.log"
 
 PORT="${TASK_ACTIONS_PORT:-8766}"
-# <config>/task-actions/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
-# default ~/.config/system; see .env.example) provides defaults only; an exported
-# OBSIDIAN_VAULT wins.
-ENV_OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"
-st_source_env task-actions
-[ -n "$ENV_OBSIDIAN_VAULT" ] && OBSIDIAN_VAULT="$ENV_OBSIDIAN_VAULT"
 VAULT="${OBSIDIAN_VAULT:-$HOME/Documents/Obsidian Vault}"
 TASKS_SUBDIR="${OBSIDIAN_TASKS_SUBDIR:-TaskNotes/Tasks}"
 SECRET_FILE="${TASK_ACTIONS_SECRET_FILE:-$HOME/.config/task-actions/secret}"
@@ -469,9 +471,11 @@ case "${1:-}" in
   status) cmd_status ;;
   url)    shift; cmd_url "$@" ;;
   base-url) resolve_base ;;
+  test)   shift
+          exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@" ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|postpone> [days]
+usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|postpone> [days]|test
 
   run     the HTTP server itself (what the LaunchAgent calls): binds
           127.0.0.1:8766 and applies signed done/postpone actions to
@@ -486,6 +490,7 @@ usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|post
           expire after 7 days. `url [-b db] <stem> <action> [days]`.
           Base URL: TASK_ACTIONS_BASE_URL, else the Tailscale Funnel
           URL when one proxies this port, else http://127.0.0.1:8766.
+  test    run the unittest suite in tests/
 
 actions: open — HTTPS wrapper that 302-redirects to the obsidian:// URI
 (mail clients strip custom-scheme links, https survives). done —
@@ -516,7 +521,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") run|start|stop|status|base-url|url <stem> <action> [days]" >&2
+    echo "usage: $(basename "$0") run|start|stop|status|base-url|url <stem> <action> [days]|test" >&2
     exit 1
     ;;
 esac

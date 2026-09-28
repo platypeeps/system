@@ -342,6 +342,7 @@ jobs:
               run_suite obsidian-review sh local-obsidian-review/obsidian-review.sh test
               run_suite weekly-digest sh local-weekly-digest/weekly-digest.sh test -v
               run_suite workspace-mcp sh local-workspace-mcp/workspace-mcp.sh test -v
+              run_suite task-actions sh local-task-actions/task-actions.sh test -v
               run_suite network-testing sh network-testing/network-testing.sh test -v
               run_suite lib "$PYTHON" lib/tests/test_config.py -v
               run_suite machine-setup sh local-machine-setup/machine-setup.sh test -v
