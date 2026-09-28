@@ -1,10 +1,20 @@
 # system — repo guide for Claude
 
-Small scripts and wrappers for local infrastructure on a macOS workstation.
+Small scripts and wrappers that run local infrastructure on macOS workstations.
 Every top-level folder is one independent tool with a `README.md`. There is no repository-wide build.
+One operator runs these tools on their own machines; the repository is public so others can read and reuse them.
+`README.md` covers setup and configuration for a human reader; this file holds the rules for changing the code.
 
 This file holds rules. Record incidents and findings in `docs/`, not here.
 Area rules load from `.claude/rules/` when you touch matching files (index at the end).
+
+## Terms
+
+- **Operator**: the person who runs these tools on their machines; their values never enter this repository.
+- **Config folder**: the per-machine folder outside the checkout that holds private values (convention 3).
+- **Command pack**: the public repository `platypeeps/sd-ai-command-pack`; it ships the `sd` workflow commands (`sd`, `sd-ship`, `sd-docs-lint`).
+- **Workflow database**: the SQLite store behind `sd`, built by `local-sd-db`; a work item in it is written `sd:<n>`.
+- **Jev**: an optional hosted model from TypeSafe, wrapped by `local-jev`; see the Jev section.
 
 ## This repository is public
 
@@ -73,7 +83,7 @@ Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-
 - A change with a shape worth agreeing on first gets a folder under `docs/work/` with `prd.md`, `design.md` and `implement.md`.
 - Check with the command pack's `sd-docs-lint` from the repository root, with no `--work-dir`; an absolute value reads zero references and passes silently.
 - Never add `.github/sd-docs-lint.json`; that opt-in sends `docs/work` prose to a third party.
-- Rule 6 checks `path:line` citations into `.md` files from each item's `.citations.tsv` (`--update-citations` writes it).
+- Its rule 6 checks `path:line` citations into `.md` files from each item's `.citations.tsv` (`--update-citations` writes it).
 
 ## Citations into code
 
@@ -89,9 +99,9 @@ Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-
 
 ## Nothing may depend on Jev
 
-`local-jev` puts TypeSafe's Jev model on `PATH`. It is experimental.
+`local-jev` puts TypeSafe's Jev model on `PATH`. It is experimental, needs an API key, and calls a hosted service.
 
-- Every caller keeps its old mechanism; the machine runs the same without Jev as with it.
+- Every caller keeps its old mechanism; a machine runs the same without Jev as with it.
 - Use one of two shapes; a caller that uses neither is wrong:
 
       if jev enabled JEV_MY_STAGE; then verdict=$(jev noul ...); else verdict=$(old_way); fi
