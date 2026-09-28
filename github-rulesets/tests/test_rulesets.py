@@ -14,6 +14,9 @@ HERE = pathlib.Path(__file__).resolve().parent
 TOOL = HERE.parent / "github-rulesets.sh"
 REPO_ROOT = HERE.parent.parent
 REPO = "example-org/example-repo"
+#: The status `sd-ship merge` posts after `sd-check` passes at the head
+#: (`sd_lib.LOCAL_GATE_CONTEXT` in the command pack); no workflow defines it.
+LOCAL_GATE = "sd/local-gate"
 
 # Serves GETs from $GH_STUB_DIR: the list call from list.json, a single
 # ruleset from <id>.json. Every call, with its stdin, is logged as one JSON
@@ -152,6 +155,11 @@ class RulesetsTest(unittest.TestCase):
         for data in self.committed.values():
             for rule in data["rules"]:
                 for check in rule.get("parameters", {}).get("required_status_checks", []):
+                    if check["context"] == LOCAL_GATE:
+                        # A commit status the maintainer's account posts, not
+                        # an app: pinned to Actions, it could never be met.
+                        self.assertNotIn("integration_id", check)
+                        continue
                     self.assertIn(check["context"], jobs)
 
     # --- diff ----------------------------------------------------------------

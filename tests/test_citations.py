@@ -48,7 +48,8 @@ constrains the name of a tracked symlink and nothing about its target.
 Stdlib and git only, on purpose: this runs in the `system-native` preflight
 right after `sd-docs-lint`, before the virtualenv exists, and every leg
 repeats it. `python3 tests/test_citations.py` from the repository root is the
-whole invocation, and a test here fails when the workflow stops naming it.
+whole invocation, and a test here fails when `tests/ci-native.sh` stops
+naming it.
 """
 
 import ast
@@ -61,7 +62,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-WORKFLOW = ".github/workflows/system-native.yml"
+#: The native suites' script, which the workflow and `make check` both run.
+WORKFLOW = "tests/ci-native.sh"
 WORK_DIR = "docs/work"
 
 #: The extensions a citation "into code" names. Markdown targets are
@@ -88,7 +90,7 @@ MARKER = re.compile(r"\[quoted:[ \t]*(?P<reason>[^\]\s][^\]\n\r\u2028\u2029]*?)[
 #: file numbers as an editor shows it.
 LINE_END = re.compile(r"\r\n|[\n\r\u2028\u2029]")
 
-#: The line of the workflow that runs `sd-docs-lint`: the binary's path at the
+#: The line of the preflight that runs `sd-docs-lint`: the binary's path at the
 #: start of a line, with or without `--pr-body` after it. The `test -f` that
 #: checks the binary exists names the same path and is not an invocation.
 LINT_INVOCATION = re.compile(r'^\s*"\$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"(?:\s|$)')
@@ -777,7 +779,7 @@ class WorkflowCase(unittest.TestCase):
         deleted, the `test -f` that names the same binary left in place, is
         a workflow in which the lint never runs, and the check says so."""
         with tempfile.TemporaryDirectory() as scratch:
-            copy = Path(scratch) / "system-native.yml"
+            copy = Path(scratch) / "ci-native.sh"
             kept = [l for l in LINE_END.split(read(WORKFLOW)) if not LINT_INVOCATION.match(l)]
             copy.write_text("\n".join(kept), encoding="utf-8")
             text = copy.read_text(encoding="utf-8")

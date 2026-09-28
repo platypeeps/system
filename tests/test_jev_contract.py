@@ -38,8 +38,8 @@ hides.
 Stdlib and git only. This runs in the `system-native` preflight beside
 `tests/test_citations.py`, before the virtualenv exists, and every leg
 repeats it. `python3 tests/test_jev_contract.py` from the repository root is
-the whole invocation, and the preflight's unwired-suite guard fails when the
-workflow stops naming it.
+the whole invocation, and the preflight's unwired-suite guard fails when
+`tests/ci-native.sh` stops naming it.
 """
 
 import ast
@@ -100,6 +100,11 @@ RUNTIME_CRITERIA = frozenset({"local-drive-intake"})
 #: fails loudly rather than passing quietly.
 SELF = "tests/test_jev_contract.py"
 
+#: The native suites' script names `jev` as a suite to run -- `run_suite jev`
+#: and `local-jev/jev.sh test` -- and as this file's gate in its usage text. It
+#: asks Jev nothing, so it is excluded by path the same way.
+SUITE_RUNNER = "tests/ci-native.sh"
+
 #: Folders that name `jev` without asking it anything. `local-sd-db` is the
 #: store the calls are recorded in: `sd_db/judgment.py` names the two arms a
 #: row can carry, one of which is spelled `jev`, and a schema that could not
@@ -151,7 +156,7 @@ def caller_folders():
     """
     folders = {}
     for rel in tracked("*/*.py", "*/*.sh", "*/*/*.py", "*/*/*.sh"):
-        if rel.startswith(TOOL) or rel == SELF:
+        if rel.startswith(TOOL) or rel in (SELF, SUITE_RUNNER):
             continue
         folder = rel.split("/")[0]
         for number, line in code_lines(rel):
@@ -854,10 +859,10 @@ class TheWorkflowRunsThisFile(unittest.TestCase):
     """Deleting the preflight line must fail here, not go quietly green."""
 
     def test_the_preflight_names_this_file(self):
-        workflow = (ROOT / ".github/workflows/system-native.yml").read_text(encoding="utf-8")
+        workflow = (ROOT / "tests/ci-native.sh").read_text(encoding="utf-8")
         wanted = re.compile(r"^\s*python3 tests/test_jev_contract\.py\s*$", re.MULTILINE)
         # assertTrue rather than assertRegex: a failing assertRegex prints the
-        # whole workflow, and nobody reads three hundred lines of YAML to find
+        # whole script, and nobody reads three hundred lines of shell to find
         # out that one line is missing.
         self.assertTrue(
             wanted.search(workflow),

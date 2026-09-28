@@ -34,19 +34,21 @@ dropped. Rulesets match by `name`; the file name is only a slug of it.
 
 The repository is public, so no file names a person. `export` drops bypass
 actors of type `User` or `Team` and names each on stderr. Roles, apps and
-deploy keys stay. The `integration_id` 15368 on each required check is the
+deploy keys stay. An `integration_id` of 15368 on a required check is the
 GitHub Actions app, which pins the check to Actions rather than to any app
 that posts a status of the same name.
 
-The required-check contexts must be job names the workflows produce;
-`tests/test_rulesets.py` expands the `system-native` matrix and fails on a
-context no workflow defines.
+The required-check contexts must be job names the workflows produce, or
+`sd/local-gate`, the status `sd-ship merge` posts after `make check` passes at
+the head. `tests/test_rulesets.py` expands the `system-native` matrix and fails
+on any other context. `sd/local-gate` carries no `integration_id`: the
+maintainer's account posts it, not an app.
 
 The two rulesets:
 
 - `main integrity` — no force push and no deletion of the default branch; no
   bypass.
 - `main required checks` — a pull request (0 approvals, since one maintainer
-  cannot approve their own pull request) and the checks `route` plus the four
-  `system-native` legs; no bypass. Strict (up-to-date) checks are off, so a
-  landing does not re-stale every open pull request.
+  cannot approve their own pull request) and the check `sd/local-gate`; no
+  bypass. Strict (up-to-date) checks are on, so the gate always ran on the
+  base a pull request lands on.

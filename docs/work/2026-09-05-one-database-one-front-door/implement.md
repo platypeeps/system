@@ -1241,7 +1241,7 @@ tests in `local-herdr/tests/test_herdr.py` run the entrypoint against
 `local-herdr/tests/doubles/herdr`, a POSIX-sh stand-in that journals argv
 and answers from fixture files — the installed binary is never called, and
 one test asserts the double is the `herdr` PATH resolves — wired as
-`run_suite herdr`, in `.github/workflows/system-native.yml`. Against the
+`run_suite herdr`, in `tests/ci-native.sh`. Against the
 real binary, read-only, `snapshot` of the live `default` session recorded
 four Claude agents with their ids and `status` answered 0. Criterion 17
 stays by hand: the steps are `local-herdr/README.md:133`, and the state

@@ -100,15 +100,22 @@ Other fixed ports:
 
 ## Tests
 
-`.github/workflows/system-native.yml` runs every suite on Linux
-(`ubuntu-latest`) with Python 3.14. Its `run_suite` lines are the list of
-suites; the preflight fails on a `*/tests/test_*.py` folder that no line names.
+`make check` runs every suite, and merges gate on it through the local gate
+(`repo.ci=local`): `sd-ship merge` runs it via `sd-check` in a clean worktree of
+the pull request's head and posts `sd/local-gate`, the one required check. It
+needs `python3.14` on `PATH` and fetches the command pack at its pinned SHA
+into `.ci/`.
+
+`tests/ci-native.sh` holds the preflight and the `run_suite` lines, which are
+the list of suites; the preflight fails on a `*/tests/test_*.py` folder that no
+line names. The CI workflow files stay in the tree but are disabled;
+`.github/workflows/system-native.yml` runs the same script on Linux.
 
 Some tests need macOS: APFS immutable retention, clonefile copies and diskutil
 in `local-sd-runner`, and the Swift build and dyld shim in `local-msgsnap`.
-CI cannot run them, and a skipped test fails CI, so they live in separate
-suites named in `tests/macos-only-suites.txt`. Run them on a Mac before pushing
-a change to a folder that file names:
+Linux cannot run them, and a skipped test fails the check, so they live in
+separate suites named in `tests/macos-only-suites.txt`. `make check` runs them
+on a Mac; to run only them:
 
     tests/run-macos-only.sh all
 

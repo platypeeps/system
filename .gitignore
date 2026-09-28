@@ -24,6 +24,8 @@ local-milvus/.sudo-shim/
 **/mcp_logs/*
 !**/mcp_logs/.gitkeep
 .venv
+# tests/check.sh: the pinned command pack and the python3 it runs
+/.ci/
 node_modules/
 __pycache__/
 

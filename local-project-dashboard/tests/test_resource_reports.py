@@ -247,7 +247,12 @@ class CronReports(unittest.TestCase):
             fake = root / "sd"; calls = root / "calls.jsonl"
             fake.write_text("#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ['REPORT_CALLS'],'a') as stream: stream.write(json.dumps(sys.argv[1:])+'\\n')\nsys.exit(int(os.environ.get('REPORT_EXIT','0')))\n")
             fake.chmod(0o755)
-            env = {**os.environ, "HOME": str(root), "SYSTEM_TOOLS_CONFIG": str(root / "config"), "SD_REPORT_BIN": str(fake), "REPORT_CALLS": str(calls), "REPORT_EXIT": "1"}
+            # `exec` asks launchd about the job; this stub answers, never the
+            # machine's gui domain. It says the label is not held.
+            launchctl = root / "launchctl"; launchctl_calls = root / "launchctl-calls"
+            launchctl.write_text(f"#!/bin/sh\necho \"$*\" >> {str(launchctl_calls)!r}\nexit 1\n"); launchctl.chmod(0o755)
+            env = {**os.environ, "HOME": str(root), "SYSTEM_TOOLS_CONFIG": str(root / "config"), "SD_REPORT_BIN": str(fake), "REPORT_CALLS": str(calls), "REPORT_EXIT": "1",
+                   "PATH": str(root) + os.pathsep + os.environ["PATH"]}
             result = subprocess.run(["sh", str(cron / "cron-jobs.sh"), "exec", "fixture"], env=env, capture_output=True, text=True, timeout=10, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             log = (cron / "logs/fixture.log").read_text()
@@ -256,12 +261,12 @@ class CronReports(unittest.TestCase):
             self.assertEqual(argv[:3], ["reports", "ingest", "fixture"])
             self.assertEqual(argv[argv.index("--offset") + 1], str(len("PREVIOUS RUN\n")))
             self.assertIn("report was not recorded", result.stderr)
+            self.assertIn("print gui/", launchctl_calls.read_text())
             self.assertFalse((cron / "logs/.fixture.lock").exists())
             self.assertFalse((cron / "logs/failures.log").exists())
             notification = root / "osascript"
             notification.write_text("#!/bin/sh\nexit 0\n"); notification.chmod(0o755)
             (jobs / "fixture.job").write_text('JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="exit 7"\nJOB_DIR=' + str(root) + "\n")
-            env["PATH"] = str(root) + os.pathsep + env["PATH"]
             result = subprocess.run(["sh", str(cron / "cron-jobs.sh"), "exec", "fixture"], env=env, capture_output=True, text=True, timeout=10, check=False)
             self.assertEqual(result.returncode, 7, result.stderr)
             self.assertEqual(len(calls.read_text().splitlines()), 2)
