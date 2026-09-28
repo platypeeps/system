@@ -434,6 +434,7 @@ class EvictedDestination(FakeTools):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.state / "brctl.log").read_text(), f"download {evicted}\n")
         self.assertEqual(len(self.rsync_runs()), 2)
+        self.assertIn(f"--- downloaded: {evicted}", result.stdout)
         self.assertTrue((self.mirror / "vault" / ".gitignore").is_file())
 
     def test_only_evicted_files_the_pass_would_update_are_downloaded(self) -> None:

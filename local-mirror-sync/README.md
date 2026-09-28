@@ -237,9 +237,10 @@ reads a file it replaces, and on an evicted one that read fails with
 "Resource deadlock avoided"; the pair then aborts at that file. `-W` does not
 prevent it (sd:1947). On that error `sync` lists, by dry run, the files the
 pair is about to update, asks `brctl download` for the evicted ones among
-them, waits up to `MIRROR_SYNC_MATERIALIZE_WAIT` seconds (default 300) and
-runs the pair once more. Nothing is deleted. A file still evicted after the
-wait fails the pair by name.
+them and waits for them. The wait is bounded per pair by
+`MIRROR_SYNC_MATERIALIZE_WAIT` seconds in total (default 300). It logs each
+downloaded file and runs the pair once more. Nothing is deleted. A file still
+evicted after the wait fails the pair by name.
 
 A live source loses files while a pass reads it: a cron attempt file, a git
 ref that a fetch prunes. GNU rsync exits 24 for that; openrsync exits 23 and

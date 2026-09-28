@@ -535,7 +535,10 @@ materialize_pending() {
       if is_dataless "$f"; then left="$left$f
 "; fi
     done < "$PENDING"
-    [ -n "$left" ] || return 0
+    if [ -z "$left" ]; then
+      sed 's/^/--- downloaded: /' "$PENDING"
+      return 0
+    fi
     [ "$waited" -lt "$MATERIALIZE_WAIT" ] || break
     sleep 1; waited=$((waited + 1))
   done
