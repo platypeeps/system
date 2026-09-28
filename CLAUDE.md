@@ -30,6 +30,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 - Merges gate on `make check` through the local gate (`repo.ci=local`): `sd-ship merge` runs it via `sd-check` and posts `sd/local-gate`, the one required check.
 - `make check` runs `tests/check.sh`: the preflight and all four legs of `tests/ci-native.sh`, plus `tests/run-macos-only.sh` suites on a Mac.
+- Actions CI is off on purpose (billing); who, when and how to revert: `docs/local-ci-rollout.md`.
 - The CI workflow files stay in the tree but are disabled; `system-native.yml` calls the same `tests/ci-native.sh`, so do not fork it.
 - A test that needs macOS goes in a suite named in `tests/macos-only-suites.txt`, never behind a skip; Linux cannot run it.
 - Do not count suites in prose; the `run_suite` lines in `tests/ci-native.sh` are the enumeration, and prose counts go stale.
