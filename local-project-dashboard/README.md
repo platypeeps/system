@@ -16,18 +16,21 @@ instead of overwriting a newer change. Capture keeps its draft and offers
 Refresh related item; other item forms offer a reload link.
 
 **Today** opens with **Now**: the fleet's loudest facts, ranked, loudest first —
-checkouts with unpushed commits, checkouts with uncommitted files, abandoned
+scheduled jobs whose last run failed, checkouts with unpushed commits, checkouts with uncommitted files, abandoned
 worktrees, and open pull requests waiting on you. The ranking is the pack
 dashboard's `dashboard/now.py`, carried across with its rank numbers, in
 `sd_dashboard/now_screen.py`; the band a row wears (`broken`, `look`,
-`queued`) is derived from the rank alone, never from the kind. The three
+`queued`) is derived from the rank alone, never from the kind. The four
 sources are the ones the Operations tabs show in full: Repos and Sessions
 through the fleet child, Trackers' PRs through `sd_db.shadow` (`needs_you`
 rows only; the days a stale row shows count from the sync's first sighting,
-because the shadow table carries no `updated_at`). The rows arrive by `/api/now` after
+because the shadow table carries no `updated_at`), and Jobs through
+`sd_db.operations.inventory`. A failed job ranks 1, after a dark collector and
+before every other row; it names the exit code or signal, the time its log was
+last written, and its retry line, `cron-jobs.sh run <job>`. The rows arrive by `/api/now` after
 the page is up, so a Today load never waits on the fleet; Refresh reads again.
 A collector that goes dark — the child refused, past its budget, exiting
-non-zero, or a shadow read that fails — is a rank-0 row naming the collector
+non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming the collector
 and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
@@ -136,7 +139,8 @@ intended service; inspection is limited to what this user can see and performs
 no network scan. Within Operations, a collector runs only when its area is opened:
 Ports runs the listener inspection, a Resources view runs its tile, and Repos and
 Sessions run the fleet reader. Today's Now runs the fleet reader too, once per
-`/api/now` read, for both areas, and reads the shadow table. None of them
+`/api/now` read, for both areas, reads the shadow table, and reads the launchd
+jobs' last-run state as the Jobs area does. None of them
 exposes prompts, environment variables, output logs or arbitrary commands.
 
 The main server binds **local loopback**. Remote access requires an explicit

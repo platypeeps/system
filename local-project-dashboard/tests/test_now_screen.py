@@ -9,11 +9,14 @@ here opens a database of its own; the criterion 2 grep in
 """
 
 import json
+import os
 import re
+import tempfile
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import contributions, progress, upsert_shadow
+from sd_db import contributions, operations, progress, upsert_shadow
 from sd_dashboard import fleet, now_screen
 
 from fleet_support import FleetCase
@@ -140,7 +143,11 @@ class Ranking(ScreenCase):
 
 
 class Document(ScreenCase):
-    """The merged document: three sources, each guarded, every row banded."""
+    """The merged document: four sources, each guarded, every row banded."""
+
+    def setUp(self):
+        super().setUp()
+        self.quiet = JobsBackend(self.tmp.name)
 
     def fixture_fleet(self, repos=(), trees=()):
         return lambda area: fleet_document(area, repos=repos, trees=trees)
@@ -172,7 +179,7 @@ class Document(ScreenCase):
         rows = progress.tracker_items(self.connection, tracker="github")
         self.assertEqual({row["number"]: row.get("needs_you") for row in rows}, {14: True, 15: True, 16: None})
         with patch.object(progress, "tracker_items", wraps=progress.tracker_items) as shadow:
-            document = now_screen.document(self.connection, now=NOW, fleet=self.fixture_fleet(
+            document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet(
                 repos=[repo("pushy", ahead=1), repo("messy", dirty=2)],
                 trees=[tree("gone", live=False)]))
         shadow.assert_called_once_with(self.connection, tracker="github")
@@ -185,14 +192,14 @@ class Document(ScreenCase):
             (4, "dirty:messy:2", "queued"),
             (4, "pr:example/project#15:4", "queued"),
         ])
-        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": ""})
+        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
         for row in document["rows"]:
             self.assertEqual(set(row), {"rank", "band", "kind", "id", "what", "detail", "source"})
 
     def test_an_empty_fleet_and_no_pulls_is_an_empty_list_with_every_source_read(self):
-        document = now_screen.document(self.connection, now=NOW, fleet=self.fixture_fleet())
+        document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet())
         self.assertEqual(document["rows"], [])
-        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": ""})
+        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
 
     def test_a_collector_that_refuses_is_a_rank_zero_row_and_the_others_still_render(self):
         def fleet_backend(area):
@@ -200,7 +207,7 @@ class Document(ScreenCase):
                 raise ValueError("fleet collection was stopped at its budget: python ran past 12 seconds")
             return fleet_document(area, trees=[tree("gone", live=False)])
 
-        document = now_screen.document(self.connection, now=NOW, fleet=fleet_backend)
+        document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet_backend)
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
             (0, "dark:repos", "broken"),
             (3, "worktrees:1", "look"),
@@ -211,14 +218,14 @@ class Document(ScreenCase):
         self.assertEqual(document["sources"]["repos"], document["rows"][0]["detail"])
 
     def test_an_incomplete_fleet_document_is_dark_and_never_read_as_calm(self):
-        document = now_screen.document(self.connection, now=NOW,
+        document = now_screen.document(self.connection, now=NOW, jobs=self.quiet,
                                        fleet=lambda area: {"root": "/repos", "rootExists": True})
         self.assertEqual([row["id"] for row in document["rows"]], ["dark:repos", "dark:sessions"])
         self.assertIn("incomplete", document["rows"][0]["detail"])
 
     def test_a_shadow_read_that_fails_is_a_rank_zero_row(self):
         with patch.object(progress, "tracker_items", side_effect=ValueError("shadow table unreadable")):
-            document = now_screen.document(self.connection, now=NOW, fleet=self.fixture_fleet())
+            document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet())
         self.assertEqual([(row["rank"], row["id"], row["detail"]) for row in document["rows"]],
                          [(0, "dark:prs", "shadow table unreadable")])
 
@@ -230,7 +237,7 @@ class DarkCollector(FleetCase):
         script = Path(self.tmp.name) / "refusing_fleet.py"
         script.write_text("import sys\nprint('fixture collector refused: ' + sys.argv[1], file=sys.stderr)\nsys.exit(3)\n")
         with patch.object(fleet, "FLEET", script):
-            document = now_screen.document(self.connection, now=NOW)
+            document = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name))
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]],
                          [(0, "dark:repos", "broken"), (0, "dark:sessions", "broken")])
         self.assertEqual(document["rows"][0]["detail"], "fixture collector refused: repos")
@@ -246,11 +253,11 @@ class DarkCollector(FleetCase):
         messy = self.checkout("messy")
         (messy / "scratch").write_text("x\n")
         self.abandoned(messy, "gone", "feat/gone")
-        document = now_screen.document(self.connection, now=NOW)
+        document = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name))
         self.assertEqual([(row["rank"], row["id"]) for row in document["rows"]], [
             (3, "ahead:clone:1"), (3, "worktrees:1"), (4, "dirty:messy:1"),
         ])
-        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": ""})
+        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
 
     def test_a_fixture_commit_leaves_the_abandoned_registration_in_place(self):
         """sd:1272: git 2.54's auto maintenance prunes a registration with no
@@ -264,7 +271,7 @@ class DarkCollector(FleetCase):
         (messy / "README").write_text("again\n")
         self.git(messy, "commit", "-q", "-am", "a later commit")
         self.assertTrue((messy / ".git" / "worktrees" / "gone").is_dir())
-        document = now_screen.document(self.connection, now=NOW)
+        document = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name))
         self.assertIn((3, "worktrees:1"), [(row["rank"], row["id"]) for row in document["rows"]])
 
 
@@ -280,7 +287,7 @@ class TodayPage(ScreenCase):
         self.assertIn('data-now="/api/now"', section.group(0))
         self.assertIn("<h2>Now</h2>", section.group(0))
         self.assertIn("<noscript>", section.group(0))
-        for area in ("Repos", "Sessions", "Trackers"):
+        for area in ("Repos", "Sessions", "Trackers", "Jobs"):
             self.assertIn(area, section.group(0))
         self.assertIn("Reading the fleet", section.group(0))
         self.assertIn('data-now-refresh', section.group(0))
@@ -300,12 +307,20 @@ class TodayPage(ScreenCase):
 class NowApi(BrowserSession):
     fleet_backend = staticmethod(lambda area: fleet_document(area, repos=[repo("pushy", ahead=1)]))
 
+    def setUp(self):
+        # `backend` is the server's `operations_backend`, which Now reads for jobs.
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.backend = JobsBackend(root.name, jobs=[("nightly-sync", "failed", 7, None)])
+        super().setUp()
+
     def test_the_document_is_served_to_a_session_and_refused_without_one(self):
         status, headers, body = self.request("/api/now", headers={"Cookie": self.cookie})
         self.assertEqual(status, 200)
         self.assertEqual(headers["Cache-Control"], "no-store")
         document = json.loads(body)
-        self.assertEqual([(row["id"], row["band"]) for row in document["rows"]], [("ahead:pushy:1", "look")])
+        self.assertEqual([(row["id"], row["band"]) for row in document["rows"]],
+                         [("job:nightly-sync:7", "broken"), ("ahead:pushy:1", "look")])
         self.assertEqual(self.request("/api/now")[0], 403)
         self.assertEqual(self.request("/api/now?x=1", headers={"Cookie": self.cookie})[0], 400)
         self.assertEqual(self.request("/api/now", headers={"Host": "evil.invalid", "Cookie": self.cookie})[0], 403)
@@ -314,3 +329,82 @@ class NowApi(BrowserSession):
         before = self.snapshot()
         self.assertEqual(self.request("/api/now", headers={"Cookie": self.cookie})[0], 200)
         self.assertEqual(self.snapshot(), before)
+
+
+class JobsBackend:
+    """An operations backend double: `names` and `inspect`, the shape
+    `operations.inventory` reads, and the `cron_root` whose `logs/` holds
+    each job's log. No launchctl call is made."""
+
+    def __init__(self, root, jobs=(), refuse=""):
+        self.cron_root = Path(root) / "local-cron-jobs"
+        (self.cron_root / "logs").mkdir(parents=True, exist_ok=True)
+        self.jobs = {name: (state, code, signal) for name, state, code, signal in jobs}
+        self.refuse = refuse
+
+    def names(self):
+        if self.refuse:
+            raise OSError(self.refuse)
+        return list(self.jobs)
+
+    def inspect(self, name):
+        state, code, signal = self.jobs[name]
+        return {"name": name, "label": "fixture." + name, "service": "fixture/" + name, "schedule": [],
+                "state": state, "pid": 7 if state == "running" else None, "last_exit": code,
+                "last_signal": signal, "runs": 1, "lifetime": None, "boot": None, "reason": "",
+                "_observation": name + state}
+
+    def log(self, name, stamp):
+        path = self.cron_root / "logs" / f"{name}.log"
+        path.write_text("a run\n")
+        os.utime(path, (stamp, stamp))
+
+
+class FailedJobs(ScreenCase):
+    """Four jobs failed on 2026-09-27 and Today did not show them."""
+
+    def fleet(self, area):
+        return fleet_document(area, repos=[repo("pushy", ahead=1)])
+
+    def test_a_failed_job_is_a_warning_row_ranked_above_every_other_source(self):
+        jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None),
+                                                ("quiet", "idle", 0, None), ("busy", "running", None, None),
+                                                ("stopped", "interrupted", None, 9)])
+        stamp = datetime(2026, 9, 27, 2, 15).timestamp()
+        jobs.log("nightly-sync", stamp)
+        # The default seam: Now reads the same launchd backend Operations does.
+        with patch.object(operations, "LaunchdBackend", lambda: jobs):
+            document = now_screen.document(self.connection, now=NOW, fleet=self.fleet)
+        self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
+            (1, "job:nightly-sync:7", "broken"),
+            (3, "ahead:pushy:1", "look"),
+        ])
+        row = document["rows"][0]
+        self.assertEqual(row["source"], "jobs")
+        self.assertEqual(row["what"], "nightly-sync failed with exit 7")
+        self.assertEqual(row["retry"], f"{jobs.cron_root}/cron-jobs.sh run nightly-sync")
+        self.assertEqual(row["detail"], f"log 2026-09-27 02:15 · retry: {row['retry']}")
+        self.assertEqual(now_screen.FAILED, 1)
+        self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
+
+    def test_a_job_killed_for_cause_names_the_signal_and_a_missing_log_says_so(self):
+        jobs = JobsBackend(self.tmp.name, jobs=[("crashy", "failed", None, 11)])
+        rows = now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)["rows"]
+        self.assertEqual(rows[0]["id"], "job:crashy:signal11")
+        self.assertEqual(rows[0]["what"], "crashy failed with SIGSEGV (11)")
+        self.assertTrue(rows[0]["detail"].startswith("no log file · retry: "), rows[0]["detail"])
+
+    def test_the_retry_line_is_home_relative_under_home(self):
+        with patch.object(Path, "home", lambda: Path(self.tmp.name)):
+            rows = now_screen.job_rows([{"name": "x", "state": "failed", "last_exit": 1, "last_signal": None}],
+                                       Path(self.tmp.name) / "repos/system/local-cron-jobs")
+        self.assertEqual(rows[0]["retry"], "~/repos/system/local-cron-jobs/cron-jobs.sh run x")
+
+    def test_a_jobs_read_that_fails_is_one_dark_row_and_the_others_still_render(self):
+        jobs = JobsBackend(self.tmp.name, refuse="LaunchAgents is unreadable")
+        document = now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)
+        self.assertEqual([(row["rank"], row["id"], row["detail"]) for row in document["rows"]], [
+            (0, "dark:jobs", "LaunchAgents is unreadable"),
+            (3, "ahead:pushy:1", "main · clean tree"),
+        ])
+        self.assertEqual(document["sources"]["jobs"], "LaunchAgents is unreadable")
