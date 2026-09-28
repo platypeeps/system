@@ -61,16 +61,21 @@ to separate the two.
      (a landing candidate for the operator, not an automatic delete; sd:1479
      closed with its PR unmerged, so "done" does not mean "landed");
    - checkout that could not fast-forward because of local changes.
-6. Every deletion prints the branch name and its tip sha, so a report line is
+6. A linked worktree placed under the root is not a checkout. `hygiene`
+   finds it through its parent's registrations and treats it by the rules
+   above. `reconcile` lists it as `WORKTREE <dir> (of <parent>)`, not as
+   `MISMATCH`: on 2026-09-28, an agent's worktree named after its branch
+   showed as a mismatched checkout that needs a rename.
+7. Every deletion prints the branch name and its tip sha, so a report line is
    enough to restore it with `git branch <name> <sha>`.
-7. `nightly` emails the report through local-notify when `--apply` changed
+8. `nightly` emails the report through local-notify when `--apply` changed
    anything or a report-only class is non-empty, like the reconcile diff.
-8. `hygiene` without `--apply` exits 0 when clean and 1 when it found stale
+9. `hygiene` without `--apply` exits 0 when clean and 1 when it found stale
    items; `--apply` exits 1 only when an action failed. It is not a `status`
    subcommand, so local-health-check does not read it.
-9. POSIX sh, per the repo conventions. The squash check and the lock parse
+10. POSIX sh, per the repo conventions. The squash check and the lock parse
    may call git plumbing only; no GitHub API call, so the sweep runs offline.
-10. Nothing depends on Jev.
+11. Nothing depends on Jev.
 
 ## Out of scope
 
@@ -91,6 +96,9 @@ to separate the two.
       deleted.
 - [ ] A merged branch in a dirty worktree keeps both worktree and branch.
 - [ ] A stash is never touched.
+- [ ] A linked worktree under the root, in a directory not named after its
+      repo: `reconcile` lists it as `WORKTREE`, not `MISMATCH`, and leaves
+      the conf unchanged; `hygiene` classifies its branch through the parent.
 - [ ] `nightly` runs `hygiene --apply` after `sync`, and its email carries
       the report only when something changed or is listed.
 - [ ] The suite runs through `repo-sync.sh test` and the `run_suite` line
