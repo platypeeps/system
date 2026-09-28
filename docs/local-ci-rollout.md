@@ -28,7 +28,7 @@ Most are private repositories in the `platypeeps` organization; Actions is disab
 Three are public: this one, the command pack, and one more.
 Two are repositories in the operator's employer organization.
 The public ones and the employer ones keep Actions on.
-There, only the CI workflow files are disabled, so CodeQL and Dependabot still run.
+There, only the CI workflow files are disabled or deleted, so CodeQL and Dependabot still run.
 One employer repository was still mid-switch on 2026-09-28.
 Its row read `local`, but its workflows and required checks were still GitHub's.
 
@@ -54,7 +54,7 @@ A merge done outside `sd-ship` never gets that status, so it cannot pass protect
 
 - **Mode:** the `ci` field of `sd-db.sh repo list`.
 - **Required check:** the branch protection or ruleset names `sd/local-gate`.
-- **Workflows:** `gh workflow list --all` shows the CI workflows as `disabled_manually`.
+- **Workflows:** `gh workflow list --all` shows no CI workflow, or shows it as `disabled_manually`.
 - **Actions on a private repository:** the repository's Actions settings show Actions disabled.
 
 ## How to switch a repository, or switch it back
@@ -74,6 +74,7 @@ Examples are an organization ruleset, or a ruleset shared with another protected
 No verb switches back.
 To go back to GitHub CI, reverse each step.
 Set the mode to `github`, restore the old required checks, and re-enable the workflows.
+A deleted workflow comes back from git history.
 Re-enable Actions only once billing allows it again.
 
 ## What the local gate needs

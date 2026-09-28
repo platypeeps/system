@@ -24,20 +24,20 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 - Run `local-scan-for-secrets/scan-for-secrets.sh` from the root before a commit that adds configuration.
 - Install the pre-push leak guard once per clone: `sh local-leak-guard/leak-guard.sh install`.
   - It reads `<config>/privacy-patterns`, one ERE per line; never commit that file or its contents.
-  - Test with synthetic patterns; CI cannot read the real ones, so no CI step may need them.
+  - Test with synthetic patterns; no suite may need the real ones.
 
 ## Tests and CI
 
 - Merges gate on `make check` through the local gate (`repo.ci=local`): `sd-ship merge` runs it via `sd-check` and posts `sd/local-gate`, the one required check.
 - `make check` runs `tests/check.sh`: the preflight and all four legs of `tests/ci-native.sh`, plus `tests/run-macos-only.sh` suites on a Mac.
 - Actions CI is off on purpose (billing); who, when and how to revert: `docs/local-ci-rollout.md`.
-- The CI workflow files stay in the tree but are disabled; `system-native.yml` calls the same `tests/ci-native.sh`, so do not fork it.
+- No GitHub workflow runs the suites; do not add one, since `make check` is the gate.
 - A test that needs macOS goes in a suite named in `tests/macos-only-suites.txt`, never behind a skip; Linux cannot run it.
 - Do not count suites in prose; the `run_suite` lines in `tests/ci-native.sh` are the enumeration, and prose counts go stale.
 - Wire a new `*/tests/test_*.py` folder into a `run_suite` line or the macOS-only list; the preflight fails naming any unwired folder.
 - Write shell-script tests as Python `unittest`; the `run_suite` wrapper asserts a unittest summary.
 - Skipped tests fail the check; do not add a skip.
-- The check uses an isolated home, an installed library, Python 3.14, and the command pack at the workflow's pinned SHA, fetched into `.ci/`.
+- The check uses an isolated home, an installed library, Python 3.14, and the command pack at the SHA in `.sd-pack-rev`, fetched into `.ci/`.
 - A test that drives `launchctl` stubs it on PATH; `make check` fails any call that reaches the real one.
 
 ## Structure
@@ -90,7 +90,7 @@ Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-
 
 ## Citations into code
 
-`tests/test_citations.py` runs in the CI preflight: `python3 tests/test_citations.py` from the root.
+`tests/test_citations.py` runs in the `make check` preflight: `python3 tests/test_citations.py` from the root.
 
 - Do not cite code as `path:line` (into `.py`, `.sh`, `.js`, `.yml`) in any tracked `.md`, `.py` or `.sh`; nothing checks the line still holds the claim.
 - The `archive/` folder under `docs/work` is exempt; a done page outside it is still scanned.

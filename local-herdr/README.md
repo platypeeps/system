@@ -181,9 +181,8 @@ list --json`, `pane get`, `agent list`, `agent start`, `pane run` and
 `workspace create` and `pane process-info` from files the tests write under a
 fixture directory. The
 suite prepends that directory to PATH and asserts the double is the `herdr`
-it resolves, so the installed binary is never called — the CI runner has
-no herdr and needs none. Wired into `.github/workflows/system-native.yml` as
-`run_suite herdr`.
+it resolves, so the installed binary is never called — `make check` needs
+no herdr. Wired into `tests/ci-native.sh` as `run_suite herdr`.
 
 What the double cannot prove is that the real binary answers the way it
 does. The suite assumes these 0.9.x shapes, read from the installed

@@ -1,11 +1,9 @@
 #!/bin/bash
 # The native suites: a preflight, then the run_suite lines of one leg.
 #
-# One script, two callers, so what CI runs and what `make check` runs cannot
-# drift. .github/workflows/system-native.yml calls it once per leg on Linux;
 # tests/check.sh, which the root Makefile's `check` target runs and the local
 # merge gate runs through sd-check, calls it for every leg on this machine.
-# Both callers start it under `env -i` with an isolated HOME and TMPDIR and
+# The caller starts it under `env -i` with an isolated HOME and TMPDIR and
 # with CI_WORK_ROOT, CI_SYSTEM_ROOT, SD_ACCEPTANCE_PACK, SD_WRITING_MANIFEST
 # and SD_PR_BODY set. Bash, not POSIX sh: `pipefail` is what fails a suite
 # whose output goes through tee.
@@ -22,7 +20,7 @@ Usage: ci-native.sh preflight
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
 Run it through tests/check.sh (or `make check`) on a workstation; it expects
-the isolated environment that script and the workflow build.
+the isolated environment that script builds.
 USAGE
 }
 
@@ -44,7 +42,7 @@ if [ "$1" = leg ]; then
   export PYTHON="$CI_WORK_ROOT/venv/bin/python"
   test -x "$PYTHON"
 else
-# The preflight, unindented as it was in the workflow, runs to the `fi` above
+# The preflight runs to the `fi` above
 # run_suite.
 
 python3 - <<'PY_VERIFY'
@@ -192,7 +190,7 @@ fi
 
 # SUITE_SHARD=i/n runs only every n-th suite of the leg, starting at the
 # i-th, so tests/check.sh can split the long tools leg across processes.
-# CI leaves it unset, and every suite runs.
+# Unset, every suite runs.
 shard_index="${SUITE_SHARD:-}"; shard_index="${shard_index%/*}"
 shard_count="${SUITE_SHARD:-}"; shard_count="${shard_count#*/}"
 case "${SUITE_SHARD:-}" in

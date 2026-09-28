@@ -6,7 +6,7 @@ genericized for publication, so its bytes differ from the source commit.
 `writing-sd-plugin.source.json` records the source commit and path, and the SHA256 of
 the file in this directory.
 The native suites consume this manifest through `SD_WRITING_MANIFEST`.
-CI verifies the digest before running the shared, dashboard, and runner suites.
+The preflight in `tests/ci-native.sh` verifies the digest before any suite runs.
 No cross-repository credential is required.
 
 To update this fixture, copy the manifest from a committed writing checkout, apply the
