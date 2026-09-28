@@ -9,7 +9,9 @@ Clone-or-pull the whole repo fleet in one sweep. Symlinked as `repo-sync` in `~/
 ./repo-sync.sh sync       # clone what is missing, fast-forward what is not
 ./repo-sync.sh check      # read-only: what is missing or on another origin
 ./repo-sync.sh reconcile  # update the conf files to match the checkouts on disk
-./repo-sync.sh nightly    # reconcile + sync, emailing changes/failures (cron)
+./repo-sync.sh hygiene    # report stale worktrees, dead locks, landed branches
+./repo-sync.sh hygiene --apply  # act on the safe classes, list the rest
+./repo-sync.sh nightly    # reconcile + sync + hygiene --apply, emailing (cron)
 ./repo-sync.sh test       # regression suite (tests/), run by system-native CI
 repo-sync                 # symlink in ~/bin/common, works from anywhere
 ```
@@ -33,10 +35,42 @@ match the checkout that prompted it, and the clone `sync` then made from that
 entry kept the removal probe passing. Rename the directory or the repo to
 bring it under management.
 
+A linked worktree placed under the root is not a checkout. `reconcile` lists
+it as `WORKTREE <dir> (of <parent>)` and leaves the conf alone; `hygiene`
+reaches it through its parent's worktree registrations.
+
+## Hygiene
+
+Agents leave worktrees and branches behind. `hygiene` sweeps each conf
+checkout. Without `--apply` it only reports; with `--apply` it acts on the
+safe classes:
+
+- prune worktree registrations whose directory is gone;
+- clear a lock whose pid is not running, or runs with a different start
+  time, then prune it (a lock without a pid is kept);
+- prune remote-tracking refs for deleted remote branches
+  (`git remote prune`);
+- delete a local branch whose content is on the default branch: an
+  ancestor, a tree equal to its merge base, or a patch-equivalent squash;
+- remove a worktree that holds such a branch, when it is clean and no
+  process has its cwd inside it.
+
+Every deletion prints the branch and its tip sha with the command that
+restores it. It lists and never deletes: a branch whose upstream is gone,
+a branch with commits on no remote, a branch named for a done sd item
+(read from the sd database when present, `REPO_SYNC_SD_DB`), and a checkout
+still behind its upstream. It never touches a stash, a remote branch, the
+default branch, or a dirty or in-use worktree. All checks are local git
+plumbing; only the remote prune talks to the remote.
+
+Without `--apply` it exits 1 when it found anything. With `--apply` it exits
+1 only when an action failed. It is not a `status` subcommand.
+
 `nightly` is what the `repo-sync-nightly` cron job (local-cron-jobs, 02:45)
 runs: reconcile — emailing the diff via local-notify's email channel whenever
 the repo list changed — then sync, emailing the failure summary if any repo
-failed. It exits 1 when an email could not be delivered, and since #200 also
+failed, then `hygiene --apply`, emailing its report when it changed, listed
+or failed anything. It exits 1 when an email could not be delivered, and since #200 also
 when half or more of the fleet failed to sync — one unreachable repo is a
 report, the cron failure push is for a lost report or an outage. The
 threshold is not "all": a dead network still lets the odd repo through, so
@@ -129,6 +163,12 @@ REPO_SYNC_TEST_SCRIPT=/tmp/old-repo-sync.sh ./repo-sync.sh test
 A `PIN` case records a decision rather than reproducing a bug — that the
 list keeps conf order instead of sorting, that a nightly with nothing to
 report stays silent.
+
+`tests/test_hygiene.py` covers `hygiene` and the `WORKTREE` line with a
+third kind, `NEW`: each case was written before the feature and seen to
+fail against the script without it. Its fixtures have history: a bare
+origin beside the root and a clone under it, so the remote prune runs
+offline.
 
 One case reads the conf files in this folder instead of building a tree:
 `ShippedConfTest` enumerates the shipped `repos.*.conf.example` files, plus

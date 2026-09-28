@@ -1,6 +1,6 @@
 #!/bin/sh
 # Clone-or-pull the repo fleet listed in repos.<profile>.conf.
-# Usage: repo-sync.sh sync|check|list|reconcile|nightly|test
+# Usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|test
 set -e
 
 # The repo convention is DIR="$(cd "$(dirname "$0")" && pwd)", but this script
@@ -130,6 +130,25 @@ scan_disk() {
       */*) subdir=${rel%/*} ;;
       *)   subdir="." ;;
     esac
+    # A linked worktree placed under the root has a .git file and a git dir
+    # that differs from its common dir (a submodule's .git file has the two
+    # equal). It is not a checkout: it belongs to its parent, which `hygiene`
+    # reaches through the parent's registrations. Listing it as a MISMATCH
+    # would ask for a rename that makes no sense (sd:1987).
+    if [ -f "$g" ]; then
+      gdir=$(git -C "$d" rev-parse --path-format=absolute --git-dir 2>/dev/null || true)
+      cdir=$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+      if [ -n "$cdir" ] && [ "$gdir" != "$cdir" ]; then
+        parent=${cdir%/.git}
+        root_real=$(cd "$ROOT" && pwd -P)
+        case "$parent" in
+          "$root_real"/*) parent=${parent#"$root_real"/} ;;
+          "$ROOT"/*)      parent=${parent#"$ROOT"/} ;;
+        esac
+        echo "WORKTREE $rel (of $parent)" >> "$WORKTREES"
+        continue
+      fi
+    fi
     url=$(git -C "$d" remote get-url origin 2>/dev/null || true)
     ownrepo=""
     case "$url" in
@@ -189,7 +208,9 @@ remove_entry() {
 reconcile() {
   scan="$TMPD/scan"; ADDED="$TMPD/added"; REMOVED="$TMPD/removed"
   UNMANAGED="$TMPD/unmanaged"; MISMATCHED="$TMPD/mismatched"
+  WORKTREES="$TMPD/worktrees"
   : > "$ADDED"; : > "$REMOVED"; : > "$UNMANAGED"; : > "$MISMATCHED"
+  : > "$WORKTREES"
 
   scan_disk | sort -u > "$scan"
   repo_list | awk '{ n = split($2, a, "/"); print $1 "/" a[n] }' \
@@ -259,6 +280,12 @@ reconcile() {
     echo "directory name does not match repo name — not representable as a"
     echo "conf line, so left alone (rename the directory, or the repo):"
     sed 's/^/  /' "$MISMATCHED"
+  fi
+  if [ -s "$WORKTREES" ]; then
+    echo
+    echo "linked worktrees under the root (not checkouts; hygiene sweeps them"
+    echo "through their parent):"
+    sed 's/^/  /' "$WORKTREES"
   fi
 }
 
@@ -350,6 +377,377 @@ sync() {
   echo "all repos synced"
 }
 
+# --- hygiene (sd:1987) ------------------------------------------------------
+# Sweeps what agents leave behind in each conf checkout: worktree
+# registrations whose directory is gone, locks held by a dead process,
+# remote-tracking refs for deleted remote branches, and local branches whose
+# content is already on the default branch. It acts only with --apply, and
+# only on those classes; everything else it lists. It reads the same fleet as
+# sync and uses git plumbing only, so it runs offline except for the remote
+# prune. It never touches a stash, a remote branch, the default branch, a
+# dirty worktree, or a worktree some process has its cwd in.
+#
+# Loops run in pipelines (subshells), so findings are counted through files
+# in $HYG_TMP: acted, found (would act with --apply), listed, failed.
+
+# A field separator that is not whitespace, so `read` keeps empty fields.
+US=$(printf '\037')
+
+hyg_act()    { echo "  $*"; echo x >> "$HYG_TMP/acted"; }
+hyg_found()  { echo "  would $*"; echo x >> "$HYG_TMP/found"; }
+hyg_list()   { echo "  $*"; echo x >> "$HYG_TMP/listed"; }
+hyg_fail()   { echo "  FAILED $*"; echo x >> "$HYG_TMP/failed"; }
+hyg_note()   { echo "  note: $*"; }
+
+# Prints "<name> <compare-ref>" for the default branch: origin/HEAD first,
+# else a local main or master. The compare ref is the remote-tracking ref
+# when there is one, so a branch counts as landed only once it is upstream.
+hyg_default() {
+  h_ref=$(git -C "$1" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  h_name=""
+  if [ -n "$h_ref" ]; then
+    h_name=${h_ref#origin/}
+  elif git -C "$1" show-ref -q --verify refs/heads/main; then
+    h_name=main
+  elif git -C "$1" show-ref -q --verify refs/heads/master; then
+    h_name=master
+  fi
+  [ -n "$h_name" ] || return 1
+  if git -C "$1" show-ref -q --verify "refs/remotes/origin/$h_name"; then
+    echo "$h_name refs/remotes/origin/$h_name"
+  else
+    echo "$h_name refs/heads/$h_name"
+  fi
+}
+
+# Prints how <branch> landed on <compare-ref> and returns 0, or returns 1.
+# Three ways: the tip is an ancestor; the branch tree equals its merge base
+# (nothing left to land); or a synthetic squash of the branch onto its merge
+# base is patch-equivalent to a commit on the default branch, which is what a
+# squash merge leaves. The synthetic commit is an unreferenced object that gc
+# collects; the identity is inline so the probe needs no user config.
+hyg_merged() {
+  if git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; then
+    echo "ancestor"; return 0
+  fi
+  h_mb=$(git -C "$1" merge-base "$3" "$2" 2>/dev/null) || return 1
+  h_bt=$(git -C "$1" rev-parse "$2^{tree}") || return 1
+  h_mt=$(git -C "$1" rev-parse "$h_mb^{tree}") || return 1
+  if [ "$h_bt" = "$h_mt" ]; then
+    echo "tree equals merge base"; return 0
+  fi
+  h_sq=$(GIT_AUTHOR_NAME=repo-sync GIT_AUTHOR_EMAIL=repo-sync@example.invalid \
+    GIT_COMMITTER_NAME=repo-sync GIT_COMMITTER_EMAIL=repo-sync@example.invalid \
+    git -C "$1" commit-tree "$h_bt" -p "$h_mb" -m "repo-sync hygiene squash probe" \
+    2>/dev/null) || return 1
+  case "$(git -C "$1" cherry "$3" "$h_sq" 2>/dev/null)" in
+    -*) echo "squash"; return 0 ;;
+  esac
+  return 1
+}
+
+# One record per worktree registration, fields split by $US:
+# path, branch (empty when detached), locked (0|1), lock reason.
+# The first record is the main checkout.
+hyg_worktrees() {
+  git -C "$1" worktree list --porcelain | awk -v us="$US" '
+    function out() { if (p != "") printf "%s%s%s%s%s%s%s\n", p, us, br, us, lk, us, lr }
+    /^worktree / { out(); p = substr($0, 10); br = ""; lk = 0; lr = ""; next }
+    /^branch /   { br = substr($0, 8); sub(/^refs\/heads\//, "", br); next }
+    /^locked/    { lk = 1; lr = substr($0, 8); next }
+    END          { out() }'
+}
+
+# Decides whether a lock still belongs to a live process. The lock text reads
+# `... (pid <n> start <lstart>)`. Returns 0 (dead: safe to clear) when the pid
+# is not running, or runs with a different start time, which means the pid
+# was reused. Returns 1 (keep) when the process lives, and 2 when the lock
+# names no pid: nothing can prove such a lock stale.
+hyg_lock_dead() {
+  h_pid=$(printf '%s\n' "$1" | sed -n 's/.*(pid \([0-9][0-9]*\).*/\1/p' | head -1)
+  [ -n "$h_pid" ] || return 2
+  h_start=$(printf '%s\n' "$1" | sed -n 's/.*(pid [0-9][0-9]* start \(.*\))[[:space:]]*$/\1/p' | head -1)
+  h_now=$(ps -p "$h_pid" -o lstart= 2>/dev/null || true)
+  [ -n "$h_now" ] || return 0
+  [ -n "$h_start" ] || return 1
+  # ps pads fields; compare with runs of blanks collapsed.
+  h_now=$(echo $h_now)
+  h_start=$(echo $h_start)
+  [ "$h_now" = "$h_start" ] && return 1
+  return 0
+}
+
+# Lists every process cwd once per run, into $HYG_TMP/cwds. /proc on Linux,
+# lsof elsewhere; with neither, every worktree counts as in use.
+hyg_cwds() {
+  [ -e "$HYG_TMP/cwds.done" ] && return 0
+  : > "$HYG_TMP/cwds"
+  if [ -d /proc/self ] && [ -e /proc/self/cwd ]; then
+    for h_p in /proc/[0-9]*; do
+      readlink "$h_p/cwd" 2>/dev/null >> "$HYG_TMP/cwds" || true
+    done
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -nP -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' >> "$HYG_TMP/cwds" || true
+  else
+    : > "$HYG_TMP/cwds.unknown"
+  fi
+  : > "$HYG_TMP/cwds.done"
+}
+
+# Returns 0 when some process has its cwd at or under $1.
+hyg_busy() {
+  hyg_cwds
+  [ -e "$HYG_TMP/cwds.unknown" ] && return 0
+  h_real=$(cd "$1" 2>/dev/null && pwd -P) || return 0
+  awk -v d="$h_real" '$0 == d || index($0, d "/") == 1 { found = 1 } END { exit !found }' \
+    "$HYG_TMP/cwds"
+}
+
+# The workflow item state for number $1, or nothing. Reads the sd database
+# read-only when it exists on this machine and sqlite3 is installed; a
+# machine without it simply lists no done-item branches.
+hyg_item_state() {
+  h_db="${REPO_SYNC_SD_DB:-$HOME/.local/share/sd/sd.db}"
+  [ -f "$h_db" ] || return 0
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+  sqlite3 -readonly "$h_db" "select status from item where id = $1" 2>/dev/null || true
+}
+
+# The item number a branch name carries: sd-<n>, sd_<n> or a trailing -<n>.
+hyg_item_number() {
+  printf '%s\n' "$1" | sed -n \
+    -e 's/.*sd[-_:]\([0-9][0-9]*\).*/\1/p' \
+    -e 't' \
+    -e 's/.*-\([0-9][0-9]*\)$/\1/p' | head -1
+}
+
+hyg_repo() {
+  d=$1
+  echo "=== $2 ($d)"
+  if ! h_def=$(hyg_default "$d"); then
+    hyg_note "no default branch found; skipped"
+    return 0
+  fi
+  def_name=${h_def%% *}
+  def_ref=${h_def#* }
+
+  # 3.3: remote-tracking refs for deleted remote branches.
+  for h_remote in $(git -C "$d" remote); do
+    if [ "$APPLY" = 1 ]; then
+      if h_out=$(git -C "$d" remote prune "$h_remote" 2>&1); then
+        printf '%s\n' "$h_out" | sed -n 's/^ \* \[pruned\] /pruned remote-tracking ref /p' \
+          | while read -r h_l; do hyg_act "$h_l"; done
+      else
+        hyg_fail "remote prune $h_remote: $(printf '%s' "$h_out" | tail -1)"
+      fi
+    else
+      if h_out=$(git -C "$d" remote prune --dry-run "$h_remote" 2>&1); then
+        printf '%s\n' "$h_out" | sed -n 's/^ \* \[would prune\] /prune remote-tracking ref /p' \
+          | while read -r h_l; do hyg_found "$h_l"; done
+      else
+        hyg_note "remote prune $h_remote not checked: remote unreachable"
+      fi
+    fi
+  done
+
+  # 3.1 and 3.2: registrations whose directory is gone. $HYG_TMP/gone holds
+  # the paths pruned (or to be pruned), so the branch pass below treats their
+  # branches as free in report mode too.
+  : > "$HYG_TMP/gone"
+  hyg_worktrees "$d" | tail -n +2 > "$HYG_TMP/wts"
+  h_prune=0
+  while IFS=$US read -r w_path w_branch w_locked w_reason; do
+    [ -d "$w_path" ] && continue
+    if [ "$w_locked" = 1 ]; then
+      h_rc=0; hyg_lock_dead "$w_reason" || h_rc=$?
+      case $h_rc in
+        1) hyg_note "kept locked worktree $w_path (directory gone; lock holder running: $w_reason)"; continue ;;
+        2) hyg_list "KEEP     worktree $w_path (directory gone; lock names no pid: $w_reason)"; continue ;;
+      esac
+      if [ "$APPLY" = 1 ]; then
+        if git -C "$d" worktree unlock "$w_path" 2>/dev/null; then
+          hyg_act "unlocked worktree $w_path (lock holder not running: $w_reason)"
+        else
+          hyg_fail "unlock worktree $w_path"; continue
+        fi
+      else
+        hyg_found "unlock worktree $w_path (lock holder not running: $w_reason)"
+      fi
+    fi
+    echo "$w_path" >> "$HYG_TMP/gone"
+    h_prune=1
+  done < "$HYG_TMP/wts"
+  if [ "$h_prune" = 1 ]; then
+    if [ "$APPLY" = 1 ]; then
+      if git -C "$d" worktree prune; then
+        hyg_worktrees "$d" | cut -d "$US" -f 1 > "$HYG_TMP/left"
+        while read -r w_path; do
+          if grep -qxF "$w_path" "$HYG_TMP/left"; then
+            hyg_fail "prune worktree $w_path (still registered)"
+          else
+            hyg_act "pruned worktree $w_path (directory gone)"
+          fi
+        done < "$HYG_TMP/gone"
+      else
+        hyg_fail "worktree prune"
+      fi
+    else
+      while read -r w_path; do
+        hyg_found "prune worktree $w_path (directory gone)"
+      done < "$HYG_TMP/gone"
+    fi
+  fi
+
+  # Who holds each branch now: the main checkout first, then linked
+  # worktrees that were not pruned above.
+  hyg_worktrees "$d" > "$HYG_TMP/holders.all"
+  : > "$HYG_TMP/holders"
+  h_first=1
+  while IFS=$US read -r w_path w_branch w_locked w_reason; do
+    if [ "$h_first" = 1 ]; then
+      h_first=0; h_kind=main
+    else
+      grep -qxF "$w_path" "$HYG_TMP/gone" && continue
+      h_kind=linked
+    fi
+    [ -n "$w_branch" ] || continue
+    printf '%s%s%s%s%s%s%s%s%s\n' "$w_branch" "$US" "$w_path" "$US" "$h_kind" "$US" \
+      "$w_locked" "$US" "$w_reason" >> "$HYG_TMP/holders"
+  done < "$HYG_TMP/holders.all"
+
+  # 3.4, 3.5 and the report-only branch classes.
+  git -C "$d" for-each-ref --format="%(refname:short)$US%(objectname)$US%(upstream:track)" \
+    refs/heads > "$HYG_TMP/branches"
+  while IFS=$US read -r b_name b_sha b_track; do
+    [ "$b_name" = "$def_name" ] && continue
+    if h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
+      h_hold=$(awk -F "$US" -v b="$b_name" '$1 == b { print; exit }' "$HYG_TMP/holders")
+      if [ -n "$h_hold" ]; then
+        w_path=$(printf '%s\n' "$h_hold" | cut -d "$US" -f 2)
+        h_kind=$(printf '%s\n' "$h_hold" | cut -d "$US" -f 3)
+        w_locked=$(printf '%s\n' "$h_hold" | cut -d "$US" -f 4)
+        w_reason=$(printf '%s\n' "$h_hold" | cut -d "$US" -f 5-)
+        # A worktree in live use is kept with a note, not a listed line: a
+        # fresh agent branch sits at the default tip, counts as landed, and
+        # would otherwise mail every night the agent runs.
+        h_why=""; h_live=0
+        if [ "$h_kind" = main ]; then
+          h_why="checked out in the main checkout"
+        elif [ "$w_locked" = 1 ]; then
+          h_rc=0; hyg_lock_dead "$w_reason" || h_rc=$?
+          [ "$h_rc" = 1 ] && h_live=1
+          h_why="worktree $w_path is locked: $w_reason"
+        elif [ ! -d "$w_path" ]; then
+          h_why="worktree $w_path is registered but missing"
+        elif [ -n "$(git -C "$w_path" status --porcelain 2>/dev/null || echo unreadable)" ]; then
+          h_why="worktree $w_path is dirty"
+        elif hyg_busy "$w_path"; then
+          h_why="worktree $w_path is in use by a process"; h_live=1
+        fi
+        if [ "$h_live" = 1 ]; then
+          hyg_note "kept branch $b_name $b_sha (landed by $h_how; $h_why)"
+          continue
+        elif [ -n "$h_why" ]; then
+          hyg_list "KEEP     branch $b_name $b_sha (landed by $h_how; $h_why)"
+          continue
+        fi
+        if [ "$APPLY" = 1 ]; then
+          if git -C "$d" worktree remove "$w_path" 2>/dev/null; then
+            hyg_act "removed worktree $w_path (held landed branch $b_name)"
+          else
+            hyg_fail "remove worktree $w_path"; continue
+          fi
+        else
+          hyg_found "remove worktree $w_path (holds landed branch $b_name)"
+        fi
+      fi
+      if [ "$APPLY" = 1 ]; then
+        h_now=$(git -C "$d" rev-parse -q --verify "refs/heads/$b_name" || true)
+        if [ "$h_now" != "$b_sha" ]; then
+          hyg_fail "delete branch $b_name $b_sha (tip moved to ${h_now:-nothing})"
+        elif git -C "$d" branch -q -D "$b_name" >/dev/null 2>&1; then
+          hyg_act "deleted branch $b_name $b_sha (landed by $h_how; restore: git -C $d branch $b_name $b_sha)"
+        else
+          hyg_fail "delete branch $b_name $b_sha"
+        fi
+      else
+        hyg_found "delete branch $b_name $b_sha (landed by $h_how)"
+      fi
+      continue
+    fi
+    if [ "$b_track" = "[gone]" ]; then
+      hyg_list "GONE     branch $b_name $b_sha (upstream gone; content not on $def_name)"
+    else
+      h_n=$(git -C "$d" rev-list --count "refs/heads/$b_name" --not --remotes 2>/dev/null || echo 0)
+      if [ "$h_n" -gt 0 ]; then
+        hyg_list "LOCAL    branch $b_name $b_sha ($h_n commit(s) on no remote ref)"
+      fi
+    fi
+    h_item=$(hyg_item_number "$b_name")
+    if [ -n "$h_item" ] && [ "$(hyg_item_state "$h_item")" = done ]; then
+      hyg_list "DONE     branch $b_name $b_sha (sd:$h_item is done; a landing candidate)"
+    fi
+  done < "$HYG_TMP/branches"
+
+  # A checkout sync could not fast-forward: still behind its upstream.
+  if h_up=$(git -C "$d" rev-parse -q --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then
+    h_behind=$(git -C "$d" rev-list --count "HEAD..@{u}" 2>/dev/null || echo 0)
+    if [ "$h_behind" -gt 0 ]; then
+      h_ahead=$(git -C "$d" rev-list --count "@{u}..HEAD" 2>/dev/null || echo 0)
+      if [ -n "$(git -C "$d" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        h_why="local changes"
+      elif [ "$h_ahead" -gt 0 ]; then
+        h_why="$h_ahead local commit(s)"
+      else
+        h_why="not pulled"
+      fi
+      hyg_list "BEHIND   checkout is $h_behind commit(s) behind $h_up ($h_why)"
+    fi
+  fi
+}
+
+hygiene() {
+  APPLY=0
+  for h_arg in "$@"; do
+    case "$h_arg" in
+      --apply) APPLY=1 ;;
+      *) echo "repo-sync.sh hygiene: unknown option '$h_arg' (want: --apply)" >&2; return 2 ;;
+    esac
+  done
+  : > "$HYG_TMP/acted"; : > "$HYG_TMP/found"; : > "$HYG_TMP/listed"; : > "$HYG_TMP/failed"
+  echo "profile : $PROFILE"
+  echo "root    : $ROOT"
+  if [ "$APPLY" = 1 ]; then echo "mode    : apply"; else echo "mode    : report only (--apply acts)"; fi
+  echo
+
+  repo_list | while read -r subdir full_repo; do
+    target="$ROOT/$subdir/${full_repo##*/}"
+    [ -d "$target/.git" ] || continue
+    h_before=$(cat "$HYG_TMP/acted" "$HYG_TMP/found" "$HYG_TMP/listed" "$HYG_TMP/failed" | wc -l)
+    hyg_repo "$target" "$full_repo" > "$HYG_TMP/repo.out" 2>&1 || true
+    h_after=$(cat "$HYG_TMP/acted" "$HYG_TMP/found" "$HYG_TMP/listed" "$HYG_TMP/failed" | wc -l)
+    # A repo with nothing to say stays out of the report.
+    if [ "$h_after" -ne "$h_before" ]; then
+      cat "$HYG_TMP/repo.out"; echo
+    fi
+  done
+
+  h_acted=$(wc -l < "$HYG_TMP/acted" | tr -d ' ')
+  h_found=$(wc -l < "$HYG_TMP/found" | tr -d ' ')
+  h_listed=$(wc -l < "$HYG_TMP/listed" | tr -d ' ')
+  h_failed=$(wc -l < "$HYG_TMP/failed" | tr -d ' ')
+  echo "----------------------------------------"
+  if [ "$APPLY" = 1 ]; then
+    echo "hygiene : $h_acted done, $h_listed listed, $h_failed failed"
+    [ "$h_failed" -eq 0 ] || return 1
+  elif [ "$h_found" -eq 0 ] && [ "$h_listed" -eq 0 ]; then
+    echo "hygiene : clean"
+  else
+    echo "hygiene : $h_found to act on with --apply, $h_listed listed"
+    return 1
+  fi
+}
+
 case "$1" in
   sync)
     # The `while read` loop runs in a subshell, so failures are collected in a
@@ -424,6 +822,24 @@ case "$1" in
       cat "$OUT"
     fi
 
+    # Hygiene after sync, so it sees the fleet as sync left it. It mails its
+    # report when it changed anything, failed, or lists something for the
+    # operator, like the reconcile diff; a clean sweep stays silent. Its own
+    # failures are in the report and do not fail the job.
+    HYG_TMP="$TMPD/hygiene"; mkdir -p "$HYG_TMP"
+    HYG_OUT="$TMPD/hygiene.out"
+    ( hygiene --apply ) > "$HYG_OUT" 2>&1 || true
+    cat "$HYG_OUT"
+    if [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; then
+      subject="repo-sync: hygiene report on $(hostname -s)"
+      body=$(printf 'repo-sync hygiene --apply — %s on %s\n\n%s\n' \
+        "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$(cat "$HYG_OUT")")
+      if ! sh "$NOTIFY" -t "$subject" -k status -c ntfy,email -b "$body"; then
+        echo "hygiene email FAILED" >&2
+        EMAIL_FAILED=1
+      fi
+    fi
+
     if [ "$EMAIL_FAILED" -ne 0 ]; then
       echo "email FAILED — exiting 1 so the cron failure push fires" >&2
       exit 1
@@ -445,6 +861,12 @@ case "$1" in
       exit 1
     fi
     ;;
+  hygiene)
+    shift
+    HYG_TMP=$(mktemp -d)
+    trap 'rm -rf "$HYG_TMP"' EXIT INT TERM
+    hygiene "$@"
+    ;;
   list)
     list
     ;;
@@ -454,7 +876,7 @@ case "$1" in
     ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: repo-sync.sh sync|check|list|reconcile|nightly|test
+usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|test
 
   sync       clone missing repos and fast-forward existing ones, then print a
              summary; exits 1 if any repo failed, having tried all the others
@@ -471,13 +893,32 @@ usage: repo-sync.sh sync|check|list|reconcile|nightly|test
              (disk is the source of truth). Checkouts without a GitHub origin
              are listed as unmanaged and left alone, as are checkouts whose
              directory name differs from their repo name (MISMATCH) — the
-             conf format cannot express those.
+             conf format cannot express those. A linked worktree under the
+             root is listed as WORKTREE <dir> (of <parent>) and left alone.
+  hygiene [--apply]
+             sweep what agents leave in each conf checkout. Without
+             --apply it only reports; with it, it prunes worktree
+             registrations whose directory is gone, clears a lock whose
+             pid is not running (or runs with another start time), prunes
+             remote-tracking refs for deleted remote branches, and deletes
+             local branches whose content is on the default branch
+             (ancestor, tree equal to the merge base, or a patch-equivalent
+             squash), removing a clean, unused worktree that holds one.
+             Every deletion prints the branch and its tip sha. It lists,
+             never deletes: branches whose upstream is gone, branches
+             with commits on no remote, branches named for a done sd item,
+             and checkouts left behind their upstream. It never touches a
+             stash, a remote branch, the default branch, or a dirty or
+             in-use worktree. Without --apply it exits 1 when it found
+             anything; with --apply it exits 1 only when an action failed.
+             It is not a status subcommand.
   nightly    reconcile (emailing the diff when the repo list changed),
-             then sync (emailing the failure summary); this is what the
-             repo-sync-nightly cron job runs. The confs keep no git
-             history: nightly rewrites them and commits nothing. Exits 1
-             when an email could not be delivered or when half or more of
-             the fleet failed.
+             then sync (emailing the failure summary), then hygiene
+             --apply (emailing its report when it changed, listed or
+             failed anything); this is what the repo-sync-nightly cron job
+             runs. The confs keep no git history: nightly rewrites them
+             and commits nothing. Exits 1 when an email could not be
+             delivered or when half or more of the fleet failed.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
              against fixture trees; sync's clone path is not covered,
@@ -510,11 +951,14 @@ environment:
   SYSTEM_TOOLS_CONFIG shared config root (default: ~/.config/system)
   MACHINE_SETUP_STATE where to look for the recorded profile
                       (default: ~/.config/machine-setup)
+  REPO_SYNC_SD_DB     the sd workflow database hygiene reads, read-only,
+                      to list branches named for a done item (default:
+                      ~/.local/share/sd/sd.db; absent means none listed)
 HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") sync|check|list|reconcile|nightly|test" >&2
+    echo "usage: $(basename "$0") sync|check|list|reconcile|hygiene|nightly|test" >&2
     exit 1
     ;;
 esac
