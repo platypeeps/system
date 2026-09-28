@@ -37,6 +37,21 @@ BOUND_MARGIN = 5
 # bound did not fire at all (the fixture sleeps 600), and the process group
 # is killed so the suite reports a failure instead of hanging with it.
 RUN_TIMEOUT = 300
+
+
+def _log_stub(parent):
+    """A `log` that prints no faults, first on PATH.
+
+    The real `log show --last 24h` reads the whole unified log, which alone
+    can outlast RUN_TIMEOUT on a busy machine; this suite is about the
+    status sweep, not fault volume.
+    """
+    stub = parent / "bin"
+    stub.mkdir(exist_ok=True)
+    log = stub / "log"
+    log.write_text("#!/bin/sh\nexit 0\n")
+    log.chmod(0o755)
+    return f"{stub}:{os.environ.get('PATH', '/usr/bin:/bin')}"
 # How long the process group may take to empty after `check` returns.
 SURVIVOR_GRACE = 2
 
@@ -157,6 +172,7 @@ esac
 """)
 
         env = dict(os.environ)
+        env["PATH"] = _log_stub(cls.tmp)
         env["HEALTH_CHECK_TOOLS_ROOT"] = str(cls.root)
         env["HEALTH_CHECK_STATE"] = str(cls.state)
         env["HEALTH_CHECK_STATUS_BOUND"] = str(STATUS_BOUND)
@@ -371,6 +387,7 @@ class StatusBoundIsValidated(unittest.TestCase):
         self.runs = getattr(self, "runs", 0) + 1
         state = self.tmp / f"state-{self.runs}"
         env = dict(os.environ)
+        env["PATH"] = _log_stub(self.tmp)
         env["HEALTH_CHECK_TOOLS_ROOT"] = str(self.tmp / "tools")
         env["HEALTH_CHECK_STATE"] = str(state)
         env["HEALTH_CHECK_STATUS_BOUND"] = bound
