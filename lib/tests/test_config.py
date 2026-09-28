@@ -58,6 +58,22 @@ class EnvFile(unittest.TestCase):
     def test_python_reads_it(self):
         self.assertEqual(stc.read_env("notify", self.envv), {"A": "1", "B": "two words", "C": "3"})
 
+    def test_python_expands_home_as_sourcing_does(self):
+        # sd:1868: agent-meter read `$HOME/...` verbatim and missed its ledger.
+        (self.conf / "home").mkdir(parents=True)
+        (self.conf / "home/.env").write_text(
+            "D=$HOME/d\nB=${HOME}/b\nT=~/t\nQ=\"$HOME/q\"\nS='$HOME/s'\nM=a$HOMEX\n")
+        home = self.envv["HOME"]
+        done = shell('st_source_env home; sh -c \'printf "%s|%s|%s|%s|%s" "$D" "$B" "$T" "$Q" "$S"\'', self.envv)
+        self.assertEqual(done.stdout, f"{home}/d|{home}/b|{home}/t|{home}/q|$HOME/s")
+        expected = {"D": f"{home}/d", "B": f"{home}/b", "T": f"{home}/t", "Q": f"{home}/q",
+                    "S": "$HOME/s", "M": "a$HOMEX"}
+        self.assertEqual(stc.read_env("home", self.envv), expected)
+        sys.path.insert(0, str(SD_DB))
+        self.addCleanup(sys.path.remove, str(SD_DB))
+        from sd_db import config as twin
+        self.assertEqual(twin.read_env("home", self.envv), expected)
+
     def test_python_absent_is_empty(self):
         self.assertEqual(stc.read_env("nothing", self.envv), {})
 
