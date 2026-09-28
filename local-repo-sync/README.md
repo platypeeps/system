@@ -12,7 +12,7 @@ Clone-or-pull the whole repo fleet in one sweep. Symlinked as `repo-sync` in `~/
 ./repo-sync.sh hygiene    # report stale worktrees, dead locks, landed branches
 ./repo-sync.sh hygiene --apply  # act on the safe classes, list the rest
 ./repo-sync.sh nightly    # reconcile + sync + hygiene --apply, emailing (cron)
-./repo-sync.sh test       # regression suite (tests/), run by system-native CI
+./repo-sync.sh test       # regression suite (tests/), run by make check
 repo-sync                 # symlink in ~/bin/common, works from anywhere
 ```
 
@@ -144,12 +144,12 @@ truth — delete them from the confs.
 
 ## Tests
 
-`./repo-sync.sh test` runs the suite in `tests/`, and `system-native` runs it
-in CI. It is Python rather than shell for one reason: the CI wrapper asserts a
-unittest summary (`Ran N tests`) and fails on any skip, and a shell harness
-produces neither. The tests still work the way the script does — build a tree
-of `git init`ed directories with an origin and no commits, write a conf, run
-the script, read back what it wrote.
+`./repo-sync.sh test` runs the suite in `tests/`, and `make check` runs it
+through `tests/ci-native.sh`. It is Python rather than shell for one reason: the
+`run_suite` wrapper asserts a unittest summary (`Ran N tests`) and fails on
+any skip, and a shell harness produces neither. The tests still work the way
+the script does — build a tree of `git init`ed directories with an origin and
+no commits, write a conf, run the script, read back what it wrote.
 
 Each case says which kind it is: its docstring opens with `REGRESSION` or
 `PIN`. A `REGRESSION` case reproduces a defect that shipped. Three of them
