@@ -84,6 +84,12 @@ is decimal (08 is eight); a value that is not a whole number stops the pass
 before any pair runs. A run folder whose name is not a real date and time
 (2020-99-99T999999) is never pruned.
 
+MIRROR_SYNC_MATERIALIZE_WAIT (seconds, default 300) bounds the wait for
+evicted iCloud destination files: on "Resource deadlock avoided" sync asks
+brctl to download the ones the pair is about to update, then retries the
+pair once. A pair whose only errors are source files that vanished mid-pass
+counts as mirrored.
+
 Safety rails before each pair runs:
   - source must exist and be non-empty (an empty directory would wipe the
     destination), and file destinations must already be directories
@@ -407,13 +413,17 @@ FAILLOG=$(mktemp)
 # a pattern written on the command line would be word-split and glob-expanded
 # by the shell before rsync ever saw it.
 EXCLUDES=$(mktemp)
-trap 'rm -f "$FAILLOG" "$EXCLUDES"' EXIT INT TERM
+# One pair's rsync stderr, read by the classifiers below, and the evicted
+# destination files it is waiting on.
+ERRS=$(mktemp)
+PENDING=$(mktemp)
+trap 'rm -f "$FAILLOG" "$EXCLUDES" "$ERRS" "$PENDING"' EXIT INT TERM
 
 # -rlptgo is -a without -D: sockets, fifos and devices are skipped, not
 # copied. openrsync recreates a socket with mkstempsock, which fails on the
-# backup disk and failed the whole pair. -W copies whole files: the delta
-# algorithm mmaps the basis file, and iCloud placeholders answer that mmap
-# with "Resource deadlock avoided".
+# backup disk and failed the whole pair. -W copies whole files. It does NOT
+# keep openrsync off an evicted iCloud basis file: that still fails with
+# "Resource deadlock avoided" (sd:1947), which materialize_pending handles.
 RSYNC_BASE="-rlptgo -W"
 RSYNC_FLAGS="$RSYNC_BASE --delete --delete-excluded"
 # MIRROR_SYNC_ADDITIVE drops both deletes, and with them the property that
@@ -460,6 +470,97 @@ esac
 # alone it churns every run -- copied when Drive happens to be mid-sync,
 # deleted when not.
 ICON_CR="$(printf 'Icon\015')"
+
+# Run this pair's rsync with the extra flags in "$@". Its stderr is echoed
+# and kept in $ERRS for the classifiers below.
+pair_rsync() {
+  prc=0
+  # shellcheck disable=SC2086
+  rsync $RSYNC_FLAGS "$@" --exclude .DS_Store --exclude '._*' \
+    --exclude "$ICON_CR" --exclude .tmp.drivedownload \
+    --exclude-from "$EXCLUDES" "$src_arg" "$dst/" 2>"$ERRS" || prc=$?
+  cat "$ERRS" >&2
+  return "$prc"
+}
+
+# An iCloud destination evicts files it keeps only in the cloud: the file
+# stays, with the SF_DATALESS flag (0x40000000) and no local data. openrsync
+# reads a file it is about to replace as its basis, and on an evicted one that
+# read answers "Resource deadlock avoided": these processes do not download on
+# read. The pair aborts at that file and nothing after it is copied (sd:1947).
+# So ask iCloud for the evicted files this pair is about to update, and only
+# those, wait for them, and let the caller retry once. Nothing is deleted: a
+# pass with a backup root still keeps the bytes it replaces. It fails, naming
+# the files, when there is nothing to ask for, no brctl to ask with, or a file
+# is still evicted after MIRROR_SYNC_MATERIALIZE_WAIT seconds (default 300).
+MATERIALIZE_WAIT="${MIRROR_SYNC_MATERIALIZE_WAIT:-300}"
+case "$MATERIALIZE_WAIT" in
+  ''|*[!0-9]*) echo "!!! refusing: MIRROR_SYNC_MATERIALIZE_WAIT must be a whole number of seconds, got '$MATERIALIZE_WAIT'" >&2; exit 1 ;;
+esac
+is_dataless() {
+  [ "$STAT_FLAVOUR" = bsd ] && [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  flags=$(stat -f '%Xf' -- "$1" 2>/dev/null) || return 1
+  case "$flags" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
+  [ $(( 0x$flags & 0x40000000 )) -ne 0 ]
+}
+materialize_pending() {
+  : > "$PENDING"
+  # A dry run lists, one per line, the paths this pair would copy.
+  # shellcheck disable=SC2086
+  rsync $RSYNC_FLAGS "$@" --dry-run -v --exclude .DS_Store --exclude '._*' \
+    --exclude "$ICON_CR" --exclude .tmp.drivedownload \
+    --exclude-from "$EXCLUDES" "$src_arg" "$dst/" 2>/dev/null \
+    | while IFS= read -r name; do
+        if [ -n "$name" ] && is_dataless "$dst/$name"; then
+          printf '%s\n' "$dst/$name" >> "$PENDING"
+        fi
+      done
+  if [ ! -s "$PENDING" ]; then
+    echo "!!! rsync hit an evicted file, but no evicted destination file is due for update: $dst" >&2
+    return 1
+  fi
+  if ! command -v brctl >/dev/null 2>&1; then
+    echo "!!! evicted destination files, and no brctl to download them:" >&2
+    sed 's/^/      /' "$PENDING" >&2
+    return 1
+  fi
+  while IFS= read -r f; do
+    echo "--- downloading evicted destination file: $f"
+    brctl download "$f" || echo "!!! brctl download failed: $f" >&2
+  done < "$PENDING"
+  waited=0
+  while :; do
+    left=""
+    while IFS= read -r f; do
+      if is_dataless "$f"; then left="$left$f
+"; fi
+    done < "$PENDING"
+    if [ -z "$left" ]; then
+      sed 's/^/--- downloaded: /' "$PENDING"
+      return 0
+    fi
+    [ "$waited" -lt "$MATERIALIZE_WAIT" ] || break
+    sleep 1; waited=$((waited + 1))
+  done
+  printf '%s' "$left" | sed "s/^/!!! still evicted after ${MATERIALIZE_WAIT}s: /" >&2
+  return 1
+}
+
+# A live tree loses files while a pass reads it: a cron job's attempt file, a
+# git ref a fetch pruned. GNU rsync exits 24 for that alone. openrsync exits
+# 23, as for any partial transfer, and prints
+# "<path>: open (2) in <cwd>: No such file or directory" per file. Such a pass
+# copied all that still exists, so it is no failure; the next pass sees the
+# tree as it is then. Any other error line keeps it a failure (sd:1947).
+only_vanished() {
+  case "$1" in
+    24) return 0 ;;
+    23) ;;
+    *) return 1 ;;
+  esac
+  grep -q 'error:' "$ERRS" || return 1
+  ! grep 'error:' "$ERRS" | grep -v -q ': open (2) in .*: No such file or directory$'
+}
 
 probe_flavours
 check_backup_root
@@ -551,10 +652,24 @@ pairs | while IFS='|' read -r src dst excl; do
   else
     set --
   fi
-  # shellcheck disable=SC2086
-  if ! rsync $RSYNC_FLAGS "$@" --exclude .DS_Store --exclude '._*' \
-       --exclude "$ICON_CR" --exclude .tmp.drivedownload \
-       --exclude-from "$EXCLUDES" "$src_arg" "$dst/"; then
+  rc=0
+  pair_rsync "$@" || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$MODE" = sync ] \
+     && grep -q 'Resource deadlock avoided' "$ERRS"; then
+    if materialize_pending "$@"; then
+      # A fresh backup directory: openrsync's --backup-dir fails with
+      # "mk_backup_dir: File exists" on the one the first try made.
+      [ -z "$KEEP" ] || set -- --backup --backup-dir "$KEEP.retry"
+      echo "--- retrying after download: $src"
+      rc=0
+      pair_rsync "$@" || rc=$?
+    fi
+  fi
+  if [ "$rc" -ne 0 ] && only_vanished "$rc"; then
+    echo "--- source files vanished during the pass; not a failure: $src" >&2
+    rc=0
+  fi
+  if [ "$rc" -ne 0 ]; then
     echo "!!! rsync failed: $src" >&2
     echo "$src (rsync error)" >> "$FAILLOG"
   fi
