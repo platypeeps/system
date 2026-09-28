@@ -47,6 +47,8 @@ directory outside the checkout:
 The script reads `.env` on every call, including the runs launchd starts with
 only `PATH` and `HOME`, so put values there rather than only in a login shell.
 An exported value wins over `.env`. All variables are optional.
+Every value in `.env` is exported to the jobs, so a job that calls another tool
+sees the same `SYSTEM_TOOLS_LABEL_PREFIX` as the script.
 
 | Variable | Meaning |
 | --- | --- |

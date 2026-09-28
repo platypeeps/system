@@ -88,3 +88,4 @@ every one of them against 127.0.0.1 (sd:1203).
   `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`; see `.env.example`): `TASK_ACTIONS_PORT` (8766), `OBSIDIAN_VAULT` (default
   `~/Documents/Obsidian Vault`), `OBSIDIAN_TASKS_SUBDIR`,
   `TASK_ACTIONS_SECRET_FILE`, `SYSTEM_TOOLS_LABEL_PREFIX`.
+- Tests: `task-actions.sh test` runs `tests/`; `launchctl` and `tailscale` are stubs there.
