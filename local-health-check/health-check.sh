@@ -13,6 +13,9 @@ STATE="${HEALTH_CHECK_STATE:-$HOME/.config/health-check}"
 # Where the status sweep looks for sibling tools. A seam for a fixture tree,
 # not a per-machine setting: on every real machine it is this checkout.
 TOOLS_ROOT="${HEALTH_CHECK_TOOLS_ROOT:-$DIR/..}"
+# The machine-wide crash report folder. A seam for tests, not a per-machine
+# setting: a fixture run must not read the host's real crash reports.
+SYSTEM_REPORTS="${HEALTH_CHECK_SYSTEM_REPORTS:-/Library/Logs/DiagnosticReports}"
 # The launchd label prefix this repository's jobs and agents carry; cron jobs
 # are "$LABEL_PREFIX.cron.<job>".
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
@@ -213,7 +216,7 @@ bounded() {
 
 # --- crash and panic reports -------------------------------------------
 
-for d in "$HOME/Library/Logs/DiagnosticReports" "/Library/Logs/DiagnosticReports"; do
+for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   [ -d "$d" ] || continue
   find "$d" -maxdepth 1 -name '*.panic' -mtime -7 2>/dev/null | while read -r p; do
     echo "$p" >> "$TMPD/panics"
