@@ -698,6 +698,62 @@ class TheManagedColumn(SchemaCase):
             connection.execute("SELECT managed FROM repo WHERE path = '/repo'").fetchone()[0], 1)
 
 
+class TheCiColumn(SchemaCase):
+    """Migration 16. `repo.ci` says where a repository's checks run (sd:1843).
+
+    `github` is GitHub Actions, which every repository used before the
+    column; `local` is `sd-check` run by the pack, posting `sd/local-gate`.
+    It is added, not rebuilt: every existing row reads `github` and keeps its
+    other values, and the CHECK holds the column to the two modes.
+    """
+
+    def _at_version_fifteen(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            # 014 converts paths with two functions `migrate` registers.
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                # 15 literally, for the reason `_at_version_nine` gives.
+                if version > 15:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.executemany(
+                "INSERT INTO repo (path, remote, runner_merge, managed, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 't', 't')",
+                [("/one", "git@github.com:platypeeps/one.git", "auto", 1),
+                 ("/two", None, "manual", 0)])
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_every_existing_row_arrives_at_github_and_keeps_its_values(self):
+        self._at_version_fifteen()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied),
+                         (15, list(range(16, SCHEMA_VERSION + 1))))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        rows = [tuple(row) for row in connection.execute(
+            "SELECT path, ci, runner_merge, managed, remote FROM repo ORDER BY path")]
+        self.assertEqual(rows, [
+            ("/one", "github", "auto", 1, "git@github.com:platypeeps/one.git"),
+            ("/two", "github", "manual", 0, None)])
+
+    def test_the_check_holds_the_column_to_github_and_local(self):
+        self._at_version_fifteen()
+        migrate(self.path)
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        connection.execute("UPDATE repo SET ci = 'local' WHERE path = '/one'")
+        for value in ("actions", "GITHUB", "", None):
+            with self.subTest(value=value), self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("UPDATE repo SET ci = ? WHERE path = '/one'", (value,))
+        self.assertEqual(
+            connection.execute("SELECT ci FROM repo WHERE path = '/one'").fetchone()[0], "local")
+
+
 class TheConnection(SchemaCase):
     def test_wal_and_foreign_keys_are_on(self):
         initialise(self.path)

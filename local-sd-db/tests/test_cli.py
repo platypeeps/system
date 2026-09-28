@@ -468,14 +468,50 @@ class TheMigrationVerbs(MigrationVerbCase):
     def test_repo_managed_sets_the_flag_and_list_shows_it_before_runner_merge(self):
         """sd:1619. `managed` sits before `runner_merge`, which stays the last
         field: the operator's instructions read the merge setting as the last
-        field of each row, and a new last field would change that answer."""
+        field of each row, and a new last field would change that answer.
+        `ci` (sd:1843) sits between them."""
         self.sd_db("repo", "add", str(self.checkout))
-        self.assertEqual(self._list_row()[-2:], ["no", "manual"])
+        self.assertEqual(self._list_row()[-3:], ["no", "github", "manual"])
         completed = self.sd_db("repo", "managed", str(self.checkout), "yes")
         self.assertIn("managed no -> yes", completed.stdout)
-        self.assertEqual(self._list_row()[-2:], ["yes", "manual"])
+        self.assertEqual(self._list_row()[-3:], ["yes", "github", "manual"])
         self.sd_db("repo", "runner-merge", str(self.checkout), "auto")
-        self.assertEqual(self._list_row()[-2:], ["yes", "auto"])
+        self.assertEqual(self._list_row()[-3:], ["yes", "github", "auto"])
+
+    def test_repo_ci_sets_the_mode_and_list_shows_it_before_runner_merge(self):
+        """sd:1843. `ci` sits just before `runner_merge`, and the verb
+        round-trips through `list`."""
+        self.sd_db("repo", "add", str(self.checkout))
+        self.assertEqual(self._list_row()[-4:], ["file", "no", "github", "manual"])
+        completed = self.sd_db("repo", "ci", str(self.checkout), "local")
+        self.assertIn("ci github -> local", completed.stdout)
+        self.assertEqual(self._list_row()[-4:], ["file", "no", "local", "manual"])
+        completed = self.sd_db("repo", "ci", str(self.checkout), "github")
+        self.assertIn("ci local -> github", completed.stdout)
+        self.assertEqual(self._list_row()[-2], "github")
+
+    def test_repo_list_keeps_runner_merge_as_the_last_field(self):
+        """The operator's instructions read the runner merge grant as the
+        last field of each `repo list` row. Every other setting moves, and
+        the last field still follows `runner-merge` alone."""
+        self.sd_db("repo", "add", str(self.checkout))
+        self.sd_db("repo", "ci", str(self.checkout), "local")
+        self.sd_db("repo", "managed", str(self.checkout), "yes")
+        self.assertEqual(self._list_row()[-1], "manual")
+        self.sd_db("repo", "runner-merge", str(self.checkout), "auto")
+        self.assertEqual(self._list_row()[-1], "auto")
+        self.sd_db("repo", "ci", str(self.checkout), "github")
+        self.assertEqual(self._list_row()[-1], "auto")
+
+    def test_repo_ci_refuses_a_bad_value_an_unknown_path_and_a_missing_argument(self):
+        self.sd_db("repo", "add", str(self.checkout))
+        completed = self.sd_db("repo", "ci", str(self.checkout), "actions", expect=1)
+        self.assertIn("github or local", completed.stdout + completed.stderr)
+        completed = self.sd_db("repo", "ci", str(self.home / "absent"), "local", expect=1)
+        self.assertIn("not a registered repository", completed.stdout + completed.stderr)
+        completed = self.sd_db("repo", "ci", str(self.checkout), expect=1)
+        self.assertIn("needs a path and github or local", completed.stderr)
+        self.assertEqual(self._list_row()[-2], "github")
 
     def test_repo_managed_refuses_a_bad_value_an_unknown_path_and_a_missing_argument(self):
         self.sd_db("repo", "add", str(self.checkout))
@@ -485,7 +521,7 @@ class TheMigrationVerbs(MigrationVerbCase):
         self.assertIn("not a registered repository", completed.stdout + completed.stderr)
         completed = self.sd_db("repo", "managed", str(self.checkout), expect=1)
         self.assertIn("needs a path and yes or no", completed.stderr)
-        self.assertEqual(self._list_row()[-2], "no")
+        self.assertEqual(self._list_row()[-3], "no")
 
     def test_repo_list_managed_prints_only_the_managed_rows(self):
         other = self.home / "other"
@@ -737,9 +773,9 @@ class TheRetireVerb(MigrationVerbCase):
             "row\n",
         )
         listed = self.sd_db("repo", "list")
-        # Status source, managed, then runner merge: the three trailing fields
-        # `repo list` prints.
-        self.assertEqual(listed.stdout.split()[-3:], ["row", "no", "manual"])
+        # Status source, managed, ci, then runner merge: the four trailing
+        # fields `repo list` prints.
+        self.assertEqual(listed.stdout.split()[-4:], ["row", "no", "github", "manual"])
 
     def test_it_needs_a_source(self):
         completed = self.sd_db("retire", expect=1)
@@ -980,7 +1016,7 @@ class TheRemoveVerbs(RemoveCase):
 
     def test_repo_and_item_with_no_verb_name_their_verbs(self):
         completed = self.sd_db("repo", expect=1)
-        for verb in ("add", "seed", "list", "runner-merge", "managed", "remove"):
+        for verb in ("add", "seed", "list", "runner-merge", "managed", "ci", "remove"):
             self.assertIn(verb, completed.stderr)
         completed = self.sd_db("item", expect=1)
         self.assertIn("remove", completed.stderr)

@@ -724,14 +724,14 @@ def one_migration_back(database):
     """
     raw = sqlite3.connect(database, isolation_level=None)
     try:
-        # The reverse of 015_repo_managed.sql, which its header carries as
-        # `--   ` lines: `repo.managed` is dropped and the version goes to 14.
+        # The reverse of 016_repo_ci.sql, which its header carries as
+        # `--   ` lines: `repo.ci` is dropped and the version goes to 15.
         # The helper is rewritten with every migration: a migration that adds
         # a column would be refused if left in place.
-        text = (SCHEMA_DIR / "015_repo_managed.sql").read_text()
+        text = (SCHEMA_DIR / "016_repo_ci.sql").read_text()
         script = "\n".join(line[4:] for line in text.splitlines() if line.startswith("--   "))
-        assert "PRAGMA user_version = 14" in script, \
-            "015's reverse is not where this helper expects it"
+        assert "PRAGMA user_version = 15" in script, \
+            "016's reverse is not where this helper expects it"
         raw.executescript(script)
         assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION - 1
     finally:

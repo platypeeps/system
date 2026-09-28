@@ -36,6 +36,12 @@ backup, and the fixture harness both repositories test against.
                     operator manages the repository. The column only, set
                     by hand with `repo managed`. Carries its reverse in its
                     header, run before 014's (sd:1619)
+      schema/016_repo_ci.sql  `repo.ci`, `github` or `local`: whether the
+                    repository's checks run in GitHub Actions or as a local
+                    `sd-check` that posts `sd/local-gate`. The column only,
+                    every row starts at `github`, set with `repo ci`.
+                    Carries its reverse in its header, run before 015's
+                    (sd:1843)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -109,8 +115,9 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh repo list --managed   # only the ones the operator manages
     ./sd-db.sh repo runner-merge PATH manual|auto   # may the runner merge it
     ./sd-db.sh repo managed PATH yes|no   # does the operator manage it
+    ./sd-db.sh repo ci PATH github|local  # where its checks run
 
-A `repo list` row reads `path remote status_source managed runner_merge`.
+A `repo list` row reads `path remote status_source managed ci runner_merge`.
 `remote` is the checkout's origin URL as written, ssh or https: the runner clones over it, so it is not respelled.
 Rows are compared by repository identity, so the two spellings of one GitHub repository match.
 `repo add` on a registered path rereads the checkout, so it refreshes a row whose repository moved to a new owner.
@@ -119,6 +126,8 @@ It is not the pack's `full`, `minimal` or `guest` mode; that lives in the reposi
 `runner_merge` stays the last field, because instructions read it there.
 `managed` is `yes` or `no`, and every row starts at `no`.
 No rule derives the flag: the GitHub owner does not decide it, so the operator sets each row.
+`ci` is `github` or `local`, and every row starts at `github`.
+`local` means the pack runs `sd-check` in a clean worktree of the head and posts an `sd/local-gate` status (sd:1843).
 
 `status_source` says who owns `docs/work` item status: the prd files (`file`) or the rows (`row`).
 Every new row starts at `file`; only `retire docs-work` switches it to `row`, directly.

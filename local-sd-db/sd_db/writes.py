@@ -92,6 +92,7 @@ def upsert_repo(
     mode: str | None = None,
     runner_merge: str | None = None,
     managed: int | None = None,
+    ci: str | None = None,
     status_source: str | None = None,
     pieces_source: str | None = None,
 ) -> str:
@@ -123,6 +124,7 @@ def upsert_repo(
             "mode": mode,
             "runner_merge": runner_merge,
             "managed": managed,
+            "ci": ci,
             "status_source": status_source,
             "pieces_source": pieces_source,
         }
