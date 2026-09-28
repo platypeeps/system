@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -677,6 +678,16 @@ class TheFleet(HoldsCase):
         log = self.run_holds(expect=1)
         self.assertEqual(self.lines(log, "UNREADABLE"), [])
 
+
+
+class FenceBacktracking(unittest.TestCase):
+    def test_indent_heavy_comment_without_a_closing_fence_parses_at_once(self):
+        # Code scanning py/redos: the old pattern took seconds at 20 tabs and
+        # grew about sevenfold per two more.
+        body = "```yaml\nsd-hold:\n" + "\t" * 40
+        started = time.monotonic()
+        self.assertIsNone(holds.parse_record("o/r", 1, "open", {"id": 1, "user": {"login": "x"}, "body": body}))
+        self.assertLess(time.monotonic() - started, 0.5)
 
 if __name__ == "__main__":
     unittest.main()
