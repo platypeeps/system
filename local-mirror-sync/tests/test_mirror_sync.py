@@ -302,6 +302,213 @@ class UnmountedShare(Fixture):
         self.assertTrue((mirror / "precious.txt").is_file())
 
 
+# Stand-ins for the tools behind an evicted destination file and a source
+# that loses files mid-pass. Neither can be staged for real in CI: a dataless
+# file needs iCloud, and a vanished file needs a race. State lives in files
+# under $MS_FAKE: `changed` names what a pass would copy, `dataless` lists the
+# destination paths iCloud has evicted, `stderr` and `rc` script a failure.
+FAKE_RSYNC = """#!{python}
+import os, sys
+state = os.environ["MS_FAKE"]
+def lines(name):
+    try:
+        with open(os.path.join(state, name)) as f:
+            return [l.rstrip("\\n") for l in f if l.strip()]
+    except FileNotFoundError:
+        return []
+args = sys.argv[1:]
+with open(os.path.join(state, "rsync.log"), "a") as log:
+    log.write(" ".join(args).replace("\\r", "<CR>") + "\\n")
+changed = lines("changed")
+if "--dry-run" in args:
+    print("Transfer starting: %d files" % len(changed))
+    for name in changed:
+        print(name)
+    sys.exit(0)
+dst = args[-1].rstrip("/")
+evicted = set(lines("dataless"))
+for name in changed:
+    if os.path.join(dst, name) in evicted:
+        print("rsync(2): error: " + name + ": mmap: Resource deadlock avoided", file=sys.stderr)
+        print("rsync(1): error: unexpected end of file", file=sys.stderr)
+        sys.exit(11)
+for line in lines("stderr"):
+    print(line, file=sys.stderr)
+sys.exit(int((lines("rc") or ["0"])[0]))
+"""
+
+# A BSD stat that reports SF_DATALESS (0x40000000) for the listed paths.
+FAKE_BSD_STAT = """#!{python}
+import os, sys
+state = os.environ["MS_FAKE"]
+args = sys.argv[1:]
+if args[0] != "-f":
+    print("stat: illegal option -- " + args[0].lstrip("-"), file=sys.stderr)
+    sys.exit(1)
+fmt, path = args[1], args[-1]
+if fmt == "%Xf":
+    with open(os.path.join(state, "dataless")) as f:
+        evicted = {{l.rstrip("\\n") for l in f}}
+    print("40008060" if path in evicted else "8040")
+    sys.exit(0)
+try:
+    st = os.stat(path)
+except OSError as error:
+    print("stat: " + str(error), file=sys.stderr)
+    sys.exit(1)
+print(fmt.replace("%d", str(st.st_dev)).replace("%i", str(st.st_ino)))
+"""
+
+# brctl download: iCloud fetches the file, so it is evicted no longer, unless
+# the path is listed in `stuck`.
+FAKE_BRCTL = """#!{python}
+import os, sys
+state = os.environ["MS_FAKE"]
+path = sys.argv[2]
+with open(os.path.join(state, "brctl.log"), "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\\n")
+stuck_file = os.path.join(state, "stuck")
+stuck = open(stuck_file).read().splitlines() if os.path.exists(stuck_file) else []
+if path not in stuck:
+    name = os.path.join(state, "dataless")
+    kept = [l for l in open(name).read().splitlines() if l != path]
+    with open(name, "w") as f:
+        f.write("".join(l + "\\n" for l in kept))
+"""
+
+
+class FakeTools(Fixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.state = self.work / "state"
+        self.state.mkdir()
+        (self.state / "dataless").write_text("")
+        bin_dir = self.work / "fake-bin"
+        bin_dir.mkdir()
+        for name, body in (("rsync", FAKE_RSYNC), ("stat", FAKE_BSD_STAT), ("brctl", FAKE_BRCTL)):
+            tool = bin_dir / name
+            tool.write_text(body.format(python=sys.executable))
+            tool.chmod(0o755)
+        self.source = self.work / "s"
+        self.write(self.source / "vault" / ".gitignore", "new\n")
+        self.mirror = self.work / "m"
+        self.write(self.mirror / "vault" / ".gitignore", "old\n")
+        self.conf = self.write(self.work / "pairs.conf", f"{self.source}|{self.mirror}\n")
+
+    def state_file(self, name: str, lines: list[str]) -> None:
+        (self.state / name).write_text("".join(line + "\n" for line in lines))
+
+    def sync(self) -> subprocess.CompletedProcess:
+        environment = dict(
+            os.environ,
+            MIRROR_SYNC_CONF=str(self.conf),
+            MS_FAKE=str(self.state),
+            MIRROR_SYNC_MATERIALIZE_WAIT="2",
+            PATH=f"{self.work / 'fake-bin'}:{os.environ['PATH']}",
+        )
+        for name in ("MIRROR_SYNC_BACKUP_ROOT", "MIRROR_SYNC_ADDITIVE"):
+            environment.pop(name, None)
+        return subprocess.run(
+            ["/bin/sh", str(MIRROR_SYNC), "sync"], capture_output=True, text=True, env=environment
+        )
+
+    def rsync_runs(self) -> list[str]:
+        log = self.state / "rsync.log"
+        lines = log.read_text().splitlines() if log.exists() else []
+        return [line for line in lines if "--dry-run" not in line]
+
+
+class EvictedDestination(FakeTools):
+    """An evicted iCloud file at the destination cannot be rsync's basis:
+    openrsync answers "Resource deadlock avoided" and aborts the pair, with
+    or without -W (sd:1947). The pass downloads what it is about to update
+    and tries the pair once more; it never deletes the evicted copy."""
+
+    def test_an_evicted_file_is_downloaded_and_the_pair_retried(self) -> None:
+        evicted = f"{self.mirror}/vault/.gitignore"
+        self.state_file("changed", ["vault/.gitignore"])
+        self.state_file("dataless", [evicted])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.state / "brctl.log").read_text(), f"download {evicted}\n")
+        self.assertEqual(len(self.rsync_runs()), 2)
+        self.assertTrue((self.mirror / "vault" / ".gitignore").is_file())
+
+    def test_only_evicted_files_the_pass_would_update_are_downloaded(self) -> None:
+        self.write(self.mirror / "untouched.txt", "stays evicted\n")
+        evicted = f"{self.mirror}/vault/.gitignore"
+        self.state_file("changed", ["vault/.gitignore"])
+        self.state_file("dataless", [evicted, f"{self.mirror}/untouched.txt"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.state / "brctl.log").read_text(), f"download {evicted}\n")
+
+    def test_a_file_that_stays_evicted_fails_the_pair_by_name(self) -> None:
+        evicted = f"{self.mirror}/vault/.gitignore"
+        self.state_file("changed", ["vault/.gitignore"])
+        self.state_file("dataless", [evicted])
+        self.state_file("stuck", [evicted])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"still evicted after 2s: {evicted}", result.stderr)
+        self.assertIn(f"{self.source} (rsync error)", result.stdout)
+        self.assertEqual(len(self.rsync_runs()), 1)
+
+
+class VanishedSource(FakeTools):
+    """A live tree loses files during a pass. openrsync exits 23 for that, as
+    for any partial transfer; when every error is a vanished source file the
+    pass copied all that still exists and must not alarm (sd:1947)."""
+
+    VANISHED = "rsync(9): error: {src}/logs/.job.attempt: open (2) in /home/example: No such file or directory"
+
+    def test_only_vanished_files_is_not_a_failure(self) -> None:
+        self.state_file("stderr", [self.VANISHED.format(src=self.source)])
+        self.state_file("rc", ["23"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("vanished during the pass", result.stderr)
+        self.assertIn("all 1 pair(s) mirrored", result.stdout)
+
+    def test_gnu_rsync_vanished_exit_is_not_a_failure(self) -> None:
+        self.state_file("stderr", ["file has vanished: \"/example/logs/.job.attempt\""])
+        self.state_file("rc", ["24"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_vanished_file_beside_another_error_still_fails(self) -> None:
+        self.state_file(
+            "stderr",
+            [
+                "rsync(9): error: hoa/downloads: unlinkat: Directory not empty",
+                self.VANISHED.format(src=self.source),
+            ],
+        )
+        self.state_file("rc", ["23"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"{self.source} (rsync error)", result.stdout)
+
+    def test_a_partial_transfer_without_error_lines_still_fails(self) -> None:
+        self.state_file("rc", ["23"])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+
+
 class NestedByIdentity(Fixture):
     """Source and destination must not nest, however either is spelled.
 
