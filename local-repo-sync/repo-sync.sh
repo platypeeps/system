@@ -467,6 +467,19 @@ hyg_merged() {
       --src-prefix=a/ --dst-prefix=b/ --pretty=medium "$h_mb..$3" 2>/dev/null \
     | git -C "$1" patch-id --verbatim 2>/dev/null | cut -d ' ' -f 1 \
     | grep -qxF "$h_want"; then
+    # A squash that landed and was reverted later still matches above. The
+    # branch counts as landed only while every path it changed still holds,
+    # on the default branch, what the branch tip holds.
+    git -C "$1" -c core.quotePath=false diff-tree -r --no-renames --name-only \
+      "$h_mt" "$h_bt" 2>/dev/null > "$HYG_TMP/squash.paths" || return 1
+    while IFS= read -r h_path; do
+      # git still quotes a name holding a quote, tab or newline; such a name
+      # cannot be looked up as printed, so the branch stays.
+      case "$h_path" in \"*) return 1 ;; esac
+      h_a=$(git -C "$1" rev-parse -q --verify "$2:$h_path" 2>/dev/null || true)
+      h_b=$(git -C "$1" rev-parse -q --verify "$3:$h_path" 2>/dev/null || true)
+      [ "$h_a" = "$h_b" ] || return 1
+    done < "$HYG_TMP/squash.paths"
     echo "squash"; return 0
   fi
   return 1
@@ -490,7 +503,14 @@ hyg_worktrees() {
 # was reused. Returns 1 (keep) when the process lives, and 2 when the lock
 # names no pid: nothing can prove such a lock stale. Only `kill -0` saying
 # "No such process" counts as not running; any other failure to look (no
-# permission, ps printing nothing) keeps the lock.
+# permission, ps failing or printing no time) keeps the lock.
+#
+# The lock's start time was formatted in the lock writer's timezone, which
+# need not be this run's. Every timezone offset is a whole number of
+# minutes, so the seconds field survives any offset: only a live pid whose
+# start differs in the seconds is proof of reuse. Any other difference is
+# ambiguous and keeps the lock; a reused pid with the same seconds (1 in 60)
+# is a missed cleanup, never a wrong one.
 hyg_lock_dead() {
   h_pid=$(printf '%s\n' "$1" | sed -n 's/.*(pid \([0-9][0-9]*\).*/\1/p' | head -1)
   [ -n "$h_pid" ] || return 2
@@ -500,14 +520,16 @@ hyg_lock_dead() {
       *"No such process"*|*"no such process"*) return 0 ;;
     esac
   fi
-  h_now=$(ps -p "$h_pid" -o lstart= 2>/dev/null || true)
-  [ -n "$h_now" ] || return 1
-  [ -n "$h_start" ] || return 1
+  h_now=$(ps -p "$h_pid" -o lstart= 2>/dev/null) || return 1
   # ps pads fields; compare with runs of blanks collapsed.
   h_now=$(echo $h_now)
   h_start=$(echo $h_start)
   [ "$h_now" = "$h_start" ] && return 1
-  return 0
+  h_sec_now=$(printf '%s\n' "$h_now" | sed -n 's/.*[0-9][0-9]*:[0-9][0-9]:\([0-9][0-9]\).*/\1/p')
+  h_sec_lock=$(printf '%s\n' "$h_start" | sed -n 's/.*[0-9][0-9]*:[0-9][0-9]:\([0-9][0-9]\).*/\1/p')
+  [ -n "$h_sec_now" ] && [ -n "$h_sec_lock" ] || return 1
+  [ "$h_sec_now" != "$h_sec_lock" ] && return 0
+  return 1
 }
 
 # Lists every process cwd into $HYG_TMP/cwds: /proc on Linux, lsof

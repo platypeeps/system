@@ -144,9 +144,13 @@ class HygieneTest(unittest.TestCase):
         time.sleep(0.2)
         live_start = lstart(live.pid)
 
+        # A reused pid shows in the seconds of its start time, the one field
+        # no timezone offset changes.
+        seconds = int(live_start.split(":")[2][:2])
+        reused_start = f"Thu Jan  1 00:00:{(seconds + 30) % 60:02d} 1970"
         reasons = {
             "dead-pid": f"claude agent agent-a1 (pid {exited.pid} start Sat Sep 26 21:09:28 2026)",
-            "reused-pid": f"claude agent agent-a2 (pid {live.pid} start Thu Jan  1 00:00:00 1970)",
+            "reused-pid": f"claude agent agent-a2 (pid {live.pid} start {reused_start})",
             "live-pid": f"claude agent agent-a3 (pid {live.pid} start {live_start})",
             "no-pid": "claude agent agent-a4",
         }
@@ -390,7 +394,8 @@ class HygieneTest(unittest.TestCase):
         f = self.fixture()
         repo = f.repo()
         wt = f.merged_worktree(repo, "unknown-users")
-        (f.bin / "lsof").write_text("#!/bin/sh\nexit 1\n")
+        # Partial output and a failing status: the status decides.
+        (f.bin / "lsof").write_text("#!/bin/sh\necho p1\necho n/nowhere\nexit 1\n")
         (f.bin / "lsof").chmod(0o755)
 
         f.run("hygiene", "--apply", expect=0,
@@ -412,6 +417,63 @@ class HygieneTest(unittest.TestCase):
               f"claude agent agent-a6 (pid {live.pid} start {lstart(live.pid)})", str(wt))
         shutil.rmtree(wt)
         (f.bin / "ps").write_text("#!/bin/sh\nexit 1\n")
+        (f.bin / "ps").chmod(0o755)
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertIn(real(wt), f.worktree_paths(repo))
+
+    def test_a_squash_reverted_on_main_is_not_deleted(self):
+        """NEW (review round 2). The squash landed and was reverted later; the
+        branch's content is no longer on main, so the branch stays."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "switch", "-q", "-c", "reverted-squash")
+        sha = f.commit(repo, "r.txt", "reverted\n", "branch")
+        f.git(repo, "switch", "-q", "main")
+        f.commit(repo, "other.txt", "other\n", "main moves on")
+        f.git(repo, "merge", "-q", "--squash", "reverted-squash")
+        f.git(repo, "commit", "-q", "-m", "squashed")
+        f.git(repo, "revert", "--no-edit", "HEAD")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertEqual(sha, f.branch_sha(repo, "reverted-squash"))
+
+    def test_a_lock_written_in_another_timezone_is_kept(self):
+        """NEW (review round 2). The lock's start time was formatted in UTC;
+        the sweep runs seven hours west. The live holder keeps its lock."""
+        f = self.fixture()
+        repo = f.repo()
+        live = subprocess.Popen(["sleep", "300"])
+        self.addCleanup(live.kill)
+        time.sleep(0.2)
+        utc_start = " ".join(subprocess.run(
+            ["ps", "-p", str(live.pid), "-o", "lstart="], capture_output=True,
+            text=True, check=True, env=dict(os.environ, TZ="UTC")).stdout.split())
+        wt = f.add_worktree(repo, "other-tz")
+        f.git(repo, "worktree", "lock", "--reason",
+              f"claude agent agent-a7 (pid {live.pid} start {utc_start})", str(wt))
+        shutil.rmtree(wt)
+
+        f.run("hygiene", "--apply", expect=0, extra_env={"TZ": "Etc/GMT+7"})
+
+        self.assertIn(real(wt), f.worktree_paths(repo))
+
+    def test_a_failing_ps_keeps_the_lock_whatever_it_prints(self):
+        """NEW (review round 2). A ps that exits non-zero proves nothing, even
+        when it prints something that is not the lock's start time."""
+        f = self.fixture()
+        repo = f.repo()
+        live = subprocess.Popen(["sleep", "300"])
+        self.addCleanup(live.kill)
+        time.sleep(0.2)
+        wt = f.add_worktree(repo, "ps-fails")
+        f.git(repo, "worktree", "lock", "--reason",
+              f"claude agent agent-a8 (pid {live.pid} start {lstart(live.pid)})", str(wt))
+        shutil.rmtree(wt)
+        (f.bin / "ps").write_text("#!/bin/sh\necho 'Thu Jan  1 00:00:07 1970'\nexit 1\n")
         (f.bin / "ps").chmod(0o755)
 
         f.run("hygiene", "--apply", expect=0)

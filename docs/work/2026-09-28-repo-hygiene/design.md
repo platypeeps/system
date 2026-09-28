@@ -60,7 +60,11 @@ match is therefore confirmed with `git patch-id --verbatim`: the verbatim id
 of the branch's net diff must equal the verbatim id of a commit on the
 default branch since the merge base. Prefixes, renames, colour and external
 diff drivers are pinned on both sides, so user config cannot make them
-differ; a mismatch keeps the branch. A squash whose landed content differs
+differ; a mismatch keeps the branch. A squash that landed and was reverted
+later still matches, so a last check compares every path the branch
+changed: the default branch must hold the same blob as the branch tip, or
+the branch stays. A path main touched again after the squash also keeps
+the branch; that is a missed cleanup, never a wrong delete. A squash whose landed content differs
 (a conflict resolved on the way in, or other spacing) stays and shows in a
 report-only class.
 
@@ -79,9 +83,13 @@ A registration whose directory is gone:
   `(pid <n> start <lstart>)` from the lock text. The pid not running, or
   running with a different `ps -o lstart=` value, means dead: the lock is
   cleared with `git worktree unlock`, then pruned. "Not running" means
-  `kill -0` reported "No such process"; any other failure to look, or a
-  `ps` that prints nothing, keeps the lock. A live pid with the same start
-  time is kept with a note. A lock without a pid is kept and listed,
+  `kill -0` reported "No such process"; any other failure to look, a `ps`
+  that exits non-zero, or a start time with no parseable clock keeps the
+  lock. The lock's start time was formatted in its writer's timezone, and
+  every offset is whole minutes, so only a difference in the seconds field
+  proves the pid was reused. Any other difference keeps the lock; a reused
+  pid with the same seconds (1 in 60) is a missed cleanup. A live pid with
+  the same start time is kept with a note. A lock without a pid is kept and listed,
   because nothing can prove it stale.
 
 Blanks are collapsed on both sides before the start-time comparison,
