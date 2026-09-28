@@ -30,7 +30,7 @@ usage: mirror-sync.sh sync|plan|list
 
   list   print the configured source|destination pairs and their excludes
   plan   rsync dry run: show what sync would copy and DELETE, change nothing
-  sync   mirror every pair (rsync -a --delete); exits 1 if any pair failed,
+  sync   mirror every pair (rsync -rlptgo -W --delete); exits 1 if any pair failed,
          having tried all the others — what the mirror-sync-nightly cron
          job runs
 
@@ -409,7 +409,13 @@ FAILLOG=$(mktemp)
 EXCLUDES=$(mktemp)
 trap 'rm -f "$FAILLOG" "$EXCLUDES"' EXIT INT TERM
 
-RSYNC_FLAGS="-a --delete --delete-excluded"
+# -rlptgo is -a without -D: sockets, fifos and devices are skipped, not
+# copied. openrsync recreates a socket with mkstempsock, which fails on the
+# backup disk and failed the whole pair. -W copies whole files: the delta
+# algorithm mmaps the basis file, and iCloud placeholders answer that mmap
+# with "Resource deadlock avoided".
+RSYNC_BASE="-rlptgo -W"
+RSYNC_FLAGS="$RSYNC_BASE --delete --delete-excluded"
 # MIRROR_SYNC_ADDITIVE drops both deletes, and with them the property that
 # makes an exact mirror dangerous as a backup: it copies a destructive edit as
 # faithfully as a useful one. `git reset --hard` deletes the work, the next
@@ -420,7 +426,7 @@ RSYNC_FLAGS="-a --delete --delete-excluded"
 # put there before; that is the right trade for the repo fleet's copy of
 # uncommitted work, and the wrong one for the other lists, which stay exact.
 if [ -n "${MIRROR_SYNC_ADDITIVE:-}" ]; then
-  RSYNC_FLAGS="-a"
+  RSYNC_FLAGS="$RSYNC_BASE"
 fi
 # The other half of the same problem: an additive pass still OVERWRITES a file
 # whose source changed, so the previous bytes are gone. MIRROR_SYNC_BACKUP_ROOT

@@ -2,7 +2,7 @@
 
 Scheduled rsync mirroring of configured directory and file pairs in archive
 mode. Directory destinations become **exact copies** of their sources, so
-extra destination files are deleted (`rsync -a --delete`), unless the job sets
+extra destination files are deleted (`rsync -rlptgo -W --delete`: archive mode without sockets, fifos or devices, whole files), unless the job sets
 `MIRROR_SYNC_ADDITIVE` (see the repos list below). File sources are copied by
 basename into existing destination directories.
 
