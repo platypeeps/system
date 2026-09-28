@@ -4,15 +4,40 @@ This page records history, not rules.
 The mechanism lives in the command pack's `WORKFLOW.md` (the `repo.ci` section).
 `local-sd-db` holds the `repo.ci` column (sd:1843).
 
-## What happened
+## Who turned Actions off, and why
 
-On 2026-09-27 and 2026-09-28, sixteen private repositories in the `platypeeps` organization moved to `repo.ci = local`.
-GitHub Actions billing had blocked their CI runs, so no pull request could get a green check.
+The operator decided the switch on 2026-09-27.
+An assistant session, acting as the single merge integrator, carried it out on 2026-09-27 and 2026-09-28.
+The operator approved each repository's switch in that session.
 
-Each repository gained a `check` entrypoint.
+GitHub Actions billing had blocked CI runs on the private repositories.
+No pull request could get a green check, so nothing could merge.
+Disabling Actions or the CI workflows is therefore deliberate.
+Do not turn them back on to "fix" a missing check; the local gate is the check now.
+
+## Which repositories moved
+
+Do not trust a list in prose; ask the workflow database:
+
+    local-sd-db/sd-db.sh repo list
+
+A row whose `ci` field reads `local` gates merges locally.
+Twenty repositories read `local` on 2026-09-28.
+
+Most are private repositories in the `platypeeps` organization; Actions is disabled there.
+Three are public: this one, the command pack, and one more.
+One is a repository in the operator's employer organization.
+The public ones and the employer one keep Actions on.
+There, only the CI workflow files are disabled, so CodeQL and Dependabot still run.
+
+The other repositories in the employer organization stay on GitHub CI.
+
+## How the gate works
+
+Each moved repository gained a `check` entrypoint, usually `make check`.
 The entrypoint mirrors what the repository's required workflow ran.
 
-`sd-ship merge` now runs that entrypoint through the pack's local gate:
+`sd-ship merge` runs that entrypoint through the pack's local gate:
 
 1. It checks the reviewed head out into a clean, detached worktree.
 2. It runs `sd-check` there.
@@ -20,17 +45,29 @@ The entrypoint mirrors what the repository's required workflow ran.
 4. The merge requires that status as `success` at the head.
 
 Branch protection or a ruleset requires `sd/local-gate` on each moved repository.
-Actions is disabled on the private repositories.
+It replaces the old required checks, such as an aggregate `CI Result` job.
+A merge done outside `sd-ship` never gets that status, so it cannot pass protection.
 
-## Public repositories
+## How to check a repository
 
-The public repositories (this one and the command pack) keep Actions on.
-CodeQL and Dependabot still run there.
-Their CI workflows are disabled; the local gate replaces them.
+- **Mode:** the `ci` field of `sd-db.sh repo list`.
+- **Required check:** the branch protection or ruleset names `sd/local-gate`.
+- **Workflows:** `gh workflow list --all` shows the CI workflows as `disabled_manually`.
+- **Actions on a private repository:** the repository's Actions settings show Actions disabled.
 
-## Repositories that stay on GitHub CI
+## How to switch a repository, or switch it back
 
-Repositories in the operator's employer organization stay on GitHub CI.
+The command pack's `sd ci local` verb (sd:1914) switches the database mode and the required check together.
+Until it lands, the switch is manual:
+
+1. Add a `check` entrypoint and prove it with `sd-check`.
+2. Set the mode with `sd-db.sh repo ci <path> local`.
+3. Require `sd/local-gate` in branch protection or the ruleset, in place of the old checks.
+4. Disable the CI workflows, or Actions as a whole on a private repository.
+
+To go back to GitHub CI, reverse each step.
+Set the mode to `github`, restore the old required checks, and re-enable the workflows.
+Re-enable Actions only once billing allows it again.
 
 ## What the local gate needs
 
@@ -45,4 +82,5 @@ These needs showed up during the rollout:
 - **Both Node repositories must declare `check:` in `CLAUDE.local.md`.**
   The local block replaces the gate's `package.json` detection.
 - **A writing repository's gate fetches the command pack** with the operator's git credentials.
-
+- **Load-sensitive tests can fail when several gates run at once.**
+  A timeout under load is not a regression; rerun the gate once the machine is quieter.
