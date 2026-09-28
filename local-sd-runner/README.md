@@ -45,6 +45,16 @@ space. Both database and work free space must be at or above the floor to dispat
 A low database floor stops owned process groups; a low work floor pauses dispatch
 while existing cleanup continues.
 
+The free-space checks read statvfs on every pulse. The APFS and quota answer comes
+from `diskutil`, which the daemon asks once per mount identity and again every
+15 minutes, not on every pulse (sd:1941): a `diskutil` that stalls past its 20 s
+timeout on a refresh keeps the last answer and names the failure under the
+heartbeat's `storage.verification.refresh_problem`, an answer that names a problem
+replaces the last one, and an answer an hour old with no successful refresh is
+forgotten, so a stall that lasts becomes the problem again. The daemon's first
+preflight has no answer to keep, so a stalled `diskutil` still refuses the start,
+and `runner.sh preflight` asks every time.
+
 The work volume `sd-work` has a **100 GB quota** in APFS container `disk3`.
 The September 8 provisioning proposal set 60 GB. On 2026-09-26 the volume was
 recreated at 100 GB, because 60 GB left too little room above the 40 GB floor.
