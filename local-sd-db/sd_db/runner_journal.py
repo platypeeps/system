@@ -14,6 +14,7 @@ import json
 import os
 import re
 import stat
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -63,7 +64,7 @@ def fsync_directory(path: Path) -> None:
 
 
 @contextmanager
-def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRefused):
+def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRefused, wait=0.0, poll=0.5):
     """Take the lock at `path`, never through a link at its final component.
 
     The one lock opener both packages share. The file is opened without
@@ -79,7 +80,10 @@ def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRef
     add: an existing lock is never chmodded under a live holder.
 
     `noun` names the lock in a refusal; `held` is the message when another
-    holder owns it; `error` is the exception raised for every refusal. Only a
+    holder owns it, or a callable that returns it, read at refusal time;
+    `error` is the exception raised for every refusal. A non-blocking lock
+    with `wait` seconds retries every `poll` seconds until that deadline, then
+    refuses as it would have at once. The lock yields its open descriptor. Only a
     link or a foreign file is reported as unsafe ownership or type. Any other
     failure to open names the system error instead, because an unwritable, a
     read-only or a full lock directory is not a verdict about the file's
@@ -100,14 +104,23 @@ def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRef
         details = os.fstat(descriptor)
         if not stat.S_ISREG(details.st_mode) or details.st_uid != os.getuid() or details.st_nlink != 1:
             raise error(f"{noun} lock has unsafe ownership or type: {path}")
+        # The clock is read only for a wait: callers that mock it see no extra reads.
+        deadline = time.monotonic() + wait if wait else None
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                break
+            except BlockingIOError as cause:
+                remaining = 0 if deadline is None else deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(poll, remaining))
+                    continue
+                # The cause is kept: a caller that relabels contention (control_gate)
+                # reads it to tell a held lock from a lock it could not open.
+                message = held() if callable(held) else held
+                raise error(message or f"runner ownership lock held: {path}") from cause
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-        except BlockingIOError as cause:
-            # The cause is kept: a caller that relabels contention (control_gate)
-            # reads it to tell a held lock from a lock it could not open.
-            raise error(held or f"runner ownership lock held: {path}") from cause
-        try:
-            yield
+            yield descriptor
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
