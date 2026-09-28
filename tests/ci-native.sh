@@ -193,8 +193,8 @@ fi
 # SUITE_SHARD=i/n runs only every n-th suite of the leg, starting at the
 # i-th, so tests/check.sh can split the long tools leg across processes.
 # CI leaves it unset, and every suite runs.
-shard_index="${SUITE_SHARD%/*}"
-shard_count="${SUITE_SHARD#*/}"
+shard_index="${SUITE_SHARD:-}"; shard_index="${shard_index%/*}"
+shard_count="${SUITE_SHARD:-}"; shard_count="${shard_count#*/}"
 case "${SUITE_SHARD:-}" in
   '') shard_index=1; shard_count=1 ;;
   [1-9]/[1-9]) [ "$shard_index" -le "$shard_count" ] || { echo "SUITE_SHARD=$SUITE_SHARD: i must not exceed n" >&2; exit 1; } ;;
