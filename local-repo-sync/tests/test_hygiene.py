@@ -353,6 +353,85 @@ class HygieneTest(unittest.TestCase):
         self.assertTrue(wt.exists())
         self.assertNotEqual("", f.branch_sha(repo, "agent-branch"))
 
+    def test_a_squash_that_differs_only_in_whitespace_is_not_deleted(self):
+        """NEW (review round 1). `git cherry` ignores whitespace, so the squash
+        match is confirmed verbatim; a branch whose content differs from what
+        landed only in whitespace stays."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "switch", "-q", "-c", "ws-branch")
+        sha = f.commit(repo, "w.txt", "hello world\n", "branch")
+        f.git(repo, "switch", "-q", "main")
+        f.commit(repo, "w.txt", "hello   world\n", "landed with other spacing")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertEqual(sha, f.branch_sha(repo, "ws-branch"))
+
+    def test_report_mode_writes_no_object_into_the_checkout(self):
+        """NEW (review round 1). The squash probe's synthetic commit goes to a
+        throwaway object directory."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "switch", "-q", "-c", "probe-me")
+        f.commit(repo, "p.txt", "probe\n", "probe")
+        f.git(repo, "push", "-q", "-u", "origin", "probe-me")
+        f.git(repo, "switch", "-q", "main")
+        before = f.git(repo, "count-objects")
+
+        f.run("hygiene", expect=None)
+
+        self.assertEqual(before, f.git(repo, "count-objects"))
+
+    def test_a_failing_process_scan_keeps_the_worktree(self):
+        """NEW (review round 1). When lsof fails, nothing is known about who
+        uses a worktree, so it counts as in use."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.merged_worktree(repo, "unknown-users")
+        (f.bin / "lsof").write_text("#!/bin/sh\nexit 1\n")
+        (f.bin / "lsof").chmod(0o755)
+
+        f.run("hygiene", "--apply", expect=0,
+              extra_env={"REPO_SYNC_PROC": str(f.tmp / "no-proc")})
+
+        self.assertTrue(wt.exists())
+        self.assertNotEqual("", f.branch_sha(repo, "unknown-users"))
+
+    def test_a_live_pid_that_ps_cannot_read_keeps_its_lock(self):
+        """NEW (review round 1). Only "No such process" means dead; a ps that
+        prints nothing for a live pid keeps the lock."""
+        f = self.fixture()
+        repo = f.repo()
+        live = subprocess.Popen(["sleep", "300"])
+        self.addCleanup(live.kill)
+        time.sleep(0.2)
+        wt = f.add_worktree(repo, "ps-blind")
+        f.git(repo, "worktree", "lock", "--reason",
+              f"claude agent agent-a6 (pid {live.pid} start {lstart(live.pid)})", str(wt))
+        shutil.rmtree(wt)
+        (f.bin / "ps").write_text("#!/bin/sh\nexit 1\n")
+        (f.bin / "ps").chmod(0o755)
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertIn(real(wt), f.worktree_paths(repo))
+
+    def test_a_checkout_without_a_default_branch_still_prunes(self):
+        """NEW (review round 1). The prunes need no default branch, so a
+        checkout without one still reports its missing worktree."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "-q", "-m", "main", "trunk")
+        f.git(repo, "remote", "set-head", "origin", "-d")
+        wt = f.add_worktree(repo, "orphaned")
+        shutil.rmtree(wt)
+
+        report = f.run("hygiene", expect=1)
+
+        self.assertIn(real(wt), report.stdout)
+
     def test_the_checked_out_branch_of_the_main_checkout_is_kept(self):
         """NEW. Requirement 4: never the checked-out branch of a worktree
         that stays, and never the default branch."""

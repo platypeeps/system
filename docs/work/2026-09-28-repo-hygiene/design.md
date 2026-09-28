@@ -34,8 +34,8 @@ those files.
 ## The default branch
 
 `source:local-repo-sync/repo-sync.sh::hyg_default` takes `origin/HEAD`,
-else a local `main`, else `master`. A checkout with none is skipped with a
-note. The comparison ref is `refs/remotes/origin/<default>` when it exists.
+else a local `main`, else `master`. A checkout with none still gets both
+prunes; only its branch pass is skipped, with a note. The comparison ref is `refs/remotes/origin/<default>` when it exists.
 A branch therefore counts as landed only once its content is upstream. A
 local-only merge into `main` keeps the branch, which is the safe side.
 
@@ -50,10 +50,19 @@ order of cost:
 | tree equals merge base | `git rev-parse <b>^{tree}` against the merge base's tree | a branch with nothing left to land |
 | squash | `git commit-tree <b>^{tree} -p <merge-base>`, then `git cherry <default> <sha>` shows `-` | a squash merge with the same patch |
 
-The synthetic commit is an unreferenced object; `git gc` collects it. Its
-identity is passed inline, so the probe needs no user configuration. A
-squash whose landed content differs (a conflict resolved on the way in)
-does not match. It stays, and shows in a report-only class.
+The synthetic commit goes to a throwaway object directory under the run's
+temporary folder, with the repository's objects as an alternate. Report mode
+therefore writes nothing into the checkout. Its identity is passed inline,
+so the probe needs no user configuration.
+
+`git cherry` compares patch ids, and patch ids ignore whitespace. A cherry
+match is therefore confirmed with `git patch-id --verbatim`: the verbatim id
+of the branch's net diff must equal the verbatim id of a commit on the
+default branch since the merge base. Prefixes, renames, colour and external
+diff drivers are pinned on both sides, so user config cannot make them
+differ; a mismatch keeps the branch. A squash whose landed content differs
+(a conflict resolved on the way in, or other spacing) stays and shows in a
+report-only class.
 
 ## Worktree registrations
 
@@ -69,8 +78,10 @@ A registration whose directory is gone:
 - locked: `source:local-repo-sync/repo-sync.sh::hyg_lock_dead` parses
   `(pid <n> start <lstart>)` from the lock text. The pid not running, or
   running with a different `ps -o lstart=` value, means dead: the lock is
-  cleared with `git worktree unlock`, then pruned. A live pid with the same
-  start time is kept with a note. A lock without a pid is kept and listed,
+  cleared with `git worktree unlock`, then pruned. "Not running" means
+  `kill -0` reported "No such process"; any other failure to look, or a
+  `ps` that prints nothing, keeps the lock. A live pid with the same start
+  time is kept with a note. A lock without a pid is kept and listed,
   because nothing can prove it stale.
 
 Blanks are collapsed on both sides before the start-time comparison,
@@ -87,10 +98,14 @@ first. The worktree goes only when all of these hold:
   ignored files do not);
 - no process has its cwd at or under it.
 
-`source:local-repo-sync/repo-sync.sh::hyg_cwds` reads process cwds once per
-run: from `/proc` on Linux, else from `lsof -d cwd`. With neither, every
-worktree counts as in use. The scan runs only when a candidate needs it; it
-took 6 seconds on a loaded workstation.
+`source:local-repo-sync/repo-sync.sh::hyg_cwds` reads process cwds from
+`/proc` on Linux, else from `lsof -d cwd`. A failed `lsof`, an empty scan,
+or neither source makes the worktree count as in use. The scan runs afresh
+for each candidate, as its last check before removal, so a process that
+moved in after an earlier scan is still seen. A scan took 6 seconds on a
+loaded workstation; only candidates pay for it. The window between the scan
+and `git worktree remove` remains; no agent in the fleet takes a
+cooperative lock the sweep could honour instead.
 
 Removal is `git worktree remove` without `--force`, so git applies its own
 clean check as a second guard. Ignored build output goes with the directory.

@@ -424,8 +424,17 @@ hyg_default() {
 # Three ways: the tip is an ancestor; the branch tree equals its merge base
 # (nothing left to land); or a synthetic squash of the branch onto its merge
 # base is patch-equivalent to a commit on the default branch, which is what a
-# squash merge leaves. The synthetic commit is an unreferenced object that gc
-# collects; the identity is inline so the probe needs no user config.
+# squash merge leaves. The synthetic commit goes to a throwaway object
+# directory, with the repository's objects as an alternate, so even report
+# mode writes nothing into the checkout. The identity is inline so the probe
+# needs no user config.
+#
+# `git cherry` compares patch ids, which ignore whitespace, so a branch that
+# differs from what landed only in whitespace would pass it. A cherry match is
+# therefore confirmed with `git patch-id --verbatim` against every commit on
+# the default branch since the merge base; without that confirmation the
+# branch stays. Prefixes, renames and colour are pinned so user config cannot
+# make the two sides differ.
 hyg_merged() {
   if git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; then
     echo "ancestor"; return 0
@@ -436,13 +445,30 @@ hyg_merged() {
   if [ "$h_bt" = "$h_mt" ]; then
     echo "tree equals merge base"; return 0
   fi
-  h_sq=$(GIT_AUTHOR_NAME=repo-sync GIT_AUTHOR_EMAIL=repo-sync@example.invalid \
+  h_objs=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  rm -rf "$HYG_TMP/objects"; mkdir -p "$HYG_TMP/objects"
+  h_sq=$(GIT_OBJECT_DIRECTORY="$HYG_TMP/objects" \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$h_objs/objects" \
+    GIT_AUTHOR_NAME=repo-sync GIT_AUTHOR_EMAIL=repo-sync@example.invalid \
     GIT_COMMITTER_NAME=repo-sync GIT_COMMITTER_EMAIL=repo-sync@example.invalid \
     git -C "$1" commit-tree "$h_bt" -p "$h_mb" -m "repo-sync hygiene squash probe" \
     2>/dev/null) || return 1
-  case "$(git -C "$1" cherry "$3" "$h_sq" 2>/dev/null)" in
-    -*) echo "squash"; return 0 ;;
+  case "$(GIT_OBJECT_DIRECTORY="$HYG_TMP/objects" \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$h_objs/objects" \
+    git -C "$1" cherry "$3" "$h_sq" 2>/dev/null)" in
+    -*) ;;
+    *) return 1 ;;
   esac
+  h_want=$(git -C "$1" diff-tree -p --no-renames --no-color --no-ext-diff \
+      --src-prefix=a/ --dst-prefix=b/ "$h_mt" "$h_bt" 2>/dev/null \
+    | git -C "$1" patch-id --verbatim 2>/dev/null | cut -d ' ' -f 1)
+  [ -n "$h_want" ] || return 1
+  if git -C "$1" log -p --no-renames --no-color --no-ext-diff --no-merges \
+      --src-prefix=a/ --dst-prefix=b/ --pretty=medium "$h_mb..$3" 2>/dev/null \
+    | git -C "$1" patch-id --verbatim 2>/dev/null | cut -d ' ' -f 1 \
+    | grep -qxF "$h_want"; then
+    echo "squash"; return 0
+  fi
   return 1
 }
 
@@ -462,13 +488,20 @@ hyg_worktrees() {
 # `... (pid <n> start <lstart>)`. Returns 0 (dead: safe to clear) when the pid
 # is not running, or runs with a different start time, which means the pid
 # was reused. Returns 1 (keep) when the process lives, and 2 when the lock
-# names no pid: nothing can prove such a lock stale.
+# names no pid: nothing can prove such a lock stale. Only `kill -0` saying
+# "No such process" counts as not running; any other failure to look (no
+# permission, ps printing nothing) keeps the lock.
 hyg_lock_dead() {
   h_pid=$(printf '%s\n' "$1" | sed -n 's/.*(pid \([0-9][0-9]*\).*/\1/p' | head -1)
   [ -n "$h_pid" ] || return 2
   h_start=$(printf '%s\n' "$1" | sed -n 's/.*(pid [0-9][0-9]* start \(.*\))[[:space:]]*$/\1/p' | head -1)
+  if ! kill -0 "$h_pid" 2>/dev/null; then
+    case "$(kill -0 "$h_pid" 2>&1 || true)" in
+      *"No such process"*|*"no such process"*) return 0 ;;
+    esac
+  fi
   h_now=$(ps -p "$h_pid" -o lstart= 2>/dev/null || true)
-  [ -n "$h_now" ] || return 0
+  [ -n "$h_now" ] || return 1
   [ -n "$h_start" ] || return 1
   # ps pads fields; compare with runs of blanks collapsed.
   h_now=$(echo $h_now)
@@ -477,27 +510,32 @@ hyg_lock_dead() {
   return 0
 }
 
-# Lists every process cwd once per run, into $HYG_TMP/cwds. /proc on Linux,
-# lsof elsewhere; with neither, every worktree counts as in use.
+# Lists every process cwd into $HYG_TMP/cwds: /proc on Linux, lsof
+# elsewhere. Returns 1 when neither can answer, or lsof fails; the caller
+# then counts the worktree as in use. It runs afresh for each candidate,
+# right before its removal, so a process that moved in after an earlier
+# candidate's scan is still seen.
 hyg_cwds() {
-  [ -e "$HYG_TMP/cwds.done" ] && return 0
   : > "$HYG_TMP/cwds"
-  if [ -d /proc/self ] && [ -e /proc/self/cwd ]; then
-    for h_p in /proc/[0-9]*; do
+  # REPO_SYNC_PROC exists for the tests, to reach the lsof path on Linux.
+  h_proc="${REPO_SYNC_PROC:-/proc}"
+  if [ -d "$h_proc/self" ] && [ -e "$h_proc/self/cwd" ]; then
+    for h_p in "$h_proc"/[0-9]*; do
       readlink "$h_p/cwd" 2>/dev/null >> "$HYG_TMP/cwds" || true
     done
   elif command -v lsof >/dev/null 2>&1; then
-    lsof -nP -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' >> "$HYG_TMP/cwds" || true
+    lsof -nP -d cwd -Fn > "$HYG_TMP/lsof" 2>/dev/null || return 1
+    sed -n 's/^n//p' "$HYG_TMP/lsof" >> "$HYG_TMP/cwds"
   else
-    : > "$HYG_TMP/cwds.unknown"
+    return 1
   fi
-  : > "$HYG_TMP/cwds.done"
+  [ -s "$HYG_TMP/cwds" ]
 }
 
-# Returns 0 when some process has its cwd at or under $1.
+# Returns 0 when some process has its cwd at or under $1, or when that cannot
+# be known.
 hyg_busy() {
-  hyg_cwds
-  [ -e "$HYG_TMP/cwds.unknown" ] && return 0
+  hyg_cwds || return 0
   h_real=$(cd "$1" 2>/dev/null && pwd -P) || return 0
   awk -v d="$h_real" '$0 == d || index($0, d "/") == 1 { found = 1 } END { exit !found }' \
     "$HYG_TMP/cwds"
@@ -524,12 +562,6 @@ hyg_item_number() {
 hyg_repo() {
   d=$1
   echo "=== $2 ($d)"
-  if ! h_def=$(hyg_default "$d"); then
-    hyg_note "no default branch found; skipped"
-    return 0
-  fi
-  def_name=${h_def%% *}
-  def_ref=${h_def#* }
 
   # 3.3: remote-tracking refs for deleted remote branches.
   for h_remote in $(git -C "$d" remote); do
@@ -615,9 +647,17 @@ hyg_repo() {
       "$w_locked" "$US" "$w_reason" >> "$HYG_TMP/holders"
   done < "$HYG_TMP/holders.all"
 
-  # 3.4, 3.5 and the report-only branch classes.
-  git -C "$d" for-each-ref --format="%(refname:short)$US%(objectname)$US%(upstream:track)" \
-    refs/heads > "$HYG_TMP/branches"
+  # 3.4, 3.5 and the report-only branch classes. They need a default branch;
+  # the prunes above do not, so they ran first.
+  : > "$HYG_TMP/branches"
+  if h_def=$(hyg_default "$d"); then
+    def_name=${h_def%% *}
+    def_ref=${h_def#* }
+    git -C "$d" for-each-ref --format="%(refname:short)$US%(objectname)$US%(upstream:track)" \
+      refs/heads > "$HYG_TMP/branches"
+  else
+    hyg_note "no default branch found; branches not classified"
+  fi
   while IFS=$US read -r b_name b_sha b_track; do
     [ "$b_name" = "$def_name" ] && continue
     if h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
