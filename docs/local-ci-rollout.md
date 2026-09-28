@@ -22,13 +22,15 @@ Do not trust a list in prose; ask the workflow database:
     local-sd-db/sd-db.sh repo list
 
 A row whose `ci` field reads `local` gates merges locally.
-Twenty repositories read `local` on 2026-09-28.
+Twenty-one repositories read `local` on 2026-09-28.
 
 Most are private repositories in the `platypeeps` organization; Actions is disabled there.
 Three are public: this one, the command pack, and one more.
-One is a repository in the operator's employer organization.
-The public ones and the employer one keep Actions on.
+Two are repositories in the operator's employer organization.
+The public ones and the employer ones keep Actions on.
 There, only the CI workflow files are disabled, so CodeQL and Dependabot still run.
+One employer repository was still mid-switch on 2026-09-28.
+Its row read `local`, but its workflows and required checks were still GitHub's.
 
 The other repositories in the employer organization stay on GitHub CI.
 
