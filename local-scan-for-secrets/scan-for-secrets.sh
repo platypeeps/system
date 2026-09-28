@@ -139,9 +139,19 @@ for arg in "$@"; do
     *) usage >&2; exit 1 ;;
   esac
 done
-# Resolve the script dir BEFORE the cd below: critical/mask move to $HOME,
-# after which a relative $0 no longer resolves (GH_STATE lives next to us).
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve the script dir BEFORE the cd below: critical/mask/prune move to
+# $HOME, after which a relative $0 no longer resolves (GH_STATE and ../lib
+# live next to us). Walk a symlink (e.g. from ~/bin) to the real script
+# first, or the siblings are looked for next to the link.
+S4S_SELF="$0"
+while [ -L "$S4S_SELF" ]; do
+  s4s_link=$(readlink "$S4S_SELF")
+  case "$s4s_link" in
+    /*) S4S_SELF="$s4s_link" ;;
+    *)  S4S_SELF="$(dirname "$S4S_SELF")/$s4s_link" ;;
+  esac
+done
+DIR="$(cd "$(dirname "$S4S_SELF")" && pwd)"
 case "$MODE" in critical|mask|prune) cd "$HOME" ;; esac
 
 # scan targets: empty in cwd mode (rg/grep default to .), explicit list in
@@ -252,16 +262,7 @@ repos/platypeeps/sd-ai-command-pack/tests
 #   S4S_EXTRA_CRITICAL_EXCLUDE_PATHS more third-party trees, one per line,
 #                                   relative to $HOME, skipped in critical mode
 # Missing is fine: the generic defaults above apply.
-S4S_SELF="$0"
-# Walk a symlink (e.g. from ~/bin) to the real script so ../lib is found.
-while [ -L "$S4S_SELF" ]; do
-  s4s_link=$(readlink "$S4S_SELF")
-  case "$s4s_link" in
-    /*) S4S_SELF="$s4s_link" ;;
-    *)  S4S_SELF="$(dirname "$S4S_SELF")/$s4s_link" ;;
-  esac
-done
-. "$(cd "$(dirname "$S4S_SELF")" && pwd)/../lib/config.sh"
+. "$DIR/../lib/config.sh"
 S4S_CONF="${S4S_CONF:-$(st_config_dir scan-for-secrets)/scan-for-secrets.conf}"
 S4S_EXTRA_SECRETS_GLOBS=""
 S4S_EXTRA_CRITICAL_EXCLUDE_PATHS=""

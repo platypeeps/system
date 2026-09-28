@@ -327,6 +327,9 @@ jobs:
               # above, and the unwired-suite guard only asks that a run_suite
               # line name the folder -- which this does.
               run_suite mirror-sync "$PYTHON" local-mirror-sync/tests/test_mirror_sync.py -v
+              # scan-for-secrets.sh reads its first word as a scan mode, so a
+              # `test` verb would be one more mode; the suite is named directly.
+              run_suite scan-for-secrets "$PYTHON" local-scan-for-secrets/tests/test_scan_for_secrets.py -v
               # notify.sh takes a message, not a subcommand: adding a
               # `test` verb would change what `notify.sh test` does today,
               # which is send a notification whose body reads "test". So this
