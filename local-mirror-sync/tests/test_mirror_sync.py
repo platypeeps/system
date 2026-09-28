@@ -240,6 +240,41 @@ class PerPairExcludes(Fixture):
         self.assertIn("excluding node_modules/,target/", result.stdout)
 
 
+class SpecialFiles(Fixture):
+    """A socket in a source is skipped, not recreated: openrsync's
+    mkstempsock failed on the backup disk and failed the whole pair."""
+
+    def _source_with_socket(self) -> Path:
+        import socket
+
+        source = self.work / "s"
+        self.write(source / "keep.txt", "keep\n")
+        server = socket.socket(socket.AF_UNIX)
+        self.addCleanup(server.close)
+        server.bind(str(source / "k"))
+        return source
+
+    def test_a_socket_is_skipped_and_the_pair_succeeds(self) -> None:
+        source = self._source_with_socket()
+        conf = self.write(self.work / "pairs.conf", f"{source}|{self.work}/m\n")
+
+        result = self.run_sync(conf)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.work / "m" / "keep.txt").is_file())
+        self.assertFalse(os.path.lexists(self.work / "m" / "k"))
+
+    def test_an_additive_pass_skips_the_socket_too(self) -> None:
+        source = self._source_with_socket()
+        conf = self.write(self.work / "pairs.conf", f"{source}|{self.work}/m\n")
+
+        result = self.run_sync(conf, additive=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.work / "m" / "keep.txt").is_file())
+        self.assertFalse(os.path.lexists(self.work / "m" / "k"))
+
+
 class UnmountedShare(Fixture):
     """A detached drive or unmounted share is a missing destination parent, and must be loud."""
 
