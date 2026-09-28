@@ -103,6 +103,20 @@ class LabelPrefixTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "http://127.0.0.1:18766")
 
+    def test_exported_values_win_over_env_file(self):
+        # REGRESSION (Copilot cd43501067e5 on PR 12). st_source_env assigns
+        # over the environment, and only OBSIDIAN_VAULT was put back, so .env
+        # beat an exported prefix and port; .env.example says exported wins.
+        self.write_env('SYSTEM_TOOLS_LABEL_PREFIX="example.test"\n'
+                       'TASK_ACTIONS_PORT="18766"\n')
+        env = {"SYSTEM_TOOLS_LABEL_PREFIX": "other.example.test",
+               "TASK_ACTIONS_PORT": "28766"}
+        status = self.run_script("status", env=env)
+        self.assertIn("label:  other.example.test.task-actions", status.stdout)
+        base = self.run_script("base-url", env=env)
+        self.assertEqual(base.returncode, 0, base.stderr)
+        self.assertEqual(base.stdout.strip(), "http://127.0.0.1:28766")
+
 
 if __name__ == "__main__":
     unittest.main()

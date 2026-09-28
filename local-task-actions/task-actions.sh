@@ -10,11 +10,15 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # <config>/task-actions/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
 # default ~/.config/system; see .env.example) provides defaults only; an exported
-# OBSIDIAN_VAULT wins. Read it before anything below uses a value it may set,
-# the label prefix and the port included.
+# OBSIDIAN_VAULT, SYSTEM_TOOLS_LABEL_PREFIX or TASK_ACTIONS_PORT wins. Read it
+# before anything below uses a value it may set.
 ENV_OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"
+ENV_LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
+ENV_PORT="${TASK_ACTIONS_PORT:-}"
 st_source_env task-actions
 [ -n "$ENV_OBSIDIAN_VAULT" ] && OBSIDIAN_VAULT="$ENV_OBSIDIAN_VAULT"
+[ -n "$ENV_LABEL_PREFIX" ] && SYSTEM_TOOLS_LABEL_PREFIX="$ENV_LABEL_PREFIX"
+[ -n "$ENV_PORT" ] && TASK_ACTIONS_PORT="$ENV_PORT"
 
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="$LABEL_PREFIX.task-actions"

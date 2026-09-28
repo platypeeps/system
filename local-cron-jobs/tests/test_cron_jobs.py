@@ -813,6 +813,18 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
         env = self.job_env({"SYSTEM_TOOLS_LABEL_PREFIX": "other.example.test"})
         self.assertEqual(env.get("SYSTEM_TOOLS_LABEL_PREFIX"), "other.example.test")
 
+    def test_an_exported_prefix_wins_over_env_file_for_the_script(self):
+        # PIN. The script's own labels use the exported prefix, not .env's.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        (self.fx.conf_dir / ".env").write_text('SYSTEM_TOOLS_LABEL_PREFIX="example.test"\n')
+        agents = self.fx.home / "Library" / "LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / "other.example.test.cron.demo.plist").write_text("<plist/>\n")
+        self.assertEqual(self.run_script("verify", "demo").stdout.split()[0], "missing")
+        out = self.run_script("verify", "demo",
+                              env={"SYSTEM_TOOLS_LABEL_PREFIX": "other.example.test"}).stdout
+        self.assertEqual(out.split()[0], "STALE")
+
     def test_default_label_prefix(self):
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
         agents = self.fx.home / "Library" / "LaunchAgents"
