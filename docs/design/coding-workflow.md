@@ -65,7 +65,10 @@ value.
 
 **`done` cannot be hand-set.** A direct status write to `done` on a work item
 is refused outright — completion needs `deliver_work` with verified remote
-merge ancestry, or `cancel_work` with an explicit cancellation receipt. Once
+merge ancestry, or `cancel_work` with an explicit cancellation receipt. A
+whole-item merge that carried `Item:` where `Delivers:` was meant completes
+only through `deliver_associated_work`, which takes a reason, checks the same
+ancestry and the `Item:` trailer, and marks the receipt as after the fact. Once
 the item is done, re-delivering with a matching outcome is a no-op, and
 re-delivering with a different one is refused rather than silently
 reclassified.

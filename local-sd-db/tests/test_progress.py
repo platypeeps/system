@@ -11,7 +11,7 @@ from unittest.mock import patch
 from sd_db import connect, create_item, upsert_repo
 from sd_db.migrate import initialise
 from sd_db.progress import (
-    cancel_work, completion_record, deliver_work, item_for_artifact,
+    cancel_work, completion_record, deliver_associated_work, deliver_work, item_for_artifact,
     relink_artifact, tracker_freshness, tracker_items,
 )
 from sd_db.shadow_sync import write_watermark
@@ -226,6 +226,71 @@ class WorkCompletion(ProgressCase):
         with patch("sd_db.progress._git", side_effect=remote_moves):
             with self.assertRaisesRegex(WorkflowError, "changed during"):
                 deliver_work(self.db, self.item, commit, who="operator")
+        self.assertEqual(item_state(self.db, self.item), before)
+
+
+class AfterTheFactDelivery(ProgressCase):
+    """A merge that carried `Item: sd:N` where `Delivers:` was meant (pack sd:1913).
+
+    `deliver_work` refuses it and keeps refusing it; the named path accepts
+    it with a reason, after the same reachability check.
+    """
+
+    REASON = "prepared without --deliver; the merge is the whole item"
+
+    def test_an_item_merge_on_the_default_branch_delivers_with_a_reason(self):
+        self.remote()
+        commit = self.commit(f"Item: sd:{self.item}")
+        self.git("push", "origin", "main")
+        with self.assertRaisesRegex(WorkflowError, "Delivers"):
+            deliver_work(self.db, self.item, commit, who="operator")
+        result = deliver_associated_work(self.db, self.item, commit, who="operator", reason=self.REASON)
+        self.assertEqual(result["item"]["status"], "done")
+        self.assertTrue(result["item"]["shipped_at"])
+        evidence = completion_record(result["item"])
+        self.assertEqual((evidence["outcome"], evidence["commit"], evidence["trailer"]), ("delivered", commit, "Item"))
+        self.assertEqual(evidence["after_the_fact"], self.REASON)
+        # The sentence every delivery writes, so one query finds this one too.
+        self.assertIn(f"delivered at {commit} on {evidence['verified_ref']}", result["notes"][-1]["body"])
+        self.assertEqual(deliver_associated_work(self.db, self.item, commit, who="operator", reason=self.REASON), result)
+
+    def test_a_blank_reason_refuses_before_any_check(self):
+        commit = self.commit(f"Item: sd:{self.item}")
+        before = item_state(self.db, self.item)
+        for reason in ("", "  ", None):
+            with self.subTest(reason=reason), self.assertRaisesRegex(WorkflowError, "reason"):
+                deliver_associated_work(self.db, self.item, commit, who="operator", reason=reason)
+        self.assertEqual(item_state(self.db, self.item), before)
+
+    def test_another_trailer_or_an_unpushed_commit_is_refused(self):
+        self.remote()
+        for trailer in (f"Closes: sd:{self.item}", f"Item: sd:{self.item + 1}", "Item: original", None):
+            commit = self.commit(trailer)
+            self.git("push", "origin", "main")
+            before = item_state(self.db, self.item)
+            with self.subTest(trailer=trailer), self.assertRaisesRegex(WorkflowError, "Item"):
+                deliver_associated_work(self.db, self.item, commit, who="operator", reason=self.REASON)
+            self.assertEqual(item_state(self.db, self.item), before)
+        commit = self.commit(f"Item: sd:{self.item}")
+        with self.assertRaisesRegex(WorkflowError, "reachable"):
+            deliver_associated_work(self.db, self.item, commit, who="operator", reason=self.REASON)
+
+    def test_an_item_line_outside_the_trailer_block_is_refused(self):
+        self.remote()
+        self.git("commit", "--allow-empty", "-m", f"A slice\n\nItem: sd:{self.item}\n\nAuthored-with: human")
+        commit = self.git("rev-parse", "HEAD")
+        self.git("push", "origin", "main")
+        with self.assertRaisesRegex(WorkflowError, "Item"):
+            deliver_associated_work(self.db, self.item, commit, who="operator", reason=self.REASON)
+
+    def test_a_cancelled_row_is_not_reclassified(self):
+        self.remote()
+        commit = self.commit(f"Item: sd:{self.item}")
+        self.git("push", "origin", "main")
+        cancel_work(self.db, self.item, reason="No longer needed", who="operator")
+        before = item_state(self.db, self.item)
+        with self.assertRaisesRegex(WorkflowError, "cancelled or previously completed"):
+            deliver_associated_work(self.db, self.item, commit, who="operator", reason=self.REASON)
         self.assertEqual(item_state(self.db, self.item), before)
 
 
