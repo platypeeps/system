@@ -476,8 +476,9 @@ hyg_merged() {
       # git still quotes a name holding a quote, tab or newline; such a name
       # cannot be looked up as printed, so the branch stays.
       case "$h_path" in \"*) return 1 ;; esac
-      h_a=$(git -C "$1" rev-parse -q --verify "$2:$h_path" 2>/dev/null || true)
-      h_b=$(git -C "$1" rev-parse -q --verify "$3:$h_path" 2>/dev/null || true)
+      # ls-tree prints mode and object id, so a mode change counts too.
+      h_a=$(git -C "$1" ls-tree "$2" -- "$h_path" 2>/dev/null || true)
+      h_b=$(git -C "$1" ls-tree "$3" -- "$h_path" 2>/dev/null || true)
       [ "$h_a" = "$h_b" ] || return 1
     done < "$HYG_TMP/squash.paths"
     echo "squash"; return 0

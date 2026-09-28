@@ -441,6 +441,30 @@ class HygieneTest(unittest.TestCase):
 
         self.assertEqual(sha, f.branch_sha(repo, "reverted-squash"))
 
+    def test_a_squash_whose_mode_changed_on_main_is_not_deleted(self):
+        """NEW (review round 3). The squash landed an executable file and main
+        dropped the bit later; same blob, different mode, so the branch
+        stays."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "switch", "-q", "-c", "mode-squash")
+        (repo / "run.sh").write_text("#!/bin/sh\n")
+        (repo / "run.sh").chmod(0o755)
+        f.git(repo, "add", "run.sh")
+        f.git(repo, "commit", "-q", "-m", "branch")
+        sha = f.git(repo, "rev-parse", "HEAD")
+        f.git(repo, "switch", "-q", "main")
+        f.commit(repo, "other.txt", "other\n", "main moves on")
+        f.git(repo, "merge", "-q", "--squash", "mode-squash")
+        f.git(repo, "commit", "-q", "-m", "squashed")
+        f.git(repo, "update-index", "--chmod=-x", "run.sh")
+        f.git(repo, "commit", "-q", "-m", "drop the bit")
+        f.git(repo, "push", "-q", "origin", "main")
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertEqual(sha, f.branch_sha(repo, "mode-squash"))
+
     def test_a_lock_written_in_another_timezone_is_kept(self):
         """NEW (review round 2). The lock's start time was formatted in UTC;
         the sweep runs seven hours west. The live holder keeps its lock."""

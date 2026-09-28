@@ -62,8 +62,15 @@ default branch since the merge base. Prefixes, renames, colour and external
 diff drivers are pinned on both sides, so user config cannot make them
 differ; a mismatch keeps the branch. A squash that landed and was reverted
 later still matches, so a last check compares every path the branch
-changed: the default branch must hold the same blob as the branch tip, or
-the branch stays. A path main touched again after the squash also keeps
+changed: the default branch must hold the same mode and object as the
+branch tip (`git ls-tree`), or the branch stays.
+
+Three limits are accepted, not fixed. An ancestor whose change was later
+reverted on main still counts as landed: the PRD names ancestry as landed,
+and every commit stays reachable from main. The default ref may move
+between classification and delete; only the branch tip is re-read, and
+each delete line carries its restore command. The lock parse assumes
+whole-minute timezone offsets, true of every current IANA zone. A path main touched again after the squash also keeps
 the branch; that is a missed cleanup, never a wrong delete. A squash whose landed content differs
 (a conflict resolved on the way in, or other spacing) stays and shows in a
 report-only class.
