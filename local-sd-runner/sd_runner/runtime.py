@@ -241,6 +241,8 @@ class Runner:
         self.fixed_path = None
         #: Each registry `start` provider's program, absolute, or None; set by `resolve_tools`.
         self.executables = {}
+        #: `storage.preflight`'s remembered `diskutil` answers by mount identity (sd:1941).
+        self.storage_verified = {}
 
     @property
     def search_path(self) -> str:
@@ -456,7 +458,8 @@ class Runner:
     def pulse(self, connection):
         holds = []
         try:
-            report = storage.preflight(self.config.database, self.config.work, self.config.retention, floor_gb=self.config.floor_gb)
+            report = storage.preflight(self.config.database, self.config.work, self.config.retention, floor_gb=self.config.floor_gb,
+                                       verified=self.storage_verified)
         except (OSError, ValueError, subprocess.SubprocessError, ExpatError) as error:
             holds.append({"probe": "storage", "reason": str(error)})
             database = None
@@ -1021,7 +1024,10 @@ class Runner:
 
     def serve(self, *, once=False):
         config = self.config
-        report = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb)
+        # The cache is empty here, so a `diskutil` with no answer refuses the
+        # start (sd:970); an answer seeds the pulses that follow (sd:1941).
+        report = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb,
+                                   verified=self.storage_verified)
         if not report["ok"]:
             raise store.RunnerRefused("; ".join(report["problems"]))
         # Serial ownership of reconciliation prevents a second daemon treating a
