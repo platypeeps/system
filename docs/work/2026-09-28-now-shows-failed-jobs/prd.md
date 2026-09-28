@@ -19,11 +19,14 @@ behaviour change") ranks failed jobs first on Now, as warnings.
    the reader the Operations Jobs area already uses. No second launchd parser.
 2. A job in state `failed` is one row at rank 1: band `broken`, after a dark
    collector and before every other source's row.
-3. The row names the job and its exit code, or the signal for a run killed
-   for cause, and the time its log `local-cron-jobs/logs/<job>.log` was last
-   written. A missing log says so.
-4. The row carries the retry line `cron-jobs.sh run <job>` (the design's
-   `jobs.retry`), in its detail and in a `retry` field.
+3. The row names the job and the signal for a run killed for cause, or
+   else its exit code, and the time its log `local-cron-jobs/logs/<job>.log`
+   was last written. A missing or unreadable log says so, and the row stays.
+4. The row carries the retry the Operations Jobs area sends,
+   `launchctl kickstart <service>`, in its detail and in a `retry` field.
+   `failed` is launchd's record of the last run, so a hand-run of
+   `cron-jobs.sh run <job>` (the design's `jobs.retry`) does not clear the
+   row; review of 43b6f6d found this, and sd:2015 carries the design gap.
 5. A jobs read that raises is one dark row naming `jobs` and the reason; the
    other three sources still render.
 6. The server passes its `operations_backend` to Now, so tests and Operations

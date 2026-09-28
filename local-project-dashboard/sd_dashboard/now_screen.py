@@ -57,8 +57,10 @@ non-zero last exit, or a signal the kernel sent for cause. Its backend is
 the server's `operations_backend`, and the job's log time is the mtime of
 `<cron_root>/logs/<job>.log`, the file `cron-jobs.sh` appends every run to.
 A failed job ranks `FAILED`, above every other source's row and below a
-dark collector, and carries the `jobs.retry` command line: a hand-run
-through `cron-jobs.sh run` clears the failure the way a scheduled run does.
+dark collector, and carries the retry the Operations Jobs area sends:
+`launchctl kickstart <service>`. `failed` is launchd's record of the last
+run, so only a run launchd starts can clear it; a hand-run through
+`cron-jobs.sh run` writes a newer log and leaves the row in place.
 """
 
 from __future__ import annotations
@@ -215,38 +217,42 @@ def session_rows(trees: list[dict]) -> list[dict]:
     }]
 
 
-def _home_relative(path: Path) -> str:
+def _log_time(log: Path | None) -> str:
+    if log is None:
+        return "log unknown"
     try:
-        return "~/" + str(path.relative_to(Path.home()))
-    except ValueError:
-        return str(path)
+        return "log " + datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except FileNotFoundError:
+        return "no log file"
+    except OSError:
+        return "log unreadable"
 
 
-def job_rows(jobs: list[dict], cron_root: Path) -> list[dict]:
+def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
     """One row for each job `operations.inventory` reads as `failed`.
 
-    The id keys on the outcome, the exit code or the signal, as the other
-    ids key on the fact that changed. The log time is when the last run
-    wrote its log; a job with no log file says so rather than guess. The
-    retry line is in the detail, where the page shows it, and in `retry`,
-    the design's `jobs.retry` command line, for a script that acts on it.
+    The id keys on the outcome, the signal when launchd names one and the
+    exit code otherwise, as the other ids key on the fact that changed. The
+    log time is when the last run wrote its log; a job with no log file, an
+    unreadable one, or a backend with no `cron_root` says so rather than
+    guess, and still gets its row. The retry line is in the detail, where
+    the page shows it, and in `retry`, for a script that acts on it.
     """
     out = []
     for job in jobs:
         if job.get("state") != "failed":
             continue
         name, code, killed = job["name"], job.get("last_exit"), job.get("last_signal")
-        outcome = f"exit {code}" if code is not None else _signal_name(killed) if killed is not None else "no exit code"
-        log = cron_root / "logs" / f"{name}.log"
-        try:
-            logged = "log " + datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        except FileNotFoundError:
-            logged = "no log file"
-        retry = f"{_home_relative(cron_root / 'cron-jobs.sh')} run {name}"
+        # launchd can report `last exit code = 0` beside a terminating signal;
+        # the signal is the cause, so it names the row.
+        outcome = _signal_name(killed) if killed is not None else f"exit {code}" if code is not None else "no exit code"
+        logged = _log_time(None if cron_root is None else cron_root / "logs" / f"{name}.log")
+        service = job.get("service")
+        retry = f"launchctl kickstart {service}" if service else "retry from Operations Jobs"
         out.append({
             "rank": FAILED,
             "kind": "job",
-            "id": f"job:{name}:{code if code is not None else f'signal{killed}'}",
+            "id": f"job:{name}:{f'signal{killed}' if killed is not None else code}",
             "what": f"{name} failed with {outcome}",
             "detail": f"{logged} · retry: {retry}",
             "retry": retry,
@@ -302,7 +308,10 @@ def _prs(connection, today: str) -> list[dict]:
 
 
 def _jobs(connection, backend) -> list[dict]:
-    return job_rows(operations.inventory(connection, backend=backend)["jobs"], Path(backend.cron_root))
+    # `cron_root` only places the log; a backend without one still lists jobs.
+    root = getattr(backend, "cron_root", None)
+    return job_rows(operations.inventory(connection, backend=backend)["jobs"],
+                    Path(root) if isinstance(root, (str, Path)) else None)
 
 
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None) -> dict:

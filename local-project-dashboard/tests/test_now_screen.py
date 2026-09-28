@@ -382,7 +382,9 @@ class FailedJobs(ScreenCase):
         row = document["rows"][0]
         self.assertEqual(row["source"], "jobs")
         self.assertEqual(row["what"], "nightly-sync failed with exit 7")
-        self.assertEqual(row["retry"], f"{jobs.cron_root}/cron-jobs.sh run nightly-sync")
+        # Retry is what the Operations Jobs area sends: a kickstart updates the
+        # launchd record Now reads, and a hand-run of cron-jobs.sh does not.
+        self.assertEqual(row["retry"], "launchctl kickstart fixture/nightly-sync")
         self.assertEqual(row["detail"], f"log 2026-09-27 02:15 · retry: {row['retry']}")
         self.assertEqual(now_screen.FAILED, 1)
         self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
@@ -394,11 +396,35 @@ class FailedJobs(ScreenCase):
         self.assertEqual(rows[0]["what"], "crashy failed with SIGSEGV (11)")
         self.assertTrue(rows[0]["detail"].startswith("no log file · retry: "), rows[0]["detail"])
 
-    def test_the_retry_line_is_home_relative_under_home(self):
-        with patch.object(Path, "home", lambda: Path(self.tmp.name)):
-            rows = now_screen.job_rows([{"name": "x", "state": "failed", "last_exit": 1, "last_signal": None}],
-                                       Path(self.tmp.name) / "repos/system/local-cron-jobs")
-        self.assertEqual(rows[0]["retry"], "~/repos/system/local-cron-jobs/cron-jobs.sh run x")
+    def test_a_signal_is_named_even_when_launchd_also_reports_exit_zero(self):
+        jobs = JobsBackend(self.tmp.name, jobs=[("crashy", "failed", 0, 11)])
+        row = now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)["rows"][0]
+        self.assertEqual((row["id"], row["what"]), ("job:crashy:signal11", "crashy failed with SIGSEGV (11)"))
+
+    def test_a_backend_without_a_cron_root_still_lists_its_failed_jobs(self):
+        class NoRoot(JobsBackend):
+            def __init__(self, root, jobs=()):
+                super().__init__(root, jobs)
+                del self.cron_root
+        jobs = NoRoot(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None)])
+        document = now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)
+        self.assertEqual(document["sources"]["jobs"], "")
+        self.assertEqual(document["rows"][0]["detail"], "log unknown · retry: launchctl kickstart fixture/nightly-sync")
+
+    def test_an_unreadable_log_is_one_rows_detail_not_a_dark_source(self):
+        jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None)])
+        jobs.log("nightly-sync", datetime(2026, 9, 27, 2, 15).timestamp())
+        real_stat = Path.stat
+
+        def refusing(path, *args, **kwargs):
+            if path.name == "nightly-sync.log":
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", refusing):
+            document = now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)
+        self.assertEqual(document["sources"]["jobs"], "")
+        self.assertTrue(document["rows"][0]["detail"].startswith("log unreadable · retry: "), document["rows"][0]["detail"])
 
     def test_a_jobs_read_that_fails_is_one_dark_row_and_the_others_still_render(self):
         jobs = JobsBackend(self.tmp.name, refuse="LaunchAgents is unreadable")

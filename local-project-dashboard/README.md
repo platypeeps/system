@@ -27,7 +27,8 @@ rows only; the days a stale row shows count from the sync's first sighting,
 because the shadow table carries no `updated_at`), and Jobs through
 `sd_db.operations.inventory`. A failed job ranks 1, after a dark collector and
 before every other row; it names the exit code or signal, the time its log was
-last written, and its retry line, `cron-jobs.sh run <job>`. The rows arrive by `/api/now` after
+last written, and its retry line, `launchctl kickstart <service>`, the one Operations Jobs sends
+(a hand-run of `cron-jobs.sh run` does not clear launchd's record). The rows arrive by `/api/now` after
 the page is up, so a Today load never waits on the fleet; Refresh reads again.
 A collector that goes dark — the child refused, past its budget, exiting
 non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming the collector
