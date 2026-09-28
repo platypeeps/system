@@ -124,3 +124,11 @@ GitHub Actions CI is off on purpose since 2026-09-27: billing blocked every run.
 Do not re-enable Actions or CI workflows to get a missing check; `sd/local-gate` is the required check.
 Read `repo.ci` with `~/repos/system/local-sd-db/sd-db.sh repo list`; `local` means `sd-ship merge` runs `sd-check`.
 Who, why, scope, and how to revert: `~/repos/system/docs/local-ci-rollout.md`.
+
+# sd lane commands: `-C <dir>`, not `cd <dir> &&`
+
+To run `sd-ship`, `sd-check`, `sd-review`, `sd-review-ack` or `sd-pr-state` in another checkout, write `<command> -C <dir> …`.
+Reason: an allow rule matches the whole line, so `cd <dir> && sd-ship merge …` goes to the auto-mode classifier, which denies it.
+Put `-C` first, before the subcommand: `sd-ship -C ~/repos/system merge --item N …`.
+Give one `-C` with an absolute path; a second `-C` or a `..` component is refused.
+Only these five commands take `-C`; `sd` and `sd-docs-lint` do not, so run those from the checkout.
