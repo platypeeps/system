@@ -129,7 +129,10 @@ first. The worktree goes only when all of these hold:
 
 `source:local-repo-sync/repo-sync.sh::hyg_cwds` reads process cwds from
 `/proc` on Linux, else from `lsof -d cwd`. A failed `lsof`, an empty scan,
-or neither source makes the worktree count as in use. The scan runs afresh
+or neither source makes the worktree count as in use. So does a `/proc`
+entry of this user whose cwd stays unreadable; one that vanished during
+the scan is an exited process and is skipped (sd:2074). Another user's cwd
+needs root to read under either source, so neither lists it. The scan runs afresh
 for each candidate, as its last check before removal, so a process that
 moved in after an earlier scan is still seen. A scan took 6 seconds on a
 loaded workstation; only candidates pay for it. The window between the scan
@@ -144,7 +147,9 @@ clean check as a second guard. A failed removal keeps the branch.
 A landed branch whose newest reflog entry is younger than
 `REPO_SYNC_HYGIENE_MIN_AGE` seconds (default 86400) is kept with a note, as
 is one with no reflog. A fresh agent branch sits at the default tip and
-counts as landed; the age is the only sign it is new.
+counts as landed; the age is the only sign it is new. The value takes at
+most 12 digits after leading zeros: a larger one fails the shell's integer
+test, which would skip the guard, so it is refused (sd:2074).
 
 The worktree list is read again just before the delete; a branch checked
 out since classification is a failure, not a delete. The delete is
@@ -175,7 +180,7 @@ landed branch is deleted or kept by the rules above first.
 | Line | Rule |
 | --- | --- |
 | `KEEP` | a landed branch held by the main checkout, a dirty worktree, or a worktree whose lock holder is not running; or a gone directory with a pidless lock |
-| `GONE` | upstream `[gone]` and content not on the default branch |
+| `GONE` | upstream `[gone]`, or named by the prune dry run in report mode (sd:2071), and content not on the default branch |
 | `LOCAL` | `git rev-list <b> --not --remotes` is not empty |
 | `DONE` | the name carries `sd-<n>`, `sd_<n>` or a trailing `-<n>`, and item `<n>` is `done` |
 | `BEHIND` | the main checkout is behind its upstream after sync: local changes, local commits, or not pulled |
