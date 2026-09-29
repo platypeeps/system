@@ -358,6 +358,8 @@ class WorktreeCheckout(WritingCase):
                 cutover_pieces(self.db, str(self.repo), expected_fingerprint="x", who="operator")
             with self.assertRaisesRegex(WorkflowError, "registered checkout"):
                 recover_cutover(self.db, str(self.repo), who="operator")
+            with self.assertRaisesRegex(WorkflowError, "registered checkout"):
+                import_piece(self.db, str(self.repo), self.piece, who="operator")
 
     def test_another_repository_keeps_its_own_files_inside_a_checkout(self):
         other = self.root / "other"
@@ -372,27 +374,17 @@ class WorktreeCheckout(WritingCase):
         self.assertIn("Other repository prose", document)
         self.assertNotIn("Worktree prose", document)
 
-    def test_a_failed_registration_restores_the_worktree_it_rewrote(self):
+    def test_registration_refuses_a_worktree_and_leaves_its_file_alone(self):
         self.cutover()
         new = self.worktree / "content/2026/new/index.md"
         new.parent.mkdir(parents=True)
         original = b'---\ntitle: New piece\nstatus: idea\npublished: null\n---\n\n## Draft\nFuture prose.\n'
         new.write_bytes(original)
-        twin = self.repo / "content/2026/new/index.md"
-        twin.parent.mkdir(parents=True)
-        twin.write_bytes(b"main checkout twin\n")
-        real = piece_state
-        calls = []
-        def failing(connection, item):
-            calls.append(item)
-            if len(calls) > 1:
-                raise RuntimeError("after the rewrite")
-            return real(connection, item)
-        with checkout(str(self.repo), self.worktree), patch("sd_db.writing.piece_state", failing):
-            with self.assertRaises(RuntimeError):
+        with checkout(str(self.repo), self.worktree):
+            with self.assertRaisesRegex(WorkflowError, "registered checkout"):
                 import_piece(self.db, str(self.repo), "2026/new", who="operator")
         self.assertEqual(new.read_bytes(), original)
-        self.assertEqual(twin.read_bytes(), b"main checkout twin\n")
+        self.assertIsNone(piece_for_key(self.db, str(self.repo), "2026/new"))
 
     def test_the_registered_checkout_is_its_own_checkout(self):
         with checkout(str(self.repo), self.repo):
