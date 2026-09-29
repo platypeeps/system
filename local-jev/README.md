@@ -230,7 +230,10 @@ waited, the judgment, its confidence, how the call ended, and whether it
 changed anything. A machine with no database, an unmigrated one or a
 read-only one records nothing and behaves exactly as it did before; there is
 no path through the recorder that raises. `JEV_METER=0` switches it off and
-`JEV_METER_DB` points it somewhere else.
+`JEV_METER_DB` points it somewhere else. A locked ledger is waited on for
+250 ms and then the row is dropped; `JEV_METER_BUSY_MS` sets another bound.
+The row needs `sd_db`, so `jev.sh` runs the interpreter `sd-db.sh` would:
+`PYTHON`, `SD_DB_PYTHON`, then the command pack's venv, then `python3`.
 
 Name yourself, or the row says `unknown`:
 
@@ -325,6 +328,19 @@ It never prints the key, never logs it, and never puts it in an error message.
 That is why `local-scan-for-secrets` is not a caller: triaging its hits is a
 textbook Noul, and it would mean posting candidate credentials to a third
 party, which is the one thing that scanner exists to prevent.
+
+**Redaction is the backstop, not the permission.** Before a request leaves,
+every string in its state and questions passes credential shapes (GitHub,
+AWS, Slack, OpenAI-style and TypeSafe keys, JWTs, `Bearer` values, private
+key blocks, `NAME_TOKEN=value` assignments, long hex and mixed base64 runs)
+and the operator's `<config>/privacy-patterns`, the file `local-leak-guard`
+reads, with the same `grep -E` meaning, line by line. Each match becomes
+`[REDACTED]`, and stderr says how many were taken out. A key that matches,
+in JSON state or among a choice's criteria, is not renamed: the request is
+refused whole, nothing is sent, and a `--fallback` is honoured. A pattern file that cannot be read or
+compiled is a setting that does not parse: nothing is sent, `enabled` exits 3,
+and a `--fallback` is honoured. Patterns catch shapes and listed values; they
+do not make a sensitive input safe to send.
 
 ## Tests
 

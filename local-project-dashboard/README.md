@@ -373,6 +373,19 @@ A font also carries `Access-Control-Allow-Origin: *`, because a browser fetches
 fonts in CORS mode. No other file gets it: the data scripts beside the pages
 hold real notes and mail, and any site could then read them from this port.
 
+The v2 Designs mockup loads `products/system/designs/v2/data/designs-data.js`.
+The tab answers that one path live, with `designs.ledger_script()`, instead of the committed file.
+`designs.ledger()` ports ui-design's `tools/collect-designs.mjs` and lists:
+
+- per page: kind, title, bytes, last commit (sha, time, subject) and a dirty flag;
+- per page: its screenshots, each one's commit time and PNG size, and which are stale;
+- per product: its brief path, title and **Status:** line, including a product with no page;
+- `caution`: pages uncommitted, without a screenshot, or with a stale one.
+
+A v2 screenshot is stale when `shots/inputs.json` lacks it or records another inputs hash.
+`designs.inputs_hash()` ports `tools/inputs.mjs` byte for byte; `test_designs.py` pins Node's output.
+Every page and screenshot the ledger names passes `designs.resolve()`.
+
 ## Legacy collector reference
 
 Until 2026-09-01 this directory ran an earlier HTML dashboard on

@@ -22,14 +22,14 @@ after it silently never run.
 default. The variable exists for the suite, which must not write to the real
 store, and for a machine whose store is somewhere else.
 
-**A busy ledger loses the row rather than the caller's time.** `sd_db` waits
-five seconds for a lock, which is right for a write someone is waiting on and
-wrong for every write made here: a subprocess caller waits for this process to
-exit, so five seconds of contention is five seconds added to a judgment that
-already finished. The connection is opened with `busy_timeout=0`, so a locked
-table fails at once and the measurement is dropped. A measurement is worth
-less than the thing it measures, and this is the one place in the stack where
-that trade is already decided.
+**A busy ledger costs the caller a quarter of a second at most.** `sd_db`
+waits five seconds for a lock, which is right for a write someone is waiting on
+and wrong for every write made here: a subprocess caller waits for this process
+to exit, so five seconds of contention is five seconds added to a judgment that
+already finished. The connection waits `BUSY_MS`, then fails and drops the
+measurement. It waited zero at first, and that dropped rows under the ordinary
+contention of a busy machine (sd:2087); 250 ms kept all of the first 112 live
+rows. `JEV_METER_BUSY_MS` sets another bound, and 0 restores the old one.
 """
 
 from __future__ import annotations
@@ -39,6 +39,9 @@ from sqlite3 import OperationalError
 
 #: The words the kill switch accepts, so a reader who knows one knows both.
 OFF = ("0", "off", "false", "no", "disabled")
+
+#: How long a write waits for a lock, in milliseconds, as `sd_db` counts it.
+BUSY_MS = 250
 
 #: What `record` returns. Only `written` means a row exists.
 WRITTEN = "written"
@@ -51,6 +54,15 @@ CONTENDED = "the ledger was busy; the measurement was dropped"
 
 def switched_on(env) -> bool:
     return (env.get("JEV_METER") or "").strip().lower() not in OFF
+
+
+def busy_ms(env) -> int:
+    """`BUSY_MS`, or what `JEV_METER_BUSY_MS` says; a value that does not
+    parse is the default, because a typo here may not cost the caller."""
+    try:
+        return max(0, int((env.get("JEV_METER_BUSY_MS") or "").strip() or BUSY_MS))
+    except ValueError:
+        return BUSY_MS
 
 
 def record(event: dict, env=None) -> str:
@@ -76,9 +88,9 @@ def record(event: dict, env=None) -> str:
         return NO_LIBRARY
     path = (env.get("JEV_METER_DB") or "").strip() or None
     try:
-        # Zero, not the library's five seconds. See the module docstring: a
-        # lock here is time added to a judgment that has already been printed.
-        connection = connect(path, busy_timeout=0)
+        # A bounded wait, not the library's five seconds. See the module
+        # docstring: a lock here is time added to a judgment already printed.
+        connection = connect(path, busy_timeout=busy_ms(env))
     except OperationalError:
         return CONTENDED
     except Exception:
@@ -86,7 +98,7 @@ def record(event: dict, env=None) -> str:
     try:
         write_row(connection, **event)
     except OperationalError:
-        # `database is locked` from a zero timeout, which is the expected
+        # `database is locked` once the wait ran out, which is the expected
         # answer under contention rather than a fault, and is worth its own
         # word so a trace does not read it as a refused row.
         return CONTENDED

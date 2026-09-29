@@ -776,7 +776,7 @@ class Dashboard(BaseHTTPRequestHandler):
         A page gets the sandboxing policy; an asset keeps the dashboard's policy
         and relaxes only its resource policy, so the sandboxed page may load it.
         """
-        from .designs import ASSET_HEADERS, FONT_HEADERS, POLICY, resolve
+        from .designs import ASSET_HEADERS, FONT_HEADERS, POLICY, read, resolve
 
         found = resolve(tail)
         if found is None:
@@ -786,7 +786,7 @@ class Dashboard(BaseHTTPRequestHandler):
             )
         target, kind = found
         try:
-            body = target.read_bytes()
+            body = read(target)
         except OSError as problem:
             return self._send(
                 503, error_page(503, str(problem)).encode("utf-8"),
