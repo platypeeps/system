@@ -73,8 +73,9 @@ def _key(piece: str) -> str:
     return piece
 
 
-# A linked worktree of the registered repository, set by `checkout` (sd:2024).
-_CHECKOUT: ContextVar[Path | None] = ContextVar("writing_checkout", default=None)
+# (registered root, worktree root), set by `checkout` (sd:2024). Only the
+# repository it was validated for is redirected; every other one keeps its path.
+_CHECKOUT: ContextVar[tuple[Path, Path] | None] = ContextVar("writing_checkout", default=None)
 
 
 def _common_dir(root: Path) -> Path:
@@ -88,6 +89,7 @@ def checkout(repo: str, root: Path | str):
     Rows stay keyed to the registered repository, so a writer in its own
     worktree records gates against the prose it changed there. `root` must
     share the registered checkout's Git directory; any other path is refused.
+    Another repository's rows keep reading their own registered checkout.
     """
     registered = sdpaths.expand(repo).resolve()
     root = Path(root).resolve()
@@ -98,7 +100,7 @@ def checkout(repo: str, root: Path | str):
             same = False
         if not same:
             raise WorkflowError(f"{root} is not a worktree of the registered repository {repo}")
-    token = _CHECKOUT.set(root)
+    token = _CHECKOUT.set((registered, root))
     try:
         yield root
     finally:
@@ -106,14 +108,15 @@ def checkout(repo: str, root: Path | str):
 
 
 def _disk(repo: str) -> Path:
-    """Where piece files live: the active `checkout`, else the registered path."""
-    return _CHECKOUT.get() or sdpaths.expand(repo).resolve()
+    """Where `repo`'s piece files live: its active `checkout`, else its registered path."""
+    registered = sdpaths.expand(repo).resolve()
+    active = _CHECKOUT.get()
+    return active[1] if active is not None and active[0] == registered else registered
 
 
 def _registered_only(repo: str) -> None:
     """Cutover journals name the registered checkout, so it runs only there."""
-    active = _CHECKOUT.get()
-    if active is not None and active != sdpaths.expand(repo).resolve():
+    if _disk(repo) != sdpaths.expand(repo).resolve():
         raise WorkflowError("writing cutover and recovery run only in the registered checkout, not a worktree")
 
 
@@ -430,7 +433,9 @@ def import_piece(connection: sqlite3.Connection, repo: str, piece: str, *, path:
             saved.parent.mkdir(parents=True)
             saved.write_bytes(original)
             entry = {"path": row["path"], "before_sha256": _hash(original), "after_sha256": _hash(retired)}
-            journal = {"repo": repo, "backup_path": str(backup), "phase": "prepared", "operation": "registration",
+            # `root` is the tree the rewrite touches, a worktree under `checkout`,
+            # so a rollback restores that tree and not the registered one (sd:2024).
+            journal = {"repo": repo, "root": str(_disk(repo)), "backup_path": str(backup), "phase": "prepared", "operation": "registration",
                        "piece": piece, "files": [entry], "at": now(), "who": who}
             _save_journal(journal_path, journal)
             if _file_hash(source) != entry["before_sha256"]:
@@ -796,7 +801,7 @@ def _file_hash(path: Path) -> str | None:
 def _restore_journal_files(journal: dict, entries: list[dict]) -> list[str]:
     conflicts = []
     backup = Path(journal["backup_path"])
-    root = sdpaths.expand(journal["repo"]).resolve()
+    root = Path(journal["root"]).resolve() if journal.get("root") else sdpaths.expand(journal["repo"]).resolve()
     for entry in reversed(entries):
         target = root / entry["path"]
         if not target.resolve().is_relative_to(root):
