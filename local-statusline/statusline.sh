@@ -42,6 +42,20 @@ try:
 except Exception:
     pass' 2>/dev/null)
 
+  # System load: the 1, 5 and 15 minute averages. The 1 minute value is
+  # yellow at or above the logical CPU count and red at twice that. Empty
+  # where sysctl has no vm.loadavg (Linux), so the segment is left out.
+  load=$(sysctl -n vm.loadavg hw.logicalcpu 2>/dev/null | tr -d '{}' | awk '
+    NR == 1 { a = $1; b = $2; c = $3 }
+    NR == 2 { n = $1 + 0 }
+    END {
+      if (a == "") exit
+      s = sprintf("load %.1f %.1f %.1f", a, b, c)
+      if (n > 0 && a + 0 >= 2 * n) s = "\033[1;38;5;196m" s "\033[0m"
+      else if (n > 0 && a + 0 >= n) s = "\033[38;5;214m" s "\033[0m"
+      print s
+    }' || true)
+
   # Model-scoped weekly allowance (e.g. Fable) from the statusline JSON on
   # stdin: warn in red once remaining drops below FABLE_WARN_PCT (default 35).
   # stdin is teed to a file because the HUD needs the same bytes afterwards.
@@ -105,7 +119,7 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
   #      its element/mergeGroups system, so it cannot be merged from config the
   #      way the Cache line can. It is folded onto the preceding line here.
   #      It only exists once a session has compacted at least once.
-  #   2. The full login email joins line 1.
+  #   2. The full login email, then the system load, join line 1.
   #   3. The allowance warning joins line 2 (the context bar), just left of
   #      the Cache segment that mergeGroups moved onto that line. Line 1 is
   #      already the widest line in the HUD, hence not there.
@@ -114,7 +128,7 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
   # Falling back to line 1 keeps the warning visible if the HUD renders a
   # single line.
   "$bun_bin" --env-file /dev/null "${plugin_dir}src/index.ts" < "$stdin_file" \
-    | awk -v e="$email" -v w="$warn" -v sep="$SEP" -v clabel="$COMPACTIONS_LABEL" '
+    | awk -v e="$email" -v l="$load" -v w="$warn" -v sep="$SEP" -v clabel="$COMPACTIONS_LABEL" '
         # claude-hud hardcodes the "Weekly" usage label (i18n has no user
         # override); shorten it, and the "Fable weekly" window name, to W.
         { gsub(/[Ww]eekly/, "W"); line[NR] = $0 }
@@ -132,6 +146,7 @@ except Exception: pass' "$stdin_file" 2>/dev/null || true)
           }
 
           if (e != "") line[1] = line[1] sep e
+          if (l != "") line[1] = line[1] sep l
           # The allowance warning goes just left of the Cache segment so it
           # sits with the other budget numbers; if that label is absent
           # (translated HUD, no Cache line) it falls back to the line end.
@@ -195,8 +210,9 @@ case "$1" in
 usage: statusline.sh render|install
 
   render     print the status line: claude-hud output, with the full login
-             email appended to line 1, the allowance warning to line 2, and
-             the compactions line folded onto the line above it
+             email and the system load appended to line 1, the allowance
+             warning to line 2, and the compactions line folded onto the
+             line above it
   install    point statusLine in ~/.claude/settings.json at this script
              (backs the file up to settings.json.bak.<timestamp> first)
 

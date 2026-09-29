@@ -5,6 +5,8 @@ plugin cannot render on its own:
 
 - the **full login email** on line 1 — claude-hud's `auth.ts` strips the domain
   and only ever prints the local part;
+- the **system load** on line 1 — the 1, 5 and 15 minute averages; the 1 minute
+  value is yellow at or above the logical CPU count and red at twice that;
 - an **allowance warning** on line 2 — red, once a plan or model-scoped window
   has less than `FABLE_WARN_PCT` percent (default 35) remaining;
 - the **compactions line folded** onto the line above it — claude-hud appends
