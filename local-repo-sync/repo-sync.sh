@@ -548,13 +548,19 @@ hyg_lock_dead() {
 # then counts the worktree as in use. It runs afresh for each candidate,
 # right before its removal, so a process that moved in after an earlier
 # candidate's scan is still seen.
+#
+# A /proc entry whose cwd cannot be read is skipped only when the process
+# has exited since the listing. One of this user's processes that stays
+# unreadable fails the scan. Another user's cwd is unreadable without root;
+# lsof does not show it either, so both paths leave it out alike.
 hyg_cwds() {
   : > "$HYG_TMP/cwds"
   # REPO_SYNC_PROC exists for the tests, to reach the lsof path on Linux.
   h_proc="${REPO_SYNC_PROC:-/proc}"
   if [ -d "$h_proc/self" ] && [ -e "$h_proc/self/cwd" ]; then
     for h_p in "$h_proc"/[0-9]*; do
-      readlink "$h_p/cwd" 2>/dev/null >> "$HYG_TMP/cwds" || true
+      readlink "$h_p/cwd" 2>/dev/null >> "$HYG_TMP/cwds" && continue
+      [ -d "$h_p" ] && [ -O "$h_p" ] && return 1
     done
   elif command -v lsof >/dev/null 2>&1; then
     lsof -nP -d cwd -Fn > "$HYG_TMP/lsof" 2>/dev/null || return 1
@@ -599,6 +605,9 @@ hyg_repo() {
   # 3.3: remote-tracking refs for deleted remote branches. The lines are
   # matched by text, so both calls run in the C locale: a translated git
   # would prune and print nothing the sed below knows.
+  # $HYG_TMP/stale holds the refs the dry run names (`origin/<branch>`): report
+  # mode leaves them in place, so the branch pass reads GONE from this list.
+  : > "$HYG_TMP/stale"
   for h_remote in $(git -C "$d" remote); do
     if [ "$APPLY" = 1 ]; then
       if h_out=$(LC_ALL=C git -C "$d" remote prune "$h_remote" 2>&1); then
@@ -609,6 +618,7 @@ hyg_repo() {
       fi
     else
       if h_out=$(LC_ALL=C git -C "$d" remote prune --dry-run "$h_remote" 2>&1); then
+        printf '%s\n' "$h_out" | sed -n 's/^ \* \[would prune\] //p' >> "$HYG_TMP/stale"
         printf '%s\n' "$h_out" | sed -n 's/^ \* \[would prune\] /prune remote-tracking ref /p' \
           | while read -r h_l; do hyg_found "$h_l"; done
       else
@@ -721,12 +731,12 @@ hyg_repo() {
         hyg_note "no origin/$def_name to verify against; landed branches not deleted"
         ;;
     esac
-    git -C "$d" for-each-ref --format="%(refname:lstrip=2)$US%(objectname)$US%(upstream:track)" \
+    git -C "$d" for-each-ref --format="%(refname:lstrip=2)$US%(objectname)$US%(upstream:track)$US%(upstream:short)" \
       refs/heads > "$HYG_TMP/branches"
   else
     hyg_note "no default branch found; branches not classified"
   fi
-  while IFS=$US read -r b_name b_sha b_track; do
+  while IFS=$US read -r b_name b_sha b_track b_up; do
     [ "$b_name" = "$def_name" ] && continue
     if h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
       [ "$h_fresh" = 1 ] || continue
@@ -817,7 +827,7 @@ hyg_repo() {
       fi
       continue
     fi
-    if [ "$b_track" = "[gone]" ]; then
+    if [ "$b_track" = "[gone]" ] || { [ -n "$b_up" ] && grep -qxF "$b_up" "$HYG_TMP/stale"; }; then
       hyg_list "GONE     branch $b_name $b_sha (upstream gone; content not on $def_name)"
     else
       h_n=$(git -C "$d" rev-list --count "refs/heads/$b_name" --not --remotes 2>/dev/null || echo 0)
@@ -861,6 +871,14 @@ hygiene() {
   case "$HYG_MIN_AGE" in
     ''|*[!0-9]*) echo "repo-sync.sh hygiene: REPO_SYNC_HYGIENE_MIN_AGE must be a number of seconds, got '$HYG_MIN_AGE'" >&2; return 2 ;;
   esac
+  # A value past the shell's integer range makes `[ -gt ]` fail, which would
+  # skip the guard. Twelve digits (over 30,000 years) is the limit; leading
+  # zeros are dropped first, so the value stays decimal.
+  HYG_MIN_AGE=$(printf '%s\n' "$HYG_MIN_AGE" | sed 's/^0*//')
+  HYG_MIN_AGE=${HYG_MIN_AGE:-0}
+  if [ "${#HYG_MIN_AGE}" -gt 12 ]; then
+    echo "repo-sync.sh hygiene: REPO_SYNC_HYGIENE_MIN_AGE must have at most 12 digits, got '$HYG_MIN_AGE'" >&2; return 2
+  fi
   HYG_NOW=$(date +%s)
   : > "$HYG_TMP/acted"; : > "$HYG_TMP/found"; : > "$HYG_TMP/listed"; : > "$HYG_TMP/failed"
   echo "profile : $PROFILE"

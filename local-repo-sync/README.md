@@ -53,7 +53,8 @@ safe classes:
 - delete a local branch whose content is on the default branch: an
   ancestor, a tree equal to its merge base, or a patch-equivalent squash;
   the branch must also sit unmoved for `REPO_SYNC_HYGIENE_MIN_AGE` seconds
-  (default 86400, read from its reflog), so a fresh branch survives;
+  (default 86400, at most 12 digits, read from its reflog), so a fresh
+  branch survives;
 - remove a worktree that holds such a branch, when it has no uncommitted,
   untracked or ignored files and no process has its cwd inside it.
 
