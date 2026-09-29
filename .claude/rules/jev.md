@@ -21,3 +21,4 @@ paths:
 - A stage variable cannot switch a stage on against a machine with no key or with `jev off`.
 - `sd-docs-lint` is a Jev caller outside this repo, opt-in per repo through a tracked `.github/sd-docs-lint.json`.
 - Do not make `local-scan-for-secrets` a caller; its hits are sensitive.
+- `jev.py` redacts credentials and `privacy-patterns` matches before sending; that is a backstop, never a reason to send.

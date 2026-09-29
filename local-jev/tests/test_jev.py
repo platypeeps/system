@@ -115,6 +115,9 @@ class StubServer(unittest.TestCase):
 
     def setUp(self):
         self.switch = str(Path(tempfile.mkdtemp()) / "enabled")
+        # The config root is pinned too, so the operator's own
+        # privacy-patterns never shape what this suite sends.
+        self.config = Path(tempfile.mkdtemp())
         Stub.status = 200
         Stub.throttle_first = 0
         Stub.noul_value = 0.97
@@ -138,7 +141,8 @@ class StubServer(unittest.TestCase):
         env = {"TYPESAFE_API_KEY": "test-key", "JEV_URL": self.url,
                "JEV_RETRIES": "3", "JEV_TIMEOUT": "10",
                "JEV_METER": "0",
-               "JEV_FLAG_FILE": self.switch}
+               "JEV_FLAG_FILE": self.switch,
+               "SYSTEM_TOOLS_CONFIG": str(self.config)}
         env.update(extra)
         return env
 
@@ -822,3 +826,101 @@ class TestStdinIsReadOnce(StubServer):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRedaction(StubServer):
+    """Nothing that looks like a credential, and nothing the operator's
+    privacy-patterns name, reaches the endpoint; a pattern file that cannot
+    be used sends nothing at all."""
+
+    # Built at run time, so this file holds no credential-shaped literal for
+    # a scanner to find.
+    GITHUB = "ghp_" + "A1b2C3d4" * 4
+    AWS = "AKIA" + "ABCDEFGH23456789"
+
+    def sent(self):
+        return json.dumps(Stub.seen[-1]["payload"])
+
+    def patterns(self, *lines):
+        (self.config / "privacy-patterns").write_text("\n".join(lines) + "\n")
+
+    def test_credential_shapes_are_replaced_in_the_state(self):
+        _code, _out, err = self.run_verbose(
+            ["noul", "q"], stdin=f"push with {self.GITHUB} and {self.AWS}")
+        self.assertNotIn(self.GITHUB, self.sent())
+        self.assertNotIn(self.AWS, self.sent())
+        self.assertIn(jev.REDACTED, self.sent())
+        self.assertIn("redacted 2 span(s)", err)
+
+    def test_a_privacy_pattern_is_replaced_in_state_and_questions(self):
+        self.patterns("# a comment", "", "Example[[:space:]]Person")
+        self.run_main(["noul", "Did Example Person write this?"],
+                      stdin="authored by Example Person")
+        self.assertNotIn("Example Person", self.sent())
+        self.assertEqual(self.sent().count(jev.REDACTED), 2)
+
+    def test_privacy_patterns_are_case_sensitive_as_grep_reads_them(self):
+        self.patterns("Example Person")
+        self.run_main(["noul", "q"], stdin="example person")
+        self.assertIn("example person", self.sent())
+
+    def test_json_state_is_redacted_field_by_field(self):
+        self.patterns("secret-host")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump({"host": "secret-host.example.test", "n": 3,
+                       "paths": ["a/secret-host/b"]}, fh)
+        self.addCleanup(os.unlink, fh.name)
+        self.run_main(["noul", "q", "--state", fh.name, "--state-format", "json"])
+        state = Stub.seen[-1]["payload"]["state"]
+        self.assertEqual(state["n"], 3)
+        self.assertNotIn("secret-host", json.dumps(state))
+
+    def test_ordinary_words_and_paths_pass_untouched(self):
+        text = ("task-list-of-things homeassistant/components/unifi/sensor "
+                "the password field bin/sd_ship_bindings.py")
+        _code, _out, err = self.run_verbose(["noul", "q"], stdin=text)
+        self.assertEqual(Stub.seen[-1]["payload"]["state"], text)
+        self.assertNotIn("redacted", err)
+
+    def test_an_uncompilable_pattern_sends_nothing_and_honours_the_fallback(self):
+        self.patterns("fine", "broken(")
+        code, out, err = self.run_verbose(["noul", "q", "--fallback", "0.5"])
+        self.assertEqual((code, out), (0, "0.5\n"))
+        self.assertEqual(Stub.seen, [])
+        self.assertIn("line 2 does not compile", err)
+        self.assertNotIn("broken(", err)
+
+    def test_an_anchored_pattern_matches_each_line_as_grep_does(self):
+        """grep -E reads line by line, so ^...$ holds for a line inside
+        multi-line state; a Python regex without MULTILINE missed it."""
+        self.patterns("^private-host$")
+        self.run_main(["noul", "q"], stdin="header\nprivate-host\nfooter")
+        self.assertNotIn("private-host", self.sent())
+
+    def test_a_protected_json_key_sends_nothing_and_honours_the_fallback(self):
+        """A key is refused, not renamed: renaming could collide with another
+        key or break an identifier the caller reads back."""
+        self.patterns("private-host")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump({"private-host": "ok"}, fh)
+        self.addCleanup(os.unlink, fh.name)
+        code, out, err = self.run_verbose(
+            ["noul", "q", "--state", fh.name, "--state-format", "json",
+             "--fallback", "0.5"])
+        self.assertEqual((code, out), (0, "0.5\n"))
+        self.assertEqual(Stub.seen, [])
+        self.assertNotIn("private-host", err)
+
+    def test_a_protected_criterion_key_sends_nothing(self):
+        self.patterns("private-host")
+        code, out = self.run_main(["choice", "q", "--criteria", "private-host,other",
+                                   "--fallback", "other"])
+        self.assertEqual((code, out), (0, "other\n"))
+        self.assertEqual(Stub.seen, [])
+
+    def test_an_unknown_posix_class_sends_nothing(self):
+        self.patterns("[[:nosuch:]]x")
+        code, _out = self.run_main(["enabled"])
+        self.assertEqual(code, 3)
+        self.run_main(["noul", "q", "--fallback", "0.5"])
+        self.assertEqual(Stub.seen, [])
