@@ -41,10 +41,12 @@ A branch therefore counts as landed only once its content is upstream. A
 local-only merge into `main` keeps the branch, which is the safe side.
 
 That ref is only as fresh as the last fetch, and a force-push can drop
-content from the remote default. Before the branch pass, `git ls-remote
-origin refs/heads/<default>` must return the local ref's sha. When it
-differs or `origin` cannot be read, the pass deletes no landed branch and
-prints one note; the report-only classes still run. A default from a local
+content from the remote default. Before the branch pass,
+`git ls-remote --symref origin HEAD` must name `refs/heads/<default>` and
+return the local ref's sha. A remote that made another branch its default
+leaves the local `origin/HEAD` stale even when the old default is unchanged.
+When either differs or `origin` cannot be read, the pass deletes no landed
+branch and prints one note; the report-only classes still run. A default from a local
 `main` or `master` proves nothing is on `origin`, so it deletes no landed
 branch either; it still serves the report-only classes.
 
@@ -89,7 +91,10 @@ report-only class.
 `source:local-repo-sync/repo-sync.sh::hyg_worktrees` parses
 `git worktree list --porcelain` into records split by the unit separator
 (`\037`). The separator is not whitespace, so `read` keeps an empty branch
-or an empty lock reason in place.
+or an empty lock reason in place. It fails when git cannot list the
+worktrees, because a pipeline into `awk` would turn that into an empty list.
+An unreadable list deletes no landed branch; before and after a delete it
+counts as "checked out".
 
 A registration whose directory is gone:
 

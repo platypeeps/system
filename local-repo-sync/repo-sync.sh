@@ -489,9 +489,11 @@ hyg_merged() {
 
 # One record per worktree registration, fields split by $US:
 # path, branch (empty when detached), locked (0|1), lock reason.
-# The first record is the main checkout.
+# The first record is the main checkout. Fails when git cannot list them:
+# a pipeline would hide that, and an empty list reads as "nothing holds it".
 hyg_worktrees() {
-  git -C "$1" worktree list --porcelain | awk -v us="$US" '
+  h_wl=$(git -C "$1" worktree list --porcelain) || return 1
+  printf '%s\n' "$h_wl" | awk -v us="$US" '
     function out() { if (p != "") printf "%s%s%s%s%s%s%s\n", p, us, br, us, lk, us, lr }
     /^worktree / { out(); p = substr($0, 10); br = ""; lk = 0; lr = ""; next }
     /^branch /   { br = substr($0, 8); sub(/^refs\/heads\//, "", br); next }
@@ -499,10 +501,11 @@ hyg_worktrees() {
     END          { out() }'
 }
 
-# Succeeds when any worktree of repo $1, the main checkout included, has
-# branch $2 checked out.
+# Returns 0 when any worktree of repo $1, the main checkout included, has
+# branch $2 checked out, 1 when none has, and 2 when git cannot list them.
 hyg_checked_out() {
-  hyg_worktrees "$1" | awk -F "$US" -v b="$2" '$2 == b { f = 1 } END { exit !f }'
+  h_co_list=$(hyg_worktrees "$1") || return 2
+  printf '%s\n' "$h_co_list" | awk -F "$US" -v b="$2" '$2 == b { f = 1 } END { exit !f }'
 }
 
 # Decides whether a lock still belongs to a live process. The lock text reads
@@ -618,7 +621,12 @@ hyg_repo() {
   # the paths pruned (or to be pruned), so the branch pass below treats their
   # branches as free in report mode too.
   : > "$HYG_TMP/gone"
-  hyg_worktrees "$d" | tail -n +2 > "$HYG_TMP/wts"
+  : > "$HYG_TMP/wts"
+  if hyg_worktrees "$d" > "$HYG_TMP/wts.all"; then
+    tail -n +2 "$HYG_TMP/wts.all" > "$HYG_TMP/wts"
+  else
+    hyg_fail "worktree list"
+  fi
   h_prune=0
   while IFS=$US read -r w_path w_branch w_locked w_reason; do
     [ -d "$w_path" ] && continue
@@ -644,7 +652,8 @@ hyg_repo() {
   if [ "$h_prune" = 1 ]; then
     if [ "$APPLY" = 1 ]; then
       if git -C "$d" worktree prune; then
-        hyg_worktrees "$d" | cut -d "$US" -f 1 > "$HYG_TMP/left"
+        hyg_worktrees "$d" > "$HYG_TMP/left.all" || hyg_fail "worktree list after prune"
+        cut -d "$US" -f 1 "$HYG_TMP/left.all" > "$HYG_TMP/left"
         while read -r w_path; do
           if grep -qxF "$w_path" "$HYG_TMP/left"; then
             hyg_fail "prune worktree $w_path (still registered)"
@@ -664,7 +673,9 @@ hyg_repo() {
 
   # Who holds each branch now: the main checkout first, then linked
   # worktrees that were not pruned above.
-  hyg_worktrees "$d" > "$HYG_TMP/holders.all"
+  # An unreadable list proves nothing about holders, so it deletes nothing.
+  h_wt_ok=1
+  hyg_worktrees "$d" > "$HYG_TMP/holders.all" || { h_wt_ok=0; hyg_fail "worktree list"; }
   : > "$HYG_TMP/holders"
   h_first=1
   while IFS=$US read -r w_path w_branch w_locked w_reason; do
@@ -686,15 +697,21 @@ hyg_repo() {
     def_name=${h_def%% *}
     def_ref=${h_def#* }
     # "Landed" is judged against the local origin/<default>. A remote that
-    # moved it since (a force-push can drop content) or cannot be asked
-    # leaves that judgement stale, so no landed branch is deleted. A local
-    # main or master proves nothing is on origin, so it deletes nothing.
-    h_fresh=1
+    # moved it since (a force-push can drop content), made another branch
+    # its default, or cannot be asked leaves that judgement stale, so no
+    # landed branch is deleted. A local main or master proves nothing is on
+    # origin, so it deletes nothing.
+    h_fresh=$h_wt_ok
     case "$def_ref" in
       refs/remotes/origin/*)
-        h_there=$(git -C "$d" ls-remote origin "refs/heads/$def_name" 2>/dev/null | cut -f 1 || true)
+        h_sym=$(git -C "$d" ls-remote --symref origin HEAD 2>/dev/null || true)
+        h_head=$(printf '%s\n' "$h_sym" | awk '$1 == "ref:" && $NF == "HEAD" { print $2; exit }')
+        h_there=$(printf '%s\n' "$h_sym" | awk '$1 != "ref:" && $NF == "HEAD" { print $1; exit }')
         h_here=$(git -C "$d" rev-parse -q --verify "$def_ref" || true)
-        if [ -z "$h_there" ] || [ "$h_there" != "$h_here" ]; then
+        if [ "$h_head" != "refs/heads/$def_name" ]; then
+          h_fresh=0
+          hyg_note "origin/HEAD here names $def_name, on origin ${h_head:-not read}; landed branches not deleted"
+        elif [ -z "$h_there" ] || [ "$h_there" != "$h_here" ]; then
           h_fresh=0
           hyg_note "origin/$def_name here ${h_here:-missing}, on origin ${h_there:-not read}; landed branches not deleted"
         fi
@@ -775,10 +792,13 @@ hyg_repo() {
         # read before the delete and again after it; a checkout that landed
         # in between gets its ref back. `branch -D` has the same window: it
         # also reads the worktrees, then deletes.
-        if hyg_checked_out "$d" "$b_name"; then
-          hyg_fail "delete branch $b_name $b_sha (checked out since it was classified)"
+        # An unreadable worktree list counts as checked out: fail closed.
+        h_co=0; hyg_checked_out "$d" "$b_name" || h_co=$?
+        if [ "$h_co" != 1 ]; then
+          hyg_fail "delete branch $b_name $b_sha (checked out since it was classified, or worktrees unreadable)"
         elif git -C "$d" update-ref -d "refs/heads/$b_name" "$b_sha" 2>/dev/null; then
-          if hyg_checked_out "$d" "$b_name"; then
+          h_co=0; hyg_checked_out "$d" "$b_name" || h_co=$?
+          if [ "$h_co" != 1 ]; then
             if git -C "$d" update-ref "refs/heads/$b_name" "$b_sha" "" 2>/dev/null; then
               hyg_fail "delete branch $b_name $b_sha (checked out during the delete; restored, reflog lost)"
             else

@@ -500,6 +500,53 @@ class HygieneTest(unittest.TestCase):
         self.assertEqual(sha, f.git(wt, "rev-parse", "HEAD"))
         self.assertIn("restored", result.stdout)
 
+    def test_an_unreadable_worktree_list_deletes_no_branch(self):
+        """NEW. Requirement 4: a worktree list git cannot produce proves
+        nothing about who holds a branch, so no landed branch is deleted."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "landed")
+        f.wrap_git("before", '*"worktree list"*', "exit 1")
+
+        f.run("hygiene", "--apply", expect=1)
+
+        self.assertNotEqual("", f.branch_sha(repo, "landed"))
+
+    def test_a_worktree_list_failing_just_before_the_delete_keeps_the_branch(self):
+        """NEW. Requirement 4: the re-read before the delete fails closed;
+        an unreadable list counts as checked out."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "landed")
+        mark = f.tmp / "classified"
+        (f.bin / "git").write_text(
+            "#!/bin/sh\n"
+            'printf \'%s\\n\' "$*" >> "$GIT_LOG"\n'
+            f'case "$*" in *for-each-ref*) : > "{mark}" ;;\n'
+            f'*"worktree list"*) [ -e "{mark}" ] && exit 1 ;;\nesac\n'
+            'exec "$REAL_GIT" "$@"\n')
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertNotEqual("", f.branch_sha(repo, "landed"))
+        self.assertIn("worktrees unreadable", result.stdout)
+
+    def test_a_moved_remote_default_deletes_no_landed_branch(self):
+        """NEW. Requirement 3.4: when origin makes another branch its
+        default, the local origin/HEAD is stale even though origin/main is
+        unchanged, so no landed branch is deleted."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "landed")
+        bare = f.git(repo, "remote", "get-url", "origin")
+        f.git(bare, "update-ref", "refs/heads/trunk", f.git(repo, "rev-parse", "HEAD"))
+        f.git(bare, "symbolic-ref", "HEAD", "refs/heads/trunk")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotEqual("", f.branch_sha(repo, "landed"))
+        self.assertIn("origin/HEAD here names main, on origin refs/heads/trunk", result.stdout)
+
     def test_a_merged_branch_in_a_dirty_worktree_keeps_both(self):
         """NEW. Criterion 5."""
         f = self.fixture()
