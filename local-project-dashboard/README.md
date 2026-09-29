@@ -39,7 +39,10 @@ writes; there is no dismiss.
 `designs/v2/`), built one page at a time beside the v1 routes, which stay as
 they are. `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted
 IBM Plex under `static/`, served at `/v2/static/`; `shell.js` marks each
-change from the reference with `build:`. The first page is `/v2/today`: the
+change from the reference with `build:`. Every v2 script builds markup with
+the `html` tag in `static/markup.js`, which escapes each value put in it; that
+file holds the one HTML sink criterion 12's grep allows in v2. The first
+page is `/v2/today`: the
 same `/api/now` rows as v1 Now, as an annunciator and a ranked ledger. It
 runs no command yet; its capture files a task through `POST /api/items`.
 Status mail, backups, HOA water, Wants you and Briefs wait for collectors.

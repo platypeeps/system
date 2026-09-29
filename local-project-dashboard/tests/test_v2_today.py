@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import unittest
 import urllib.request
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from test_workflow_actions import BrowserSession
 V2 = Path(v2.__file__).resolve().parent
 TODAY_JS = (V2 / "static" / "today.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
+MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 
 class ThePage(BrowserSession):
@@ -59,7 +61,7 @@ class ThePage(BrowserSession):
     def test_every_file_the_page_names_is_served(self):
         _, _, body = self.request("/v2/today")
         named = re.findall(r'(?:src|href)="(/v2/static/[^"]+)"', body)
-        self.assertEqual(len(named), 8)  # four stylesheets, four scripts
+        self.assertEqual(len(named), 9)  # four stylesheets, five scripts
         for path in named:
             status, headers, _ = self.request(path)
             self.assertEqual(status, 200, path)
@@ -68,8 +70,8 @@ class ThePage(BrowserSession):
     def test_data_and_page_script_load_before_the_shell_and_the_shell_loads_last(self):
         _, _, body = self.request("/v2/today")
         scripts = re.findall(r'<script src="/v2/static/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "icons.js", "today.js", "shell.js"])
-        self.assertLess(body.index('src="/v2/static/theme.js"'), body.index("</head>"))
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "today.js", "shell.js"])
+        self.assertLess(body.index('src="/v2/static/markup.js"'), body.index("</head>"))
         self.assertGreater(body.index('src="/v2/static/icons.js"'), body.index("<body"))
 
     def test_the_session_the_page_opens_reads_now(self):
@@ -149,3 +151,31 @@ class TheShellPort(BrowserSession):
             status, headers, body = self.request(path)
             self.assertEqual(status, 200, path)
             self.assertNotIn("/v2/", body, path)
+
+
+class TheMarkup(unittest.TestCase):
+    """markup.js is the v2 scripts' one HTML sink; test_markup's grep exempts it and nothing else."""
+
+    def test_the_one_sink_is_a_template_fed_only_by_the_tag(self):
+        self.assertEqual(MARKUP_JS.count("innerHTML"), 1)
+        self.assertIn("const t = document.createElement('template');\n    t.innerHTML = m.text;", MARKUP_JS)
+        self.assertIn("if (!made.has(m)) throw new TypeError", MARKUP_JS)
+        self.assertIn("window.markup = Object.freeze({ html, nodes, put });", MARKUP_JS)
+        for source in (SHELL_JS, TODAY_JS):
+            self.assertNotIn("esc(", source)
+            self.assertIn("window.markup", source)
+
+    def test_the_tag_escapes_every_value_that_it_did_not_make(self):
+        """The escaping, pinned as written. The gate's PATH has no node and
+        allows no skipped test, so the behaviour itself (a quote, a tag and an
+        entity in an attribute and in text; nesting; a forged value refused)
+        is run under node by hand and recorded on the pull request."""
+        table = re.search(r"const ESC = \{([^}]*)\};", MARKUP_JS).group(1)
+        pairs = re.findall(r"""(['"])(.)\1: '([^']+)'""", table)
+        self.assertEqual({char: entity for _, char, entity in pairs},
+                         {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})
+        self.assertIn("""  const value = v => made.has(v) ? v.text
+    : Array.isArray(v) ? v.map(value).join('')
+    : v === null || v === undefined || v === false ? ''
+    : String(v).replace(/[&<>"']/g, c => ESC[c]);""", MARKUP_JS)
+        self.assertEqual(MARKUP_JS.count("made.add("), 1)

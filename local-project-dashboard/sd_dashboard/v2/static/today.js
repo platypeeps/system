@@ -1,6 +1,7 @@
 // Today v2 (sd:2110): the page script. It loads before shell.js, which reads what it declares.
 // Rows: /api/now, the document now_screen.document builds (the one v1 Today's Now section reads). Nothing here is sample data.
 // Ported from ui-design products/system/designs/v2/today.html at a3861c9; the sources the build has no collector for are left out.
+// Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   // The v2 sections that are built. Every other rail entry says it is not built yet.
   window.SHELL_PAGES = { Today: '/v2/today' };
@@ -24,8 +25,8 @@
   const SRC = { jobs: ['Jobs', 'activity', 'jobs'], prs: ['Pull requests', 'git-pull-request', 'trackers'], sessions: ['Sessions', 'bot', 'sessions'], repos: ['Repos', 'hard-drive-download', 'repos'] };
   const TYPE = { job: 'job', pr: 'pull request', ahead: 'repo', dirty: 'repo', worktree: 'sessions', dark: 'collector' };
   const KIND = { job: 'Job', pr: 'Pull request', ahead: 'Repo', dirty: 'Repo', worktree: 'Sessions', dark: 'Collector' };
-  const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const I = n => `<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+  const { html, put } = window.markup;
+  const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const area = s => `/operations?area=${SRC[s]?.[2] || s}`;
 
   let DOC = null, ROWS = [], srcFilter = null, query = '';
@@ -41,11 +42,11 @@
     const r = ROWS.find(x => x.id === id); if (!r) return;
     $('rows').querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
     const s = STATE[r.band];
-    $('details').innerHTML = `<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${KIND[r.kind] || r.kind} · ${s}</p>
-      <h2>${esc(r.what)}</h2>
-      <dl>${Object.entries(facts(r)).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}<dt>Read</dt><dd><time class="rel" data-long datetime="${esc(DOC.now)}"></time></dd></dl>
-      <p><a href="${esc(area(r.source))}">Open ${esc(SRC[r.source]?.[0] || r.source)} in Operations</a></p>
-      <h3>Act</h3>${shell.commands.bar(id)}`;
+    put($('details'), html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${KIND[r.kind] || r.kind} · ${s}</p>
+      <h2>${r.what}</h2>
+      <dl>${Object.entries(facts(r)).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>Read</dt><dd><time class="rel" data-long datetime="${DOC.now}"></time></dd></dl>
+      <p><a href="${area(r.source)}">Open ${SRC[r.source]?.[0] || r.source} in Operations</a></p>
+      <h3>Act</h3>${shell.commands.bar(id)}`);
     shell.commands.select(id);
     shell.suggest([`Why is ${r.what.split(' ')[0]} on this list?`, 'What else changed around this time?', 'Rank what I should do in the next hour']);
     $('details').setAttribute('data-swap', ''); requestAnimationFrame(() => $('details').removeAttribute('data-swap'));
@@ -60,18 +61,18 @@
     document.querySelectorAll('.cell[data-src]').forEach(cell => {
       const s = cell.dataset.src, why = DOC.sources[s], rows = ROWS.filter(r => r.source === s && r.kind !== 'dark');
       const val = cell.querySelector('.val');
-      if (why) { cell.dataset.state = 'unknown'; cell.title = why; val.innerHTML = '<span class="ph">not read</span>'; return; }
+      if (why) { cell.dataset.state = 'unknown'; cell.title = why; put(val, html`<span class="ph">not read</span>`); return; }
       cell.removeAttribute('title');
       const st = rows.map(r => STATE[r.band]);
       cell.dataset.state = st.includes('warning') ? 'warning' : st.includes('caution') ? 'caution' : 'ok';
       const n = k => rows.filter(r => r.kind === k).length;
-      val.innerHTML = s === 'jobs' ? `<b>${rows.length}</b> failed`
-        : s === 'prs' ? `<span class="ph"><b>${rows.length}</b> awaiting</span> you`
-        : s === 'sessions' ? `<span class="ph"><b>${rows.reduce((a, r) => a + (+(r.id.split(':')[1]) || 0), 0)}</b> abandoned</span>`
-        : `<span class="ph"><b>${n('ahead')}</b> ahead</span> · <span class="ph">${n('dirty')} dirty</span>`;
+      put(val, s === 'jobs' ? html`<b>${rows.length}</b> failed`
+        : s === 'prs' ? html`<span class="ph"><b>${rows.length}</b> awaiting</span> you`
+        : s === 'sessions' ? html`<span class="ph"><b>${rows.reduce((a, r) => a + (+(r.id.split(':')[1]) || 0), 0)}</b> abandoned</span>`
+        : html`<span class="ph"><b>${n('ahead')}</b> ahead</span> · <span class="ph">${n('dirty')} dirty</span>`);
     });
     const d = new Date(DOC.now);
-    $('observed').innerHTML = `<b>${d.toISOString().slice(11, 16)}</b> UTC`;
+    put($('observed'), html`<b>${d.toISOString().slice(11, 16)}</b> UTC`);
   }
 
   function registerObjects() {
@@ -86,17 +87,17 @@
 
   function render() {
     const tb = $('rows');
-    tb.innerHTML = ROWS.map((r, i) => { const s = STATE[r.band]; return `<tr data-id="${esc(r.id)}" data-src="${esc(r.source)}"${i && ROWS[i - 1].band !== r.band ? ' class="band-start"' : ''}>
+    put(tb, ROWS.length ? html`${ROWS.map((r, i) => { const s = STATE[r.band]; return html`<tr data-id="${r.id}" data-src="${r.source}"${i && ROWS[i - 1].band !== r.band ? html` class="band-start"` : ''}>
       <td class="g g-${s}" title="${s}">${GLYPH[s]}</td>
-      <td class="what"><button type="button">${esc(r.what)}</button></td>
-      <td class="detail">${esc(r.detail)}</td>
-      <td class="src">${I(SRC[r.source]?.[1] || 'circle-help')}${esc(r.source)}</td>
-      <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`; }).join('')
-      || '<tr class="empty"><td colspan="5">Nothing wants you: every source was read and raised no row.</td></tr>';
+      <td class="what"><button type="button">${r.what}</button></td>
+      <td class="detail">${r.detail}</td>
+      <td class="src">${I(SRC[r.source]?.[1] || 'circle-help')}${r.source}</td>
+      <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`; })}`
+      : html`<tr class="empty"><td colspan="5">Nothing wants you: every source was read and raised no row.</td></tr>`);
     const count = s => ROWS.filter(r => STATE[r.band] === s).length;
-    $('tally').innerHTML = `<span class="g-warning">■ ${count('warning')} warning</span><span class="g-caution">▲ ${count('caution')} caution</span><span class="g-queued">◌ ${count('queued')} queued</span>`;
+    put($('tally'), html`<span class="g-warning">■ ${count('warning')} warning</span><span class="g-caution">▲ ${count('caution')} caution</span><span class="g-queued">◌ ${count('queued')} queued</span>`);
     const d = new Date(DOC.now);
-    $('subhead').innerHTML = `${esc(d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' }))} · <b>${ROWS.length}</b> thing${ROWS.length === 1 ? '' : 's'} want${ROWS.length === 1 ? 's' : ''} you, loudest first · read <time class="rel" datetime="${esc(DOC.now)}"></time>`;
+    put($('subhead'), html`${d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })} · <b>${ROWS.length}</b> thing${ROWS.length === 1 ? '' : 's'} want${ROWS.length === 1 ? 's' : ''} you, loudest first · read <time class="rel" datetime="${DOC.now}"></time>`);
     const w = count('warning'), c = count('caution');
     window.PAGE_ATTENTION = { state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: w ? 'warning rows' : 'caution rows' };
     shell.attention();
@@ -117,7 +118,7 @@
     shell.reconcile({ rows: tb.querySelectorAll('tr[data-id]'), current: new URLSearchParams(location.search).get('row'),
       select: id => select(id, false),
       clear: () => { const u = new URL(location.href); u.searchParams.delete('row'); history.replaceState(null, '', u);
-        $('details').innerHTML = `<p class="why">${ROWS.length ? 'No row matches the filter, so nothing is selected. Esc clears it.' : 'Nothing is selected: Now has no rows.'}</p>`; } });
+        put($('details'), html`<p class="why">${ROWS.length ? 'No row matches the filter, so nothing is selected. Esc clears it.' : 'Nothing is selected: Now has no rows.'}</p>`); } });
   }
 
   async function load() {
@@ -132,7 +133,7 @@
     } catch (e) {
       $('subhead').textContent = `Now could not be read: ${e.message}. Refresh tries again.`;
       document.querySelectorAll('.cell[data-src]').forEach(cell => { cell.dataset.state = 'unknown'; cell.querySelector('.val').textContent = 'not read'; });
-      $('rows').innerHTML = `<tr class="empty"><td colspan="5">Now could not be read: ${esc(e.message)}</td></tr>`;
+      put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${e.message}</td></tr>`);
     } finally { $('refresh').removeAttribute('aria-busy'); }
   }
 
@@ -177,8 +178,8 @@
     function paint() {
       const v = input.value.trim(), p = v.match(/\bp([1-4])\b/i);
       prev.hidden = !v; ghost.textContent = v ? `→ ${mode}` : '';
-      as.innerHTML = mode === 'task' ? `${I('list-todo')} task “${esc(v.replace(/\bp[1-4]\b/gi, '').trim())}”${p ? ` · P${p[1]}` : ''}`
-        : mode === 'ask' ? `${I('message-square')} ask chat in fleet scope` : `${I('filter')} filter the ledger`;
+      put(as, mode === 'task' ? html`${I('list-todo')} task “${v.replace(/\bp[1-4]\b/gi, '').trim()}”${p ? ` · P${p[1]}` : ''}`
+        : mode === 'ask' ? html`${I('message-square')} ask chat in fleet scope` : html`${I('filter')} filter the ledger`);
       query = mode === 'filter' ? v.toLowerCase() : '';
       if (DOC) applyFilter();
     }

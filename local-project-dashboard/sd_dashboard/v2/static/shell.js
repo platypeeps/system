@@ -5,9 +5,13 @@
 // narrow-screen rule moved to shell.css and the favicon count is off (the dashboard CSP is default-src 'self',
 // which refuses an inline <style> and a data: icon), capture calls window.SHELL_CAPTURE when a page sets it,
 // and the chat stub says that no chat backend is connected.
+// build: every string of markup is html`…` from markup.js, which escapes each value put in it; nodes() and put() are
+// the only way in, so the hand escaping is gone. rowActions, bar, time and ICON return html`…` for a page to compose.
+// Help text renders <b> and <code> only.
 // A page sets <body data-page="Today" data-scope="fleet" data-scope-note="…"> and may call window.shell.*.
 (() => {
-  const ICON = (n, cls = '') => `<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+  const { html, nodes, put } = window.markup;
+  const ICON = (n, cls = '') => html`<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const GROUPS = [
     ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i']]],
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
@@ -23,18 +27,18 @@
   // The current page overrides its own badge with its live value, so a badge never disagrees with its page.
   const counts = Object.assign({}, window.SHELL_COUNTS && window.SHELL_COUNTS.pages);
   // The badge says what the number is, so a screen reader hears "Tasks, 3 overdue" and not just "3".
-  const badge = c => c && c.n && c.state !== 'ok' ? `<span class="count ${c.state}" title="${c.n} ${c.what}">${c.n}<span class="sr"> ${c.what}</span></span>` : '';
+  const badge = c => c && c.n && c.state !== 'ok' ? html`<span class="count ${c.state}" title="${c.n} ${c.what}">${c.n}<span class="sr"> ${c.what}</span></span>` : html``;
 
   // ---------- Rail ----------
   const rail = document.createElement('aside');
   rail.className = 'rail'; rail.setAttribute('aria-label', 'Sidebar');
-  rail.innerHTML = `
+  put(rail, html`
     <a class="mark" href="${PAGES.Today || '#'}"><b>sd</b><span>system</span></a>
-    <nav aria-label="Sections" id="sections">${GROUPS.map(([g, items]) => `
+    <nav aria-label="Sections" id="sections">${GROUPS.map(([g, items]) => html`
       <div><span class="label">${g}</span><ul>${items.map(([name, icon, key]) => {
         const href = PAGES[name] || '#';
-        return `<li><a href="${href}" data-section="${name}"${name === page ? ' aria-current="page"' : ''}${PAGES[name] ? '' : ' data-unbuilt'}>${ICON(icon)}<span class="nm">${name}</span>${badge(counts[name])}<kbd>g ${key}</kbd></a></li>`;
-      }).join('')}</ul></div>`).join('')}
+        return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${PAGES[name] ? '' : html` data-unbuilt`}>${ICON(icon)}<span class="nm">${name}</span>${badge(counts[name])}<kbd>g ${key}</kbd></a></li>`;
+      })}</ul></div>`)}
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-choice="dark">${ICON('moon')}Dark</button>
         <button type="button" data-theme-choice="light">${ICON('sun')}Light</button>
@@ -52,7 +56,7 @@
       <button class="cmd" type="button" id="open-chat" aria-controls="pane" aria-label="Chat (c)">${ICON('message-square')}<span class="txt">Chat</span><kbd>c</kbd></button>
       <button class="cmd" type="button" id="open-palette" aria-label="Commands (⌘K)">${ICON('command')}<span class="txt">Commands</span><kbd>⌘K</kbd></button>
       <button class="cmd" type="button" id="reload" title="Reload this page (r)" aria-label="Reload this page (r)">${ICON('rotate-ccw')}<span class="txt">Reload</span><kbd>r</kbd></button>
-    </div>`;
+    </div>`);
   // The in-nav theme copy shows only inside the narrow-screen Sections menu.
   rail.querySelector('nav > .theme').classList.add('menu-theme');
   const shell = document.querySelector('.shell');
@@ -66,7 +70,7 @@
     const link = rail.querySelector(`[data-section="${page}"]`);
     if (!a || !link) return;
     link.querySelector('.count')?.remove();
-    link.querySelector('kbd').insertAdjacentHTML('beforebegin', badge(a));
+    link.querySelector('kbd').before(nodes(badge(a)));
     titleCount(a.state === 'warning' ? a.n : 0);
   };
   // Warnings show in the tab: "(3) Today · system" and a count drawn on the favicon (patterns.md, Density).
@@ -100,7 +104,7 @@
   const pane = document.createElement('aside');
   pane.className = 'pane'; pane.id = 'pane'; pane.setAttribute('aria-label', 'Details and chat');
   const scope = body.dataset.scope || 'fleet';
-  pane.innerHTML = `
+  put(pane, html`
     <div class="tabs">
       <div role="tablist" aria-label="Panel" class="tablist">
       <button role="tab" id="tab-details" aria-controls="panel-details" aria-selected="true" type="button">${ICON('layout-dashboard')}<span class="nm">Details</span></button>
@@ -128,7 +132,7 @@
           <div class="meta"><span>Reads freely · writes need your approval</span><span>claude -p · runner</span></div>
         </form>
       </div>
-    </div>`;
+    </div>`);
   shell.append(pane);
   if (details) pane.querySelector('#panel-details').append(details);
 
@@ -181,18 +185,17 @@
   pin.addEventListener('click', () => pin.setAttribute('aria-pressed', pin.getAttribute('aria-pressed') !== 'true'));
   function setContext(text) { if (pin.getAttribute('aria-pressed') !== 'true') pane.querySelector('#scope-ctx').textContent = text ? `+ ${text}` : ''; }
   function suggest(list) {
-    thread.innerHTML = `<div class="msg"><span class="label">Ask in ${scope}</span></div>
-      <div class="suggest">${list.map(s => `<button type="button">${ICON('message-square')}<span>${s}</span></button>`).join('')}</div>`;
+    put(thread, html`<div class="msg"><span class="label">Ask in ${scope}</span></div>
+      <div class="suggest">${list.map(s => html`<button type="button">${ICON('message-square')}<span>${s}</span></button>`)}</div>`);
     thread.querySelectorAll('.suggest button').forEach(b => b.addEventListener('click', () => { send(b.textContent.trim()); }));
   }
   function send(text) {
     if (!text) return;
-    const esc = t => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     // build: no chat backend is connected yet; the answer says so instead of pretending.
     const answer = window.SHELL_PAGES ? `No chat backend is connected to this dashboard yet, so nothing was sent. A later slice sends this to claude -p in the ${scope} scope.`
       : `Mockup: no chat backend here. The build sends this to claude -p in the ${scope} scope and streams the answer.`;
-    thread.insertAdjacentHTML('beforeend', `<div class="msg"><span class="who label">${ICON('user')}You</span><p>${esc(text)}</p></div>
-      <div class="msg"><span class="who label">${ICON('bot')}Claude · ${scope}</span><p class="why">${esc(answer)}</p></div>`);
+    thread.append(nodes(html`<div class="msg"><span class="who label">${ICON('user')}You</span><p>${text}</p></div>
+      <div class="msg"><span class="who label">${ICON('bot')}Claude · ${scope}</span><p class="why">${answer}</p></div>`));
     thread.scrollTop = thread.scrollHeight;
     remember(text, answer);
   }
@@ -209,7 +212,7 @@
     if (!details || details.querySelector('.asked')) return;
     const list = selId && askedAll()[selId]; if (!list || !list.length) return;
     const o = OBJ.get(selId);
-    details.insertAdjacentHTML('beforeend', `<section class="asked"><h3>Asked here</h3>${list.map(x => `<div class="qa"><p class="q">${ICON('user')}<span>${esc(x.q)}</span></p><p class="a why">${esc(x.a)}</p></div>`).join('')}<p class="why">${o ? `About ${esc(o.label)} · ` : ''}this session, newest first.</p></section>`);
+    details.append(nodes(html`<section class="asked"><h3>Asked here</h3>${list.map(x => html`<div class="qa"><p class="q">${ICON('user')}<span>${x.q}</span></p><p class="a why">${x.a}</p></div>`)}<p class="why">${o ? `About ${o.label} · ` : ''}this session, newest first.</p></section>`));
   }
   if (details) new MutationObserver(() => renderAsked()).observe(details, { childList: true });
   pane.querySelector('#composer').addEventListener('submit', e => { e.preventDefault(); const i = document.getElementById('chat-input'); send(i.value.trim()); i.value = ''; });
@@ -227,8 +230,12 @@
     const below = r.bottom + 8, above = r.top - pop.offsetHeight - 8;
     pop.style.top = `${below + pop.offsetHeight < innerHeight || above < 0 ? below : above}px`;
   }
+  // build: help text is page markup held in an attribute; <b> and <code> render and anything else shows as written.
+  const helpText = s => { const out = []; let at = 0;
+    s.replace(/<(b|code)>([^<]*)<\/\1>/g, (m, tag, inner, i) => { out.push(s.slice(at, i), tag === 'b' ? html`<b>${inner}</b>` : html`<code>${inner}</code>`); at = i + m.length; return m; });
+    out.push(s.slice(at)); return html`${out}`; };
   function showHelp(btn) {
-    pop.innerHTML = btn.dataset.help; pop.hidden = false; place(btn);
+    put(pop, helpText(btn.dataset.help || '')); pop.hidden = false; place(btn);
     btn.setAttribute('aria-describedby', 'help-pop');
   }
   function hideHelp() {
@@ -262,7 +269,7 @@
   body.append(t);
   let tTimer = 0, tUndo = null;
   function toast(msg, undo) {
-    t.innerHTML = `<span></span>${undo ? `<button class="btn quiet sm" type="button" aria-keyshortcuts="u">${ICON('undo-2')}Undo<kbd>u</kbd></button>` : ''}`;
+    put(t, html`<span></span>${undo ? html`<button class="btn quiet sm" type="button" aria-keyshortcuts="u">${ICON('undo-2')}Undo<kbd>u</kbd></button>` : ''}`);
     t.firstChild.textContent = msg; t.hidden = false; tUndo = undo || null;
     if (undo) t.querySelector('button').addEventListener('click', () => { t.hidden = true; tUndo = null; undo(); });
     clearTimeout(tTimer); tTimer = setTimeout(() => { t.hidden = true; tUndo = null; }, undo ? 10000 : 4000);
@@ -275,7 +282,6 @@
   //   shell.commands.put({ id, type, label, …facts })   shell.commands.select(id)
   const REG = [], OBJ = new Map(), picked = new Set();
   let selId = null;
-  const esc = v => String(v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   // A command without cli is dashboard-only (chat, navigation); it shows no CLI line.
   const cliOf = (c, o) => c.cli ? c.cli(o) : '';
   // A cli string that starts with "no CLI:" or "no sd verb:" is a reason, not a command.
@@ -286,15 +292,15 @@
   const live = o => cmdsFor(o).filter(c => !offWhy(c, o));
   const confirmDlg = document.createElement('dialog');
   confirmDlg.className = 'palette confirm'; confirmDlg.setAttribute('aria-labelledby', 'confirm-h');
-  confirmDlg.innerHTML = '<h2 id="confirm-h"></h2>'; // the label target exists while the dialog is closed
+  put(confirmDlg, html`<h2 id="confirm-h"></h2>`); // the label target exists while the dialog is closed
   body.append(confirmDlg);
   // Confirm: one dialog for every irreversible, force or large bulk action. It names the target and shows the command.
   function confirmAction({ title, body: text = '', cli = '', ok = 'Confirm', keep = 'Keep it', danger = true }) {
     return new Promise(done => {
-      confirmDlg.innerHTML = `<form method="dialog" class="confirm-body">
-        <h2 id="confirm-h">${esc(title)}</h2>${text ? `<p>${esc(text)}</p>` : ''}
-        ${cli ? `<div class="cli"><code>${esc(cli)}</code></div>` : ''}
-        <div class="actions"><button class="btn quiet" value="no">${esc(keep)}</button><button class="btn${danger ? ' danger' : ''}" value="yes">${esc(ok)}</button></div></form>`;
+      put(confirmDlg, html`<form method="dialog" class="confirm-body">
+        <h2 id="confirm-h">${title}</h2>${text ? html`<p>${text}</p>` : ''}
+        ${cli ? html`<div class="cli"><code>${cli}</code></div>` : ''}
+        <div class="actions"><button class="btn quiet" value="no">${keep}</button><button class="btn${danger ? ' danger' : ''}" value="yes">${ok}</button></div></form>`);
       confirmDlg.returnValue = '';
       confirmDlg.onclose = () => done(confirmDlg.returnValue === 'yes');
       confirmDlg.showModal(); confirmDlg.querySelector('[value="no"]').focus();
@@ -319,10 +325,10 @@
     const b = e.target.closest('.proposal [data-p]'); if (!b) return;
     const card = b.closest('.proposal'), foot = card.querySelector('footer'), p = b.dataset.p;
     if (p === 'approve') {
-      const was = foot.innerHTML, done = b.dataset.done || 'Approved', undone = b.dataset.undone || 'Approval undone';
+      const was = [...foot.childNodes], done = b.dataset.done || 'Approved', undone = b.dataset.undone || 'Approval undone';
       card.dataset.state = 'approved';
-      foot.innerHTML = `<span class="stamp">${ICON('check')}${esc(done)}</span>`;
-      toast(done, () => { delete card.dataset.state; foot.innerHTML = was; toast(undone); });
+      put(foot, html`<span class="stamp">${ICON('check')}${done}</span>`);
+      toast(done, () => { delete card.dataset.state; foot.replaceChildren(...was); toast(undone); });
     } else if (p === 'discard') {
       card.hidden = true;
       toast('Proposal discarded', () => { card.hidden = false; });
@@ -335,19 +341,19 @@
   });
   // Row: the primary command as a button, then ⋯ for the menu.
   function rowActions(id) {
-    const o = OBJ.get(id); if (!o) return '';
+    const o = OBJ.get(id); if (!o) return html``;
     const L = live(o), p = L.find(c => c.primary?.(o));
-    if (!L.length) return '<span class="rowact"></span>';
-    return `<span class="rowact">${p ? `<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${esc(id)}">${esc(p.label)}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${esc(id)}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${esc(o.label)}">${ICON('ellipsis')}</button></span>`;
+    if (!L.length) return html`<span class="rowact"></span>`;
+    return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
   // Details: every command, off ones with their reason, each with its CLI line.
   function bar(id) {
-    const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return '';
+    const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
-    return `<div class="actions">${on.map(c => `<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${esc(id)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${esc(c.label)}${c.key ? `<kbd>${c.key}</kbd>` : ''}</button>`).join('')}</div>
-      ${off.map(c => `<p class="why off"><b>${esc(c.label)}</b> is off: ${esc(offWhy(c, o))}</p>`).join('')}
-      <h3>Same thing from the CLI</h3>${on.filter(c => noCli(cliOf(c, o))).map(c => `<p class="why"><b>${esc(c.label)}</b> has no CLI${c.cli ? `: ${esc(cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, ''))}` : '; it is dashboard only'}.</p>`).join('')}${on.filter(c => !noCli(cliOf(c, o))).map(c => `<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${esc(cliOf(c, o))}</code></button><button class="icon-btn" type="button" data-copy="${esc(cliOf(c, o))}" aria-label="Copy: ${esc(cliOf(c, o))}">${ICON('copy')}</button></div>`).join('')}`;
+    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
+      ${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}
+      <h3>Same thing from the CLI</h3>${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>`)}`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
   const menuEl = document.createElement('div');
@@ -360,9 +366,9 @@
     anchor?.setAttribute?.('aria-expanded', 'true');
     menuEl.setAttribute('aria-label', `Actions for ${o.label}`);
     const on = live(o);
-    menuEl.innerHTML = `<p class="label">${esc(o.label)}</p>${on.map(c => `<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${esc(id)}"><span>${esc(c.label)}${c.risk === 'confirm' ? '…' : ''}</span><code>${esc(shownCli(c, o))}</code>${c.key ? `<kbd>${c.key}</kbd>` : ''}</button>`).join('')}
-      <button role="menuitem" type="button" data-menu-open="${esc(id)}"><span>Open details</span><code></code><kbd>↵</kbd></button>
-      <button role="menuitem" type="button" data-menu-ask="${esc(id)}"><span>Ask in chat</span><code></code><kbd>c</kbd></button>`;
+    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
+      <button role="menuitem" type="button" data-menu-open="${id}"><span>Open details</span><code></code><kbd>↵</kbd></button>
+      <button role="menuitem" type="button" data-menu-ask="${id}"><span>Ask in chat</span><code></code><kbd>c</kbd></button>`);
     menuEl.hidden = false;
     const r = (anchor && anchor.getBoundingClientRect()) || { left: innerWidth / 2 - 150, right: innerWidth / 2 + 150, bottom: innerHeight / 3, top: innerHeight / 3 };
     const w = menuEl.offsetWidth, h = menuEl.offsetHeight;
@@ -403,7 +409,7 @@
     if (!picked.size) { bulk.hidden = true; return; }
     const objs = [...picked].map(i => OBJ.get(i)), type = objs[0].type;
     const shared = objs.every(o => o.type === type) ? REG.filter(c => c.on === type && c.bulk && objs.every(o => !offWhy(c, o))) : [];
-    bulk.innerHTML = `<span><b>${picked.size}</b> selected</span>${shared.map(c => `<button class="btn quiet sm" type="button" data-bulk="${c.id}">${esc(c.label)} ${picked.size}</button>`).join('') || '<span class="why">No shared command</span>'}<button class="btn quiet sm" type="button" data-bulk-clear>Clear</button>`;
+    put(bulk, html`<span><b>${picked.size}</b> selected</span>${shared.length ? shared.map(c => html`<button class="btn quiet sm" type="button" data-bulk="${c.id}">${c.label} ${picked.size}</button>`) : html`<span class="why">No shared command</span>`}<button class="btn quiet sm" type="button" data-bulk-clear>Clear</button>`);
     bulk.hidden = false;
   }
   bulk.addEventListener('click', e => {
@@ -439,25 +445,25 @@
   // One capture everywhere. It files a task or followup, or a note on the selected row.
   const cap = document.createElement('dialog');
   cap.className = 'palette capture'; cap.setAttribute('aria-labelledby', 'cap-h');
-  cap.innerHTML = '<h2 id="cap-h"></h2>';
+  put(cap, html`<h2 id="cap-h"></h2>`);
   body.append(cap);
   const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe quoting for text a person typed: $(), backticks and \ stay literal
   // openCapture(target): target is the object (or its id) the command was run on; without one, the selected row.
   function openCapture(target) {
     const o = (typeof target === 'string' ? OBJ.get(target) : target && target.id && OBJ.get(target.id)) || (target && target.type ? target : null) || OBJ.get(selId);
     const about = o && o.item ? o : null;
-    cap.innerHTML = `<form method="dialog" class="confirm-body" id="cap-form">
+    put(cap, html`<form method="dialog" class="confirm-body" id="cap-form">
       <h2 id="cap-h">Capture</h2>
       <div class="seg" role="radiogroup" aria-label="Kind">
         <label><input type="radio" name="kind" value="task" checked><span>Task</span></label>
         <label><input type="radio" name="kind" value="followup"><span>Followup</span></label>
-        <label${about ? '' : ' class="off" title="Select a row that has an item first"'}><input type="radio" name="kind" value="note"${about ? '' : ' disabled'}><span>Note on #${about ? esc(about.item) : '…'}</span></label>
+        <label${about ? '' : html` class="off" title="Select a row that has an item first"`}><input type="radio" name="kind" value="note"${about ? '' : html` disabled`}><span>Note on #${about ? about.item : '…'}</span></label>
       </div>
       <label class="sr" for="cap-in">Title or note</label>
       <input id="cap-in" class="cap-in" autocomplete="off" placeholder="What needs doing" required>
-      ${o ? `<p class="why">About: <b>${esc(o.label)}</b> · linked as its source</p>` : '<p class="why">No row selected · files to the inbox</p>'}
+      ${o ? html`<p class="why">About: <b>${o.label}</b> · linked as its source</p>` : html`<p class="why">No row selected · files to the inbox</p>`}
       <div class="cli"><code id="cap-cli">sd task add ''</code></div>
-      <div class="actions"><button class="btn quiet" value="no" formnovalidate>Cancel</button><button class="btn" value="yes">Capture</button></div></form>`;
+      <div class="actions"><button class="btn quiet" value="no" formnovalidate>Cancel</button><button class="btn" value="yes">Capture</button></div></form>`);
     const f = cap.querySelector('form'), inp = f.querySelector('#cap-in'), cli = f.querySelector('#cap-cli');
     const upd = () => {
       const k = f.kind.value, t = shq(inp.value);
@@ -475,18 +481,18 @@
   const pal = document.createElement('dialog');
   pal.className = 'palette'; pal.setAttribute('aria-label', 'Commands');
   const extra = window.PAGE_COMMANDS || [];
-  pal.innerHTML = `<div class="pal-head">${ICON('search')}<input placeholder="Run, go to, or ask" aria-label="Filter commands" id="pal-in" role="combobox" aria-controls="pal-list" aria-expanded="true"><button class="icon-btn" type="button" id="pal-close" aria-label="Close">${ICON('x')}</button></div><ul role="listbox" id="pal-list" aria-label="Commands"></ul>`;
+  put(pal, html`<div class="pal-head">${ICON('search')}<input placeholder="Run, go to, or ask" aria-label="Filter commands" id="pal-in" role="combobox" aria-controls="pal-list" aria-expanded="true"><button class="icon-btn" type="button" id="pal-close" aria-label="Close">${ICON('x')}</button></div><ul role="listbox" id="pal-list" aria-label="Commands"></ul>`);
   body.append(pal);
   const palIn = pal.querySelector('#pal-in'), palList = pal.querySelector('#pal-list');
   let opts = [];
   function buildPal() {
     const o = OBJ.get(selId);
-    const grp = t => `<li role="presentation" class="grp">${esc(t)}</li>`;
-    palList.innerHTML = (o && live(o).length ? grp(`Selected · ${o.label}`) + live(o).map(c => `<li role="option" data-run="${c.id}">${ICON(c.icon || 'play')}<span>${esc(c.label)}</span><code>${esc(shownCli(c, o))}</code>${c.key ? `<kbd>. ${c.key}</kbd>` : ''}</li>`).join('') : '')
-      + (extra.length ? grp('This page') + extra.map((c, i) => `<li role="option" data-cmd="${i}">${ICON(c.icon || 'play')}<span>${esc(c.label)}</span>${c.key ? `<kbd>${c.key}</kbd>` : ''}</li>`).join('') : '')
-      + (VIEWS.length ? grp('Views') + VIEWS.map((v, i) => `<li role="option" data-view="${i}">${ICON('filter')}<span>View: ${esc(v.name)}</span><code>${esc(viewHref(v))}</code></li>`).join('') : '')
-      + grp('Anywhere') + `<li role="option" data-capture>${ICON('plus')}<span>Capture a task, followup or note</span><kbd>n</kbd></li><li role="option" data-chat>${ICON('message-square')}<span>Ask in chat</span><kbd>c</kbd></li>`
-      + GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => `<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}</span><kbd>g ${k}</kbd></li>`).join('');
+    const grp = t => html`<li role="presentation" class="grp">${t}</li>`;
+    put(palList, html`${o && live(o).length ? [grp(`Selected · ${o.label}`), live(o).map(c => html`<li role="option" data-run="${c.id}">${ICON(c.icon || 'play')}<span>${c.label}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>. ${c.key}</kbd>` : ''}</li>`)] : ''
+      }${extra.length ? [grp('This page'), extra.map((c, i) => html`<li role="option" data-cmd="${i}">${ICON(c.icon || 'play')}<span>${c.label}</span>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</li>`)] : ''
+      }${VIEWS.length ? [grp('Views'), VIEWS.map((v, i) => html`<li role="option" data-view="${i}">${ICON('filter')}<span>View: ${v.name}</span><code>${viewHref(v)}</code></li>`)] : ''
+      }${grp('Anywhere')}<li role="option" data-capture>${ICON('plus')}<span>Capture a task, followup or note</span><kbd>n</kbd></li><li role="option" data-chat>${ICON('message-square')}<span>Ask in chat</span><kbd>c</kbd></li>${
+      GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}</span><kbd>g ${k}</kbd></li>`)}`);
     opts = [...palList.querySelectorAll('[role="option"]')];
     opts.forEach(x => x.addEventListener('click', () => runOpt(x)));
   }
@@ -536,9 +542,9 @@
     const isCur = params => Object.entries(params).every(([k, v]) => cur.get(k) === v);
     const none = ![...keys].some(k => cur.has(k));
     slot.className = 'views'; slot.setAttribute('role', 'navigation'); slot.setAttribute('aria-label', 'Saved views');
-    slot.innerHTML = `<span class="label">View</span><a class="chip" href="${href({})}"${none ? ' aria-current="true"' : ''}>All</a>` +
-      VIEWS.map(v => `<a class="chip" href="${href(v.params)}"${!none && isCur(v.params) ? ' aria-current="true"' : ''}>${esc(v.name)}</a>`).join('') +
-      `<button class="help" type="button" aria-label="Help: saved views" data-help="<b>A view is a URL.</b> Each chip sets the filters it names and clears the rest; the address bar carries it, so a view can be bookmarked, sent or opened from the palette.">${ICON('circle-help')}</button>`;
+    put(slot, html`<span class="label">View</span><a class="chip" href="${href({})}"${none ? html` aria-current="true"` : ''}>All</a>${
+      VIEWS.map(v => html`<a class="chip" href="${href(v.params)}"${!none && isCur(v.params) ? html` aria-current="true"` : ''}>${v.name}</a>`)
+      }<button class="help" type="button" aria-label="Help: saved views" data-help="<b>A view is a URL.</b> Each chip sets the filters it names and clears the rest; the address bar carries it, so a view can be bookmarked, sent or opened from the palette.">${ICON('circle-help')}</button>`);
     slot.querySelectorAll('.help').forEach(b => b.setAttribute('aria-expanded', 'false'));
   }
   const viewHref = v => { const u = new URLSearchParams(); Object.entries(v.params).forEach(([k, val]) => u.set(k, val)); return `?${u}`; };
@@ -550,7 +556,7 @@
   keys.className = 'palette keys'; keys.setAttribute('aria-labelledby', 'keys-h');
   const KEYS = [['j / k', 'Next / previous row'], ['↵', 'Open Details for the selected row'], ['.', 'Actions for the selected row'], ['x', 'Select the row for a bulk command'], ['n', 'Capture a task, followup or note'],
     ['u', 'Undo the last undoable action while its toast shows'], ['⌘K', 'Commands'], ['c', 'Chat'], ['[ ]', 'Fold the sections rail / the panel'], ['g then a letter', 'Go to a section'], ['r', 'Reload'], ['?', 'This sheet'], ['Esc', 'Close']];
-  keys.innerHTML = `<div class="confirm-body"><h2 id="keys-h">Keys</h2><table class="keys-table"><tbody>${KEYS.concat(window.PAGE_KEYS || []).map(([k, w]) => `<tr><th scope="row"><kbd>${esc(k)}</kbd></th><td>${esc(w)}</td></tr>`).join('')}</tbody></table><div class="actions"><button class="btn quiet" type="button" id="keys-close">Close</button></div></div>`;
+  put(keys, html`<div class="confirm-body"><h2 id="keys-h">Keys</h2><table class="keys-table"><tbody>${KEYS.concat(window.PAGE_KEYS || []).map(([k, w]) => html`<tr><th scope="row"><kbd>${k}</kbd></th><td>${w}</td></tr>`)}</tbody></table><div class="actions"><button class="btn quiet" type="button" id="keys-close">Close</button></div></div>`);
   body.append(keys);
   keys.querySelector('#keys-close').addEventListener('click', () => keys.close());
   keys.addEventListener('click', e => { if (e.target === keys) keys.close(); });
@@ -608,7 +614,8 @@
   function time(iso, { future = false, long = false, empty = '' } = {}) {
     const t = document.createElement('time'); t.className = 'rel'; t.setAttribute('datetime', iso || '');
     if (future) t.dataset.future = ''; if (long) t.dataset.long = ''; if (empty) t.dataset.empty = empty;
-    fillTime(t); return t.outerHTML;
+    // build: the filled cell comes back as html`…` built from its own attributes, since markup.js is the only sink.
+    fillTime(t); return html`<time${[...t.attributes].map(a => html` ${a.name}="${a.value}"`)}>${t.textContent}</time>`;
   }
   hydrate(document);
   new MutationObserver(recs => recs.forEach(r => r.addedNodes.forEach(n => { if (n.nodeType === 1) { if (n.matches('time.rel[datetime]:not([data-rel])')) fillTime(n); hydrate(n); } }))).observe(body, { childList: true, subtree: true });
@@ -630,7 +637,7 @@
     if (!band.isConnected) { const first = rows[0].closest('table, ul, ol, .board, section') || rows[0].parentElement; first.parentElement.insertBefore(band, first); }
     if (!n) { band.hidden = true; delete body.dataset.onlyNew; return; }
     const only = body.dataset.onlyNew === '';
-    band.innerHTML = `${ICON('eye')}<b>${n}</b> row${n > 1 ? 's' : ''} changed since you last looked (${esc(relText(seenMark, { now: true }))}) · <button class="linkbtn" type="button" data-since="only" aria-pressed="${only}">${only ? 'Show all' : 'Only these'}</button> · <button class="linkbtn" type="button" data-since="seen">Mark seen</button>`;
+    put(band, html`${ICON('eye')}<b>${n}</b> row${n > 1 ? 's' : ''} changed since you last looked (${relText(seenMark, { now: true })}) · <button class="linkbtn" type="button" data-since="only" aria-pressed="${only}">${only ? 'Show all' : 'Only these'}</button> · <button class="linkbtn" type="button" data-since="seen">Mark seen</button>`);
     band.hidden = false;
     band.dataset.newest = newest;
   }
