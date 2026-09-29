@@ -551,6 +551,19 @@ class HygieneTest(unittest.TestCase):
         self.assertNotEqual("", f.branch_sha(repo, "landed"))
         self.assertIn("origin/HEAD here names main, on origin refs/heads/trunk", result.stdout)
 
+    def test_a_landed_branch_sharing_a_tag_name_is_deleted(self):
+        """NEW. Requirement 3.4: a tag with the branch's name makes
+        `refname:short` print `heads/<name>`; the name is taken whole."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "twin")
+        f.git(repo, "tag", "twin")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertEqual("", f.branch_sha(repo, "twin"))
+        self.assertIn("deleted branch twin ", result.stdout)
+
     def test_a_merged_branch_in_a_dirty_worktree_keeps_both(self):
         """NEW. Criterion 5."""
         f = self.fixture()

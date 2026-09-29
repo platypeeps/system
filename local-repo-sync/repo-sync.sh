@@ -721,7 +721,7 @@ hyg_repo() {
         hyg_note "no origin/$def_name to verify against; landed branches not deleted"
         ;;
     esac
-    git -C "$d" for-each-ref --format="%(refname:short)$US%(objectname)$US%(upstream:track)" \
+    git -C "$d" for-each-ref --format="%(refname:lstrip=2)$US%(objectname)$US%(upstream:track)" \
       refs/heads > "$HYG_TMP/branches"
   else
     hyg_note "no default branch found; branches not classified"
