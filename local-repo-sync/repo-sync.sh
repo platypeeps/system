@@ -684,6 +684,20 @@ hyg_repo() {
   while IFS=$US read -r b_name b_sha b_track; do
     [ "$b_name" = "$def_name" ] && continue
     if h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
+      # A branch made or moved within HYG_MIN_AGE seconds is kept: a fresh
+      # agent branch sits at the default tip and counts as landed. The age
+      # is the newest reflog entry's; no reflog means no age, so it is kept.
+      if [ "$HYG_MIN_AGE" -gt 0 ]; then
+        h_at=$(git -C "$d" reflog show --date=unix -n 1 --format=%gd "refs/heads/$b_name" 2>/dev/null \
+          | sed -n 's/.*@{\([0-9][0-9]*\)}$/\1/p')
+        if [ -z "$h_at" ]; then
+          hyg_note "kept branch $b_name $b_sha (landed by $h_how; no reflog gives its age)"
+          continue
+        elif [ $((HYG_NOW - h_at)) -lt "$HYG_MIN_AGE" ]; then
+          hyg_note "kept branch $b_name $b_sha (landed by $h_how; moved $((HYG_NOW - h_at))s ago, under ${HYG_MIN_AGE}s)"
+          continue
+        fi
+      fi
       h_hold=$(awk -F "$US" -v b="$b_name" '$1 == b { print; exit }' "$HYG_TMP/holders")
       if [ -n "$h_hold" ]; then
         w_path=$(printf '%s\n' "$h_hold" | cut -d "$US" -f 2)
@@ -702,8 +716,10 @@ hyg_repo() {
           h_why="worktree $w_path is locked: $w_reason"
         elif [ ! -d "$w_path" ]; then
           h_why="worktree $w_path is registered but missing"
-        elif [ -n "$(git -C "$w_path" status --porcelain 2>/dev/null || echo unreadable)" ]; then
-          h_why="worktree $w_path is dirty"
+        elif [ -n "$(git -C "$w_path" status --porcelain --ignored 2>/dev/null || echo unreadable)" ]; then
+          # Ignored files count: an .env or a local database is not
+          # rebuildable, and `worktree remove` would take it with the tree.
+          h_why="worktree $w_path holds uncommitted, untracked or ignored files"
         elif hyg_busy "$w_path"; then
           h_why="worktree $w_path is in use by a process"; h_live=1
         fi
@@ -725,13 +741,17 @@ hyg_repo() {
         fi
       fi
       if [ "$APPLY" = 1 ]; then
-        h_now=$(git -C "$d" rev-parse -q --verify "refs/heads/$b_name" || true)
-        if [ "$h_now" != "$b_sha" ]; then
-          hyg_fail "delete branch $b_name $b_sha (tip moved to ${h_now:-nothing})"
-        elif git -C "$d" branch -q -D "$b_name" >/dev/null 2>&1; then
+        # update-ref compares the tip it deletes with the one classified, in
+        # one step. Unlike `branch -D` it does not refuse a checked-out
+        # branch, so the worktree list is read again just before.
+        if hyg_worktrees "$d" | awk -F "$US" -v b="$b_name" '$2 == b { f = 1 } END { exit !f }'; then
+          hyg_fail "delete branch $b_name $b_sha (checked out since it was classified)"
+        elif git -C "$d" update-ref -d "refs/heads/$b_name" "$b_sha" 2>/dev/null; then
+          git -C "$d" config --remove-section "branch.$b_name" 2>/dev/null || true
           hyg_act "deleted branch $b_name $b_sha (landed by $h_how; restore: git -C $d branch $b_name $b_sha)"
         else
-          hyg_fail "delete branch $b_name $b_sha"
+          h_now=$(git -C "$d" rev-parse -q --verify "refs/heads/$b_name" || true)
+          hyg_fail "delete branch $b_name $b_sha (tip now ${h_now:-gone})"
         fi
       else
         hyg_found "delete branch $b_name $b_sha (landed by $h_how)"
@@ -777,6 +797,12 @@ hygiene() {
       *) echo "repo-sync.sh hygiene: unknown option '$h_arg' (want: --apply)" >&2; return 2 ;;
     esac
   done
+  # Seconds a landed branch must sit unmoved before it is deleted.
+  HYG_MIN_AGE="${REPO_SYNC_HYGIENE_MIN_AGE:-86400}"
+  case "$HYG_MIN_AGE" in
+    ''|*[!0-9]*) echo "repo-sync.sh hygiene: REPO_SYNC_HYGIENE_MIN_AGE must be a number of seconds, got '$HYG_MIN_AGE'" >&2; return 2 ;;
+  esac
+  HYG_NOW=$(date +%s)
   : > "$HYG_TMP/acted"; : > "$HYG_TMP/found"; : > "$HYG_TMP/listed"; : > "$HYG_TMP/failed"
   echo "profile : $PROFILE"
   echo "root    : $ROOT"

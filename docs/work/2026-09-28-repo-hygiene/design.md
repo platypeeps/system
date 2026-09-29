@@ -109,8 +109,8 @@ first. The worktree goes only when all of these hold:
 
 - it is a linked worktree, not the main checkout;
 - its directory exists and it is not locked;
-- `git status --porcelain` prints nothing (untracked files count as dirty;
-  ignored files do not);
+- `git status --porcelain --ignored` prints nothing (untracked and ignored
+  files both count: an ignored `.env` or local database is not rebuildable);
 - no process has its cwd at or under it.
 
 `source:local-repo-sync/repo-sync.sh::hyg_cwds` reads process cwds from
@@ -123,15 +123,22 @@ and `git worktree remove` remains; no agent in the fleet takes a
 cooperative lock the sweep could honour instead.
 
 Removal is `git worktree remove` without `--force`, so git applies its own
-clean check as a second guard. Ignored build output goes with the directory.
-A failed removal keeps the branch.
+clean check as a second guard. A failed removal keeps the branch.
 
 ## Deleting a branch
 
-The tip is read again just before the delete; a moved tip is a failure, not
-a delete. `git branch -D` removes the ref, its reflog and its config section.
-It also refuses a branch still checked out anywhere, a third guard. The line
-printed carries the name, the sha and the restore command:
+A landed branch whose newest reflog entry is younger than
+`REPO_SYNC_HYGIENE_MIN_AGE` seconds (default 86400) is kept with a note, as
+is one with no reflog. A fresh agent branch sits at the default tip and
+counts as landed; the age is the only sign it is new.
+
+The worktree list is read again just before the delete; a branch checked
+out since classification is a failure, not a delete. The delete is
+`git update-ref -d refs/heads/<b> <sha>`, which compares the tip with the
+classified sha and removes the ref in one step, so a moved tip also fails.
+`update-ref` leaves the config section, so `git config --remove-section`
+follows it. The line printed carries the name, the sha and the restore
+command:
 
     deleted branch <b> <sha> (landed by squash; restore: git -C <repo> branch <b> <sha>)
 

@@ -48,8 +48,11 @@ to separate the two.
       ancestor, a tree equal to its merge base, or a patch-equivalent squash
       (`git cherry` on a synthetic squash commit);
    5. remove a worktree that holds a branch from class 4, only when
-      `git status --porcelain` is empty and no process has its cwd inside it;
-      ignored build output goes with it.
+      `git status --porcelain --ignored` is empty and no process has its cwd
+      inside it; ignored files (an `.env`, a local database) keep it.
+   Class 4 skips a branch whose newest reflog entry is younger than
+   `REPO_SYNC_HYGIENE_MIN_AGE` seconds (default 86400), or that has no
+   reflog: a fresh branch sits at the default tip and counts as landed.
 4. Never act on: the checked-out branch of any worktree not removed in 3.5;
    the default branch; a branch in a dirty or live worktree; a stash; any
    remote branch.

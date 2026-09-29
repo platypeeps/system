@@ -12,6 +12,7 @@ without it. The README's test section says how to aim the suite at old code.
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,24 @@ echo done
 
 class HygieneFixture(Fixture):
     """A Fixture whose repositories have history, branches and worktrees."""
+
+    def run(self, *args, expect=0, extra_env=None):
+        # Every branch a case makes is seconds old, so the age guard is off
+        # unless the case names it.
+        env = {"REPO_SYNC_HYGIENE_MIN_AGE": "0", **(extra_env or {})}
+        return super().run(*args, expect=expect, extra_env=env)
+
+    def wrap_git(self, when, pattern, action):
+        """Replace the logging git stub with one that runs the shell
+        `action` `when` ("before" or "after") the real call, for arguments
+        matching the `case` pattern `pattern`."""
+        call = '"$REAL_GIT" "$@"; rc=$?'
+        body = f"{action}\n{call}" if when == "before" else f"{call}\n{action}"
+        (self.bin / "git").write_text(
+            "#!/bin/sh\n"
+            'printf \'%s\\n\' "$*" >> "$GIT_LOG"\n'
+            f'case "$*" in {pattern})\n{body}\nexit $rc ;;\nesac\n'
+            'exec "$REAL_GIT" "$@"\n')
 
     def git(self, cwd, *args, check=True):
         result = subprocess.run(
@@ -292,22 +311,91 @@ class HygieneTest(unittest.TestCase):
         self.assertIn("behind", result.stdout)
 
     def test_a_merged_branch_in_a_clean_worktree_goes_with_its_worktree(self):
-        """NEW. Requirement 3.5: the worktree is removed, ignored build
-        output with it, then the branch is deleted."""
+        """NEW. Requirement 3.5: a worktree with nothing uncommitted,
+        untracked or ignored is removed, then the branch is deleted."""
         f = self.fixture()
         repo = f.repo()
-        (repo / ".gitignore").write_text("build/\n")
-        f.git(repo, "add", ".gitignore")
-        f.git(repo, "commit", "-q", "-m", "ignore build")
-        f.git(repo, "push", "-q", "origin", "main")
         wt = f.merged_worktree(repo, "clean-merged")
-        (wt / "build").mkdir()
-        (wt / "build" / "out.o").write_text("object\n")
 
         f.run("hygiene", "--apply", expect=0)
 
         self.assertFalse(wt.exists())
         self.assertEqual("", f.branch_sha(repo, "clean-merged"))
+
+    def test_a_merged_branch_in_a_worktree_with_ignored_files_keeps_both(self):
+        """NEW. Requirement 3.5: ignored files (an .env, a local database)
+        are not rebuildable in general, so they keep the worktree."""
+        f = self.fixture()
+        repo = f.repo()
+        (repo / ".gitignore").write_text(".env\n")
+        f.git(repo, "add", ".gitignore")
+        f.git(repo, "commit", "-q", "-m", "ignore env")
+        f.git(repo, "push", "-q", "origin", "main")
+        wt = f.merged_worktree(repo, "ignored-merged")
+        (wt / ".env").write_text("TOKEN=change-me\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue((wt / ".env").exists())
+        self.assertNotEqual("", f.branch_sha(repo, "ignored-merged"))
+        self.assertIn("KEEP     branch ignored-merged", result.stdout)
+
+    def test_a_fresh_landed_branch_is_kept_by_default(self):
+        """NEW. Requirement 3.4: a branch made a moment ago sits at the
+        default tip and counts as landed; the default age guard keeps it."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "fresh")
+
+        f.run("hygiene", "--apply", expect=0,
+              extra_env={"REPO_SYNC_HYGIENE_MIN_AGE": None})
+
+        self.assertNotEqual("", f.branch_sha(repo, "fresh"))
+
+    def test_an_old_landed_branch_goes_under_the_default_age(self):
+        """NEW. Requirement 3.4: the guard reads the newest reflog entry,
+        so a branch last moved two days ago is deleted."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "old")
+        log = repo / ".git" / "logs" / "refs" / "heads" / "old"
+        old = str(int(time.time()) - 2 * 86400)
+        log.write_text(re.sub(r"> \d+ ", f"> {old} ", log.read_text()))
+
+        f.run("hygiene", "--apply", expect=0,
+              extra_env={"REPO_SYNC_HYGIENE_MIN_AGE": None})
+
+        self.assertEqual("", f.branch_sha(repo, "old"))
+
+    def test_a_branch_whose_tip_moves_before_the_delete_is_kept(self):
+        """NEW. Requirement 4: the delete compares the tip it classified,
+        so a commit landing between the check and the delete survives."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "racing")
+        moved = f.git(repo, "commit-tree", "-p", "HEAD", "-m", "late",
+                      f.git(repo, "rev-parse", "HEAD^{tree}"))
+        f.wrap_git("before", '*"-D racing"*|*"update-ref -d refs/heads/racing"*',
+                   f'"$REAL_GIT" -C "{repo}" update-ref refs/heads/racing {moved}')
+
+        f.run("hygiene", "--apply", expect=None)
+
+        self.assertEqual(moved, f.branch_sha(repo, "racing"))
+
+    def test_a_branch_checked_out_before_the_delete_is_kept(self):
+        """NEW. Requirement 4: the worktree list is read again just before
+        the delete, so a worktree added after classification keeps it."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "grabbed")
+        wt = f.tmp / "wt" / "grabbed"
+        f.wrap_git("after", '*for-each-ref*',
+                   f'"$REAL_GIT" -C "{repo}" worktree add -q "{wt}" grabbed >/dev/null 2>&1')
+
+        f.run("hygiene", "--apply", expect=None)
+
+        self.assertNotEqual("", f.branch_sha(repo, "grabbed"))
+        self.assertTrue(wt.exists())
 
     def test_a_merged_branch_in_a_dirty_worktree_keeps_both(self):
         """NEW. Criterion 5."""
