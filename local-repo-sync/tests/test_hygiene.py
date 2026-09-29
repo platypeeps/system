@@ -281,7 +281,7 @@ class HygieneTest(unittest.TestCase):
         repo = f.repo()
         other = f.tmp / "other"
         bare = f.git(repo, "remote", "get-url", "origin")
-        f.git(f.tmp, "clone", "-q", bare, str(other))
+        f.git(f.tmp, "clone", "-q", "-b", "main", bare, str(other))
         f.commit(other, "README", "upstream\n", "upstream change")
         f.git(other, "push", "-q", "origin", "main")
         f.git(repo, "fetch", "-q", "origin")
