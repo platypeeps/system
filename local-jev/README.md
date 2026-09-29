@@ -334,8 +334,10 @@ every string in its state and questions passes credential shapes (GitHub,
 AWS, Slack, OpenAI-style and TypeSafe keys, JWTs, `Bearer` values, private
 key blocks, `NAME_TOKEN=value` assignments, long hex and mixed base64 runs)
 and the operator's `<config>/privacy-patterns`, the file `local-leak-guard`
-reads, with the same `grep -E` meaning. Each match becomes `[REDACTED]`, and
-stderr says how many were taken out. A pattern file that cannot be read or
+reads, with the same `grep -E` meaning, line by line. Each match becomes
+`[REDACTED]`, and stderr says how many were taken out. A key that matches,
+in JSON state or among a choice's criteria, is not renamed: the request is
+refused whole, nothing is sent, and a `--fallback` is honoured. A pattern file that cannot be read or
 compiled is a setting that does not parse: nothing is sent, `enabled` exits 3,
 and a `--fallback` is honoured. Patterns catch shapes and listed values; they
 do not make a sensitive input safe to send.

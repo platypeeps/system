@@ -890,6 +890,34 @@ class TestRedaction(StubServer):
         self.assertIn("line 2 does not compile", err)
         self.assertNotIn("broken(", err)
 
+    def test_an_anchored_pattern_matches_each_line_as_grep_does(self):
+        """grep -E reads line by line, so ^...$ holds for a line inside
+        multi-line state; a Python regex without MULTILINE missed it."""
+        self.patterns("^private-host$")
+        self.run_main(["noul", "q"], stdin="header\nprivate-host\nfooter")
+        self.assertNotIn("private-host", self.sent())
+
+    def test_a_protected_json_key_sends_nothing_and_honours_the_fallback(self):
+        """A key is refused, not renamed: renaming could collide with another
+        key or break an identifier the caller reads back."""
+        self.patterns("private-host")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump({"private-host": "ok"}, fh)
+        self.addCleanup(os.unlink, fh.name)
+        code, out, err = self.run_verbose(
+            ["noul", "q", "--state", fh.name, "--state-format", "json",
+             "--fallback", "0.5"])
+        self.assertEqual((code, out), (0, "0.5\n"))
+        self.assertEqual(Stub.seen, [])
+        self.assertNotIn("private-host", err)
+
+    def test_a_protected_criterion_key_sends_nothing(self):
+        self.patterns("private-host")
+        code, out = self.run_main(["choice", "q", "--criteria", "private-host,other",
+                                   "--fallback", "other"])
+        self.assertEqual((code, out), (0, "other\n"))
+        self.assertEqual(Stub.seen, [])
+
     def test_an_unknown_posix_class_sends_nothing(self):
         self.patterns("[[:nosuch:]]x")
         code, _out = self.run_main(["enabled"])

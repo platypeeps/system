@@ -722,7 +722,9 @@ def privacy_patterns(env) -> tuple[list, str]:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         try:
-            compiled.append(re.compile(ere_to_python(line)))
+            # MULTILINE because grep matches line by line: `^host$` must hold
+            # for a line inside multi-line state, not only for the whole.
+            compiled.append(re.compile(ere_to_python(line), re.MULTILINE))
         except re.error:
             # The line number and not the line: the line is the secret.
             return [], f"{path} line {line_number} does not compile; nothing was sent"
@@ -748,7 +750,16 @@ def redact(value, patterns, counted: list):
     if isinstance(value, list):
         return [redact(item, patterns, counted) for item in value]
     if isinstance(value, dict):
-        return {key: redact(item, patterns, counted) for key, item in value.items()}
+        out = {}
+        for key, item in value.items():
+            # A key is refused, not renamed: a renamed key can collide with
+            # another, or break an identifier the caller reads back, such as
+            # a question id or a criterion. The message names no key.
+            if isinstance(key, str) and redact(key, patterns, [0]) != key:
+                raise JevError("a key in the request matches a redaction "
+                               "pattern; nothing was sent")
+            out[key] = redact(item, patterns, counted)
+        return out
     return value
 
 
