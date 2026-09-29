@@ -522,7 +522,7 @@ class TestJevFallback(unittest.TestCase):
 
     Every test here runs against a fake `jev.sh` written into a temp directory
     and injected by path. Nothing reaches the network: a suite that called the
-    real endpoint would spend tokens on every CI run, and `system-native`
+    real endpoint would spend tokens on every `make check`, and `tests/ci-native.sh`
     treats a skipped test as a failure, so "skip when offline" is not an
     option.
     """

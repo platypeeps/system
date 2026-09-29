@@ -45,9 +45,9 @@ form-2 target are each resolved first, and one that a symlink carries out of
 the tree, or that is not a regular file, is not read (sd:963). `git ls-files`
 constrains the name of a tracked symlink and nothing about its target.
 
-Stdlib and git only, on purpose: this runs in the `system-native` preflight
-right after `sd-docs-lint`, before the virtualenv exists, and every leg
-repeats it. `python3 tests/test_citations.py` from the repository root is the
+Stdlib and git only, on purpose: this runs in the `tests/ci-native.sh`
+preflight right after `sd-docs-lint`, before the virtualenv exists, once
+per `make check` and before any leg. `python3 tests/test_citations.py` from the repository root is the
 whole invocation, and a test here fails when `tests/ci-native.sh` stops
 naming it.
 """
