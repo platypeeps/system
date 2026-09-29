@@ -191,8 +191,8 @@ right findings and first lines, silence for the others, the
 `declared`/`checked` count, the bound enforced, and nothing left running
 afterwards. The other stages still
 run against the real machine, which is where the suite's wall time goes
-(`log show --last 24h` is most of it). The `system-native` CI job runs it
-as one `run_suite` line; a skip fails there.
+(`log show --last 24h` is most of it). `make check` runs it
+as one `run_suite` line in `tests/ci-native.sh`; a skip fails there.
 
 `tests/test_jev_order.py` covers the Jev ordering with the call stubbed —
 nothing in the suite reaches the network. It runs `check` once per case against

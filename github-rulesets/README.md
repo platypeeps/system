@@ -38,10 +38,9 @@ deploy keys stay. An `integration_id` of 15368 on a required check is the
 GitHub Actions app, which pins the check to Actions rather than to any app
 that posts a status of the same name.
 
-The required-check contexts must be job names the workflows produce, or
-`sd/local-gate`, the status `sd-ship merge` posts after `make check` passes at
-the head. `tests/test_rulesets.py` expands the `system-native` matrix and fails
-on any other context. `sd/local-gate` carries no `integration_id`: the
+The one required-check context is `sd/local-gate`, the status `sd-ship merge`
+posts after `make check` passes at the head. No workflow runs here, so
+`tests/test_rulesets.py` fails on any other context. `sd/local-gate` carries no `integration_id`: the
 maintainer's account posts it, not an app.
 
 The two rulesets:

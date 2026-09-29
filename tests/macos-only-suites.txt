@@ -1,12 +1,13 @@
-# Suites that need macOS and so never run in CI, which is Linux.
+# Suites that need macOS, kept out of the legs of tests/ci-native.sh, which
+# stay portable to Linux. `make check` runs them on a Mac.
 # One suite per line: a name, then the command, run from the repository root.
 # tests/run-macos-only.sh runs every line; run it before pushing a change to
-# one of these folders. The workflow's unwired-suite preflight accepts a folder
+# one of these folders. The preflight's unwired-suite guard accepts a folder
 # named here as wired, and fails a line whose command names a missing path.
 # Keep every line literal: the preflight greps for `<folder>/`.
 
 # APFS immutable retention (`chflags uchg`), clonefile seeds (`cp -c`) and
-# diskutil. The rest of local-sd-runner runs in the CI runner leg.
+# diskutil. The rest of local-sd-runner runs in the runner leg.
 runner-macos sh local-sd-runner/runner.sh test-macos -v
 # swiftc, `xcrun clang` and an open(2) shim loaded with DYLD_INSERT_LIBRARIES.
 msgsnap sh local-msgsnap/msgsnap.sh test -v

@@ -108,8 +108,8 @@ into `.ci/`.
 
 `tests/ci-native.sh` holds the preflight and the `run_suite` lines, which are
 the list of suites; the preflight fails on a `*/tests/test_*.py` folder that no
-line names. The CI workflow files stay in the tree but are disabled;
-`.github/workflows/system-native.yml` runs the same script on Linux.
+line names. No GitHub workflow runs the suites. The pack pin is one full commit
+sha in `.sd-pack-rev`; bump it deliberately.
 
 Some tests need macOS: APFS immutable retention, clonefile copies and diskutil
 in `local-sd-runner`, and the Swift build and dyld shim in `local-msgsnap`.
