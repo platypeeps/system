@@ -642,6 +642,137 @@ def parse_levels(spec: str) -> list:
     return out
 
 
+# --- redaction --------------------------------------------------------------
+#
+# "Pipe nothing sensitive into Jev" was a rule with nothing behind it. Every
+# string in a request's state and questions now passes two sets of patterns
+# before it leaves: credential shapes, below, and the operator's own
+# `<config>/privacy-patterns`, the file the leak guard reads. A pattern file
+# that cannot be read or compiled sends nothing: it is a setting that does not
+# parse, so it takes the same road as a malformed JEV_TIMEOUT, and every
+# caller falls back to its old path.
+
+REDACTED = "[REDACTED]"
+
+#: A credential must start at a word edge, or `task-...` reads as an `sk-` key.
+_EDGE = r"(?<![A-Za-z0-9_])"
+
+#: Credential shapes. Ported from jonathanavis96/jev-kit, `airlock/redact.py`
+#: (MIT), and narrowed: a `password` rule there also ate prose such as "the
+#: password field", which the docs lint sends.
+TOKEN_PATTERNS = tuple(re.compile(p, re.DOTALL) for p in (
+    _EDGE + r"apikey_[A-Za-z0-9_]{8,}",
+    _EDGE + r"sk-[A-Za-z0-9_-]{10,}",
+    _EDGE + r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})",
+    _EDGE + r"xox[abprs]-[A-Za-z0-9-]{10,}",
+    _EDGE + r"AKIA[0-9A-Z]{16}",
+    r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    r"(?i)\bBearer\s+\S+",
+    r"(?i)(?:--password[= ]+|\bpassword=)\S+",
+    r"(?i)[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Za-z0-9_]*=\S+",
+    r"(?<![A-Za-z0-9])[A-Fa-f0-9]{32,}(?![A-Za-z0-9])",
+))
+
+#: A long run of base64 characters is a key only when it mixes cases and
+#: digits; `homeassistant/components/unifi/sensor` is a path, and sd-review
+#: sends paths.
+_BASE64_RUN = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])")
+
+#: The POSIX classes `grep -E` knows and Python's `re` does not. Python reads
+#: `[[:digit:]]` as a set of punctuation and letters and compiles it, so an
+#: untranslated class is a pattern that silently never matches.
+_POSIX_CLASSES = {
+    "alpha": "A-Za-z", "digit": "0-9", "alnum": "A-Za-z0-9", "upper": "A-Z",
+    "lower": "a-z", "space": r"\s", "xdigit": "0-9A-Fa-f", "blank": r" \t",
+    "punct": r"!-/:-@\[-`{-~",
+}
+
+
+def privacy_file(env) -> Path:
+    """The leak guard's pattern file, resolved the way `lib/config.sh` does."""
+    return system_tools_config.root(env) / "privacy-patterns"
+
+
+def ere_to_python(line: str) -> str:
+    def swap(match):
+        name = match.group(1)
+        if name not in _POSIX_CLASSES:
+            raise re.error(f"[:{name}:] has no translation here")
+        return _POSIX_CLASSES[name]
+    return re.sub(r"\[:([a-z]+):\]", swap, line)
+
+
+def privacy_patterns(env) -> tuple[list, str]:
+    """The operator's patterns and an empty problem, or none and what is wrong.
+
+    Read as `grep -E -f` reads them, after the leak guard drops blank and
+    comment lines: one pattern per line, case-sensitive. A missing file is no
+    patterns; the leak guard warns about that, and this is not the place.
+    """
+    path = privacy_file(env)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return [], ""
+    except (OSError, UnicodeDecodeError) as exc:
+        return [], f"{path} cannot be read ({exc.__class__.__name__}); nothing was sent"
+    compiled = []
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        try:
+            # MULTILINE because grep matches line by line: `^host$` must hold
+            # for a line inside multi-line state, not only for the whole.
+            compiled.append(re.compile(ere_to_python(line), re.MULTILINE))
+        except re.error:
+            # The line number and not the line: the line is the secret.
+            return [], f"{path} line {line_number} does not compile; nothing was sent"
+    return compiled, ""
+
+
+def redact(value, patterns, counted: list):
+    """`value` with every match replaced; `counted[0]` gains the number."""
+    if isinstance(value, str):
+        for pattern in (*TOKEN_PATTERNS, *patterns):
+            value, hits = pattern.subn(REDACTED, value)
+            counted[0] += hits
+
+        def mixed(match):
+            run = match.group(0)
+            if (any(c.isdigit() for c in run) and any(c.isupper() for c in run)
+                    and any(c.islower() for c in run)):
+                counted[0] += 1
+                return REDACTED
+            return run
+
+        return _BASE64_RUN.sub(mixed, value)
+    if isinstance(value, list):
+        return [redact(item, patterns, counted) for item in value]
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            # A key is refused, not renamed: a renamed key can collide with
+            # another, or break an identifier the caller reads back, such as
+            # a question id or a criterion. The message names no key.
+            if isinstance(key, str) and redact(key, patterns, [0]) != key:
+                raise JevError("a key in the request matches a redaction "
+                               "pattern; nothing was sent")
+            out[key] = redact(item, patterns, counted)
+        return out
+    return value
+
+
+def redacted_payload(payload: dict, patterns) -> tuple[dict, int]:
+    """The payload as it may leave, and how many spans were taken out."""
+    counted = [0]
+    out = dict(payload)
+    for field in ("state", "questions"):
+        if field in out:
+            out[field] = redact(out[field], patterns, counted)
+    return out, counted[0]
+
+
 # --- request ----------------------------------------------------------------
 
 def build_payload(state, questions: dict, model: str) -> dict:
@@ -679,13 +810,15 @@ def settings(env=None) -> dict:
     env = os.environ if env is None else env
     timeout, timeout_problem = number(env, "JEV_TIMEOUT", DEFAULT_TIMEOUT, float)
     retries, retries_problem = number(env, "JEV_RETRIES", DEFAULT_RETRIES, int)
+    patterns, patterns_problem = privacy_patterns(env)
     return {
         "key": env.get("TYPESAFE_API_KEY", ""),
         "url": env.get("JEV_URL", DEFAULT_URL),
         "model": env.get("JEV_MODEL", DEFAULT_MODEL),
         "timeout": timeout,
         "retries": retries,
-        "problem": timeout_problem or retries_problem,
+        "privacy": patterns,
+        "problem": timeout_problem or retries_problem or patterns_problem,
     }
 
 
@@ -706,6 +839,9 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
     `opener` and `sleep` are injected so the suite can drive a throttled
     server and a doubling backoff without waiting for either.
     """
+    payload, taken = redacted_payload(payload, conf.get("privacy", ()))
+    if taken:
+        sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         conf["url"],
