@@ -5,12 +5,12 @@
 // narrow-screen rule moved to shell.css and the favicon count is off (the dashboard CSP is default-src 'self',
 // which refuses an inline <style> and a data: icon), capture calls window.SHELL_CAPTURE when a page sets it,
 // and the chat stub says that no chat backend is connected.
-// build: every string of markup is html`…` from markup.js, which escapes each value put in it; nodes() and put() are
-// the only way in, so the hand escaping is gone. rowActions, bar, time and ICON return html`…` for a page to compose.
-// Help text renders <b> and <code> only.
+// build: every string of markup is html`…` from markup.js, which escapes each value put in it; put() is the only
+// way in, so the hand escaping is gone. rowActions, bar, time and ICON return html`…` for a page to compose.
+// Help text renders <b> and <code> only, without attributes.
 // A page sets <body data-page="Today" data-scope="fleet" data-scope-note="…"> and may call window.shell.*.
 (() => {
-  const { html, nodes, put } = window.markup;
+  const { html, put } = window.markup;
   const ICON = (n, cls = '') => html`<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const GROUPS = [
     ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i']]],
@@ -70,7 +70,7 @@
     const link = rail.querySelector(`[data-section="${page}"]`);
     if (!a || !link) return;
     link.querySelector('.count')?.remove();
-    link.querySelector('kbd').before(nodes(badge(a)));
+    put(link.querySelector('kbd'), badge(a), 'before');
     titleCount(a.state === 'warning' ? a.n : 0);
   };
   // Warnings show in the tab: "(3) Today · system" and a count drawn on the favicon (patterns.md, Density).
@@ -194,8 +194,8 @@
     // build: no chat backend is connected yet; the answer says so instead of pretending.
     const answer = window.SHELL_PAGES ? `No chat backend is connected to this dashboard yet, so nothing was sent. A later slice sends this to claude -p in the ${scope} scope.`
       : `Mockup: no chat backend here. The build sends this to claude -p in the ${scope} scope and streams the answer.`;
-    thread.append(nodes(html`<div class="msg"><span class="who label">${ICON('user')}You</span><p>${text}</p></div>
-      <div class="msg"><span class="who label">${ICON('bot')}Claude · ${scope}</span><p class="why">${answer}</p></div>`));
+    put(thread, html`<div class="msg"><span class="who label">${ICON('user')}You</span><p>${text}</p></div>
+      <div class="msg"><span class="who label">${ICON('bot')}Claude · ${scope}</span><p class="why">${answer}</p></div>`, 'append');
     thread.scrollTop = thread.scrollHeight;
     remember(text, answer);
   }
@@ -212,7 +212,7 @@
     if (!details || details.querySelector('.asked')) return;
     const list = selId && askedAll()[selId]; if (!list || !list.length) return;
     const o = OBJ.get(selId);
-    details.append(nodes(html`<section class="asked"><h3>Asked here</h3>${list.map(x => html`<div class="qa"><p class="q">${ICON('user')}<span>${x.q}</span></p><p class="a why">${x.a}</p></div>`)}<p class="why">${o ? `About ${o.label} · ` : ''}this session, newest first.</p></section>`));
+    put(details, html`<section class="asked"><h3>Asked here</h3>${list.map(x => html`<div class="qa"><p class="q">${ICON('user')}<span>${x.q}</span></p><p class="a why">${x.a}</p></div>`)}<p class="why">${o ? `About ${o.label} · ` : ''}this session, newest first.</p></section>`, 'append');
   }
   if (details) new MutationObserver(() => renderAsked()).observe(details, { childList: true });
   pane.querySelector('#composer').addEventListener('submit', e => { e.preventDefault(); const i = document.getElementById('chat-input'); send(i.value.trim()); i.value = ''; });
@@ -230,10 +230,22 @@
     const below = r.bottom + 8, above = r.top - pop.offsetHeight - 8;
     pop.style.top = `${below + pop.offsetHeight < innerHeight || above < 0 ? below : above}px`;
   }
-  // build: help text is page markup held in an attribute; <b> and <code> render and anything else shows as written.
-  const helpText = s => { const out = []; let at = 0;
-    s.replace(/<(b|code)>([^<]*)<\/\1>/g, (m, tag, inner, i) => { out.push(s.slice(at, i), tag === 'b' ? html`<b>${inner}</b>` : html`<code>${inner}</code>`); at = i + m.length; return m; });
-    out.push(s.slice(at)); return html`${out}`; };
+  // help:start
+  // build: help text is page markup held in an attribute. <b> and <code> render, bare; every other tag and every
+  // attribute is dropped, and all text shows as written. A <b> or <code> left open closes at the end.
+  const HELP_TAGS = { b: [html`<b>`, html`</b>`], code: [html`<code>`, html`</code>`] };
+  const helpText = s => { const out = [], open = []; let at = 0;
+    for (const m of s.matchAll(/<(\/?)([a-zA-Z][\w-]*)[^>]*>/g)) {
+      out.push(s.slice(at, m.index)); at = m.index + m[0].length;
+      const tag = m[2].toLowerCase();
+      if (!Object.hasOwn(HELP_TAGS, tag)) continue;
+      if (!m[1]) { open.push(tag); out.push(HELP_TAGS[tag][0]); }
+      else if (open.includes(tag)) for (let t = null; t !== tag;) { t = open.pop(); out.push(HELP_TAGS[t][1]); }
+    }
+    out.push(s.slice(at));
+    while (open.length) out.push(HELP_TAGS[open.pop()][1]);
+    return html`${out}`; };
+  // help:end
   function showHelp(btn) {
     put(pop, helpText(btn.dataset.help || '')); pop.hidden = false; place(btn);
     btn.setAttribute('aria-describedby', 'help-pop');

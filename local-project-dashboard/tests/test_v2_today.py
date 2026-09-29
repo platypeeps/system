@@ -4,8 +4,9 @@ What this slice promises: `/v2/today` answers under the same policy as every
 other response; the shell's files are served from the package with their
 types; the page loads its data and script before `shell.js`, as the design's
 page contract requires; Today's rows are `now_screen.document`'s, read by the
-same `/api/now` v1 reads; and the v1 routes and files are as they were.
-The browser half -- no console error, no policy refusal, no horizontal
+same `/api/now` v1 reads; the v1 routes and files are as they were; and
+`markup.js`, run under JavaScriptCore, turns no value into markup and help
+text into bare <b> and <code> only. The browser half -- no console error, no policy refusal, no horizontal
 scroll at 375 px -- is a manual check recorded on the pull request.
 """
 
@@ -13,9 +14,11 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 
 from sd_dashboard import now_screen, server, v2
@@ -50,10 +53,11 @@ class ThePage(BrowserSession):
 
     def test_the_page_holds_nothing_the_policy_refuses(self):
         _, _, body = self.request("/v2/today")
-        self.assertNotIn("<style", body)
-        self.assertNotRegex(body, r"\sstyle=")
-        self.assertNotRegex(body, r"\son[a-z]+=")
-        for script in re.findall(r"<script\b[^>]*>(.*?)</script>", body, re.S):
+        # HTML tag and attribute names ignore case, so the checks do too.
+        self.assertNotRegex(body, re.compile(r"<style\b", re.I))
+        self.assertNotRegex(body, re.compile(r"\sstyle\s*=", re.I))
+        self.assertNotRegex(body, re.compile(r"\son[a-z]+\s*=", re.I))
+        for script in re.findall(r"<script\b[^>]*>(.*?)</script\s*>", body, re.S | re.I):
             self.assertEqual(script.strip(), "", "an inline script")
         for url in re.findall(r'(?:src|href)="((?:https?:)?//[^"]*)"', body):
             self.fail(f"another origin: {url}")
@@ -153,6 +157,43 @@ class TheShellPort(BrowserSession):
             self.assertNotIn("/v2/", body, path)
 
 
+# markup.js runs under JavaScriptCore through osascript: the gate's PATH has no node and allows no skipped test.
+# The page is a stand-in: a <template> records the text it is asked to parse, and a target records where it went.
+OSASCRIPT = "/usr/bin/osascript"
+STAND_IN = """
+var window = globalThis, sunk = [];
+var document = { createElement: function (tag) {
+  if (tag !== 'template') throw new Error('a sink other than <template>: ' + tag);
+  var t = {}; Object.defineProperty(t, 'innerHTML', { set: function (v) { t.content = { parsed: v }; } }); return t; } };
+var target = {}; ['replaceChildren', 'append', 'prepend', 'before'].forEach(function (w) { target[w] = function (f) { sunk.push([w, f.parsed]); }; });
+"""
+HELP = re.search(r"^  // help:start\n(.*?)^  // help:end$", SHELL_JS, re.S | re.M).group(1)
+
+
+def run_js(test, script):
+    """Run markup.js and then `script` in the stand-in page; the script's last expression is JSON."""
+    result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", STAND_IN + MARKUP_JS + script],
+                            capture_output=True, text=True, timeout=60, check=False)
+    test.assertEqual(result.returncode, 0, result.stderr)
+    return json.loads(result.stdout)
+
+
+class Parsed(HTMLParser):
+    """What a browser builds from markup: its tags with their attributes, and its text."""
+
+    def __init__(self, markup):
+        super().__init__(convert_charrefs=True)
+        self.tags, self.text = [], []
+        self.feed(markup)
+        self.close()
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append((tag, attrs))
+
+    def handle_data(self, data):
+        self.text.append(data)
+
+
 class TheMarkup(unittest.TestCase):
     """markup.js is the v2 scripts' one HTML sink; test_markup's grep exempts it and nothing else."""
 
@@ -160,22 +201,54 @@ class TheMarkup(unittest.TestCase):
         self.assertEqual(MARKUP_JS.count("innerHTML"), 1)
         self.assertIn("const t = document.createElement('template');\n    t.innerHTML = m.text;", MARKUP_JS)
         self.assertIn("if (!made.has(m)) throw new TypeError", MARKUP_JS)
-        self.assertIn("window.markup = Object.freeze({ html, nodes, put });", MARKUP_JS)
+        self.assertEqual(MARKUP_JS.count("made.add("), 1)
         for source in (SHELL_JS, TODAY_JS):
             self.assertNotIn("esc(", source)
             self.assertIn("window.markup", source)
+        # A template's strings carry `raw`; a script that names it could forge one. Only markup.js reads it.
+        others = sorted(p.name for p in (V2 / "static").glob("*.js") if p.name != "markup.js")
+        self.assertIn("shell.js", others)
+        self.assertEqual([n for n in others if re.search(r"\braw\b", (V2 / "static" / n).read_text(encoding="utf-8"))], [])
 
-    def test_the_tag_escapes_every_value_that_it_did_not_make(self):
-        """The escaping, pinned as written. The gate's PATH has no node and
-        allows no skipped test, so the behaviour itself (a quote, a tag and an
-        entity in an attribute and in text; nesting; a forged value refused)
-        is run under node by hand and recorded on the pull request."""
-        table = re.search(r"const ESC = \{([^}]*)\};", MARKUP_JS).group(1)
-        pairs = re.findall(r"""(['"])(.)\1: '([^']+)'""", table)
-        self.assertEqual({char: entity for _, char, entity in pairs},
-                         {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})
-        self.assertIn("""  const value = v => made.has(v) ? v.text
-    : Array.isArray(v) ? v.map(value).join('')
-    : v === null || v === undefined || v === false ? ''
-    : String(v).replace(/[&<>"']/g, c => ESC[c]);""", MARKUP_JS)
-        self.assertEqual(MARKUP_JS.count("made.add("), 1)
+    def test_a_hole_holding_markup_renders_as_text(self):
+        attack = "<img src=x onerror=alert(1)>"
+        quote = '"><img src=x onerror=alert(1)>'
+        sunk = run_js(self, f"""const {{ html, put }} = window.markup;
+put(target, html`<p title="${{{json.dumps(quote)}}}">${{{json.dumps(attack)}}}</p>`); JSON.stringify(sunk)""")
+        self.assertEqual(len(sunk), 1)
+        where, markup = sunk[0]
+        self.assertEqual(where, "replaceChildren")
+        parsed = Parsed(markup)
+        self.assertEqual(parsed.tags, [("p", [("title", quote)])])
+        self.assertEqual("".join(parsed.text), attack)
+
+    def test_only_the_tag_makes_markup_and_only_put_parses_it(self):
+        got = run_js(self, """const { html, put } = window.markup;
+const refused = f => { try { f(); return false; } catch (e) { return e instanceof TypeError; } };
+const forged = Object.assign(['<img src=x onerror=alert(1)>'], { raw: ['<img src=x onerror=alert(1)>'] });
+const m = html`<b>${'<i>'}</b>`;
+put(target, html`<ul>${['a', '<b>'].map(x => html`<li>${x}</li>`)}</ul>`);
+put(target, html`${m}`, 'append'); put(target, html`${null}${undefined}${false}${0}`, 'prepend'); put(target, html`<hr>`, 'before');
+JSON.stringify({ exports: Object.keys(window.markup), frozen: Object.isFrozen(window.markup) && Object.isFrozen(m), sunk,
+  refused: [refused(() => html(['<img>'])), refused(() => html(forged)), refused(() => put(target, '<img>')),
+            refused(() => put(target, { text: '<img>' })), refused(() => put(target, m, 'outerHTML'))],
+  kept: (() => { try { m.text = '<img>'; } catch (e) { /* strict mode throws; sloppy mode ignores the write */ } return m.text; })() })""")
+        self.assertEqual(got["exports"], ["html", "put"])
+        self.assertTrue(got["frozen"])
+        self.assertEqual(got["sunk"], [["replaceChildren", "<ul><li>a</li><li>&lt;b&gt;</li></ul>"], ["append", "<b>&lt;i&gt;</b>"],
+                                       ["prepend", "0"], ["before", "<hr>"]])
+        self.assertEqual(got["refused"], [True] * 5)
+        self.assertEqual(got["kept"], "<b>&lt;i&gt;</b>")
+
+    def test_help_renders_bare_b_and_code_and_drops_every_other_tag_and_attribute(self):
+        text = ('Rank <b>broken</b> first; run <code>sd jobs</code>. <B class="x" onclick="alert(1)">loud</B> '
+                '<img src=x onerror=alert(1)><a href="javascript:alert(1)">link</a> <script>alert(2)</script><i>it</i> '
+                '1 < 2 & 3 > 2 <code>a<b>c</code> <b>open')
+        sunk = run_js(self, "const { html, put } = window.markup;\n" + HELP + f"put(target, helpText({json.dumps(text)})); JSON.stringify(sunk)")
+        markup = sunk[0][1]
+        self.assertEqual(markup, "Rank <b>broken</b> first; run <code>sd jobs</code>. <b>loud</b> link alert(2)it "
+                                 "1 &lt; 2 &amp; 3 &gt; 2 <code>a<b>c</b></code> <b>open</b>")
+        parsed = Parsed(markup)
+        self.assertEqual({tag for tag, _ in parsed.tags}, {"b", "code"})
+        self.assertEqual([attrs for _, attrs in parsed.tags if attrs], [])
+        self.assertEqual("".join(parsed.text), "Rank broken first; run sd jobs. loud link alert(2)it 1 < 2 & 3 > 2 ac open")
