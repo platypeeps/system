@@ -674,11 +674,16 @@ class TheMeterWaitsOnlyBriefly(MeteringCase):
 
         holder = self.hold()
         started = time.monotonic()
-        said = jev_meter.record(dict(self.EVENT), {"JEV_METER_DB": str(self.store)})
+        said = jev_meter.record(dict(self.EVENT), {"JEV_METER_DB": str(self.store),
+                                                   "JEV_METER_BUSY_MS": "100"})
         waited = time.monotonic() - started
         holder.execute("ROLLBACK")
         self.assertEqual(said, jev_meter.CONTENDED)
-        self.assertLess(waited, 1.0, f"waited {waited:.2f}s on a locked ledger")
+        # The ceiling is what the bound replaced, sd_db's own five seconds,
+        # less headroom. A tight wall-clock ceiling failed the gate at load 23
+        # (1.23 s against 1.0 s for a 250 ms bound); forty times the bound
+        # still tells a bounded wait from the library's.
+        self.assertLess(waited, 4.0, f"waited {waited:.2f}s on a locked ledger")
 
     def test_a_lock_released_inside_the_bound_still_writes_the_row(self):
         """The case the bound exists for: a zero wait dropped this row."""
@@ -700,9 +705,16 @@ class TheMeterWaitsOnlyBriefly(MeteringCase):
         thread = threading.Thread(target=hold_briefly)
         thread.start()
         self.assertTrue(locked.wait(5))
-        said = jev_meter.record(dict(self.EVENT), {"JEV_METER_DB": str(self.store)})
+        # A bound far above the 50 ms hold, so load cannot stretch the hold
+        # past it; that the default bound is not zero is asserted below.
+        said = jev_meter.record(dict(self.EVENT), {"JEV_METER_DB": str(self.store),
+                                                   "JEV_METER_BUSY_MS": "3000"})
         thread.join()
         self.assertEqual(said, jev_meter.WRITTEN)
+
+    def test_the_default_bound_waits_long_enough_to_land_a_contended_row(self):
+        """A zero default dropped rows under ordinary contention (sd:2087)."""
+        self.assertGreaterEqual(jev_meter.busy_ms({}), 100)
 
     def test_the_bound_can_be_set_and_a_typo_keeps_the_default(self):
         self.assertEqual(jev_meter.busy_ms({}), jev_meter.BUSY_MS)
