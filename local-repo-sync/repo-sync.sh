@@ -684,6 +684,20 @@ hyg_repo() {
   if h_def=$(hyg_default "$d"); then
     def_name=${h_def%% *}
     def_ref=${h_def#* }
+    # "Landed" is judged against the local origin/<default>. A remote that
+    # moved it since (a force-push can drop content) or cannot be asked
+    # leaves that judgement stale, so no landed branch is deleted.
+    h_fresh=1
+    case "$def_ref" in
+      refs/remotes/origin/*)
+        h_there=$(git -C "$d" ls-remote origin "refs/heads/$def_name" 2>/dev/null | cut -f 1 || true)
+        h_here=$(git -C "$d" rev-parse -q --verify "$def_ref" || true)
+        if [ -z "$h_there" ] || [ "$h_there" != "$h_here" ]; then
+          h_fresh=0
+          hyg_note "origin/$def_name here ${h_here:-missing}, on origin ${h_there:-not read}; landed branches not deleted"
+        fi
+        ;;
+    esac
     git -C "$d" for-each-ref --format="%(refname:short)$US%(objectname)$US%(upstream:track)" \
       refs/heads > "$HYG_TMP/branches"
   else
@@ -692,6 +706,7 @@ hyg_repo() {
   while IFS=$US read -r b_name b_sha b_track; do
     [ "$b_name" = "$def_name" ] && continue
     if h_how=$(hyg_merged "$d" "refs/heads/$b_name" "$def_ref"); then
+      [ "$h_fresh" = 1 ] || continue
       # A branch made or moved within HYG_MIN_AGE seconds is kept: a fresh
       # agent branch sits at the default tip and counts as landed. The age
       # is the newest reflog entry's; no reflog means no age, so it is kept.

@@ -46,7 +46,9 @@ to separate the two.
       (`git fetch --prune`);
    4. delete a local branch whose content is on the default branch: an
       ancestor, a tree equal to its merge base, or a patch-equivalent squash
-      (`git cherry` on a synthetic squash commit);
+      (`git cherry` on a synthetic squash commit); only when `git ls-remote`
+      shows `origin`'s default at the local `origin/<default>` sha, since a
+      force-push since the last fetch can drop the content;
    5. remove a worktree that holds a branch from class 4, only when
       `git status --porcelain --ignored` is empty and no process has its cwd
       inside it; ignored files (an `.env`, a local database) keep it.

@@ -64,7 +64,10 @@ on no remote, one named for a done sd item
 (read from the sd database when present, `REPO_SYNC_SD_DB`), and a checkout
 still behind its upstream. It never touches a stash, a remote branch, the
 default branch, or a dirty or in-use worktree. All checks are local git
-plumbing; only the remote prune talks to the remote.
+plumbing, except two calls to `origin`: the remote prune, and
+`git ls-remote` for the default branch. When `origin` cannot be read, or its
+default differs from the local `origin/<default>`, no landed branch is
+deleted that run.
 
 Without `--apply` it exits 1 when it found anything. With `--apply` it exits
 1 only when an action failed. It is not a `status` subcommand.

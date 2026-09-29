@@ -39,6 +39,13 @@ prunes; only its branch pass is skipped, with a note. The comparison ref is `ref
 A branch therefore counts as landed only once its content is upstream. A
 local-only merge into `main` keeps the branch, which is the safe side.
 
+That ref is only as fresh as the last fetch, and a force-push can drop
+content from the remote default. Before the branch pass, `git ls-remote
+origin refs/heads/<default>` must return the local ref's sha. When it
+differs or `origin` cannot be read, the pass deletes no landed branch and
+prints one note; the report-only classes still run. A default from a local
+`main` or `master` has no remote to ask and is used as is.
+
 ## Landed branches
 
 `source:local-repo-sync/repo-sync.sh::hyg_merged` tries three tests, in

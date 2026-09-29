@@ -342,6 +342,26 @@ class HygieneTest(unittest.TestCase):
 
         self.assertEqual("", f.branch_sha(repo, "feat/thing-1234"))
 
+    def test_a_stale_default_ref_deletes_no_landed_branch(self):
+        """NEW. Requirement 3.4: a branch counts as landed against the local
+        origin/<default>. When the remote's default no longer matches it (a
+        force-push removed the content), no landed branch is deleted."""
+        f = self.fixture()
+        repo = f.repo()
+        seed = f.git(repo, "rev-parse", "HEAD")
+        f.git(repo, "switch", "-q", "-c", "rewound")
+        sha = f.commit(repo, "r.txt", "rewound\n", "rewound")
+        f.git(repo, "switch", "-q", "main")
+        f.git(repo, "merge", "-q", "--ff-only", "rewound")
+        f.git(repo, "push", "-q", "origin", "main")
+        bare = f.git(repo, "remote", "get-url", "origin")
+        f.git(bare, "update-ref", "refs/heads/main", seed)
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertEqual(sha, f.branch_sha(repo, "rewound"))
+        self.assertIn("landed branches not deleted", result.stdout)
+
     def test_a_checkout_behind_with_local_changes_is_listed(self):
         """NEW. Requirement 5: a checkout sync could not fast-forward."""
         f = self.fixture()
