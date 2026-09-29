@@ -58,8 +58,9 @@ safe classes:
   untracked or ignored files and no process has its cwd inside it.
 
 Every deletion prints the branch and its tip sha with the command that
-restores it. It lists and never deletes: a branch whose upstream is gone,
-a branch with commits on no remote, a branch named for a done sd item
+restores it. Of the branches whose content is not on the default branch,
+it lists and never deletes: one whose upstream is gone, one with commits
+on no remote, one named for a done sd item
 (read from the sd database when present, `REPO_SYNC_SD_DB`), and a checkout
 still behind its upstream. It never touches a stash, a remote branch, the
 default branch, or a dirty or in-use worktree. All checks are local git

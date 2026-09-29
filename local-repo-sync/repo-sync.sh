@@ -592,17 +592,19 @@ hyg_repo() {
   d=$1
   echo "=== $2 ($d)"
 
-  # 3.3: remote-tracking refs for deleted remote branches.
+  # 3.3: remote-tracking refs for deleted remote branches. The lines are
+  # matched by text, so both calls run in the C locale: a translated git
+  # would prune and print nothing the sed below knows.
   for h_remote in $(git -C "$d" remote); do
     if [ "$APPLY" = 1 ]; then
-      if h_out=$(git -C "$d" remote prune "$h_remote" 2>&1); then
+      if h_out=$(LC_ALL=C git -C "$d" remote prune "$h_remote" 2>&1); then
         printf '%s\n' "$h_out" | sed -n 's/^ \* \[pruned\] /pruned remote-tracking ref /p' \
           | while read -r h_l; do hyg_act "$h_l"; done
       else
         hyg_fail "remote prune $h_remote: $(printf '%s' "$h_out" | tail -1)"
       fi
     else
-      if h_out=$(git -C "$d" remote prune --dry-run "$h_remote" 2>&1); then
+      if h_out=$(LC_ALL=C git -C "$d" remote prune --dry-run "$h_remote" 2>&1); then
         printf '%s\n' "$h_out" | sed -n 's/^ \* \[would prune\] /prune remote-tracking ref /p' \
           | while read -r h_l; do hyg_found "$h_l"; done
       else
@@ -831,8 +833,9 @@ hygiene() {
     h_before=$(cat "$HYG_TMP/acted" "$HYG_TMP/found" "$HYG_TMP/listed" "$HYG_TMP/failed" | wc -l)
     hyg_repo "$target" "$full_repo" > "$HYG_TMP/repo.out" 2>&1 || true
     h_after=$(cat "$HYG_TMP/acted" "$HYG_TMP/found" "$HYG_TMP/listed" "$HYG_TMP/failed" | wc -l)
-    # A repo with nothing to say stays out of the report.
-    if [ "$h_after" -ne "$h_before" ]; then
+    # A repo with nothing to say stays out of the report; a note alone
+    # still prints, though it counts nowhere.
+    if [ "$h_after" -ne "$h_before" ] || grep -q '^  note: ' "$HYG_TMP/repo.out"; then
       cat "$HYG_TMP/repo.out"; echo
     fi
   done

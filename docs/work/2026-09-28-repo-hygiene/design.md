@@ -155,6 +155,9 @@ command:
 
 ## Report-only classes
 
+`GONE`, `LOCAL` and `DONE` apply only to a branch that is not landed; a
+landed branch is deleted or kept by the rules above first.
+
 | Line | Rule |
 | --- | --- |
 | `KEEP` | a landed branch held by the main checkout, a dirty worktree, or a worktree whose lock holder is not running; or a gone directory with a pidless lock |

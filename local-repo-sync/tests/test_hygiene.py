@@ -260,6 +260,32 @@ class HygieneTest(unittest.TestCase):
         gone = [l for l in result.stdout.splitlines() if "unique" in l and "gone" in l]
         self.assertTrue(gone, result.stdout)
 
+    def test_prune_accounting_does_not_read_translated_output(self):
+        """NEW. Requirement 3.3: git translates the prune lines under a
+        non-C locale; the counts must not depend on them. The stub
+        translates whenever LC_ALL is not C."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "push", "-q", "origin", "main:elsewhere")
+        f.git(repo, "fetch", "-q", "origin")
+        bare = f.git(repo, "remote", "get-url", "origin")
+        f.git(bare, "branch", "-D", "elsewhere")
+        (f.bin / "git").write_text(
+            "#!/bin/sh\n"
+            'printf \'%s\\n\' "$*" >> "$GIT_LOG"\n'
+            'case "$*" in *"remote prune"*)\n'
+            '  [ "$LC_ALL" = C ] || { "$REAL_GIT" "$@" 2>&1 | sed -e "s/would prune/wird entfernt/" -e "s/pruned/entfernt/"; exit 0; } ;;\n'
+            'esac\n'
+            'exec "$REAL_GIT" "$@"\n')
+        env = {"LC_ALL": "de_DE.UTF-8", "LANG": "de_DE.UTF-8"}
+
+        report = f.run("hygiene", expect=1, extra_env=env)
+        applied = f.run("hygiene", "--apply", expect=0, extra_env=env)
+
+        self.assertIn("would prune remote-tracking ref origin/elsewhere", report.stdout)
+        self.assertIn("pruned remote-tracking ref origin/elsewhere", applied.stdout)
+        self.assertIn("1 done", applied.stdout)
+
     def test_a_never_pushed_branch_is_reported_not_deleted(self):
         """NEW. Requirement 5: commits on no remote ref are listed."""
         f = self.fixture()
@@ -293,6 +319,28 @@ class HygieneTest(unittest.TestCase):
         self.assertIn("sd:1234", result.stdout)
         f.run("hygiene", "--apply", extra_env={"REPO_SYNC_SD_DB": str(db)})
         self.assertEqual(sha, f.branch_sha(repo, "feat/thing-1234"))
+
+    def test_a_landed_branch_for_a_done_item_is_deleted(self):
+        """NEW. Requirement 5: the report-only classes cover branches whose
+        content is not on the default branch. A landed branch goes by 3.4,
+        even when its item is done and its commits are on no remote (a
+        squash landing whose remote branch was deleted)."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "switch", "-q", "-c", "feat/thing-1234")
+        f.commit(repo, "t.txt", "thing\n", "thing")
+        f.git(repo, "switch", "-q", "main")
+        f.git(repo, "merge", "-q", "--squash", "feat/thing-1234")
+        f.git(repo, "commit", "-q", "-m", "squashed")
+        f.git(repo, "push", "-q", "origin", "main")
+        (f.bin / "sqlite3").write_text(SQLITE_STUB)
+        (f.bin / "sqlite3").chmod(0o755)
+        db = f.tmp / "sd.db"
+        db.write_text("")
+
+        f.run("hygiene", "--apply", expect=0, extra_env={"REPO_SYNC_SD_DB": str(db)})
+
+        self.assertEqual("", f.branch_sha(repo, "feat/thing-1234"))
 
     def test_a_checkout_behind_with_local_changes_is_listed(self):
         """NEW. Requirement 5: a checkout sync could not fast-forward."""
@@ -347,10 +395,13 @@ class HygieneTest(unittest.TestCase):
         repo = f.repo()
         f.git(repo, "branch", "fresh")
 
-        f.run("hygiene", "--apply", expect=0,
-              extra_env={"REPO_SYNC_HYGIENE_MIN_AGE": None})
+        result = f.run("hygiene", "--apply", expect=0,
+                       extra_env={"REPO_SYNC_HYGIENE_MIN_AGE": None})
 
         self.assertNotEqual("", f.branch_sha(repo, "fresh"))
+        # A repo with only a note still prints it (design: notes print but
+        # do not count).
+        self.assertIn("note: kept branch fresh", result.stdout)
 
     def test_an_old_landed_branch_goes_under_the_default_age(self):
         """NEW. Requirement 3.4: the guard reads the newest reflog entry,

@@ -56,7 +56,11 @@ to separate the two.
 4. Never act on: the checked-out branch of any worktree not removed in 3.5;
    the default branch; a branch in a dirty or live worktree; a stash; any
    remote branch.
-5. Report-only classes, listed per repo in the report:
+5. Report-only classes, listed per repo in the report. They cover branches
+   that 3.4 does not take: a branch whose content is on the default branch
+   is landed, and 3.4 deletes it whatever its upstream, its remote refs or
+   its item say. A squash landing leaves its commits on no remote once the
+   remote branch is deleted, and its item done; both are the normal case.
    - branch whose upstream is gone and whose content is not on the default
      branch;
    - branch with commits on no remote ref (never pushed);
