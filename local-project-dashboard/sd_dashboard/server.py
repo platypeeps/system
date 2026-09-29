@@ -536,13 +536,14 @@ class Dashboard(BaseHTTPRequestHandler):
                 if path == "/api/now":
                     from . import now_screen
 
-                    # The fleet child and the shadow read, for a page that
-                    # was opened first: the document describes this machine.
+                    # The fleet child, the shadow read and the launchd jobs, for
+                    # a page that was opened first: the document describes this machine.
                     if not self._session(context):
                         return self._json(403, {"error": "Open a dashboard page before reading Now."})
                     if split.query:
                         return self._json(400, {"error": "Now does not accept query parameters."})
-                    return self._json(200, now_screen.document(connection, now=self.clock(), fleet=self.fleet_backend))
+                    return self._json(200, now_screen.document(connection, now=self.clock(), fleet=self.fleet_backend,
+                                                           jobs=self.operations_backend))
                 if path == "/api/usage":
                     from .usage_screen import document
 
