@@ -70,6 +70,10 @@ class HygieneFixture(Fixture):
         self.git(target, "remote", "set-head", "origin", "main")
         self.commit(target, "README", "seed\n", "readme")
         self.git(target, "push", "-q", "origin", "main")
+        # A bare init without init.defaultBranch leaves HEAD at master, which
+        # `ls-remote --symref` cannot report; hygiene would then delete nothing.
+        bare = self.git(target, "remote", "get-url", "origin")
+        self.git(bare, "symbolic-ref", "HEAD", "refs/heads/main")
         subdir, name = rel.rsplit("/", 1)
         with (self.folder / f"repos.{self.profile}.conf").open("a") as conf:
             conf.write(f"{subdir} owner/{name}\n")
