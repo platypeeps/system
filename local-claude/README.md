@@ -56,7 +56,7 @@ The record itself is private and lives outside the checkout, in
   database that is a symlink, or a missing table is skipped the same way; an invalid setting or any other database
   error exits non-zero.
 - `claude.sh test` — the unittest suite in `local-claude/tests/`, run by the
-  `tools` leg of `system-native`. It runs against a scratch
+  `tools` leg of `tests/ci-native.sh` under `make check`. It runs against a scratch
   `CLAUDE_MEM_DATA_DIR`, so it reads and writes nothing under `~/.claude-mem`.
 - **Do not set `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` below the
   plugin's 400000 default** in `~/.claude-mem/settings.json`, and do not

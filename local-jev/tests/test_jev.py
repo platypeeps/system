@@ -1,8 +1,8 @@
 """The suite runs against a stub of the API on loopback, not against TypeSafe.
 
 That is deliberate twice over. A suite that called the real endpoint would
-spend tokens on every CI run and go red when someone else's network did, and
-`system-native` treats a skip as a failure, so "skip when offline" is not an
+spend tokens on every `make check` and go red when someone else's network did,
+and `tests/ci-native.sh` treats a skip as a failure, so "skip when offline" is not an
 option this repo has. The stub also lets a test assert the exact payload that
 went out, which is the half of the contract a live call cannot show.
 """
