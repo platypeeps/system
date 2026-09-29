@@ -259,6 +259,13 @@ class TheMarkup(unittest.TestCase):
         others = sorted(p.name for p in (V2 / "static").glob("*.js") if p.name != "markup.js")
         self.assertIn("shell.js", others)
         self.assertEqual([n for n in others if re.search(r"\braw\b", (V2 / "static" / n).read_text(encoding="utf-8"))], [])
+        # No other script can hand html a forged strings array: it names html only as a tag (html`), and reads markup.js
+        # only by destructuring it. In-page code could build a template object's shape; this is what rules that out.
+        for name in others:
+            source = (V2 / "static" / name).read_text(encoding="utf-8")
+            reads = re.sub(r"const \{ [\w, ]+ \} = window\.markup;", "", source)
+            self.assertEqual(re.findall(r"window\.markup\b", reads), [], name)
+            self.assertEqual(re.findall(r"(?<![\w.$])html\b(?!`)", reads), [], name)
 
     def test_a_hole_holding_markup_renders_as_text(self):
         attack = "<img src=x onerror=alert(1)>"
@@ -282,13 +289,31 @@ put(target, html`${m}`, 'append'); put(target, html`${null}${undefined}${false}$
 JSON.stringify({ exports: Object.keys(window.markup), frozen: Object.isFrozen(window.markup) && Object.isFrozen(m), sunk,
   refused: [refused(() => html(['<img>'])), refused(() => html(forged)), refused(() => put(target, '<img>')),
             refused(() => put(target, { text: '<img>' })), refused(() => put(target, m, 'outerHTML'))],
-  kept: (() => { try { m.text = '<img>'; } catch (e) { /* strict mode throws; sloppy mode ignores the write */ } return m.text; })() })""")
+  kept: (() => { try { m.text = '<img>'; } catch (e) { /* strict mode throws; sloppy mode ignores the write */ } return m.text; })(),
+  frozenForgery: refused(() => html(Object.freeze(Object.assign(['<img src=x onerror=alert(1)>'], { raw: Object.freeze(['<img src=x onerror=alert(1)>']) })))),
+  jsonForgery: refused(() => html(Object.freeze(JSON.parse('["<img>"]')))) })""")
         self.assertEqual(got["exports"], ["html", "put"])
         self.assertTrue(got["frozen"])
         self.assertEqual(got["sunk"], [["replaceChildren", "<ul><li>a</li><li>&lt;b&gt;</li></ul>"], ["append", "<b>&lt;i&gt;</b>"],
                                        ["prepend", "0"], ["before", "<hr>"]])
         self.assertEqual(got["refused"], [True] * 5)
         self.assertEqual(got["kept"], "<b>&lt;i&gt;</b>")
+        self.assertTrue(got["frozenForgery"], "a frozen array with a frozen, enumerable raw passed as a template")
+        self.assertTrue(got["jsonForgery"])
+
+    def test_a_value_inside_a_tag_must_be_markup_the_tag_made(self):
+        got = run_js(self, """const { html, put } = window.markup;
+const refused = f => { try { f(); return false; } catch (e) { return e instanceof TypeError; } };
+const on = 'onmouseover=alert(1)';
+const bareFragment = html` ${on}`;
+JSON.stringify({
+  refused: [refused(() => html`<div ${on}>`), refused(() => html`<a href=${'x onclick=alert(1)'}>`), refused(() => html`<${'img src=x onerror=alert(1)'}>`),
+            refused(() => html`<div${bareFragment}>`), refused(() => html`<div ${[html` a="1"`, on]}>`), refused(() => html`<p data-x=${'1'}>`)],
+  allowed: [html`<div ${''}${null}${false}${html` class="x"`}${[html` a="1"`]}>`.text, html`<div${html` title="${'" onclick=alert(1)'}"`}>`.text,
+            html`<p title='${"it's"}'>${on}</p>`.text, html`<p>${bareFragment}</p>`.text] })""")
+        self.assertEqual(got["refused"], [True] * 6)
+        self.assertEqual(got["allowed"], ['<div  class="x" a="1">', '<div title="&quot; onclick=alert(1)">',
+                                          "<p title='it&#39;s'>onmouseover=alert(1)</p>", "<p> onmouseover=alert(1)</p>"])
 
     def test_help_renders_bare_b_and_code_and_drops_every_other_tag_and_attribute(self):
         text = ('Rank <b>broken</b> first; run <code>sd jobs</code>. <B class="x" onclick="alert(1)">loud</B> '

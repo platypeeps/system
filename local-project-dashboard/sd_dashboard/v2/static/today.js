@@ -118,7 +118,7 @@
     shell.reconcile({ rows: tb.querySelectorAll('tr[data-id]'), current: new URLSearchParams(location.search).get('row'),
       select: id => select(id, false),
       clear: () => { const u = new URL(location.href); u.searchParams.delete('row'); history.replaceState(null, '', u);
-        put($('details'), html`<p class="why">${ROWS.length ? 'No row matches the filter, so nothing is selected. Esc clears it.' : 'Nothing is selected: Now has no rows.'}</p>`); } });
+        put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Now could not be read.' : ROWS.length ? 'No row matches the filter, so nothing is selected. Esc clears it.' : 'Nothing is selected: Now has no rows.'}</p>`); } });
   }
 
   async function load() {
@@ -131,9 +131,16 @@
       document.body.dataset.observed = doc.now;
       registerObjects(); render();
     } catch (e) {
+      // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
+      DOC = null; ROWS = [];
+      delete document.body.dataset.observed;
       $('subhead').textContent = `Now could not be read: ${e.message}. Refresh tries again.`;
-      document.querySelectorAll('.cell[data-src]').forEach(cell => { cell.dataset.state = 'unknown'; cell.querySelector('.val').textContent = 'not read'; });
+      document.querySelectorAll('.cell[data-src]').forEach(cell => { cell.dataset.state = 'unknown'; cell.title = 'Now could not be read'; put(cell.querySelector('.val'), html`<span class="ph">not read</span>`); });
+      put($('observed'), html`<span class="ph">not read</span>`);
+      put($('tally'), html``);
       put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${e.message}</td></tr>`);
+      shell.attention({ state: 'unknown', n: 0, what: 'rows' });
+      applyFilter();
     } finally { $('refresh').removeAttribute('aria-busy'); }
   }
 

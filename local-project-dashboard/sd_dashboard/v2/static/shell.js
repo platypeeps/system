@@ -473,12 +473,16 @@
       </div>
       <label class="sr" for="cap-in">Title or note</label>
       <input id="cap-in" class="cap-in" autocomplete="off" placeholder="What needs doing" required>
-      ${o ? html`<p class="why">About: <b>${o.label}</b> · linked as its source</p>` : html`<p class="why">No row selected · files to the inbox</p>`}
+      <p class="why" id="cap-why"></p>
       <div class="cli"><code id="cap-cli">sd task add ''</code></div>
       <div class="actions"><button class="btn quiet" value="no" formnovalidate>Cancel</button><button class="btn" value="yes">Capture</button></div></form>`);
-    const f = cap.querySelector('form'), inp = f.querySelector('#cap-in'), cli = f.querySelector('#cap-cli');
+    const f = cap.querySelector('form'), inp = f.querySelector('#cap-in'), cli = f.querySelector('#cap-cli'), why = f.querySelector('#cap-why');
     const upd = () => {
       const k = f.kind.value, t = shq(inp.value);
+      // build: say what POST /api/items stores. Only a followup on a row with an item links to it (followup_of).
+      why.textContent = k === 'note' ? `A comment on #${about.item}`
+        : k === 'followup' && about ? `A followup of #${about.item}`
+        : o ? `Files to the inbox; not linked to ${o.label}` : 'No row selected · files to the inbox';
       cli.textContent = k === 'note' ? `sd task note ${about.item} --kind comment --body ${t}` : `sd task add${k === 'followup' ? ' --kind followup' : ''} ${t}${o && o.item ? ` --followup-of ${o.item}` : ''}`;
     };
     f.addEventListener('input', upd); upd();
@@ -627,7 +631,8 @@
     const t = document.createElement('time'); t.className = 'rel'; t.setAttribute('datetime', iso || '');
     if (future) t.dataset.future = ''; if (long) t.dataset.long = ''; if (empty) t.dataset.empty = empty;
     // build: the filled cell comes back as html`…` built from its own attributes, since markup.js is the only sink.
-    fillTime(t); return html`<time${[...t.attributes].map(a => html` ${a.name}="${a.value}"`)}>${t.textContent}</time>`;
+    // Each attribute is named in the literal: markup.js takes no value where a name or a bare attribute goes.
+    fillTime(t); return html`<time class="rel" datetime="${iso || ''}"${future ? html` data-future=""` : ''}${long ? html` data-long=""` : ''}${empty ? html` data-empty="${empty}"` : ''} title="${t.title}" data-rel="${t.dataset.rel || ''}" data-local="${t.dataset.local || ''}"${t.hasAttribute('tabindex') ? html` tabindex="0"` : ''}>${t.textContent}</time>`;
   }
   hydrate(document);
   new MutationObserver(recs => recs.forEach(r => r.addedNodes.forEach(n => { if (n.nodeType === 1) { if (n.matches('time.rel[datetime]:not([data-rel])')) fillTime(n); hydrate(n); } }))).observe(body, { childList: true, subtree: true });
