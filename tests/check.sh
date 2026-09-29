@@ -1,19 +1,18 @@
 #!/bin/sh
-# Every native suite on this machine, as CI runs them, plus the macOS-only
-# suites on a Mac. The root Makefile's `check` target runs this, and so does
-# the local merge gate: `sd-ship merge` runs `sd-check`, which finds `make
-# check`, in a clean detached worktree of the pull request's head.
+# Every native suite on this machine, plus the macOS-only suites on a Mac.
+# The root Makefile's `check` target runs this, and so does the local merge
+# gate: `sd-ship merge` runs `sd-check`, which finds `make check`, in a
+# clean detached worktree of the pull request's head.
 #
 # The environment is built here, not borrowed from the caller. The command
-# pack is fetched into `.ci/pack` (gitignored) at the SHA the workflow pins,
-# read from the workflow so there is one pin. `.ci/bin/python3` is the
-# machine's python3.14, as CI pins 3.14. Each suite then runs under `env -i`
-# with an isolated HOME and TMPDIR outside the tree and a PATH of that bin
-# plus the system directories, as the workflow's run step does.
+# pack is fetched into `.ci/pack` (gitignored) at the SHA in `.sd-pack-rev`,
+# the one pin. `.ci/bin/python3` is the machine's python3.14. Each suite then
+# runs under `env -i` with an isolated HOME and TMPDIR outside the tree and a
+# PATH of that bin plus the system directories.
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
-WORKFLOW="$ROOT/.github/workflows/system-native.yml"
+PIN_FILE="$ROOT/.sd-pack-rev"
 PACK_URL="${CI_PACK_URL:-https://github.com/platypeeps/sd-ai-command-pack.git}"
 LEGS="shared dashboard runner tools"
 TOOLS_SHARDS=3
@@ -43,16 +42,18 @@ case "${1:-}" in
   *) usage >&2; exit 1 ;;
 esac
 
-# The pack pin is the `ref:` under the pack checkout in the workflow.
-pin="$(awk '/repository: platypeeps\/sd-ai-command-pack/ { found = 1 }
-            found && $1 == "ref:" { print $2; exit }' "$WORKFLOW")"
+# The pack pin: one full commit sha in `.sd-pack-rev`; bump it deliberately.
+# sd:1439: schema 14 stores repository paths as `~/` keys, and a pack older
+# than pack #1166 writes the absolute path, so local-sd-plan's registration
+# failed its foreign key. Pack #1166 merged as 6d6214f6.
+pin="$(cat "$PIN_FILE" 2>/dev/null || true)"
 case "$pin" in
-  [0-9a-f]*) [ "${#pin}" -eq 40 ] || { echo "check.sh: no 40-hex pack ref in $WORKFLOW" >&2; exit 1; } ;;
-  *) echo "check.sh: no pack ref in $WORKFLOW" >&2; exit 1 ;;
+  *[!0-9a-f]*|"") echo "check.sh: no 40-hex pack sha in $PIN_FILE" >&2; exit 1 ;;
 esac
+[ "${#pin}" -eq 40 ] || { echo "check.sh: no 40-hex pack sha in $PIN_FILE" >&2; exit 1; }
 
 python="$(command -v python3.14 || true)"
-[ -n "$python" ] || { echo "check.sh: python3.14 is not on PATH; CI pins 3.14" >&2; exit 1; }
+[ -n "$python" ] || { echo "check.sh: python3.14 is not on PATH; the suites need 3.14" >&2; exit 1; }
 for tool in git sqlite3 lsof ps rsync; do
   command -v "$tool" > /dev/null || { echo "check.sh: $tool is not on PATH; the suites call it" >&2; exit 1; }
 done
@@ -90,7 +91,7 @@ if [ "$(git -C "$pack" rev-parse -q --verify HEAD 2>/dev/null)" != "$pin" ]; the
 fi
 echo "check.sh: pack $pin, $("$python" --version)"
 
-# HOME and TMPDIR sit outside the tree, as RUNNER_TEMP does in CI: a fixture
+# HOME and TMPDIR sit outside the tree: a fixture
 # repository made under the checkout would find the checkout's own .git.
 # /tmp and not $TMPDIR: macOS caps a socket path at 104 bytes, and a fixture
 # socket under /var/folders/.../T/ plus the temp directories nested in it
@@ -103,8 +104,7 @@ for tool in git sqlite3 lsof ps rsync make; do
 done
 tool_path="$tool_path:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Each job gets its own HOME and TMPDIR under $work/<job>, as each CI leg
-# gets its own runner: parallel suites must not share a home's state.
+# Each job gets its own HOME and TMPDIR under $work/<job>: parallel suites must not share a home's state.
 isolated() {
   mkdir -p "$work/$job/home" "$work/$job/tmp.noindex"
   env -i PATH="$tool_path" HOME="$work/$job/home" TMPDIR="$work/$job/tmp.noindex" \
@@ -121,8 +121,7 @@ echo "== preflight"
 job=preflight
 isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" preflight
 
-# Every leg and, on a Mac, every macOS-only suite run at once, as CI runs
-# the legs on four runners. Run one after another they took 24 minutes here,
+# Every leg and, on a Mac, every macOS-only suite run at once. Run one after another they took 24 minutes here,
 # most of it runner-macos alone, and sd-check stops a check at 15. Each job
 # writes its own log, printed whole once it ends, so the output does not
 # interleave.

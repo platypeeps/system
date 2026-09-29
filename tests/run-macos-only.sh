@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the macOS-only suites that CI (Linux) cannot: every line of
+# Run the macOS-only suites that Linux cannot: every line of
 # tests/macos-only-suites.txt, or the ones named on the command line.
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,8 +15,9 @@ Usage: run-macos-only.sh all|<suite>...
   <suite>  run the named suites only (names are the first word of each line)
   list     print the suite names and commands
 
-CI runs on Linux and cannot run these suites. Run this on a Mac before pushing
-a change to a folder the list names. Like CI, a suite fails when it reports a
+Linux cannot run these suites, so the legs of tests/ci-native.sh leave them
+out; `make check` runs them on a Mac. Run this on a Mac before pushing a change
+to a folder the list names. As in the legs, a suite fails when it reports a
 skipped test or prints no unittest summary. Exits 1 when any suite fails.
 USAGE
 }
@@ -40,7 +41,7 @@ if [ -z "${SD_ACCEPTANCE_PACK:-}" ] && [ -f "$pack/bin/sd-ship" ]; then
 fi
 
 logs="$(mktemp -d "${TMPDIR:-/tmp}/run-macos-only.XXXXXX")"
-# As CI does: the ship lifecycle runs the pack's sd-ship, which imports an
+# As the preflight does: the ship lifecycle runs the pack's sd-ship, which imports an
 # installed sd_db, not source on PYTHONPATH. Suites run under this venv.
 echo "== installing local-sd-db into a throwaway venv"
 python3 -m venv --copies "$logs/venv"
