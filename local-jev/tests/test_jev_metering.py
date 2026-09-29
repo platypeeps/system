@@ -18,6 +18,7 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock
 import urllib.error
@@ -653,26 +654,62 @@ class TheCauseIsWrittenOnce(MeteringCase):
         self.assertEqual(self.stage()["declines"], {cause: 2})
 
 
-class TheMeterNeverWaits(MeteringCase):
+class TheMeterWaitsOnlyBriefly(MeteringCase):
     """Metering runs after the answer is printed, but a subprocess caller
     waits for this process to exit, so a lock it waited on would be time
-    added to a decision that already finished."""
+    added to a decision that already finished. The wait is bounded, and short
+    enough that the ordinary contention of a busy machine still lands."""
 
-    def test_a_locked_ledger_drops_the_measurement_instead_of_waiting(self):
-        import time
+    EVENT = {"caller": "c", "stage": "s", "provider": "p",
+             "primitive": "noul", "outcome": "ok"}
 
+    def hold(self):
         holder = connect(self.store)
         self.addCleanup(holder.close)
         holder.execute("BEGIN IMMEDIATE")
+        return holder
+
+    def test_a_locked_ledger_drops_the_measurement_after_the_bound(self):
+        import time
+
+        holder = self.hold()
         started = time.monotonic()
-        said = jev_meter.record(
-            {"caller": "c", "stage": "s", "provider": "p",
-             "primitive": "noul", "outcome": "ok"},
-            {"JEV_METER_DB": str(self.store)})
+        said = jev_meter.record(dict(self.EVENT), {"JEV_METER_DB": str(self.store)})
         waited = time.monotonic() - started
         holder.execute("ROLLBACK")
         self.assertEqual(said, jev_meter.CONTENDED)
         self.assertLess(waited, 1.0, f"waited {waited:.2f}s on a locked ledger")
+
+    def test_a_lock_released_inside_the_bound_still_writes_the_row(self):
+        """The case the bound exists for: a zero wait dropped this row."""
+        import time
+
+        locked = threading.Event()
+
+        def hold_briefly():
+            # SQLite connections stay in the thread that opened them.
+            holder = connect(self.store)
+            try:
+                holder.execute("BEGIN IMMEDIATE")
+                locked.set()
+                time.sleep(0.05)
+                holder.execute("ROLLBACK")
+            finally:
+                holder.close()
+
+        thread = threading.Thread(target=hold_briefly)
+        thread.start()
+        self.assertTrue(locked.wait(5))
+        said = jev_meter.record(dict(self.EVENT), {"JEV_METER_DB": str(self.store)})
+        thread.join()
+        self.assertEqual(said, jev_meter.WRITTEN)
+
+    def test_the_bound_can_be_set_and_a_typo_keeps_the_default(self):
+        self.assertEqual(jev_meter.busy_ms({}), jev_meter.BUSY_MS)
+        self.assertEqual(jev_meter.busy_ms({"JEV_METER_BUSY_MS": "0"}), 0)
+        self.assertEqual(jev_meter.busy_ms({"JEV_METER_BUSY_MS": "40"}), 40)
+        self.assertEqual(jev_meter.busy_ms({"JEV_METER_BUSY_MS": "soon"}),
+                         jev_meter.BUSY_MS)
 
     def test_a_locked_ledger_changes_neither_the_answer_nor_the_exit_code(self):
         holder = connect(self.store)
