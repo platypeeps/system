@@ -44,6 +44,13 @@ class Location(unittest.TestCase):
         self.assertEqual(stc.config_dir("weekly-digest", env), self.home / "c/weekly-digest")
         self.assertEqual(shell("st_config_dir weekly-digest", env).stdout.strip(), str(self.home / "c/weekly-digest"))
 
+    def test_config_file_sits_in_the_tool_dir_except_privacy_patterns(self):
+        env = self.env(SYSTEM_TOOLS_CONFIG=str(self.home / "c"))
+        self.assertEqual(shell("st_config_file notify notify.conf", env).stdout.strip(),
+                         str(self.home / "c/notify/notify.conf"))
+        self.assertEqual(shell("st_config_file leak-guard privacy-patterns", env).stdout.strip(),
+                         str(self.home / "c/privacy-patterns"))
+
 
 class EnvFile(unittest.TestCase):
     def setUp(self):

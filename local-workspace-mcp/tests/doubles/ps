@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stub ps: with $FAKE_DIR/etime, answers `ps -o etime= -p PID` with that
+# elapsed time ([[dd-]hh:]mm:ss); otherwise runs the real ps.
+if [ -s "$FAKE_DIR/etime" ]; then
+  printf '%s\n' "$(cat "$FAKE_DIR/etime")"
+  exit 0
+fi
+exec /bin/ps "$@"

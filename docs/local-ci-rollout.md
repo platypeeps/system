@@ -22,13 +22,16 @@ Do not trust a list in prose; ask the workflow database:
     local-sd-db/sd-db.sh repo list
 
 A row whose `ci` field reads `local` gates merges locally.
-Twenty repositories read `local` on 2026-09-28.
+Twenty-two repositories read `local` on 2026-09-29.
 
 Most are private repositories in the `platypeeps` organization; Actions is disabled there.
 Three are public: this one, the command pack, and one more.
-One is a repository in the operator's employer organization.
-The public ones and the employer one keep Actions on.
+Two are repositories in the operator's employer organization.
+The public ones and the employer ones keep Actions on.
 There, only the CI workflow files are disabled, so CodeQL and Dependabot still run.
+One employer repository finished its switch on 2026-09-29.
+Its branch protection now requires only `sd/local-gate`, and its CI workflows are disabled.
+Its `make check` can run past the default `sd-check` timeout under load.
 
 The other repositories in the employer organization stay on GitHub CI.
 
@@ -57,14 +60,19 @@ A merge done outside `sd-ship` never gets that status, so it cannot pass protect
 
 ## How to switch a repository, or switch it back
 
-The command pack's `sd ci local` verb (sd:1914) switches the database mode and the required check together.
-Until it lands, the switch is manual:
+To switch a repository, first add a `check` entrypoint and prove it with `sd-check`.
+Then run the command pack's `sd ci local` (sd:1914) from its checkout.
+It is a dry run; `--apply` writes. It needs `admin` on the repository.
+It makes three changes together, each skipped when it already holds:
 
-1. Add a `check` entrypoint and prove it with `sd-check`.
-2. Set the mode with `sd-db.sh repo ci <path> local`.
-3. Require `sd/local-gate` in branch protection or the ruleset, in place of the old checks.
-4. Disable the CI workflows, or Actions as a whole on a private repository.
+1. It sets `repo.ci` to `local`, as `sd-db.sh repo ci <path> local` does.
+2. It makes `sd/local-gate` the one required check, in branch protection or the ruleset.
+3. It disables Actions on a private repository, or only the declared CI workflows on a public one.
 
+It refuses when a requirement it cannot rewrite names another context.
+Examples are an organization ruleset, or a ruleset shared with another protected branch.
+
+No verb switches back.
 To go back to GitHub CI, reverse each step.
 Set the mode to `github`, restore the old required checks, and re-enable the workflows.
 Re-enable Actions only once billing allows it again.

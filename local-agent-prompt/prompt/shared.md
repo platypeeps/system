@@ -26,31 +26,8 @@ If Archify is unavailable, name the limitation and use a suitable available form
 
 # RTK - Rust Token Killer
 
-**Usage**: Token-optimized CLI proxy (60-90% savings on dev operations)
-
-## Meta Commands (always use rtk directly)
-
-```bash
-rtk gain              # Show token savings analytics
-rtk gain --history    # Show command usage history with savings
-rtk discover          # Analyze Claude Code history for missed opportunities
-rtk proxy <cmd>       # Execute raw command without filtering (for debugging)
-```
-
-## Installation Verification
-
-```bash
-rtk --version         # Should show: rtk X.Y.Z
-rtk gain              # Should work (not "command not found")
-which rtk             # Verify correct binary
-```
-
-⚠️ **Name collision**: If `rtk gain` fails, you may have reachingforthejack/rtk (Rust Type Kit) installed instead.
-
-## Hook-Based Usage
-
-All other commands are automatically rewritten by the Claude Code hook.
-Example: `git status` → `rtk git status` (transparent, 0 tokens overhead)
+A hook rewrites shell commands through `rtk`, a token-saving CLI proxy: `git status` becomes `rtk git status`.
+Run `rtk` meta commands such as `rtk gain` directly. If `rtk gain` fails, reachingforthejack/rtk (Rust Type Kit) may be installed instead.
 
 If `rtk` misbehaves, re-run the command through `rtk proxy <cmd>` — that
 bypasses the filtering, so identical output means the wrapper is at fault and
@@ -59,11 +36,14 @@ back to the bare command and say so; do not keep retrying through `rtk`.
 
 # GitHub: MCP before `gh`
 
-For GitHub work — PRs, reviews, issues, commits, repo contents, releases — use the `mcp__github__*` tools, not `gh` via Bash.
+For GitHub work — PRs, reviews, commits, repo contents, releases — use the `mcp__github__*` tools, not `gh` via Bash.
+
+**We do not use GitHub issues.** Track work in the `sd` tracker: `sd task add`, `sd task note`, `sd task status`.
+Never open, search or cite a GitHub issue as the work record; pack repos have issues disabled.
 
 These tools are usually **deferred**: only their names are loaded, so they look unavailable and `gh` looks like the only option. It isn't. Load schemas first, batching everything the task needs into one call:
 
-`ToolSearch("select:mcp__github__pull_request_read,mcp__github__list_pull_requests,mcp__github__issue_read")`
+`ToolSearch("select:mcp__github__pull_request_read,mcp__github__list_pull_requests,mcp__github__get_commit")`
 
 Then call them normally. One extra round-trip buys structured JSON and field selection instead of parsing CLI text.
 
@@ -117,3 +97,19 @@ instead of everywhere the thing you changed appears. **Enumerate first, then che
 The passing form of the check enumerates from the filesystem or the database — `ls`, a schema
 query, a repo-wide grep — rather than searching for the string you just typed. A check built
 from what you already know cannot find what you did not know about.
+
+# CI runs locally, not on GitHub Actions
+
+GitHub Actions CI is off on purpose since 2026-09-27: billing blocked every run.
+Do not re-enable Actions or CI workflows to get a missing check; `sd/local-gate` is the required check.
+Read `repo.ci` with `~/repos/system/local-sd-db/sd-db.sh repo list`; `local` means `sd-ship merge` runs `sd-check`.
+Dependabot stays on; land its pull requests through `sd-ship` like any other, since GitHub cannot post `sd/local-gate`.
+Who, why, scope, and how to revert: `~/repos/system/docs/local-ci-rollout.md`.
+
+# sd lane commands: `-C <dir>`, not `cd <dir> &&`
+
+To run `sd-ship`, `sd-check`, `sd-review`, `sd-review-ack` or `sd-pr-state` in another checkout, write `<command> -C <dir> …`.
+Reason: an allow rule matches the whole line, so `cd <dir> && sd-ship merge …` goes to the auto-mode classifier, which denies it.
+Put `-C` first, before the subcommand: `sd-ship -C ~/repos/system merge --item N …`.
+Give one `-C` with an absolute path; a second `-C` or a `..` component is refused.
+Only these five commands take `-C`; `sd` and `sd-docs-lint` do not, so run those from the checkout.
