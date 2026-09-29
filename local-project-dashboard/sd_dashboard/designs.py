@@ -77,6 +77,12 @@ POLICY = (
 #: Headers an asset response carries in place of the dashboard's.
 ASSET_HEADERS = {"Cross-Origin-Resource-Policy": "cross-origin"}
 
+#: A font's headers. The sandboxed page has an opaque origin, and a browser
+#: fetches a font in CORS mode, so without this header every mockup falls back
+#: to system fonts. Only fonts get it: the data scripts beside the pages hold
+#: real notes and mail, and any site could read them from the loopback port.
+FONT_HEADERS = {**ASSET_HEADERS, "Access-Control-Allow-Origin": "*"}
+
 
 def resolve(tail: str, root: Path | None = None) -> tuple[Path, str] | None:
     """The file and content type this address names, or None.

@@ -21,6 +21,8 @@ def tree(base: Path) -> None:
     """The ui-design layout in miniature, plus the things that must not be served."""
     (base / "foundation").mkdir(parents=True)
     (base / "foundation" / "tokens.css").write_text(":root{}", encoding="utf-8")
+    (base / "foundation" / "fonts").mkdir()
+    (base / "foundation" / "fonts" / "plex.woff2").write_bytes(b"wOF2")
     shop = base / "products" / "system" / "designs"
     (shop / "shots").mkdir(parents=True)
     (shop / "v1-today.html").write_text(
@@ -154,6 +156,13 @@ class Policy(unittest.TestCase):
         self.assertEqual(designs.ASSET_HEADERS,
                          {"Cross-Origin-Resource-Policy": "cross-origin"})
 
+    def test_only_a_font_is_readable_from_another_origin(self):
+        # A sandboxed page has an opaque origin and fetches fonts in CORS mode, so
+        # a font needs Access-Control-Allow-Origin. Nothing else gets it: the data
+        # scripts beside the pages hold real notes and mail.
+        self.assertEqual(designs.FONT_HEADERS,
+                         {**designs.ASSET_HEADERS, "Access-Control-Allow-Origin": "*"})
+
 
 class Served(unittest.TestCase):
     """The real `_design`, `_send` and `end_headers`, writing into a buffer."""
@@ -212,6 +221,25 @@ class Served(unittest.TestCase):
         self.assertEqual(sent["Cross-Origin-Resource-Policy"], "cross-origin")
         self.assertEqual(sent["Content-Security-Policy"], CSP)
         self.assertEqual(sent["X-Content-Type-Options"], "nosniff")
+
+    def test_a_font_is_readable_by_the_sandboxed_page(self):
+        status, sent, _ = self.get(self.handler(), "foundation/fonts/plex.woff2")
+        self.assertEqual(status, 200)
+        self.assertEqual(sent["Content-Type"], "font/woff2")
+        self.assertEqual(sent["Access-Control-Allow-Origin"], "*")
+        self.assertEqual(sent["Cross-Origin-Resource-Policy"], "cross-origin")
+
+    def test_no_other_design_file_is_readable_cross_origin(self):
+        for tail in ("foundation/tokens.css", "products/system/designs/v1-today.html",
+                     "products/system/designs/shots/v1.png", "nope.html"):
+            _, sent, _ = self.get(self.handler(), tail)
+            self.assertNotIn("Access-Control-Allow-Origin", sent, tail)
+
+    def test_the_next_response_does_not_inherit_the_font_header(self):
+        handler = self.handler()
+        self.get(handler, "foundation/fonts/plex.woff2")
+        _, sent, _ = self.get(handler, "foundation/tokens.css")
+        self.assertNotIn("Access-Control-Allow-Origin", sent)
 
     def test_every_refusal_is_the_same_404(self):
         for tail in (".git/config.html", "products/system/README.md", "../x.html", "nope.html"):
