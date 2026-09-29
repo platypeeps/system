@@ -32,6 +32,53 @@ SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 
+class Refused(HTMLParser):
+    """What the page policy (default-src 'self') refuses, read the way a browser reads the markup:
+    a <style> element, a style attribute, an inline handler, a <script> without src or with text,
+    and a src or href on another origin."""
+
+    def __init__(self, markup):
+        super().__init__(convert_charrefs=True)
+        self.found, self.script = [], None
+        self.feed(markup)
+        self.close()
+        self.end_script()
+
+    def handle_starttag(self, tag, attrs):
+        self.end_script()
+        for name, value in attrs:
+            if name == "style":
+                self.found.append(f"style attribute on <{tag}>")
+            elif name.startswith("on"):
+                self.found.append(f"handler {name} on <{tag}>")
+            elif name in ("src", "href") and re.match(r"(?:https?:)?//", value or ""):
+                self.found.append(f"another origin: {value}")
+        if tag == "style":
+            self.found.append("<style>")
+        elif tag == "script":
+            self.script = []
+            if not dict(attrs).get("src"):
+                self.found.append("script without src")
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+    def handle_data(self, data):
+        if self.script is not None:
+            self.script.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.end_script()
+
+    def end_script(self):
+        if self.script is not None and "".join(self.script).strip():
+            if "script without src" in self.found[-1:]:
+                self.found.pop()
+            self.found.append(f"inline script: {''.join(self.script).strip()!r}")
+        self.script = None
+
+
 class ThePage(BrowserSession):
     fleet_backend = staticmethod(lambda area: fleet_document(area, repos=[repo("pushy", ahead=1)]))
 
@@ -53,14 +100,17 @@ class ThePage(BrowserSession):
 
     def test_the_page_holds_nothing_the_policy_refuses(self):
         _, _, body = self.request("/v2/today")
-        # HTML tag and attribute names ignore case, so the checks do too.
-        self.assertNotRegex(body, re.compile(r"<style\b", re.I))
-        self.assertNotRegex(body, re.compile(r"\sstyle\s*=", re.I))
-        self.assertNotRegex(body, re.compile(r"\son[a-z]+\s*=", re.I))
-        for script in re.findall(r"<script\b[^>]*>(.*?)</script\s*>", body, re.S | re.I):
-            self.assertEqual(script.strip(), "", "an inline script")
-        for url in re.findall(r'(?:src|href)="((?:https?:)?//[^"]*)"', body):
-            self.fail(f"another origin: {url}")
+        self.assertEqual(Refused(body).found, [])
+
+    def test_the_policy_scan_reads_markup_as_a_browser_does(self):
+        # Each of these is what a regex over the text missed or could miss; the parser reads tags as a browser does.
+        self.assertEqual(Refused('<script\n>x</script\t\n bar>').found, ["inline script: 'x'"])
+        self.assertEqual(Refused('<SCRIPT >alert(1)</SCRIPT >').found, ["inline script: 'alert(1)'"])
+        self.assertEqual(Refused('<script src="/v2/static/a.js"></script>').found, [])
+        self.assertEqual(Refused('<Style>p{}</Style><p STYLE="x" OnClick="y">').found,
+                         ["<style>", "style attribute on <p>", "handler onclick on <p>"])
+        self.assertEqual(Refused('<link href="//fonts.example/x.css"><img src="https://x.example/i.png">').found,
+                         ["another origin: //fonts.example/x.css", "another origin: https://x.example/i.png"])
 
     def test_every_file_the_page_names_is_served(self):
         _, _, body = self.request("/v2/today")
