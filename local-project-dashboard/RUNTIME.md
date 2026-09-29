@@ -61,8 +61,9 @@ needed for listener inspection. Operations' service controls act only on
 eligible user LaunchAgents; system daemons and dashboard/access services remain
 read-only. See [README.md](README.md) for the Operations tabs, one per entry of
 `operations_screen.AREAS`, and their scope. Today's Now section reads the fleet
-child (both areas) and the shadow table on each `/api/now` request a page
-makes, not on the page render; a fleet child that fails is a row on Now.
+child (both areas), the shadow table and the launchd jobs on each `/api/now`
+request a page makes, not on the page render; a fleet child or a jobs read that
+fails is a row on Now.
 
 ## Private front door
 

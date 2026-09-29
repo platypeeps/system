@@ -135,32 +135,17 @@ class RulesetsTest(unittest.TestCase):
             for actor in data.get("bypass_actors", []):
                 self.assertNotIn(actor["actor_type"], ("User", "Team"), name)
 
-    def test_required_contexts_name_jobs_the_workflows_define(self):
-        workflows = "".join(
-            p.read_text() for p in (REPO_ROOT / ".github" / "workflows").glob("*.yml")
-        )
-        legs = []
-        for line in workflows.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("leg: ["):
-                legs = [leg.strip() for leg in stripped[len("leg: ["):-1].split(",")]
-        names = {line.split("name:", 1)[1].strip() for line in workflows.splitlines()
-                 if line.startswith("    name:")}
-        jobs = set()
-        for name in names:
-            if "${{ matrix.leg }}" in name:
-                jobs.update(name.replace("${{ matrix.leg }}", leg) for leg in legs)
-            else:
-                jobs.add(name)
+    def test_the_only_required_context_is_the_local_gate(self):
+        # No workflow runs here, so any other context could never be met.
+        contexts = []
         for data in self.committed.values():
             for rule in data["rules"]:
                 for check in rule.get("parameters", {}).get("required_status_checks", []):
-                    if check["context"] == LOCAL_GATE:
-                        # A commit status the maintainer's account posts, not
-                        # an app: pinned to Actions, it could never be met.
-                        self.assertNotIn("integration_id", check)
-                        continue
-                    self.assertIn(check["context"], jobs)
+                    contexts.append(check["context"])
+                    # A commit status the maintainer's account posts, not
+                    # an app: pinned to Actions, it could never be met.
+                    self.assertNotIn("integration_id", check)
+        self.assertEqual(contexts, [LOCAL_GATE])
 
     # --- diff ----------------------------------------------------------------
 

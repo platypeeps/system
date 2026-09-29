@@ -1264,12 +1264,6 @@ class NeedsClosure(unittest.TestCase):
         (self.root / ".github" / "workflows" / "a.yml").write_text(allowed, encoding="utf-8")
         self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {"test": {"ci"}})
 
-    def test_this_repositorys_ci_job_is_the_aggregate(self):
-        """The `ci` job S4 adds must be the shape this reader credits."""
-        workflow = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "system-native.yml"
-        jobs = dict(protection._jobs(protection._significant(workflow.read_text(encoding="utf-8"))))
-        self.assertEqual(protection._gated_needs(jobs["ci"], protection._needs(jobs["ci"])), ["system-native"])
-
     def test_a_name_two_jobs_produce_is_covered_only_when_both_are(self):
         """sd:1741 review round 5: `test` gated by `ci` in a.yml says nothing
         of another `test` in b.yml."""
