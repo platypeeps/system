@@ -16,7 +16,7 @@ from sd_db.workflow import StaleItem, WorkflowError
 from sd_db.writing import (
     change_stage, cutover_pieces, cutover_preview, import_piece, list_pieces,
     piece_for_key, piece_state, preflight, record_gate, update_piece_metadata,
-    verify_pieces, readiness, recover_cutover, park_piece,
+    verify_pieces, readiness, recover_cutover, park_piece, checkout,
 )
 
 
@@ -309,6 +309,59 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
         self.assertEqual(len(list_pieces(self.db, str(self.repo), include_parked=True)), 2)
         self.cutover()
         self.assertTrue(parked.exists())
+
+
+class WorktreeCheckout(WritingCase):
+    """A writer in a linked worktree reads its own files under the registered row (sd:2024)."""
+
+    def setUp(self):
+        super().setUp()
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+        def git(*args, cwd=self.repo):
+            subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+        git("init", "-q", "-b", "main")
+        git("add", "-A")
+        git("commit", "-q", "-m", "seed")
+        self.worktree = self.root / "worktree"
+        git("worktree", "add", "-q", "-b", "gate", str(self.worktree))
+        self.linked = self.worktree / "content" / self.piece / "index.md"
+
+    def test_state_reads_the_worktree_prose_under_the_registered_row(self):
+        self.linked.write_text(self.linked.read_text().replace("A claim.", "Worktree prose."))
+        with checkout(str(self.repo), self.worktree):
+            state = piece_state(self.db, self.item)
+        self.assertIn("Worktree prose", state["writing"]["document"])
+        self.assertNotIn("Worktree prose", piece_state(self.db, self.item)["writing"]["document"])
+
+    def test_gate_hashes_the_worktree_report_not_the_main_checkout(self):
+        (self.worktree / "content" / self.piece / "fact-check.md").write_text("Worktree ledger.\n")
+        with checkout(str(self.repo), self.worktree):
+            record_gate(self.db, self.item, "fact-check", verdict="pass", findings=[], reason="Reviewed",
+                        reviewed_digest=self.digest, who="operator")
+            fresh = piece_state(self.db, self.item)["writing"]["gates"]
+        stale = piece_state(self.db, self.item)["writing"]["gates"]
+        self.assertNotEqual(fresh, stale)
+
+    def test_a_path_outside_the_repository_is_refused(self):
+        stranger = self.root / "stranger"
+        stranger.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=stranger, check=True)
+        for path in (stranger, self.root):
+            with self.assertRaisesRegex(WorkflowError, "not a worktree"):
+                with checkout(str(self.repo), path):
+                    pass
+
+    def test_cutover_and_recovery_refuse_a_worktree(self):
+        with checkout(str(self.repo), self.worktree):
+            with self.assertRaisesRegex(WorkflowError, "registered checkout"):
+                cutover_pieces(self.db, str(self.repo), expected_fingerprint="x", who="operator")
+            with self.assertRaisesRegex(WorkflowError, "registered checkout"):
+                recover_cutover(self.db, str(self.repo), who="operator")
+
+    def test_the_registered_checkout_is_its_own_checkout(self):
+        with checkout(str(self.repo), self.repo):
+            self.assertIn("A claim", piece_state(self.db, self.item)["writing"]["document"])
 
 
 if __name__ == "__main__":
