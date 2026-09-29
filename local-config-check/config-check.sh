@@ -36,7 +36,8 @@ Usage: config-check.sh <command>
                    uncommented ones in .env.example) that are unset or still
                    a placeholder (change-me, /path/to/..., example.test);
                    *_DIR, *_REPO, *_FILE, *_SRC, *_SOURCE, *_DESTINATION
-                   values whose path does not exist; *_SD_KEY values that
+                   values whose path does not exist (not *_MARKER_DIR,
+                   which may be absent); *_SD_KEY values that
                    `sd config get` cannot read (skipped when sd is not on
                    PATH). Other *.example files are reported present or
                    absent. Prints names only, never a value. Exits 1 when a
@@ -119,6 +120,8 @@ evaluate() {
                 *change-me*|*/path/to/*|*example.test*) echo "placeholder $cc_v"; continue ;;
             esac
             case "$cc_v" in
+                # A marker's existence tells machines apart; absent is a state.
+                *_MARKER_DIR) ;;
                 *_DIR|*_REPO|*_FILE|*_SRC|*_SOURCE|*_DESTINATION)
                     cc_p=$cc_val
                     case "$cc_p" in "~/"*) cc_p="$HOME/${cc_p#"~/"}" ;; esac
@@ -157,7 +160,7 @@ check_tool() {
     for cc_ex in $(examples "$cc_folder"); do
         [ "$cc_ex" = ".env.example" ] && continue
         cc_file=${cc_ex%.example}
-        if [ -e "$cc_cfg/$cc_file" ]; then
+        if [ -e "$(st_config_file "$cc_tool" "$cc_file")" ]; then
             cc_present=1
             cc_details="$cc_details  conf: $cc_file present
 "
@@ -278,8 +281,8 @@ case "${1:-}" in
         for cc_folder in $(tool_folders); do
             cc_tool=$(tool_name "$cc_folder")
             for cc_ex in $(examples "$cc_folder"); do
-                printf '%s\t%s/%s -> %s/%s\n' "$cc_tool" "$cc_folder" "$cc_ex" \
-                    "$(st_config_dir "$cc_tool")" "${cc_ex%.example}"
+                printf '%s\t%s/%s -> %s\n' "$cc_tool" "$cc_folder" "$cc_ex" \
+                    "$(st_config_file "$cc_tool" "${cc_ex%.example}")"
             done
         done
         ;;
