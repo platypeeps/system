@@ -819,6 +819,112 @@ class HygieneTest(unittest.TestCase):
         self.assertEqual("", f.branch_sha(repo, "feature-thing"))
         self.assertNotIn("feature-thing", (f.folder / "repos.terra.conf").read_text())
 
+    def test_report_mode_lists_a_gone_upstream_before_the_prune(self):
+        """NEW (sd:2071). Report mode prunes nothing, so the stale
+        remote-tracking ref still exists and `%(upstream:track)` never reads
+        [gone]; the dry run's list names the branch GONE all the same."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "switch", "-q", "-c", "unique")
+        sha = f.commit(repo, "u.txt", "unique\n", "unique")
+        f.git(repo, "push", "-q", "-u", "origin", "unique")
+        f.git(repo, "switch", "-q", "main")
+        bare = f.git(repo, "remote", "get-url", "origin")
+        f.git(bare, "branch", "-D", "unique")
+
+        # Report mode exits 1 when anything would be acted on.
+        result = f.run("hygiene", expect=1)
+
+        self.assertIn(f"GONE     branch unique {sha}", result.stdout)
+        self.assertNotEqual("", f.git(repo, "rev-parse", "-q", "--verify",
+                                      "refs/remotes/origin/unique", check=False))
+
+    def test_a_min_age_the_shell_cannot_compare_is_refused(self):
+        """NEW (sd:2074). A digits-only age past the shell's integer range
+        made the age test false, which switched the guard off; it is
+        refused, and nothing is deleted."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "fresh")
+
+        result = f.run("hygiene", "--apply", expect=2,
+                       extra_env={"REPO_SYNC_HYGIENE_MIN_AGE": "99999999999999999999"})
+
+        self.assertIn("REPO_SYNC_HYGIENE_MIN_AGE", result.stderr)
+        self.assertNotEqual("", f.branch_sha(repo, "fresh"))
+
+    def test_a_min_age_with_leading_zeros_is_read_as_decimal(self):
+        """NEW (sd:2074). Leading zeros do not count against the length
+        limit, and the value is still decimal."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "fresh")
+
+        f.run("hygiene", "--apply", expect=0,
+              extra_env={"REPO_SYNC_HYGIENE_MIN_AGE": "00000000000000000000086400"})
+
+        self.assertNotEqual("", f.branch_sha(repo, "fresh"))
+
+    def fake_proc(self, f, pids):
+        """A /proc stand-in: `self/cwd` plus one `<pid>/cwd` per entry of
+        `pids`, a path (a readable link) or None (a plain file, which
+        readlink cannot read)."""
+        proc = f.tmp / "proc"
+        (proc / "self").mkdir(parents=True)
+        (proc / "self" / "cwd").symlink_to(f.tmp)
+        for pid, cwd in pids.items():
+            (proc / str(pid)).mkdir()
+            if cwd is None:
+                (proc / str(pid) / "cwd").write_text("")
+            else:
+                (proc / str(pid) / "cwd").symlink_to(cwd)
+        return proc
+
+    def test_an_unreadable_proc_cwd_that_persists_keeps_the_worktree(self):
+        """NEW (sd:2074). A process of this user whose cwd cannot be read
+        may sit in the worktree, so the scan fails closed."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.merged_worktree(repo, "proc-blind")
+        proc = self.fake_proc(f, {101: f.tmp, 102: None})
+
+        f.run("hygiene", "--apply", expect=0, extra_env={"REPO_SYNC_PROC": str(proc)})
+
+        self.assertTrue(wt.exists())
+        self.assertNotEqual("", f.branch_sha(repo, "proc-blind"))
+
+    def test_a_readable_proc_scan_removes_an_unused_worktree(self):
+        """NEW (sd:2074). The /proc path still removes a worktree when every
+        cwd reads and none is inside it."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.merged_worktree(repo, "proc-clear")
+        proc = self.fake_proc(f, {101: f.tmp})
+
+        f.run("hygiene", "--apply", expect=0, extra_env={"REPO_SYNC_PROC": str(proc)})
+
+        self.assertFalse(wt.exists())
+        self.assertEqual("", f.branch_sha(repo, "proc-clear"))
+
+    def test_a_pid_that_exits_during_the_proc_scan_does_not_block(self):
+        """NEW (sd:2074). A process that exits between the listing and the
+        read leaves no entry; that is not an unreadable cwd."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.merged_worktree(repo, "proc-vanish")
+        proc = self.fake_proc(f, {101: f.tmp, 103: f.tmp})
+        # readlink finds pid 103 gone: the stub removes it, then fails.
+        (f.bin / "readlink").write_text(
+            "#!/bin/sh\n"
+            'case "$1" in */103/cwd) rm -rf "${1%/cwd}"; exit 1 ;; esac\n'
+            'exec /usr/bin/readlink "$@"\n')
+        (f.bin / "readlink").chmod(0o755)
+
+        f.run("hygiene", "--apply", expect=0, extra_env={"REPO_SYNC_PROC": str(proc)})
+
+        self.assertFalse(wt.exists())
+        self.assertEqual("", f.branch_sha(repo, "proc-vanish"))
+
 
 class ReconcileWorktreeTest(unittest.TestCase):
     def test_a_worktree_under_the_root_is_listed_as_worktree(self):

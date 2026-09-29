@@ -48,18 +48,33 @@ to an ack store; the decision that made the pack's dashboard read-only
 deleted that store (sd:719, note 1347), and nothing here writes. The ids
 keep the pack's shapes so the comparison holds row for row and so a later
 ack store, if one is wanted, has a key to use.
+
+**Failed scheduled jobs are the fourth source.** Four launchd cron jobs
+failed on 2026-09-27 and Today said nothing, because the pack's Now never
+read jobs. The read is `sd_db.operations.inventory`, the one the
+Operations Jobs area renders, so the two agree on what `failed` means: a
+non-zero last exit, or a signal the kernel sent for cause. Its backend is
+the server's `operations_backend`, and the job's log time is the mtime of
+`<cron_root>/logs/<job>.log`, the file `cron-jobs.sh` appends every run to.
+A failed job ranks `FAILED`, above every other source's row and below a
+dark collector, and carries the retry the Operations Jobs area sends:
+`launchctl kickstart <service>`. `failed` is launchd's record of the last
+run, so only a run launchd starts can clear it; a hand-run through
+`cron-jobs.sh run` writes a newer log and leaves the row in place.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 
-from sd_db import progress
+from sd_db import operations, progress
 from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
 from .markup import join, tag
+from .operations_screen import _signal_name
 
 __all__ = ["band", "document", "now_panel"]
 
@@ -68,6 +83,9 @@ __all__ = ["band", "document", "now_panel"]
 # R11-D20). The numbers are the pack's; `tests/test_now_screen.py` holds
 # them to a copy taken by hand from `dashboard/now.py` at 85c4fa1b.
 DARK = 0
+# A scheduled job whose last run failed: not in the pack, which read no jobs.
+# It sits in the loudest band with the dark rows, and after them.
+FAILED = 1
 AHEAD = 3
 DIRTY = 4
 # A pull request nobody has looked at for a fortnight, and one that is simply
@@ -82,9 +100,9 @@ ABANDONED = 3
 #: The three bands, loudest first; the script paints each as a class name.
 BANDS = ("broken", "look", "queued")
 
-#: The three sources, in the order the document reads them. Each names an
+#: The four sources, in the order the document reads them. Each names an
 #: Operations area a reader can open when the script is off.
-SOURCES = ("repos", "sessions", "prs")
+SOURCES = ("repos", "sessions", "prs", "jobs")
 
 
 def band(rank: int) -> str:
@@ -199,6 +217,50 @@ def session_rows(trees: list[dict]) -> list[dict]:
     }]
 
 
+def _log_time(log: Path | None) -> str:
+    if log is None:
+        return "log unknown"
+    try:
+        return "log " + datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except FileNotFoundError:
+        return "no log file"
+    except OSError:
+        return "log unreadable"
+
+
+def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
+    """One row for each job `operations.inventory` reads as `failed`.
+
+    The id keys on the outcome, the signal when launchd names one and the
+    exit code otherwise, as the other ids key on the fact that changed. The
+    log time is when the last run wrote its log; a job with no log file, an
+    unreadable one, or a backend with no `cron_root` says so rather than
+    guess, and still gets its row. The retry line is in the detail, where
+    the page shows it, and in `retry`, for a script that acts on it.
+    """
+    out = []
+    for job in jobs:
+        if job.get("state") != "failed":
+            continue
+        name, code, killed = job["name"], job.get("last_exit"), job.get("last_signal")
+        # launchd can report `last exit code = 0` beside a terminating signal;
+        # the signal is the cause, so it names the row.
+        outcome = _signal_name(killed) if killed is not None else f"exit {code}" if code is not None else "no exit code"
+        logged = _log_time(None if cron_root is None else cron_root / "logs" / f"{name}.log")
+        service = job.get("service")
+        retry = f"launchctl kickstart {service}" if service else "retry from Operations Jobs"
+        out.append({
+            "rank": FAILED,
+            "kind": "job",
+            "id": f"job:{name}:{f'signal{killed}' if killed is not None else code}",
+            "what": f"{name} failed with {outcome}",
+            "detail": f"{logged} · retry: {retry}",
+            "retry": retry,
+            "source": "jobs",
+        })
+    return out
+
+
 def dark_row(source: str, reason: str) -> dict:
     """The row a collector that went dark raises: rank 0, the collector, the reason."""
     return {
@@ -245,12 +307,20 @@ def _prs(connection, today: str) -> list[dict]:
     return pr_rows(progress.tracker_items(connection, tracker="github"), today)
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None) -> dict:
+def _jobs(connection, backend) -> list[dict]:
+    # `cron_root` only places the log; a backend without one still lists jobs.
+    root = getattr(backend, "cron_root", None)
+    return job_rows(operations.inventory(connection, backend=backend)["jobs"],
+                    Path(root) if isinstance(root, (str, Path)) else None)
+
+
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None) -> dict:
     """The merged, ranked, banded rows, and what each source said if it said nothing.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, and the seam
-    a test fills; the default runs the child. Each source is guarded on its
-    own so one collector's failure is one row and the other two still
+    a test fills; the default runs the child. `jobs` is an operations
+    backend, `operations.LaunchdBackend` by default. Each source is guarded
+    on its own so one collector's failure is one row and the others still
     answer. `sources` carries the empty string for a source that was read
     and the reason for one that was not, the same text its row shows.
     """
@@ -259,7 +329,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None) -> dict:
     sources: dict[str, str] = {}
     for source, collect in (("repos", lambda: _repos(read)),
                             ("sessions", lambda: _sessions(read)),
-                            ("prs", lambda: _prs(connection, now))):
+                            ("prs", lambda: _prs(connection, now)),
+                            ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend()))):
         try:
             found = collect()
         except (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error) as failure:
@@ -277,18 +348,20 @@ def now_panel() -> object:
     """The section Today renders; the script fills its rows from `/api/now`.
 
     What is in the HTML is what a reader without the script needs: the
-    heading, the three sources as the Operations areas that show them in
+    heading, the four sources as the Operations areas that show them in
     full, and the fact that the rows are on their way. The table's body is
     the one placeholder row until the script replaces it.
     """
     areas = join((
         tag("a", "Repos", href="/operations?area=repos"), ", ",
-        tag("a", "Sessions", href="/operations?area=sessions"), " and ",
-        tag("a", "Trackers", href="/operations?area=trackers"),
+        tag("a", "Sessions", href="/operations?area=sessions"), ", ",
+        tag("a", "Trackers", href="/operations?area=trackers"), " and ",
+        tag("a", "Jobs", href="/operations?area=jobs"),
     ))
     return tag("section",
         tag("h2", "Now"),
-        tag("p", join(("Unpushed commits, uncommitted files, abandoned worktrees and pull requests waiting on you, ",
+        tag("p", join(("Failed scheduled jobs, unpushed commits, uncommitted files, abandoned worktrees "
+                       "and pull requests waiting on you, ",
                        "loudest first, read at this moment from ", areas, ". Nothing here is stored.")), class_="hint"),
         tag("table",
             tag("thead", tag("tr", tag("th", "Band"), tag("th", "What"), tag("th", "Detail"), tag("th", "Source"))),

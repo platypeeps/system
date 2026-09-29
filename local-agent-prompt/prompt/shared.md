@@ -113,3 +113,7 @@ Reason: an allow rule matches the whole line, so `cd <dir> && sd-ship merge …`
 Put `-C` first, before the subcommand: `sd-ship -C ~/repos/system merge --item N …`.
 Give one `-C` with an absolute path; a second `-C` or a `..` component is refused.
 Only these five commands take `-C`; `sd` and `sd-docs-lint` do not, so run those from the checkout.
+
+# Git worktrees go outside `~/repos`
+
+Create a git worktree outside `~/repos`, for example `~/worktrees/<repo>-<branch>`: `repo-sync` reads each folder under `~/repos` as a checkout.
