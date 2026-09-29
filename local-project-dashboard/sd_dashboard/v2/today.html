@@ -1,0 +1,77 @@
+<!doctype html>
+<!--
+  Today, v2 (sd:2110). Built from ui-design products/system/designs/v2/today.html at a3861c9 and design.md.
+  Data: /api/now, the document now_screen.document builds for v1 Today's Now section, read when the page opens and on Refresh.
+  Sources: repos and sessions (fleet child), prs (shadow table), jobs (launchd through sd_db.operations.inventory).
+  Left out until a collector exists: status mail, backups, HOA water, the Runner lamp, Wants you and Briefs.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Today · system</title>
+<link rel="stylesheet" href="/v2/static/fonts.css">
+<link rel="stylesheet" href="/v2/static/tokens.css">
+<script src="/v2/static/theme.js"></script>
+<script src="/v2/static/markup.js"></script>
+<link rel="stylesheet" href="/v2/static/shell.css">
+<link rel="stylesheet" href="/v2/static/today.css">
+</head>
+<body data-page="Today" data-scope="fleet">
+<script src="/v2/static/icons.js"></script>
+<div class="shell">
+  <main>
+    <header class="head">
+      <div>
+        <h1>Today</h1>
+        <p id="subhead">Reading the fleet…</p>
+      </div>
+      <div class="shift">
+        <label class="field">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr">Filter, capture or ask</span>
+          <input id="shift" placeholder="Filter, capture a task, or ask" autocomplete="off" aria-describedby="shift-hint">
+          <span class="ghost" id="ghost"></span>
+          <kbd>/</kbd>
+        </label>
+        <div class="preview" id="shift-preview" hidden>
+          <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
+          <div class="chips" role="group" aria-label="Interpret as">
+            <button class="chip" type="button" data-as="filter" aria-pressed="true">filter rows</button>
+            <button class="chip" type="button" data-as="task" aria-pressed="false">new task</button>
+            <button class="chip" type="button" data-as="ask" aria-pressed="false">ask chat</button>
+          </div>
+          <p class="hint" id="shift-hint">→ accepts · Enter runs · Tab moves on</p>
+        </div>
+      </div>
+    </header>
+
+    <h2 class="sr">Subsystems</h2>
+    <ul class="annunciator" id="annunciator">
+      <li><button class="cell" type="button" data-src="jobs" data-state="unknown" aria-pressed="false"><span class="lbl">Jobs<svg class="i" aria-hidden="true"><use href="#i-siren"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="prs" data-state="unknown" aria-pressed="false"><span class="lbl">Pull requests<svg class="i" aria-hidden="true"><use href="#i-git-pull-request"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="sessions" data-state="unknown" aria-pressed="false"><span class="lbl">Sessions<svg class="i" aria-hidden="true"><use href="#i-bot"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="repos" data-state="unknown" aria-pressed="false"><span class="lbl">Repos<svg class="i" aria-hidden="true"><use href="#i-hard-drive-download"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
+    </ul>
+
+    <section aria-labelledby="now-h">
+      <div class="sec-head">
+        <h2 id="now-h">Now <button class="help" type="button" aria-label="Help: Now" data-help="&lt;b&gt;One ranked list.&lt;/b&gt; Failed jobs, pull requests waiting on you, abandoned worktrees and unpushed or uncommitted checkouts, loudest first. A source that could not be read is a row, never an empty list. Tap a lamp above to filter by source.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <table class="ledger" aria-labelledby="now-h">
+        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">What</th><th scope="col">Detail</th><th scope="col">Source</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <tbody id="rows"><tr class="empty"><td colspan="5">Reading the fleet…</td></tr></tbody>
+      </table>
+      <p class="filtered" id="filtered" hidden></p>
+    </section>
+  </main>
+
+  <div class="details" id="details"><p class="why">Reading the fleet…</p></div>
+</div>
+<script src="/v2/static/today.js"></script>
+<script src="/v2/static/shell.js"></script>
+</body>
+</html>

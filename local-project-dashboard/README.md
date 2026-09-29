@@ -35,6 +35,19 @@ non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming 
 and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
+**v2** is the redesign from ui-design `products/system/` (`design.md`,
+`designs/v2/`), built one page at a time beside the v1 routes, which stay as
+they are. `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted
+IBM Plex under `static/`, served at `/v2/static/`; `shell.js` marks each
+change from the reference with `build:`. Every v2 script builds markup with
+the `html` tag in `static/markup.js`, which escapes each value put in it, and
+puts it in the page with `put`, which takes only what `html` made; that file
+holds the one HTML sink criterion 12's grep allows in v2. The first
+page is `/v2/today`: the
+same `/api/now` rows as v1 Now, as an annunciator and a ranked ledger. It
+runs no command yet; its capture files a task through `POST /api/items`.
+Status mail, backups, HOA water, Wants you and Briefs wait for collectors.
+
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
 item, Followup note, Comment, Question, Decision and Proposal. The word

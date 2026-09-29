@@ -18,6 +18,9 @@ from sd_dashboard.markup import Markup, escape, markdown, tag
 
 HERE = Path(__file__).resolve().parents[1]
 
+#: The v2 scripts' one HTML sink, as `git grep` names it from the repository root.
+V2_SINK = "local-project-dashboard/sd_dashboard/v2/static/markup.js"
+
 #: `prd.md:1330-1332`. Every construct in one artifact.
 ARTIFACT = """\
 # A heading
@@ -176,12 +179,17 @@ class TheGrep(unittest.TestCase):
         self.assertTrue(self.grep("Markup"))
 
     def test_no_escape_hatch_anywhere_in_the_dashboard(self):
+        """`v2/static/markup.js` is the v2 scripts' `markup.py`: it holds their
+        one HTML sink, which takes only what its escaping `html` tag built.
+        `test_v2_today.TheMarkup` pins that file to that one sink."""
         for needle in ("|safe", "innerHTML", "mark_safe", "outerHTML",
-                       "document.write", "dangerouslySetInnerHTML"):
+                       "document.write", "dangerouslySetInnerHTML",
+                       "insertAdjacentHTML", "DOMParser", "createContextualFragment"):
             hits = [
                 line for line in self.grep(needle)
                 if "/tests/" not in line.split(":", 1)[0]
                 and "markup.py" not in line.split(":", 1)[0]
+                and line.split(":", 1)[0] != V2_SINK
             ]
             self.assertEqual(hits, [], f"{needle} is in the dashboard")
 
