@@ -34,7 +34,7 @@ DIR="$(cd "$(dirname "$SELF")" && pwd)"
 . "$DIR/../lib/config.sh"
 
 ME="leak-guard"
-PATTERNS="${LEAK_GUARD_PATTERNS:-$SYSTEM_TOOLS_CONFIG/privacy-patterns}"
+PATTERNS="${LEAK_GUARD_PATTERNS:-$(st_config_file "$ME" privacy-patterns)}"
 MARKER="# installed by local-leak-guard"
 ZERO="0000000000000000000000000000000000000000"
 

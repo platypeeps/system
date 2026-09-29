@@ -22,6 +22,8 @@ a new folder with a `.env.example` is checked on the next run.
 
 Each top-level `<folder>/<file>.example` maps to `<config>/<tool>/<file>`.
 `<tool>` is the folder name minus `local-`; other folders keep their name.
+`st_config_file` in `lib/config.sh` resolves the path, the same function the
+tools read through; `privacy-patterns` sits at `<config>/privacy-patterns`.
 
 For `.env.example`:
 
@@ -33,6 +35,8 @@ For `.env.example`:
   `example.test`;
 - for names ending in `_DIR`, `_REPO`, `_FILE`, `_SRC`, `_SOURCE`,
   `_DESTINATION`: whether the path exists (a leading `~/` expands);
+- names ending in `_MARKER_DIR` are exempt from the path check: a marker
+  exists on one machine only, so its absence is a state, not a fault;
 - for names ending in `_SD_KEY`: whether `sd config get <value>` succeeds.
   Without `sd` on `PATH`, the check prints a note and skips it.
 

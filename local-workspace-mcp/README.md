@@ -28,8 +28,10 @@ about 90s to answer after a restart.
 `mcp-session-id` header. It then sends `notifications/initialized` on that
 session, as every MCP client must, and closes the session with `DELETE`, so
 repeated probes leave no sessions behind. All three calls share one 10s
-deadline (`WORKSPACE_MCP_TIMEOUT`), so the probe as a whole ends within it;
-with no time left, the close is skipped and the healthy line says so. A close
+deadline (`WORKSPACE_MCP_TIMEOUT`). The close is never skipped: past the
+deadline it still gets 3s (`WORKSPACE_MCP_CLOSE_TIMEOUT`), because a slow
+server is exactly the one a skipped close leaks into, one session per probe.
+The probe ends within 13s, inside `local-health-check`'s 30s bound. A close
 that fails (a curl error, or HTTP other than 2xx or 405) is broken, since each
 probe would leave a session behind. `watch` reports a failed close but never
 restarts for it: the server is alive. It answers 3 when the LaunchAgent is not loaded, so a
@@ -41,7 +43,10 @@ does the window where `local-maintenance` boots the agent out for a uv prune.
 1 it keeps probing for up to 90s first: a server launchd is still starting
 needs about that long, and a restart then would reset its startup and drop
 every live session. An answer in that window ends the run with no restart.
-Only when the whole window fails does it run `launchctl kickstart -k` once and
+When the whole window fails but the agent's process is younger than 300s
+(`WORKSPACE_MCP_STARTUP`), the run exits 1 without a restart: it is still
+starting, and under heavy load that took minutes on 2026-09-28. A later run
+restarts it if it stays down. Only an older agent gets `launchctl kickstart -k` once and
 poll `status` for up to 150s. When the agent is booted out during either
 wait, the run ends with exit 0 and neither restarts nor notifies. When
 the server still does not answer, the first run of the outage notifies through
@@ -54,8 +59,8 @@ of the same outage restart again without a second notice; the cron wrapper
 still reports each exit 1. A healthy probe clears the marker, so the next
 outage notifies again. The marker lives in `~/.local/state/workspace-mcp/`.
 
-`help` lists the environment overrides (URL, label, timeout, wait, poll, state
-directory, notifier).
+`help` lists the environment overrides (URL, label, timeout, close timeout,
+startup age, wait, poll, state directory, notifier).
 
 ## Install
 

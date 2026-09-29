@@ -22,15 +22,16 @@ Do not trust a list in prose; ask the workflow database:
     local-sd-db/sd-db.sh repo list
 
 A row whose `ci` field reads `local` gates merges locally.
-Twenty-one repositories read `local` on 2026-09-28.
+Twenty-two repositories read `local` on 2026-09-29.
 
 Most are private repositories in the `platypeeps` organization; Actions is disabled there.
 Three are public: this one, the command pack, and one more.
 Two are repositories in the operator's employer organization.
 The public ones and the employer ones keep Actions on.
 There, only the CI workflow files are disabled or deleted, so CodeQL and Dependabot still run.
-One employer repository was still mid-switch on 2026-09-28.
-Its row read `local`, but its workflows and required checks were still GitHub's.
+One employer repository finished its switch on 2026-09-29.
+Its branch protection now requires only `sd/local-gate`, and its CI workflows are disabled.
+Its `make check` can run past the default `sd-check` timeout under load.
 
 The other repositories in the employer organization stay on GitHub CI.
 
