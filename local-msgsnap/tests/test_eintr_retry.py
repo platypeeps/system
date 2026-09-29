@@ -2,7 +2,7 @@
 
 sd:946, the sd:935 follow-up. The shell suite runs the real binary end to
 end with open(2) stood in by `interpose_open.c`, and nothing in CI ran it:
-the system-native unwired-suite guard keys on `*/tests/test_*.py`, and the
+the `tests/ci-native.sh` unwired-suite guard keys on `*/tests/test_*.py`, and the
 `run_suite` wrapper asserts a unittest summary the shell suite does not
 print. This module is that summary. The shell suite stays the single source
 of truth for what the binary must do -- every expectation lives there, once,

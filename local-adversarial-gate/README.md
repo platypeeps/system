@@ -40,7 +40,7 @@ at the bound, TERM then KILL, so the sandbox and the reviewer under the launcher
 with it and nothing keeps the pipe open. `--out` must name a file; an empty or absent
 one is refused before `codex` is reached. `test` runs the suite in `tests/`, against a
 fake `codex` on a private PATH, so no test reaches the real CLI; the `tools` leg of
-`system-native` runs it.
+`tests/ci-native.sh` runs it under `make check`.
 
 **`render` is the one most callers want.** A caller that already owns its invocation
 should compose through `render` and keep its own `codex` call: the writing pack does,

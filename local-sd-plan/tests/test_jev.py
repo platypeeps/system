@@ -3,7 +3,7 @@
 Everything here is offline. `SD_PLAN_JEV` replaces Jev's argv the way
 `SD_PLAN_AGENT` replaces the agent's, so the stub answers `enabled` with an
 exit code and `ask` with the JSON the real `ask` prints -- no key, no network,
-and `system-native` treats a skipped test as a failure, so "skip when offline"
+and `tests/ci-native.sh` treats a skipped test as a failure, so "skip when offline"
 was never available.
 
 What these cases are really about is the contract in `CLAUDE.md`'s "Nothing

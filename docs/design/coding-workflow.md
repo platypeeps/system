@@ -88,9 +88,10 @@ dispatches, and disposes of each finding locally as blocking or advisory. It
 never posts to GitHub. The full detail lives in
 [Code review](code-review.html).
 
-**CI** runs on every pull request and every push to `main`, as four parallel
-legs. Each leg repeats the same preflight before building anything, because
-the preflight is cheap and needs no artifact handoff:
+**`make check`** is the merge gate. `sd-ship merge` runs it through `sd-check`
+and posts `sd/local-gate`, the one required check; GitHub Actions CI is off.
+It runs `tests/check.sh`: one preflight, then four legs in parallel, plus the
+macOS-only suites on a Mac. The preflight runs once, before any leg:
 
 1. `sd-docs-lint`, from the repository root with no `--work-dir`
 2. `tests/test_citations.py`
@@ -99,10 +100,10 @@ the preflight is cheap and needs no artifact handoff:
    naming any folder no `run_suite` line names
 
 That fourth one closes a specific failure: a suite that exists but was never
-wired into CI stays silently green. The guard reads the filesystem rather than
+wired into a leg stays silently green. The guard reads the filesystem rather than
 a list, so it cannot drift behind the tree.
 
-A skipped test fails CI. That is deliberate, and `run_suite` refuses both a
+A skipped test fails the check. That is deliberate, and `run_suite` refuses both a
 `skipped=` count above zero and a missing `Ran N tests` summary line.
 
 ## Two permissions, commonly conflated
@@ -131,8 +132,8 @@ Work: sd:402
 ```
 
 The value is either a `docs/work` path resolving to a directory with a
-`prd.md`, or `sd:<positive integer>`. CI hands the body to `sd-docs-lint`,
-which fails a second `Work:` line and a malformed id — `sd:0402` and `sd:+402`
+`prd.md`, or `sd:<positive integer>`. `sd-docs-lint --pr-body` checks it,
+and fails a second `Work:` line and a malformed id — `sd:0402` and `sd:+402`
 do not pass.
 
 Two things this rule does **not** do, both worth knowing:
@@ -172,7 +173,7 @@ The pack's own `docs/coding-to-release.md` is the outer loop: the generic
 sequence of inspect, plan, isolate, check, review, ship, record, close out,
 with the owner and exit condition for each step. This document is how *this*
 repository fills those steps in — its `docs/work` layout, its runner, its four
-CI legs, its row-based tracking.
+check legs, its row-based tracking.
 
 The pack also has a `docs/work/` of its own, governed by its own guide. It is
 not the one described here.
@@ -181,7 +182,7 @@ not the one described here.
 
 **Verified in this build.** The status list and the refusal of a direct write
 to `done`; the `Work:` line grammar and that an absent line passes; the four
-CI preflight steps and the unwired-suite guard; the citation gate's three
+preflight steps and the unwired-suite guard; the citation gate's three
 accepted anchor forms.
 
 **Not verified here.** Whether any individual repository currently sets

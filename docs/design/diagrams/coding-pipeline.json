@@ -140,9 +140,9 @@
       "lane": "gates",
       "col": 5,
       "type": "security",
-      "label": "system-native",
-      "sublabel": "preflight, 4 legs",
-      "tag": "every push"
+      "label": "sd/local-gate",
+      "sublabel": "make check, 4 legs",
+      "tag": "at merge"
     },
     {
       "id": "done",

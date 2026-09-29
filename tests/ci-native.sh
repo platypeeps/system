@@ -298,7 +298,7 @@ case "$SUITE_LEG" in
     fi
     ;;
   *)
-    echo "system-native: no suites are wired for leg '$SUITE_LEG'" >&2
+    echo "ci-native.sh: no suites are wired for leg '$SUITE_LEG'" >&2
     exit 1
     ;;
 esac
