@@ -96,6 +96,14 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
     """
     if path in ("/", "/today"):
         return screens.today(connection, now=now, parameters=parameters)
+    if path.startswith("/v2/"):
+        from . import v2
+
+        # The v2 shell (sd:2110). The page is static; its rows come from /api/now.
+        found = v2.page(path)
+        if found is None:
+            raise NotFound(path)
+        return found
     if path == "/backlog":
         return screens.backlog(connection, now=now, parameters=parameters)
     if path == "/contributions":
@@ -496,6 +504,8 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._send(204, b"", "image/x-icon")
         if path.startswith("/static/"):
             return self._static(path[len("/static/") :])
+        if path.startswith("/v2/static/"):
+            return self._v2_asset(path[len("/v2/static/") :])
         if path.startswith("/documents/"):
             return self._document(path[len("/documents/") :])
         if path.startswith("/designs/"):
@@ -785,6 +795,14 @@ class Dashboard(BaseHTTPRequestHandler):
         if kind.startswith("text/html"):
             return self._send(200, body, kind, policy=POLICY)
         self._send(200, body, kind, overrides=FONT_HEADERS if kind.startswith("font/") else ASSET_HEADERS)
+
+    def _v2_asset(self, name: str) -> None:
+        from .v2 import asset
+
+        found = asset(name)
+        if found is None:
+            return self._send(404, error_page(404, "No such file.").encode("utf-8"), "text/html; charset=utf-8")
+        self._send(200, *found)
 
     def _static(self, name: str) -> None:
         if name not in STATIC_FILES:
