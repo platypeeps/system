@@ -15,7 +15,7 @@ from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent.parent
 ENTRYPOINT = FOLDER / "config-check.sh"
-SECRET = "s3cr3t-value-never-printed"
+SENTINEL = "sentinel-value-never-printed"
 
 
 class ConfigCheckTest(unittest.TestCase):
@@ -60,7 +60,7 @@ class ConfigCheckTest(unittest.TestCase):
                               text=True, timeout=60)
 
     def assertNoSecret(self, proc):
-        self.assertNotIn(SECRET, proc.stdout + proc.stderr)
+        self.assertNotIn(SENTINEL, proc.stdout + proc.stderr)
 
     # --- entrypoint conventions -------------------------------------------
 
@@ -80,7 +80,7 @@ class ConfigCheckTest(unittest.TestCase):
 
     def test_required_var_missing_and_placeholder_are_named(self):
         self.folder("local-alpha", {".env.example": "ALPHA_USER=change-me\nALPHA_PASS=change-me\n# ALPHA_OPT=x\n"})
-        self.conf("alpha", ".env", f"ALPHA_USER=change-me\nALPHA_OTHER={SECRET}\n")
+        self.conf("alpha", ".env", f"ALPHA_USER=change-me\nALPHA_OTHER={SENTINEL}\n")
         proc = self.run_cc("check")
         self.assertEqual(proc.returncode, 1, proc.stdout)
         self.assertIn("alpha: broken (.env present; 2 required, 1 optional)", proc.stdout)
@@ -91,7 +91,7 @@ class ConfigCheckTest(unittest.TestCase):
 
     def test_complete_env_is_ok_and_values_never_print(self):
         self.folder("local-alpha", {".env.example": "ALPHA_USER=change-me\nexport ALPHA_PASS=change-me\n"})
-        self.conf("alpha", ".env", f"ALPHA_USER=admin\nexport ALPHA_PASS={SECRET}\n")
+        self.conf("alpha", ".env", f"ALPHA_USER=admin\nexport ALPHA_PASS={SENTINEL}\n")
         proc = self.run_cc("check")
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertIn("alpha: ok (.env present; 2 required, 0 optional)", proc.stdout)
@@ -190,7 +190,7 @@ class ConfigCheckTest(unittest.TestCase):
     def test_privacy_patterns_map_to_the_config_root(self):
         # leak-guard reads <config>/privacy-patterns, not <config>/leak-guard/.
         self.folder("local-leak-guard", {"privacy-patterns.example": "# x\n"})
-        (self.config / "privacy-patterns").write_text(f"{SECRET}\n")
+        (self.config / "privacy-patterns").write_text(f"{SENTINEL}\n")
         proc = self.run_cc("check")
         self.assertIn("leak-guard: ok (no .env.example)", proc.stdout)
         self.assertIn("  conf: privacy-patterns present", proc.stdout)
@@ -251,7 +251,7 @@ class ConfigCheckTest(unittest.TestCase):
     def test_status_1_names_broken_tools_only(self):
         self.folder("local-alpha", {".env.example": "A=x\n"})
         self.folder("local-beta", {".env.example": "B=x\n"})
-        self.conf("alpha", ".env", f"A=change-me-{SECRET}\n")
+        self.conf("alpha", ".env", f"A=change-me-{SENTINEL}\n")
         self.conf("beta", ".env", "B=1\n")
         proc = self.run_cc("status")
         self.assertEqual(proc.returncode, 1)
