@@ -17,7 +17,7 @@ and one executor underneath both.
 ./sd-plan.sh nightly --dry-run    # what tonight would plan, enqueueing nothing
 ./sd-plan.sh nightly    # select one row per participating repository, enqueue each
 ./sd-plan.sh status   # is this machine set up to plan anything, as an exit code
-./sd-plan.sh test     # this folder's suite, run by system-native CI
+./sd-plan.sh test     # this folder's suite, run by make check
 ./sd-plan.sh help     # the subcommands
 ```
 
@@ -476,8 +476,8 @@ here is an action you take. `jev off` and an unkeyed machine stop it too.
 
 ## Tests
 
-`./sd-plan.sh test`, and `system-native` runs it in CI. Python rather than
-shell for the reason `local-repo-sync/README.md:90` gives: the CI wrapper
+`./sd-plan.sh test`, and `make check` runs it. Python rather than
+shell for the reason `local-repo-sync/README.md:90` gives: the `run_suite` wrapper
 asserts a `Ran N tests` summary and fails on any skip, and a shell harness
 produces neither.
 

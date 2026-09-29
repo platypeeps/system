@@ -52,8 +52,7 @@ regrant FDA for faults that had nothing to do with it. `open(2)` returning
 `tests/eintr-retry.sh` runs the real binary with `open(2)` stood in by a
 dyld interposer and checks all of this without needing the grant.
 `msgsnap.sh test` runs it as a unittest suite, which is how the
-`system-native` CI `tools` leg runs it on every pull request and every push
-to `main` (sd:946).
+`tools` leg of `make check` runs it (sd:946).
 
 ## What makes it safe to grant
 
