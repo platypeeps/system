@@ -356,6 +356,9 @@ opaque: it reads no dashboard cookie and calls no dashboard endpoint.
 the page's own CSS and images load as cross-origin requests. Asset responses
 therefore carry `Cross-Origin-Resource-Policy: cross-origin` through the
 handler's `_overrides`; every other header stays the dashboard's.
+A font also carries `Access-Control-Allow-Origin: *`, because a browser fetches
+fonts in CORS mode. No other file gets it: the data scripts beside the pages
+hold real notes and mail, and any site could then read them from this port.
 
 ## Legacy collector reference
 

@@ -429,7 +429,9 @@ class Dashboard(BaseHTTPRequestHandler):
     #
     # `_overrides` does the same for any other header in the tuple, by name. A
     # design asset uses it to relax Cross-Origin-Resource-Policy, because the
-    # sandboxed mockup that loads it has an opaque origin (see designs.py).
+    # sandboxed mockup that loads it has an opaque origin (see designs.py). An
+    # override the tuple does not name is added after it: a design font sends
+    # Access-Control-Allow-Origin that way.
     def end_headers(self) -> None:
         policy = getattr(self, "_policy", None)
         overrides = getattr(self, "_overrides", None) or {}
@@ -438,6 +440,10 @@ class Dashboard(BaseHTTPRequestHandler):
                 value = policy
             value = overrides.get(name, value)
             self.send_header(name, value)
+        named = {name for name, _ in SECURITY_HEADERS}
+        for name, value in overrides.items():
+            if name not in named:
+                self.send_header(name, value)
         super().end_headers()
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - base class
@@ -760,7 +766,7 @@ class Dashboard(BaseHTTPRequestHandler):
         A page gets the sandboxing policy; an asset keeps the dashboard's policy
         and relaxes only its resource policy, so the sandboxed page may load it.
         """
-        from .designs import ASSET_HEADERS, POLICY, resolve
+        from .designs import ASSET_HEADERS, FONT_HEADERS, POLICY, resolve
 
         found = resolve(tail)
         if found is None:
@@ -778,7 +784,7 @@ class Dashboard(BaseHTTPRequestHandler):
             )
         if kind.startswith("text/html"):
             return self._send(200, body, kind, policy=POLICY)
-        self._send(200, body, kind, overrides=ASSET_HEADERS)
+        self._send(200, body, kind, overrides=FONT_HEADERS if kind.startswith("font/") else ASSET_HEADERS)
 
     def _static(self, name: str) -> None:
         if name not in STATIC_FILES:
