@@ -330,7 +330,7 @@ party, which is the one thing that scanner exists to prevent.
 
 `./jev.sh test` runs the suite against a stub of the API on loopback, never
 against TypeSafe. A suite that called the real endpoint would spend tokens on
-every CI run and go red when someone else's network did, and `system-native`
+every `make check` and go red when someone else's network did, and `tests/ci-native.sh`
 treats a skipped test as a failure, so "skip when offline" is not an option.
 The stub also lets a test assert the exact payload that went out, which is the
 half of the contract a live call cannot show.

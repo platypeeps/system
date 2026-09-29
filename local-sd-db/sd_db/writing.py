@@ -14,6 +14,8 @@ import os
 import re
 import sqlite3
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
@@ -71,9 +73,58 @@ def _key(piece: str) -> str:
     return piece
 
 
+# (registered root, worktree root), set by `checkout` (sd:2024). Only the
+# repository it was validated for is redirected; every other one keeps its path.
+_CHECKOUT: ContextVar[tuple[Path, Path] | None] = ContextVar("writing_checkout", default=None)
+
+
+def _common_dir(root: Path) -> Path:
+    return (root / _git(root, "rev-parse", "--git-common-dir")).resolve()
+
+
+@contextmanager
+def checkout(repo: str, root: Path | str):
+    """Read and write piece files in `root`, a worktree of `repo` (sd:2024).
+
+    Rows stay keyed to the registered repository, so a writer in its own
+    worktree records gates against the prose it changed there. `root` must
+    share the registered checkout's Git directory; any other path is refused.
+    Another repository's rows keep reading their own registered checkout.
+    Registration, cutover and recovery journal the registered checkout, so
+    they refuse to run inside it.
+    """
+    registered = sdpaths.expand(repo).resolve()
+    root = Path(root).resolve()
+    if root != registered:
+        try:
+            same = _common_dir(root) == _common_dir(registered)
+        except WorkflowError:
+            same = False
+        if not same:
+            raise WorkflowError(f"{root} is not a worktree of the registered repository {repo}")
+    token = _CHECKOUT.set((registered, root))
+    try:
+        yield root
+    finally:
+        _CHECKOUT.reset(token)
+
+
+def _disk(repo: str) -> Path:
+    """Where `repo`'s piece files live: its active `checkout`, else its registered path."""
+    registered = sdpaths.expand(repo).resolve()
+    active = _CHECKOUT.get()
+    return active[1] if active is not None and active[0] == registered else registered
+
+
+def _registered_only(repo: str) -> None:
+    """Journals name the registered checkout, so their writers run only there."""
+    if _disk(repo) != sdpaths.expand(repo).resolve():
+        raise WorkflowError("writing registration, cutover and recovery run only in the registered checkout, not a worktree")
+
+
 def _path(repo: str, piece: str, relative: str | None = None) -> Path:
     piece = _key(piece)
-    root = sdpaths.expand(repo).resolve()
+    root = _disk(repo)
     relative = relative or f"content/{piece}/index.md"
     wanted = {f"content/{piece}/index.md", f"content-parked/{piece}/index.md"}
     if relative not in wanted:
@@ -168,7 +219,7 @@ def _snapshot(row) -> dict:
     for name, filename in REPORTS.items():
         candidate = path.with_name(filename)
         if candidate.exists():
-            if not candidate.resolve().is_relative_to(sdpaths.expand(row["repo"]).resolve()):
+            if not candidate.resolve().is_relative_to(_disk(row["repo"])):
                 raise WorkflowError(f"{filename} escapes the registered repository")
             files[name] = candidate.read_bytes()
     return {"path": path, "text": text, "digest": digest, "files": files,
@@ -327,8 +378,8 @@ def _import_piece(connection: sqlite3.Connection, repo: str, piece: str, *, path
         title = _text(metadata.get("title"), "title")
         fields = _fields(existing["fields"]) if existing else {}
         fields["writing"] = metadata
-        disk = sdpaths.expand(repo)
-        relative = source.relative_to(disk.resolve()).as_posix()
+        disk = _disk(repo)
+        relative = source.relative_to(disk).as_posix()
         base_commit, source_commit = None, None
         if (disk / ".git").exists():
             try:
@@ -365,6 +416,7 @@ def import_piece(connection: sqlite3.Connection, repo: str, piece: str, *, path:
     ownership is already row while the new item may still roll back.
     """
     repo = _canonical(connection, repo)
+    _registered_only(repo)
     if pieces_owner(connection, repo) != "row":
         return _import_piece(connection, repo, piece, path=path, who=who)
     journal_path = _journal_path(connection, repo)
@@ -408,7 +460,7 @@ def import_piece(connection: sqlite3.Connection, repo: str, piece: str, *, path:
 
 
 def _inventory(repo: str) -> list[dict]:
-    root = sdpaths.expand(repo).resolve()
+    root = _disk(repo)
     entries = {}
     for tree in ("content", "content-parked"):
         for path in sorted((root / tree).glob("*/*/index.md")):
@@ -719,7 +771,7 @@ def verify_pieces(connection: sqlite3.Connection, repo: str) -> dict:
                 differences.append(f"{entry['piece']}: parked identity differs from source")
     differences.extend(f"{piece}: database row has no artifact" for piece in rows)
     if owner == "row":
-        marker = sdpaths.expand(repo) / MARKER
+        marker = _disk(repo) / MARKER
         if not marker.exists() or marker.read_text(encoding="utf-8") != "row\n":
             differences.append("writing status marker is missing or incorrect")
     return {"ok": not differences, "owner": owner, "files": len(files), "rows": row_count, "differences": differences}
@@ -777,6 +829,7 @@ def _restore_journal_files(journal: dict, entries: list[dict]) -> list[str]:
 def recover_cutover(connection: sqlite3.Connection, repo: str, *, who: str) -> dict:
     """Recover a killed cutover without overwriting subsequent user edits."""
     repo = _canonical(connection, repo)
+    _registered_only(repo)
     journal_path = _journal_path(connection, repo)
     if not journal_path.exists():
         raise WorkflowError("no writing cutover journal exists for this repository")
@@ -815,6 +868,7 @@ def cutover_pieces(connection: sqlite3.Connection, repo: str, *, expected_finger
     original, rewritten, touched = {}, {}, []
     journal = None
     repo = _canonical(connection, repo)
+    _registered_only(repo)
     disk = sdpaths.expand(repo)
     journal_path = _journal_path(connection, repo)
     try:

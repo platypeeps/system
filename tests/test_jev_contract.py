@@ -35,9 +35,9 @@ a pass -- the very shape this file exists to ban. So the rules ask about the
 flags a folder uses anywhere in its own code, which no amount of wrapping
 hides.
 
-Stdlib and git only. This runs in the `system-native` preflight beside
-`tests/test_citations.py`, before the virtualenv exists, and every leg
-repeats it. `python3 tests/test_jev_contract.py` from the repository root is
+Stdlib and git only. This runs in the `tests/ci-native.sh` preflight
+beside `tests/test_citations.py`, before the virtualenv exists, once per
+`make check` and before any leg. `python3 tests/test_jev_contract.py` from the repository root is
 the whole invocation, and the preflight's unwired-suite guard fails when
 `tests/ci-native.sh` stops naming it.
 """
@@ -866,7 +866,7 @@ class TheWorkflowRunsThisFile(unittest.TestCase):
         # out that one line is missing.
         self.assertTrue(
             wanted.search(workflow),
-            "the system-native preflight no longer runs this file, so none of "
+            "the tests/ci-native.sh preflight no longer runs this file, so none of "
             "these rules is enforced anywhere; add the line "
             "`python3 tests/test_jev_contract.py` beside the citations gate",
         )
