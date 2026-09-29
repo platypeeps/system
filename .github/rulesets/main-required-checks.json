@@ -14,28 +14,11 @@
     {
       "type": "required_status_checks",
       "parameters": {
-        "strict_required_status_checks_policy": false,
+        "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           {
-            "context": "route",
-            "integration_id": 15368
-          },
-          {
-            "context": "system-native (shared)",
-            "integration_id": 15368
-          },
-          {
-            "context": "system-native (dashboard)",
-            "integration_id": 15368
-          },
-          {
-            "context": "system-native (runner)",
-            "integration_id": 15368
-          },
-          {
-            "context": "system-native (tools)",
-            "integration_id": 15368
+            "context": "sd/local-gate"
           }
         ]
       }

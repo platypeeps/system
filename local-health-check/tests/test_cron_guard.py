@@ -82,6 +82,13 @@ class CronGuardAgainstFixtures(unittest.TestCase):
 
         stub = cls.tmp / "bin"
         stub.mkdir()
+        # The real `log show --last 24h` reads the whole unified log, which
+        # alone can outlast RUN_TIMEOUT on a busy machine; this suite is not
+        # about fault volume, so the stub prints no faults.
+        log = stub / "log"
+        log.write_text("#!/bin/sh\nexit 0\n")
+        log.chmod(0o755)
+
         launchctl = stub / "launchctl"
         arms = "".join(
             f'    {job}) printf \'\\truns = {runs}\\n\\tlast exit code = {code}\\n\' ;;\n'

@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import sys
+import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -255,12 +259,131 @@ def finalize_delivery(connection: sqlite3.Connection, run_id: str, descriptor: d
     return state
 
 
+#: How often a waiting ship lock retries, in seconds; the deadline bounds the wait.
+WAIT_POLL_SECONDS = 0.5
+#: The holder record is small; a longer file is not one.
+HOLDER_BYTES = 4096
+HELD = "another ship operation owns this repository"
+
+
+#: The directory beside the database that holds one lock file per repository.
+LOCK_DIRECTORY = "ship-locks"
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def read_holder(path: Path) -> dict | None:
+    """The advisory record in a ship lock file, or None when it holds none.
+
+    The flock is the lock; this record only names who took it. `alive` says
+    whether its pid still runs: a record whose pid is gone is what a killed
+    holder leaves, and it names nobody. A reused pid can make a stale record
+    read as alive; the record is a hint for a person, never a hold.
+    """
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        raw = os.read(descriptor, HOLDER_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    try:
+        record = json.loads(raw) if 0 < len(raw) <= HOLDER_BYTES else None
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or type(record.get("pid")) is not int or record["pid"] <= 0:
+        return None
+    age = None
+    try:
+        age = max(0, int(time.time() - datetime.fromisoformat(record["started_at"]).timestamp()))
+    except (KeyError, TypeError, ValueError):
+        pass
+    fields = ("pid", "command", "item", "review", "repository", "started_at")
+    return {**{name: record.get(name) for name in fields}, "age_seconds": age, "alive": _alive(record["pid"])}
+
+
+def _holder_text(record: dict | None) -> str:
+    if record is None or not record["alive"]:
+        return "holder not recorded"
+    parts = [f"pid {record['pid']}"]
+    if record.get("command"):
+        parts.append(str(record["command"]))
+    if record.get("item") is not None and f"--item {record['item']}" not in str(record.get("command") or ""):
+        parts.append(f"item {record['item']}")
+    if record.get("review"):
+        parts.append(f"review {record['review']}")
+    if record["age_seconds"] is not None:
+        parts.append(f"held {record['age_seconds']}s")
+    return ", ".join(parts)
+
+
+def lock_files(database: Path) -> list[dict]:
+    """Every ship lock file, as held, stale or idle; nothing here removes one.
+
+    A lock file is a flock target and stays after its holder ends, so a file
+    is not a hold (sd:1940). `held` means its record names a live pid; `stale`
+    means the record names a pid that is gone; `idle` means no record.
+    """
+    directory = database.parent / LOCK_DIRECTORY
+    if not directory.is_dir():
+        return []
+    entries = []
+    for path in sorted(directory.glob("*.lock")):
+        record = read_holder(path)
+        state = "idle" if record is None else "held" if record["alive"] else "stale"
+        entries.append({"path": str(path), "state": state, **(record or {})})
+    return entries
+
+
+def held_locks(database: Path) -> list[dict]:
+    """The ship locks a live process holds, for `sd runner status`."""
+    return [{key: value for key, value in entry.items() if key not in ("state", "alive")}
+            for entry in lock_files(database) if entry["state"] == "held"]
+
+
+def _write_holder(descriptor: int, record: dict) -> None:
+    """Replace the record in place; the flock is on this inode, so no rename."""
+    data = json.dumps(record, sort_keys=True).encode()[:HOLDER_BYTES]
+    os.ftruncate(descriptor, 0)
+    os.pwrite(descriptor, data, 0)
+
+
 @contextmanager
-def repository_lock(database: Path, repository: str):
-    """Serial per remote across clones; never lock or alter an operator checkout."""
-    directory = database.parent / "ship-locks"
+def repository_lock(database: Path, repository: str, *, holder: dict | None = None, wait: float = 0):
+    """Serial per remote across clones; never lock or alter an operator checkout.
+
+    Under the flock, the holder writes pid, command, item or review, repository
+    and start time into the lock file, and clears it on release. A refusal
+    reads it back. `wait` seconds block on the flock, polled every
+    WAIT_POLL_SECONDS, then refuse as `wait=0` refuses at once.
+    """
+    if wait < 0:
+        raise WorkflowError("ship lock wait must be zero or more seconds")
+    directory = database.parent / "ship-locks"  # LOCK_DIRECTORY
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    name = hashlib.sha256(repository.encode()).hexdigest() + ".lock"
-    with runner_journal.lock(directory / name, blocking=False, noun="ship", error=WorkflowError,
-                             held="another ship operation owns this repository; retry after it finishes"):
-        yield
+    path = directory / (hashlib.sha256(repository.encode()).hexdigest() + ".lock")
+
+    def held() -> str:
+        waited = f"; waited {wait:g}s" if wait else ""
+        return f"{HELD} ({_holder_text(read_holder(path))}){waited}; retry after it finishes"
+
+    with runner_journal.lock(path, blocking=False, noun="ship", error=WorkflowError, held=held,
+                             wait=wait, poll=WAIT_POLL_SECONDS) as descriptor:
+        given = holder or {}
+        record = {"pid": os.getpid(), "repository": repository, "started_at": now(),
+                  "command": given.get("command") or " ".join([Path(sys.argv[0]).name, *sys.argv[1:]])[:512],
+                  "item": given.get("item"), "review": given.get("review")}
+        _write_holder(descriptor, record)
+        try:
+            yield
+        finally:
+            os.ftruncate(descriptor, 0)

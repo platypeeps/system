@@ -8,18 +8,9 @@
         "required_approving_review_count": 0,
         "enforce_admins": true
       },
-      "because": "One maintainer account holds push and merge rights on this repository, and GitHub forbids approving your own pull request, so any required approval count above zero locks main for the only person who can merge. The ruleset `main required checks` requires a pull request (0 approvals) with route and the four system-native legs, and it has no bypass, so every commit on main comes through a pull request whose checks passed; sd-review runs locally before every merge.",
+      "because": "One maintainer account holds push and merge rights on this repository, and GitHub forbids approving your own pull request, so any required approval count above zero locks main for the only person who can merge. The ruleset `main required checks` requires a pull request (0 approvals) with the sd/local-gate status, which sd-ship merge posts after make check passes at the head, and it has no bypass, so every commit on main comes through a pull request whose checks passed; sd-review runs locally before every merge.",
       "since": "2026-09-27",
       "until": "a second account with push or merge rights on this repository exists"
-    },
-    {
-      "id": "strict",
-      "state": {
-        "strict": false
-      },
-      "because": "Strict checks leave every other open pull request behind on each landing, and each one brought up to date re-runs the four system-native legs against a base that moved for no reason its diff cares about. With one maintainer landing pull requests one at a time, the re-runs buy no safety that the local review and the post-merge run on main do not already give.",
-      "since": "2026-09-27",
-      "until": "system-native runs on a merge queue"
     }
   ]
 }

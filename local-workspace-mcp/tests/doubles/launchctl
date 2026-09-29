@@ -16,6 +16,10 @@ case "$1" in
     else
       [ -e "$FAKE_DIR/loaded" ] || exit 113
     fi ;;
+  list)
+    # $FAKE_DIR/pid: the agent's pid, printed as launchd does; the stub ps
+    # answers its age. `list` never reads print_seq.
+    [ -s "$FAKE_DIR/pid" ] && printf '{\n\t"PID" = %s;\n};\n' "$(cat "$FAKE_DIR/pid")" ;;
   kickstart) [ -e "$FAKE_DIR/heal_on_kickstart" ] && echo ok > "$FAKE_DIR/curl_mode" ;;
 esac
 exit 0

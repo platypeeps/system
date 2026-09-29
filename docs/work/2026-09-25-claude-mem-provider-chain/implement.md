@@ -10,7 +10,7 @@ created: 2026-09-25
    script with `--apply` against a scratch data directory and a stub server
    on `127.0.0.1` for the gateway and Gemini.
    Check: the new cases fail on `origin/main`.
-2. **The watchdog.** Rewrite `mem_pro_watchdog` in `local-claude/claude.sh` to
+2. **The watchdog.** Rewrite `mem_pro_watchdog` [quoted: removed 2026-09-28] in `local-claude/claude.sh` to
    the design's run. Help text, `local-claude/README.md` and the job's comment
    follow.
    Check: `claude.sh test` green; each mutant below turns a case red.
@@ -77,3 +77,9 @@ accepted:
   while the current provider works.
   `test_a_stuck_provider_moves_up_at_once_to_one_that_answers` failed with
   `'gemini' != 'openrouter'`.
+
+2026-09-28 — retired. The operator moved claude-mem to the Claude
+subscription with Haiku 4.5 and cancelled cmem Pro, so no provider is left to
+move between. The cron job was uninstalled and dropped from the personal
+profile; this change removes `mem-pro-watchdog`, its two test files, and the
+`pro-watchdog.log` trim in `prune-mem-logs`, which nothing writes any more.

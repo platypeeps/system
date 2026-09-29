@@ -225,7 +225,7 @@ def _git(root: Path, *args: str, input: str | None = None) -> str:
 
 
 def _delivery_evidence(row: dict, commit: str, *, verification_root: Path | None = None,
-                       registered_remote: str | None = None) -> dict:
+                       registered_remote: str | None = None, trailer: str = "delivers") -> dict:
     root = verification_root or paths.expand(row["repo"])
     if not root.is_dir():
         raise WorkflowError("registered repository is unavailable; delivery cannot be verified")
@@ -265,6 +265,15 @@ def _delivery_evidence(row: dict, commit: str, *, verification_root: Path | None
     message = _git(root, "show", "-s", "--format=%B", commit)
     trailers = _git(root, "interpret-trailers", "--parse", input=message)
     wanted = {f"sd:{row['id']}"}
+    if trailer == "item":
+        # `sd-ship` writes `Item: sd:<id>` and nothing else, so the original
+        # source slug a `Delivers:` may name does not apply here.
+        named = {line.partition(":")[2].strip() for line in trailers.splitlines()
+                 if line.partition(":")[0].lower() == "item"}
+        if not named.intersection(wanted):
+            raise WorkflowError(f"commit carries no Item trailer for sd:{row['id']}")
+        return {"commit": commit, "verified_ref": verified_ref, "verified_tip": tip,
+                "shipped_at": stamp(_git(root, "show", "-s", "--format=%cI", commit)), "trailer": "Item"}
     external = row["external_id"] or ""
     if row["source"] == "docs/work" and "::docs/work/" in external:
         original = PurePosixPath(external.split("::", 1)[1])
@@ -294,13 +303,48 @@ def deliver_work(
         if isinstance(previous, dict) and previous.get("outcome") == "delivered":
             return initial
         raise WorkflowError("cancelled or previously completed work cannot be reclassified as delivered")
-    if verification_root is None:
-        evidence = _delivery_evidence(initial["item"], commit)
-    else:
-        registered = connection.execute("SELECT remote FROM repo WHERE path = ?", (initial["item"]["repo"],)).fetchone()
-        evidence = _delivery_evidence(initial["item"], commit, verification_root=Path(verification_root).resolve(),
-                                      registered_remote=registered["remote"] if registered else None)
+    evidence = _verified(connection, initial["item"], commit, verification_root)
     return _complete_delivery(connection, item, initial["revision"], evidence, who=who)
+
+
+def _verified(connection: sqlite3.Connection, row: dict, commit: str,
+              verification_root: Path | str | None, **trailer: str) -> dict:
+    """`_delivery_evidence` from the row's checkout, or from a clone held to its registered remote."""
+    if verification_root is None:
+        return _delivery_evidence(row, commit, **trailer)
+    registered = connection.execute("SELECT remote FROM repo WHERE path = ?", (row["repo"],)).fetchone()
+    return _delivery_evidence(row, commit, verification_root=Path(verification_root).resolve(),
+                              registered_remote=registered["remote"] if registered else None, **trailer)
+
+
+def deliver_associated_work(
+    connection: sqlite3.Connection, item: int, commit: str, *, who: str, reason: str,
+    expected_revision: str | None = None, verification_root: Path | str | None = None,
+) -> dict:
+    """Deliver work whose whole-item merge carried `Item:` where `Delivers:` was meant.
+
+    The after-the-fact path, taken only by name and with a reason: a merge
+    prepared without `--deliver` lands `Item: sd:<id>`, which `deliver_work`
+    refuses, and no later commit of the same item can be made to carry the
+    trailer. It checks what `Delivers:` would have shown: the commit is on
+    the verified default branch, it names this item in its trailer block,
+    and the row is not completed. The receipt records `trailer: Item` and
+    the reason, so it never reads as an ordinary delivery. `deliver_work`
+    is unchanged and still refuses the same commit.
+    """
+    who = _text(who, "who")
+    if not isinstance(reason, str) or not reason.strip():
+        raise WorkflowError("after-the-fact delivery requires a nonempty reason")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
+        raise WorkflowError("delivery requires a full lowercase commit ID")
+    initial = _work(connection, item, expected_revision)
+    previous = completion_record(initial["item"]) or {}
+    if initial["item"]["status"] == "done":
+        if previous.get("outcome") == "delivered":
+            return initial
+        raise WorkflowError("cancelled or previously completed work cannot be reclassified as delivered")
+    evidence = _verified(connection, initial["item"], commit, verification_root, trailer="item")
+    return _complete_delivery(connection, item, initial["revision"], {**evidence, "after_the_fact": reason.strip()}, who=who)
 
 
 def _complete_delivery(connection: sqlite3.Connection, item: int, revision: str,

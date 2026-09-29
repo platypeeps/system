@@ -6,12 +6,10 @@ to the local date the script sees; row ages to the clock at the run.
 """
 
 import datetime
-import fcntl
 import hashlib
 import os
 import pathlib
 import sqlite3
-import stat
 import subprocess
 import tempfile
 import time
@@ -118,111 +116,6 @@ class DatedLogs(PruneCase):
         code, output = self.run_prune("--apply")
         self.assertEqual(code, 0, output)
         self.assertIn("nothing to do", output)
-
-
-class TheWatchdogLog(PruneCase):
-    def write_watchdog(self, count):
-        path = self.logs / "pro-watchdog.log"
-        path.write_text("".join("line %d\n" % i for i in range(1, count + 1)))
-        path.chmod(0o640)
-        return path
-
-    def test_it_is_trimmed_to_its_last_5000_lines_keeping_its_mode(self):
-        path = self.write_watchdog(6000)
-        size = path.stat().st_size
-        code, output = self.run_prune("--apply")
-        self.assertEqual(code, 0, output)
-        lines = path.read_text().splitlines()
-        self.assertEqual(len(lines), 5000)
-        self.assertEqual(lines[0], "line 1001")
-        self.assertEqual(lines[-1], "line 6000")
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
-        self.assertIn("reclaimed %d bytes" % (size - path.stat().st_size), output)
-        # No temp file is left beside it.
-        self.assertEqual(self.names(), ["pro-watchdog.log"])
-
-    def test_a_dry_run_leaves_it_alone(self):
-        path = self.write_watchdog(6000)
-        before = path.read_text()
-        code, output = self.run_prune()
-        self.assertEqual(code, 0, output)
-        self.assertEqual(path.read_text(), before)
-        self.assertIn("would trim pro-watchdog.log from 6000 to 5000 lines", output)
-
-    def environment(self):
-        env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_MEM_")}
-        env["CLAUDE_MEM_DATA_DIR"] = str(self.data)
-        env["CLAUDE_MEM_PRO_WATCHDOG_NOTIFY"] = "0"
-        return env
-
-    def test_the_trim_waits_for_a_writer_holding_the_lock(self):
-        # A line the watchdog appends while the trim is under way must land
-        # in the file that survives, not in the copy being replaced.
-        path = self.write_watchdog(6000)
-        with path.open("a") as writer:
-            fcntl.flock(writer, fcntl.LOCK_EX)
-            prune = subprocess.Popen(["sh", str(SCRIPT), "prune-mem-logs", "--apply"],
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     env=self.environment())
-            self.addCleanup(prune.kill)
-            time.sleep(1.5)
-            self.assertIsNone(prune.poll(), "the trim did not wait for the lock")
-            writer.write("appended while trimming\n")
-            writer.flush()
-        output = prune.communicate(timeout=60)[0].decode()
-        self.assertEqual(prune.returncode, 0, output)
-        self.assertEqual(path.read_text().splitlines()[-1], "appended while trimming")
-
-    def test_the_watchdog_waits_for_the_trim_and_writes_to_the_new_file(self):
-        # The other side: a watchdog line queued behind the trim's lock must
-        # follow the rename to the trimmed file.
-        path = self.write_watchdog(10)
-        with path.open("rb") as trimmer:
-            fcntl.flock(trimmer, fcntl.LOCK_EX)
-            watchdog = subprocess.Popen(["sh", str(SCRIPT), "mem-pro-watchdog", "--apply"],
-                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                        env=self.environment())
-            self.addCleanup(watchdog.kill)
-            time.sleep(1.5)
-            self.assertIsNone(watchdog.poll(), "the watchdog did not wait for the lock")
-            replacement = self.logs / "replacement"
-            replacement.write_text("trimmed\n")
-            os.replace(replacement, path)
-        output = watchdog.communicate(timeout=60)[0].decode()
-        self.assertEqual(watchdog.returncode, 0, output)
-        lines = path.read_text().splitlines()
-        self.assertEqual(lines[0], "trimmed")
-        self.assertIn("not managing claude-mem here", lines[-1])
-
-    def test_a_trim_that_waited_on_another_trim_reads_the_new_file(self):
-        # Two overlapping trims: the second opened the old file before the
-        # first renamed its copy over it, and a line was appended to that
-        # copy since. The second must trim the file now at the path, not
-        # write the stale inode's tail back over it.
-        path = self.write_watchdog(6000)
-        with path.open("rb") as first:
-            fcntl.flock(first, fcntl.LOCK_EX)
-            second = subprocess.Popen(["sh", str(SCRIPT), "prune-mem-logs", "--apply"],
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                      env=self.environment())
-            self.addCleanup(second.kill)
-            time.sleep(1.5)
-            self.assertIsNone(second.poll(), "the second trim did not wait for the lock")
-            replacement = self.logs / "replacement"
-            replacement.write_text("trimmed\nappended after the first trim\n")
-            os.replace(replacement, path)
-        output = second.communicate(timeout=60)[0].decode()
-        self.assertEqual(second.returncode, 0, output)
-        self.assertEqual(path.read_text().splitlines(),
-                         ["trimmed", "appended after the first trim"], output)
-
-    def test_a_short_log_is_not_rewritten(self):
-        path = self.write_watchdog(4999)
-        inode = path.stat().st_ino
-        code, output = self.run_prune("--apply")
-        self.assertEqual(code, 0, output)
-        self.assertEqual(path.stat().st_ino, inode)
-        self.assertIn("reclaimed 0 bytes", output)
 
 
 DAY_MS = 86400 * 1000

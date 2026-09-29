@@ -120,9 +120,10 @@ class StatusTests(WorkspaceMcpCase):
     def test_the_handshake_gets_only_the_time_initialize_left(self) -> None:
         # Three calls with a full TIMEOUT each could take 3 x TIMEOUT, past
         # local-health-check's 30s bound. They share one deadline instead.
+        # The close's floor is set to 1 here so only the shared deadline binds.
         self.given()
         (self.fake / "curl_delay").write_text("2\n")
-        r = self.run_sh("status", WORKSPACE_MCP_TIMEOUT="4")
+        r = self.run_sh("status", WORKSPACE_MCP_TIMEOUT="4", WORKSPACE_MCP_CLOSE_TIMEOUT="1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         calls = self.journal("curl")
         (note,) = [c for c in calls if "notifications/initialized" in c]
@@ -130,13 +131,18 @@ class StatusTests(WorkspaceMcpCase):
         self.assertLessEqual(max_time(note), 2)
         self.assertLessEqual(max_time(close), 2)
 
-    def test_no_time_left_after_initialize_is_broken(self) -> None:
+    def test_no_time_left_after_initialize_is_broken_and_still_closes(self) -> None:
+        # The server made a session; leaving it open because the server was
+        # slow is how a slow server collects one session per probe.
         self.given()
         (self.fake / "curl_delay").write_text("3\n")
         r = self.run_sh("status", WORKSPACE_MCP_TIMEOUT="3")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("left no time within 3s", r.stdout)
-        self.assertEqual([c for c in self.journal("curl") if "initialize" not in c or "notifications" in c], [])
+        calls = self.journal("curl")
+        self.assertEqual([c for c in calls if "notifications/initialized" in c], [])
+        (close,) = [c for c in calls if "-X DELETE" in c]
+        self.assertEqual(max_time(close), 3)
 
     def test_a_session_close_that_fails_is_broken(self) -> None:
         # A close that fails leaves one session behind per probe; the probe
@@ -158,16 +164,18 @@ class StatusTests(WorkspaceMcpCase):
         r = self.run_sh("status")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_a_close_skipped_for_lack_of_time_says_why(self) -> None:
-        # The bound wins over the cleanup: the probe stays healthy, sends no
-        # DELETE, and names the session it left open.
+    def test_a_spent_deadline_still_gives_the_close_its_floor(self) -> None:
+        # The close is never skipped: past the deadline it gets
+        # WORKSPACE_MCP_CLOSE_TIMEOUT, so the probe stays bounded at
+        # TIMEOUT + CLOSE_TIMEOUT and leaves no session behind.
         self.given()
         (self.fake / "curl_delay").write_text("1\n")
         (self.fake / "note_delay").write_text("2\n")
-        r = self.run_sh("status", WORKSPACE_MCP_TIMEOUT="3")
+        r = self.run_sh("status", WORKSPACE_MCP_TIMEOUT="3", WORKSPACE_MCP_CLOSE_TIMEOUT="2")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("left its session open: no time within 3s to close it", r.stdout)
-        self.assertEqual([c for c in self.journal("curl") if "-X DELETE" in c], [])
+        self.assertIn("healthy", r.stdout)
+        (close,) = [c for c in self.journal("curl") if "-X DELETE" in c]
+        self.assertEqual(max_time(close), 2)
 
     def test_agent_not_loaded_is_nothing_to_check(self) -> None:
         self.given(loaded=False)
@@ -241,6 +249,32 @@ class WatchTests(WorkspaceMcpCase):
         self.assertRegex(kick, r"^launchctl kickstart -k gui/\d+/local\.system-tools\.google-workspace-mcp$")
         self.assertIn("recovered", r.stdout)
         self.assertEqual(self.journal("notify"), [])
+
+    def test_a_young_agent_is_reported_but_not_restarted(self) -> None:
+        # A kickstart resets a startup in progress; under load that startup
+        # took minutes, so a restart at the end of GRACE started it over.
+        for etime, age in (("01:30", 90), ("04:59", 299)):
+            with self.subTest(etime=etime):
+                self.given(curl="hang", heal=True)
+                (self.fake / "pid").write_text("4242\n")
+                (self.fake / "etime").write_text(etime + "\n")
+                r = self.run_sh("watch")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertEqual(self.kickstarts(), [])
+                self.assertIn(f"the agent started {age}s ago (under 300s); no restart", r.stdout)
+                self.assertEqual(self.journal("notify"), [])
+                (self.fake / "journal").unlink()
+
+    def test_an_agent_past_startup_is_restarted(self) -> None:
+        for etime in ("05:00", "1:02:03", "2-01:00:00"):
+            with self.subTest(etime=etime):
+                self.given(curl="hang", heal=True)
+                (self.fake / "pid").write_text("4242\n")
+                (self.fake / "etime").write_text(etime + "\n")
+                r = self.run_sh("watch")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(len(self.kickstarts()), 1)
+                (self.fake / "journal").unlink()
 
     def test_the_label_prefix_comes_from_the_shared_variable(self) -> None:
         self.given(curl="hang", heal=True)

@@ -28,14 +28,17 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 ## Tests and CI
 
-- `.github/workflows/system-native.yml` runs every suite on Linux (`ubuntu-latest`), Python 3.14, in four legs (`shared`, `dashboard`, `runner`, `tools`).
-- A test that needs macOS goes in a suite named in `tests/macos-only-suites.txt`, never behind a skip; CI cannot run it.
-- Run `tests/run-macos-only.sh all` on a Mac before pushing a change to a folder that list names.
-- Do not count suites in prose; the `run_suite` lines are the enumeration, and prose counts go stale.
+- Merges gate on `make check` through the local gate (`repo.ci=local`): `sd-ship merge` runs it via `sd-check` and posts `sd/local-gate`, the one required check.
+- `make check` runs `tests/check.sh`: the preflight and all four legs of `tests/ci-native.sh`, plus `tests/run-macos-only.sh` suites on a Mac.
+- Actions CI is off on purpose (billing); who, when and how to revert: `docs/local-ci-rollout.md`.
+- The CI workflow files stay in the tree but are disabled; `system-native.yml` calls the same `tests/ci-native.sh`, so do not fork it.
+- A test that needs macOS goes in a suite named in `tests/macos-only-suites.txt`, never behind a skip; Linux cannot run it.
+- Do not count suites in prose; the `run_suite` lines in `tests/ci-native.sh` are the enumeration, and prose counts go stale.
 - Wire a new `*/tests/test_*.py` folder into a `run_suite` line or the macOS-only list; the preflight fails naming any unwired folder.
-- Write shell-script tests as Python `unittest`; the CI wrapper asserts a unittest summary.
-- Skipped tests fail CI; do not add a skip.
-- CI uses an isolated home, an installed library, and the public command pack pinned by SHA.
+- Write shell-script tests as Python `unittest`; the `run_suite` wrapper asserts a unittest summary.
+- Skipped tests fail the check; do not add a skip.
+- The check uses an isolated home, an installed library, Python 3.14, and the command pack at the workflow's pinned SHA, fetched into `.ci/`.
+- A test that drives `launchctl` stubs it on PATH; `make check` fails any call that reaches the real one.
 
 ## Structure
 
@@ -76,7 +79,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - Do not list the declaring tools in prose; lists go stale.
 7. **launchd labels** use the prefix in `SYSTEM_TOOLS_LABEL_PREFIX` (default `local.system-tools`); never hardcode a personal prefix.
 
-Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-cswap` is bash; `local-gito` sources `~/.gito/.env`; `local-cron-jobs` uses `local`.
+Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-cswap` and `tests/ci-native.sh` are bash; `local-gito` sources `~/.gito/.env`; `local-cron-jobs` uses `local`.
 
 ## Planned work lives in `docs/work/`
 
