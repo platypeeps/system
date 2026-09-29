@@ -362,6 +362,20 @@ class HygieneTest(unittest.TestCase):
         self.assertEqual(sha, f.branch_sha(repo, "rewound"))
         self.assertIn("landed branches not deleted", result.stdout)
 
+    def test_without_origin_default_no_landed_branch_is_deleted(self):
+        """NEW. Requirement 3.4: with no origin/<default> to verify, the
+        local main proves nothing is on origin, so nothing is deleted."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "local-only")
+        f.git(repo, "remote", "set-head", "origin", "-d")
+        f.git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertNotEqual("", f.branch_sha(repo, "local-only"))
+        self.assertIn("landed branches not deleted", result.stdout)
+
     def test_a_checkout_behind_with_local_changes_is_listed(self):
         """NEW. Requirement 5: a checkout sync could not fast-forward."""
         f = self.fixture()

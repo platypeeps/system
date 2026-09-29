@@ -65,9 +65,9 @@ on no remote, one named for a done sd item
 still behind its upstream. It never touches a stash, a remote branch, the
 default branch, or a dirty or in-use worktree. All checks are local git
 plumbing, except two calls to `origin`: the remote prune, and
-`git ls-remote` for the default branch. When `origin` cannot be read, or its
-default differs from the local `origin/<default>`, no landed branch is
-deleted that run.
+`git ls-remote` for the default branch. When `origin` cannot be read, the
+local `origin/<default>` is missing, or it differs from `origin`'s, no landed
+branch is deleted that run.
 
 Without `--apply` it exits 1 when it found anything. With `--apply` it exits
 1 only when an action failed. It is not a `status` subcommand.

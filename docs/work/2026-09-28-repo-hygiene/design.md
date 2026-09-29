@@ -35,7 +35,8 @@ those files.
 
 `source:local-repo-sync/repo-sync.sh::hyg_default` takes `origin/HEAD`,
 else a local `main`, else `master`. A checkout with none still gets both
-prunes; only its branch pass is skipped, with a note. The comparison ref is `refs/remotes/origin/<default>` when it exists.
+prunes; only its branch pass is skipped, with a note. The comparison ref is `refs/remotes/origin/<default>` when it exists;
+without it, no landed branch is deleted (below).
 A branch therefore counts as landed only once its content is upstream. A
 local-only merge into `main` keeps the branch, which is the safe side.
 
@@ -44,7 +45,8 @@ content from the remote default. Before the branch pass, `git ls-remote
 origin refs/heads/<default>` must return the local ref's sha. When it
 differs or `origin` cannot be read, the pass deletes no landed branch and
 prints one note; the report-only classes still run. A default from a local
-`main` or `master` has no remote to ask and is used as is.
+`main` or `master` proves nothing is on `origin`, so it deletes no landed
+branch either; it still serves the report-only classes.
 
 ## Landed branches
 

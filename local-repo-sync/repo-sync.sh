@@ -401,7 +401,8 @@ hyg_note()   { echo "  note: $*"; }
 
 # Prints "<name> <compare-ref>" for the default branch: origin/HEAD first,
 # else a local main or master. The compare ref is the remote-tracking ref
-# when there is one, so a branch counts as landed only once it is upstream.
+# when there is one, so a branch counts as landed only once it is upstream;
+# a local compare ref serves the report-only classes but deletes nothing.
 hyg_default() {
   h_ref=$(git -C "$1" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)
   h_name=""
@@ -686,7 +687,8 @@ hyg_repo() {
     def_ref=${h_def#* }
     # "Landed" is judged against the local origin/<default>. A remote that
     # moved it since (a force-push can drop content) or cannot be asked
-    # leaves that judgement stale, so no landed branch is deleted.
+    # leaves that judgement stale, so no landed branch is deleted. A local
+    # main or master proves nothing is on origin, so it deletes nothing.
     h_fresh=1
     case "$def_ref" in
       refs/remotes/origin/*)
@@ -696,6 +698,10 @@ hyg_repo() {
           h_fresh=0
           hyg_note "origin/$def_name here ${h_here:-missing}, on origin ${h_there:-not read}; landed branches not deleted"
         fi
+        ;;
+      *)
+        h_fresh=0
+        hyg_note "no origin/$def_name to verify against; landed branches not deleted"
         ;;
     esac
     git -C "$d" for-each-ref --format="%(refname:short)$US%(objectname)$US%(upstream:track)" \
