@@ -136,8 +136,19 @@ The worktree list is read again just before the delete; a branch checked
 out since classification is a failure, not a delete. The delete is
 `git update-ref -d refs/heads/<b> <sha>`, which compares the tip with the
 classified sha and removes the ref in one step, so a moved tip also fails.
-`update-ref` leaves the config section, so `git config --remove-section`
-follows it. The line printed carries the name, the sha and the restore
+The list is read once more after the delete. A branch checked out in that
+window gets its ref back at the same sha (its reflog is lost), and the line
+is a failure. Only then does `git config --remove-section` remove the config
+section, which `update-ref` leaves.
+
+No git lock covers a checkout: `git checkout` and `git worktree add` write
+the worktree's `HEAD`, not the branch ref. So no delete can exclude a
+concurrent checkout. `git branch -D` is no stronger; it reads the worktrees
+to refuse a checked-out branch, then deletes the ref, with the same window.
+Codex review pass 3 on #19 asked for report-only deletion until writers
+honour a shared lock. That is rejected: the window is two git calls wide,
+the branch must also sit unmoved for a day, and the loss in it is repaired
+by the restore above. Report-only would leave every landed branch in place. The line printed carries the name, the sha and the restore
 command:
 
     deleted branch <b> <sha> (landed by squash; restore: git -C <repo> branch <b> <sha>)

@@ -498,6 +498,12 @@ hyg_worktrees() {
     END          { out() }'
 }
 
+# Succeeds when any worktree of repo $1, the main checkout included, has
+# branch $2 checked out.
+hyg_checked_out() {
+  hyg_worktrees "$1" | awk -F "$US" -v b="$2" '$2 == b { f = 1 } END { exit !f }'
+}
+
 # Decides whether a lock still belongs to a live process. The lock text reads
 # `... (pid <n> start <lstart>)`. Returns 0 (dead: safe to clear) when the pid
 # is not running, or runs with a different start time, which means the pid
@@ -742,11 +748,21 @@ hyg_repo() {
       fi
       if [ "$APPLY" = 1 ]; then
         # update-ref compares the tip it deletes with the one classified, in
-        # one step. Unlike `branch -D` it does not refuse a checked-out
-        # branch, so the worktree list is read again just before.
-        if hyg_worktrees "$d" | awk -F "$US" -v b="$b_name" '$2 == b { f = 1 } END { exit !f }'; then
+        # one step. No git lock covers a checkout, so the worktree list is
+        # read before the delete and again after it; a checkout that landed
+        # in between gets its ref back. `branch -D` has the same window: it
+        # also reads the worktrees, then deletes.
+        if hyg_checked_out "$d" "$b_name"; then
           hyg_fail "delete branch $b_name $b_sha (checked out since it was classified)"
         elif git -C "$d" update-ref -d "refs/heads/$b_name" "$b_sha" 2>/dev/null; then
+          if hyg_checked_out "$d" "$b_name"; then
+            if git -C "$d" update-ref "refs/heads/$b_name" "$b_sha" "" 2>/dev/null; then
+              hyg_fail "delete branch $b_name $b_sha (checked out during the delete; restored, reflog lost)"
+            else
+              hyg_fail "delete branch $b_name $b_sha (checked out during the delete; restore it: git -C $d branch $b_name $b_sha)"
+            fi
+            continue
+          fi
           git -C "$d" config --remove-section "branch.$b_name" 2>/dev/null || true
           hyg_act "deleted branch $b_name $b_sha (landed by $h_how; restore: git -C $d branch $b_name $b_sha)"
         else

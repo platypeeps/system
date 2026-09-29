@@ -397,6 +397,24 @@ class HygieneTest(unittest.TestCase):
         self.assertNotEqual("", f.branch_sha(repo, "grabbed"))
         self.assertTrue(wt.exists())
 
+    def test_a_branch_checked_out_during_the_delete_is_restored(self):
+        """NEW. Requirement 4: git has no lock a checkout honours, so a
+        checkout can land between the last worktree read and the delete.
+        The list is read once more after it, and the ref comes back."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "branch", "late")
+        sha = f.branch_sha(repo, "late")
+        wt = f.tmp / "wt" / "late"
+        f.wrap_git("before", '*"update-ref -d refs/heads/late"*',
+                   f'"$REAL_GIT" -C "{repo}" worktree add -q "{wt}" late >/dev/null 2>&1')
+
+        result = f.run("hygiene", "--apply", expect=1)
+
+        self.assertEqual(sha, f.branch_sha(repo, "late"))
+        self.assertEqual(sha, f.git(wt, "rev-parse", "HEAD"))
+        self.assertIn("restored", result.stdout)
+
     def test_a_merged_branch_in_a_dirty_worktree_keeps_both(self):
         """NEW. Criterion 5."""
         f = self.fixture()
