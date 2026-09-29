@@ -20,6 +20,17 @@ st_config_dir() {
     printf '%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$1"
 }
 
+# st_config_file <tool> <file>: where the tool reads <file>, the copy of its
+# committed <file>.example. Most files sit in the tool's config directory;
+# privacy-patterns sits at the root, where every clone's pre-push guard finds
+# it. The reader and local-config-check both resolve paths here.
+st_config_file() {
+    case "$2" in
+        privacy-patterns) printf '%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$2" ;;
+        *) printf '%s/%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$1" "$2" ;;
+    esac
+}
+
 # st_source_env <tool>: source <config>/<tool>/.env when it exists, with
 # `set -a` so its assignments are exported. Returns 0 either way; a missing
 # file is fine when the values are exported.
