@@ -14,6 +14,8 @@ URL="${WORKSPACE_MCP_URL:-http://127.0.0.1:8083/mcp}"
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="${WORKSPACE_MCP_LABEL:-$LABEL_PREFIX.google-workspace-mcp}"
 TIMEOUT="${WORKSPACE_MCP_TIMEOUT:-10}"
+CLOSE_TIMEOUT="${WORKSPACE_MCP_CLOSE_TIMEOUT:-3}"
+STARTUP="${WORKSPACE_MCP_STARTUP:-300}"
 GRACE="${WORKSPACE_MCP_GRACE:-90}"
 RESTART_WAIT="${WORKSPACE_MCP_RESTART_WAIT:-150}"
 POLL="${WORKSPACE_MCP_POLL:-10}"
@@ -25,9 +27,10 @@ usage() {
   cat <<'HELPEOF'
 usage: workspace-mcp.sh status|watch|test|help
 
-  status   POST one MCP initialize to the server; the whole probe,
-           handshake and close included, is bounded by
-           WORKSPACE_MCP_TIMEOUT seconds. Exits 0 when it answers HTTP 200
+  status   POST one MCP initialize to the server; initialize and handshake
+           are bounded by WORKSPACE_MCP_TIMEOUT seconds, and the session
+           close gets at least WORKSPACE_MCP_CLOSE_TIMEOUT more, so a slow
+           server is not left one session per probe. Exits 0 when it answers HTTP 200
            with an mcp-session-id header and then accepts
            notifications/initialized on that session (the session is
            closed with DELETE after); 3 when there is nothing to check
@@ -38,7 +41,9 @@ usage: workspace-mcp.sh status|watch|test|help
   watch    what the cron job runs. `status`; on 1, keep probing every
            WORKSPACE_MCP_POLL seconds for up to WORKSPACE_MCP_GRACE, since
            a server launchd is still starting needs about 90s. Only when
-           every probe in that window fails, restart the agent once
+           every probe in that window fails, and the agent's process is at
+           least WORKSPACE_MCP_STARTUP seconds old (a younger one is still
+           starting: exit 1, no restart), restart the agent once
            (launchctl kickstart -k) and poll the same way for up to
            WORKSPACE_MCP_RESTART_WAIT. Windows count sleeps; each probe
            adds up to WORKSPACE_MCP_TIMEOUT. Exits 0
@@ -59,6 +64,8 @@ env:
                               $SYSTEM_TOOLS_LABEL_PREFIX.google-workspace-mcp;
                               the prefix defaults to local.system-tools)
   WORKSPACE_MCP_TIMEOUT       seconds per probe (default 10)
+  WORKSPACE_MCP_CLOSE_TIMEOUT least seconds the session close gets (default 3)
+  WORKSPACE_MCP_STARTUP       an agent younger than this is not restarted (default 300)
   WORKSPACE_MCP_GRACE         seconds to keep probing before a restart (default 90)
   WORKSPACE_MCP_RESTART_WAIT  seconds to wait after a restart (default 150)
   WORKSPACE_MCP_POLL          seconds between probes after a restart (default 10)
@@ -72,6 +79,30 @@ HELPEOF
 }
 
 stamp() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+
+# DELETE the probe's session. The close gets what the deadline left, but never
+# less than CLOSE_TIMEOUT: a slow server is the one a skipped close leaks into,
+# one session per probe. The worst case is TIMEOUT + CLOSE_TIMEOUT, still
+# inside local-health-check's 30s bound. Sets `drc` and `dcode`.
+close_session() {
+  cleft=$(( deadline - $(date +%s) ))
+  [ "$cleft" -lt "$CLOSE_TIMEOUT" ] && cleft=$CLOSE_TIMEOUT
+  dcode=$(curl -sS -o /dev/null -X DELETE "$URL" --max-time "$cleft" -w '%{http_code}' \
+    -H "mcp-session-id: $sid" 2>/dev/null) && drc=0 || drc=$?
+}
+
+# Seconds since launchd started the agent's process, or nothing when unknown.
+# `launchctl list LABEL` prints `"PID" = N;`; ps prints etime as [[dd-]hh:]mm:ss.
+agent_age() {
+  apid=$(launchctl list "$LABEL" 2>/dev/null | awk -F' = ' '/"PID"/{gsub(/[; ]/, "", $2); print $2; exit}')
+  [ -n "$apid" ] || return 0
+  ps -o etime= -p "$apid" 2>/dev/null | awk '{
+    t=$1; d=0
+    if (index(t, "-")) { split(t, x, "-"); d=x[1]; t=x[2] }
+    n=split(t, p, ":"); s=0
+    for (i=1; i<=n; i++) s=s*60+p[i]
+    print d*86400+s }'
+}
 
 # Prints one line of reason and returns the status code, so `watch` can reuse
 # it without the exit. 4 means alive but the session close failed: `status`
@@ -111,6 +142,7 @@ probe() {
   # behind each time. The server answered 202 and 200 to these on 2026-09-26.
   left=$(( deadline - $(date +%s) ))
   if [ "$left" -lt 1 ]; then
+    close_session
     echo "workspace-mcp: $URL answered initialize but left no time within ${TIMEOUT}s for notifications/initialized"
     return 1
   fi
@@ -118,24 +150,13 @@ probe() {
     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
     -H "mcp-session-id: $sid" \
     -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' 2>/dev/null) && rc=0 || rc=$?
-  # With no time left the close is skipped: the bound wins over the cleanup.
-  left=$(( deadline - $(date +%s) ))
-  closed=skipped
-  if [ "$left" -ge 1 ]; then
-    dcode=$(curl -sS -o /dev/null -X DELETE "$URL" --max-time "$left" -w '%{http_code}' \
-      -H "mcp-session-id: $sid" 2>/dev/null) && drc=0 || drc=$?
-    closed=tried
-  fi
+  close_session
   case "$rc:$ncode" in
     0:2??) ;;
     *)
       echo "workspace-mcp: $URL answered initialize but not notifications/initialized (curl exit $rc, HTTP $ncode)"
       return 1 ;;
   esac
-  if [ "$closed" = skipped ]; then
-    echo "workspace-mcp: healthy: $URL answered initialize, but the probe left its session open: no time within ${TIMEOUT}s to close it"
-    return 0
-  fi
   # A close that fails leaves a session behind on every probe. The MCP spec
   # lets a server answer 405 when clients may not end sessions: not a fault.
   case "$drc:$dcode" in
@@ -228,6 +249,14 @@ watch() {
   if [ "$rc" -eq 3 ]; then
     echo "$(stamp) $line; no restart"
     return 0
+  fi
+  # A kickstart resets a startup still in progress. Under heavy load startup
+  # took minutes on 2026-09-28, and a restart at 90s started it over. Report a
+  # young agent without restarting it; a later run restarts it if it stays down.
+  age=$(agent_age)
+  if [ -n "$age" ] && [ "$age" -lt "$STARTUP" ]; then
+    echo "$(stamp) workspace-mcp: no answer for ${waited}s, but the agent started ${age}s ago (under ${STARTUP}s); no restart this run"
+    return 1
   fi
   echo "$(stamp) workspace-mcp: no answer for ${waited}s; restarting: launchctl kickstart -k gui/$(id -u)/$LABEL"
   launchctl kickstart -k "gui/$(id -u)/$LABEL" || \
