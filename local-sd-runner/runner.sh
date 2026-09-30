@@ -4,11 +4,12 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 case "${1:-}" in
   -h|--help|help)
-    echo 'runner.sh serve|once|status|preflight|install-plan|prune|prune-apply|retained-remove|discard-plan|archive-plan|archive-refresh|recovery-plan|recovery-reconcile|recovery-quarantine|recovery-unlink|commands|cancel|resume|restore|restore-status|test|test-macos [--config FILE]'
+    echo 'runner.sh serve|once|status|restart|preflight|install-plan|prune|prune-apply|retained-remove|discard-plan|archive-plan|archive-refresh|recovery-plan|recovery-reconcile|recovery-quarantine|recovery-unlink|commands|cancel|resume|restore|restore-status|test|test-macos [--config FILE]'
     echo 'test runs every suite that passes on any platform (CI runs it on Linux). test-macos runs tests/macos/: APFS immutable retention and clonefile seeds, macOS only.'
     echo 'prune and discard-plan are read-only plans. prune-apply --fingerprint FP --who NAME removes only the retained clones that plan lists.'
     echo 'retained-remove --assignment N --who NAME removes one released assignment'"'"'s retained copy, early, with the operator'"'"'s name.'
     echo 'retained-remove --clone-only removes only each attempt'"'"'s clone, and keeps kept.tar, archives/, ignored/ and the directories.'
+    echo 'restart [--max-load N] [--wait SECONDS] kicks the agent only when no assignment is active, recovery-plan is clean and the 1-minute load is below N (default: the core count); it waits for a healthy heartbeat with a new pid and prints that pid and its runner_commit.'
     echo 'status exits 0 healthy, 3 when the <prefix>.sd-runner agent (prefix SYSTEM_TOOLS_LABEL_PREFIX, default local.system-tools) is not loaded (nothing to check, even without a runtime), 1 stale, unhealthy, or loaded without a runtime; local-health-check reads these codes'
     exit 0 ;;
   '') echo 'usage: runner.sh serve|once|status|preflight|install-plan|prune|test|test-macos' >&2; exit 1 ;;
@@ -49,8 +50,9 @@ case "${1:-}" in
       fi
       exit 3
     fi ;;
-  serve|once)
+  serve|once|restart)
     # env.sh may set SD_RUNNER_PYTHON, so the interpreter resolves after it.
+    # restart reads it too, for the SYSTEM_TOOLS_LABEL_PREFIX its agent label uses.
     [ ! -f "$HOME/.config/shell/env.sh" ] || . "$HOME/.config/shell/env.sh" ;;
 esac
 runtime_python="${SD_RUNNER_PYTHON:-$HOME/repos/platypeeps/sd-ai-command-pack/.venv/bin/python}"

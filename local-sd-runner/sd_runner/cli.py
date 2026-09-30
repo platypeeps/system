@@ -10,6 +10,7 @@ import plistlib
 import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -82,6 +83,67 @@ def heartbeat_state(config: Config) -> dict:
         connection.close()
 
 
+#: Seconds `restart` waits for the new daemon's healthy heartbeat.
+RESTART_WAIT = 180
+
+
+def restart(config: Config, *, max_load: float | None = None, wait: float = RESTART_WAIT, label: str = LABEL,
+            clock=time.monotonic, sleep=time.sleep) -> dict:
+    """Kick the runner agent when it is safe to, and wait for the new daemon (sd:1951).
+
+    Three guards refuse with a reason before launchd is touched. An active
+    assignment would lose its supervisor to the kick. A `recovery-plan`
+    that is not clean is what the new daemon's recovery holds on, so it
+    would start unhealthy. A load average at or above `max_load` (default:
+    the core count) is what starved the cold start's `diskutil` into a
+    relaunch loop on 2026-09-28 (sd:1950). Then `launchctl kickstart -k`
+    replaces the process, and the verb waits up to `wait` seconds for a
+    heartbeat that is healthy and names a new pid. `runner_commit` is the
+    checkout commit the new daemon read at start, None from a daemon that
+    does not write it.
+    """
+    if not agent_loaded(label):
+        return {"ok": False, "reason": f"the {label} agent is not loaded; install it first (runner.sh install-plan)"}
+    connection = connect(config.database, write=False)
+    try:
+        active = sorted({row["id"] for row in connection.execute(
+            "SELECT id FROM assignment WHERE status IN ('running', 'ending')")}
+            | {run["assignment"] for run in store.active_runs(connection)})
+        before = store.heartbeat_state(connection)
+    finally:
+        connection.close()
+    if active:
+        return {"ok": False, "reason": f"the queue is not idle: assignment {', '.join(map(str, active))} is active; "
+                "restart when it has ended", "active": active}
+    from . import reconciliation
+    plan = reconciliation.plan(config)
+    if plan["entries"] or plan["journal_issues"] or plan["restore_pending"]:
+        return {"ok": False, "reason": f"recovery-plan is not clean ({len(plan['entries'])} entries, "
+                f"{len(plan['journal_issues'])} journal issues, restore pending {plan['restore_pending']}); "
+                "read runner.sh recovery-plan and resolve it first"}
+    limit = float(max_load if max_load is not None else os.cpu_count() or 1)
+    load = os.getloadavg()[0]
+    if load >= limit:
+        return {"ok": False, "reason": f"the 1-minute load average {load:.1f} is at or above {limit:g}; "
+                "a cold start under load can stall on diskutil, so restart when the machine is quieter",
+                "load": load, "max_load": limit}
+    previous = before.get("pid")
+    kick = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+                          capture_output=True, text=True, check=False)
+    if kick.returncode:
+        return {"ok": False, "reason": f"launchctl kickstart exited {kick.returncode}: {kick.stderr.strip()}"}
+    deadline = clock() + wait
+    while True:
+        state = heartbeat_state(config)
+        if state.get("pid") not in (None, previous) and state.get("ok"):
+            return {"ok": True, "pid": state["pid"], "previous_pid": previous,
+                    "runner_commit": state.get("runner_commit")}
+        if clock() >= deadline:
+            return {"ok": False, "previous_pid": previous, "pid": state.get("pid"), "healthy": state.get("healthy"),
+                    "reason": f"no healthy heartbeat with a new pid within {wait:g}s; read runner.sh status and the err log"}
+        sleep(min(2.0, max(deadline - clock(), 0.0)))
+
+
 def install_plan(config: Config, *, config_path=None) -> dict:
     launcher = Path(__file__).resolve().parents[1] / "runner.sh"
     label = LABEL
@@ -108,6 +170,10 @@ def main(argv=None) -> int:
         command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
         if name == "prune":
             command.add_argument("--days", type=int, default=30)
+    command = sub.add_parser("restart")
+    command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+    command.add_argument("--max-load", type=float)
+    command.add_argument("--wait", type=float, default=RESTART_WAIT)
     command = sub.add_parser("prune-apply")
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--days", type=int, default=30)
@@ -162,6 +228,8 @@ def main(argv=None) -> int:
             config = replace(config, database=args.database.resolve())
         if args.verb == "preflight":
             result = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb)
+        elif args.verb == "restart":
+            result = restart(config, max_load=args.max_load, wait=args.wait)
         elif args.verb == "install-plan":
             result = install_plan(config, config_path=args.config)
         elif args.verb in {"prune", "discard-plan"}:

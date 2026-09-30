@@ -300,6 +300,22 @@ Unknown measurements forbid dispatch. Confirmed low database space still attempt
 One failed process observation cannot abort the remaining stops or trigger unrelated restart cleanup.
 Database corruption remains fatal; SQLite contention retains its bounded retry behavior.
 
+### Deploy a change to the running daemon
+
+Python reads the runner's modules once, at start, so a merged change reaches the daemon only through a restart.
+Pull the checkout, then run `runner.sh restart`. Do not kick the agent with `launchctl` by hand.
+The verb refuses with a reason, and leaves launchd alone, unless all three guards pass:
+
+- No assignment is active. A kick ends the daemon that supervises it.
+- `runner.sh recovery-plan` is clean. The new daemon's recovery holds on what the plan lists, so it would start unhealthy.
+- The 1-minute load average is below `--max-load` (default: the core count).
+  A cold start under load stalled on `diskutil` and launchd relaunched it for six minutes (sd:1950).
+
+It then runs `launchctl kickstart -k` on the `<prefix>.sd-runner` agent.
+It waits up to `--wait` seconds (default 180) for a healthy heartbeat with a new pid.
+It prints that pid and the heartbeat's `runner_commit` (null from a daemon that does not write it), and exits 0.
+Otherwise it exits 1 naming the reason.
+
 The runner refreshes kept-clone archives on a persisted 24-hour cadence.
 Each refresh creates a separate verified generation and preserves the original archive and all previous generations.
 Process holders, restore uncertainty, any standing `journal_issues` entry, changing contents, and insufficient free space hold the refresh.
