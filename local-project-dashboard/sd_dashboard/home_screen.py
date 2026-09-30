@@ -9,8 +9,12 @@ the operator's house, and this repository is public, so they live in
 `<config>/project-dashboard/home-tiles.conf` (`home-tiles.conf.example` is the
 template), one line per tile:
 
-    headline|<entity_id>|<name>          the lamp above the groups (the problems sensor)
-    tile|<group>|<entity_id>|<name>      a tile, in its group, in file order
+    headline|<entity_id>|<name>[|<type>]          the lamp above the groups (the problems sensor)
+    tile|<group>|<entity_id>|<name>[|<type>]      a tile, in its group, in file order
+
+`<type>` is optional: `alarm`, `lock`, `toggle` or `sensor`, the command set
+the tile gets. Without it the page types the tile by its domain; a virtual
+binary sensor that works as a switch needs `toggle` said.
 
 A line this module cannot read is named in `config.problems` with its line
 number and skipped; the other lines still count.
@@ -28,7 +32,7 @@ from pathlib import Path
 
 from .documents import _config_dir
 
-__all__ = ["CONFIG", "READER_REASON", "document", "parse"]
+__all__ = ["CONFIG", "READER_REASON", "TYPES", "document", "parse"]
 
 #: In this machine's config directory, never supplied by a request. The checkout ships `home-tiles.conf.example` only.
 CONFIG = _config_dir() / "home-tiles.conf"
@@ -39,6 +43,9 @@ READER_REASON = "no Home Assistant reader: the dashboard does not read HA state 
 #: An HA entity id: `<domain>.<object_id>`, lower case, as HA writes them.
 ENTITY = re.compile(r"[a-z_]+\.[a-z0-9_]+")
 
+#: The command sets a tile can have (the design's object types on Home).
+TYPES = ("alarm", "lock", "toggle", "sensor")
+
 
 def parse(text: str) -> tuple[dict | None, list[dict], list[str]]:
     """The headline, the groups in file order, and one problem per line that was not read."""
@@ -48,13 +55,18 @@ def parse(text: str) -> tuple[dict | None, list[dict], list[str]]:
         if not line or line.startswith("#"):
             continue
         fields = [f.strip() for f in line.split("|")]
-        kind = fields[0]
-        if kind == "headline" and len(fields) == 3:
+        kind, kind_type = fields[0], None
+        if kind == "headline" and len(fields) in (3, 4):
             group, entity, name = None, fields[1], fields[2]
-        elif kind == "tile" and len(fields) == 4:
+            kind_type = fields[3] if len(fields) == 4 else None
+        elif kind == "tile" and len(fields) in (4, 5):
             group, entity, name = fields[1], fields[2], fields[3]
+            kind_type = fields[4] if len(fields) == 5 else None
         else:
-            problems.append(f"line {number}: expected headline|<entity_id>|<name> or tile|<group>|<entity_id>|<name>")
+            problems.append(f"line {number}: expected headline|<entity_id>|<name>[|<type>] or tile|<group>|<entity_id>|<name>[|<type>]")
+            continue
+        if kind_type is not None and kind_type not in TYPES:
+            problems.append(f"line {number}: type {kind_type!r} is not one of {', '.join(TYPES)}")
             continue
         if not ENTITY.fullmatch(entity):
             problems.append(f"line {number}: {entity!r} is not an entity id (domain.object_id)")
@@ -69,7 +81,7 @@ def parse(text: str) -> tuple[dict | None, list[dict], list[str]]:
             problems.append(f"line {number}: a second headline")
             continue
         seen.add(entity)
-        tile = {"id": entity, "name": name, "domain": entity.split(".", 1)[0]}
+        tile = {"id": entity, "name": name, "domain": entity.split(".", 1)[0], "type": kind_type}
         if kind == "headline":
             headline = tile
         else:

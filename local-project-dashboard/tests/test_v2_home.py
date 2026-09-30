@@ -36,6 +36,8 @@ HOME_JS = (V2 / "static" / "home.js").read_text(encoding="utf-8")
 KIOSK_JS = (V2 / "static" / "home-kiosk.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 EXAMPLE = Path(home_screen.__file__).resolve().parents[1] / "home-tiles.conf.example"
+#: A token value no page output may ever hold.
+TOKEN = "tok-7f3a9c-never-shown"
 
 #: The design's Home commands (design source products/system/designs/v2/home.html): id, object type, label, key, risk.
 COMMANDS = [
@@ -71,9 +73,12 @@ class TheDocument(ScreenCase):
     def test_the_example_reads_as_a_headline_and_groups_in_file_order(self):
         doc = home_screen.document(now=NOW, config=EXAMPLE)
         self.assertEqual((doc["config"]["state"], doc["config"]["problems"]), ("read", []))
-        self.assertEqual(doc["headline"], {"id": "binary_sensor.problems_active", "name": "Problems active", "domain": "binary_sensor"})
+        self.assertEqual(doc["headline"], {"id": "binary_sensor.problems_active", "name": "Problems active", "domain": "binary_sensor", "type": None})
         self.assertEqual([g["name"] for g in doc["groups"]], ["Security", "Water & safety", "Network & backup", "Toggles"])
         self.assertEqual([t["id"] for t in doc["groups"][0]["tiles"]], ["alarm_control_panel.house", "lock.front_door"])
+        # The optional fifth field types a tile the domain would not: a virtual switch is a toggle.
+        self.assertEqual([(t["id"], t["type"]) for t in doc["groups"][3]["tiles"]],
+                         [("input_boolean.guest_mode", None), ("binary_sensor.virtual_porch_light", "toggle")])
         self.assertFalse(doc["reader"]["available"])
 
     def test_a_line_it_cannot_read_is_named_and_the_rest_still_count(self):
@@ -87,13 +92,18 @@ class TheDocument(ScreenCase):
             "headline|binary_sensor.problems_active|Problems",
             "headline|binary_sensor.other|Second",
             "tile||lock.gate|Gate",
+            "tile|Security|lock.shed|Shed|door",
+            "tile|Security|switch.fan|Fan|toggle",
         ])))
         self.assertEqual(doc["config"]["state"], "partial")
         self.assertEqual([p.split(":", 1)[0] for p in doc["config"]["problems"]],
-                         ["line 3", "line 4", "line 5", "line 6", "line 8", "line 9"])
+                         ["line 3", "line 4", "line 5", "line 6", "line 8", "line 9", "line 10"])
+        self.assertIn("type 'door' is not one of alarm, lock, toggle, sensor", doc["config"]["problems"][6])
         self.assertIn("is listed twice", doc["config"]["problems"][3])
         self.assertIn("a second headline", doc["config"]["problems"][4])
-        self.assertEqual(doc["groups"], [{"name": "Security", "tiles": [{"id": "lock.front_door", "name": "Front door", "domain": "lock"}]}])
+        self.assertEqual(doc["groups"], [{"name": "Security", "tiles": [
+            {"id": "lock.front_door", "name": "Front door", "domain": "lock", "type": None},
+            {"id": "switch.fan", "name": "Fan", "domain": "switch", "type": "toggle"}]}])
         self.assertEqual(doc["headline"]["id"], "binary_sensor.problems_active")
 
 
@@ -123,6 +133,14 @@ class ThePage(BrowserSession):
         doc = json.loads(body)
         self.assertEqual(doc["headline"]["id"], "binary_sensor.problems_active")
         self.assertFalse(doc["reader"]["available"])
+
+    def test_the_document_never_carries_the_token(self):
+        cookie = {"Cookie": self.cookie}
+        with mock.patch.object(home_screen, "CONFIG", EXAMPLE), mock.patch.dict("os.environ", {"HA_TOKEN": TOKEN, "HA_URL": "https://ha.example.test"}):
+            status, _, body = self.request("/api/home", headers=cookie)
+        self.assertEqual(status, 200)
+        self.assertNotIn(TOKEN, body)
+        self.assertNotIn("ha.example.test", body)
 
 
 # The stand-in additions home.js and home-kiosk.js need beyond test_v2_tasks: a root element with attributes, a clock, and the shell's row, url and
@@ -164,26 +182,45 @@ class TheScript(ScreenCase):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]);")
         self.assertEqual(out["R"]["reg"], COMMANDS)
 
-    def test_every_command_is_off_with_the_reader_reason_and_sends_nothing(self):
-        out = self.run_page("""R.when = REG.map(c => (c.when || (() => true))(C.get(c.on === 'alarm' ? 'alarm_control_panel.house' : c.on === 'lock' ? 'lock.front_door'
-  : c.on === 'toggle' ? 'input_boolean.guest_mode' : 'binary_sensor.water_leak')));
-REG.forEach(c => shellRun(c, C.get('lock.front_door'))); await flush();""")
-        self.assertEqual(out["R"]["when"], [home_screen.READER_REASON] * len(COMMANDS))
+    def test_every_write_is_off_with_the_reader_reason_and_sends_nothing(self):
+        out = self.run_page("""const target = c => C.get(c.on === 'alarm' ? 'alarm_control_panel.house' : c.on === 'lock' ? 'lock.front_door'
+  : c.on === 'toggle' ? 'input_boolean.guest_mode' : 'binary_sensor.water_leak');
+R.when = REG.map(c => (c.when || (() => true))(target(c)));
+REG.forEach(c => shellRun(c, target(c))); await flush();""")
+        writes = [c for c in COMMANDS if c[0] != "sensor.read"]
+        self.assertEqual(out["R"]["when"], [home_screen.READER_REASON] * len(writes) + [True])
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["gets"], ["/api/home"])
         self.assertEqual(out["confirms"], [])
-        self.assertEqual({t[0] for t in out["toasts"]}, {f"off: {home_screen.READER_REASON}"})
+        self.assertEqual([t[0] for t in out["toasts"]], [f"off: {home_screen.READER_REASON}"] * len(writes)
+                         + ["Copy the line; it reads HA_TOKEN and HA_URL from your shell"])
+
+    def test_read_state_is_a_copy_only_line_that_names_the_token_and_never_holds_one(self):
+        # A document that carries a token by mistake: nothing the page shows or copies may hold its value.
+        doc = json.loads(json.dumps(self.doc))
+        doc["reader"]["token"] = TOKEN
+        doc["groups"][2]["tiles"][0]["token"] = TOKEN
+        out = self.run_page("""const read = REG.find(c => c.id === 'sensor.read');
+R.read = [read.executes, read.cli(C.get('binary_sensor.water_leak'))];
+R.lines = []; OBJ.forEach(o => REG.filter(c => c.on === o.type).forEach(c => R.lines.push(c.cli(o))));
+open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.groups.html;""", answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertEqual(out["R"]["read"], [False, 'curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/binary_sensor.water_leak"'])
+        self.assertTrue(out["R"]["lines"])
+        for line in out["R"]["lines"]:
+            self.assertIn("$HA_TOKEN", line)
+            self.assertIn("$HA_URL", line)
+        self.assertNotIn(TOKEN, json.dumps(out))
 
     def test_the_tiles_are_unknown_with_the_reason_and_the_page_claims_nothing(self):
         out = self.run_page("R.groups = ELS.groups.html; R.head = ELS.headline.html; R.sub = ELS.subhead.html;")
         groups = out["R"]["groups"]
         for name in ("House alarm", "Front door", "Water leak", "Guest mode", "Water &amp; safety"):
             self.assertIn(name, groups)
-        self.assertEqual(len(re.findall(r'data-state="unknown"', groups)), 7)
+        self.assertEqual(len(re.findall(r'data-state="unknown"', groups)), 8)
         self.assertNotRegex(groups, r'data-state="(ok|caution|warning)"')
         self.assertIn("no HA reader", groups)
         self.assertIn("Problems active", out["R"]["head"])
-        self.assertIn("7 tiles", out["R"]["sub"])
+        self.assertIn("8 tiles", out["R"]["sub"])
         self.assertEqual(out["states"][0]["kind"], "loading")
         last = out["states"][-1] or {}
         self.assertEqual(last.get("kind"), "partial", "the page did not say no state was read")
@@ -191,13 +228,27 @@ REG.forEach(c => shellRun(c, C.get('lock.front_door'))); await flush();""")
         self.assertEqual(out["attention"], {"state": "unknown", "n": 0, "what": "HA not read"})
 
     def test_a_missing_config_and_a_failed_read_each_say_so(self):
-        missing = home_screen.document(now=NOW, config=EXAMPLE.with_name("absent.conf"))
+        missing = home_screen.document(now=NOW, config=Path(self.enterContext(tempfile.TemporaryDirectory())) / "home-tiles.conf")
         out = self.run_page("R.groups = ELS.groups.html;", answer=f"() => [200, {json.dumps(missing)}]")
-        self.assertEqual((out["states"][-1]["kind"], out["states"][-1]["title"]), ("empty", "No tiles configured"))
-        self.assertNotIn("tile", out["R"]["groups"])
+        last = out["states"][-1]
+        self.assertEqual((last["kind"], last["title"], last["source"]), ("empty", "No tile list", "<config>/project-dashboard/home-tiles.conf"))
+        self.assertIn("project-dashboard/home-tiles.conf.example", last["text"])
+        self.assertEqual(out["R"]["groups"], "", "a missing tile list drew a grid")
         out = self.run_page("", answer="() => [500, { error: 'boom' }]")
         self.assertEqual(out["states"][-1]["kind"], "error")
         self.assertIn("boom", out["states"][-1]["text"])
+
+    def test_no_tile_shows_ok_even_when_a_reader_answers(self):
+        # Until a reader ports the design's state grammar, no tile may claim a state it was not given.
+        doc = json.loads(json.dumps(self.doc))
+        doc["reader"] = {"available": True, "reason": ""}
+        out = self.run_page("R.groups = ELS.groups.html; R.head = ELS.headline.html;", answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertNotRegex(out["R"]["groups"] + out["R"]["head"], r'data-state="(ok|caution|warning)"|●')
+        self.assertEqual(len(re.findall(r'data-state="unknown"', out["R"]["groups"])), 8)
+
+    def test_a_configured_type_gives_the_tile_its_commands(self):
+        out = self.run_page("R.t = [C.get('binary_sensor.virtual_porch_light').type, C.get('binary_sensor.water_leak').type, C.get('input_boolean.guest_mode').type];")
+        self.assertEqual(out["R"]["t"], ["toggle", "sensor", "toggle"])
 
     def test_details_name_the_entity_and_why_it_has_no_state(self):
         out = self.run_page("open('lock.front_door'); R.det = ELS.details.html; open('no.such'); R.after = ELS.details.html;")

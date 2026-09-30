@@ -30,11 +30,12 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Commands (products/system/commands.md) ----------
   // Home rule: safe toggles and lock run with Undo; arm, disarm and unlock ask first and get no Undo. The CLI line is the HA REST
-  // service call a reader will make. build: each is off with the reader's reason, so none runs, and none declares an Undo it
-  // could not honour.
+  // service call a reader will make. build: each write is off with the reader's reason, so none runs, and none declares an Undo
+  // it could not honour. Read state is copy only: its line names $HA_TOKEN and $HA_URL, never a value.
   const svcCli = svc => o => `curl -X POST -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/services/${svc(o).replace('.', '/')}" -d '{"entity_id":"${o.id}"}'`;
   const TYPE = { alarm_control_panel: 'alarm', lock: 'lock', input_boolean: 'toggle' };
-  const typeOf = id => TYPE[domain(id)] || 'sensor';
+  // build: a tile's configured type wins (a virtual switch says toggle); otherwise the domain decides.
+  const typeOf = id => E[id]?.type || TYPE[domain(id)] || 'sensor';
   // build: the reference read the place from sample names; the tile's configured group names it here.
   const place = o => E[o.id]?.group || 'home';
   const security = svc => o => `This calls ${svc} on ${o.id}. It changes physical security (${place(o)}).`;
@@ -50,7 +51,7 @@ addEventListener('DOMContentLoaded', () => {
       { id: 'toggle.on', on: 'toggle', label: 'Turn on', key: 'o', risk: 'undo', primary: () => true, when: off, cli: svcCli(() => 'input_boolean.turn_on'), run: notSent },
       { id: 'toggle.off', on: 'toggle', label: 'Turn off', key: 'f', risk: 'undo', primary: () => true, when: off, cli: svcCli(() => 'input_boolean.turn_off'), run: notSent },
       // Read-only sensors: the one command is the state read a reader makes.
-      { id: 'sensor.read', on: 'sensor', label: 'Read state', key: 's', risk: 'safe', when: off, cli: o => `curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/${o.id}"`, run: notSent },
+      { id: 'sensor.read', on: 'sensor', label: 'Read state', key: 's', risk: 'safe', executes: false, cli: o => `curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/${o.id}"`, run: () => 'Copy the line; it reads HA_TOKEN and HA_URL from your shell' },
     );
   }
   // build: a tile shows its commands only once one of them can run.
@@ -160,7 +161,7 @@ addEventListener('DOMContentLoaded', () => {
     GROUPS.forEach(g => g.tiles.forEach(t => { E[t.id] = { ...t, group: g.name }; }));
     Object.values(E).forEach(e => C.put({ id: e.id, type: typeOf(e.id), label: e.name }));
     const problems = CONFIG?.problems || [];
-    if (CONFIG?.state === 'missing') window.shell.state({ kind: 'empty', title: 'No tiles configured', text: 'Copy home-tiles.conf.example to the config path to list the entities worth a lamp.', source: CONFIG.source });
+    if (CONFIG?.state === 'missing') window.shell.state({ kind: 'empty', title: 'No tile list', text: `Copy project-dashboard/home-tiles.conf.example to ${CONFIG.source} to list the entities worth a lamp.`, source: CONFIG.source });
     else if (CONFIG?.state === 'error') window.shell.state({ kind: 'error', text: `The tile list was not read: ${problems.join('; ')}.`, source: CONFIG.source });
     else if (problems.length) window.shell.state({ kind: 'partial', text: `${plural(problems.length, 'line')} skipped: ${problems.join('; ')}. ${REASON ? `No tile has a state: ${REASON}.` : ''}`, source: CONFIG.source });
     else if (REASON) window.shell.state({ kind: 'partial', title: 'No state read', text: `The tiles are the configured entities; none has a state: ${REASON}.`, source: '/api/home' });
