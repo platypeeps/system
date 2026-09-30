@@ -294,6 +294,10 @@ Run `recovery-plan` again before reconciling ownership or restarting the daemon.
 Quarantine does not resume work, reconstruct missing rows, or resolve a database restore hold.
 
 `runner.sh status` prints the heartbeat state as one JSON line and answers with convention 6's codes: 0 healthy, 3 when the `<prefix>.sd-runner` agent is not loaded (`launchctl print` fails — nothing to check), 1 when the heartbeat is stale or unhealthy.
+The heartbeat's `runner_commit` is the checkout's HEAD when `serve` started: Python keeps the modules it loaded, so a `git pull` reaches the daemon only through a restart (sd:1952).
+`runner.sh status` and `sd runner status` compare it with the checkout's HEAD on disk, with no fetch, and add `checkout_commit`.
+A moved checkout adds `deploy_warning`, `runner started at <sha7>, checkout at <sha7>; restart to deploy`, and leaves the exit code alone.
+A heartbeat without the field, from an older daemon, reads `runner_commit unknown`.
 A missing interpreter follows the same split: 3 when the agent is not loaded, because that machine never provisioned the pack; 1 when it is loaded, because a runner whose virtualenv was rebuilt cannot start.
 The agent question is decided before the store is opened, so a machine that never installed the agent and holds no store answers 3, not `connect`'s 1.
 `local-health-check` reads those codes in its nightly sweep and quotes the first stdout line as the finding, so the body is one line; it is the heartbeat state whenever the store can be read.
