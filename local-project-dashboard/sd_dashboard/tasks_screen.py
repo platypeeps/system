@@ -63,8 +63,9 @@ def document(connection, *, now: str) -> dict:
             # The due date a completion today gives the next occurrence, for the confirm to name before it writes.
             "next_due": workflow.next_occurrence_due(state["item"]) if row["recurrence"] else None,
             "status_since": row["status_since"], "revision": state["revision"],
-            # `reads.is_urgent` without the due-date rule: the page applies that one itself, so a due edit moves the
-            # task at once, and keeps the rest (an attention report, a `ready_to_send` row older than three days).
+            # The matrix's urgency is `reads.is_urgent`, decided here. Without the due-date rule it is
+            # `urgent_otherwise`, which the page keeps for a due edit made before the rows are read again.
+            "urgent": reads.is_urgent(row, now=now),
             "urgent_otherwise": reads.is_urgent({**dict(row), "due": None}, now=now),
             "allowed": workflow.allowed_statuses(connection, row["id"]),
         })
