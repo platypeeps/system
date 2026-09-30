@@ -3,7 +3,8 @@
 This directory contains the workflow dashboard and the six legacy collector
 commands. They are separate surfaces.
 
-**The workflow dashboard** (`sd_dashboard/`) has Today, Backlog, Contributions, Writing,
+**The workflow dashboard** (`sd_dashboard/`) opens on the new design's Today, and keeps
+the classic Today, Backlog, Contributions, Writing,
 Operations, Protection, Skills, Documents, Designs, and individual Item pages. Its production launcher uses the
 command pack's provisioned Python interpreter and installed `sd_db` package;
 it refuses an adjacent source import or a mismatched database schema.
@@ -35,18 +36,46 @@ non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming 
 and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
-**v2** is the redesign from ui-design `products/system/` (`design.md`,
-`designs/v2/`), built one page at a time beside the v1 routes, which stay as
-they are. `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted
-IBM Plex under `static/`, served at `/v2/static/`; `shell.js` marks each
-change from the reference with `build:`. Every v2 script builds markup with
-the `html` tag in `static/markup.js`, which escapes each value put in it, and
-puts it in the page with `put`, which takes only what `html` made; that file
-holds the one HTML sink criterion 12's grep allows in v2. The first
-page is `/v2/today`: the
-same `/api/now` rows as v1 Now, as an annunciator and a ranked ledger. It
+**The new design is the default** (sd:2163). It is the redesign from ui-design
+`products/system/` (`design.md`, `designs/v2/`), built one page at a time.
+`sd_dashboard/v2/` holds the ported shell, tokens and self-hosted IBM Plex
+under `static/`, served at `/ui/`; `shell.js` marks each change from the
+reference with `build:`. The assets take `/ui/` because the old screens own
+`/static/`, which serves exactly `dashboard.css` and `dashboard.js`. Every
+v2 script builds markup with the `html` tag in `static/markup.js`, which
+escapes each value put in it, and puts it in the page with `put`, which takes
+only what `html` made; that file holds the one HTML sink criterion 12's grep
+allows in v2. The first page is Today, at `/` and `/today`: the same
+`/api/now` rows as the classic Now, as an annunciator and a ranked ledger. It
 runs no command yet; its capture files a task through `POST /api/items`.
 Status mail, backups, HOA water, Wants you and Briefs wait for collectors.
+
+The old screens stay until their section is ported. Only the old Today moved,
+to `/classic/today`; every other old screen keeps its path. A `/v2/` address
+that names a page or an asset answers 301 with its new one (`/v2/today` to
+`/today`, `/v2/static/<file>` to `/ui/<file>`); any other `/v2/` path is a 404.
+One map in `sd_dashboard/v2/__init__.py`, served as `/ui/sections.js`, says
+where each rail section goes: `SECTIONS` for ported pages, `CLASSIC` for the
+old screen an unported section opens (tagged "classic" on the rail), and
+`SCREENS` for old screens without a section, which the palette lists under
+Classic screens.
+
+| Section or screen | Opens |
+| --- | --- |
+| Today | `/today` (new) |
+| Tasks | `/backlog` |
+| Writing | `/writing` |
+| Research | `/operations?area=resources` |
+| Contributions | `/contributions` |
+| Documents | `/documents` |
+| Skills | `/skills` |
+| Metrics | `/operations?area=usage` |
+| Management | `/operations?area=jobs` |
+| Reports | `/operations?area=reports` |
+| Commands | `/operations?area=commands` |
+| Designs | `/designs` |
+| Briefs, Notes, HOA, Home, Health, Activity | no old screen; the rail says not built yet |
+| Palette: Today (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup

@@ -279,7 +279,7 @@ class TodayPage(ScreenCase):
     """The Now section sits at the top of Today and says how it is filled."""
 
     def test_now_is_the_first_section_of_today_and_names_its_sources(self):
-        page = self.render("/")
+        page = self.render("/classic/today")
         section = re.search(r'<section[^>]*id="now"[^>]*>.*?</section>', page, re.DOTALL)
         self.assertIsNotNone(section, "no Now section")
         self.assertLess(page.index('id="now"'), page.index("Your work today"))
@@ -294,7 +294,7 @@ class TodayPage(ScreenCase):
 
     def test_the_page_render_reads_no_fleet(self):
         with patch.object(fleet, "collect", side_effect=AssertionError("Today ran the fleet child")):
-            self.render("/")
+            self.render("/classic/today")
 
     def test_the_script_paints_the_band_the_server_computed(self):
         script = (Path(now_screen.__file__).parent / "static" / "dashboard.js").read_text(encoding="utf-8")
