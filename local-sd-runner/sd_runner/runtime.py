@@ -222,6 +222,26 @@ def verify_skill_source(request: dict) -> None:
 COLD_START_WINDOW = 600
 
 
+def drain_path(database: Path) -> Path:
+    """The marker `runner.sh restart` writes to stop claims before it kicks the agent (sd:1951)."""
+    return database.parent / "runner-drain.json"
+
+
+def drain_request(database: Path) -> str | None:
+    """The token of an unexpired drain marker, or None.
+
+    A marker that does not read, or whose `expires_at` has passed, is
+    ignored: a restart that died without removing it must not stop the
+    queue for good.
+    """
+    try:
+        marker = json.loads(drain_path(database).read_text())
+        token, expires = marker["token"], float(marker["expires_at"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    return token if isinstance(token, str) and token and expires > time.time() else None
+
+
 class Runner:
     def __init__(self, config: Config, *, freezer=storage.freeze, observer=processes.survivors, transport=None):
         self.config = config
@@ -460,6 +480,9 @@ class Runner:
             connection.close()
 
     def pulse(self, connection):
+        # Read before this tick claims anything: the heartbeat that names the
+        # token tells `restart` that no claim follows it (sd:1951).
+        drain = drain_request(self.config.database)
         holds = []
         try:
             report = storage.preflight(self.config.database, self.config.work, self.config.retention, floor_gb=self.config.floor_gb,
@@ -487,7 +510,7 @@ class Runner:
                 raise ValueError("pack HEAD is unavailable")
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             holds.append({"probe": "pack_head", "reason": str(error)})
-        if holds:
+        if holds or drain:
             report = {**report, "dispatch_allowed": False}
         # Today reads the copies waiting on space from here: the floor, the free space, the space needed.
         space_holds = []
@@ -503,7 +526,7 @@ class Runner:
             "restoration_pending": self._restore_pending(connection),
             "database_holds": sorted(self.pending_endings), "probe_holds": holds, "space_holds": space_holds,
             "pack_commit": commit, "delivery_watch": self.delivery_watch_result, "executables": self.executables,
-            "archive_refresh": self.archive_watch_result})
+            "archive_refresh": self.archive_watch_result, "drain": drain})
 
     def refresh_archives(self):
         from .archive_refresh import refresh

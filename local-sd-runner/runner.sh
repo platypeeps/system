@@ -9,7 +9,7 @@ case "${1:-}" in
     echo 'prune and discard-plan are read-only plans. prune-apply --fingerprint FP --who NAME removes only the retained clones that plan lists.'
     echo 'retained-remove --assignment N --who NAME removes one released assignment'"'"'s retained copy, early, with the operator'"'"'s name.'
     echo 'retained-remove --clone-only removes only each attempt'"'"'s clone, and keeps kept.tar, archives/, ignored/ and the directories.'
-    echo 'restart [--max-load N] [--wait SECONDS] kicks the agent only when no assignment is active, recovery-plan is clean and the 1-minute load is below N (default: the core count); it waits for a healthy heartbeat with a new pid and prints that pid and its runner_commit.'
+    echo 'restart [--max-load N] [--wait SECONDS] drains the daemon (runner-drain.json; the agent'"'"'s own pid must acknowledge it), then kicks the agent only when no assignment is active, recovery-plan is clean and the 1-minute load is below N (default: the core count); it waits for a healthy heartbeat with a new pid and prints that pid and its runner_commit.'
     echo 'status exits 0 healthy, 3 when the <prefix>.sd-runner agent (prefix SYSTEM_TOOLS_LABEL_PREFIX, default local.system-tools) is not loaded (nothing to check, even without a runtime), 1 stale, unhealthy, or loaded without a runtime; local-health-check reads these codes'
     exit 0 ;;
   '') echo 'usage: runner.sh serve|once|status|preflight|install-plan|prune|test|test-macos' >&2; exit 1 ;;

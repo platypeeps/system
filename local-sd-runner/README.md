@@ -307,7 +307,15 @@ Database corruption remains fatal; SQLite contention retains its bounded retry b
 
 Python reads the runner's modules once, at start, so a merged change reaches the daemon only through a restart.
 Pull the checkout, then run `runner.sh restart`. Do not kick the agent with `launchctl` by hand.
-The verb refuses with a reason, and leaves launchd alone, unless all three guards pass:
+
+The verb first drains the daemon, because an idle queue read before the kick can be claimed before it.
+It writes `runner-drain.json` beside the database, and each pulse reads it before its tick claims anything.
+A heartbeat that names the marker's token says the daemon claims nothing more.
+That heartbeat must come from the pid `launchctl print` names for the agent.
+So a `--config` naming a database the agent does not serve refuses, and the agent is not kicked.
+A marker from a verb that died expires after twice `--wait` plus a minute, so the queue does not stay stopped.
+
+The verb then refuses with a reason, removes the marker, and leaves launchd alone, unless all three guards pass:
 
 - No assignment is active. A kick ends the daemon that supervises it.
 - `runner.sh recovery-plan` is clean. The new daemon's recovery holds on what the plan lists, so it would start unhealthy.
@@ -316,8 +324,11 @@ The verb refuses with a reason, and leaves launchd alone, unless all three guard
 
 It then runs `launchctl kickstart -k` on the `<prefix>.sd-runner` agent.
 It waits up to `--wait` seconds (default 180) for a healthy heartbeat with a new pid.
-It prints that pid and the heartbeat's `runner_commit` (null from a daemon that does not write it), and exits 0.
+It removes the marker, prints that pid and the heartbeat's `runner_commit` (null from a daemon that does not write it), and exits 0.
 Otherwise it exits 1 naming the reason.
+
+A daemon that started before the drain existed never acknowledges it, so the verb refuses.
+Deploy that first change by hand, when the queue is idle.
 
 The runner refreshes kept-clone archives on a persisted 24-hour cadence.
 Each refresh creates a separate verified generation and preserves the original archive and all previous generations.

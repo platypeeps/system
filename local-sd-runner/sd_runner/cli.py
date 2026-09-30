@@ -7,10 +7,12 @@ import getpass
 import json
 import os
 import plistlib
+import re
 import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -87,29 +89,80 @@ def heartbeat_state(config: Config) -> dict:
 RESTART_WAIT = 180
 
 
+def agent_pid(label: str = LABEL) -> int | None:
+    """The pid `launchctl print` names for the agent, or None when it runs no process."""
+    try:
+        done = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                              capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    match = re.search(r"^\s*pid = (\d+)\s*$", done.stdout, re.MULTILINE) if done.returncode == 0 else None
+    return int(match.group(1)) if match else None
+
+
 def restart(config: Config, *, max_load: float | None = None, wait: float = RESTART_WAIT, label: str = LABEL,
             clock=time.monotonic, sleep=time.sleep) -> dict:
-    """Kick the runner agent when it is safe to, and wait for the new daemon (sd:1951).
+    """Drain the runner, then kick its agent, and wait for the new daemon (sd:1951).
 
-    Three guards refuse with a reason before launchd is touched. An active
-    assignment would lose its supervisor to the kick. A `recovery-plan`
-    that is not clean is what the new daemon's recovery holds on, so it
-    would start unhealthy. A load average at or above `max_load` (default:
-    the core count) is what starved the cold start's `diskutil` into a
-    relaunch loop on 2026-09-28 (sd:1950). Then `launchctl kickstart -k`
-    replaces the process, and the verb waits up to `wait` seconds for a
-    heartbeat that is healthy and names a new pid. `runner_commit` is the
-    checkout commit the new daemon read at start, None from a daemon that
-    does not write it.
+    A snapshot of an idle queue proves nothing about the moment of the
+    kick: the daemon can claim a queued row in between, and `kickstart -k`
+    would kill that row's supervisor. So the verb writes a drain marker
+    (`runtime.drain_path`), which every pulse reads before its tick claims,
+    and waits for a heartbeat that names the marker's token: from then on
+    the daemon claims nothing. That heartbeat must come from the agent's
+    own pid, so a `--config` naming a database the agent does not serve
+    refuses instead of kicking the agent. Then an active assignment (it
+    would lose its supervisor), a `recovery-plan` that is not clean (the
+    new daemon's recovery holds on it) or a load average at or above
+    `max_load` (default: the core count; a cold start under load stalled
+    on `diskutil`, sd:1950) refuses. Every refusal leaves launchd alone and
+    removes the marker. After `launchctl kickstart -k` the verb waits up to
+    `wait` seconds for a healthy heartbeat with a new pid, then removes the
+    marker so the new daemon dispatches. A marker left by a verb that died
+    expires on its own. `runner_commit` is None from a daemon that does
+    not write it.
     """
     if not agent_loaded(label):
         return {"ok": False, "reason": f"the {label} agent is not loaded; install it first (runner.sh install-plan)"}
+    agent = agent_pid(label)
+    if agent is None:
+        return {"ok": False, "reason": f"the {label} agent has no running process to drain; start it with launchctl kickstart"}
+    limit = float(max_load if max_load is not None else os.cpu_count() or 1)
+    load = os.getloadavg()[0]
+    if load >= limit:
+        return {"ok": False, "reason": f"the 1-minute load average {load:.1f} is at or above {limit:g}; "
+                "a cold start under load can stall on diskutil, so restart when the machine is quieter",
+                "load": load, "max_load": limit}
+    from .runtime import drain_path, drain_request
+    marker = drain_path(config.database)
+    if drain_request(config.database) is not None:
+        return {"ok": False, "reason": f"another restart is draining ({marker}); wait for it or for the marker to expire"}
+    token = uuid.uuid4().hex
+    partial = marker.with_suffix(".partial")
+    partial.write_text(json.dumps({"token": token, "expires_at": time.time() + 2 * wait + 60, "by": "runner.sh restart"}))
+    partial.replace(marker)
+    try:
+        return _drained_restart(config, token, agent, wait=wait, label=label, clock=clock, sleep=sleep)
+    finally:
+        if drain_request(config.database) == token:
+            marker.unlink(missing_ok=True)
+
+
+def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clock, sleep) -> dict:
+    deadline = clock() + wait
+    while (state := heartbeat_state(config)).get("drain") != token:
+        if clock() >= deadline:
+            return {"ok": False, "reason": f"the daemon serving {config.database} did not acknowledge the drain within {wait:g}s; "
+                    "the agent may run code older than the drain, or not serve this database"}
+        sleep(min(2.0, max(deadline - clock(), 0.0)))
+    if state.get("pid") != agent:
+        return {"ok": False, "reason": f"the daemon serving {config.database} is pid {state.get('pid')}; "
+                f"the {label} agent runs pid {agent}; --config names a different runner"}
     connection = connect(config.database, write=False)
     try:
         active = sorted({row["id"] for row in connection.execute(
             "SELECT id FROM assignment WHERE status IN ('running', 'ending')")}
             | {run["assignment"] for run in store.active_runs(connection)})
-        before = store.heartbeat_state(connection)
     finally:
         connection.close()
     if active:
@@ -121,13 +174,6 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
         return {"ok": False, "reason": f"recovery-plan is not clean ({len(plan['entries'])} entries, "
                 f"{len(plan['journal_issues'])} journal issues, restore pending {plan['restore_pending']}); "
                 "read runner.sh recovery-plan and resolve it first"}
-    limit = float(max_load if max_load is not None else os.cpu_count() or 1)
-    load = os.getloadavg()[0]
-    if load >= limit:
-        return {"ok": False, "reason": f"the 1-minute load average {load:.1f} is at or above {limit:g}; "
-                "a cold start under load can stall on diskutil, so restart when the machine is quieter",
-                "load": load, "max_load": limit}
-    previous = before.get("pid")
     kick = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
                           capture_output=True, text=True, check=False)
     if kick.returncode:
@@ -135,11 +181,11 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
     deadline = clock() + wait
     while True:
         state = heartbeat_state(config)
-        if state.get("pid") not in (None, previous) and state.get("ok"):
-            return {"ok": True, "pid": state["pid"], "previous_pid": previous,
+        if state.get("pid") not in (None, agent) and state.get("ok"):
+            return {"ok": True, "pid": state["pid"], "previous_pid": agent,
                     "runner_commit": state.get("runner_commit")}
         if clock() >= deadline:
-            return {"ok": False, "previous_pid": previous, "pid": state.get("pid"), "healthy": state.get("healthy"),
+            return {"ok": False, "previous_pid": agent, "pid": state.get("pid"), "healthy": state.get("healthy"),
                     "reason": f"no healthy heartbeat with a new pid within {wait:g}s; read runner.sh status and the err log"}
         sleep(min(2.0, max(deadline - clock(), 0.0)))
 
