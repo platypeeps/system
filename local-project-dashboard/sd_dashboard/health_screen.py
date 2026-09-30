@@ -43,6 +43,7 @@ from sd_db import protection as protection_module
 
 from . import fleet as fleet_module
 from . import ports_screen
+from .operations_screen import TRAILER_SECONDS
 from .protection_screen import APPLICABLE, FLAGS, GAPS, ORDER
 
 __all__ = ["AREAS", "document"]
@@ -63,9 +64,6 @@ AREAS = (
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
     ("prot", "Protection", "sd shadow sync → repo_protection", ()),
 )
-#: The Attribution walk's overall budget: one `git log` per registered repo on a page load must not stall the page.
-#: Measured on 2026-09-30 at load 150: 58 repos in 0.75-0.78 s warm. Past it the area says it stopped rather than waited on.
-TRAILER_SECONDS = 10.0
 #: The matrix lines, in the design's order: v1's gap columns, then its merge-setting flags.
 CHECKS = GAPS + FLAGS
 LISTENER = {"listening": "Listening", "not_listening": "No listener observed",
