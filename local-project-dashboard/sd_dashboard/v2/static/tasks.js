@@ -16,7 +16,8 @@ addEventListener('DOMContentLoaded', () => {
   const DAY = 86400000;
   const now0 = new Date(), TODAY = new Date(now0.getFullYear(), now0.getMonth(), now0.getDate());
   const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const plus = n => iso(new Date(TODAY.getTime() + n * DAY));
+  // Calendar days, not 24-hour steps: across a DST change a fixed step lands on the wrong local date (review, PR #46).
+  const plus = n => iso(new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate() + n));
   const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const WD = ['sun','mon','tue','wed','thu','fri','sat'];
   const fmt = s => { const d = new Date(s + 'T00:00'); return `${MON[d.getMonth()]} ${d.getDate()}`; };
@@ -37,7 +38,7 @@ addEventListener('DOMContentLoaded', () => {
   const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
   let tasks = [], READ = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, kind: r.kind, assignment: r.assignment, recurrence: r.recurrence, revision: r.revision, allowed: r.allowed, real: true });
+    status: r.status, kind: r.kind, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, recurrence: r.recurrence, revision: r.revision, allowed: r.allowed, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   const label = t => t.id ? `#${t.id}` : (t.kind === 'ops' ? 'ops' : 'no id');
   async function post(path, body) {
@@ -56,13 +57,14 @@ addEventListener('DOMContentLoaded', () => {
   function absorb(key, state) {
     const t = byKey(key); if (!t || !state?.item) return;
     Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence, revision: state.revision });
-    delete DET.items[t.id];
+    staleDet(t.id);
     if (selected === key) readDet(t.id); // the open Details read again, so they show the write
   }
 
   // Derived urgency, as sd_db.reads.is_urgent: due within 7 days, or overdue.
   const days = t => t.due ? Math.round((new Date(t.due + 'T00:00') - TODAY) / DAY) : null;
-  const urgent = t => t.overdue || (t.due !== null && t.due !== undefined && days(t) <= 7);
+  // The due-date rule is applied here, so an edit moves the task at once; the server sends the rest of reads.is_urgent.
+  const urgent = t => t.overdue || !!t.urgentOtherwise || (t.due !== null && t.due !== undefined && days(t) <= 7);
   const important = t => t.p !== null && t.p !== undefined && t.p <= 2;
   const quadOf = t => QUADS.find(q => q[2] === urgent(t) && q[3] === important(t))[0];
   function state(t) {
@@ -110,6 +112,7 @@ addEventListener('DOMContentLoaded', () => {
     if (t.kind === 'ops') return { ok: false, reason: 'An ops row has no priority or due date to set.' };
     if (!EDITABLE(t)) return { ok: false, reason: `a ${t.kind} item uses its own editing workflow` };
     if (quadOf(t) === q) return { ok: false, reason: 'Already here.' };
+    if (!Q[2] && t.urgentOtherwise) return { ok: false, reason: 'It is urgent for a reason a due date does not change (a waiting message or a report that needs attention).' };
     const ch = {}, words = [];
     if (Q[3] && !important(t)) { ch.p = 2; words.push(`priority ${t.p ? 'P' + t.p : 'unset'}→P2`); }
     if (!Q[3] && important(t)) { ch.p = 3; words.push(`priority P${t.p}→P3`); }
@@ -121,6 +124,8 @@ addEventListener('DOMContentLoaded', () => {
   }
   // build: sd_db.workflow.DETAIL_KINDS; edit_item refuses every other kind.
   const EDITABLE = t => ['task', 'followup', 'work'].includes(t.kind);
+  // build: sd_db.workflow.TASK_STATUS_KINDS; workflow._recurring refuses a rule on any other kind.
+  const RECURS = ['task', 'personal', 'followup'];
   const cliMove = (t, to) => t.id ? `sd task status ${t.id} ${to}` : '';
   function cliQuad(t, ch) {
     if (!t.id) return '';
@@ -191,22 +196,28 @@ addEventListener('DOMContentLoaded', () => {
   const T = o => byKey(o.id);
   const before = new Map(); // key → the fields a command changed, as they were before it
   // Details beyond the row (sd:2180). build: /api/tasks/<id>, read when a task is selected, kept until a write changes it.
-  const DET = { items: {}, reading: {}, failed: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
+  // Each read carries the item's generation; a write bumps it, so an answer sent before the write is dropped, not cached.
+  const DET = { items: {}, reading: {}, failed: {}, gen: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
   async function readDet(id, force) {
-    if (!id || (!force && (DET.items[id] || DET.reading[id]))) return;
-    DET.reading[id] = true; delete DET.failed[id];
-    try { DET.items[id] = await getJSON(`/api/tasks/${id}`); } catch (err) { DET.failed[id] = err.message; }
+    if (!id || (!force && (DET.items[id] || DET.reading[id] === (DET.gen[id] || 0)))) return;
+    const gen = DET.gen[id] || 0;
+    DET.reading[id] = gen; delete DET.failed[id];
+    let got, err;
+    try { got = await getJSON(`/api/tasks/${id}`); } catch (e) { err = e; }
+    if ((DET.gen[id] || 0) !== gen) return; // a write landed meanwhile; the read it started is the one that counts
     delete DET.reading[id];
+    if (err) DET.failed[id] = err.message; else DET.items[id] = got;
     putAll(); if (byKey(selected)?.id === id) renderDetails();
   }
+  const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
   function putAll() {
     tasks.forEach(t => C.put({ id: t.key, type: t.kind === 'ops' ? 'ops row' : 'item', label: `${label(t)} ${t.title}`, item: t.id }));
     Object.values(DET.items).forEach(d => {
       d.notes.forEach(n => C.put({ id: `note:${n.id}`, type: 'note', label: `${n.kind} ${n.id} on #${d.item.id}`, note: n.id, kind: n.kind, resolved: n.resolved, item: d.item.id }));
-      d.assignments.forEach(a => C.put({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo }));
+      d.assignments.forEach(a => C.put({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo, can: a.runner }));
     });
   }
-  const redrawDet = id => { delete DET.items[id]; readDet(id, true); };
+  const redrawDet = id => { staleDet(id); readDet(id, true); };
   // note.resolve: one declaration, copied on every page that lists followups (Tasks, Today; commands.md § Shared declarations).
   const NOTE_RESOLVE = done => ({ id: 'note.resolve', on: 'note', label: 'Resolve', key: 'v', risk: 'confirm', icon: 'check', primary: o => o.kind === 'followup' && !o.resolved,
     when: o => o.kind !== 'followup' ? `a ${o.kind} note has nothing to resolve` : o.resolved ? `resolved ${o.resolved.slice(0, 10)}` : true,
@@ -249,9 +260,9 @@ addEventListener('DOMContentLoaded', () => {
       cli: o => idOr(o, t => `sd task status ${t.id} <status>`),
       run: o => { askMove(T(o)); return null; } },
     { id: 'item.p2', on: 'item', label: 'Edit → P2', risk: 'undo', bulk: true, icon: 'flag-triangle-right',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : EDITABLE(t) || `a ${t.kind} item uses its own editing workflow`; },
+      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : !EDITABLE(t) ? `a ${t.kind} item uses its own editing workflow` : t.p === 2 ? 'it is already P2' : true; },
       cli: o => idOr(o, t => `sd task edit ${t.id} --priority 2`),
-      run: o => { const t = T(o), was = t.p; if (was === 2) return `${label(t)} is already P2`; editRun(t, { p: 2 }, () => `${label(t)} P${was || '–'} → P2`); return null; },
+      run: o => { const t = T(o), was = t.p; editRun(t, { p: 2 }, () => `${label(t)} P${was || '–'} → P2`); return null; },
       undo: o => editUndo(o.id)() },
     { id: 'item.note', on: 'item', label: 'Note', key: 'n', risk: 'safe', icon: 'notebook-pen',
       when: o => !!T(o)?.id || 'this row has no sd id to attach a note to',
@@ -259,7 +270,8 @@ addEventListener('DOMContentLoaded', () => {
       run: o => { window.shell.capture(o); const r = document.querySelector('dialog.capture input[value="note"]'); if (r && !r.disabled) { r.checked = true; r.form.dispatchEvent(new Event('input')); } return 'Write the note'; } },
     // build: sd run queues through POST /api/run (runner_controls.enqueue); Undo cancels the queued assignment it made.
     { id: 'item.run', on: 'item', label: 'Run', key: 'r', risk: 'undo', icon: 'play',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to run' : t.assignment === 'running' ? 'an assignment is already running' : t.assignment === 'queued' ? 'already queued for the runner' : t.status === 'done' ? 'the task is done' : true; },
+      // build: runner_controls.readiness, the check /api/run makes, read with the Details (review, PR #46).
+      when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id to run' : !d ? 'run readiness was not read for this row' : d.run.allowed || d.run.reason; },
       cli: o => idOr(o, t => `sd run ${t.id}`),
       run: o => { const t = T(o);
         const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision } }).then(out => { before.set(t.key, { ...before.get(t.key), queued: out.assignments?.[0] }); return load(); });
@@ -282,7 +294,8 @@ addEventListener('DOMContentLoaded', () => {
       run: o => `Copy the line and write the reason · ${label(T(o))}` },
     // Recurrence: sd task edit --recur needs a due date; --clear-recur stops the series and clears its anchor, which Undo sets again.
     { id: 'item.recur', on: 'item', label: 'Edit → repeat weekly', risk: 'undo', icon: 'calendar-clock',
-      when: o => { const t = T(o), d = detOf(t); if (!t?.id) return 'this row has no sd id to edit'; if (!d) return 'recurrence was not read for this row';
+      when: o => { const t = T(o), d = detOf(t); if (!t?.id) return 'this row has no sd id to edit'; if (!RECURS.includes(t.kind)) return `a ${t.kind} item cannot recur`;
+        if (!d) return 'recurrence was not read for this row';
         return d.item.recurrence ? `it repeats already: ${d.item.recurrence}` : t.due ? true : '--recur needs a due date'; },
       cli: o => idOr(o, t => `sd task edit ${t.id} --recur FREQ=WEEKLY`),
       run: o => { const t = T(o); editRun(t, { recurrence: 'FREQ=WEEKLY' }, () => `${label(t)} repeats weekly`); return null; }, undo: o => editUndo(o.id)() },
@@ -300,11 +313,11 @@ addEventListener('DOMContentLoaded', () => {
     // Assignments: the same declarations as Management (commands.md § Shared declarations).
     // build: requeue and cancel post to /api/runner/<n>/(requeue|cancel) with the assignment's queue revision.
     { id: 'asg.requeue', on: 'assignment', label: 'Requeue', key: 'q', risk: 'undo', bulk: true, primary: o => o.status === 'blocked',
-      when: o => o.status === 'blocked' || `the assignment is ${o.status}`, cli: o => `sd runner requeue ${o.n}`,
+      when: o => o.can.requeue.allowed || o.can.requeue.reason, cli: o => `sd runner requeue ${o.n}`,
       run: o => { landing(runner(o, 'requeue'), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, () => undoRequeue(o)); return null; },
       undo: o => undoRequeue(o) },
     { id: 'asg.cancel', on: 'assignment', label: 'Cancel', key: 'x', risk: 'confirm',
-      when: o => ['queued', 'running'].includes(o.status) || `the assignment is ${o.status}, not queued or running`, cli: o => `sd runner cancel ${o.n}`,
+      when: o => o.can.cancel.allowed || o.can.cancel.reason, cli: o => `sd runner cancel ${o.n}`,
       consequence: o => `Stops assignment #${o.n} in ${o.repo} and releases its lease.`,
       run: o => { landing(runner(o, 'cancel'), () => `Cancel requested · #${o.n} · sd runner cancel ${o.n}`); return null; } },
     { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: o => o.status !== 'blocked', cli: o => `sd assignments get ${o.n}`, run: o => `Assignment #${o.n} shown in Details` },
@@ -345,13 +358,19 @@ addEventListener('DOMContentLoaded', () => {
   }
   function renderBoard() {
     const v = visible();
-    put(document.getElementById('view-board'), html`<div class="board" id="board" role="listbox" aria-label="Tasks by status" aria-multiselectable="false">${STATUSES.map(([s, name], i) => {
+    // build: backlog_items also returns statuses with no column (a message's ready_to_send); they get one lane, which
+    // takes no drop and no key, so every row the page counts is on the board (review, PR #46).
+    const other = v.filter(t => !SLABEL[t.status]);
+    put(document.getElementById('view-board'), html`<div class="board" id="board" role="listbox" aria-label="Tasks by status" aria-multiselectable="false"${other.length ? html` data-other` : ''}>${STATUSES.map(([s, name], i) => {
       const rows = v.filter(t => t.status === s);
       return html`<div class="col" data-drop="status:${s}" role="group" aria-label="${name}">
         <header><span class="label">${name}</span><kbd>${i + 1}</kbd><span class="n">${rows.length}</span></header>
         <div><p class="refusal" role="note"></p><div class="drop">${(rows.length ? rows.map(t => card(t)) : html`<p class="empty">${on() ? 'None match the filters.' : 'Nothing ' + name.toLowerCase() + '.'}</p>`)}</div></div>
       </div>`;
-    })}</div>`);
+    })}${other.length ? html`<div class="col" role="group" aria-label="Other statuses">
+        <header><span class="label">Other</span><span class="n">${other.length}</span></header>
+        <div><div class="drop">${other.map(t => card(t, true))}</div></div>
+      </div>` : ''}</div>`);
   }
   function renderMatrix() {
     const v = visible().filter(t => t.status !== 'done' && t.kind !== 'ops');
@@ -360,7 +379,7 @@ addEventListener('DOMContentLoaded', () => {
       const worst = rows.some(t => state(t) === 'warning') ? 'warning' : rows.some(t => state(t) === 'caution') ? 'caution' : '';
       return html`<div class="quad" data-q="${k}" data-drop="quad:${k}">
         <header><h3>${name}</h3><span class="sub">${sub}</span><span class="n">${rows.length}</span><span class="lamp"${worst ? html` data-state="${worst}"` : ''}></span></header>
-        <div><div class="drop">${(rows.length ? rows.map(t => card(t, true)) : html`<p class="empty">Empty.</p>`)}</div><p class="refusal" role="note"></p></div>
+        <div><div class="drop" role="listbox" aria-label="${name}: ${sub}">${(rows.length ? rows.map(t => card(t, true)) : html`<p class="empty">Empty.</p>`)}</div><p class="refusal" role="note"></p></div>
         ${k === 'do' ? html`<span class="reticle" aria-hidden="true"></span>` : ''}
       </div>`;
     });
