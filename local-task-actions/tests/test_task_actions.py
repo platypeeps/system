@@ -103,6 +103,20 @@ class LabelPrefixTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "http://127.0.0.1:18766")
 
+    def test_base_url_does_not_wait_out_the_funnel_timeout(self):
+        # REGRESSION (sd:1770). The watchdog's `sleep` inherited the stdout
+        # of `$(funnel_url)`, so the substitution waited for the sleep to end:
+        # every probe cost the full FUNNEL_TIMEOUT even when tailscale
+        # answered at once, and a digest paid it once per button.
+        import time
+        start = time.monotonic()
+        result = self.run_script("base-url",
+                                 env={"TASK_ACTIONS_FUNNEL_TIMEOUT": "20"})
+        elapsed = time.monotonic() - start
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "http://127.0.0.1:8766")
+        self.assertLess(elapsed, 10, "base-url waited out the watchdog")
+
     def test_exported_values_win_over_env_file(self):
         # REGRESSION (Copilot cd43501067e5 on PR 12). st_source_env assigns
         # over the environment, and only OBSIDIAN_VAULT was put back, so .env
