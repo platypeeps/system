@@ -223,11 +223,13 @@ CHECKOUT = Path(__file__).resolve().parents[2]
 
 
 def checkout_commit(root: Path = CHECKOUT) -> str | None:
-    """The checkout's HEAD, or None when `root` is not a checkout (sd:1952)."""
-    try:
-        return gitops.git(root, "rev-parse", "--verify", "HEAD", check=False) or None
-    except (OSError, subprocess.SubprocessError):
-        return None
+    """The checkout's HEAD, or None when `root` is not a checkout (sd:1952).
+
+    Read from its files, as `status` reads it: `serve` runs this before its
+    first pulse, and a `git` child polls the global `time.sleep` while it
+    waits, which a slow start under load reaches (sd:2254).
+    """
+    return store.checkout_head(root)
 
 
 #: Seconds a cold start waits for `diskutil` to answer before it refuses (sd:1950).
