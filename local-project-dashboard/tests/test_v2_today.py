@@ -189,7 +189,7 @@ class TheShellPort(BrowserSession):
             self.assertNotRegex(source, r"style=\\?\"")
         # The favicon count draws a data: URL; the build leaves it to the mockups.
         self.assertIn("if (!window.SHELL_PAGES) icon.href = c.toDataURL", SHELL_JS)
-        self.assertIn('window.SHELL_PAGES = {"Today": "/today", "Tasks": "/tasks"};', v2.GENERATED["sections.js"].decode())
+        self.assertIn('window.SHELL_PAGES = {"Today": "/today", "Tasks": "/tasks", "Activity": "/activity"};', v2.GENERATED["sections.js"].decode())
 
     def test_today_maps_every_band_source_and_kind_now_can_send(self):
         state = re.search(r"const STATE = \{([^}]*)\}", TODAY_JS).group(1)

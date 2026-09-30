@@ -552,5 +552,45 @@ class CaptureItems(unittest.TestCase):
             self.assertEqual(tuple(connection.iterdump()), before)
 
 
+class TheActivityReads(unittest.TestCase):
+    """The two reads behind the dashboard's Activity (sd:2111): delivery notes and recent assignments, by day."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = Path(self.tmp.name) / "sd.db"
+        initialise(path)
+        self.connection = connect(path)
+        self.addCleanup(self.connection.close)
+        self.item = create_item(self.connection, kind="work", title="A slice")
+
+    def test_delivery_notes_are_the_code_delivery_comments_from_the_day_on(self):
+        from sd_db.ship import note_merge
+
+        for number, sha in ((1, "a" * 40), (2, "b" * 40)):
+            note_merge(self.connection, self.item, {"pull_request": {"url": f"https://github.com/o/r/pull/{number}"},
+                                                    "merge_commit": sha})
+        add_note(self.connection, self.item, "comment", "Code delivery, said in passing")
+        add_note(self.connection, self.item, "decision", "Code delivery https://github.com/o/r/pull/3 at " + "c" * 40)
+        ids = [row["id"] for row in self.connection.execute("SELECT id FROM note WHERE body LIKE 'Code delivery http%' ORDER BY id")]
+        self.connection.execute("UPDATE note SET timestamp = '2026-09-01T10:00:00Z' WHERE id = ?", (ids[0],))
+        self.connection.commit()
+        rows = reads.delivery_notes(self.connection, since="2026-09-05T12:00:00Z")
+        self.assertEqual([row["id"] for row in rows], [ids[1]])
+        self.assertEqual(rows[0]["title"], "A slice")
+
+    def test_recent_assignments_leave_out_exec_and_older_days(self):
+        from sd_db.writes import create_assignment
+
+        author = create_assignment(self.connection, item=self.item, role="author", status="done")
+        create_assignment(self.connection, item=self.item, role="exec", status="done")
+        old = create_assignment(self.connection, item=self.item, role="review", status="done")
+        self.connection.execute("UPDATE assignment SET started = ?, ended = ? WHERE id = ?",
+                                ("2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z", old))
+        self.connection.execute("UPDATE assignment SET started = '2026-09-06T08:00:00Z' WHERE id = ?", (author,))
+        self.connection.commit()
+        self.assertEqual(reads.recent_assignments(self.connection, since="2026-09-05T12:00:00Z"), [author])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

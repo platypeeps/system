@@ -577,6 +577,16 @@ class Dashboard(BaseHTTPRequestHandler):
                     if number > 9223372036854775807:
                         return self._json(404, {"error": "No such item."})
                     return self._json(200, tasks_screen.details(connection, number, now=self.clock()))
+                if path == "/api/activity":
+                    from . import activity_screen
+
+                    # The Activity page's 24-hour timeline (sd:2111), from the records the library already keeps.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Activity."})
+                    if split.query:
+                        return self._json(400, {"error": "Activity does not accept query parameters."})
+                    return self._json(200, activity_screen.document(connection, now=self.clock(),
+                                                                     jobs_backend=self.operations_backend))
                 if path == "/api/usage":
                     from .usage_screen import document
 
