@@ -325,6 +325,16 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
                     "restart": services.restart_service}[action]
         return lambda connection: mutation(connection, label, backend=services_backend,
             expected_revision=values["revision"], who="dashboard")
+    match = re.fullmatch(r"/api/repos/(runner-merge|managed)", path)
+    if match:
+        from .management_screen import set_repo
+
+        # The two sd-db repo verbs Management runs (sd:2118); `before` is what the page showed, refused when stale.
+        words = ("manual", "auto") if match[1] == "runner-merge" else ("yes", "no")
+        if (set(values) != {"path", "value", "before"} or not isinstance(values["path"], str)
+                or values["value"] not in words or values["before"] not in words or values["value"] == values["before"]):
+            raise ValueError(f"Provide the repository path, the new {match[1]} value and the value the page showed.")
+        return lambda connection: set_repo(connection, match[1], values["path"], values["value"], values["before"])
     operation = re.fullmatch(r"/api/(jobs|assignments)/([a-z0-9][a-z0-9_-]{0,99})/(retry|cancel)", path)
     if operation:
         from sd_db import operations
@@ -577,6 +587,17 @@ class Dashboard(BaseHTTPRequestHandler):
                     if number > 9223372036854775807:
                         return self._json(404, {"error": "No such item."})
                     return self._json(200, tasks_screen.details(connection, number, now=self.clock()))
+                if path == "/api/management":
+                    from . import management_screen
+
+                    # The Management page's one reading (sd:2118): v1's repo table, fleet, runner, services and jobs reads.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Management."})
+                    if split.query:
+                        return self._json(400, {"error": "Management does not accept query parameters."})
+                    return self._json(200, management_screen.document(connection, now=self.clock(), fleet=self.fleet_backend,
+                                                                      jobs=self.operations_backend,
+                                                                      services=self.services_backend))
                 if path == "/api/usage":
                     from .usage_screen import document
 
