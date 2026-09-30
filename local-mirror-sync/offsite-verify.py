@@ -60,9 +60,13 @@ def _load_config_env() -> None:
 
 _load_config_env()
 
-#: The share root the offsite copies live under. Overridable so the tests can
-#: run against a fixture, and so a second machine can name its own mount.
-DEFAULT_ROOT = Path(os.environ.get("OFFSITE_VERIFY_ROOT", "/Volumes/Offsite/Backup"))
+#: The share root the offsite copies live under. It is a local value -- the
+#: mount point of this account's NAS -- so it comes from OFFSITE_VERIFY_ROOT
+#: (exported, or in `<config>/mirror-sync/.env`) and has no built-in default.
+#: A hardcoded mount that exists on no machine failed every call that omitted
+#: `--root` (sd:2048); an unset variable now fails by naming itself instead.
+ROOT_VARIABLE = "OFFSITE_VERIFY_ROOT"
+DEFAULT_ROOT = Path(os.environ[ROOT_VARIABLE]) if os.environ.get(ROOT_VARIABLE) else None
 
 # A filesystem that is served by another machine. A local disk -- internal,
 # USB, a disk image -- is none of these, and it dies in the fire, theft or
@@ -621,7 +625,7 @@ def _writable_destination(destination: Path, root: Path, report: Report) -> bool
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
-                        help=f"off-machine backup root (default {DEFAULT_ROOT})")
+                        help=f"off-machine backup root (default: ${ROOT_VARIABLE})")
     parser.add_argument("--max-db-age-hours", type=float, default=DEFAULT_MAX_DB_AGE_HOURS)
     parser.add_argument("--allow-local-root", action="store_true",
                         help="accept a backup root on this machine's own filesystem"
@@ -642,6 +646,13 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now(UTC)
     report = Report()
     root = arguments.root
+
+    if root is None:
+        print("FAIL  " + system_tools_config.missing(
+                  ROOT_VARIABLE, "mirror-sync", ".env", "local-mirror-sync")
+              + f" Set it as {ROOT_VARIABLE}=<share mount>/Backup (--root overrides both).",
+              file=sys.stderr)
+        return 1
 
     # An unmounted share looks like a missing directory, and reporting that is
     # the whole point of this job. Nothing else can be checked without it.
