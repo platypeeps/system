@@ -566,12 +566,13 @@ class Dashboard(BaseHTTPRequestHandler):
                 if path == "/api/health":
                     from . import health_screen
 
-                    # The Health page's areas (sd:2115): the fleet child's worktrees and the missing-trailer count.
+                    # The Health page's areas (sd:2115): worktrees, missing trailers, ports and branch protection.
                     if not self._session(context):
                         return self._json(403, {"error": "Open a dashboard page before reading Health."})
                     if split.query:
                         return self._json(400, {"error": "Health does not accept query parameters."})
-                    return self._json(200, health_screen.document(connection, now=self.clock(), fleet=self.fleet_backend))
+                    return self._json(200, health_screen.document(connection, now=self.clock(), fleet=self.fleet_backend,
+                                                                  ports=self.ports_backend))
                 if path == "/api/tasks" or re.fullmatch(r"/api/tasks/[1-9][0-9]{0,18}", path):
                     from . import tasks_screen
 

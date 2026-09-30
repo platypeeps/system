@@ -1,10 +1,11 @@
 <!doctype html>
 <!--
   Health (sd:2115), at /fleet-health: /health is the service's own check (runtime.py reads it). Built from the design source's
-  products/system/designs/v2/health.html at e301f82, with design.md and commands.md.
-  Data: /api/health (health_screen.document: the fleet child's worktree registrations and reads.missing_trailers), read when the
-  page opens and on Refresh. The design's other areas have no reader yet; the document names them and the page shows them as
-  not read. Writes: none. Every fix is a CLI line for Copy. Nothing here is sample data.
+  products/system/designs/v2/health.{html,css,js} at d82daa1, with design.md and commands.md.
+  Data: /api/health (health_screen.document: the fleet child's worktree registrations, reads.missing_trailers, Operations >
+  Ports' collect_ports and protection.rows), read when the page opens and on Refresh. Five of the design's areas have no reader
+  yet; the document names them and the page shows them as not read. Writes: none. Every fix is a CLI line for Copy.
+  Nothing here is sample data.
 -->
 <html lang="en">
 <head>

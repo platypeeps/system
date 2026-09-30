@@ -109,3 +109,56 @@ dialog.confirm .actions { margin-top: var(--space-md); }
 /* build: an area with no reader, or whose reader failed, says so in place of its ledger (design.md: unknown is never clean). */
 .unread { margin: 0 0 var(--space-sm); font: 400 var(--text-xs)/1.5 var(--font-data); color: var(--color-ink-2); }
 .unread b { font-weight: 600; }
+
+/* Ports and Protection (d82daa1): the counts line, warnings, the protection matrix and its table fallback. */
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0 0 var(--space-sm); font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
+.sw { display: inline-block; width: 0.75rem; height: 0.75rem; vertical-align: -0.1em; margin-right: var(--space-2xs); border-radius: 2px; }
+.counts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-sm); margin: 0 0 var(--space-xs); font: 400 var(--text-xs)/1.4 var(--font-data); color: var(--color-ink-2); }
+.warn { margin: 0 0 var(--space-xs); font-size: var(--text-xs); color: var(--color-ink-2); max-width: 70ch; }
+.pmx-wrap { overflow-x: auto; margin: 0 0 var(--space-sm); }
+.pmx-wrap:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.pmx { --pmx-line: 0.875rem; display: grid; grid-template-columns: 8.5rem minmax(0, 1fr) 2rem; gap: var(--space-xs); align-items: start; min-width: 36rem; }
+.pmx ul { margin: 0; padding: 0; list-style: none; font: 400 var(--text-2xs)/var(--pmx-line) var(--font-data); color: var(--color-ink-2); }
+.pmx ul li { height: var(--pmx-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pmx-labels li:first-child, .pmx-n li:first-child { color: var(--color-ink); font-weight: 500; }
+.pmx-n { text-align: right; }
+.pmx-cols { display: flex; gap: 1px; min-width: 0; }
+.pmx-col { all: unset; flex: 1 1 0; min-width: 0.5rem; cursor: pointer; border-radius: 1px; }
+.pmx-col svg { display: block; width: 100%; height: calc(var(--pmx-line) * 12); }
+.pmx-col:hover { background: var(--color-well); }
+.pmx-col:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.pmx-col[aria-current="true"] { box-shadow: inset 0 0 0 2px var(--color-accent); }
+.pmx-col[data-status="unknown"] { background: repeating-linear-gradient(135deg, var(--color-panel) 0 4px, var(--color-rule) 4px 5px); }
+.pmx .c-gap { fill: var(--color-caution); }
+.pmx .c-ok { fill: var(--color-series-2); }
+.pmx .st-protected { fill: var(--color-series-3); }
+.pmx .st-unprotected { fill: var(--color-warning); }
+.sw.gap { background: var(--color-caution); }
+.sw.pass { height: 0.2rem; vertical-align: 0.2em; background: var(--color-series-2); }
+.sw.na { border: 1px solid var(--color-rule-2); }
+.sw.unk { background: repeating-linear-gradient(135deg, var(--color-panel) 0 3px, var(--color-rule) 3px 4px); border: 1px solid var(--color-rule); }
+.pmx-table { margin: 0 0 var(--space-md); }
+.pmx-table summary { cursor: pointer; font-size: var(--text-xs); color: var(--color-ink-2); padding: var(--space-2xs) 0; }
+.pmx-table .tscroll { overflow-x: auto; max-height: 28rem; overflow-y: auto; }
+.pmx-table table { border-collapse: collapse; font: 400 var(--text-2xs)/1.35 var(--font-data); }
+.pmx-table caption { text-align: left; padding: var(--space-xs) 0; color: var(--color-muted); font-size: var(--text-xs); }
+.pmx-table th, .pmx-table td { padding: var(--space-3xs) var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule-2); text-align: left; vertical-align: top; }
+.pmx-table thead th { position: sticky; top: 0; background: var(--color-panel); color: var(--color-muted); font-weight: 600; white-space: nowrap; }
+.pmx-table tbody th { white-space: nowrap; font-weight: 500; }
+.pmx-table td { min-width: 5rem; max-width: 18rem; }
+.pmx-table td b { color: var(--color-caution); }
+.pmx-table .sent { color: var(--color-ink-2); }
+.details dl.checks dd.c-gap { color: var(--color-ink); }
+.details dl.checks dd.c-gap::first-line { font-weight: 500; }
+.details dl.checks dd.c-na { color: var(--color-muted); }
+@media (pointer: coarse) {
+  .pmx-col { flex: 0 0 var(--row-touch); }
+  .pmx-cols { min-width: max-content; }
+  .pmx { grid-template-columns: 8.5rem max-content 2rem; }
+  .pmx-table summary { display: flex; align-items: center; min-height: var(--row-touch); }
+  .pmx-table tbody th a { display: inline-flex; align-items: center; min-height: var(--row-touch); min-width: var(--row-touch); }
+  .counts .fixes .btn.sm { line-height: var(--row-touch); }
+}
+@media (forced-colors: active) {
+  .pmx .c-gap, .pmx .st-unprotected { fill: CanvasText; } .pmx .c-ok, .pmx .st-protected { fill: GrayText; }
+}

@@ -62,13 +62,17 @@ carry Undo; resolving a followup note and cancelling an assignment ask first.
 `sd work relink` and `sd work cancel` are shown for Copy only.
 
 Health is at `/fleet-health` (sd:2115); `/health` stays the service's own
-check. `GET /api/health` (`health_screen.document`) lists the design's seven
-areas in its order. Two have a reader: Worktrees (registrations whose directory
-is gone, from the fleet child Sessions reads) and Attribution (the
-missing-trailer count Progress shows). Disk, Credentials, Branches,
-Dependencies and Security have no collector yet; each shows as unknown and
-names what it does not read. Nothing on the page writes: Prune registrations
-and Attribute are CLI lines for Copy, and Re-check reads the document again.
+check. `GET /api/health` (`health_screen.document`) lists the design's nine
+areas in its order. Four have a reader: Worktrees (registrations whose directory
+is gone, from the fleet child Sessions reads), Attribution (the
+missing-trailer count Progress shows), Ports (Operations > Ports' reader, with
+its counts and warnings) and Protection (`protection.rows`, drawn as a matrix
+with one column per repository and a table carrying the same cells; an unread
+repository shows no cell). Disk, Credentials, Branches, Dependencies and
+Security have no collector yet; each shows as unknown and names what it does
+not read. Nothing on the page writes: Prune registrations, Attribute, Inspect
+listener and Re-run collector are CLI lines for Copy, and Re-check reads the
+document again.
 
 The old screens stay until their section is ported. Only the old Today moved,
 to `/classic/today`; every other old screen keeps its path. A `/v2/` address
