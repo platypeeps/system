@@ -52,8 +52,11 @@ timeout on a refresh keeps the last answer and names the failure under the
 heartbeat's `storage.verification.refresh_problem`, an answer that names a problem
 replaces the last one, and an answer an hour old with no successful refresh is
 forgotten, so a stall that lasts becomes the problem again. The daemon's first
-preflight has no answer to keep, so a stalled `diskutil` still refuses the start,
-and `runner.sh preflight` asks every time.
+preflight has no answer to keep. When `diskutil` gives none (a timeout or a
+non-zero exit), the daemon writes an unhealthy heartbeat with the problem and a
+`starting` field, dispatches nothing, and asks again each interval for 10 minutes
+before it refuses the start (sd:1950). A definitive answer, not APFS or no quota,
+refuses at once. `runner.sh preflight` asks every time.
 
 The work volume `sd-work` has a **100 GB quota** in APFS container `disk3`.
 The September 8 provisioning proposal set 60 GB. On 2026-09-26 the volume was
