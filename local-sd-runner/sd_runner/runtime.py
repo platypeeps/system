@@ -218,6 +218,18 @@ def verify_skill_source(request: dict) -> None:
         raise store.RunnerRefused("skill source changed since the reviewed selection; refresh before dispatch")
 
 
+#: The checkout this runner runs from: its modules, the program launchd starts.
+CHECKOUT = Path(__file__).resolve().parents[2]
+
+
+def checkout_commit(root: Path = CHECKOUT) -> str | None:
+    """The checkout's HEAD, or None when `root` is not a checkout (sd:1952)."""
+    try:
+        return gitops.git(root, "rev-parse", "--verify", "HEAD", check=False) or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 #: Seconds a cold start waits for `diskutil` to answer before it refuses (sd:1950).
 COLD_START_WINDOW = 600
 
@@ -247,6 +259,8 @@ class Runner:
         self.executables = {}
         #: `storage.preflight`'s remembered `diskutil` answers by mount identity (sd:1941).
         self.storage_verified = {}
+        #: The checkout's HEAD when `serve` started, the code this process runs (sd:1952).
+        self.runner_commit = None
 
     @property
     def search_path(self) -> str:
@@ -503,7 +517,11 @@ class Runner:
             "restoration_pending": self._restore_pending(connection),
             "database_holds": sorted(self.pending_endings), "probe_holds": holds, "space_holds": space_holds,
             "pack_commit": commit, "delivery_watch": self.delivery_watch_result, "executables": self.executables,
-            "archive_refresh": self.archive_watch_result})
+            "archive_refresh": self.archive_watch_result, **self.deployed()})
+
+    def deployed(self) -> dict:
+        """The heartbeat's `runner_commit` and `runner_checkout`, which `heartbeat_state` compares (sd:1952)."""
+        return {"runner_commit": self.runner_commit, "runner_checkout": str(CHECKOUT)}
 
     def refresh_archives(self):
         from .archive_refresh import refresh
@@ -1071,6 +1089,8 @@ class Runner:
             self.await_storage(report)
             self.resolve_tools()
             connection = connect(config.database)
+            # Read once: Python keeps the modules it loaded, whatever a pull changes on disk.
+            self.runner_commit = checkout_commit()
             try:
                 try:
                     holds = self.recover(connection)
@@ -1078,7 +1098,8 @@ class Runner:
                     holds = [{"reason": str(error)}]
                 if holds:
                     try:
-                        database_write(connection, store.heartbeat, {"healthy": False, "interval_seconds": config.interval, "restore_holds": holds})
+                        database_write(connection, store.heartbeat, {"healthy": False, "interval_seconds": config.interval, "restore_holds": holds,
+                                                                     **self.deployed()})
                     except sqlite3.Error as error:
                         raise store.RunnerRefused(f"runner recovery held: {holds}; diagnostic heartbeat unavailable: {error}") from error
                     raise store.RunnerRefused("runner recovery has unresolved durable-journal holds")
