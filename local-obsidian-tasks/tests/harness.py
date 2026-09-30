@@ -48,9 +48,24 @@ for a in "$@"; do printf '%s\\n' "$a" >> "$NOTIFY_RECORD"; done
 exit "${NOTIFY_EXIT:-0}"
 """
 
-# Exits non-zero, which is exactly how the real tool behaves when it is not
-# installed: the digest degrades to Open-only buttons made from obsidian://.
+# Exits non-zero by default, which is exactly how the real tool behaves when
+# it is not installed: the digest degrades to Open-only buttons made from
+# obsidian://. The ACTIONS_STUB_* settings make it record its calls, hang, or
+# sign against a base URL, the same stub local-obsidian-review's suite uses.
 STUB_ACTIONS = """#!/bin/sh
+if [ -n "${ACTIONS_STUB_RECORD:-}" ]; then
+  printf '%s %s\\n' "$1" "${TASK_ACTIONS_BASE_URL:-<unset>}" >> "$ACTIONS_STUB_RECORD"
+fi
+if [ -n "${ACTIONS_STUB_HANG:-}" ]; then sleep "$ACTIONS_STUB_HANG"; fi
+if [ "$1" = url ] && [ -n "${ACTIONS_STUB_SIGN_HANG:-}" ]; then
+  sleep "$ACTIONS_STUB_SIGN_HANG"
+fi
+if [ -n "${ACTIONS_STUB_SIGNS:-}" ]; then
+  case "$1" in
+    base-url) printf '%s\\n' "$ACTIONS_STUB_SIGNS"; exit 0 ;;
+    url)      printf '%s/task?stub=1\\n' "${TASK_ACTIONS_BASE_URL:?url called with no base}"; exit 0 ;;
+  esac
+fi
 exit 1
 """
 
