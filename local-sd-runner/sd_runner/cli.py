@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import getpass
 import json
 import os
@@ -11,6 +13,8 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from dataclasses import replace
@@ -87,6 +91,13 @@ def heartbeat_state(config: Config) -> dict:
 
 #: Seconds `restart` waits for the new daemon's healthy heartbeat.
 RESTART_WAIT = 180
+#: A drain marker lives `2 * wait` plus this many seconds past its last renewal.
+DRAIN_GRACE = 60
+#: Seconds between the verb's renewals of its drain marker.
+DRAIN_RENEW = 10
+#: A marker this close to its expiry is not renewed and does not permit the
+#: kick: the daemon may read it expired before the write lands.
+DRAIN_MARGIN = 10
 
 
 def agent_pid(label: str = LABEL) -> int | None:
@@ -121,6 +132,14 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
     marker so the new daemon dispatches. A marker left by a verb that died
     expires on its own. `runner_commit` is None from a daemon that does
     not write it.
+
+    The drain must hold from the acknowledgement to the kick. A thread
+    renews the marker while the verb lives, and only a marker that has not
+    expired: once it lapses the daemon may have claimed, and nothing makes
+    it unexpired again. So the check just before the kick, that the marker
+    still holds this verb's token well ahead of its expiry, proves the
+    drain never lapsed; a lapse refuses. One restart at a time holds the
+    lock beside the database from before the marker to after its removal.
     """
     if not agent_loaded(label):
         return {"ok": False, "reason": f"the {label} agent is not loaded; install it first (runner.sh install-plan)"}
@@ -135,17 +154,77 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
                 "load": load, "max_load": limit}
     from .runtime import drain_path, drain_request
     marker = drain_path(config.database)
-    if drain_request(config.database) is not None:
-        return {"ok": False, "reason": f"another restart is draining ({marker}); wait for it or for the marker to expire"}
-    token = uuid.uuid4().hex
-    partial = marker.with_suffix(".partial")
-    partial.write_text(json.dumps({"token": token, "expires_at": time.time() + 2 * wait + 60, "by": "runner.sh restart"}))
-    partial.replace(marker)
-    try:
+    with contextlib.ExitStack() as held:
+        lock = held.enter_context(open(restart_lock_path(config.database), "a"))
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"ok": False, "reason": f"another restart is running ({restart_lock_path(config.database)}); wait for it"}
+        if drain_request(config.database) is not None:
+            return {"ok": False, "reason": f"another restart is draining ({marker}); wait for it or for the marker to expire"}
+        token = uuid.uuid4().hex
+        ttl = 2 * wait + DRAIN_GRACE
+        _publish(marker, token, time.time() + ttl)
+        held.callback(_withdraw, marker, token)
+        renewal = _Renewal(marker, token, ttl)
+        held.callback(renewal.stop)
         return _drained_restart(config, token, agent, wait=wait, label=label, clock=clock, sleep=sleep)
-    finally:
-        if drain_request(config.database) == token:
-            marker.unlink(missing_ok=True)
+
+
+def restart_lock_path(database: Path) -> Path:
+    """The lock one `runner.sh restart` holds for its whole run."""
+    return database.parent / "runner-restart.lock"
+
+
+def _publish(marker: Path, token: str, expires_at: float) -> None:
+    """Write the marker atomically, through a temporary file of this writer's own."""
+    handle, name = tempfile.mkstemp(dir=marker.parent, prefix=f".{marker.name}.", suffix=".partial")
+    try:
+        with os.fdopen(handle, "w") as partial:
+            json.dump({"token": token, "expires_at": expires_at, "by": "runner.sh restart"}, partial)
+        os.replace(name, marker)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+
+
+def _withdraw(marker: Path, token: str) -> None:
+    """Remove the marker when it is this verb's, expired or not."""
+    try:
+        mine = json.loads(marker.read_text()).get("token") == token
+    except (OSError, ValueError, AttributeError):
+        mine = False
+    if mine:
+        marker.unlink(missing_ok=True)
+
+
+def _drain_holds(marker: Path, token: str) -> bool:
+    """Whether the marker names `token` and stays unexpired for DRAIN_MARGIN seconds more."""
+    try:
+        value = json.loads(marker.read_text())
+        return value["token"] == token and float(value["expires_at"]) > time.time() + DRAIN_MARGIN
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+class _Renewal:
+    """Renew the verb's marker every DRAIN_RENEW seconds while it still holds."""
+
+    def __init__(self, marker: Path, token: str, ttl: float):
+        self.marker, self.token, self.ttl = marker, token, ttl
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.run, name="drain-renewal", daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while not self.stopped.wait(DRAIN_RENEW):
+            if not _drain_holds(self.marker, self.token):
+                return
+            _publish(self.marker, self.token, time.time() + self.ttl)
+
+    def stop(self):
+        self.stopped.set()
+        self.thread.join()
 
 
 def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clock, sleep) -> dict:
@@ -174,6 +253,10 @@ def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clo
         return {"ok": False, "reason": f"recovery-plan is not clean ({len(plan['entries'])} entries, "
                 f"{len(plan['journal_issues'])} journal issues, restore pending {plan['restore_pending']}); "
                 "read runner.sh recovery-plan and resolve it first"}
+    from .runtime import drain_path
+    if not _drain_holds(drain_path(config.database), token):
+        return {"ok": False, "reason": "the drain lapsed before the kick; the daemon may have claimed work, "
+                "so run runner.sh restart again"}
     kick = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
                           capture_output=True, text=True, check=False)
     if kick.returncode:

@@ -20,13 +20,14 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from sd_db import runner as store
 from sd_db import runner_journal as journal
-from sd_runner import cli, runtime
+from sd_runner import cli, reconciliation, runtime
 from tests import test_runtime
 
 STUB = """#!/bin/sh
@@ -161,6 +162,69 @@ class Restart(unittest.TestCase):
         result = self.restart()
         self.assertIn("another restart is draining", result["reason"])
         self.assertEqual(json.loads(runtime.drain_path(self.fixture.database).read_text())["token"], "other")
+
+    def test_a_drain_that_lapses_during_inspection_refuses_without_a_kick(self):
+        """The marker expires while `recovery-plan` scans (a machine sleep, a slow journal): the daemon claims."""
+        store.enqueue(self.fixture.db, [self.fixture.item], who="operator")
+        marker = runtime.drain_path(self.fixture.database)
+        real = reconciliation.plan
+
+        def slow(config):
+            clean = real(config)
+            marker.write_text(json.dumps({**json.loads(marker.read_text()), "expires_at": time.time() - 1}))
+            self.step(0)
+            return clean
+
+        with patch.object(cli, "DRAIN_RENEW", 3600), patch.object(reconciliation, "plan", slow):
+            result = self.restart()
+        self.assertEqual(len(self.claimed), 1, "the fixture's daemon claims once the drain lapses")
+        self.assertFalse(result["ok"], result)
+        self.assertIn("the drain lapsed before the kick", result["reason"])
+        self.assert_not_kicked()
+
+    def test_renewal_keeps_the_drain_past_its_first_expiry(self):
+        real = reconciliation.plan
+
+        def slow(config):
+            time.sleep(1.5)
+            return real(config)
+
+        with patch.object(cli, "DRAIN_GRACE", 0), patch.object(cli, "DRAIN_MARGIN", 0.2), \
+                patch.object(cli, "DRAIN_RENEW", 0.1), patch.object(reconciliation, "plan", slow):
+            result = self.restart(wait=0.5)
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(runtime.drain_path(self.fixture.database).exists())
+
+    def test_renewal_never_revives_a_lapsed_marker(self):
+        marker = runtime.drain_path(self.fixture.database)
+        lapsed = {"token": "mine", "expires_at": time.time() - 1}
+        marker.write_text(json.dumps(lapsed))
+        with patch.object(cli, "DRAIN_RENEW", 0.05):
+            renewal = cli._Renewal(marker, "mine", 60)
+            time.sleep(0.3)
+            renewal.stop()
+        self.assertEqual(json.loads(marker.read_text()), lapsed)
+
+    def test_a_second_restart_during_the_first_refuses(self):
+        """The second starts after the first holds the lock, before the first's marker exists."""
+        real = runtime.drain_request
+        second = []
+
+        def racing(database):
+            if not second:
+                second.append(None)
+                second[0] = cli.restart(self.fixture.config, wait=5.0, sleep=self.step)
+            return real(database)
+
+        with patch.object(runtime, "drain_request", racing):
+            first = self.restart()
+        self.assertIn("another restart is running", second[0].get("reason", ""), second[0])
+        self.assertTrue(first["ok"], first)
+        self.assertEqual(len([call for call in self.calls() if call.startswith("kickstart")]), 1, self.calls())
+
+    def test_a_leftover_partial_file_does_not_block_the_marker(self):
+        runtime.drain_path(self.fixture.database).with_suffix(".partial").mkdir()
+        self.assertTrue(self.restart()["ok"])
 
     def test_main_passes_the_options(self):
         output = io.StringIO()
