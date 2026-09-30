@@ -71,7 +71,10 @@ funnel_url() {
   tailscale funnel status >"$tmp" 2>/dev/null & pid=$!
   # The watchdog records that it fired, and only when the kill lands: a daemon
   # that answers in the same instant the timer expires is not a timeout.
-  ( sleep "$FUNNEL_TIMEOUT"; kill "$pid" 2>/dev/null && : >"$killed" ) 2>/dev/null &
+  # Its stdout goes to /dev/null: killing the subshell leaves its `sleep`
+  # running, and a `sleep` holding the `$(funnel_url)` pipe made every probe
+  # wait out the whole timeout (sd:1770).
+  ( sleep "$FUNNEL_TIMEOUT"; kill "$pid" 2>/dev/null && : >"$killed" ) >/dev/null 2>&1 &
   watchdog=$!
   wait "$pid" 2>/dev/null || true
   kill "$watchdog" 2>/dev/null || true
