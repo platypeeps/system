@@ -38,7 +38,7 @@ addEventListener('DOMContentLoaded', () => {
   const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
   let tasks = [], READ = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, kind: r.kind, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, recurrence: r.recurrence, revision: r.revision, allowed: r.allowed, real: true });
+    status: r.status, kind: r.kind, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, recurrence: r.recurrence, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   const label = t => t.id ? `#${t.id}` : (t.kind === 'ops' ? 'ops' : 'no id');
   async function post(path, body) {
@@ -56,6 +56,7 @@ addEventListener('DOMContentLoaded', () => {
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
   function absorb(key, state) {
     const t = byKey(key); if (!t || !state?.item) return;
+    if (t.due !== state.item.due || t.recurrence !== state.item.recurrence) t.nextDue = null; // the next date is read with the rows
     Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence, revision: state.revision });
     staleDet(t.id);
     if (selected === key) readDet(t.id); // the open Details read again, so they show the write
@@ -126,6 +127,7 @@ addEventListener('DOMContentLoaded', () => {
   const EDITABLE = t => ['task', 'followup', 'work'].includes(t.kind);
   // build: sd_db.workflow.TASK_STATUS_KINDS; workflow._recurring refuses a rule on any other kind.
   const RECURS = ['task', 'personal', 'followup'];
+  const repeats = t => !!t?.recurrence;
   const cliMove = (t, to) => t.id ? `sd task status ${t.id} ${to}` : '';
   function cliQuad(t, ch) {
     if (!t.id) return '';
@@ -169,10 +171,12 @@ addEventListener('DOMContentLoaded', () => {
   }
   const undoOne = w => () => w.undo().then(ok => { if (ok) toast(`${w.words} undone · ${w.name}`); }, err => failed(w.name, err));
   const undoLast = o => { const w = LAST.get(o.id); if (w) undoOne(w)(); };
+  // After a group with failures, the toast says how many were reversed and names each row that was not, and why.
   const undoAll = ws => () => Promise.allSettled(ws.map(w => w.undo())).then(rs => {
-    const done = rs.filter(r => r.status === 'fulfilled' && r.value).length, bad = rs.filter(r => r.status === 'rejected');
-    toast(`${ws[0].words} undone · ${plural(done, ws[0].noun)}${bad.length ? ` · ${bad.length} not undone: ${bad[0].reason.message}` : ''}`);
-    if (bad.some(r => r.reason.stale)) load();
+    const done = rs.filter(r => r.status === 'fulfilled' && r.value).length;
+    const not = rs.map((r, i) => r.status === 'rejected' ? `${ws[i].name} (${r.reason.message})` : r.value ? '' : `${ws[i].name} (its change did not land)`).filter(Boolean);
+    toast(`${ws[0].words} undone · ${not.length ? `${done} of ${ws.length} reversed · not reversed: ${not.join(', ')}` : plural(done, ws[0].noun)}`);
+    if (rs.some(r => r.status === 'rejected' && r.reason.stale)) load();
   });
   // The shell runs a command and then sends shell:ran; its bulk bar runs one command per picked row in the same tick. A
   // single run toasts when its write lands. A bulk run gets the shell's toast at once; this page replaces its Undo, which
@@ -257,8 +261,8 @@ addEventListener('DOMContentLoaded', () => {
   // the status this move left, read as the write is sent.
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
     id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban',
-    primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && T(o).recurrence),
-    when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; if (s === 'done' && t.recurrence) return 'it repeats: Complete occurrence opens the next one, and has no Undo';
+    primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
+    when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; if (s === 'done' && repeats(t)) return 'it repeats: 5 completes it and opens the next occurrence';
       const L = legal(t, s); return L.ok || L.reason; },
     cli: o => idOr(o, t => cliMove(t, s)),
     run: o => { const t = T(o); let from = t.status;
@@ -268,13 +272,17 @@ addEventListener('DOMContentLoaded', () => {
   }]));
   // A repeating task's completion makes workflow.change_status open the next occurrence and clear the rule on this one. A
   // move back would leave both open, so completing it is confirmed and has no Undo (review, PR #46). The rows are read
-  // again when it lands, so the next occurrence is listed at once. Key 5 is Done's; only one of the two is on for a task.
-  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Complete occurrence', key: '5', risk: 'confirm', icon: 'calendar-check',
-    primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && !!T(o).recurrence,
-    when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; if (!t.recurrence) return 'the task does not repeat; Status → Done completes it';
+  // again when it lands, so the next occurrence is listed at once. Key 5 is Done's too: the shell runs the first command
+  // on a key that is on, so the two `when` tests split on repeats() and never are both on. Not bulk: a picked repeating
+  // row is skipped with its reason (keys below).
+  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check',
+    primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
+    when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; if (!repeats(t)) return 'the task does not repeat; Status → Done completes it';
       const L = legal(t, 'done'); return L.ok || L.reason; },
     cli: o => idOr(o, t => cliMove(t, 'done')),
-    consequence: o => `Marks it done and opens the next occurrence (${T(o).recurrence}). A move back would leave two open tasks, so there is no Undo.`,
+    // build: next_due is workflow.next_occurrence_due, the date the completion computes; without it the rule is named.
+    consequence: o => { const t = T(o);
+      return `Completes ${label(t)} and opens the next occurrence${t.nextDue ? `, due ${fmt(t.nextDue)}` : ''} (${t.recurrence}). A move back would leave two open tasks, so there is no Undo.`; },
     run: o => { const t = T(o); let from = t.status;
       const next = v => v?.next_occurrence ? `next occurrence #${v.next_occurrence}${byKey(String(v.next_occurrence))?.due ? ` due ${fmt(byKey(String(v.next_occurrence)).due)}` : ''}`
         : `the series ended: ${v?.next_occurrence_reason || 'no next occurrence was made'}`;
@@ -546,8 +554,17 @@ addEventListener('DOMContentLoaded', () => {
   function move(key, to) {
     const t = byKey(key), L = legal(t, to);
     if (!L.ok) { toast(`${label(t)} not moved: ${L.reason}`); return false; }
-    C.run(to === 'done' && t.recurrence ? COMPLETE : STATUS_CMD[to], C.get(key));
+    C.run(to === 'done' && repeats(t) ? COMPLETE : STATUS_CMD[to], C.get(key));
     return true;
+  }
+  // Picked rows and 1–5: the status command runs as one bulk group on each picked row it is on for, as the shell's bulk bar
+  // runs it; each row it is off for is skipped and named with its reason (a repeating task's Done is item.complete, not bulk).
+  function movePicked(to) {
+    const c = STATUS_CMD[to], objs = [...checked].map(k => C.get(k)).filter(Boolean);
+    const on = objs.filter(o => c.when(o) === true), off = objs.filter(o => c.when(o) !== true);
+    if (on.length) C.run({ ...c, when: () => true, cli: () => on.map(o => c.cli(o)).join(' && '), run: () => { on.forEach(o => c.run(o)); return `${c.label} · ${plural(on.length, 'item')}`; } },
+      { id: 'bulk', type: 'items', label: plural(on.length, 'item') });
+    if (off.length) toast(`Skipped ${off.map(o => `${label(T(o))}: ${c.when(o)}`).join('; ')}`);
   }
   // build: a quadrant drop is an edit; it lands through the same write, toasts after, and Undo edits the fields back.
   function commitEdit(t, ch, words) {
@@ -709,12 +726,13 @@ addEventListener('DOMContentLoaded', () => {
     }
     if (e.key === 'v') { vChord = Date.now(); return; }
     const n = parseInt(e.key, 10);
+    if (checked.size && view !== 'matrix' && n >= 1 && n <= 5) { e.preventDefault(); movePicked(STATUSES[n - 1][0]); return; }
     if (!selected || !byKey(selected) || !(n >= 1)) return;
     if (view === 'board' && n <= 5) { e.preventDefault(); move(selected, STATUSES[n - 1][0]); document.querySelector(`.card[data-key="${selected}"]`)?.focus(); }
     if (view === 'matrix' && n <= 4) { e.preventDefault(); toQuad(selected, QUADS[n - 1][0]); document.querySelector(`.card[data-key="${selected}"]`)?.focus(); }
   });
   // The shell walks rows and cards on j / k (a card takes focus) and sends Esc here to cancel a drag.
-  window.PAGE_KEYS = [['1 – 5', 'Board: move the selected task to that column'], ['1 – 4', 'Matrix: place the selected task in that quadrant'],
+  window.PAGE_KEYS = [['1 – 5', 'Board: move the selected task to that column; with rows picked, move the picked rows'], ['1 – 4', 'Matrix: place the selected task in that quadrant'],
     ['v l / v b / v m', 'List, board or matrix view']];
   window.PAGE_LIST = { rows: () => document.querySelectorAll('main [data-key]'), id: n => n.dataset.key, current: () => selected,
     select: (key, n) => { select(key, false); if (n.matches('.card')) n.focus(); }, clear: () => !!drag && (endDrag(false), true) };

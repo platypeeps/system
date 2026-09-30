@@ -287,7 +287,7 @@ class TheScript(ScreenCase):
         statuses = [[f"item.status.{s}", "item", "undo", str(i + 1), None, True, True]
                     for i, s in enumerate(["planning", "ready", "in_progress", "blocked", "done"])]
         self.assertEqual(out["R"]["reg"], statuses + [
-            ["item.complete", "item", "confirm", "5", None, True, False],
+            ["item.complete", "item", "confirm", "5", True, True, False],
             ["item.edit", "item", "safe", "e", None, True, False],
             ["item.move", "item", "safe", "m", None, True, False],
             ["item.p2", "item", "undo", None, None, True, True],
@@ -484,7 +484,7 @@ lastUndo().undo(); await flush();""", answer)
             [f"/api/items/{ask}/status", {"status": "in_progress", "revision": self.row("ask")["revision"]}],
             [f"/api/items/{plan}/status", {"status": "ready", "revision": "b" * 64}],
         ])
-        self.assertIn("Status → In progress undone · 1 item", [t[0] for t in out["toasts"]])
+        self.assertIn(f"Status → In progress undone · 1 of 2 reversed · not reversed: #{ask} (its change did not land)", [t[0] for t in out["toasts"]])
 
     def test_a_bulk_failure_toast_offers_undo_for_the_landed_writes_only(self):
         plan, ask = self.ids["plan"], self.ids["ask"]
@@ -535,7 +535,7 @@ OUT.toasts[1].undo(); await flush(); HOLD.splice(0).forEach(f => f()); await flu
         out = self.run_page(f"""R.done = cmd('item.status.done').when(C.get('{plan}'));
 R.complete = cmd('item.complete').when(C.get('{plan}')); R.key = cmd('item.complete').key;
 shellRun(cmd('item.complete'), C.get('{plan}')); await flush(); R.listed = !!C.get('99');""", answer)
-        self.assertEqual(out["R"]["done"], "it repeats: Complete occurrence opens the next one, and has no Undo")
+        self.assertEqual(out["R"]["done"], "it repeats: 5 completes it and opens the next occurrence")
         self.assertEqual(out["R"]["complete"], True)
         self.assertEqual(out["R"]["key"], "5")
         self.assertEqual(out["confirms"], ["item.complete"])
@@ -543,6 +543,44 @@ shellRun(cmd('item.complete'), C.get('{plan}')); await flush(); R.listed = !!C.g
         self.assertEqual(out["gets"], ["/api/tasks", "/api/tasks"], "the rows were not read again for the next occurrence")
         self.assertTrue(out["R"]["listed"], "the next occurrence is not listed")
         self.assertEqual(out["toasts"], [[f"#{plan} Ready → Done · next occurrence #99 due Sep 16 · sd task status {plan} done", False]])
+
+    def repeat_plan(self):
+        """Make `plan` weekly in the store, and read the documents again."""
+        set_item_fields(self.connection, self.ids["plan"], recurrence="FREQ=WEEKLY")
+        self.connection.commit()
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.details = {str(i): tasks_screen.details(self.connection, i, now=NOW) for i in self.ids.values()}
+
+    def test_exactly_one_key_5_command_is_on_for_a_repeating_and_a_plain_row(self):
+        self.repeat_plan()
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        out = self.run_page(f"""const five = k => REG.filter(c => c.key === '5' && c.when(C.get(k)) === true).map(c => c.id);
+R.plan = five('{plan}'); R.ask = five('{ask}');""")
+        self.assertEqual(out["R"], {"plan": ["item.complete"], "ask": ["item.status.done"]})
+
+    def test_the_confirm_names_the_next_occurrence_before_the_write(self):
+        self.repeat_plan()
+        plan = self.ids["plan"]
+        self.assertEqual(self.row("plan")["next_due"], "2026-09-16")
+        self.assertIsNone(self.row("ask")["next_due"])
+        out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}'));")
+        self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and opens the next occurrence, due Sep 16 (FREQ=WEEKLY)."), out["R"]["text"])
+        self.assertEqual(out["posts"], [])
+        self.row("plan")["next_due"] = None
+        out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}'));")
+        self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and opens the next occurrence (FREQ=WEEKLY)."), out["R"]["text"])
+
+    def test_5_on_a_mixed_selection_moves_the_plain_rows_and_skips_the_repeating_ones(self):
+        self.repeat_plan()
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = f"(path, body) => [200, {{ item: {{ id: {ask}, status: 'done', priority: 3, due: null, recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
+        out = self.run_page(f"""document.dispatchEvent(new CustomEvent('shell:picked', {{ detail: ['{plan}', '{ask}'] }}));
+document.dispatchEvent({{ type: 'keydown', key: '5', target: El('card'), preventDefault() {{}} }}); await flush();
+R.bulk = cmd('item.complete').bulk;""", answer)
+        self.assertEqual(out["posts"], [[f"/api/items/{ask}/status", {"status": "done", "revision": self.row("ask")["revision"]}, 64]])
+        self.assertIn([f"Skipped #{plan}: it repeats: 5 completes it and opens the next occurrence", False], out["toasts"])
+        self.assertIn(["Status → Done · 1 item", True], out["toasts"])
+        self.assertIsNone(out["R"].get("bulk"))
 
     def test_a_task_that_does_not_repeat_has_no_complete_occurrence(self):
         ask = self.ids["ask"]
