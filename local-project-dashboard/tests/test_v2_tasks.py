@@ -18,6 +18,7 @@ look at 375 px -- is a manual check recorded on the pull request.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import unittest
@@ -99,6 +100,35 @@ class TheDocuments(ScreenCase):
         self.assertIsNone(got["external"])
         self.assertEqual(got["item"]["path"], "docs/work/port/prd.md")
 
+    def test_urgency_beyond_the_due_date_comes_from_reads_is_urgent(self):
+        report = self.item("Look at the failed run", kind="report", fields={"attention": True})
+        rows = {row["id"]: row for row in tasks_screen.document(self.connection, now=NOW)["rows"]}
+        self.assertTrue(rows[report]["urgent_otherwise"])
+        self.assertFalse(rows[self.ids["plan"]]["urgent_otherwise"], "a due date is the page's own rule, not sent")
+
+    def test_details_carry_run_readiness_and_runner_capabilities(self):
+        from sd_db import runner_controls
+
+        got = tasks_screen.details(self.connection, self.ids["ask"], now=NOW)
+        ready = runner_controls.readiness(self.connection, self.ids["ask"])
+        self.assertEqual(got["run"], {"allowed": ready["allowed"], "reason": ready["reason"]})
+        self.assertFalse(got["run"]["allowed"])
+        (row,) = tasks_screen.details(self.connection, self.ids["port"], now=NOW)["assignments"]
+        self.assertEqual(row["runner"], {
+            "requeue": {"allowed": False, "reason": "the assignment is running, not blocked or cancelled"},
+            "cancel": {"allowed": False, "reason": "a legacy running assignment has no owned runner attempt to stop"}})
+
+    def test_runner_capabilities_follow_the_runner_rules(self):
+        caps = tasks_screen._runner_capabilities
+        run = lambda **k: {"released_at": None, "cancel_requested": None, **k}
+        self.assertTrue(caps({"role": "author", "status": "blocked", "run": None})["requeue"]["allowed"])
+        self.assertTrue(caps({"role": "author", "status": "cancelled", "run": run(released_at="x")})["requeue"]["allowed"])
+        self.assertFalse(caps({"role": "author", "status": "blocked", "run": run()})["requeue"]["allowed"])
+        self.assertFalse(caps({"role": "exec", "status": "blocked", "run": None})["requeue"]["allowed"])
+        self.assertTrue(caps({"role": "author", "status": "queued", "run": None})["cancel"]["allowed"])
+        self.assertTrue(caps({"role": "author", "status": "running", "run": run()})["cancel"]["allowed"])
+        self.assertFalse(caps({"role": "author", "status": "running", "run": run(cancel_requested="x")})["cancel"]["allowed"])
+
     def test_a_missing_item_raises_for_the_route_to_answer_404(self):
         with self.assertRaises(workflow.MissingItem):
             tasks_screen.details(self.connection, 9999, now=NOW)
@@ -178,8 +208,7 @@ var ANSWER = null;
 function fetch(path, o) {
   var body = o && o.body ? JSON.parse(o.body) : null;
   if (o && o.method === 'POST') OUT.posts.push([path, body, o.headers['X-SD-CSRF'].length]); else OUT.gets.push(path);
-  var a = ANSWER(path, body);
-  return Promise.resolve({ ok: a[0] < 300, status: a[0], json: () => Promise.resolve(a[1]) });
+  return Promise.resolve(ANSWER(path, body)).then(a => ({ ok: a[0] < 300, status: a[0], json: () => Promise.resolve(a[1]) }));
 }
 """
 SHELL = r"""
@@ -222,20 +251,21 @@ class TheScript(ScreenCase):
         self.doc = tasks_screen.document(self.connection, now=NOW)
         self.details = {str(i): tasks_screen.details(self.connection, i, now=NOW) for i in self.ids.values()}
 
-    def run_page(self, body, answer="null"):
+    def run_page(self, body, answer="null", *, prelude="", env=None):
         """Load tasks.js, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R."""
-        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
+        script = (prelude + STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
                   + f"\nconst DOC = {json.dumps(self.doc)}, DETAILS = {json.dumps(self.details)};\n"
-                  + "const WRITE = " + answer + ";\n"
+                  + "const WRITE = " + answer + ";\nvar DETAIL = null;\n"
                   + """ANSWER = (path, body) => {
   if (path === '/api/tasks') return [200, DOC];
-  var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return [200, DETAILS[m[1]]];
+  var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, DETAILS[m[1]]];
   return WRITE ? WRITE(path, body) : [404, { error: 'no answer' }];
 };\n""" + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
-                                capture_output=True, text=True, timeout=60, check=False)
+                                capture_output=True, text=True, timeout=60, check=False,
+                                env=None if env is None else {**os.environ, **env})
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
         self.assertIsNone(out["error"])
@@ -365,6 +395,70 @@ shellRun(cmd('item.recur'), C.get('{plan}')); await flush(); lastToast().undo();
         self.assertEqual(out["R"]["cli"], f"sd task edit {plan} --recur FREQ=WEEKLY")
         self.assertEqual(out["posts"], [[f"/api/items/{plan}", {"recurrence": "FREQ=WEEKLY", "revision": row["revision"]}, 64],
                                         [f"/api/items/{plan}", {"recurrence": None, "revision": "b" * 64}, 64]])
+
+    def test_a_due_weekday_is_a_calendar_date_across_the_dst_change(self):
+        # Friday 2026-10-30 in Denver; the clocks go back on Sunday 2026-11-01, so "due mon" is 2026-11-02.
+        prelude = """var RealDate = Date; Date = class extends RealDate { constructor(...a) { if (a.length) super(...a); else super(2026, 9, 30, 9, 0, 0); } };\n"""
+        out = self.run_page("""var box = document.getElementById('shift-in'); box.value = 'Call the bank due mon';
+box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""",
+                            "() => [201, { item: { id: 99, title: 'Call the bank' } }]", prelude=prelude, env={"TZ": "America/Denver"})
+        self.assertEqual(out["posts"][0][:2], ["/api/items", {"title": "Call the bank", "due": "2026-11-02"}])
+
+    def test_details_read_before_a_write_never_replace_the_read_after_it(self):
+        plan = self.ids["plan"]
+        after = json.loads(json.dumps(self.details[str(plan)]))
+        after["notes"][0]["body"] = "Written after the move"
+        answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-09', recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
+        out = self.run_page(f"""var release, reads = 0;
+DETAIL = id => ++reads === 1 ? new Promise(r => {{ release = () => r([200, DETAILS[id]]); }}) : [200, AFTER];
+open({plan}); await flush();
+shellRun(cmd('item.status.in_progress'), C.get('{plan}')); await flush();
+release(); await flush(); R.html = ELS.details.html; R.reads = reads;""", answer, prelude=f"var AFTER = {json.dumps(after)};\n")
+        self.assertEqual(out["R"]["reads"], 2)
+        self.assertIn("Written after the move", out["R"]["html"])
+        self.assertNotIn("Check the budget first", out["R"]["html"])
+
+    def test_commands_are_off_where_the_library_would_refuse_them(self):
+        plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
+        (asg,) = self.details[str(port)]["assignments"]
+        out = self.run_page(f"""open({ask}); await flush(); open({port}); await flush(); open({plan}); await flush();
+R.p2 = cmd('item.p2').when(C.get('{plan}'));
+R.run = cmd('item.run').when(C.get('{ask}'));
+R.recur = cmd('item.recur').when(C.get('{port}'));
+R.requeue = cmd('asg.requeue').when(C.get('asg:{asg["id"]}'));
+R.cancel = cmd('asg.cancel').when(C.get('asg:{asg["id"]}'));""")
+        self.assertEqual(out["R"], {
+            "p2": "it is already P2",
+            "run": self.details[str(ask)]["run"]["reason"],
+            "recur": "a work item cannot recur",
+            "requeue": "the assignment is running, not blocked or cancelled",
+            "cancel": "a legacy running assignment has no owned runner attempt to stop"})
+        self.assertTrue(out["R"]["run"])
+
+    def test_a_status_with_no_column_gets_the_other_lane(self):
+        ask = self.ids["ask"]
+        for row in self.doc["rows"]:
+            if row["id"] == ask:
+                row["status"] = "ready_to_send"
+        out = self.run_page("R.board = ELS['view-board'].html;")
+        other = out["R"]["board"].split('aria-label="Other statuses"', 1)
+        self.assertEqual(len(other), 2, "no Other lane")
+        self.assertIn("Answer the question", other[1])
+        self.assertIn("data-other", out["R"]["board"])
+
+    def test_the_matrix_places_by_reads_is_urgent_and_each_quadrant_owns_its_options(self):
+        ask = self.ids["ask"]
+        for row in self.doc["rows"]:
+            if row["id"] == ask:
+                row["urgent_otherwise"] = True
+        out = self.run_page("""document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'matrix' })); await flush();
+R.matrix = ELS['view-matrix'].html;""")
+        quads = dict(re.findall(r'data-q="(\w+)"(.*?)(?=data-q="|$)', out["R"]["matrix"], re.S))
+        self.assertIn("Answer the question", quads["delegate"])
+        self.assertEqual(out["R"]["matrix"].count('role="listbox"'), 4)
+        # Every card (role="option") sits in a quadrant's drop list, and every drop list is a listbox.
+        self.assertEqual(out["R"]["matrix"].count('<div class="drop" role="listbox"'), 4)
+        self.assertNotIn('<div class="drop">', out["R"]["matrix"])
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", TASKS_JS)
