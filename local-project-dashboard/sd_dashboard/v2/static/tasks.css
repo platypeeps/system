@@ -64,7 +64,8 @@
  * never a column cut at the edge. Below 720px it becomes a snap carousel that scrolls inside itself. */
 #view-board { container-type: inline-size; }
 .board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--space-sm); overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: var(--space-xs); }
-@container (max-width: 65.5rem) { .board { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.board[data-other] { grid-template-columns: repeat(6, minmax(0, 1fr)); } /* build: the Other lane (review, PR #46) */
+@container (max-width: 65.5rem) { .board, .board[data-other] { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .col { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; border-radius: var(--radius-md); background: var(--color-well); border: var(--rule-hair) solid transparent; }
 .col header { display: flex; align-items: center; gap: var(--space-xs); padding: var(--space-xs) var(--space-sm); border-bottom: var(--rule-hair) solid var(--color-rule-2); }
 .col header .n { margin-left: auto; font: 500 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }

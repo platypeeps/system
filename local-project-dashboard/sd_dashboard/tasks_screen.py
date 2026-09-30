@@ -61,6 +61,9 @@ def document(connection, *, now: str) -> dict:
             "repo": label(row["repo"]) if row["repo"] else None, "repo_path": row["repo"],
             "recurrence": row["recurrence"], "assignment": live.get(row["id"]),
             "status_since": row["status_since"], "revision": state["revision"],
+            # `reads.is_urgent` without the due-date rule: the page applies that one itself, so a due edit moves the
+            # task at once, and keeps the rest (an attention report, a `ready_to_send` row older than three days).
+            "urgent_otherwise": reads.is_urgent({**dict(row), "due": None}, now=now),
             "allowed": workflow.allowed_statuses(connection, row["id"]),
         })
     return {"read": now, "statuses": list(STATUSES), "rows": out}
@@ -90,25 +93,57 @@ def _external(connection, row, *, now: str) -> dict | None:
                           "reason": freshness["reason"]}}
 
 
+def _runner_capabilities(queue: dict) -> dict:
+    """What `sd runner requeue` and `sd runner cancel` accept for this assignment, with the reason when they refuse.
+
+    The same rules `runner_screen.assignment_controls` uses to offer v1's buttons, from `runner.requeue` and
+    `runner_controls.control`.
+    """
+    held, status = queue["run"], queue["status"]
+    if queue["role"] == "exec":
+        requeue = "finite execution authorizations are single-use"
+    elif status not in ("blocked", "cancelled"):
+        requeue = f"the assignment is {status}, not blocked or cancelled"
+    elif held and not held.get("released_at"):
+        requeue = "its runner lease is not released yet"
+    else:
+        requeue = None
+    if held and held.get("cancel_requested"):
+        cancel = "a stop is already requested; the runner still owns cleanup"
+    elif status == "queued" or (status == "running" and held):
+        cancel = None
+    elif status == "running":
+        cancel = "a legacy running assignment has no owned runner attempt to stop"
+    else:
+        cancel = f"the assignment is {status}, not queued or running"
+    return {"requeue": {"allowed": requeue is None, "reason": requeue},
+            "cancel": {"allowed": cancel is None, "reason": cancel}}
+
+
 def details(connection, item: int, *, now: str) -> dict:
     """One item's Details sections. Raises `workflow.MissingItem` for an id with no item."""
-    from sd_db import operations, runner
+    from sd_db import operations, runner, runner_controls
 
     state = workflow.item_state(connection, item)
     row = reads.item_by_id(connection, item)
     assignments = []
     for assignment in reads.item_assignments(connection, item):
         cancel = operations.assignment_state(connection, assignment["id"])["capabilities"]["cancel"]
+        queue = runner.queue_state(connection, assignment["id"])
         assignments.append({
             "id": assignment["id"], "role": assignment["role"], "provider": assignment["provider"],
             "status": assignment["status"], "started": assignment["started"], "ended": assignment["ended"],
             "usd": assignment["usd"], "estimated": bool(assignment["estimated"]),
-            "revision": runner.queue_state(connection, assignment["id"])["revision"], "cancel": cancel,
+            "revision": queue["revision"], "cancel": cancel, "runner": _runner_capabilities(queue),
         })
+    ready = runner_controls.readiness(connection, item)
     return {
         "read": now, "item": state["item"], "revision": state["revision"],
         "history": [_note(note) for note in state["notes"] if note["kind"] == "status_change"],
         "notes": [_note(note) for note in state["notes"] if note["kind"] != "status_change"],
         "assignments": assignments, "allowed": workflow.allowed_statuses(connection, item),
         "external": _external(connection, row, now=now),
+        # `sd run` readiness, as `/api/run` checks it (`runner_controls.readiness`): read here, for one item, rather
+        # than for every row, because it reads the item's assignments and leases.
+        "run": {"allowed": ready["allowed"], "reason": ready["reason"]},
     }
