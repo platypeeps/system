@@ -31,6 +31,7 @@ import mimetypes
 import os
 import re
 import secrets
+import socket
 import sqlite3
 import sys
 import threading
@@ -827,7 +828,18 @@ class Dashboard(BaseHTTPRequestHandler):
         self._send(200, target.read_bytes(), f"{guessed}; charset=utf-8")
 
 
-class DashboardServer(ThreadingHTTPServer):
+class Listener(ThreadingHTTPServer):
+    """A listening socket whose accept queue holds a page's burst of connections (sd:2131).
+
+    socketserver's default backlog is 5. Tailscale serve takes a page's
+    assets over one HTTP/2 connection and dials a backend connection for each
+    at once; macOS resets a connect beyond the queue, and the proxy answers 502.
+    """
+
+    request_queue_size = socket.SOMAXCONN
+
+
+class DashboardServer(Listener):
     """Own both listeners so partial startup and shutdown leave no orphan socket."""
 
     direct_server = None
@@ -899,7 +911,7 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         if frontdoor is not None and frontdoor.direct is not None:
             direct = frontdoor.direct
             direct_handler = type("DirectDashboard", (handler,), {"direct_listener": True})
-            primary.direct_server = ThreadingHTTPServer((direct.address, direct.port), direct_handler)
+            primary.direct_server = Listener((direct.address, direct.port), direct_handler)
             primary.direct_server.runtime_owner = primary
         return primary
     except BaseException:
