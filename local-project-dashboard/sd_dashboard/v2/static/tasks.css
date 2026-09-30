@@ -1,0 +1,176 @@
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 */
+/* Build (sd:2124): the design source's products/system/designs/v2/tasks.css at d82daa1, unchanged below this line but for the Details
+ * External context block, which reuses the page's .src and dl rules and adds none. */
+/* Tasks page. Tokens only. Structure: head + filter strip + one of three views (list, board, matrix) + details pane.
+ * Statuses and move rules mirror sd_db.workflow (TASK_STATUSES, allowed_statuses); urgency mirrors sd_db.reads.is_urgent. */
+.views { display: inline-flex; align-items: center; gap: var(--space-2xs); }
+.seg { display: inline-grid; grid-auto-flow: column; gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }
+.seg button {
+  display: inline-flex; align-items: center; gap: var(--space-2xs); min-height: 2.25rem; padding: 0 var(--space-sm);
+  border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-muted); font: 500 var(--text-sm)/1 var(--font-ui); cursor: pointer;
+}
+.seg button:hover { color: var(--color-ink); background: var(--color-well); }
+.seg button[aria-pressed="true"] { color: var(--color-ink); background: var(--color-well); box-shadow: inset 0 -2px 0 var(--color-accent); }
+.seg kbd { font-size: var(--text-2xs); color: var(--color-muted); }
+
+/* Filters */
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); padding: var(--space-sm) 0; border-top: var(--rule-hair) solid var(--color-rule-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); margin-bottom: var(--space-md); }
+.fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); }
+.fgroup > .label { margin-right: var(--space-2xs); }
+.fgroup .chips { margin: 0; }
+.fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-xs); font-size: var(--text-xs); color: var(--color-muted); }
+.linkbtn { border: 0; background: none; padding: var(--space-2xs); color: var(--color-ink-2); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.linkbtn:hover { color: var(--color-ink); }
+
+/* Cards (board + matrix) */
+.card {
+  position: relative; display: grid; gap: var(--space-2xs);
+  padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-sm);
+  border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-sm); background: var(--color-panel);
+  cursor: grab; user-select: none; -webkit-user-select: none; touch-action: manipulation;
+}
+.card:hover { border-color: var(--color-rule); }
+.card[aria-selected="true"] { border-color: var(--color-accent); box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
+.card[data-state="warning"] { box-shadow: inset var(--rule-lamp) 0 0 var(--color-warning); }
+.card[data-state="caution"] { box-shadow: inset var(--rule-lamp) 0 0 var(--color-caution); }
+.card[aria-selected="true"][data-state] { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
+.card.lifted { opacity: 0.35; }
+.card .top { display: flex; align-items: center; gap: var(--space-xs); min-height: 1.5rem; }
+.card .id { font: 500 var(--text-xs)/1 var(--font-data); color: var(--color-ink-2); }
+.card .g { font-size: var(--text-xs); line-height: 1; }
+.card .t { font-size: var(--text-sm); line-height: 1.35; color: var(--color-ink); overflow-wrap: anywhere; }
+.card .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-xs); font: 400 var(--text-2xs)/1.3 var(--font-data); color: var(--color-muted); }
+.card .rowact { margin-left: auto; }
+/* Pick box: the input is the hit area; the span draws the box. x on a selected row does the same. */
+.pick { position: relative; display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; flex: none; }
+.pick input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.pick span { width: 1rem; height: 1rem; border: var(--rule-hair) solid var(--color-muted); border-radius: var(--radius-sm); background: var(--color-paper); pointer-events: none; }
+.pick input:checked + span { border-color: var(--color-accent); background: var(--color-accent); box-shadow: inset 0 0 0 2px var(--color-paper); }
+.pick input:focus-visible + span { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.card[data-picked], .list tr[data-picked] td { background: var(--color-accent-bg); }
+.pri { display: inline-block; min-width: 1.75rem; padding: 1px 4px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); font: 500 var(--text-2xs)/1.2 var(--font-data); text-align: center; color: var(--color-ink-2); }
+.pri[data-p="1"] { border-color: var(--color-ink-2); color: var(--color-ink); font-weight: 600; }
+.pri[data-p=""] { border-style: dashed; color: var(--color-muted); }
+.repo { font: 400 var(--text-2xs)/1.3 var(--font-data); color: var(--color-ink-2); }
+.repo::before { content: "#"; color: var(--color-muted); }
+.due.warning { color: var(--color-warning); font-weight: 500; }
+.due.caution { color: var(--color-caution); }
+.tag { display: inline-block; padding: 0 4px; border: var(--rule-hair) dashed var(--color-rule); border-radius: var(--radius-sm); font: 500 var(--text-2xs)/1.4 var(--font-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-muted); }
+.tag.real { border-style: solid; color: var(--color-ink-2); }
+.lock { color: var(--color-muted); }
+
+/* Board */
+/* The board fits its region: five columns when five 12.5rem columns fit, else three and two (the pane open at 1440),
+ * never a column cut at the edge. Below 720px it becomes a snap carousel that scrolls inside itself. */
+#view-board { container-type: inline-size; }
+.board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--space-sm); overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: var(--space-xs); }
+@container (max-width: 65.5rem) { .board { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.col { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; border-radius: var(--radius-md); background: var(--color-well); border: var(--rule-hair) solid transparent; }
+.col header { display: flex; align-items: center; gap: var(--space-xs); padding: var(--space-xs) var(--space-sm); border-bottom: var(--rule-hair) solid var(--color-rule-2); }
+.col header .n { margin-left: auto; font: 500 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
+.col header kbd { font-size: var(--text-2xs); color: var(--color-muted); }
+.drop { display: grid; align-content: start; gap: var(--space-xs); padding: var(--space-xs); min-height: 8rem; }
+.empty { margin: 0; padding: var(--space-xs); font-size: var(--text-xs); color: var(--color-muted); }
+.refusal { display: none; margin: 0 var(--space-xs) var(--space-xs); padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-sm); background: var(--color-panel); font-size: var(--text-xs); line-height: 1.4; color: var(--color-ink-2); }
+.refusal b { color: var(--color-warning); font-weight: 600; }
+/* Drag states: legal targets stay lit, the hovered one is outlined, refused ones hatch and say why. */
+[data-dragging] [data-drop][data-legal="yes"] { border-color: var(--color-rule); }
+[data-dragging] [data-drop][data-over="yes"][data-legal="yes"] { border: var(--rule-hair) dashed var(--color-accent); background: var(--color-accent-bg); }
+[data-dragging] [data-drop][data-legal="no"] { background-image: repeating-linear-gradient(135deg, var(--color-hatch) 0 1px, transparent 1px 8px); opacity: 0.7; }
+[data-dragging] [data-drop][data-legal="no"][data-over="yes"] { opacity: 1; border-color: var(--color-warning); }
+[data-dragging] [data-drop][data-legal="no"] .refusal { display: block; }
+[data-dragging] [data-drop][data-legal="no"] .drop > .card { opacity: 0.5; }
+.ghost-card { position: fixed; z-index: 40; pointer-events: none; margin: 0; box-shadow: 0 12px 32px var(--color-scrim); border-color: var(--color-accent); cursor: grabbing; }
+.ghost-card .verdict { font: 500 var(--text-2xs)/1.3 var(--font-data); color: var(--color-muted); }
+.ghost-card .verdict.no { color: var(--color-warning); }
+
+/* Matrix */
+.matrix { display: grid; grid-template-columns: 2rem minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto minmax(15rem, auto) minmax(15rem, auto); gap: 0; }
+.axis { display: flex; align-items: center; justify-content: center; gap: var(--space-xs); font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-muted); }
+.axis.x { padding: 0 0 var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); }
+.axis.y { writing-mode: vertical-rl; transform: rotate(180deg); border-left: var(--rule-hair) solid var(--color-rule); padding: 0 var(--space-xs) 0 0; }
+.axis .rule { font-family: var(--font-data); letter-spacing: 0; text-transform: none; font-weight: 400; }
+.quad { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); padding: var(--space-sm); border: var(--rule-hair) solid transparent; border-right-color: var(--color-rule-2); border-bottom-color: var(--color-rule-2); background: var(--color-paper); min-width: 0; }
+.quad[data-q="schedule"], .quad[data-q="drop"] { border-right-color: transparent; }
+.quad[data-q="delegate"], .quad[data-q="drop"] { border-bottom-color: transparent; }
+.quad[data-q="do"] { border-right: var(--rule-hair) solid var(--color-rule); border-bottom: var(--rule-hair) solid var(--color-rule); }
+.quad[data-q="schedule"] { border-bottom: var(--rule-hair) solid var(--color-rule); }
+.quad[data-q="delegate"] { border-right: var(--rule-hair) solid var(--color-rule); }
+.quad header { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: var(--space-2xs) var(--space-sm); margin-bottom: var(--space-sm); }
+.quad h3 { margin: 0; font: 600 var(--text-xl)/1 var(--font-label); letter-spacing: 0.02em; text-transform: uppercase; color: var(--color-ink); }
+.quad[data-q="drop"] h3, .quad[data-q="delegate"] h3 { color: var(--color-ink-2); }
+.quad .sub { font: 400 var(--text-2xs)/1.3 var(--font-data); color: var(--color-muted); }
+.quad .n { font: 500 var(--text-lg)/1 var(--font-data); color: var(--color-muted); }
+.quad .lamp { grid-column: 1 / -1; height: var(--rule-lamp); border-radius: 2px; background: var(--color-rule-2); }
+.quad .lamp[data-state="warning"] { background: var(--color-warning-lamp); }
+.quad .lamp[data-state="caution"] { background: var(--color-caution); }
+.quad .drop { min-height: 6rem; padding: 0; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
+.quad .refusal { margin: var(--space-xs) 0 0; }
+.reticle { position: absolute; width: 0.75rem; height: 0.75rem; right: -0.4rem; bottom: -0.4rem; z-index: 1; border: var(--rule-hair) solid var(--color-ink-2); border-radius: 50%; background: var(--color-paper); }
+.mnote { margin: var(--space-sm) 0 0; font-size: var(--text-xs); color: var(--color-muted); }
+
+/* List */
+.list { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.list-wrap { overflow-x: auto; }
+.list th { text-align: left; padding: 0 var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
+.list th button { display: inline-flex; align-items: center; gap: var(--space-2xs); border: 0; background: none; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+.list td { padding: 0 var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); white-space: nowrap; }
+.list td.title { white-space: normal; min-width: 14rem; }
+.list td.title button { border: 0; background: none; padding: var(--space-2xs) 0; color: var(--color-ink); font: inherit; text-align: left; cursor: pointer; }
+.list tr[aria-selected="true"] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
+.list .mono { font-family: var(--font-data); font-size: var(--text-xs); color: var(--color-ink-2); }
+
+/* Details extras */
+.foot { margin-top: var(--space-lg); padding-top: var(--space-sm); border-top: var(--rule-hair) solid var(--color-rule-2); font-size: var(--text-xs); color: var(--color-muted); }
+
+@media (pointer: coarse) {
+  .pick { width: var(--row-touch); height: var(--row-touch); }
+  .fgroup .chip { min-width: var(--row-touch); }
+  .linkbtn, .list th button { min-height: var(--row-touch); min-width: var(--row-touch); }
+  .details .actions .btn, .details .icon-btn { min-height: var(--row-touch); min-width: var(--row-touch); }
+}
+@media (max-width: 899px) {
+  .head { align-items: stretch; }
+  .views { width: 100%; justify-content: space-between; }
+}
+@media (max-width: 719px) {
+  .board { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 82%; scroll-snap-type: x mandatory; scroll-padding: 0 var(--space-md); }
+  .col { scroll-snap-align: start; }
+  .matrix { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; gap: var(--space-sm); }
+  .axis { display: none; }
+  .quad, .quad[data-q] { border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); }
+  .reticle { display: none; }
+  .quad .drop { grid-template-columns: minmax(0, 1fr); }
+  .fsum { margin-left: 0; }
+  .seg kbd { display: none; }
+  .seg button { padding: 0 var(--space-sm); min-height: var(--row-touch); }
+}
+@media (max-width: 380px) { .board { grid-auto-columns: 88%; } }
+@media (prefers-reduced-motion: no-preference) {
+  .card { transition: border-color var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out); }
+  .card.landed { animation: swap var(--dur-lamp) var(--ease-out); }
+}
+@media (forced-colors: active) {
+  .card[aria-selected="true"] { outline: 2px solid Highlight; }
+  [data-dragging] [data-drop][data-legal="no"] { outline: 2px dashed GrayText; }
+}
+.date-dlg .date-form { display: grid; gap: var(--space-sm); padding: var(--space-lg); }
+.date-dlg h2 { margin: 0; font: 600 var(--text-md)/1.25 var(--font-ui); }
+/* Move to: every status, legal ones as buttons, refused ones off with the reason beside them. */
+.moves { display: grid; gap: var(--space-2xs); }
+.moves .mv { display: grid; grid-template-columns: minmax(9rem, auto) minmax(0, 1fr); align-items: center; gap: var(--space-2xs) var(--space-sm); }
+.moves .btn { justify-content: space-between; }
+.moves .btn:disabled { opacity: 1; background: transparent; color: var(--color-muted); border-style: dashed; cursor: not-allowed; }
+.moves .why { margin: 0; font-size: var(--text-xs); }
+.moves code { font: 400 var(--text-2xs)/1.3 var(--font-data); color: var(--color-muted); overflow-wrap: anywhere; }
+@media (max-width: 479px) { .moves .mv { grid-template-columns: minmax(0, 1fr); } }
+.date-dlg input, .date-dlg select { min-height: var(--row-touch); padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper); color: var(--color-ink); font: inherit; color-scheme: inherit; }
+
+/* Details records (sd:2180): status history, notes, assignments. Each section names its read in .src. */
+.details .src { margin: calc(-1 * var(--space-2xs)) 0 var(--space-xs); font: var(--text-xs) var(--font-data); color: var(--color-muted); overflow-wrap: anywhere; }
+.details h3 .n { font-weight: 400; color: var(--color-muted); font-size: var(--text-xs); }
+.details ol.rec { list-style: none; margin: 0 0 var(--space-md); padding: 0; display: grid; gap: var(--space-xs); font-size: var(--text-sm); }
+.details ol.rec li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-2xs) var(--space-sm); align-items: baseline; padding-bottom: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule-2); }
+.details ol.rec li > span { overflow-wrap: anywhere; min-width: 0; color: var(--color-ink-2); }
+.details ol.rec small { color: var(--color-muted); font-size: var(--text-xs); }
+.details ol.rec time, .details ol.rec .mono { font: var(--text-xs) var(--font-data); color: var(--color-muted); white-space: nowrap; }

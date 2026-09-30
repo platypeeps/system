@@ -1,15 +1,14 @@
 // v2 shell: grouped rail, right pane (Details | Chat), help popovers, palette, toast, keys.
-// Mockup behaviour only. The build replaces the chat stub with the runner-backed service.
-// Build port (local-project-dashboard, sd:2110): ui-design products/system/designs/v2/shell.js at a3861c9.
-// Changes from the reference, each marked "build:": the page map comes from window.SHELL_PAGES, the rail's
-// narrow-screen rule moved to shell.css and the favicon count is off (the dashboard CSP is default-src 'self',
-// which refuses an inline <style> and a data: icon), capture calls window.SHELL_CAPTURE when a page sets it,
-// and the chat stub says that no chat backend is connected.
+// Build port (local-project-dashboard): the design source's products/system/designs/v2/shell.js at d82daa1 (sd:2124; first ported
+// at a3861c9 for sd:2110). The reference carries the build hooks below; the build adds only what is marked "build (sd:2163)".
 // build (sd:2163): /ui/sections.js sets window.SHELL_CLASSIC, the old screen each unported section opens (a "classic"
 // tag on the rail), and window.SHELL_SCREENS, old screens without a section, which the palette offers.
-// build: every string of markup is html`…` from markup.js, which escapes each value put in it; put() is the only
-// way in, so the hand escaping is gone. rowActions, bar, time and ICON return html`…` for a page to compose.
+// Markup (sd:2127, from the build's sd:2110 port): every string of markup is html`…` from markup.js, which escapes each
+// value put in it; put() is the only way in. rowActions, bar, time and ICON return html`…` for a page to compose.
 // Help text renders <b> and <code> only, without attributes.
+// Build hooks, marked "build:": a built dashboard sets window.SHELL_PAGES (its page map) and window.SHELL_CAPTURE (how
+// a capture is filed); the mockup sets neither and keeps its sample behaviour. The favicon count is off under SHELL_PAGES,
+// since the dashboard CSP (default-src 'self') refuses a data: icon.
 // A page sets <body data-page="Today" data-scope="fleet" data-scope-note="…"> and may call window.shell.*.
 (() => {
   const { html, put } = window.markup;
@@ -67,7 +66,14 @@
   rail.querySelector('nav > .theme').classList.add('menu-theme');
   const shell = document.querySelector('.shell');
   shell.prepend(rail);
-  // build: the rule that hid one theme copy per width was an injected <style>; it is in shell.css now.
+  // Skip link: the first tab stop, ahead of the rail's 26 (review 2026-09-29, 24). main is its target.
+  const main = document.querySelector('main') || body;
+  if (main !== body) { main.id ||= 'main'; main.tabIndex = -1; }
+  const skip = document.createElement('a');
+  skip.className = 'skip'; skip.href = `#${main.id || ''}`; skip.textContent = 'Skip to content';
+  // icons.js prepends its sprite on DOMContentLoaded, so the link goes in after it and stays first.
+  const skipFirst = () => body.prepend(skip);
+  document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', skipFirst) : skipFirst();
 
   // A page sets window.PAGE_ATTENTION = { state, n, what } and calls shell.attention() when it changes.
   const attention = a => {
@@ -80,6 +86,11 @@
     titleCount(a.state === 'warning' ? a.n : 0);
   };
   // Warnings show in the tab: "(3) Today · system" and a count drawn on the favicon (patterns.md, Density).
+  // A token is a light-dark() pair, which a canvas refuses; a probe element resolves it to the colour the theme shows.
+  function tok(name) {
+    const i = document.createElement('i'); i.hidden = true; i.style.color = `var(${name})`; body.append(i);
+    const c = getComputedStyle(i).color; i.remove(); return c;
+  }
   const baseTitle = document.title.replace(/^\(\d+\) /, '');
   function titleCount(n) {
     document.title = n ? `(${n}) ${baseTitle}` : baseTitle;
@@ -87,9 +98,9 @@
     if (!icon) { icon = document.createElement('link'); icon.rel = 'icon'; document.head.append(icon); }
     const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d');
     const cs = getComputedStyle(document.documentElement);
-    g.fillStyle = n ? cs.getPropertyValue('--color-warning').trim() || '#c33' : cs.getPropertyValue('--color-ink-2').trim() || '#888';
+    g.fillStyle = tok(n ? '--color-warning' : '--color-ink-2');
     g.beginPath(); g.arc(16, 16, 15, 0, Math.PI * 2); g.fill();
-    g.fillStyle = cs.getPropertyValue('--color-paper').trim() || '#000'; g.font = `700 ${n > 9 ? 17 : 20}px ${cs.getPropertyValue('--font-data') || 'monospace'}`;
+    g.fillStyle = tok('--color-paper'); g.font = `700 ${n > 9 ? 17 : 20}px ${cs.getPropertyValue('--font-data') || 'monospace'}`;
     g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(n ? String(Math.min(n, 99)) : 'sd', 16, 17);
     // build: a data: icon breaks the dashboard CSP (default-src 'self'), so the drawn count stays off.
     if (!window.SHELL_PAGES) icon.href = c.toDataURL('image/png');
@@ -128,7 +139,7 @@
           <button class="icon-btn" type="button" id="pin-scope" aria-pressed="false" aria-label="Pin this scope">${ICON('pin')}</button>
           <button class="help" type="button" aria-label="Help: chat scope" data-help="<b>Scope follows the view.</b> The chat answers inside the scoped repo or area, with the selected row as context. Pin keeps this scope while you move. Every write becomes a proposal you approve.">${ICON('circle-help')}</button>
         </div>
-        <div class="thread" id="thread" aria-live="polite"></div>
+        <div class="thread" id="thread"></div>
         <form class="composer" id="composer">
           <label class="sr" for="chat-input">Message</label>
           <div class="box">
@@ -179,7 +190,9 @@
   if (store('sd.pane') === 'min') setPane(true);
   const wide = () => matchMedia('(min-width: 1240px)').matches;
   let paneReturn = null;
-  const openPane = tab => { if (tab) showTab(tab); if (body.dataset.pane) setPane(false); if (!pane.contains(document.activeElement)) paneReturn = document.activeElement; pane.setAttribute('data-open', ''); };
+  // Below 1240 the pane is a bottom sheet, last in the DOM: focus moves into it, or 89 stops sit between the row and the sheet.
+  const openPane = tab => { if (tab) showTab(tab); if (body.dataset.pane) setPane(false); if (!pane.contains(document.activeElement)) paneReturn = document.activeElement; pane.setAttribute('data-open', '');
+    if (!wide() && !pane.contains(document.activeElement)) pane.querySelector('[role="tab"][aria-selected="true"]')?.focus(); };
   // Close puts focus back on the row (or button) that opened the sheet, so a keyboard user does not restart at the top.
   const closePane = () => { const was = pane.hasAttribute('data-open'); pane.removeAttribute('data-open'); if (was && paneReturn?.isConnected && !wide()) paneReturn.focus?.(); };
   pane.querySelector('#close-pane').addEventListener('click', closePane);
@@ -190,7 +203,11 @@
   const pin = pane.querySelector('#pin-scope');
   pin.addEventListener('click', () => pin.setAttribute('aria-pressed', pin.getAttribute('aria-pressed') !== 'true'));
   function setContext(text) { if (pin.getAttribute('aria-pressed') !== 'true') pane.querySelector('#scope-ctx').textContent = text ? `+ ${text}` : ''; }
+  // The thread is not a live region: a selection rewrites the suggestions on every j / k, and a live thread announced each
+  // (review 2026-09-29, 28). Only a new answer speaks, through role="status" on that message; the same list is not rewritten.
+  let suggested = '';
   function suggest(list) {
+    const key = JSON.stringify(list); if (key === suggested && thread.querySelector('.suggest')) return; suggested = key;
     put(thread, html`<div class="msg"><span class="label">Ask in ${scope}</span></div>
       <div class="suggest">${list.map(s => html`<button type="button">${ICON('message-square')}<span>${s}</span></button>`)}</div>`);
     thread.querySelectorAll('.suggest button').forEach(b => b.addEventListener('click', () => { send(b.textContent.trim()); }));
@@ -202,6 +219,8 @@
       : `Mockup: no chat backend here. The build sends this to claude -p in the ${scope} scope and streams the answer.`;
     put(thread, html`<div class="msg"><span class="who label">${ICON('user')}You</span><p>${text}</p></div>
       <div class="msg"><span class="who label">${ICON('bot')}Claude · ${scope}</span><p class="why">${answer}</p></div>`, 'append');
+    thread.querySelectorAll('[role="status"]').forEach(m => m.removeAttribute('role'));
+    thread.lastElementChild.setAttribute('role', 'status'); suggested = '';
     thread.scrollTop = thread.scrollHeight;
     remember(text, answer);
   }
@@ -282,13 +301,17 @@
   new MutationObserver(() => document.querySelectorAll('.help:not([aria-expanded])').forEach(b => b.setAttribute('aria-expanded', 'false'))).observe(body, { childList: true, subtree: true });
 
   // ---------- Toast with Undo ----------
-  const t = document.createElement('div');
+  // Two elements: t carries the Undo, tp a plain message. A plain toast while an Undo is live goes to tp, stacked above, so
+  // the Undo keeps its 10 s (review 2026-09-29, item 5). A new undoable action replaces the old Undo: u undoes the latest.
+  const t = document.createElement('div'), tp = document.createElement('div');
   t.className = 'toast'; t.hidden = true; t.setAttribute('role', 'status');
-  body.append(t);
-  let tTimer = 0, tUndo = null;
+  tp.className = 'toast plain'; tp.hidden = true; tp.setAttribute('role', 'status');
+  body.append(t, tp);
+  let tTimer = 0, tpTimer = 0, tUndo = null;
   function toast(msg, undo) {
+    if (!undo && tUndo) { put(tp, html`<span>${msg}</span>`); tp.hidden = false; clearTimeout(tpTimer); tpTimer = setTimeout(() => { tp.hidden = true; }, 4000); return; }
     put(t, html`<span></span>${undo ? html`<button class="btn quiet sm" type="button" aria-keyshortcuts="u">${ICON('undo-2')}Undo<kbd>u</kbd></button>` : ''}`);
-    t.firstChild.textContent = msg; t.hidden = false; tUndo = undo || null;
+    t.firstChild.textContent = msg; t.hidden = false; tUndo = undo || null; tp.hidden = true;
     if (undo) t.querySelector('button').addEventListener('click', () => { t.hidden = true; tUndo = null; undo(); });
     clearTimeout(tTimer); tTimer = setTimeout(() => { t.hidden = true; tUndo = null; }, undo ? 10000 : 4000);
   }
@@ -299,6 +322,8 @@
   //   shell.commands.register({ id, on, label, key, cli: o => '…', risk: 'safe'|'undo'|'confirm', primary: o => bool, when: o => true|'reason', run: o => 'result', undo: o => {} })
   //   shell.commands.put({ id, type, label, …facts })   shell.commands.select(id)
   const REG = [], OBJ = new Map(), picked = new Set();
+  // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
+  const { plural } = window.markup;
   let selId = null;
   // A command without cli is dashboard-only (chat, navigation); it shows no CLI line.
   const cliOf = (c, o) => c.cli ? c.cli(o) : '';
@@ -306,35 +331,69 @@
   const noCli = s => !s || /^no (CLI|sd verb)\b/.test(s);
   const shownCli = (c, o) => { const s = cliOf(c, o); return noCli(s) ? '' : s; };
   const offWhy = (c, o) => { const w = c.when ? c.when(o) : true; return w === true ? '' : (w || 'not available'); };
+  // executes: true when the dashboard runs the CLI line itself; false when the line is shown for Copy only. A declaration may
+  // say so; otherwise an `sd` verb runs and anything else (git, rm, uv, gh, sd-review, a pipe) is copy-only (commands.md).
+  const executes = (c, o) => typeof c.executes === 'boolean' ? c.executes : /^sd\s/.test(shownCli(c, o));
   const cmdsFor = o => o ? REG.filter(c => c.on === o.type) : [];
   const live = o => cmdsFor(o).filter(c => !offWhy(c, o));
+  // Every shell dialog opens through modal(): Tab and Shift+Tab cycle inside it, Esc closes it (native), and focus goes back
+  // to the control that opened it, or, when a re-render replaced that control, to the same command or the row's ⋯ (patterns.md).
+  const focusables = d => [...d.querySelectorAll('button, a[href], input:not([type=hidden]):not([disabled]), select, textarea, [tabindex="0"]')].filter(e => e.getClientRects().length && !e.disabled);
+  function trap(d) {
+    d.addEventListener('keydown', e => {
+      if (e.key !== 'Tab') return;
+      const f = focusables(d); if (!f.length) return;
+      const i = f.indexOf(document.activeElement), n = e.shiftKey ? (i <= 0 ? f.length - 1 : i - 1) : (i === f.length - 1 ? 0 : i + 1);
+      e.preventDefault(); f[n].focus();
+    });
+  }
+  function refocus(from) {
+    if (!from) return;
+    if (from.isConnected) return from.focus();
+    const sel = from.dataset?.cmd && from.dataset.obj ? `[data-cmd="${CSS.escape(from.dataset.cmd)}"][data-obj="${CSS.escape(from.dataset.obj)}"]` : from.dataset?.menuFor ? `[data-menu-for="${CSS.escape(from.dataset.menuFor)}"]` : null;
+    const obj = from.dataset?.obj || from.dataset?.menuFor;
+    (sel && document.querySelector(sel) || obj && document.querySelector(`[data-menu-for="${CSS.escape(obj)}"]`) || document.querySelector('main'))?.focus();
+  }
+  function modal(d, first) {
+    const from = document.activeElement !== body ? document.activeElement : null;
+    d.addEventListener('close', () => { const a = document.activeElement; if (!a || a === body || d.contains(a)) refocus(from); }, { once: true });
+    d.showModal(); first?.focus();
+    return from;
+  }
   const confirmDlg = document.createElement('dialog');
   confirmDlg.className = 'palette confirm'; confirmDlg.setAttribute('aria-labelledby', 'confirm-h');
   put(confirmDlg, html`<h2 id="confirm-h"></h2>`); // the label target exists while the dialog is closed
-  body.append(confirmDlg);
+  body.append(confirmDlg); trap(confirmDlg);
   // Confirm: one dialog for every irreversible, force or large bulk action. It names the target and shows the command.
   function confirmAction({ title, body: text = '', cli = '', ok = 'Confirm', keep = 'Keep it', danger = true }) {
+    let from = null;
     return new Promise(done => {
       put(confirmDlg, html`<form method="dialog" class="confirm-body">
         <h2 id="confirm-h">${title}</h2>${text ? html`<p>${text}</p>` : ''}
         ${cli ? html`<div class="cli"><code>${cli}</code></div>` : ''}
         <div class="actions"><button class="btn quiet" value="no">${keep}</button><button class="btn${danger ? ' danger' : ''}" value="yes">${ok}</button></div></form>`);
       confirmDlg.returnValue = '';
-      confirmDlg.onclose = () => done(confirmDlg.returnValue === 'yes');
-      confirmDlg.showModal(); confirmDlg.querySelector('[value="no"]').focus();
+      confirmDlg.onclose = () => done({ yes: confirmDlg.returnValue === 'yes', from });
+      from = modal(confirmDlg, confirmDlg.querySelector('[value="no"]'));
     });
   }
+  // The act a confirm names: the label when it already names its object ("Remove worktree"), else the label and the type
+  // ("Cancel job"). The OK button repeats it; Keep says what not doing it means, never a second "Cancel" (review item 13).
+  const actOf = (c, o) => /\s/.test(c.label.trim()) ? c.label : `${c.label} ${o.type}`;
   function run(c, o) {
     const go = () => {
       const msg = c.run ? c.run(o) : '';
-      if (msg === null) return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } })); // opened a form
+      if (msg === null) return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id, form: true } })); // opened a form
       const text = msg || `${c.label} · ${o.label}`;
-      if (c.risk === 'undo') toast(text, () => { c.undo?.(o); toast(`${c.label} undone.`); });
+      // Undo only where the command declares one: a toast that says "undone" over nothing is worse than no Undo.
+      if (c.risk === 'undo' && c.undo) toast(text, () => { c.undo(o); toast(`${c.label} undone · ${o.label}`); });
       else toast(text);
       document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } }));
     };
     if (c.risk !== 'confirm' && !c.askFirst) return go();
-    confirmAction({ title: `${c.label} ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: shownCli(c, o), ok: c.label, danger: c.risk === 'confirm' }).then(yes => yes && go());
+    const act = actOf(c, o);
+    confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: shownCli(c, o), ok: act, keep: `Don't ${c.label.toLowerCase()}`, danger: c.risk === 'confirm' })
+      .then(({ yes, from }) => { if (!yes) return; go(); const a = document.activeElement; if (!a || a === body) refocus(from); });
   }
 
   // Proposal cards (chat writes). Approve is the confirmation; both approve and discard get Undo.
@@ -371,7 +430,7 @@
     const first = on.find(c => c.primary?.(o)) || on[0];
     return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
       ${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}
-      <h3>Same thing from the CLI</h3>${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>`)}`;
+      <h3>Same thing from the CLI</h3>${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
   const menuEl = document.createElement('div');
@@ -434,10 +493,10 @@
     if (e.target.closest('[data-bulk-clear]')) { picked.clear(); return renderBulk(); }
     const b = e.target.closest('[data-bulk]'); if (!b) return;
     const c = REG.find(x => x.id === b.dataset.bulk), objs = [...picked].map(i => OBJ.get(i));
-    const group = { id: 'bulk', type: c.on, label: `${objs.length} ${c.on}s` };
+    const group = { id: 'bulk', type: plural(2, c.on).replace(/^2 /, ''), label: plural(objs.length, c.on) };
     // The confirm dialog gets the group, which has no row fields, so consequence is rebuilt from the real objects: one line each, repeats folded.
     const consequence = c.consequence && (() => { const lines = [...new Set(objs.map(o => c.consequence(o)))]; return lines.length > 4 ? `${lines.slice(0, 4).join(' ')} And ${lines.length - 4} more.` : lines.join(' '); });
-    const one = { ...c, cli: () => objs.map(o => cliOf(c, o)).join(' && '), run: () => { objs.forEach(o => c.run?.(o)); picked.clear(); renderBulk(); return `${c.label} · ${objs.length} ${c.on}s`; }, undo: () => objs.forEach(o => c.undo?.(o)),
+    const one = { ...c, cli: () => objs.map(o => cliOf(c, o)).join(' && '), run: () => { objs.forEach(o => c.run?.(o)); picked.clear(); renderBulk(); return `${c.label} · ${group.label}`; }, undo: c.undo && (() => objs.forEach(o => c.undo(o))),
       consequence, askFirst: objs.length > 25, risk: c.risk };
     run(one, group);
   });
@@ -449,11 +508,14 @@
     list: () => REG.map(c => { const objs = [...OBJ.values()].filter(x => x.type === c.on);
       const on = objs.filter(x => { try { return !offWhy(c, x); } catch { return false; } });
       const o = on.find(x => { try { const l = cliOf(c, x); return l && !/^no (CLI|sd verb)\b/i.test(l); } catch { return false; } }) || on[0] || objs[0]; let cli = '', off = '';
-      try { cli = o ? cliOf(c, o) : ''; off = o ? offWhy(c, o) : ''; } catch { cli = ''; }
-      return { id: c.id, on: c.on, label: c.label, key: c.key || '', risk: c.risk || 'safe', bulk: !!c.bulk, primary: !!c.primary, cli, off, objects: objs.length }; }),
+      let runs = typeof c.executes === 'boolean' ? c.executes : false;
+      try { cli = o ? cliOf(c, o) : ''; off = o ? offWhy(c, o) : ''; runs = o ? executes(c, o) : runs; } catch { cli = ''; }
+      return { id: c.id, on: c.on, label: c.label, key: c.key || '', risk: c.risk || 'safe', bulk: !!c.bulk, primary: !!c.primary, cli, off, executes: runs, objects: objs.length }; }),
+    // The ids of the objects a command is live for, in put order; verify.mjs runs each command on one of them.
+    targets: id => { const c = REG.find(x => x.id === id); return c ? [...OBJ.values()].filter(o => { try { return o.type === c.on && !offWhy(c, o); } catch { return false; } }).map(o => o.id) : []; },
     put: o => { OBJ.set(o.id, o); return o; },
     get: id => OBJ.get(id),
-    select: id => { const changed = id !== selId; selId = id; const o = OBJ.get(id); setContext(o?.label); if (changed) { details?.querySelector('.asked')?.remove(); renderAsked(); } },
+    select: id => { const changed = id !== selId; selId = id; const o = OBJ.get(id); setContext(o?.label); writeRow(id); if (changed) { details?.querySelector('.asked')?.remove(); renderAsked(); } },
     selected: () => OBJ.get(selId),
     rowActions, bar, openMenu, run,
     pick: id => { const o = OBJ.get(id); if (!o) return; if (!REG.some(c => c.on === o.type && c.bulk)) { toast(`No bulk command for a ${o.type}.`); return; } picked.has(id) ? picked.delete(id) : picked.add(id); renderBulk(); },
@@ -464,10 +526,10 @@
   const cap = document.createElement('dialog');
   cap.className = 'palette capture'; cap.setAttribute('aria-labelledby', 'cap-h');
   put(cap, html`<h2 id="cap-h"></h2>`);
-  body.append(cap);
+  body.append(cap); trap(cap);
   const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe quoting for text a person typed: $(), backticks and \ stay literal
   // openCapture(target): target is the object (or its id) the command was run on; without one, the selected row.
-  function openCapture(target) {
+  function openCapture(target, text = '') {
     const o = (typeof target === 'string' ? OBJ.get(target) : target && target.id && OBJ.get(target.id)) || (target && target.type ? target : null) || OBJ.get(selId);
     const about = o && o.item ? o : null;
     put(cap, html`<form method="dialog" class="confirm-body" id="cap-form">
@@ -491,11 +553,11 @@
         : o ? `Files to the inbox; not linked to ${o.label}` : 'No row selected · files to the inbox';
       cli.textContent = k === 'note' ? `sd task note ${about.item} --kind comment --body ${t}` : `sd task add${k === 'followup' ? ' --kind followup' : ''} ${t}${o && o.item ? ` --followup-of ${o.item}` : ''}`;
     };
-    f.addEventListener('input', upd); upd();
+    inp.value = text; f.addEventListener('input', upd); upd();
     // build: a page that files captures sets window.SHELL_CAPTURE({ kind, title, item, about }) → Promise<toast text>.
     cap.onclose = () => { if (cap.returnValue === 'yes' && inp.value.trim() && window.SHELL_CAPTURE) { window.SHELL_CAPTURE({ kind: f.kind.value, title: inp.value.trim(), item: about ? about.item : null, about: o }).then(toast, e => toast(String(e.message || e))); return; }
-      if (cap.returnValue === 'yes' && inp.value.trim()) toast(`${f.kind.value === 'note' ? 'Note added' : 'Captured'}: ${inp.value.trim()}`, () => toast('Capture removed.')); };
-    cap.showModal(); inp.focus();
+      if (cap.returnValue === 'yes' && inp.value.trim()) { const v = inp.value.trim(); toast(`${f.kind.value === 'note' ? 'Note added' : 'Captured'}: ${v}`, () => { toast('Capture removed. The text is back in Capture.'); openCapture(o, v); }); } };
+    modal(cap, inp);
   }
 
   // ---------- Palette ----------
@@ -504,7 +566,7 @@
   pal.className = 'palette'; pal.setAttribute('aria-label', 'Commands');
   const extra = window.PAGE_COMMANDS || [];
   put(pal, html`<div class="pal-head">${ICON('search')}<input placeholder="Run, go to, or ask" aria-label="Filter commands" id="pal-in" role="combobox" aria-controls="pal-list" aria-expanded="true"><button class="icon-btn" type="button" id="pal-close" aria-label="Close">${ICON('x')}</button></div><ul role="listbox" id="pal-list" aria-label="Commands"></ul>`);
-  body.append(pal);
+  body.append(pal); trap(pal);
   const palIn = pal.querySelector('#pal-in'), palList = pal.querySelector('#pal-list');
   let opts = [];
   function buildPal() {
@@ -531,13 +593,13 @@
     pal.close();
     if (o.dataset.go) return go(o.dataset.go);
     if (o.dataset.href) { location.href = o.dataset.href; return; }
-    if (o.dataset.view) { location.search = viewHref(VIEWS[+o.dataset.view]); return; }
+    if (o.dataset.view) { location.href = viewHref(VIEWS[+o.dataset.view]); return; }
     if (o.hasAttribute('data-chat')) { openChat(); if (palIn.value.trim()) send(palIn.value.trim()); return; }
     if (o.hasAttribute('data-capture')) return openCapture();
     if (o.dataset.run) { const s = OBJ.get(selId), c = REG.find(x => x.id === o.dataset.run); return run(c, s); }
     extra[+o.dataset.cmd]?.run?.();
   }
-  function openPal() { closeMenu(); buildPal(); palIn.value = ''; filter(); pal.showModal(); palIn.focus(); }
+  function openPal() { closeMenu(); buildPal(); palIn.value = ''; filter(); modal(pal, palIn); }
   palIn.addEventListener('input', filter);
   palIn.addEventListener('keydown', e => {
     const v = vis(), i = v.findIndex(o => o.getAttribute('aria-selected') === 'true');
@@ -561,17 +623,55 @@
   function views(list) {
     VIEWS = list || []; const slot = document.getElementById('views'); if (!slot) return;
     const cur = new URLSearchParams(location.search), keys = new Set(VIEWS.flatMap(v => Object.keys(v.params)));
-    const keep = [...cur].filter(([k]) => !keys.has(k) && k !== 'page' && k !== 'row');
-    const href = params => { const u = new URLSearchParams(keep); Object.entries(params).forEach(([k, v]) => u.set(k, v)); const s = u.toString(); return s ? `?${s}` : location.pathname.split('/').pop(); };
+    // A view keeps every param it does not name (the text filter, the sort) and ?row=, which the page drops on load when the
+    // view hides that row (shell.reconcile). Only the pager resets: page 3 of one view is not page 3 of another.
+    // The drawn href leaves ?row= out, so it does not change with every selection; following a chip adds the row back.
+    const keep = row => [...new URLSearchParams(location.search)].filter(([k]) => !keys.has(k) && k !== 'page' && (row || k !== 'row'));
+    const href = (params, row) => { const u = new URLSearchParams(keep(row)); Object.entries(params).forEach(([k, v]) => u.set(k, v)); const s = u.toString(); return s ? `?${s}` : location.pathname.split('/').pop(); };
     const isCur = params => Object.entries(params).every(([k, v]) => cur.get(k) === v);
     const none = ![...keys].some(k => cur.has(k));
+    viewHref = v => href(v.params, true); // the palette opens a view the way its chip does
     slot.className = 'views'; slot.setAttribute('role', 'navigation'); slot.setAttribute('aria-label', 'Saved views');
     put(slot, html`<span class="label">View</span><a class="chip" href="${href({})}"${none ? html` aria-current="true"` : ''}>All</a>${
       VIEWS.map(v => html`<a class="chip" href="${href(v.params)}"${!none && isCur(v.params) ? html` aria-current="true"` : ''}>${v.name}</a>`)
       }<button class="help" type="button" aria-label="Help: saved views" data-help="<b>A view is a URL.</b> Each chip sets the filters it names and clears the rest; the address bar carries it, so a view can be bookmarked, sent or opened from the palette.">${ICON('circle-help')}</button>`);
     slot.querySelectorAll('.help').forEach(b => b.setAttribute('aria-expanded', 'false'));
+    // The row and the filters move after render, so a chip's href is rebuilt from the address at the moment it is followed.
+    slot.onclick = e => { const a = e.target.closest('a.chip'); if (!a || e.metaKey || e.ctrlKey || e.shiftKey) return; const v = VIEWS[[...slot.querySelectorAll('a.chip')].indexOf(a) - 1]; e.preventDefault(); location.href = href(v ? v.params : {}, true); };
   }
-  const viewHref = v => { const u = new URLSearchParams(); Object.entries(v.params).forEach(([k, val]) => u.set(k, val)); return `?${u}`; };
+  let viewHref = v => { const u = new URLSearchParams(); Object.entries(v.params).forEach(([k, val]) => u.set(k, val)); return `?${u}`; };
+
+  // ---------- The page's list: j / k, Esc and ?row= ----------
+  // A page declares its list once, window.PAGE_LIST = { rows, select, id, current, clear, when }, and binds none of these keys.
+  //   rows()          the row elements in reading order; j / k walk those with a box (getClientRects), so hidden rows are skipped.
+  //   select(id, el)  the page's own selection; the shell then scrolls the row into view.
+  //   id(el)          the row's id (default el.dataset.id). current() the selected id (default: the row with aria-selected="true").
+  //   clear()         Esc when nothing is open to close: clear the page's filter (or cancel a drag); true when there was one.
+  //   when()          false while j / k do not apply (Writing's editor view).
+  // ?row= is the shell's too: shell.commands.select(id) writes it, shell.row() reads it, shell.row(id) writes it for a selection
+  // that is not a command object (a Metrics reading), and shell.url(query) writes a page's own params around it.
+  function writeRow(id) {
+    const u = new URL(location.href);
+    if (id == null || id === '') u.searchParams.delete('row'); else u.searchParams.set('row', id);
+    if (u.href !== location.href) try { history.replaceState(history.state, '', u); } catch (_) {}
+  }
+  function url(query) {
+    const p = new URLSearchParams(query), r = new URLSearchParams(location.search).get('row');
+    p.delete('row'); if (r) p.set('row', r);
+    const s = p.toString();
+    try { history.replaceState(history.state, '', `${s ? '?' + s : location.pathname.split('/').pop()}${location.hash}`); } catch (_) {}
+  }
+  const rowParam = () => new URLSearchParams(location.search).get('row');
+  function step(d) {
+    const L = window.PAGE_LIST; if (!L || (L.when && !L.when())) return false;
+    const idOf = L.id || (el => el.dataset.id);
+    const rows = [...L.rows()].filter(el => el.getClientRects().length); if (!rows.length) return false;
+    const cur = L.current ? L.current() : (() => { const on = rows.find(el => el.getAttribute('aria-selected') === 'true'); return on ? idOf(on) : null; })();
+    const i = rows.findIndex(el => idOf(el) === cur);
+    const n = rows[i < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, i + d))];
+    L.select(idOf(n), n); n.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return true;
+  }
 
   // ---------- Keys ----------
   const CHORDS = Object.fromEntries(GROUPS.flatMap(([, items]) => items).map(([k2, , k]) => [k, k2]));
@@ -579,24 +679,36 @@
   const keys = document.createElement('dialog');
   keys.className = 'palette keys'; keys.setAttribute('aria-labelledby', 'keys-h');
   const KEYS = [['j / k', 'Next / previous row'], ['↵', 'Open Details for the selected row'], ['.', 'Actions for the selected row'], ['x', 'Select the row for a bulk command'], ['n', 'Capture a task, followup or note'],
-    ['u', 'Undo the last undoable action while its toast shows'], ['⌘K', 'Commands'], ['c', 'Chat'], ['[ ]', 'Fold the sections rail / the panel'], ['g then a letter', 'Go to a section'], ['r', 'Reload'], ['?', 'This sheet'], ['Esc', 'Close']];
+    ['u', 'Undo the last undoable action while its toast shows'], ['⌘K', 'Commands'], ['c', 'Chat'], ['[ ]', 'Fold the sections rail / the panel'], ['g then a letter', 'Go to a section'], ['r', 'Reload'], ['?', 'This sheet'], ['Esc', 'Close the top panel, else clear the filter']];
   put(keys, html`<div class="confirm-body"><h2 id="keys-h">Keys</h2><table class="keys-table"><tbody>${KEYS.concat(window.PAGE_KEYS || []).map(([k, w]) => html`<tr><th scope="row"><kbd>${k}</kbd></th><td>${w}</td></tr>`)}</tbody></table><div class="actions"><button class="btn quiet" type="button" id="keys-close">Close</button></div></div>`);
-  body.append(keys);
+  body.append(keys); trap(keys);
   keys.querySelector('#keys-close').addEventListener('click', () => keys.close());
   keys.addEventListener('click', e => { if (e.target === keys) keys.close(); });
   keys.addEventListener('keydown', e => { if (e.key === '?') { e.preventDefault(); keys.close(); } });
   let chord = 0;
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); pal.open ? pal.close() : openPal(); return; }
+    // Esc does one thing: close the topmost overlay (help, action menu, the pane as a bottom sheet, the rail menu), else clear
+    // the page's filter through PAGE_LIST.clear(). The docked pane is not an overlay, so a wide Esc goes to the filter.
     if (e.key === 'Escape') {
       if (document.querySelector('dialog[open]')) return; // the dialog closes itself; the pane behind it stays
-      if (pinned || !pop.hidden) { hideHelp(); return; } if (!menuEl.hidden) { closeMenu(); return; } closePane(); setMenu(false); return;
+      if (pinned || !pop.hidden) { hideHelp(); return; } if (!menuEl.hidden) { closeMenu(); return; }
+      const sheet = !wide() && pane.hasAttribute('data-open'), menuOpen = rail.hasAttribute('data-menu');
+      closePane(); setMenu(false);
+      if (sheet || menuOpen) return;
+      // A page's field clears its own text on Esc and stops the key there; an empty field reaches here and lets go of focus.
+      if (e.target.matches('input, textarea, select, [contenteditable]')) { e.target.blur(); return; }
+      if (window.PAGE_LIST?.clear?.()) e.preventDefault();
+      return;
     }
     if (e.target.matches('input, textarea, select, [contenteditable]') || document.querySelector('dialog[open]') || menuEl.contains(e.target)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     // A pending g-chord takes the next key, whatever it is: "g n" goes to Notes and does not open Capture.
     if (chord && Date.now() - chord < 1500) { chord = 0; if (CHORDS[e.key]) { e.preventDefault(); go(CHORDS[e.key]); return; } }
     if (e.key === 'g') { chord = Date.now(); return; }
+    if ((e.key === 'j' || e.key === 'k') && step(e.key === 'j' ? 1 : -1)) { e.preventDefault(); return; }
+    // A time cell is a toggle: Enter or Space shows the exact time, again the relative one.
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('time.rel[data-rel]')) { e.preventDefault(); flipTime(e.target); return; }
     if (e.key === 'Enter' && selId && !e.target.matches('a, button, [role="button"], [role="menuitem"], [role="tab"]')) { e.preventDefault(); document.dispatchEvent(new CustomEvent('shell:open', { detail: selId })); return; }
     if (e.key === '.' && selId) { e.preventDefault(); openMenu(selId, document.querySelector(`[data-menu-for="${CSS.escape(selId)}"]`)); return; }
     if (e.key === 'x' && selId) { e.preventDefault(); commands.pick(selId); return; }
@@ -606,7 +718,7 @@
     if (e.key === 'r') { e.preventDefault(); location.reload(); }
     if (e.key === '[' && matchMedia('(min-width: 900px)').matches) { e.preventDefault(); setRail(!body.dataset.rail); }
     if (e.key === ']') { e.preventDefault(); wide() ? setPane(!body.dataset.pane) : pane.hasAttribute('data-open') ? closePane() : openPane(); }
-    if (e.key === '?') { e.preventDefault(); keys.showModal(); }
+    if (e.key === '?') { e.preventDefault(); modal(keys, keys.querySelector('#keys-close')); }
   });
 
   // ---------- Time cells ----------
@@ -631,19 +743,41 @@
     if (!isFinite(Date.parse(iso || ''))) { el.textContent = el.dataset.empty || 'none'; el.dataset.rel = el.textContent; el.removeAttribute('tabindex'); return; }
     const label = relText(iso, { future }), exact = exactText(iso);
     el.textContent = el.hasAttribute('data-long') ? `${label} · ${exact}` : label;
-    el.title = exact; el.dataset.rel = label; el.dataset.local = exact;
+    el.title = exact; el.dataset.rel = label; el.dataset.local = exact; el.setAttribute('aria-description', exact); // the title alone is hover-only
     if (!el.hasAttribute('data-long') && !el.closest('button, a')) el.tabIndex = 0; // a time inside a control is read with it
   }
   const hydrate = root => root.querySelectorAll?.('time.rel[datetime]:not([data-rel])').forEach(fillTime);
+  // The toggle: a click (or Enter / Space, under Keys) swaps the relative text for the exact time and back. The click stops
+  // there, so a time inside a row does not also select the row. A time inside a button or link, or a long cell, is left alone.
+  function flipTime(t) { if (!t.dataset.local) return; t.textContent = t.textContent === t.dataset.rel ? t.dataset.local : t.dataset.rel; }
+  document.addEventListener('click', e => { const t = e.target.closest?.('time.rel[data-rel]'); if (t && t.dataset.local && !t.hasAttribute('data-long') && !t.closest('button, a')) { e.stopPropagation(); flipTime(t); } }, true);
   function time(iso, { future = false, long = false, empty = '' } = {}) {
     const t = document.createElement('time'); t.className = 'rel'; t.setAttribute('datetime', iso || '');
     if (future) t.dataset.future = ''; if (long) t.dataset.long = ''; if (empty) t.dataset.empty = empty;
     // build: the filled cell comes back as html`…` built from its own attributes, since markup.js is the only sink.
     // Each attribute is named in the literal: markup.js takes no value where a name or a bare attribute goes.
-    fillTime(t); return html`<time class="rel" datetime="${iso || ''}"${future ? html` data-future=""` : ''}${long ? html` data-long=""` : ''}${empty ? html` data-empty="${empty}"` : ''} title="${t.title}" data-rel="${t.dataset.rel || ''}" data-local="${t.dataset.local || ''}"${t.hasAttribute('tabindex') ? html` tabindex="0"` : ''}>${t.textContent}</time>`;
+    fillTime(t); return html`<time class="rel" datetime="${iso || ''}"${future ? html` data-future=""` : ''}${long ? html` data-long=""` : ''}${empty ? html` data-empty="${empty}"` : ''} title="${t.title}" aria-description="${t.title}" data-rel="${String(t.dataset.rel || '')}" data-local="${String(t.dataset.local || '')}"${t.hasAttribute('tabindex') ? html` tabindex="0"` : ''}>${t.textContent}</time>`;
   }
   hydrate(document);
   new MutationObserver(recs => recs.forEach(r => r.addedNodes.forEach(n => { if (n.nodeType === 1) { if (n.matches('time.rel[datetime]:not([data-rel])')) fillTime(n); hydrate(n); } }))).observe(body, { childList: true, subtree: true });
+
+  // ---------- Staleness (design.md, Microinteractions) ----------
+  // body[data-observed] is the reading time and body[data-interval] the collector's interval in minutes. Past twice the interval
+  // the Observed cell (#refresh) turns caution and says "stale since …"; past five times it is unknown. It is checked against
+  // real now each minute and after a re-render. A page without data-interval gets no state: the shell does not guess a cadence.
+  function staleness() {
+    const cell = document.getElementById('refresh'), obs = Date.parse(body.dataset.observed || ''), iv = +body.dataset.interval * 60000;
+    if (!cell || !isFinite(obs) || !(iv > 0)) return;
+    const age = Date.now() - obs, state = age > 5 * iv ? 'unknown' : age > 2 * iv ? 'caution' : '';
+    const d = new Date(obs + 2 * iv).toISOString(), text = state ? `${state === 'unknown' ? 'unknown · ' : ''}stale since ${d.slice(5, 10)} ${d.slice(11, 16)} UTC` : '';
+    const was = cell.querySelector('.stale');
+    if ((was?.textContent || '') === text) return; // the text names the state, so the same text means nothing changed
+    was?.remove();
+    if (!state) { if (cell.dataset.stale === '') { delete cell.dataset.state; delete cell.dataset.stale; } return; }
+    cell.dataset.state = state; cell.dataset.stale = '';
+    put(cell.querySelector('.val') || cell, html`<small class="stale">${text}</small>`, 'append');
+  }
+  staleness(); addEventListener('load', staleness); setInterval(staleness, 60 * 1000);
 
   // ---------- Since you last looked ----------
   // A page marks rows with data-changed="<ISO>". The shell keeps the newest time seen per page (localStorage) and, on the next visit,
@@ -653,16 +787,24 @@
   let seenMark = sinceParam || store(sinceKey) || '';
   const band = document.createElement('p');
   band.className = 'since'; band.setAttribute('role', 'status'); band.hidden = true;
-  const main = document.querySelector('main') || body;
+  // A new row says so in words as well as with the accent bar: colour alone is not a state (review 2026-09-29, 25).
+  const newMark = (r, on) => {
+    const host = r.matches('tr') ? r.querySelector('td, th') : r, was = host?.querySelector(':scope > .sr[data-new-sr]');
+    if (on && host && !was) put(host, html`<span class="sr" data-new-sr>new</span>`, 'prepend');
+    if (!on && was) was.remove();
+  };
   function markNew() {
     const rows = [...main.querySelectorAll('[data-changed]')]; if (!rows.length) return;
     const newest = rows.map(r => r.dataset.changed).sort().pop();
     let n = 0;
-    rows.forEach(r => { const isNew = !!seenMark && r.dataset.changed > seenMark; r.toggleAttribute('data-new', isNew); if (isNew) n++; });
+    rows.forEach(r => { const isNew = !!seenMark && r.dataset.changed > seenMark; if (r.hasAttribute('data-new') !== isNew) r.toggleAttribute('data-new', isNew); newMark(r, isNew); if (isNew) n++; });
     if (!band.isConnected) { const first = rows[0].closest('table, ul, ol, .board, section') || rows[0].parentElement; first.parentElement.insertBefore(band, first); }
     if (!n) { band.hidden = true; delete body.dataset.onlyNew; return; }
-    const only = body.dataset.onlyNew === '';
-    put(band, html`${ICON('eye')}<b>${n}</b> row${n > 1 ? 's' : ''} changed since you last looked (${relText(seenMark, { now: true })}) · <button class="linkbtn" type="button" data-since="only" aria-pressed="${only}">${only ? 'Show all' : 'Only these'}</button> · <button class="linkbtn" type="button" data-since="seen">Mark seen</button>`);
+    const only = body.dataset.onlyNew === '', said = `${n}|${only}|${relText(seenMark, { now: true })}`;
+    // The band is a status: rewrite it only when what it says changed, or every re-render announces it again (review 28).
+    if (band.dataset.said === said && !band.hidden) return;
+    band.dataset.said = said;
+    put(band, html`${ICON('eye')}<b>${n}</b> ${markup.plural.word(n, 'row')} changed since you last looked (${relText(seenMark, { now: true })}) · <button class="linkbtn" type="button" data-since="only" aria-pressed="${String(only)}">${only ? 'Show all' : 'Only these'}</button> · <button class="linkbtn" type="button" data-since="seen">Mark seen</button>`);
     band.hidden = false;
     band.dataset.newest = newest;
   }
@@ -672,7 +814,7 @@
     if (b.dataset.since === 'seen') { seenMark = band.dataset.newest; store(sinceKey, seenMark); delete body.dataset.onlyNew; markNew(); toast('Marked seen. New rows light again when something changes.'); }
   });
   if (main) {
-    let raf = 0; new MutationObserver(recs => { if (recs.every(r => band.contains(r.target))) return; cancelAnimationFrame(raf); raf = requestAnimationFrame(markNew); }).observe(main, { childList: true, subtree: true });
+    let raf = 0; new MutationObserver(recs => { if (recs.every(r => band.contains(r.target))) return; cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { markNew(); staleness(); }); }).observe(main, { childList: true, subtree: true });
     markNew();
     // Leaving the page records the newest change seen, so the next visit lights only what came after.
     addEventListener('pagehide', () => { const newest = [...main.querySelectorAll('[data-changed]')].map(r => r.dataset.changed).sort().pop(); if (newest && !sinceParam && newest > (store(sinceKey) || '')) store(sinceKey, newest); });
@@ -705,7 +847,37 @@
     return null;
   }
 
-  window.shell = { ICON, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: confirmAction, commands, capture: openCapture, shq, time, attention, views, reconcile, pages: PAGES, groups: GROUPS };
+  // ---------- The state slot: loading, error, partial read, empty (review 2026-09-29, 20) ----------
+  // One slot per page, #state, right under the head. A page never draws these itself: it says which one holds and why, with
+  // shell.state({ kind, text, source }), or window.PAGE_STATE before shell.js runs; shell.state(null) empties the slot. A page
+  // without #state in its markup gets one. The build sets 'loading' before its fetch and 'error' or 'partial' when a read fails,
+  // so a collector that fails renders as a failure and never as a clean page. The glyph follows the state grammar.
+  const STATES = { loading: ['queued', 'Loading'], error: ['unknown', 'Read failed'], partial: ['caution', 'Partial read'], empty: ['ok', 'Nothing here'] };
+  const GLYPHS = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };
+  let stateSlot = document.getElementById('state');
+  if (!stateSlot && main !== body) { stateSlot = document.createElement('div'); stateSlot.id = 'state'; (main.querySelector(':scope > header.head') || main.firstElementChild)?.after(stateSlot); }
+  // A section with a reading of its own (Today's day timeline, sd:2180) names its slot: shell.state(s, 'state-timeline') draws the
+  // same grammar in that element, so an empty or failed section never draws its own empty state or a chart of nothing.
+  function state(s, at) {
+    const slot = at ? document.getElementById(at) : stateSlot;
+    if (!slot) return;
+    slot.className = 'state'; slot.setAttribute('role', 'status');
+    const k = s && STATES[s.kind];
+    if (!k) { slot.hidden = true; slot.replaceChildren(); delete slot.dataset.kind; return; }
+    slot.hidden = false; slot.dataset.kind = s.kind;
+    put(slot, html`<span class="g-${k[0]}" aria-hidden="true">${GLYPHS[k[0]]}</span><b>${s.title || k[1]}</b><span>${s.text || ''}</span>${s.source ? html`<code>${s.source}</code>` : ''}`);
+  }
+  // Screenshot and review hooks: #loading, #error and #empty show each variant on any page.
+  const hookState = { '#loading': { kind: 'loading', text: 'Reading the collector. Rows appear when it answers.' },
+    '#error': { kind: 'error', text: 'The collector did not answer, so nothing below is current. Reload retries it.' },
+    '#empty': { kind: 'empty', text: 'The collector answered with no rows.' } }[location.hash];
+  state(hookState || window.PAGE_STATE || null);
+
+  // shell.ready settles after load and two frames, when every page script and the shell have drawn; 'shell:ready' fires then.
+  // verify.mjs waits on it instead of a fixed sleep (sd:2137).
+  const ready = new Promise(done => { const go = () => requestAnimationFrame(() => requestAnimationFrame(() => { document.dispatchEvent(new Event('shell:ready')); done(); }));
+    document.readyState === 'complete' ? go() : addEventListener('load', go, { once: true }); });
+  window.shell = { ready, ICON, plural, state, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
   if (location.hash === '#chat') openChat(); // screenshot hook
   if (location.hash === '#sheet') openPane('tab-details');
   if (location.hash === '#menu') setMenu(true);

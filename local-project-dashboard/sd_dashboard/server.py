@@ -563,6 +563,20 @@ class Dashboard(BaseHTTPRequestHandler):
                         return self._json(400, {"error": "Now does not accept query parameters."})
                     return self._json(200, now_screen.document(connection, now=self.clock(), fleet=self.fleet_backend,
                                                            jobs=self.operations_backend))
+                if path == "/api/tasks" or re.fullmatch(r"/api/tasks/[1-9][0-9]{0,18}", path):
+                    from . import tasks_screen
+
+                    # The Tasks page's rows and one item's Details (sd:2124), read as v1 /backlog and /item/<id> read them.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Tasks."})
+                    if split.query:
+                        return self._json(400, {"error": "Tasks does not accept query parameters."})
+                    if path == "/api/tasks":
+                        return self._json(200, tasks_screen.document(connection, now=self.clock()))
+                    number = int(path.rsplit("/", 1)[1])
+                    if number > 9223372036854775807:
+                        return self._json(404, {"error": "No such item."})
+                    return self._json(200, tasks_screen.details(connection, number, now=self.clock()))
                 if path == "/api/usage":
                     from .usage_screen import document
 
