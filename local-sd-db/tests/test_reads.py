@@ -514,9 +514,10 @@ class QuietRunReportsAreNotBacklog(unittest.TestCase):
         number `1` alike, while `is_urgent` accepts only the boolean. Before
         this was tightened the row below was in the backlog and not in the
         urgent quadrant -- the shared-row contract broken by the clause written
-        to protect it. `ingest` cannot produce this row (`reporting.py:25`
-        refuses a non-bool `attention`), so it is a hand-edited or legacy one,
-        and quiet is the safe direction for those.
+        to protect it. `ingest` cannot produce this row: it refuses a non-bool
+        `attention` (`type(attention) is not bool`, in `ingest` of `local-sd-db/sd_db/reporting.py`),
+        so it is a hand-edited or legacy one, and quiet is the safe direction
+        for those.
         """
         writer = self.store()
         quiet = self.report(writer, attention=False, job="quiet-job")
