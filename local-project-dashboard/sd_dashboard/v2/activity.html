@@ -1,8 +1,9 @@
 <!doctype html>
 <!--
-  Activity (sd:2111), at /activity. Built from the design source's products/system/designs/v2/activity.html at b1bd28b, with design.md and commands.md.
+  Activity (sd:2111), at /activity. Built from the design source's products/system/designs/v2/activity.html, .css and .js at d82daa1, with design.md and commands.md.
   Data: /api/activity (activity_screen.document: sd-ship delivery notes, runner assignments, launchd jobs and their log time, and
-  registered command runs, over the 24 hours before the read), read when the page opens and after a write.
+  the execution journal, over the 24 hours before the read; the journal's older records come too, for All read),
+  read when the page opens and after a write. The journal is runner_exec.executions: version-1 records only (sd:2183).
   Reviews, deploys and mail have no collector: the document names each with its reason and the page draws it unknown.
   Writes: the v1 action routes (runner requeue and cancel, job retry). Nothing here is sample data.
 -->
@@ -76,7 +77,8 @@
     </table>
     <p class="empty" id="empty" hidden></p>
     <div class="pager" id="pager"></div>
-    <p class="note" id="note">Merges are the pull requests sd-ship landed. Runs are runner assignments and scheduled jobs whose log was written in the window. Commands are registered commands the dashboard ran.</p>
+    <p class="note" id="journal-note"></p>
+    <p class="note" id="note">Merges are the pull requests sd-ship landed. Runs are runner assignments and scheduled jobs whose log was written in the window.</p>
     <p class="note" id="undated" hidden></p>
   </section>
 </main>

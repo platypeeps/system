@@ -1,4 +1,4 @@
-// Activity (sd:2111): the design source's products/system/designs/v2/activity.html script at b1bd28b, ported. Each change from the
+// Activity (sd:2111): the design source's products/system/designs/v2/activity.js at d82daa1, ported. Each change from the
 // reference is marked "build:". The events are /api/activity (activity_screen.py), never sample data. A command that executes
 // posts to the route v1 already answers, and its toast comes after the write lands, not before.
 // Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
@@ -6,26 +6,28 @@ const { html, put, plural } = window.markup;
 window.PAGE_COMMANDS = [
   { label: 'Filter the timeline', icon: 'search', run: () => document.getElementById('shift').focus() },
 ];
-window.PAGE_KEYS = [['/', 'Filter the timeline']];
+window.PAGE_KEYS = [['/', 'Filter events, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
   const C = window.shell.commands;
   const $ = id => document.getElementById(id);
 
-  // build: the kinds are the document's. Commands joins the design's five (review 2026-09-29, item 15): every write the
-  // dashboard runs through a registered command lands here. A kind with no collector is unknown, with the document's reason.
+  // build: the sources are the document's. A kind with no collector is unknown, with the document's reason.
   const KINDS = [
     { id: 'merge', name: 'Merges', icon: 'git-pull-request', src: 'sd-ship delivery notes' },
     { id: 'run', name: 'Runs', icon: 'play', src: 'runner assignments and launchd jobs' },
-    { id: 'command', name: 'Commands', icon: 'terminal', src: 'registered command runs' },
     { id: 'review', name: 'Reviews', icon: 'bot', src: 'none' },
     { id: 'deploy', name: 'Deploys', icon: 'hard-drive-download', src: 'none' },
     { id: 'mail', name: 'Mail', icon: 'mail', src: 'none' },
+    { id: 'command', name: 'Commands', icon: 'terminal', src: 'the execution journal: notes of kind exec' },
   ];
   const SOURCES = { merge: ['merge'], run: ['run', 'job'], command: ['command'] };
   const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };
   const kindOf = id => KINDS.find(k => k.id === id);
   const hhmm = iso => iso.slice(11, 16);
+  const ago = iso => { const m = Math.round((OBSERVED - Date.parse(iso)) / 60000); return m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`; };
+  // The document holds the 24 hours and, for the journal, older records too; the chart and the 24h range are the window.
+  const inWindow = e => Date.parse(e.at) >= RANGE.from;
 
   // ---------- Data (build) ----------
   let DOC = null, EVENTS = [], OBSERVED = Date.now(), RANGE = { from: OBSERVED - 864e5, to: OBSERVED }, REPOS = [];
@@ -62,19 +64,19 @@ addEventListener('DOMContentLoaded', () => {
     registerObjects();
     const failed = Object.entries(doc.sources).filter(([, why]) => why);
     window.shell.state(failed.length ? { kind: 'partial', text: failed.map(([s, why]) => `${s}: ${why}`).join(' · '), source: '/api/activity' }
-      : !EVENTS.length ? { kind: 'empty', text: 'No merge, run or command in the last 24 hours.' } : null);
+      : !EVENTS.some(inWindow) ? { kind: 'empty', text: 'No merge, run or command in the last 24 hours.' } : null);
     update();
     if (selected && EVENTS.some(e => e.id === selected)) show(selected); // the open Details read again after each load
   }
 
   // ---------- State (mirrored in the URL) ----------
-  const F = { kind: new Set(), repo: new Set(), state: '', q: '', hour: false };
+  const F = { kind: new Set(), repo: new Set(), state: '', q: '', hour: false, all: false }; // all: every event read, the journal's older records too
   let page = 1, size = 50, selected = null, allRepos = false;
   function readURL() {
     const p = new URLSearchParams(location.search);
     (p.get('kind') || '').split(',').filter(Boolean).forEach(v => F.kind.add(v));
     (p.get('repo') || '').split(',').filter(Boolean).forEach(v => F.repo.add(v));
-    F.state = p.get('state') || ''; F.q = p.get('q') || ''; F.hour = p.get('range') === '1h';
+    F.state = p.get('state') || ''; F.q = p.get('q') || ''; F.hour = p.get('range') === '1h'; F.all = p.get('range') === 'all';
     page = +p.get('page') || 1; size = [25, 50, 100, 200].includes(+p.get('size')) ? +p.get('size') : 50;
     selected = window.shell.row() || null;
   }
@@ -85,13 +87,14 @@ addEventListener('DOMContentLoaded', () => {
     if (F.state) p.set('state', F.state);
     if (F.q) p.set('q', F.q);
     if (F.hour) p.set('range', '1h');
+    if (F.all) p.set('range', 'all');
     if (page > 1) p.set('page', page);
     if (size !== 50) p.set('size', size);
     window.shell.url(p); // build: the shell keeps ?row=
   }
   const since = () => F.hour ? OBSERVED - 36e5 : 0;
-  const active = () => F.kind.size + F.repo.size + (F.state ? 1 : 0) + (F.q ? 1 : 0) + (F.hour ? 1 : 0);
-  const match = e => (!F.kind.size || F.kind.has(e.k)) && (!F.repo.size || F.repo.has(e.repo)) && (!F.state || e.s === F.state) && (!since() || Date.parse(e.at) >= since()) &&
+  const active = () => F.kind.size + F.repo.size + (F.state ? 1 : 0) + (F.q ? 1 : 0) + (F.hour || F.all ? 1 : 0);
+  const match = e => (!F.kind.size || F.kind.has(e.k)) && (!F.repo.size || F.repo.has(e.repo)) && (!F.state || e.s === F.state) && (F.all || Date.parse(e.at) >= (since() || RANGE.from)) &&
     (!F.q || `${e.what} ${e.repo || ''} ${e.ref} ${e.detail || ''}`.toLowerCase().includes(F.q));
 
   // ---------- Annunciator ----------
@@ -104,24 +107,27 @@ addEventListener('DOMContentLoaded', () => {
     pageAttention();
     const n = (k, s) => EVENTS.filter(e => e.k === k && (!s || e.s === s)).length;
     const worst = k => unknownWhy(k) ? 'unknown' : n(k, 'warning') ? 'warning' : n(k, 'caution') ? 'caution' : 'ok';
-    const pressed = k => String(F.kind.size === 1 && F.kind.has(k));
-    const cell = (k, val) => html`<li><button class="cell" type="button" data-kind="${k.id}" data-state="${worst(k.id)}" aria-pressed="${pressed(k.id)}"><span class="lbl">${k.name}${ICON(k.icon)}</span><span class="val">${unknownWhy(k.id) ? html`<span class="ph"><b>unknown</b></span> · <span class="ph">no source</span>` : val}</span></button></li>`;
-    const [merge, run, command, ...rest] = KINDS;
+    const pressed = k => String(F.kind.has(k)); // a lamp, its Kind chip and its lane button are one control (design.md § Interaction rules)
+    // build: a kind with no answer is a lamp that cannot be pressed, as the design's deploy cell is.
+    const cell = (k, val) => unknownWhy(k.id)
+      ? html`<li><div class="cell" data-kind="${k.id}" data-state="unknown"><span class="lbl">${k.name}${ICON(k.icon)}</span><span class="val"><span class="ph"><b>unknown</b></span> · <span class="ph">no source</span></span></div></li>`
+      : html`<li><button class="cell" type="button" data-kind="${k.id}" data-state="${worst(k.id)}" aria-pressed="${pressed(k.id)}"><span class="lbl">${k.name}${ICON(k.icon)}</span><span class="val">${val}</span></button></li>`;
+    const asg = EVENTS.filter(e => e.k === 'run' && e.status).length;
+    const VAL = {
+      merge: html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(EVENTS.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`,
+      run: html`<span class="ph"><b>${n('run', 'warning')}</b> jobs failed</span> · <span class="ph">${n('run', 'caution')} of ${asg} runs blocked</span>`,
+      command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} in the journal</span>`,
+    };
     const d = new Date(OBSERVED);
     put($('annunciator'), html`
-      ${cell(merge, html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(EVENTS.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`)}
-      ${cell(run, html`<span class="ph"><b>${n('run', 'warning')}</b> failed</span> · <span class="ph">${n('run', 'caution')} of ${n('run')} blocked</span>`)}
-      ${cell(command, html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} run</span>`)}
-      ${rest.map(k => cell(k, ''))}
+      ${KINDS.map(k => cell(k, VAL[k.id] || ''))}
       <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${ICON('rotate-ccw')}</span><span class="val"><span class="ph"><b>${d.toISOString().slice(11, 16)}</b> UTC</span> · <span class="ph">${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}</span></span></button></li>`);
   }
   $('annunciator').addEventListener('click', e => {
     const c = e.target.closest('button.cell'); if (!c) return;
     if (c.id === 'refresh') return load(); // build: reads the document again instead of reloading the page
     const k = c.dataset.kind;
-    if (unknownWhy(k)) return showKind(k);
-    const only = F.kind.size === 1 && F.kind.has(k);
-    F.kind = only ? new Set() : new Set([k]); page = 1; update();
+    F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update(); // adds to the kind filter, as the chip and the lane do
   });
 
   // ---------- Lane chart (hand-rolled SVG, patterns.md § Charts) ----------
@@ -129,10 +135,11 @@ addEventListener('DOMContentLoaded', () => {
   const x = t => ((Date.parse(t) - RANGE.from) / (RANGE.to - RANGE.from)) * W;
   const hours = () => Array.from({ length: 25 }, (_, i) => RANGE.from + i * 36e5);
   function renderRange() {
-    // build: the document holds 24 hours, so 7d and 30d stay off and say why.
+    // build: the document holds 24 hours and the journal's older records, so 7d and 30d stay off and say why.
     put($('range'), html`
       <button class="chip" type="button" data-r="1h" aria-pressed="${String(F.hour)}">1h</button>
-      <button class="chip" type="button" data-r="24h" aria-pressed="${String(!F.hour)}">24h</button>
+      <button class="chip" type="button" data-r="24h" aria-pressed="${String(!F.hour && !F.all)}">24h</button>
+      <button class="chip" type="button" data-r="all" aria-pressed="${String(F.all)}">All read <span class="n">+${EVENTS.filter(e => !inWindow(e)).length} older</span></button>
       <button class="chip" type="button" data-r="7d" aria-pressed="false">7d <span class="n">▨ not read</span></button>
       <button class="chip" type="button" data-r="30d" aria-pressed="false">30d <span class="n">▨ not read</span></button>`);
   }
@@ -140,14 +147,14 @@ addEventListener('DOMContentLoaded', () => {
     const c = e.target.closest('.chip'); if (!c) return;
     const r = c.dataset.r;
     if (r === '7d' || r === '30d') return toast(`${r} is not read: /api/activity holds the last 24 hours. The range stays at 24h.`);
-    F.hour = r === '1h'; page = 1; update();
+    F.hour = r === '1h'; F.all = r === 'all'; page = 1; update();
   });
   function renderLanes() {
     const H24 = hours();
     const grid = H24.filter((_, i) => i % 3 === 0).map(t => { const gx = ((t - RANGE.from) / (RANGE.to - RANGE.from) * W).toFixed(1); return html`<line x1="${gx}" x2="${gx}" y1="0" y2="${String(H)}"/>`; });
     const order = { ok: 0, queued: 0, unknown: 0, caution: 1, warning: 2 };
     const lanes = KINDS.map(k => {
-      const evs = EVENTS.filter(e => e.k === k.id && (!F.repo.size || F.repo.has(e.repo)));
+      const evs = EVENTS.filter(e => e.k === k.id && inWindow(e) && (!F.repo.size || F.repo.has(e.repo))); // the chart is the 24 h window
       const why = unknownWhy(k.id);
       const btn = html`<button class="lane-btn" type="button" data-kind="${k.id}" aria-pressed="${String(F.kind.has(k.id))}">${ICON(k.icon)}<span>${k.name}</span><span class="n">${why ? '▨' : String(evs.length)}</span></button>`;
       if (why) return html`<div class="lane">${btn}<div class="track unknown"><svg viewBox="0 0 ${String(W)} ${String(H)}" preserveAspectRatio="none" aria-hidden="true"><g class="grid">${grid}</g></svg><p class="why-unknown"><span>▨ unknown · no ${k.name.toLowerCase().replace(/s$/, '')} source</span></p></div></div>`;
@@ -189,10 +196,11 @@ addEventListener('DOMContentLoaded', () => {
     if (f === 'state') F.state = F.state === v ? '' : v;
     page = 1; update();
   });
-  function clearAll() { F.kind.clear(); F.repo.clear(); F.state = ''; F.q = ''; F.hour = false; input.value = ''; prev.hidden = true; ghost.textContent = ''; page = 1; update(); }
+  function clearAll() { F.kind.clear(); F.repo.clear(); F.state = ''; F.q = ''; F.hour = false; F.all = false; input.value = ''; prev.hidden = true; ghost.textContent = ''; page = 1; update(); }
 
   // ---------- Timeline ----------
   const tbody = $('rows');
+  const whereOf = e => e.k === 'command' || e.k === 'run' ? (e.item ? `sd:${e.item}` : e.job || e.ref || '') : e.ref || '';
   function renderRows() {
     const all = EVENTS.filter(match);
     const pages = Math.max(1, Math.ceil(all.length / size)); page = Math.min(page, pages);
@@ -201,24 +209,28 @@ addEventListener('DOMContentLoaded', () => {
     let last = '';
     put(tbody, html`${rows.map(e => {
       const h = e.at.slice(0, 13), band = h !== last ? html`<tr class="hour" aria-hidden="true"><td colspan="6">${h.slice(11)}:00 UTC · ${new Date(e.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}<span class="n">${plural(perHour[h], 'event')}</span></td></tr>` : ''; last = h;
+      const sub = e.k === 'merge' ? e.repo : e.detail;
       return html`${band}<tr data-id="${e.id}" data-changed="${e.at}" aria-selected="${String(e.id === selected)}">
-        <td class="t"><time datetime="${e.at}">${hhmm(e.at)}</time></td>
-        <td class="g g-${e.s}" title="${e.s}">${GLYPH[e.s] || GLYPH.unknown}</td>
+        <td class="t"><time datetime="${e.at}" title="${ago(e.at)}">${hhmm(e.at)}</time></td>
+        <td class="g g-${e.s}">${GLYPH[e.s] || GLYPH.unknown}<span class="sr">${e.s}</span></td>
         <td class="k">${ICON(kindOf(e.k).icon)}${e.k}</td>
-        <td class="what"><button type="button">${e.what}<small>${e.detail || ''}</small></button></td>
-        <td class="ref">${e.ref || ''}</td>
+        <td class="what"><button type="button">${e.what}<small>${sub || ''}</small></button></td>
+        <td class="ref">${whereOf(e)}</td>
         <td class="act">${C.rowActions(e.id)}</td></tr>`;
     })}`);
     const empty = $('empty');
-    empty.hidden = !!all.length || !EVENTS.length;
-    put(empty, all.length || !EVENTS.length ? html`` : html`No event matches these filters. <button class="linkbtn" type="button" data-clear>Clear all</button>`);
+    empty.hidden = !!all.length || !EVENTS.some(inWindow);
+    put(empty, all.length || !EVENTS.some(inWindow) ? html`` : html`No event matches these filters. <button class="linkbtn" type="button" data-clear>Clear all</button>`);
     const a = all.length ? (page - 1) * size + 1 : 0, z = Math.min(page * size, all.length);
     put($('pager'), html`<span>${a}–${z} of ${all.length}</span>
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${String(page - 1)}">${ICON('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${String(page + 1)}">Next${ICON('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${String(n)}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
     const c = s => all.filter(e => e.s === s).length;
     put($('tally'), html`<span class="g-warning">■ ${c('warning')} failed</span><span class="g-caution">▲ ${c('caution')} caution</span><span>● ${c('ok')} ok</span>`);
-    put($('sub'), html`${plural(EVENTS.length, 'event')} across the fleet · last 24 hours to ${new Date(OBSERVED).toISOString().slice(11, 16)} UTC, ${new Date(OBSERVED).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })}`);
+    put($('sub'), html`${plural(EVENTS.filter(inWindow).length, 'event')} across the fleet · last 24 hours to ${new Date(OBSERVED).toISOString().slice(11, 16)} UTC, ${new Date(OBSERVED).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })}`);
+    // build: the design's journal note, with this document's count; the runner records are the collector's gap, not a count.
+    const journal = EVENTS.filter(e => e.k === 'command'), older = journal.filter(e => !inWindow(e)).length;
+    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec that v1's Operations › Commands reads, the version-1 records. Runner records carry a plain-text body that reader skips (system task sd:2183), so none shows here. All read adds the ${String(older)} older than this window.`);
     const undated = DOC?.undated || [];
     $('undated').hidden = !undated.length;
     put($('undated'), undated.length ? html`${undated.join(', ')} failed with no readable log time, so ${undated.length === 1 ? 'it has' : 'they have'} no place on this timeline. Today lists failed jobs.` : html``);
@@ -237,7 +249,8 @@ addEventListener('DOMContentLoaded', () => {
     { name: 'Failed', params: { state: 'warning' } },
     { name: 'Last hour', params: { range: '1h' } },
     { name: 'Merges', params: { kind: 'merge' } },
-    { name: 'Commands', params: { kind: 'command' } }, // build: the design's Reviews view has no collector behind it
+    // build: the design's Reviews view is left out; no collector reads reviews.
+    { name: 'Command journal', params: { kind: 'command', range: 'all' } },
     { name: 'Failed in the last hour', params: { state: 'warning', range: '1h' } },
   ];
   function update() {
@@ -249,7 +262,7 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Details ----------
   const details = $('details');
-  const OUTPUT = {}; // build: an execution's output, read by exec.output, shown under its facts
+  const OUTPUT = {}; // build: an execution's output, read by command.output, shown under its facts
   function swap() { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); }
   const utc = iso => iso ? `${iso.slice(0, 16).replace('T', ' ')} UTC` : '—';
   function facts(e) {
@@ -257,7 +270,9 @@ addEventListener('DOMContentLoaded', () => {
     if (e.k === 'merge') Object.assign(f, { Repo: `${e.owner}/${e.repo}`, 'Pull request': e.ref, Item: e.item ? `sd:${e.item}` : '—', Commit: e.commit });
     if (e.k === 'run' && e.n) Object.assign(f, { Assignment: `#${e.n}`, Item: e.item ? `sd:${e.item}` : '—', Role: e.role, Provider: e.provider || '—', Status: e.status, Started: utc(e.started), Ended: utc(e.ended) });
     if (e.k === 'run' && e.job) Object.assign(f, { Job: e.job, 'Last run': e.rc, Detail: e.detail });
-    if (e.k === 'command') Object.assign(f, { Record: `note ${e.note}`, Item: e.item ? `sd:${e.item} · ${e.detail}` : '—', Exit: e.exit === null || e.exit === undefined ? 'still running' : String(e.exit), By: e.who || '—', Ended: utc(e.ended) });
+    if (e.k === 'command') Object.assign(f, { Note: String(e.note), Item: e.item ? `sd:${e.item} · ${e.title || ''}` : '—', Command: e.command, Scope: e.scope || 'not recorded',
+      Started: utc(e.started), Ended: utc(e.ended), Exit: e.exit == null ? (e.ended ? 'none recorded' : 'still running') : String(e.exit), Session: e.who || '—',
+      Output: e.expired ? `expired ${e.expired}` : 'Show output reads it' });
     f.Source = e.src;
     return f;
   }
@@ -288,7 +303,7 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Commands (products/system/commands.md): declared once, rendered by the shell ----------
   // build: an event's object carries what its commands need from the document: the pull request, the assignment and its queue
   // revision, the job and its revision and retry capability, the execution record.
-  const TYPE = { merge: 'pull request', command: 'execution' };
+  const TYPE = { merge: 'pull request', command: 'command' };
   function registerObjects() {
     EVENTS.forEach(e => C.put({ ...e, id: e.id, type: e.k === 'run' ? (e.job ? 'job' : 'assignment') : TYPE[e.k], label: e.what, event: e.id }));
   }
@@ -326,10 +341,11 @@ addEventListener('DOMContentLoaded', () => {
       run: o => { landing(post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => load()), () => `Retry started · ${o.job}`); return null; } },
     // build: Management is not built, so the log is a line to copy.
     { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => `Copy the line to read the log of ${o.job}` },
-    // build: an execution record (review 2026-09-29, item 15): its output reads /api/executions/<note>, as v1 Operations > Commands does.
-    { id: 'exec.output', on: 'execution', label: 'Show output', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd runner commands output ${o.note}`,
-      run: o => { landing(readOutput(o), () => `Output of note ${o.note} shown in Details`); return null; } },
-    { id: 'exec.item', on: 'execution', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
+    // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
+    { id: 'command.output', on: 'command', label: 'Show output', key: 'o', risk: 'safe', primary: () => true,
+      when: o => ev(o).expired ? `the output expired ${ev(o).expired}` : true,
+      cli: o => `sd runner commands output ${o.note}`, run: o => { landing(readOutput(o), () => `Output of note ${o.note} shown in Details`); return null; } },
+    { id: 'command.item', on: 'command', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
   );
   function undoRequeue(o, out) {
     post(`/api/runner/${o.n}/cancel`, { revision: out.revision }).then(() => load()).then(() => toast(`Requeue undone · #${o.n}`), failed);
@@ -364,7 +380,7 @@ addEventListener('DOMContentLoaded', () => {
       if (mode === 'task') { window.shell.capture(null, input.value.trim()); input.value = ''; renderShift(); }
       if (mode === 'ask') { window.shell.openChat(); window.shell.send(input.value.trim()); input.value = ''; renderShift(); }
     }
-    if (e.key === 'Escape') { input.value = ''; renderShift(); input.blur(); }
+    if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; renderShift(); }
   });
   prev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { setMode(c.dataset.as); input.focus(); } });
   document.addEventListener('keydown', e => {

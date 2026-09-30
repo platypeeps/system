@@ -14,8 +14,11 @@ keeps, so the port adds no collector:
   as `operations.job_state` reads it (Today's failed-job read, sd:2110).
   A failed job whose log time cannot be read has no place on a timeline;
   its name goes in `undated`, so the page says so rather than drop it.
-- **command**: `runner_exec.executions`, the dashboard's own runs of
-  registered commands (v1 Operations > Commands; review 2026-09-29 item 15).
+- **command**: the execution journal, as `runner_exec.executions` reads it
+  (v1 Operations > Commands; the design's journal, sd:2180). Every record it
+  returns comes, older ones too, so the page's "All read" range can show them;
+  the other kinds stay in the window. It reads version-1 records only: a
+  runner record's plain-text body is skipped (system task sd:2183).
 
 The design's other kinds have no collector here. Each is in `unknown` with
 the reason, and the page draws it hatched: unknown is not zero.
@@ -39,7 +42,7 @@ __all__ = ["KINDS", "UNKNOWN", "WINDOW", "document"]
 WINDOW = timedelta(hours=24)
 
 #: The kinds the page draws, in lane order.
-KINDS = ("merge", "run", "command", "review", "deploy", "mail")
+KINDS = ("merge", "run", "review", "deploy", "mail", "command")
 
 #: Kinds with no collector, and why. The page shows each as unknown, never as zero.
 UNKNOWN = {
@@ -147,25 +150,28 @@ def jobs(connection, backend, start: datetime, end: datetime) -> tuple[list[dict
     return out, undated
 
 
-def commands(connection, start: datetime, end: datetime) -> list[dict]:
+def commands(connection, end: datetime) -> list[dict]:
+    """Every journal record up to `end`, at its end time. No exit code on an ended run means it was stopped: caution."""
     out = []
     for row in runner_exec.executions(connection, limit=100):
-        at = _inside(row["timestamp"], start, end)
-        if at is None:
+        stamp = _utc(row["ended"]) or _utc(row["timestamp"])
+        if stamp is None or stamp > end:
             continue
         code, command = row["exit_code"], row.get("command")
-        state = "queued" if row["ended"] is None else "ok" if code == 0 else "warning"
+        state = "queued" if row["ended"] is None else "ok" if code == 0 else "caution" if code is None else "warning"
         text = " ".join(map(str, command)) if isinstance(command, list) else str(command or "a registered command")
-        out.append({"id": f"command:{row['id']}", "k": "command", "at": at, "s": state, "repo": None,
-                    "what": text, "detail": row["title"] or "", "ref": f"sd:{row['item']}" if row["item"] else "",
+        outcome = "running" if row["ended"] is None else "no exit code" if code is None else f"exit {code}"
+        out.append({"id": f"cmd:{row['id']}", "k": "command", "at": _iso(stamp), "s": state, "repo": None,
+                    "what": f"{text} · {outcome}", "detail": row["title"] or "", "ref": f"note {row['id']}",
+                    "title": row["title"], "command": text,
                     "note": row["id"], "item": row["item"], "exit": code, "who": row["session"],
                     "scope": row.get("scope"), "started": row["started"], "ended": row["ended"],
-                    "expired": row.get("output_expired"), "src": "registered command runs (runner_exec.executions)"})
+                    "expired": row.get("output_expired"), "src": "the execution journal (runner_exec.executions)"})
     return out
 
 
 def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> dict:
-    """Every event in the 24 hours before `now`, newest first, and what each source said."""
+    """Every event in the 24 hours before `now`, and every journal record, newest first, and what each source said."""
     end = _utc(now)
     start = end - WINDOW
     events: list[dict] = []
@@ -180,7 +186,7 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
     for source, collect in (("merge", lambda: merges(connection, start, end)),
                             ("run", lambda: runs(connection, start, end)),
                             ("job", read_jobs),
-                            ("command", lambda: commands(connection, start, end))):
+                            ("command", lambda: commands(connection, end))):
         try:
             found = collect()
         except (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error) as failure:

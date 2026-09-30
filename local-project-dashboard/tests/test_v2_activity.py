@@ -4,9 +4,10 @@ What this slice promises: `/activity` answers under the shared policy and
 loads its script before `shell.js`; `/api/activity` is one 24-hour timeline
 built from records the library already keeps -- the delivery notes
 `ship.note_merge` writes, runner assignments with their queue revision,
-launchd jobs placed at their log time, and the registered command runs
-`runner_exec.executions` lists -- and names every kind it has no collector
-for, with the reason, rather than showing it as zero.
+launchd jobs placed at their log time -- plus the execution journal
+`runner_exec.executions` lists, older records too, and names every kind it
+has no collector for, with the reason, rather than showing it as zero. The
+page follows the design source at d82daa1.
 
 `activity.js` runs under JavaScriptCore (osascript), against the stand-in
 page and shell `test_v2_tasks` uses, with the document above as its fetch
@@ -47,7 +48,7 @@ def stamp(iso):
 
 
 def seed(case):
-    """A merge in the window and one before it, three assignments, two command runs, on the fixture database."""
+    """A merge in the window and one before it, three assignments, four journal records, on the fixture database."""
     repo = case.repo()
     port = case.item("Port the page", kind="work", repo=repo)
     old = case.item("An old slice", kind="work", repo=repo)
@@ -63,9 +64,11 @@ def seed(case):
     exec_row = case.assignment(port, role="exec", status="done")
     ok_run = case.note(port, "{}", kind="exec", started=INSIDE, ended=INSIDE, exit_code=0, session="dashboard")
     bad_run = case.note(port, "{}", kind="exec", started=INSIDE, ended=INSIDE, exit_code=2, session="dashboard")
-    for note, command in ((ok_run, "status"), (bad_run, "prune")):
+    stopped = case.note(port, "{}", kind="exec", started=INSIDE, ended=INSIDE, session="dashboard")
+    older = case.note(old, "{}", kind="exec", started=OUTSIDE, ended=OUTSIDE, exit_code=0, session="dashboard")
+    for note, command, at in ((ok_run, "status", INSIDE), (bad_run, "prune", INSIDE), (stopped, "sync", INSIDE), (older, "status", OUTSIDE)):
         body = {"version": 1, "note": note, "command": command, "scope": "item"}
-        case.connection.execute("UPDATE note SET body = ?, timestamp = ? WHERE id = ?", (json.dumps(body), INSIDE, note))
+        case.connection.execute("UPDATE note SET body = ?, timestamp = ? WHERE id = ?", (json.dumps(body), at, note))
     # Seeding, as support.ScreenCase.age does: the library writes the real clock, and the fixture's clock is NOW.
     case.connection.execute("UPDATE note SET timestamp = ? WHERE id = ?", (INSIDE, notes[0]))
     case.connection.execute("UPDATE note SET timestamp = ? WHERE id = ?", (OUTSIDE, notes[1]))
@@ -75,7 +78,7 @@ def seed(case):
     case.connection.execute("UPDATE assignment SET started = ?, ended = ? WHERE id = ?", (OUTSIDE, OUTSIDE, stale))
     case.connection.commit()
     return {"port": port, "old": old, "merge": notes[0], "blocked": blocked, "done": done, "stale": stale,
-            "exec": exec_row, "ok_run": ok_run, "bad_run": bad_run}
+            "exec": exec_row, "ok_run": ok_run, "bad_run": bad_run, "stopped": stopped, "older": older}
 
 
 def backend(case, *, refuse=""):
@@ -99,7 +102,7 @@ class TheDocument(ScreenCase):
     def test_the_window_is_the_24_hours_before_the_read(self):
         self.assertEqual((self.doc["read"], self.doc["from"], self.doc["to"]),
                          (NOW, "2026-09-05T12:00:00Z", NOW))
-        self.assertEqual(self.doc["kinds"], ["merge", "run", "command", "review", "deploy", "mail"])
+        self.assertEqual(self.doc["kinds"], ["merge", "run", "review", "deploy", "mail", "command"])
         stamps = [event["at"] for event in self.doc["events"]]
         self.assertEqual(stamps, sorted(stamps, reverse=True))
 
@@ -132,11 +135,17 @@ class TheDocument(ScreenCase):
         self.assertNotIn("job:lost-log", self.by_id)
         self.assertEqual(self.doc["undated"], ["lost-log"])
 
-    def test_a_command_run_is_an_execution_record(self):
-        ok_run, bad_run = self.by_id[f"command:{self.ids['ok_run']}"], self.by_id[f"command:{self.ids['bad_run']}"]
-        self.assertEqual((ok_run["s"], ok_run["what"], ok_run["note"], ok_run["item"], ok_run["exit"]),
-                         ("ok", "status", self.ids["ok_run"], self.ids["port"], 0))
-        self.assertEqual((bad_run["s"], bad_run["exit"]), ("warning", 2))
+    def test_a_command_is_a_journal_record_and_older_ones_come_too(self):
+        ok_run, bad_run = self.by_id[f"cmd:{self.ids['ok_run']}"], self.by_id[f"cmd:{self.ids['bad_run']}"]
+        self.assertEqual((ok_run["s"], ok_run["what"], ok_run["note"], ok_run["item"], ok_run["exit"], ok_run["ref"]),
+                         ("ok", "status · exit 0", self.ids["ok_run"], self.ids["port"], 0, f"note {self.ids['ok_run']}"))
+        self.assertEqual((bad_run["s"], bad_run["what"]), ("warning", "prune · exit 2"))
+        stopped = self.by_id[f"cmd:{self.ids['stopped']}"]
+        self.assertEqual((stopped["s"], stopped["what"]), ("caution", "sync · no exit code"))
+        older = self.by_id[f"cmd:{self.ids['older']}"]
+        self.assertEqual((older["at"], older["title"]), (OUTSIDE, "An old slice"))
+        self.assertFalse(any(e["at"] < self.doc["from"] for e in self.doc["events"] if e["k"] != "command"),
+                         "only the journal reaches before the window")
 
     def test_a_kind_with_no_collector_is_named_with_its_reason(self):
         self.assertEqual(set(self.doc["unknown"]), {"review", "deploy", "mail"})
@@ -183,6 +192,7 @@ PAGE = r"""
 C.select = () => {}; C.pick = () => {};
 window.shell.row = () => null; window.shell.setContext = () => {}; window.shell.openChat = () => {}; window.shell.send = () => {};
 window.shell.pages = { Tasks: '/tasks' };
+OUT.urls = []; window.shell.url = p => OUT.urls.push([p.get('kind'), p.get('range')]); window.shell.views = v => { OUT.views = v.map(x => x.name); };
 """
 
 
@@ -223,8 +233,8 @@ class TheScript(ScreenCase):
             ["asg.item", "assignment", "safe", "i", None, True, False, False],
             ["jobs.retry", "job", "safe", "t", None, True, False, True],
             ["jobs.log", "job", "safe", "l", False, True, False, False],
-            ["exec.output", "execution", "safe", "o", None, True, False, False],
-            ["exec.item", "execution", "safe", "i", None, True, False, False],
+            ["command.output", "command", "safe", "o", None, True, False, False],
+            ["command.item", "command", "safe", "i", None, True, False, False],
         ])
 
     def test_the_page_reads_the_document_once_and_draws_unknown_kinds_hatched(self):
@@ -235,11 +245,12 @@ class TheScript(ScreenCase):
         lanes = out["R"]["lanes"]
         for kind in ("review", "deploy", "mail"):
             self.assertRegex(lanes, rf'data-kind="{kind}"[^>]*>.*?<span class="n">▨</span>')
-            self.assertIn(f'data-kind="{kind}" data-state="unknown"', out["R"]["ann"])
+            self.assertRegex(out["R"]["ann"], rf'<div class="cell" data-kind="{kind}" data-state="unknown">')
         self.assertIn('data-kind="command" data-state="warning"', out["R"]["ann"])
         self.assertIn("Port the page", out["R"]["rows"])
         self.assertIn("nightly-sync failed with exit 7", out["R"]["rows"])
-        self.assertIn(f"{len(self.doc['events'])} events", out["R"]["sub"])
+        inside = [e for e in self.doc["events"] if e["at"] >= self.doc["from"]]
+        self.assertIn(f"{len(inside)} events", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 2, "what": "failed events in 24 h"})
 
     def test_a_failed_read_is_an_error_and_a_failed_source_is_partial(self):
@@ -254,7 +265,7 @@ class TheScript(ScreenCase):
     def test_the_kind_filter_narrows_the_rows(self):
         out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { f: 'kind', v: 'command' } } : null } });
 R.rows = ELS.rows.html;""")
-        self.assertIn(">status<", out["R"]["rows"])
+        self.assertIn(">status · exit 0<", out["R"]["rows"])
         self.assertNotIn("Port the page<small>", out["R"]["rows"])
 
     def test_requeue_toasts_after_the_write_and_undo_cancels_with_the_revision_it_answered(self):
@@ -287,12 +298,45 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", "() =
     def test_show_output_reads_the_execution_record_into_details(self):
         note = self.ids["bad_run"]
         answer = "(path) => [200, { state: 'finished', output: 'removed 3 worktrees', output_expired: null }]"
-        out = self.run_page(f"shellRun(cmd('exec.output'), C.get('command:{note}')); await flush(); R.details = ELS.details.html;",
+        out = self.run_page(f"shellRun(cmd('command.output'), C.get('cmd:{note}')); await flush(); R.details = ELS.details.html;",
                             answer)
         self.assertEqual(out["gets"], ["/api/activity", f"/api/executions/{note}?offset=0"])
         self.assertIn("removed 3 worktrees", out["R"]["details"])
         self.assertEqual(out["toasts"], [[f"Output of note {note} shown in Details", False]])
         self.assertEqual(out["posts"], [])
+
+    def test_a_lamp_its_chip_and_its_lane_add_to_one_kind_set(self):
+        click = "ELS.%s.listeners.click[0]({ target: { closest: s => s === '%s' ? { dataset: { kind: '%s' } } : null } });"
+        out = self.run_page(click % ("lanes", ".lane-btn", "run") + click % ("annunciator", "button.cell", "merge")
+                            + "R.ann = ELS.annunciator.html; R.lanes = ELS.lanes.html; R.filters = ELS.filters.html;")
+        self.assertEqual(out["urls"][-1], ["run,merge", None], "a lamp adds to the set, never replaces it")
+        for kind in ("merge", "run"):
+            self.assertIn(f'data-kind="{kind}" data-state="', out["R"]["ann"])
+            self.assertRegex(out["R"]["ann"], rf'data-kind="{kind}" data-state="\w+" aria-pressed="true"')
+            self.assertRegex(out["R"]["lanes"], rf'data-kind="{kind}" aria-pressed="true"')
+            self.assertRegex(out["R"]["filters"], rf'data-v="{kind}" aria-pressed="true"')
+
+    def test_all_read_adds_the_older_journal_records_and_24h_leaves_them_out(self):
+        older = self.ids["older"]
+        range_ = "ELS.range.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { r: '%s' } } : null } });"
+        out = self.run_page("R.day = ELS.rows.html; R.chip = ELS.range.html; R.lanes = ELS.lanes.html; R.note = ELS['journal-note'].html;"
+                            + range_ % "all" + "R.all = ELS.rows.html;" + range_ % "24h" + "R.back = ELS.rows.html;")
+        self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["day"])
+        self.assertIn("All read <span class=\"n\">+1 older</span>", out["R"]["chip"])
+        self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["lanes"], "the chart is the 24 hours")
+        self.assertIn(f'data-id="cmd:{older}"', out["R"]["all"])
+        self.assertIn([None, "all"], out["urls"])
+        self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["back"])
+        self.assertIn("4 records", out["R"]["note"])
+        self.assertIn("sd:2183", out["R"]["note"])
+        self.assertIn("Command journal", out["views"])
+
+    def test_a_row_names_its_state_in_words_and_where_it_belongs(self):
+        port = self.ids["port"]
+        out = self.run_page("R.rows = ELS.rows.html;")
+        row = re.search(rf'<tr data-id="cmd:{self.ids["bad_run"]}".*?</tr>', out["R"]["rows"], re.S).group(0)
+        self.assertIn('<span class="sr">warning</span>', row)
+        self.assertIn(f'<td class="ref">sd:{port}</td>', row)
 
     def test_the_log_is_a_line_to_copy(self):
         out = self.run_page("R.cli = cmd('jobs.log').cli(C.get('job:nightly-sync'));")
