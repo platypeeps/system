@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sd_db import connect, create_item, reads, reporting, upsert_repo, workflow
 from sd_db.errors import SdDbError
@@ -175,6 +176,26 @@ class MissingTrailers(unittest.TestCase):
             f"{TRAILERED}\n",
         )
         self.assertEqual(self.count(), 0)
+
+    def test_a_walk_past_its_budget_is_refused_not_a_partial_count(self):
+        """One slow repository spends a caller's budget: the read raises, it does not return 0."""
+        stub = Path(self.tmp.name) / "bin"
+        stub.mkdir()
+        (stub / "git").write_text("#!/bin/sh\nexec sleep 5\n")
+        (stub / "git").chmod(0o755)
+        path = os.environ["PATH"]
+        os.environ["PATH"] = f"{stub}{os.pathsep}{path}"
+        self.addCleanup(os.environ.__setitem__, "PATH", path)
+        with self.assertRaisesRegex(reads.OverBudget, r"^the trailer count ran past its budget of 0\.3 seconds$"):
+            reads.missing_trailers(self.connection, now=NOW, repo_paths=[str(self.repo)], within=0.3)
+        # A spent budget starts no git at all.
+        with mock.patch.object(reads.subprocess, "run") as run, self.assertRaises(reads.OverBudget):
+            reads.missing_trailers(self.connection, now=NOW, repo_paths=[str(self.repo)], within=0)
+        run.assert_not_called()
+
+    def test_a_budget_the_walk_fits_changes_nothing(self):
+        commit_with(self.repo, "no trailers here\n")
+        self.assertEqual(reads.missing_trailers(self.connection, now=NOW, repo_paths=[str(self.repo)], within=30), 1)
 
     def test_a_repository_that_cannot_be_read_is_not_a_crash(self):
         missing = Path(self.tmp.name) / "not-a-repository"

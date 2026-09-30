@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,6 +51,7 @@ __all__ = [
     "item_notes",
     "item_shadow",
     "missing_trailers",
+    "OverBudget",
     "on_branch",
     "open_followups",
     "runner_board",
@@ -513,8 +515,13 @@ def weekly_numbers(
     ]
 
 
+class OverBudget(SdDbError):
+    """A read that ran past the budget its caller set and was stopped, not waited on."""
+
+
 def missing_trailers(
-    connection: sqlite3.Connection, *, now: str | None = None, repo_paths: list[str] | None = None
+    connection: sqlite3.Connection, *, now: str | None = None, repo_paths: list[str] | None = None,
+    within: float | None = None,
 ) -> int:
     """The missing-trailer count Today shows: week commits with no `Authored-with:`.
 
@@ -530,8 +537,15 @@ def missing_trailers(
     a newline cannot reach it, and `%x1f` separates the two fields inside a
     record -- a unit separator, because it cannot occur in a hash and, unlike
     the NUL, does not collide with what `-z` is already using.
+
+    `within` is an overall time budget in seconds, for a caller that must not
+    wait on a slow fleet (the Health page). The walk stops when it is spent
+    and raises `OverBudget`: a partial count is not the count. Without it
+    each repository still has its own 20 s timeout, as before.
     """
     stamp = _now(now)
+    stop = None if within is None else time.monotonic() + within
+    refusal = f"the trailer count ran past its budget of {within:g} seconds" if within is not None else ""
     since, until = _week(stamp)
     if repo_paths is None:
         repo_paths = [
@@ -540,13 +554,22 @@ def missing_trailers(
         ]
     missing = 0
     for path in repo_paths:
+        timeout = 20.0
+        if stop is not None:
+            timeout = min(timeout, stop - time.monotonic())
+            if timeout <= 0:
+                raise OverBudget(refusal)
         try:
             done = subprocess.run(
                 ["git", "-C", str(paths.disk(path)), "log", "--no-merges", "-z",
                  f"--since={since}", f"--until={until}T23:59:59",
                  "--format=%H%x1f%(trailers)"],
-                capture_output=True, text=True, timeout=20,
+                capture_output=True, text=True, timeout=timeout,
             )
+        except subprocess.TimeoutExpired:
+            if stop is not None and time.monotonic() >= stop:
+                raise OverBudget(refusal) from None
+            continue
         except (OSError, subprocess.SubprocessError):
             continue
         if done.returncode != 0:

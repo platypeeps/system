@@ -23,8 +23,12 @@ import json
 import os
 import re
 import subprocess
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from sd_db import reads
 
 from sd_dashboard import health_screen, server, v2
 
@@ -204,6 +208,26 @@ class TheDocument(ScreenCase):
         (row,) = doc["areas"][8]["rows"]
         self.assertEqual((row["state"], row["reason"], row["cells"]), ("unknown", "not yet observed", []))
 
+    def test_a_slow_git_walk_is_stopped_at_its_budget_and_is_the_attribution_error(self):
+        stub = Path(self.tmp.name) / "bin"
+        stub.mkdir()
+        # exec: the process the budget kills is the one holding the pipes.
+        (stub / "git").write_text("#!/bin/sh\nexec sleep 5\n")
+        (stub / "git").chmod(0o755)
+        for name in ("one", "two"):
+            self.repo(f"/checkouts/{name}")
+        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
+                patch.object(health_screen, "TRAILER_SECONDS", 0.5, create=True):
+            started = time.monotonic()
+            doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot,
+                                         protection=protection_of([]))
+            elapsed = time.monotonic() - started
+        attr = doc["areas"][2]
+        self.assertLess(elapsed, 3, "the page waited on the git walk instead of stopping it")
+        self.assertEqual((attr["rows"], attr["error"]), ([], "the trailer count ran past its budget of 0.5 seconds "
+                                                             "and was stopped rather than waited on"))
+        self.assertEqual(doc["areas"][3]["rows"][0]["id"], "wt:ok")
+
     def test_the_default_trailer_reader_counts_a_registered_repo(self):
         repo = Path(self.tmp.name) / "repo"
         env = {**os.environ, "GIT_AUTHOR_DATE": "2026-09-05T10:00:00Z", "GIT_COMMITTER_DATE": "2026-09-05T10:00:00Z",
@@ -330,6 +354,18 @@ class TheScript(ScreenCase):
         self.assertIn("<b>Not read:</b> fleet collection was stopped at its budget: sessions", out["R"]["areas"])
         self.assertEqual(out["states"][-1]["kind"], "partial")
         self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": "findings to watch"})
+
+    def test_a_trailer_count_over_its_budget_shows_as_the_refusal_not_a_stall(self):
+        def refused(connection, *, now):
+            raise reads.OverBudget("the trailer count ran past its budget of 10 seconds")
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=refused, ports=ports_snapshot,
+                                     protection=protection_of([]))
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html;", doc)
+        self.assertRegex(out["R"]["lamps"], r'data-area="attr" data-state="unknown"[^>]*>.*?not read')
+        self.assertIn("<b>Not read:</b> the trailer count ran past its budget of 10 seconds and was stopped rather than "
+                      "waited on", out["R"]["areas"])
+        self.assertNotIn('data-id="attr:', out["R"]["areas"])
+        self.assertEqual(out["states"][-1]["kind"], "partial")
 
     def test_a_document_that_does_not_arrive_leaves_no_row_and_says_so(self):
         out = self.run_page("""R.before = ELS.areas.html;

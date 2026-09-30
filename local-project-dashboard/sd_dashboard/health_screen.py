@@ -10,7 +10,8 @@ port adds no collector:
   be read is a row of its own, in the unknown state.
 - Attribution: `reads.missing_trailers`, the count Operations > Progress
   shows: commits of the last seven days, in every registered repository,
-  with no `Authored-with:` trailer.
+  with no `Authored-with:` trailer. The walk runs inside `TRAILER_SECONDS`;
+  past it the area is the refusal, not a stall.
 - Ports: `ports_screen.port_rows` over `collect_ports`, Operations > Ports'
   reader, with its counts and warnings; collected for the request.
 - Protection: `protection.rows`, what the nightly `sd shadow sync` left in
@@ -60,6 +61,9 @@ AREAS = (
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
     ("prot", "Protection", "sd shadow sync → repo_protection", ()),
 )
+#: The Attribution walk's overall budget: one `git log` per registered repo on a page load must not stall the page.
+#: Measured on 2026-09-30 at load 150: 58 repos in 0.75-0.78 s warm. Past it the area says it stopped rather than waited on.
+TRAILER_SECONDS = 10.0
 #: The matrix lines, in the design's order: v1's gap columns, then its merge-setting flags.
 CHECKS = GAPS + FLAGS
 LISTENER = {"listening": "Listening", "not_listening": "No listener observed",
@@ -244,7 +248,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
     page draws above them (`extra`).
     """
     read_fleet = fleet or fleet_module.collect
-    count_trailers = trailers or reads.missing_trailers
+    count_trailers = trailers or (lambda connection, *, now: reads.missing_trailers(
+        connection, now=now, within=TRAILER_SECONDS))
     collect_ports = ports or ports_screen._collect
     read_protection = protection or protection_module.rows
     readers = {
@@ -263,6 +268,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
                 area["rows"], area["extra"] = found if isinstance(found, tuple) else (found, {})
                 if "at" in area["extra"]:
                     area["at"] = area["extra"].pop("at")
+            except reads.OverBudget as refused:
+                area["error"] = f"{refused} and was stopped rather than waited on"
             except ports_screen.OverBudget as refused:
                 area["error"] = f"the port inventory exceeded its collection budget and was stopped rather than waited on: {refused}"
             except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError, SdDbError, sqlite3.Error) as failure:
