@@ -303,8 +303,8 @@ def _verify_volume(mount: Path, floor_gb) -> tuple[str | None, bool, int | None]
     return None, True, quota
 
 
-def _verified_volume(mount: Path, device: int, floor_gb, verified: dict | None, clock) -> tuple[str | None, int | None, dict]:
-    """`_verify_volume`, remembered per mount identity: (problem, quota, verification) (sd:1941).
+def _verified_volume(mount: Path, device: int, floor_gb, verified: dict | None, clock) -> tuple[str | None, int | None, dict, bool]:
+    """`_verify_volume`, remembered per mount identity: (problem, quota, verification, answered) (sd:1941).
 
     `verified` is the runtime's dict of answers by `(mount, device)`, which is
     what a mounted volume keeps while it stays mounted. An answer younger
@@ -316,6 +316,8 @@ def _verified_volume(mount: Path, device: int, floor_gb, verified: dict | None, 
     successful refresh is forgotten, so a stall that lasts is the problem it
     was. Without a dict (`serve`'s first preflight before it, the CLI verbs)
     every call asks, and no answer is the problem it always was (sd:970).
+    `answered` is False only when the problem is `diskutil` giving no answer,
+    which `serve`'s cold start retries for a bounded window (sd:1950).
     """
     identity = (str(mount), device)
     now = clock()
@@ -324,20 +326,20 @@ def _verified_volume(mount: Path, device: int, floor_gb, verified: dict | None, 
         verified.pop(identity)
         entry = None
     if entry is not None and now - entry["checked_at"] < VERIFY_INTERVAL:
-        return None, entry["quota"], _repeated(entry, now)
+        return None, entry["quota"], _repeated(entry, now), True
     problem, answered, quota = _verify_volume(mount, floor_gb)
     if problem is None:
         entry = {"verified_at": now, "checked_at": now, "quota": quota, "refresh_problem": None}
         if verified is not None:
             verified[identity] = entry
-        return None, quota, _repeated(entry, now, cached=False)
+        return None, quota, _repeated(entry, now, cached=False), True
     if answered or entry is None:
         if verified is not None:
             verified.pop(identity, None)
-        return problem, quota, {"cached": False, "age_seconds": None, "refresh_problem": None}
+        return problem, quota, {"cached": False, "age_seconds": None, "refresh_problem": None}, answered
     entry["checked_at"] = now
     entry["refresh_problem"] = problem
-    return None, entry["quota"], _repeated(entry, now)
+    return None, entry["quota"], _repeated(entry, now), True
 
 
 def _repeated(entry: dict, now: float, *, cached=True) -> dict:
@@ -345,13 +347,19 @@ def _repeated(entry: dict, now: float, *, cached=True) -> dict:
 
 
 def preflight(database: Path, work: Path, retained: Path, *, floor_gb=40, verified: dict | None = None, clock=time.monotonic) -> dict:
-    """The storage report; `verified` is the caller's cache of `diskutil` answers, see `_verified_volume`."""
+    """The storage report; `verified` is the caller's cache of `diskutil` answers, see `_verified_volume`.
+
+    `unverified` lists the problems that are `diskutil` giving no answer (a
+    timeout or a non-zero exit), a subset of `problems`: not yet known, where
+    every other problem is a definitive answer (sd:1950).
+    """
     if floor_gb <= 0:
         raise RunnerRefused("free-space floor must be positive")
     db, active, backup = capacity(database), capacity(work), capacity(retained)
     problems = []
     quota = None
     verification = None
+    unverified = []
     if not work.is_dir() or not retained.is_dir():
         problems.append("worktrees and retained-clone directories must exist on the provisioned work volume")
     if active["device"] == db["device"]:
@@ -365,15 +373,17 @@ def preflight(database: Path, work: Path, retained: Path, *, floor_gb=40, verifi
         mount = work.resolve()
         while not mount.is_mount() and mount.parent != mount:
             mount = mount.parent
-        problem, quota, verification = _verified_volume(mount, active["device"], floor_gb, verified, clock)
+        problem, quota, verification, answered = _verified_volume(mount, active["device"], floor_gb, verified, clock)
         if problem is not None:
             problems.append(problem)
+            if not answered:
+                unverified.append(problem)
     elif sys.platform != "darwin":
         problems.append("production runner storage requires macOS APFS")
     return {"ok": not problems, "problems": problems, "database": db, "work": active, "retention": backup,
             "dispatch_allowed": not problems and active["free"] >= floor_gb * 1e9 and db["free"] >= floor_gb * 1e9,
             "database_below_floor": db["free"] < floor_gb * 1e9, "free_floor_gb": floor_gb, "quota_bytes": quota,
-            "verification": verification}
+            "verification": verification, "unverified": unverified}
 
 
 def walk(path: Path, *, skip=None) -> dict:
