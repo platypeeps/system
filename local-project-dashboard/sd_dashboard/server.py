@@ -577,6 +577,15 @@ class Dashboard(BaseHTTPRequestHandler):
                     if number > 9223372036854775807:
                         return self._json(404, {"error": "No such item."})
                     return self._json(200, tasks_screen.details(connection, number, now=self.clock()))
+                if path == "/api/home":
+                    from . import home_screen
+
+                    # The Home page's tiles (sd:2117), from the config folder; no Home Assistant state is read yet.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Home."})
+                    if split.query:
+                        return self._json(400, {"error": "Home does not accept query parameters."})
+                    return self._json(200, home_screen.document(now=self.clock()))
                 if path == "/api/usage":
                     from .usage_screen import document
 

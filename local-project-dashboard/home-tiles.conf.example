@@ -1,0 +1,25 @@
+# The Home page's tiles: the Home Assistant entities worth a lamp.
+#
+# Copy this file to <config>/project-dashboard/home-tiles.conf and edit it
+# (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system); the lines below
+# are examples. Entity ids describe a house, so the real list stays outside
+# the checkout. Without a home-tiles.conf the page shows no tiles and says why.
+#
+# Pipe-separated, one tile per line, in the order the page draws them:
+#
+#   headline|<entity_id>|<name>          the lamp above the groups
+#   tile|<group>|<entity_id>|<name>      a tile in its group
+#
+# The dashboard reads no Home Assistant state yet, so every tile shows as
+# unknown ("no Home Assistant reader") and every command is off with that
+# reason. A line the page cannot read is named on the page and skipped.
+
+headline|binary_sensor.problems_active|Problems active
+
+tile|Security|alarm_control_panel.house|House alarm
+tile|Security|lock.front_door|Front door
+tile|Water & safety|binary_sensor.water_leak|Water leak
+tile|Water & safety|binary_sensor.smoke_sensors|Smoke sensors
+tile|Network & backup|binary_sensor.wan_degraded|WAN degraded
+tile|Network & backup|sensor.backup_last_successful_automatic_backup|Last automatic backup
+tile|Toggles|input_boolean.guest_mode|Guest mode
