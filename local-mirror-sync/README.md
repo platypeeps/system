@@ -56,7 +56,8 @@ which copied the repo fleet to the NAS over SMB at about 80 minutes per no-op
 pass.
 
 **`mirrors-nas.conf` is the off-machine copy.** `sd-db-backup` copies
-`/Volumes/local/Backup` to `/Volumes/Offsite/Backup` once a day, right
+`/Volumes/local/Backup` to the NAS share's `Backup` folder (the
+`--destination` in its job file) once a day, right
 after its snapshot and only if the snapshot succeeded. A separate schedule
 would not order them: after a night asleep, launchd runs missed jobs
 together at wake. That
@@ -193,7 +194,9 @@ to name the share the job expects, which `--expected-share` holds
 (for example `192.0.2.10/Offsite`). Its default comes from
 `OFFSITE_VERIFY_EXPECTED_SHARE`, exported or set in this folder's gitignored
 `.env` (copy `.env.example`); unset, the run fails and names the variable.
-`OFFSITE_VERIFY_ROOT` overrides the default root, `/Volumes/Offsite/Backup`.
+`OFFSITE_VERIFY_ROOT` names the root, the share's `Backup` folder; like the
+expected share it is a local value with no built-in default, and unset, the run fails and names it.
+`--root` overrides it.
 The device is split into its server and share and both are
 compared whole: `//user@192.0.2.100/Offsite` contains the expected
 address and `Offsite-old` starts with the expected share, and each of
