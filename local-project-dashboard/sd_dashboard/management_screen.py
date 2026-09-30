@@ -194,13 +194,19 @@ class StaleSetting(workflow.StaleItem):
 
 
 def set_repo(connection: sqlite3.Connection, field: str, path: str, value: str, before: str) -> dict:
-    """One sd-db repo verb, refused when the row moved since the page read it; returns the new setting."""
+    """One sd-db repo verb, refused when the row moved since the page read it; returns the new setting.
+
+    The read, the check and the write hold one `BEGIN IMMEDIATE`: the server
+    answers requests on threads, and two that read the same old value must
+    not both write.
+    """
     setter, column = SETTERS[field]
-    row = repos.row_for(connection, path)
-    if row is None:
-        raise repos.RepoRefusal(f"{path} is not a registered repository")
-    current = ("yes" if row["managed"] else "no") if column == "managed" else row[column]
-    if current != before:
-        raise StaleSetting(f"{column} for {path} is {current} now, not {before}; read the page again")
-    _, was = setter(connection, row["path"], value)
+    with workflow.transaction(connection):
+        row = repos.row_for(connection, path)
+        if row is None:
+            raise repos.RepoRefusal(f"{path} is not a registered repository")
+        current = ("yes" if row["managed"] else "no") if column == "managed" else row[column]
+        if current != before:
+            raise StaleSetting(f"{column} for {path} is {current} now, not {before}; read the page again")
+        _, was = setter(connection, row["path"], value)
     return {"path": row["path"], "field": column, "value": value, "before": was}

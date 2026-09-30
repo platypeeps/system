@@ -60,16 +60,26 @@ const pullWhy = o => { const g = o.row.git;
 
 // ---------- Time ----------
 // build: launchd calendars (StartCalendarInterval dicts) in the viewer's clock, which is the Mac's when the dashboard runs there.
-function nextRun(schedule) {
+// A calendar entry names any of Month, Day, Weekday, Hour and Minute; the next run is the earliest entry's next match.
+function nextRun(schedule, now = Date.now()) {
   if (!Array.isArray(schedule) || !schedule.length) return '';
-  const now = Date.now(), cands = [];
-  const base = new Date(now); base.setSeconds(0, 0);
-  for (let m = 1; m <= 8 * 1440 && !cands.length; m++) {
-    const t = new Date(base.getTime() + m * 60000);
-    if (schedule.some(e => (e.Minute == null || e.Minute === t.getMinutes()) && (e.Hour == null || e.Hour === t.getHours())
-      && (e.Weekday == null || e.Weekday % 7 === t.getDay()) && (e.Day == null || e.Day === t.getDate()) && (e.Month == null || e.Month === t.getMonth() + 1))) cands.push(t);
+  const from = new Date(now); from.setSeconds(0, 0); from.setMinutes(from.getMinutes() + 1);
+  const next = schedule.map(e => nextOf(e, from)).filter(Boolean).sort((a, b) => a - b)[0];
+  return next ? next.toISOString().replace('.000', '') : '';
+}
+// build: day by day with no one-week horizon, so a monthly or yearly entry has a next run; eight years reach a 29 February.
+function nextOf(e, from) {
+  const hours = e.Hour != null ? [e.Hour] : [...Array(24).keys()], minutes = e.Minute != null ? [e.Minute] : [...Array(60).keys()];
+  for (let d = 0; d <= 8 * 366; d++) {
+    const day = new Date(from.getFullYear(), from.getMonth(), from.getDate() + d);
+    if ((e.Month != null && e.Month !== day.getMonth() + 1) || (e.Day != null && e.Day !== day.getDate())
+      || (e.Weekday != null && e.Weekday % 7 !== day.getDay())) continue;
+    for (const h of hours) for (const m of minutes) {
+      const t = new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m);
+      if (t >= from) return t;
+    }
   }
-  return cands.length ? cands[0].toISOString().replace('.000', '') : '';
+  return null;
 }
 function human(schedule) {
   if (!Array.isArray(schedule) || !schedule.length) return 'no calendar';
@@ -89,7 +99,9 @@ const stateOf = j => j.state === 'failed' ? 'warning' : ['unknown', 'unloaded'].
 const params = new URLSearchParams(location.search);
 const details = document.getElementById('details');
 const repoParam = params.get('repo');
-let view = params.get('view') || 'repos';
+// build: the view comes from the URL, so it is checked against the five names before anything indexes by it.
+const VIEWS = ['repos', 'lane', 'sessions', 'deploys', 'schedules'];
+let view = VIEWS.includes(params.get('view')) ? params.get('view') : 'repos';
 const LIST_STATE = () => ({ repos: [RS, 'name', 1], lane: [LS, 'id', -1], schedules: [SS, 'rank', 1] })[view];
 function setURL() {
   const p = new URLSearchParams();
@@ -151,6 +163,13 @@ function lamps() {
 }
 
 // ---------- Lists: sort, filter, page ----------
+// build: a page from the URL or an older reading can pass the last page; clamp it before slicing, and say so in the URL.
+function clampPage(total, st) {
+  const page = Math.min(Math.max(1, st.page), Math.max(1, Math.ceil(total / st.size)));
+  if (page === st.page) return;
+  st.page = page;
+  setURL();
+}
 function pager(total, st, onChange) {
   const pages = Math.max(1, Math.ceil(total / st.size));
   st.page = Math.min(st.page, pages);
@@ -198,6 +217,7 @@ function renderRepos() {
   if (!DOC.repos) { put(el, unknown('The repo table was not read', why('repos'), 'sd-db.sh repo list')); return; }
   if (repoParam) return renderRepoPage(el);
   const rows = repoRows();
+  clampPage(rows.length, RS);
   const start = (RS.page - 1) * RS.size;
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
@@ -582,6 +602,7 @@ function renderSchedules() {
     .sort((a, b) => SS.sort === 'rank' ? (RANK[a.rank] - RANK[b.rank]) || a.next.localeCompare(b.next)
       : SS.sort === 'name' ? a.name.localeCompare(b.name) * SS.dir : a.next.localeCompare(b.next) * SS.dir);
   const failed = CRON.filter(c => c.rank === 'warning').length;
+  clampPage(rows.length, SS);
   const start = (SS.page - 1) * SS.size;
   put(el, html`
     <div class="sec-head"><h2 id="sch-h">Schedules <button class="help" type="button" aria-label="Help: Schedules" data-help="<b>launchd calendar jobs, ranked.</b> Failed first, then by next run. Times are this browser's clock; launchd reads the Mac's.">${I('circle-help')}</button></h2>
@@ -598,7 +619,7 @@ function renderSchedules() {
 document.getElementById('view-schedules').addEventListener('click', e => {
   const s = e.target.closest('[data-sort]'); if (s) { SS.dir = SS.sort === s.dataset.sort ? -SS.dir : 1; SS.sort = s.dataset.sort; renderSchedules(); return setURL(); }
   const f = e.target.closest('[data-state-f]');
-  if (f) { const inp = document.getElementById('shift'); inp.value = /state:failed/.test(inp.value) ? inp.value.replace(/\s*state:failed/, '').trim() : (inp.value + ' state:failed').trim(); text.q = inp.value; SS.page = 1; return renderSchedules(); }
+  if (f) { const inp = document.getElementById('shift'); inp.value = /state:failed/.test(inp.value) ? inp.value.replace(/\s*state:failed/, '').trim() : (inp.value + ' state:failed').trim(); text.q = inp.value; SS.page = 1; renderSchedules(); return setURL(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
@@ -682,7 +703,12 @@ function selectRow(id, open) {
 
 // ---------- Filter box ----------
 const input = document.getElementById('shift'), ghost = document.getElementById('ghost');
-function render() { ({ repos: renderRepos, lane: renderLane, sessions: renderSessions, deploys: renderDeploys, schedules: renderSchedules })[view](); }
+const RENDER = new Map([['repos', renderRepos], ['lane', renderLane], ['sessions', renderSessions], ['deploys', renderDeploys], ['schedules', renderSchedules]]);
+function render() {
+  const draw = RENDER.get(view);
+  if (!draw) throw new Error(`no such view: ${view}`);
+  draw();
+}
 function applyText() {
   text.q = input.value.trim();
   const n = Object.keys(tokens().chips).length;

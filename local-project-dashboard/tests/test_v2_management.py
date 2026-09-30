@@ -134,6 +134,37 @@ class TheDocument(ScreenCase):
         rows = {row["path"]: row for row in self.document()["repos"]}
         self.assertEqual((rows[self.ids["checkout"]]["runner_merge"], rows[self.ids["checkout"]]["managed"]), ("auto", "yes"))
 
+    def test_the_stale_check_and_the_write_hold_one_write_transaction(self):
+        """Copilot on PR #50: two requests could read the same old value, and the late one overwrote.
+
+        While the verb reads the row, a second connection must not be able to
+        take the write lock; before the fix it could, and wrote in between.
+        """
+        import sqlite3
+
+        from sd_db import repos
+
+        other = sqlite3.connect(self.path, isolation_level=None, timeout=0)
+        self.addCleanup(other.close)
+        seen = []
+        read = repos.row_for
+
+        def racing(connection, path):
+            row = read(connection, path)
+            try:
+                other.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as locked:
+                seen.append(str(locked))
+            else:
+                other.execute("UPDATE repo SET runner_merge = 'auto' WHERE path = ?", (row["path"],))
+                other.execute("COMMIT")
+                seen.append("the other writer got in")
+            return row
+
+        with patch.object(repos, "row_for", racing):
+            management_screen.set_repo(self.connection, "runner-merge", self.ids["checkout"], "auto", "manual")
+        self.assertEqual(seen, ["database is locked"])
+
 
 class ThePage(BrowserSession):
     fleet_backend = staticmethod(fleet)
@@ -189,16 +220,19 @@ document.querySelector = sel => sel === 'main' ? MAIN : baseQuery(sel);
 // A sub-view lamp's value is a child the page fills: each element answers querySelector with one child per selector.
 var baseById = document.getElementById;
 document.getElementById = id => { var e = baseById.call(document, id);
-  if (!e.kids) { e.kids = {}; e.querySelector = sel => e.kids[sel] = e.kids[sel] || El(id + ' ' + sel); } return e; };
+  if (!e.kids) { e.kids = {}; e.querySelector = sel => { if (!e.kids[sel]) { e.kids[sel] = El(id + ' ' + sel);
+    e.kids[sel].after = f => { e.html = (e.html || '') + (f.html || ''); }; } return e.kids[sel]; }; } return e; };
 """
 SHELL_EXTRA = r"""
 var ROW = null;
 window.shell.row = (...a) => a.length ? (ROW = a[0]) : ROW;
 window.shell.setContext = () => {};
+OUT.urls = [];
+window.shell.url = p => OUT.urls.push({ view: p.get('view'), p: p.get('p'), q: p.get('q') });
 """
 
 
-class TheScript(ScreenCase):
+class PageScript(ScreenCase):
     """management.js against the document `management_screen` builds for the seeded database."""
 
     def setUp(self):
@@ -207,10 +241,11 @@ class TheScript(ScreenCase):
         jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
         self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices())
 
-    def run_page(self, body, answer="null", doc=None):
+    def run_page(self, body, answer="null", doc=None, search=""):
         script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA
                   + f"\nconst DOC0 = {json.dumps(doc or self.doc)};\n"
                   + "const WRITE = " + answer + ";\n"
+                  + f"location.search = {json.dumps(search)};\n"
                   + """ANSWER = (path, body) => {
   if (path === '/api/management') return [200, DOC0];
   return WRITE ? WRITE(path, body) : [200, {}];
@@ -224,6 +259,8 @@ class TheScript(ScreenCase):
         self.assertIsNone(out["error"])
         return out
 
+
+class TheScript(PageScript):
     def test_every_command_is_registered_with_its_risk_key_and_run_path(self):
         out = self.run_page("""R.reg = REG.map(c => [c.id, c.on, c.risk, c.key || null,
   typeof c.executes === 'boolean' ? c.executes : null, typeof c.undo === 'function']);""")
@@ -303,3 +340,42 @@ C.run(cmd('jobs.retry'), C.get('cron:quiet')); await flush();""", answer="(p, b)
         self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/jobs/nightly-sync/retry", {"revision": revision})])
         self.assertEqual(out["toasts"][0], ["Retry started · nightly-sync", False])
         self.assertTrue(out["toasts"][1][0].startswith("off: "), out["toasts"])
+
+
+class TheFindings(PageScript):
+    """The Copilot and CodeQL findings on PR #50, one test each."""
+
+    def test_a_monthly_or_yearly_calendar_has_a_next_run(self):
+        out = self.run_page("""const at = (...a) => new Date(...a).toISOString().replace('.000', '');
+const now = new Date(2026, 8, 30, 12, 0).getTime();
+R.got = [nextRun([{ Day: 15, Hour: 3, Minute: 0 }], now), nextRun([{ Month: 1, Day: 1, Hour: 0, Minute: 5 }], now),
+  nextRun([{ Month: 2, Day: 29, Hour: 0, Minute: 0 }], now), nextRun([{ Minute: 30 }], now), nextRun([{ Weekday: 7, Hour: 2, Minute: 0 }], now)];
+R.want = [at(2026, 9, 15, 3, 0), at(2027, 0, 1, 0, 5), at(2028, 1, 29, 0, 0), at(2026, 8, 30, 12, 30), at(2026, 9, 4, 2, 0)];""")
+        self.assertEqual(out["R"]["got"], out["R"]["want"])
+
+    def test_a_page_past_the_last_is_clamped_before_the_slice_and_the_url_follows(self):
+        out = self.run_page("R.sched = ELS['view-schedules'].html;", search="?view=schedules&p=5")
+        self.assertIn("nightly-sync", out["R"]["sched"])
+        self.assertTrue(out["urls"], "the clamp wrote no URL, so ?p=5 stays in the address bar")
+        self.assertEqual(out["urls"][-1], {"view": "schedules", "p": None, "q": None})
+        out = self.run_page("R.repos = ELS['view-repos'].html;", search="?view=repos&p=3")
+        self.assertIn("busy", out["R"]["repos"])
+        self.assertEqual(out["urls"][-1]["p"], None)
+
+    def test_the_failed_state_chip_writes_the_url(self):
+        out = self.run_page("""showView('schedules');
+const chip = { dataset: { stateF: 'failed' } };
+const target = { closest: sel => sel === '[data-state-f]' ? chip : null };
+ELS['view-schedules'].listeners.click.forEach(f => f({ target }));
+R.sched = ELS['view-schedules'].html;""")
+        self.assertEqual(out["urls"][-1], {"view": "schedules", "p": None, "q": "state:failed"})
+        self.assertNotIn(">quiet<", out["R"]["sched"])
+
+    def test_a_view_name_from_the_url_is_one_of_five_or_repos(self):
+        for name in ("constructor", "toString", "__proto__", "nope"):
+            with self.subTest(name=name):
+                out = self.run_page("R.view = view; R.repos = ELS['view-repos'].html;", search=f"?view={name}")
+                self.assertEqual(out["R"]["view"], "repos")
+                self.assertIn("busy", out["R"]["repos"])
+        out = self.run_page("view = 'constructor'; try { render(); R.drew = true; } catch (e) { R.refused = e.message; }")
+        self.assertEqual(out["R"], {"refused": "no such view: constructor"})
