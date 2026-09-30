@@ -47,7 +47,10 @@ case "$1" in
       echo "mac-utils.sh: no such key: $SSH_KEY (set MAC_UTILS_SSH_KEY)" >&2
       exit 1
     fi
-    ssh-add "$SSH_KEY"
+    # --apple-use-keychain keeps the passphrase in the login keychain, so a
+    # job that starts after a reboot can load the key without a prompt
+    # (`ssh-add --apple-load-keychain` in repo-sync.sh, sd:2160).
+    ssh-add --apple-use-keychain "$SSH_KEY"
     ;;
   brew-update)
     brew update && brew upgrade && brew cleanup
@@ -60,7 +63,8 @@ usage: mac-utils.sh flushdns|resetvideo|unquarantine|net|addkey|brew-update
   resetvideo            kill VDCAssistant to free a wedged built-in camera (sudo)
   unquarantine <path>.. strip com.apple.quarantine from the given paths
   net                   list the processes currently holding network sockets
-  addkey                ssh-add this machine's identity key
+  addkey                ssh-add this machine's identity key, keeping its
+                        passphrase in the keychain across reboots
   brew-update           brew update && brew upgrade && brew cleanup
 
 environment:

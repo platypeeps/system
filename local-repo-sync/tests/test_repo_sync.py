@@ -180,6 +180,9 @@ class Fixture:
             # network the alternative is a DNS or connect timeout, not a
             # quick error.
             GIT_SSH_COMMAND="false",
+            # The nightly SSH preflight (sd:2160) must not load keys into the
+            # real agent of the machine running the suite.
+            REPO_SYNC_SSH_ADD="true",
         )
         for key, value in (extra_env or {}).items():
             if value is None:
@@ -404,6 +407,48 @@ class RepoSyncTest(unittest.TestCase):
         self.assertNotIn("exiting 1", result.stderr)
         self.assertIn("1 repo(s) failed", f.notify_log.read_text())
 
+
+    def test_nightly_names_a_locked_ssh_key_as_the_cause(self):
+        """REGRESSION (sd:2160). On 2026-09-29, 63 of 65 failures were "Permission
+        denied (publickey)": a reboot left the key locked. The report listed 65
+        repos and never said why. It now names the key first, after one try to
+        load it from the keychain."""
+        f = self.fixture()
+        f.write_conf("a owner/one\na owner/two\n")
+        f.checkout("a/one", "owner/one")
+        f.checkout("a/two", "owner/two")
+        ssh_add_log = f.tmp / "ssh-add.log"
+        stub = f.bin / "ssh-add-stub"
+        stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{ssh_add_log}"\n')
+        stub.chmod(0o755)
+
+        result = f.run("nightly", expect=1, extra_env={"REPO_SYNC_SSH_ADD": str(stub)})
+
+        self.assertEqual(ssh_add_log.read_text(), "--apple-load-keychain\n")
+        self.assertIn("no key authenticates to git@github.com", result.stdout)
+        log = f.notify_log.read_text()
+        self.assertIn("no key authenticates to git@github.com", log)
+        self.assertLess(log.index("mac-utils.sh addkey"), log.index("Failed repos:"))
+
+    def test_nightly_loads_keychain_keys_before_the_sweep(self):
+        """PIN (sd:2160). A key the keychain can unlock is loaded, the run says
+        so, and nothing is reported: the night is healthy."""
+        f = self.fixture()
+        marker = f.tmp / "key-loaded"
+        ssh = f.bin / "ssh-stub"
+        ssh.write_text(f'#!/bin/sh\n[ -e "{marker}" ] || exit 255\n'
+                       'echo "Hi owner! You\'ve successfully authenticated, but GitHub does not provide shell access."\n'
+                       "exit 1\n")
+        ssh.chmod(0o755)
+        ssh_add = f.bin / "ssh-add-stub"
+        ssh_add.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+        ssh_add.chmod(0o755)
+
+        result = f.run("nightly", extra_env={"GIT_SSH_COMMAND": str(ssh), "REPO_SYNC_SSH_ADD": str(ssh_add)})
+
+        self.assertIn("loaded key(s) from the keychain", result.stdout)
+        self.assertNotIn("no key authenticates", result.stdout)
+        self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
 class ConfigDirTest(unittest.TestCase):
     def fixture(self, **kwargs):
