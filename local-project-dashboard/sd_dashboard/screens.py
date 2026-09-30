@@ -142,7 +142,7 @@ def today(connection, *, now: str, parameters) -> str:
     query, page_number, selected = Listing.read_query(parameters)
     listing = Listing(
         name="today",
-        path="/",
+        path="/classic/today",
         query=query,
         page_number=page_number,
         selected=selected,
@@ -164,7 +164,7 @@ def today(connection, *, now: str, parameters) -> str:
     followups = reads.open_followups(connection)
     followup_list = Listing(
         name="followups",
-        path="/",
+        path="/classic/today",
         rows=followups,
         row_href=lambda row: f"/item/{row['item']}",
         columns=[

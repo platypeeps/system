@@ -5,6 +5,8 @@
 // narrow-screen rule moved to shell.css and the favicon count is off (the dashboard CSP is default-src 'self',
 // which refuses an inline <style> and a data: icon), capture calls window.SHELL_CAPTURE when a page sets it,
 // and the chat stub says that no chat backend is connected.
+// build (sd:2163): /ui/sections.js sets window.SHELL_CLASSIC, the old screen each unported section opens (a "classic"
+// tag on the rail), and window.SHELL_SCREENS, old screens without a section, which the palette offers.
 // build: every string of markup is html`…` from markup.js, which escapes each value put in it; put() is the only
 // way in, so the hand escaping is gone. rowActions, bar, time and ICON return html`…` for a page to compose.
 // Help text renders <b> and <code> only, without attributes.
@@ -21,6 +23,10 @@
   ];
   // build: a page that is built sets window.SHELL_PAGES; a section missing from it shows as not built yet.
   const PAGES = window.SHELL_PAGES || { Today: 'today.html', Briefs: 'briefs.html', Tasks: 'tasks.html', Research: 'research.html', Documents: 'documents.html', HOA: 'hoa.html', Home: 'home.html', Skills: 'skills.html', Metrics: 'metrics.html', Activity: 'activity.html', Reports: 'reports.html', Writing: 'writing.html', Notes: 'notes.html', Contributions: 'contributions.html', Health: 'health.html', Management: 'management.html', Designs: 'designs.html', Commands: 'commands.html' };
+  // build (sd:2163): an unported section opens its old screen until its port moves it into SHELL_PAGES.
+  const CLASSIC = window.SHELL_CLASSIC || {}, SCREENS = window.SHELL_SCREENS || {};
+  const hrefOf = name => PAGES[name] || CLASSIC[name];
+  const classic = name => !PAGES[name] && !!CLASSIC[name];
   const body = document.body;
   const page = body.dataset.page;
   // Rail badges: data/counts.js (window.SHELL_COUNTS) is generated from every page's window.PAGE_ATTENTION.
@@ -36,8 +42,8 @@
     <a class="mark" href="${PAGES.Today || '#'}"><b>sd</b><span>system</span></a>
     <nav aria-label="Sections" id="sections">${GROUPS.map(([g, items]) => html`
       <div><span class="label">${g}</span><ul>${items.map(([name, icon, key]) => {
-        const href = PAGES[name] || '#';
-        return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${PAGES[name] ? '' : html` data-unbuilt`}>${ICON(icon)}<span class="nm">${name}</span>${badge(counts[name])}<kbd>g ${key}</kbd></a></li>`;
+        const href = hrefOf(name) || '#';
+        return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${hrefOf(name) ? '' : html` data-unbuilt`}${classic(name) ? html` data-classic` : ''}>${ICON(icon)}<span class="nm">${name}</span>${classic(name) ? html`<span class="classic">classic<span class="sr"> screen</span></span>` : ''}${badge(counts[name])}<kbd>g ${key}</kbd></a></li>`;
       })}</ul></div>`)}
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-choice="dark">${ICON('moon')}Dark</button>
@@ -96,7 +102,7 @@
   menu.addEventListener('click', () => setMenu(menu.getAttribute('aria-expanded') !== 'true'));
   rail.addEventListener('click', e => {
     const a = e.target.closest('a[data-unbuilt]');
-    if (a) { e.preventDefault(); toast(`${a.dataset.section} is not ${window.SHELL_PAGES ? 'built in v2 yet' : 'in this mockup round'}.`); }
+    if (a) { e.preventDefault(); toast(`${a.dataset.section} is not ${window.SHELL_PAGES ? 'built yet, and has no classic screen' : 'in this mockup round'}.`); }
   });
 
   // ---------- Right pane: Details | Chat ----------
@@ -508,7 +514,8 @@
       }${extra.length ? [grp('This page'), extra.map((c, i) => html`<li role="option" data-cmd="${i}">${ICON(c.icon || 'play')}<span>${c.label}</span>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</li>`)] : ''
       }${VIEWS.length ? [grp('Views'), VIEWS.map((v, i) => html`<li role="option" data-view="${i}">${ICON('filter')}<span>View: ${v.name}</span><code>${viewHref(v)}</code></li>`)] : ''
       }${grp('Anywhere')}<li role="option" data-capture>${ICON('plus')}<span>Capture a task, followup or note</span><kbd>n</kbd></li><li role="option" data-chat>${ICON('message-square')}<span>Ask in chat</span><kbd>c</kbd></li>${
-      GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}</span><kbd>g ${k}</kbd></li>`)}`);
+      GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}${classic(n) ? ' (classic)' : ''}</span><kbd>g ${k}</kbd></li>`)}${
+      Object.keys(SCREENS).length ? [grp('Classic screens'), Object.entries(SCREENS).map(([n, href]) => html`<li role="option" data-href="${href}">${ICON('arrow-up-right')}<span>Open ${n}</span><code>${href}</code></li>`)] : ''}`);
     opts = [...palList.querySelectorAll('[role="option"]')];
     opts.forEach(x => x.addEventListener('click', () => runOpt(x)));
   }
@@ -523,6 +530,7 @@
   function runOpt(o) {
     pal.close();
     if (o.dataset.go) return go(o.dataset.go);
+    if (o.dataset.href) { location.href = o.dataset.href; return; }
     if (o.dataset.view) { location.search = viewHref(VIEWS[+o.dataset.view]); return; }
     if (o.hasAttribute('data-chat')) { openChat(); if (palIn.value.trim()) send(palIn.value.trim()); return; }
     if (o.hasAttribute('data-capture')) return openCapture();
@@ -542,8 +550,8 @@
   rail.querySelector('#open-palette').addEventListener('click', openPal);
 
   function go(name) {
-    if (PAGES[name]) { location.href = PAGES[name]; return; }
-    toast(`${name} is not ${window.SHELL_PAGES ? 'built in v2 yet' : 'in this mockup round'}.`);
+    if (hrefOf(name)) { location.href = hrefOf(name); return; }
+    toast(`${name} is not ${window.SHELL_PAGES ? 'built yet, and has no classic screen' : 'in this mockup round'}.`);
   }
 
   // ---------- Saved views ----------

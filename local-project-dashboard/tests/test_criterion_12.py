@@ -45,7 +45,7 @@ STATIC = HERE / "sd_dashboard" / "static"
 class TheSections(ScreenCase):
     def test_the_three_sections_this_pull_request_lands_exist(self):
         self.item("an item")
-        for path in ("/", "/backlog", "/item/1"):
+        for path in ("/classic/today", "/backlog", "/item/1"):
             page = self.render(path)
             self.assertIn("<!doctype html>", page)
             self.assertIn("/static/dashboard.css", page)
@@ -70,7 +70,7 @@ class TheSections(ScreenCase):
         later = [section.key for section in SECTIONS if not section.built]
         self.assertEqual(later, [])
         self.assertEqual([section.key for section in SECTIONS], ["today", "backlog", "contributions", "writing", "operations", "protection", "item", "skills", "documents", "designs"])
-        page = self.render("/")
+        page = self.render("/classic/today")
         self.assertNotIn("nav-later", page)
         for section in SECTIONS:
             if not section.built:
@@ -89,7 +89,7 @@ class DeliberateWriteControls(ScreenCase):
 
     def pages(self):
         return {
-            "/": self.render("/"),
+            "/classic/today": self.render("/classic/today"),
             "/backlog": self.render("/backlog"),
             "/backlog?view=board": self.render("/backlog", {"view": ["board"]}),
             "/backlog?view=matrix": self.render("/backlog", {"view": ["matrix"]}),
@@ -290,7 +290,7 @@ class OnTheWire(ScreenCase):
 
     def test_every_response_carries_the_policy_and_the_frame_refusal(self):
         for path, expected in (
-            ("/", 200), ("/backlog", 200), (f"/item/{self.id}", 200),
+            ("/", 200), ("/classic/today", 200), ("/backlog", 200), (f"/item/{self.id}", 200),
             ("/static/dashboard.js", 200), ("/static/dashboard.css", 200),
             ("/item/999999", 404), ("/nowhere", 404),
         ):
@@ -312,7 +312,7 @@ class OnTheWire(ScreenCase):
         is not a screen -- the Item screen is one item and is reached from a
         row. A section is not the same thing as a destination.
         """
-        _, _, body = self.fetch("/")
+        _, _, body = self.fetch("/classic/today")
         for href in set(re.findall(r'href="(/[^"]*)"', body)):
             status, _, _ = self.fetch(href)
             self.assertEqual(status, 200, href)
