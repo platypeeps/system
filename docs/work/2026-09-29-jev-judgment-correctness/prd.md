@@ -34,33 +34,35 @@ later event says whether the judgment held.
    an identifier that names the judged thing, never submitted content. It is
    recorded as the row's `question_id` and never sent. `--id` keeps its role
    as a key of the request, so a subject there would leave the machine.
-4. `sd-review` is the first labelled stage. Its subject is the repository and
-   the head commit it reviewed.
-5. A labeller reads unlabelled rows of one stage, finds each subject's outcome,
-   and writes a label only when the outcome is final. It reports what it
-   labelled, what it skipped and why, and writes nothing without `--apply`.
+4. `sd-review` passes a subject: the repository and the head commit it
+   reviewed. No rule labels it yet (see Out of scope).
+5. A label comes only from independent evidence of the right answer, never
+   from the prediction under test. A labeller reads unlabelled rows through
+   `sd-db.sh judgments unlabelled` and writes through `judgments label`.
 6. `sd-db judgments` reports, per stage, how many rows are labelled and how
    many of those were right, and the same by reported-confidence band.
-7. Nothing may depend on Jev: the labeller reads the ledger and git history,
-   and calls no model.
+7. Nothing may depend on Jev: a labeller calls no model.
 
 ## Out of scope
 
+- A labeller for the `sd-review` tier. The first cut was withdrawn in review
+  (2026-09-29): a later fix in a file the change shared is not evidence that
+  the review missed it, and deriving the "right" tier from the chosen one made
+  the label depend on the prediction it scored. The tier's right answer is not
+  observable from later commits. Recording escaped defects as outcome
+  evidence, apart from `override`, is a follow-up.
+
 - Review-finding triage (sd:2092), ordering stages (sd:2091, sd:2094, sd:2095)
-  and duplicate hints (sd:2093). Each needs its caller to exist first; each
-  gets its own rule in the labeller when it does.
+  and duplicate hints (sd:2093). Each needs its caller to exist first. Triage
+  is the first rule to write: the final `sd-receive-review` disposition is its
+  right answer, independent of the prediction.
 - Setting floors. A floor is chosen from the report after about 50–100
   labelled rows per stage; that is a follow-up, not code here.
-- Detecting over-review. The `sd-review` rule sees a missed problem, not wasted
-  depth; the design says so where the report prints.
 
 ## Acceptance
 
 - A label written through the ledger shows in `sd-db judgments` for its stage.
 - A second, different label for the same row is refused without `--replace`.
-- The `sd-review` labeller, run on a fixture repository, labels a merged change
-  with no later fix as right, one with a later fix touching its files as
-  wrong, and skips an unmerged or too-recent change with a reason.
 - `sd-review` rows written after the pack change carry
   `sd-review-tier:<owner>.<repo>:<sha12>` as their `question_id`, and the
   request `jev` sends carries no part of it.

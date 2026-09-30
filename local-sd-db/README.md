@@ -279,9 +279,10 @@ instead of opening the database itself. The same label twice changes nothing;
 a different label is refused unless `--replace` says to overwrite it.
 
     sd-db.sh judgments unlabelled --stage JEV_SD_REVIEW --prefix sd-review-tier: --json
-    sd-db.sh judgments label --row 42 --override 3 --source outcome.sd-review.14d
+    sd-db.sh judgments label --row 42 --override 3 --source outcome.example
 
-`jev label sd-review` in `local-jev` is the first labeller.
+No labeller ships yet: a label needs independent evidence of the right answer,
+never one derived from the prediction it scores (sd:2107).
 
 ## Automatic provider selection
 

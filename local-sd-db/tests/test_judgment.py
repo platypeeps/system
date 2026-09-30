@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sd_db import connect
 from sd_db import judgment
@@ -481,7 +482,7 @@ class AnIdentifierIsNotContent(JudgmentCase):
 
 #: The subject a labelled stage writes, and the rule that labels it.
 SUBJECT = "sd-review-tier:example.widgets:0123456789ab"
-SOURCE = "outcome.sd-review.14d"
+SOURCE = "outcome.example"
 LATER = "2026-10-05T12:00:00+00:00"
 
 
@@ -624,10 +625,12 @@ class TheCorrectnessReport(JudgmentCase):
         self.assertEqual({b["band"]: b["labelled"] for b in entry["bands"]}["0.9"], 3)
 
     def test_the_text_prints_correctness_and_the_rule_s_limit(self):
-        printed = text(by_stage(self.connection))
+        limits = {SOURCE: "labels see missed problems, not wasted depth"}
+        with mock.patch.dict(judgment.LABEL_LIMITS, limits):
+            printed = text(by_stage(self.connection))
         self.assertIn("correctness: 5 labelled, 4 right (80%)", printed)
         self.assertIn("by confidence: 0.6 1/1, 0.9 1/2, none 2/2", printed)
-        self.assertIn("outcome.sd-review.14d: labels see missed problems, "
+        self.assertIn("outcome.example: labels see missed problems, "
                       "not wasted depth", printed)
 
     def test_a_stage_with_no_labels_says_so(self):

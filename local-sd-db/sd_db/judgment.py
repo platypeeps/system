@@ -524,9 +524,9 @@ ORDER BY stage, source
 #: What a labelling rule cannot see, printed next to the stage it labelled.
 #: A rule that sees only one direction of error makes `right` an upper bound,
 #: and a reader choosing a floor from it has to know that.
-LABEL_LIMITS = {
-    "outcome.sd-review.14d": "labels see missed problems, not wasted depth",
-}
+#: Empty until a rule ships: the first sd-review rule was withdrawn in review,
+#: because a later fix in a shared file is not evidence of the right tier.
+LABEL_LIMITS: dict[str, str] = {}
 
 
 def present(connection: sqlite3.Connection) -> bool:

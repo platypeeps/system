@@ -27,17 +27,20 @@ and never picks a wrong tier.
 2. `sd_db.judgment.label`, `unlabelled`, the counts and bands, and the two
    `sd-db.sh judgments` verbs, with help lines.
    Check: `sd-db.sh test` green.
-3. Tests first for `jev --subject` (absent from the request, present as
-   the row's `question_id`) and for `jev label sd-review` on a fixture
-   repository.
-4. The labeller in `local-jev`, `label` in `jev help`, and a README section.
+3. Tests first for `jev --subject`: absent from the request, present as the
+   row's `question_id`.
+4. `--subject` in `jev.py`, its help line, and a README section.
    Check: the `local-jev` suite green.
-5. The cron example and its README line.
-6. Fail-first by mutation: drop the `window open` guard, and the deepest-tier
-   rule, one at a time. Check: a named case fails for each.
-7. `make check` through `sd-check`.
+5. Fail-first by mutation: drop the `replace` refusal. Check: a named case
+   fails.
+6. `make check` through `sd-check`.
+
+Review withdrew the `sd-review` labeller (design, "Withdrawn"); it was steps
+3–6 of the first cut.
 
 ## Follow-ups, filed when this lands
 
 - Floors per stage once `sd-db judgments` shows 50 labelled rows for it.
-- A rule per stage for sd:2091–2095 when each caller exists.
+- A rule per stage for sd:2091–2095 when each caller exists; triage first.
+- `sd-review` outcome evidence (linked reverts and fixes) recorded apart from
+  `override`.

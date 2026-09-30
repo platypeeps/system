@@ -96,9 +96,6 @@ cp examples/health-check-nightly.job ~/.config/system/cron-jobs/jobs/
 ./cron-jobs.sh install health-check-nightly
 ```
 
-`examples/jev-label-nightly.job` runs `jev label sd-review --apply` at 03:30,
-after `repo-sync-nightly`, to label recorded review tiers from later fixes.
-
 Job files are sourced by `cron-jobs.sh` wherever they live, so `$ROOT` (this
 folder) is available to them: `"$ROOT/../local-<tool>/<tool>.sh"` reaches a
 sibling tool from any checkout.
