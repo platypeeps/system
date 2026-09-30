@@ -2229,6 +2229,23 @@ class BackupRootIdentity(unittest.TestCase):
         self.assertTrue(any("mount table does not list" in failure
                             for failure in report.failures), report.failures)
 
+    def test_an_unset_root_fails_by_naming_its_variable(self) -> None:
+        # There is no built-in root: a hardcoded mount that exists on no
+        # machine failed every call that omitted --root (sd:2048).
+        config = self.work / "config"
+        (config / "mirror-sync").mkdir(parents=True)
+        environment = {key: value for key, value in os.environ.items()
+                       if key != "OFFSITE_VERIFY_ROOT"}
+        environment["SYSTEM_TOOLS_CONFIG"] = str(config)
+        result = subprocess.run(
+            [sys.executable, str(OFFSITE_VERIFY), "--preflight-only"],
+            capture_output=True, text=True, env=environment,
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("OFFSITE_VERIFY_ROOT is not set", result.stderr)
+        self.assertNotIn("/Volumes/Offsite", result.stdout + result.stderr)
+
     def test_the_preflight_stops_before_the_rest_of_the_run(self) -> None:
         # A writer needs the root's answer before it writes, not the whole
         # verification pass, so the flag has to end the run where the root
