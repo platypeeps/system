@@ -787,14 +787,21 @@ stage_repos() {
 # host rule is not repeated here. A folder that does not exist lists nothing;
 # one that cannot be read, or a python3 or lib that fails, exits non-zero,
 # because a caller that sweeps must not read a failure as "no host jobs".
+# os.listdir, not os.path.lexists first: lexists reads a PermissionError on
+# an ancestor folder as "absent", which failed open the same way.
 host_cron_jobs() {
   PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
 dirs = stc.cron_job_dirs()
 host = dirs[-2] if len(dirs) > 1 and dirs[-2].parent == dirs[-1] else None
-if host is not None and os.path.lexists(host):
-    for name in sorted(os.listdir(host)):
-        if name.endswith(".job"):
-            print(name[:-4])'
+names = []
+if host is not None:
+    try:
+        names = os.listdir(host)
+    except FileNotFoundError:
+        pass
+for name in sorted(names):
+    if name.endswith(".job"):
+        print(name[:-4])'
 }
 
 stage_cron() {
@@ -1781,9 +1788,19 @@ cmd_capture() {
     # "1289583905" precedes "302584613", numerically it follows. Every other
     # kind here already sorts this way; mas was the only exception.
     # Id 0 is a beta or TestFlight build: `mas install 0` installs nothing, so
-    # it has no place in a profile.
+    # it has no place in a profile. A profile entry with the same name stays,
+    # though: update counts it as installed, and a rebuild needs its store id.
     mas list 2>/dev/null | sed -e 's/ *([^)]*)$//' -e 's/  */ /g' -e 's/^ *//' \
-      | grep -v '^0 ' | sort > "$tmp/have.mas"
+      > "$tmp/all.mas"
+    { grep -v '^0 ' "$tmp/all.mas" || :; } > "$tmp/have.pre"
+    if [ -f "$PROFILE_DIR/$PROFILE.mas" ]; then
+      sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/  */ /g' \
+        "$PROFILE_DIR/$PROFILE.mas" \
+        | awk 'NR == FNR { if (sub(/^0 /, "")) beta[$0] = 1; next }
+               NF { n = $0; sub(/^[0-9]+ /, "", n); if (n in beta) print }' \
+          "$tmp/all.mas" - >> "$tmp/have.pre"
+    fi
+    sort -u "$tmp/have.pre" > "$tmp/have.mas"
     common_manifest mas > "$tmp/common.mas"
     comm -23 "$tmp/have.mas" "$tmp/common.mas" > "$tmp/out.mas"
   else

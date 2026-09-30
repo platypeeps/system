@@ -127,7 +127,7 @@ Run in order. Pass one as the second argument to run it alone.
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
 | `brew` | taps, formulae, casks | — |
-| `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
+| `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
 | `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
 | `envs` | install the `.env` of each folder listed in `ENVS` into `$SYSTEM_TOOLS_CONFIG/<tool>/.env` from `envs/<profile>/<folder>.env`, falling back to `envs/common/`, always 0600. Templates hold non-secret defaults only | — |

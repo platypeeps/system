@@ -196,6 +196,14 @@ class CronDiscoveryTest(CronTest):
         self.lock_host_folder()
         self.assert_nothing_uninstalled(self.run_stage("cron", "--apply"))
 
+    def test_an_unsearchable_jobs_folder_uninstalls_nothing(self):
+        # os.path.lexists reads a PermissionError on an ancestor as "absent".
+        for job in ("shared-job", "host-job"):
+            self.install_plist(job)
+        self.jobs.chmod(0)
+        self.addCleanup(self.jobs.chmod, 0o755)
+        self.assert_nothing_uninstalled(self.run_stage("cron", "--apply"))
+
     def test_no_host_folder_is_not_a_failure(self):
         (self.jobs / HOST / "host-job.job").unlink()
         (self.jobs / HOST).rmdir()
@@ -267,6 +275,18 @@ class CaptureTest(StageTest):
         mas = (self.profiles / "personal.mas").read_text()
         self.assertIn("111 Alpha", mas)
         self.assertNotIn("Beta App", mas)
+
+    def test_capture_keeps_a_profile_app_now_installed_as_a_beta(self):
+        # update counts "222 Beta App" as installed by its id-0 name; capture
+        # must not drop it, or a rebuild would never install the store build.
+        (self.profiles / "personal.mas").write_text("111 Alpha\n222 Beta App\n")
+        result = self.capture(MAS_LIST="111  Alpha  (1.0)\n0  Beta App  (2.0b1)\n0  Other  (1.0)\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        mas = (self.profiles / "personal.mas").read_text()
+        self.assertIn("111 Alpha", mas)
+        self.assertIn("222 Beta App", mas)
+        self.assertNotIn("Other", mas)
+        self.assertFalse([l for l in mas.splitlines() if l.startswith("0 ")], mas)
 
     def test_capture_keeps_an_extra_dir_job_in_the_profile(self):
         extra = pathlib.Path(self.tmp.name) / "extra"
