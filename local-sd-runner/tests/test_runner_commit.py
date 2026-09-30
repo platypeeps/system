@@ -71,6 +71,14 @@ class RunnerCommit(unittest.TestCase):
         self.assertEqual(runtime.CHECKOUT, Path(runtime.__file__).resolve().parents[2])
         self.assertTrue((runtime.CHECKOUT / "local-sd-runner/runner.sh").is_file())
 
+    def test_checkout_commit_starts_no_process(self):
+        """sd:2254: a `git` child polled the tests' patched `time.sleep` under load."""
+        head = subprocess.run(["git", "-C", str(self.fixture.checkout), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        with patch.object(subprocess, "run", side_effect=AssertionError("checkout_commit started a process")), \
+                patch.object(subprocess, "Popen", side_effect=AssertionError("checkout_commit started a process")):
+            self.assertEqual(runtime.checkout_commit(self.fixture.checkout), head)
+
     def test_status_warns_when_the_checkout_moved_and_still_exits_0(self):
         checkout = self.fixture.checkout
         started = subprocess.run(["git", "-C", str(checkout), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()

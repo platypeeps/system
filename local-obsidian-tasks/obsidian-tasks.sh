@@ -97,13 +97,71 @@ def field(text, name):
     m = re.search(rf"^{name}:\s*[\"']?(.*?)[\"']?\s*$", text, re.M)
     return m.group(1) if m else ""
 
+# `task-actions.sh url` probes `tailscale funnel status` for its base URL
+# unless TASK_ACTIONS_BASE_URL is set, and this digest signs three links a
+# card. So the base is discovered once, through `base-url`, and every later
+# signature is built on it. A stall on either call is a bounded failure: the
+# digest keeps Open-only links for the rest of the run instead of dying on
+# `subprocess.TimeoutExpired` (sd:1770; local-obsidian-review did the same
+# in sd:1203).
+ACTION_URL_TIMEOUT = 5
+BASE_URL_TIMEOUT = 10
+
+#: Empty until `signer_base()` runs; ``[""]`` means discovery failed.
+_base = []
+
+#: Set by the first signing timeout, so a slow signer costs one timeout a
+#: run, not one a button.
+_signer_down = []
+
+
+def signer_base():
+    """The base URL for signed links, resolved once per run; "" on failure."""
+    if _base:
+        return _base[0]
+    try:
+        r = subprocess.run(["sh", actions, "base-url"],
+                           capture_output=True, text=True,
+                           timeout=BASE_URL_TIMEOUT)
+        base = r.stdout.strip() if r.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        base = ""
+        sys.stderr.write(
+            "obsidian-tasks.sh: %s base-url did not answer within %ds\n"
+            % (actions, BASE_URL_TIMEOUT))
+    except OSError:
+        base = ""
+    if not base:
+        sys.stderr.write(
+            "obsidian-tasks.sh: action links unsigned -- no base URL could be "
+            "discovered; the digest keeps Open-only links for this run\n")
+    _base.append(base)
+    return base
+
+
 def action_url(stem, action, days="3"):
-    # Signed by local-task-actions; empty string when that tool is absent
-    # so the digest degrades to Open-only buttons instead of failing.
+    # Signed by local-task-actions; empty string when that tool is absent or
+    # unreachable, so the digest degrades to Open-only buttons instead of failing.
+    if _signer_down:
+        return ""
+    base = signer_base()
+    if not base:
+        return ""
+    env = dict(os.environ, TASK_ACTIONS_BASE_URL=base)
     try:
         r = subprocess.run(["sh", actions, "url", stem, action, days],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, env=env,
+                           timeout=ACTION_URL_TIMEOUT)
         return r.stdout.strip() if r.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        # With the base in hand this call touches no daemon, so this is a
+        # slow machine rather than a stalled one; the answer is the same.
+        _signer_down.append(True)
+        sys.stderr.write(
+            "obsidian-tasks.sh: action links unsigned -- %s did not sign "
+            "within %ds; the digest keeps Open-only links for this run\n"
+            % (actions, ACTION_URL_TIMEOUT))
+        return ""
     except OSError:
         return ""
 
