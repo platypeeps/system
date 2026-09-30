@@ -74,7 +74,7 @@ class HeartbeatRefusalOverHttp(ScreenCase):
         self.connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('heartbeat', 'runner', ?, '[1, 2]')", (self.now,))
         self.connection.commit()
         try:
-            answer = urllib.request.urlopen(self.base + "/", timeout=10)
+            answer = urllib.request.urlopen(self.base + "/classic/today", timeout=10)
             status, body = answer.status, answer.read().decode("utf-8")
         except urllib.error.HTTPError as refused:
             with refused:
@@ -106,13 +106,13 @@ class Today(ScreenCase):
         expected = [row["id"] for row in reads.today_items(self.connection, now=self.now)]
         self.assertEqual(expected, [self.sent, self.running])
 
-        page = self.render("/")
+        page = self.render("/classic/today")
         positions = [page.index(f'href="/item/{item}"') for item in expected]
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn(f'href="/item/{self.later}"', page)
 
     def test_finished_unsent_comes_first_with_days_since_ready(self):
-        page = listing_content(self.render("/"), "today")
+        page = listing_content(self.render("/classic/today"), "today")
         self.assertLess(page.index("finished, unsent"), page.index("in progress"))
         self.assertIn("In status", page)
 
@@ -139,7 +139,7 @@ class Today(ScreenCase):
 
     def test_open_followups(self):
         self.note(self.running, "chase the reviewer")
-        page = self.render("/")
+        page = self.render("/classic/today")
         self.assertIn("chase the reviewer", page)
 
     def test_a_hand_written_heartbeat_row_leaves_route_as_the_store_refusal_not_a_type_error(self):
@@ -150,14 +150,14 @@ class Today(ScreenCase):
         self.connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('heartbeat', 'runner', ?, '[1, 2]')", (self.now,))
         self.connection.commit()
         with self.assertRaises(SdDbError) as caught:
-            self.render("/")
+            self.render("/classic/today")
         self.assertIn("the runner heartbeat body is a JSON array", str(caught.exception))
 
     def test_the_runner_board_renders_rows_the_runner_does_not_yet_write(self):
         """The board exists before the runner does, which is the point of it."""
         first = self.assignment(self.running, status="running", provider="opus")
         second = self.assignment(self.sent, status="queued", after=first)
-        page = self.render("/")
+        page = self.render("/classic/today")
         self.assertIn("The runner", page)
         for lane in ("queued", "running", "blocked", "done"):
             self.assertIn(f"{lane} (", page)
@@ -168,13 +168,13 @@ class Today(ScreenCase):
         held = self.assignment(self.running, status="running")
         other = self.item("second in the same repo", repo="/repos/system")
         self.assignment(other, status="queued")
-        page = self.render("/")
+        page = self.render("/classic/today")
         self.assertIn(f"held by assignment {held}", page)
 
     def test_the_timeline_is_svg_the_server_rendered(self):
         one = self.assignment(self.running, status="running", budget_minutes=30)
         update_assignment(self.connection, one, started=f"{self.now[:10]}T09:00:00Z")
-        page = self.render("/")
+        page = self.render("/classic/today")
         self.assertIn("chart-timeline", page)
         self.assertIn("<svg", page)
         self.assertNotIn("<canvas", page)
@@ -188,7 +188,7 @@ class Today(ScreenCase):
         self.assertIn("Providers this month", page)
         self.assertIn("opus", page)
         self.assertIn("$/pass", page)
-        today = self.render("/")
+        today = self.render("/classic/today")
         for label in ("Week, cost and provider details", "Providers this month",
                       "cost per shipped item", "commits missing a trailer", "cost-tile"):
             self.assertNotIn(label, today)
@@ -199,7 +199,7 @@ class Today(ScreenCase):
         upsert_repo(self.connection, "/repos/system", status_source="row")
         progress.cancel_work(self.connection, self.sent, reason="Fixture complete", who="operator")
         progress.cancel_work(self.connection, self.running, reason="Fixture complete", who="operator")
-        page = self.render("/")
+        page = self.render("/classic/today")
         self.assertIn("Nothing is due and nothing is in progress.", page)
 
 
@@ -229,7 +229,7 @@ class OperationsUsage(ScreenCase):
             self.assertIn(expected, page)
         self.assertNotIn("Age in status", page)
         self.assertNotIn("Jobs needing attention", page)
-        for path in ("/", "/backlog"):
+        for path in ("/classic/today", "/backlog"):
             relocated = self.render(path)
             self.assertNotIn("Week, cost and provider details", relocated)
             self.assertNotIn("fixture-plan:", relocated)

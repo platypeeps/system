@@ -3,9 +3,7 @@
 // Ported from ui-design products/system/designs/v2/today.html at a3861c9; the sources the build has no collector for are left out.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
-  // The v2 sections that are built. Every other rail entry says it is not built yet.
-  window.SHELL_PAGES = { Today: '/v2/today' };
-
+  // The rail's map (built sections, and the old screen each unported one opens) is /ui/sections.js, loaded before this.
   const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
   // Capture files through the same route and library call as v1 Today's capture form (POST /api/items).
   window.SHELL_CAPTURE = async ({ kind, title, item }) => {
@@ -150,7 +148,7 @@
     { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => $('shift').focus() },
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },
     { label: 'Read Now again', icon: 'rotate-ccw', run: () => load() },
-    { label: 'Open the v1 dashboard', icon: 'layout-dashboard', run: () => { location.href = '/'; } },
+    { label: 'Open the classic Today', icon: 'layout-dashboard', run: () => { location.href = '/classic/today'; } },
   ];
 
   document.addEventListener('DOMContentLoaded', () => {

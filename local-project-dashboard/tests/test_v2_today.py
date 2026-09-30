@@ -1,10 +1,11 @@
 """The v2 shell and its Today page (sd:2110).
 
-What this slice promises: `/v2/today` answers under the same policy as every
+What this slice promises: `/today` answers under the same policy as every
 other response; the shell's files are served from the package with their
 types; the page loads its data and script before `shell.js`, as the design's
 page contract requires; Today's rows are `now_screen.document`'s, read by the
-same `/api/now` v1 reads; the v1 routes and files are as they were; and
+same `/api/now` v1 reads; the v1 files are as they were (sd:2163 moved the
+old Today to `/classic/today`; `test_default_routes` holds the moves); and
 `markup.js`, run under JavaScriptCore, turns no value into markup and help
 text into bare <b> and <code> only. The browser half -- no console error, no policy refusal, no horizontal
 scroll at 375 px -- is a manual check recorded on the pull request.
@@ -89,7 +90,7 @@ class ThePage(BrowserSession):
         super().setUp()
 
     def test_the_route_answers_under_the_shared_policy_with_a_session(self):
-        status, headers, body = self.request("/v2/today")
+        status, headers, body = self.request("/today")
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
         self.assertEqual(headers["Content-Security-Policy"], server.CSP)
@@ -99,38 +100,38 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Today · system</title>", body)
 
     def test_the_page_holds_nothing_the_policy_refuses(self):
-        _, _, body = self.request("/v2/today")
+        _, _, body = self.request("/today")
         self.assertEqual(Refused(body).found, [])
 
     def test_the_policy_scan_reads_markup_as_a_browser_does(self):
         # Each of these is what a regex over the text missed or could miss; the parser reads tags as a browser does.
         self.assertEqual(Refused('<script\n>x</script\t\n bar>').found, ["inline script: 'x'"])
         self.assertEqual(Refused('<SCRIPT >alert(1)</SCRIPT >').found, ["inline script: 'alert(1)'"])
-        self.assertEqual(Refused('<script src="/v2/static/a.js"></script>').found, [])
+        self.assertEqual(Refused('<script src="/ui/a.js"></script>').found, [])
         self.assertEqual(Refused('<Style>p{}</Style><p STYLE="x" OnClick="y">').found,
                          ["<style>", "style attribute on <p>", "handler onclick on <p>"])
         self.assertEqual(Refused('<link href="//fonts.example/x.css"><img src="https://x.example/i.png">').found,
                          ["another origin: //fonts.example/x.css", "another origin: https://x.example/i.png"])
 
     def test_every_file_the_page_names_is_served(self):
-        _, _, body = self.request("/v2/today")
-        named = re.findall(r'(?:src|href)="(/v2/static/[^"]+)"', body)
-        self.assertEqual(len(named), 9)  # four stylesheets, five scripts
+        _, _, body = self.request("/today")
+        named = re.findall(r'(?:src|href)="(/ui/[^"]+)"', body)
+        self.assertEqual(len(named), 10)  # four stylesheets, six scripts
         for path in named:
             status, headers, _ = self.request(path)
             self.assertEqual(status, 200, path)
             self.assertEqual(headers["Content-Security-Policy"], server.CSP, path)
 
     def test_data_and_page_script_load_before_the_shell_and_the_shell_loads_last(self):
-        _, _, body = self.request("/v2/today")
-        scripts = re.findall(r'<script src="/v2/static/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "today.js", "shell.js"])
-        self.assertLess(body.index('src="/v2/static/markup.js"'), body.index("</head>"))
-        self.assertGreater(body.index('src="/v2/static/icons.js"'), body.index("<body"))
+        _, _, body = self.request("/today")
+        scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "today.js", "shell.js"])
+        self.assertLess(body.index('src="/ui/markup.js"'), body.index("</head>"))
+        self.assertGreater(body.index('src="/ui/icons.js"'), body.index("<body"))
 
     def test_the_session_the_page_opens_reads_now(self):
         """The rows Today paints are `now_screen.document`'s, through the route v1 uses."""
-        status, headers, _ = self.request("/v2/today")
+        status, headers, _ = self.request("/today")
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         status, _, body = self.request("/api/now", headers={"Cookie": cookie})
         self.assertEqual(status, 200)
@@ -139,9 +140,9 @@ class ThePage(BrowserSession):
                          [("job:nightly-sync:7", "broken", "jobs"), ("ahead:pushy:1", "look", "repos")])
         self.assertIn("fetch('/api/now'", TODAY_JS)
 
-    def test_a_path_under_v2_that_is_not_a_page_or_a_file_is_a_404(self):
-        for path in ("/v2/", "/v2/nowhere", "/v2/static/nowhere.js", "/v2/static/../__init__.py",
-                     "/v2/static/%2e%2e/__init__.py", "/v2/static/", "/v2/today.html"):
+    def test_a_path_under_ui_that_is_not_a_file_is_a_404(self):
+        for path in ("/ui/", "/ui/nowhere.js", "/ui/../__init__.py", "/ui/%2e%2e/__init__.py", "/ui/today.html",
+                     "/today.html"):
             status, headers, _ = self.request(path)
             self.assertEqual(status, 404, path)
             self.assertEqual(headers["Content-Security-Policy"], server.CSP, path)
@@ -153,12 +154,12 @@ class TheAssets(BrowserSession):
                     ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8"}
         on_disk = sorted(path.relative_to(V2 / "static").as_posix()
                          for path in (V2 / "static").rglob("*") if path.is_file())
-        self.assertEqual(sorted(v2.ASSETS), on_disk)
-        for name in on_disk:
-            with urllib.request.urlopen(f"{self.base}/v2/static/{name}", timeout=5) as answer:
+        self.assertEqual(sorted(v2.ASSETS), sorted(on_disk + list(v2.GENERATED)))
+        for name in v2.ASSETS:
+            with urllib.request.urlopen(f"{self.base}/ui/{name}", timeout=5) as answer:
                 status, headers, body = answer.status, answer.headers, answer.read()
             self.assertEqual(status, 200, name)
-            self.assertEqual(body, (V2 / "static" / name).read_bytes(), name)
+            self.assertEqual(body, v2.GENERATED.get(name) or (V2 / "static" / name).read_bytes(), name)
             self.assertEqual(headers["Content-Type"], expected[Path(name).suffix], name)
             self.assertEqual(headers["X-Content-Type-Options"], "nosniff", name)
         self.assertIn("fonts/ibm-plex-sans-var.woff2", on_disk)
@@ -175,7 +176,7 @@ class TheAssets(BrowserSession):
         for first in faces:
             self.assertIn(first, v2.ASSETS)
         for name in v2.ASSETS:
-            if name.endswith((".css", ".js")):
+            if name.endswith((".css", ".js")) and name not in v2.GENERATED:
                 text = (V2 / "static" / name).read_text(encoding="utf-8")
                 self.assertNotRegex(text, r"url\(\s*['\"]?(https?:)?//", name)
 
@@ -188,7 +189,7 @@ class TheShellPort(BrowserSession):
             self.assertNotRegex(source, r"style=\\?\"")
         # The favicon count draws a data: URL; the build leaves it to the mockups.
         self.assertIn("if (!window.SHELL_PAGES) icon.href = c.toDataURL", SHELL_JS)
-        self.assertIn("window.SHELL_PAGES = { Today: '/v2/today' }", TODAY_JS)
+        self.assertIn('window.SHELL_PAGES = {"Today": "/today"};', v2.GENERATED["sections.js"].decode())
 
     def test_today_maps_every_band_source_and_kind_now_can_send(self):
         state = re.search(r"const STATE = \{([^}]*)\}", TODAY_JS).group(1)
@@ -199,12 +200,12 @@ class TheShellPort(BrowserSession):
         types = re.search(r"const TYPE = \{([^}]*)\}", TODAY_JS).group(1)
         self.assertEqual(set(re.findall(r"(\w+):", types)), kinds)
 
-    def test_the_v1_files_and_pages_are_unchanged(self):
+    def test_the_v1_files_are_unchanged_and_no_page_names_a_v2_address(self):
         self.assertEqual(server.STATIC_FILES, ("dashboard.css", "dashboard.js"))
-        for path in ("/", "/today", "/backlog", "/static/dashboard.js", "/static/dashboard.css"):
+        for path in ("/", "/today", "/classic/today", "/backlog", "/static/dashboard.js", "/static/dashboard.css"):
             status, headers, body = self.request(path)
             self.assertEqual(status, 200, path)
-            self.assertNotIn("/v2/", body, path)
+            self.assertNotRegex(body, r"""["'(]/v2/""", path)
 
 
 # markup.js runs under JavaScriptCore through osascript: the gate's PATH has no node and allows no skipped test.

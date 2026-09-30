@@ -1,6 +1,6 @@
 <!doctype html>
 <!--
-  Today, v2 (sd:2110). Built from ui-design products/system/designs/v2/today.html at a3861c9 and design.md.
+  Today, v2 (sd:2110), the default page at / and /today since sd:2163. Built from ui-design products/system/designs/v2/today.html at a3861c9 and design.md.
   Data: /api/now, the document now_screen.document builds for v1 Today's Now section, read when the page opens and on Refresh.
   Sources: repos and sessions (fleet child), prs (shadow table), jobs (launchd through sd_db.operations.inventory).
   Left out until a collector exists: status mail, backups, HOA water, the Runner lamp, Wants you and Briefs.
@@ -10,15 +10,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Today · system</title>
-<link rel="stylesheet" href="/v2/static/fonts.css">
-<link rel="stylesheet" href="/v2/static/tokens.css">
-<script src="/v2/static/theme.js"></script>
-<script src="/v2/static/markup.js"></script>
-<link rel="stylesheet" href="/v2/static/shell.css">
-<link rel="stylesheet" href="/v2/static/today.css">
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/today.css">
 </head>
 <body data-page="Today" data-scope="fleet">
-<script src="/v2/static/icons.js"></script>
+<script src="/ui/icons.js"></script>
 <div class="shell">
   <main>
     <header class="head">
@@ -71,7 +71,8 @@
 
   <div class="details" id="details"><p class="why">Reading the fleet…</p></div>
 </div>
-<script src="/v2/static/today.js"></script>
-<script src="/v2/static/shell.js"></script>
+<script src="/ui/sections.js"></script>
+<script src="/ui/today.js"></script>
+<script src="/ui/shell.js"></script>
 </body>
 </html>
