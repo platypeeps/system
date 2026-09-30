@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from decimal import Decimal
 
 from .database import transaction
 from .errors import SdDbError
@@ -350,7 +351,7 @@ def label(
     moment = _now() if now is None else stamp(now)
     with transaction(connection):
         row = connection.execute(
-            "SELECT primitive, override FROM judgment WHERE id = ?", (row_id,)
+            "SELECT primitive, answer, override FROM judgment WHERE id = ?", (row_id,)
         ).fetchone()
         if row is None:
             raise JudgmentRefused(f"no judgment row {row_id}")
@@ -358,8 +359,12 @@ def label(
             raise JudgmentRefused(
                 f"row {row_id} is a gate event, not a decision; there is "
                 f"nothing for a label to be right or wrong about")
+        if row["answer"] is None:
+            raise JudgmentRefused(
+                f"row {row_id} recorded no answer (a failed call or a batch); "
+                f"a label on it could only ever count as wrong")
         if row["override"] is not None:
-            if float(row["override"]) == float(override):
+            if same_number(row["override"], override):
                 return False
             if not replace:
                 raise JudgmentRefused(
@@ -372,6 +377,12 @@ def label(
     return True
 
 
+def same_number(left: str, right: str) -> bool:
+    """Whether two recorded numbers are equal, exactly: `2` is `2.0`, and
+    2**53 is not 2**53 + 1, which a float comparison would call equal."""
+    return Decimal(left) == Decimal(right)
+
+
 def unlabelled(
     connection: sqlite3.Connection,
     stage: str,
@@ -382,7 +393,8 @@ def unlabelled(
 
     `prefix` narrows them to the rows whose `question_id` starts with it,
     which is how a labeller finds the rows that name a subject it can look
-    up. Gate events are not decisions and are never returned.
+    up. Gate events are not decisions, and a row with no answer cannot be
+    labelled, so neither is returned.
     """
     stage = _identifier("stage", stage, required=True)
     if not present(connection):
@@ -390,7 +402,8 @@ def unlabelled(
     rows = connection.execute(
         "SELECT id, timestamp, caller, stage, arm, primitive, question_id, "
         "outcome, answer, confidence FROM judgment "
-        "WHERE stage = ? AND override IS NULL AND primitive <> ? "
+        "WHERE stage = ? AND override IS NULL AND answer IS NOT NULL "
+        "AND primitive <> ? "
         "AND (? IS NULL OR substr(question_id, 1, length(?)) = ?) "
         "ORDER BY timestamp, id",
         (stage, GATE_PRIMITIVE, prefix, prefix, prefix))
@@ -427,9 +440,6 @@ SELECT stage, arm,
        SUM(changed = 'no')                               AS changed_no,
        SUM(changed = 'unknown')                          AS changed_unknown,
        SUM(override IS NOT NULL)                         AS overrides,
-       SUM(override IS NOT NULL)                         AS labelled,
-       SUM(override IS NOT NULL AND answer IS NOT NULL
-           AND CAST(override AS REAL) = CAST(answer AS REAL)) AS right,
        COALESCE(SUM(tokens_in), 0)                       AS tokens_in,
        COALESCE(SUM(tokens_out), 0)                      AS tokens_out,
        SUM(usd)                                          AS usd,
@@ -487,26 +497,28 @@ GROUP BY stage
 """
 
 
-#: Labelled rows by the confidence the model reported, in tenths: `0.9` holds
-#: 0.9 up to and including 1.0, and a row with no confidence is `none`. This
-#: is the read a floor is chosen from; reported confidence is not accuracy,
-#: and this is where the two are put side by side.
-BANDS = """
-SELECT stage,
-       CASE WHEN confidence IS NULL THEN 'none'
-            ELSE printf('%.1f', MIN(CAST(confidence * 10 AS INTEGER), 9) / 10.0)
-       END                                               AS band,
-       COUNT(*)                                          AS labelled,
-       SUM(answer IS NOT NULL
-           AND CAST(override AS REAL) = CAST(answer AS REAL)) AS right
+#: Every labelled decision, for the correctness counts. Rightness is decided
+#: in Python with `same_number`: SQLite has no exact decimal, and a REAL cast
+#: calls 2**53 and 2**53 + 1 equal. Labels are few, so this is a small read.
+LABELLED = """
+SELECT stage, arm, confidence, answer, override
 FROM judgment
 WHERE override IS NOT NULL
+  AND answer IS NOT NULL
   AND primitive <> :gate
   AND (:since IS NULL OR timestamp >= :since)
   AND (:until IS NULL OR timestamp < :until)
-GROUP BY stage, band
-ORDER BY stage, band = 'none', band
+ORDER BY stage, arm
 """
+
+
+def band_of(confidence) -> str:
+    """Reported confidence in tenths: `0.9` holds 0.9 up to and including 1.0,
+    and a row with no confidence is `none`."""
+    if confidence is None:
+        return "none"
+    return f"{min(int(confidence * 10), 9) / 10:.1f}"
+
 
 #: Which rules labelled each stage, so the report can print what each rule
 #: cannot see next to the numbers it produced.
@@ -581,11 +593,28 @@ def by_stage(
     for row in connection.execute(PAIRS, bounds):
         if row["stage"] in stages:
             stages[row["stage"]]["paired"] = row["paired"]
-    for row in connection.execute(BANDS, bounds):
-        if row["stage"] in stages:
-            stages[row["stage"]]["bands"].append(
-                {"band": row["band"], "labelled": row["labelled"],
-                 "right": row["right"] or 0})
+    for arm in (a for entry in stages.values() for a in entry["arms"].values()):
+        arm["labelled"] = arm["right"] = 0
+    # Bands are per arm: a baseline row has no confidence, and pooling it with
+    # the model's `none` band would mix two arms in one number.
+    bands: dict[tuple[str, str, str], dict] = {}
+    for row in connection.execute(LABELLED, bounds):
+        if row["stage"] not in stages:
+            continue
+        right = int(same_number(row["answer"], row["override"]))
+        arm = stages[row["stage"]]["arms"][row["arm"]]
+        arm["labelled"] += 1
+        arm["right"] += right
+        band = bands.setdefault(
+            (row["stage"], row["arm"], band_of(row["confidence"])),
+            {"arm": row["arm"], "band": band_of(row["confidence"]),
+             "labelled": 0, "right": 0})
+        band["labelled"] += 1
+        band["right"] += right
+    for (stage, _, _), band in sorted(
+            bands.items(), key=lambda item: (item[0][0], item[0][1],
+                                             item[0][2] == "none", item[0][2])):
+        stages[stage]["bands"].append(band)
     for row in connection.execute(SOURCES, bounds):
         if row["stage"] in stages:
             stages[row["stage"]]["sources"].append(row["source"])
@@ -626,16 +655,19 @@ def _arm_line(label: str, arm: dict | None) -> str:
 def _correctness_lines(entry: dict) -> list[str]:
     """How many of a stage's rows carry a label, how many of those were
     right, and the same by reported confidence, with each rule's limit."""
-    labelled = sum(arm.get("labelled") or 0 for arm in entry["arms"].values())
-    if not labelled:
+    if not any(arm.get("labelled") for arm in entry["arms"].values()):
         return ["    correctness: no labelled rows"]
-    right = sum(arm.get("right") or 0 for arm in entry["arms"].values())
-    lines = [f"    correctness: {labelled} labelled, {right} right "
-             f"({_rate(right, labelled)})"]
-    if entry.get("bands"):
-        lines.append("    by confidence: " + ", ".join(
-            f"{band['band']} {band['right']}/{band['labelled']}"
-            for band in entry["bands"]))
+    lines = []
+    for name in ("jev", "baseline"):
+        arm = entry["arms"].get(name)
+        if not arm or not arm.get("labelled"):
+            continue
+        lines.append(f"    correctness {name}: {arm['labelled']} labelled, "
+                     f"{arm['right']} right ({_rate(arm['right'], arm['labelled'])})")
+        bands = [band for band in entry.get("bands", ()) if band["arm"] == name]
+        if bands:
+            lines.append(f"    by confidence {name}: " + ", ".join(
+                f"{band['band']} {band['right']}/{band['labelled']}" for band in bands))
     for source in entry.get("sources", ()):
         if source in LABEL_LIMITS:
             lines.append(f"    {source}: {LABEL_LIMITS[source]}")

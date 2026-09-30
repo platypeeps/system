@@ -36,10 +36,13 @@ tier deeper than chosen") scores itself.
   validates with `_answer` and `_identifier`, updates one row, and returns
   whether it changed anything. The same value again is a no-op; a different
   value without `replace` raises `JudgmentRefused`.
-- `unlabelled(connection, stage, *, prefix)`: rows of a stage with no
-  `override`, whose `question_id` starts with `prefix`, oldest first.
-- `by_stage` gains `labelled` and `right` per arm, and a `bands` list:
-  reported confidence in tenths, each with `labelled` and `right`.
+- `label` refuses a row with no answer: a label on it could only be wrong.
+  Labels compare as exact decimals (`2` is `2.0`; 2**53 is not 2**53 + 1).
+- `unlabelled(connection, stage, *, prefix)`: rows of a stage with an answer
+  and no `override`, whose `question_id` starts with `prefix`, oldest first.
+- `by_stage` gains `labelled` and `right` per arm, and a `bands` list per arm:
+  reported confidence in tenths, each with `labelled` and `right`. Rightness
+  is decided in Python, since SQLite has no exact decimal.
 - `sd-db.sh judgments label --row N --override V --source S [--replace]` and
   `sd-db.sh judgments unlabelled --stage S [--prefix P] [--json]` are the
   command surface; a labeller uses these and never opens the database itself.

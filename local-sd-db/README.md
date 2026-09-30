@@ -269,9 +269,11 @@ are the record until then.
 Reported confidence is not accuracy. A row can carry a label: `override` is
 the answer an authoritative later source says it should have been, a number
 in the shape of `answer`; `override_source` names the rule that produced it,
-and `override_at` says when. A row is right when the label equals the answer.
-The report counts labelled and right rows per arm, and the same by reported
-confidence in tenths, so a floor is read off numbers instead of guessed. It
+and `override_at` says when. A row is right when the label equals the answer,
+compared exactly as decimals. A row with no answer (a failed call, a batch)
+cannot be labelled. The report counts labelled and right rows per arm, and per
+arm by reported confidence in tenths, so a floor is read off numbers instead
+of guessed. It
 prints each rule's known blind spot beside the stage it labelled.
 
 `judgments label` is the one write path, and a labeller uses these verbs

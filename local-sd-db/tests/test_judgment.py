@@ -551,6 +551,25 @@ class TheLabel(JudgmentCase):
             judgment.label(self.connection, 999, "3", SOURCE)
         self.assertIn("no judgment row 999", str(caught.exception))
 
+    def test_a_row_with_no_answer_cannot_be_labelled(self):
+        """Copilot b655780dbf07: a failed call or an ask batch recorded no
+        answer, so a label on it could only ever count as wrong."""
+        row_id = self.judged(answer=None, outcome="timeout")
+        with self.assertRaises(JudgmentRefused) as caught:
+            judgment.label(self.connection, row_id, "2", SOURCE)
+        self.assertIn("no answer", str(caught.exception))
+        self.assertIsNone(self.row(row_id)["override"])
+
+    def test_labels_compare_exactly_and_not_as_floats(self):
+        """Copilot 8a3aaacf325b: 2**53 and 2**53 + 1 are one float, so a float
+        comparison called a different label the same and refused nothing."""
+        row_id = self.judged(answer="9007199254740992")
+        judgment.label(self.connection, row_id, "9007199254740992", SOURCE)
+        self.assertTrue(judgment.label(self.connection, row_id, "9007199254740993",
+                                       SOURCE, replace=True))
+        self.assertFalse(judgment.label(self.connection, row_id, "9007199254740993.0",
+                                        SOURCE))
+
     def test_a_gate_event_cannot_be_labelled(self):
         """A gate row is not a decision, so there is nothing to be right about."""
         row_id = self.write(arm="baseline", provider="local-fallback",
@@ -577,6 +596,15 @@ class TheUnlabelled(JudgmentCase):
         self.assertEqual([row["id"] for row in found], [earlier, later])
         self.assertEqual(found[0]["answer"], "2")
         self.assertEqual(found[0]["question_id"], SUBJECT[:-1] + "c")
+
+    def test_a_row_with_no_answer_is_not_listed(self):
+        """Copilot 2095adee1168: `label` refuses an answerless row, so listing
+        one would hand a labeller a row it can never write."""
+        self.write(stage="JEV_SD_REVIEW", question_id=SUBJECT, answer=None,
+                   outcome="timeout")
+        kept = self.write(stage="JEV_SD_REVIEW", question_id=SUBJECT, answer="2")
+        self.assertEqual([row["id"] for row in
+                          judgment.unlabelled(self.connection, "JEV_SD_REVIEW")], [kept])
 
     def test_no_prefix_means_every_unlabelled_decision_of_the_stage(self):
         self.write(stage="JEV_SD_REVIEW", question_id=SUBJECT, answer="1")
@@ -605,31 +633,47 @@ class TheCorrectnessReport(JudgmentCase):
         self.entry = {entry["stage"]: entry
                       for entry in by_stage(self.connection)}["JEV_SD_REVIEW"]
 
+    def test_a_wrong_label_past_float_precision_is_not_right(self):
+        """Copilot 8a3aaacf325b: the report compared REAL casts, so a label one
+        past 2**53 read as right."""
+        row_id = self.write(stage="precise", answer="9007199254740992")
+        judgment.label(self.connection, row_id, "9007199254740993", SOURCE)
+        entry = {e["stage"]: e for e in by_stage(self.connection)}["precise"]
+        self.assertEqual((entry["arms"]["jev"]["labelled"],
+                          entry["arms"]["jev"]["right"]), (1, 0))
+        self.assertEqual([(b["arm"], b["labelled"], b["right"]) for b in entry["bands"]],
+                         [("jev", 1, 0)])
+
     def test_labelled_and_right_are_counted_per_arm(self):
         jev = self.entry["arms"]["jev"]
         self.assertEqual((jev["labelled"], jev["right"]), (4, 3))
         baseline = self.entry["arms"]["baseline"]
         self.assertEqual((baseline["labelled"], baseline["right"]), (1, 1))
 
-    def test_the_bands_are_reported_confidence_in_tenths(self):
-        bands = {band["band"]: (band["labelled"], band["right"])
-                 for band in self.entry["bands"]}
-        self.assertEqual(bands, {"0.6": (1, 1), "0.9": (2, 1), "none": (2, 2)})
-        self.assertEqual([band["band"] for band in self.entry["bands"]],
-                         ["0.6", "0.9", "none"])
+    def test_the_bands_are_reported_confidence_in_tenths_per_arm(self):
+        """Copilot 3b5b44ffd195: a baseline row has no confidence, so pooling
+        it with the model's `none` band mixed two arms in one number."""
+        bands = [(band["arm"], band["band"], band["labelled"], band["right"])
+                 for band in self.entry["bands"]]
+        self.assertEqual(bands, [("baseline", "none", 1, 1), ("jev", "0.6", 1, 1),
+                                 ("jev", "0.9", 2, 1), ("jev", "none", 1, 1)])
 
     def test_a_confidence_of_one_is_in_the_top_band(self):
         row_id = self.write(stage="JEV_SD_REVIEW", answer="1", confidence=1.0)
         judgment.label(self.connection, row_id, "1", SOURCE)
         entry = {e["stage"]: e for e in by_stage(self.connection)}["JEV_SD_REVIEW"]
-        self.assertEqual({b["band"]: b["labelled"] for b in entry["bands"]}["0.9"], 3)
+        self.assertEqual({(b["arm"], b["band"]): b["labelled"]
+                          for b in entry["bands"]}[("jev", "0.9")], 3)
 
     def test_the_text_prints_correctness_and_the_rule_s_limit(self):
         limits = {SOURCE: "labels see missed problems, not wasted depth"}
         with mock.patch.dict(judgment.LABEL_LIMITS, limits):
             printed = text(by_stage(self.connection))
-        self.assertIn("correctness: 5 labelled, 4 right (80%)", printed)
-        self.assertIn("by confidence: 0.6 1/1, 0.9 1/2, none 2/2", printed)
+        # Copilot 240a25dd2ee3: per arm, as the PR says, not one stage total.
+        self.assertIn("correctness jev: 4 labelled, 3 right (75%)", printed)
+        self.assertIn("correctness baseline: 1 labelled, 1 right (100%)", printed)
+        self.assertIn("by confidence jev: 0.6 1/1, 0.9 1/2, none 1/1", printed)
+        self.assertIn("by confidence baseline: none 1/1", printed)
         self.assertIn("outcome.example: labels see missed problems, "
                       "not wasted depth", printed)
 
@@ -684,7 +728,7 @@ class TheLabelVerbs(JudgmentCase):
                                 "JEV_SD_REVIEW", "--json")
         self.assertEqual(json.loads(out), [])
         code, out, _ = self.cli("judgments")
-        self.assertIn("correctness: 1 labelled, 0 right (0%)", out)
+        self.assertIn("correctness jev: 1 labelled, 0 right (0%)", out)
 
     def test_a_changed_label_is_refused_without_replace(self):
         row_id = self.write(stage="JEV_SD_REVIEW", answer="2")
