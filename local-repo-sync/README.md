@@ -208,6 +208,11 @@ list, and `terra` is the one that reads a single conf instead of layering on
 
 - Clones over SSH (`git@github.com:`), so the agent needs a key loaded —
   `mac-utils.sh addkey` if it is not.
+- After a reboot the agent is empty, and a key with a passphrase stays locked.
+  `nightly` checks GitHub SSH once before the sweep. If no key answers, it runs
+  `ssh-add --apple-load-keychain` and checks again. A key still locked is named
+  at the top of the failure report. Run `mac-utils.sh addkey` once so the
+  keychain holds the passphrase (sd:2160).
 - Pulls are `--ff-only`. A repo with local commits or a dirty tree is reported
   as a failure instead of being silently merged; the old script used a bare
   `git pull` and could leave merge commits behind.

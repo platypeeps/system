@@ -340,6 +340,39 @@ check() {
   echo "total   : $(repo_list | wc -l | tr -d ' ') repos, all present"
 }
 
+# --- GitHub SSH preflight (sd:2160) ----------------------------------------
+# `nightly` runs under launchd. After a reboot the agent holds no key until
+# someone unlocks one, so every SSH fetch fails the same way: on 2026-09-29,
+# 63 of 65 failures were "Permission denied (publickey)". Check once before
+# the sweep. When no key answers, load the passphrases the keychain holds
+# (`mac-utils.sh addkey` stores one) and check again. A key that is still
+# locked is named once in the report, instead of in 63 identical errors.
+
+# git runs GIT_SSH_COMMAND through the shell, so this does too.
+ssh_to_github() {
+  sh -c "${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes -o ConnectTimeout=10 -T git@github.com" < /dev/null 2>&1
+}
+
+# Prints one "ssh     :" line when it acted or failed; silent when a key
+# already answers. Returns 1 when no key authenticates.
+ssh_preflight() {
+  case $(ssh_to_github) in *"successfully authenticated"*) return 0 ;; esac
+  # Not every ssh-add knows --apple-load-keychain; one that does not fails
+  # here, and the check below reports the key as locked.
+  ${REPO_SYNC_SSH_ADD:-ssh-add} --apple-load-keychain < /dev/null > /dev/null 2>&1 || true
+  case $(ssh_to_github) in
+    *"successfully authenticated"*)
+      echo "ssh     : loaded key(s) from the keychain before the sweep"
+      return 0
+      ;;
+  esac
+  echo "ssh     : no key authenticates to git@github.com, so every SSH clone and"
+  echo "          pull fails. After a reboot, a key with a passphrase stays locked"
+  echo "          until someone unlocks it. Run 'mac-utils.sh addkey' once: it keeps"
+  echo "          the passphrase in the keychain, which this job then loads."
+  return 1
+}
+
 sync() {
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
@@ -971,14 +1004,26 @@ case "$1" in
       fi
     fi
 
+    SSH_NOTE="$TMPD/ssh"
+    ssh_preflight > "$SSH_NOTE" 2>&1 || true
+    cat "$SSH_NOTE"
+
     OUT="$TMPD/out"
     if ! sync > "$OUT" 2>&1; then
       cat "$OUT"
       SYNC_FAILED=1
       n=$(wc -l < "$FAILLOG" | tr -d ' ')
       subject="repo-sync: $n repo(s) failed on $(hostname -s)"
-      body=$(printf 'repo-sync nightly report — %s on %s\n\nFailed repos:\n%s\n\nLast output:\n%s\n' \
+      # The SSH note goes first: when it names a locked key, it is the cause
+      # of most of the list below. A command substitution drops trailing
+      # newlines, so the blank line after it is added here.
+      ssh_part=$(cat "$SSH_NOTE")
+      [ -z "$ssh_part" ] || ssh_part="$ssh_part
+
+"
+      body=$(printf 'repo-sync nightly report — %s on %s\n\n%sFailed repos:\n%s\n\nLast output:\n%s\n' \
         "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" \
+        "$ssh_part" \
         "$(sed 's/^/  /' "$FAILLOG")" \
         "$(tail -60 "$OUT")")
       if ! sh "$NOTIFY" -t "$subject" -k status -F -c ntfy,email -b "$body"; then

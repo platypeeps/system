@@ -101,7 +101,7 @@ row, `research-kit`, left in sd:1156.
 
 | Tool | Needs | Notes |
 | --- | --- | --- |
-| `repo-sync` | `git`, an SSH key on GitHub | Clones over `git@github.com:`. Run `mac-utils addkey` first if the agent is empty. Check the machine profile with `repo-sync list` before the first `repo-sync sync`. |
+| `repo-sync` | `git`, an SSH key on GitHub | Clones over `git@github.com:`. Run `mac-utils addkey` once; it keeps the passphrase in the keychain, so `repo-sync nightly` can load the key after a reboot. Check the machine profile with `repo-sync list` before the first `repo-sync sync`. |
 | `gito` | [`uv`](https://docs.astral.sh/uv/) (for `uvx`) | Credentials go in `~/.gito/.env`, or export `OPENAI_API_KEY`. Run `gito setup` for the interactive path. |
 | `prism` | a checkout at `~/repos/ai/prism` with a built `prism` binary | Override the location with `PRISM_BIN`. Config in `~/.prism/.env`. |
 | `mac-utils` | macOS | `flushdns` and `resetvideo` call `sudo`. |
