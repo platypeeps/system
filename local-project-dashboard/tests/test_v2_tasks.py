@@ -646,6 +646,34 @@ R.bulk = cmd('item.complete').bulk;""", answer)
         self.assertIn(["Status → Done · 1 item", True], out["toasts"])
         self.assertIsNone(out["R"].get("bulk"))
 
+    def test_the_copied_run_line_is_a_valid_sd_run(self):
+        plan = self.ids["plan"]
+        out = self.run_page(f"""R.cli = cmd('item.run').cli(C.get('{plan}'));
+R.text = (await cmd('item.run').run(C.get('{plan}'))).text;""",
+                            "(path) => path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'r'.repeat(64) }] }] : [404, {}]")
+        self.assertEqual(out["R"]["cli"], f"sd run --sequential {plan}")
+        self.assertTrue(out["R"]["text"].endswith(f"· sd run --sequential {plan}"), out["R"]["text"])
+
+    def test_the_confirm_names_the_rule_of_a_byday_series(self):
+        set_item_fields(self.connection, self.ids["plan"], recurrence="FREQ=WEEKLY;BYDAY=MO,TH")
+        self.connection.commit()
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        plan = self.ids["plan"]
+        out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}'));")
+        self.assertIn("(FREQ=WEEKLY;BYDAY=MO,TH)", out["R"]["text"])
+        self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and opens the next occurrence"), out["R"]["text"])
+
+    def test_work_ops_and_done_rows_have_neither_key_5_command(self):
+        port, ask, plan = self.ids["port"], self.ids["ask"], self.ids["plan"]
+        for row in self.doc["rows"]:
+            if row["id"] == ask:
+                row["status"] = "done"
+            if row["id"] == plan:
+                row["kind"] = "ops"
+        out = self.run_page(f"""const five = k => REG.filter(c => c.key === '5' && c.when(C.get(k)) === true).map(c => c.id);
+R.work = five('{port}'); R.done = five('{ask}'); R.ops = five('{plan}');""")
+        self.assertEqual(out["R"], {"work": [], "done": [], "ops": []})
+
     def test_a_task_that_does_not_repeat_has_no_complete_occurrence(self):
         ask = self.ids["ask"]
         out = self.run_page(f"R.when = cmd('item.complete').when(C.get('{ask}')); R.done = cmd('item.status.done').when(C.get('{ask}'));")

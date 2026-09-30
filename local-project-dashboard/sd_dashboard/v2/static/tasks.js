@@ -296,14 +296,15 @@ addEventListener('DOMContentLoaded', () => {
       when: o => !!T(o)?.id || 'this row has no sd id to attach a note to',
       cli: o => idOr(o, t => `sd task note ${t.id} --kind comment --body "…"`),
       run: o => { window.shell.capture(o); const r = document.querySelector('dialog.capture input[value="note"]'); if (r && !r.disabled) { r.checked = true; r.form.dispatchEvent(new Event('input')); } return 'Write the note'; } },
-    // build: sd run queues through POST /api/run (runner_controls.enqueue); Undo cancels the queued assignment it made.
+    // build: sd run queues through POST /api/run (runner_controls.enqueue); Undo cancels the queued assignment it made. The
+    // copied line is `sd run --sequential <id>`: sd run needs --sequential or --parallel, as runner_screen.py writes it.
     { id: 'item.run', on: 'item', label: 'Run', key: 'r', risk: 'undo', icon: 'play',
       // build: runner_controls.readiness, the check /api/run makes, read with the Details (review, PR #46).
       when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id to run' : !d ? 'run readiness was not read for this row' : d.run.allowed || d.run.reason; },
-      cli: o => idOr(o, t => `sd run ${t.id}`),
+      cli: o => idOr(o, t => `sd run --sequential ${t.id}`),
       run: o => { const t = T(o);
         const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision } }).then(out => load().then(() => out.assignments?.[0]));
-        return landing(p, () => `${label(t)} queued for the runner · sd run ${t.id}`, unqueue); },
+        return landing(p, () => `${label(t)} queued for the runner · sd run --sequential ${t.id}`, unqueue); },
       undo: undoOf },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
