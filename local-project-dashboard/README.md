@@ -61,6 +61,15 @@ after the write lands. Status, priority, due and recurrence edits and a requeue
 carry Undo; resolving a followup note and cancelling an assignment ask first.
 `sd work relink` and `sd work cancel` are shown for Copy only.
 
+Health is at `/fleet-health` (sd:2115); `/health` stays the service's own
+check. `GET /api/health` (`health_screen.document`) lists the design's seven
+areas in its order. Two have a reader: Worktrees (registrations whose directory
+is gone, from the fleet child Sessions reads) and Attribution (the
+missing-trailer count Progress shows). Disk, Credentials, Branches,
+Dependencies and Security have no collector yet; each shows as unknown and
+names what it does not read. Nothing on the page writes: Prune registrations
+and Attribute are CLI lines for Copy, and Re-check reads the document again.
+
 The old screens stay until their section is ported. Only the old Today moved,
 to `/classic/today`; every other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
@@ -85,7 +94,8 @@ Classic screens.
 | Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
-| Briefs, Notes, HOA, Home, Health, Activity | no old screen; the rail says not built yet |
+| Health | `/fleet-health` (new) |
+| Briefs, Notes, HOA, Home, Activity | no old screen; the rail says not built yet |
 | Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
