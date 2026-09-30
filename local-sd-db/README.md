@@ -264,6 +264,25 @@ are the record until then.
     sd-db.sh judgments --since 2026-09 # a month; bounds are compared as text
     sd-db.sh judgments --json          # the same read, for a screen
 
+### Labels: whether a judgment was right
+
+Reported confidence is not accuracy. A row can carry a label: `override` is
+the answer an authoritative later source says it should have been, a number
+in the shape of `answer`; `override_source` names the rule that produced it,
+and `override_at` says when. A row is right when the label equals the answer.
+The report counts labelled and right rows per arm, and the same by reported
+confidence in tenths, so a floor is read off numbers instead of guessed. It
+prints each rule's known blind spot beside the stage it labelled.
+
+`judgments label` is the one write path, and a labeller uses these verbs
+instead of opening the database itself. The same label twice changes nothing;
+a different label is refused unless `--replace` says to overwrite it.
+
+    sd-db.sh judgments unlabelled --stage JEV_SD_REVIEW --prefix sd-review-tier: --json
+    sd-db.sh judgments label --row 42 --override 3 --source outcome.sd-review.14d
+
+`jev label sd-review` in `local-jev` is the first labeller.
+
 ## Automatic provider selection
 
 Provider `roles` declare capability. Enabled flags control availability.

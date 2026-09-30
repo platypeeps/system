@@ -44,6 +44,13 @@ timeouts, from an unkeyed machine, or from a `jev` nobody linked onto PATH.
 **`changed` is `unknown` until a caller can prove otherwise.** Only a caller
 that also hands over what it would have done can be compared against; the rest
 say `unknown` rather than guess. Nothing here infers it.
+
+**A label is a later answer, in the answer's own shape.** Reported confidence
+is not accuracy, so a row can carry `override`: what an authoritative later
+source says the answer should have been, a number like `answer`. A row is
+right when the two are equal. `label` is the one write path for it, and it
+holds the label to the same shapes a row is held to: a number, and a source
+that is an identifier naming the rule that produced it (sd:2107).
 """
 
 from __future__ import annotations
@@ -70,8 +77,10 @@ __all__ = [
     "by_stage",
     "document",
     "json_text",
+    "label",
     "record",
     "text",
+    "unlabelled",
 ]
 
 #: Which mechanism answered. `jev` is the judgment model's arm, whatever the
@@ -314,6 +323,80 @@ def record(
     return int(cursor.lastrowid)
 
 
+def label(
+    connection: sqlite3.Connection,
+    row_id: int,
+    override: object,
+    source: object,
+    *,
+    replace: bool = False,
+    now: str | None = None,
+) -> bool:
+    """Write the later, authoritative answer for one row, and say whether
+    anything changed.
+
+    The one write path for a label. `override` is held to the answer's shape
+    and `source` to the identifier grammar, before anything is read. The same
+    value again is a no-op that returns False and keeps the first moment; a
+    different value is refused unless `replace` says to overwrite it, because
+    two rules disagreeing about one row is a finding, not a last-writer-wins.
+    """
+    if type(row_id) is not int or row_id < 1:
+        raise JudgmentRefused(f"row must be a whole number of one or more; got {row_id!r}")
+    if override is None or override == "":
+        raise JudgmentRefused("override is required: the answer the later source gave")
+    override = _answer(override)
+    source = _identifier("source", source, required=True)
+    moment = _now() if now is None else stamp(now)
+    with transaction(connection):
+        row = connection.execute(
+            "SELECT primitive, override FROM judgment WHERE id = ?", (row_id,)
+        ).fetchone()
+        if row is None:
+            raise JudgmentRefused(f"no judgment row {row_id}")
+        if row["primitive"] == GATE_PRIMITIVE:
+            raise JudgmentRefused(
+                f"row {row_id} is a gate event, not a decision; there is "
+                f"nothing for a label to be right or wrong about")
+        if row["override"] is not None:
+            if float(row["override"]) == float(override):
+                return False
+            if not replace:
+                raise JudgmentRefused(
+                    f"row {row_id} is already labelled {row['override']}; a "
+                    f"different label replaces it only when asked to")
+        connection.execute(
+            "UPDATE judgment SET override = ?, override_source = ?, "
+            "override_at = ? WHERE id = ?",
+            (override, source, moment, row_id))
+    return True
+
+
+def unlabelled(
+    connection: sqlite3.Connection,
+    stage: str,
+    *,
+    prefix: str | None = None,
+) -> list[dict]:
+    """The decisions of one stage that carry no label yet, oldest first.
+
+    `prefix` narrows them to the rows whose `question_id` starts with it,
+    which is how a labeller finds the rows that name a subject it can look
+    up. Gate events are not decisions and are never returned.
+    """
+    stage = _identifier("stage", stage, required=True)
+    if not present(connection):
+        return []
+    rows = connection.execute(
+        "SELECT id, timestamp, caller, stage, arm, primitive, question_id, "
+        "outcome, answer, confidence FROM judgment "
+        "WHERE stage = ? AND override IS NULL AND primitive <> ? "
+        "AND (? IS NULL OR substr(question_id, 1, length(?)) = ?) "
+        "ORDER BY timestamp, id",
+        (stage, GATE_PRIMITIVE, prefix, prefix, prefix))
+    return [dict(row) for row in rows]
+
+
 #: The primitive a gate event carries: one caller asking, before any decision,
 #: whether a judgment is available at all. It is not a decision, and every
 #: query below that counts decisions excludes it.
@@ -344,6 +427,9 @@ SELECT stage, arm,
        SUM(changed = 'no')                               AS changed_no,
        SUM(changed = 'unknown')                          AS changed_unknown,
        SUM(override IS NOT NULL)                         AS overrides,
+       SUM(override IS NOT NULL)                         AS labelled,
+       SUM(override IS NOT NULL AND answer IS NOT NULL
+           AND CAST(override AS REAL) = CAST(answer AS REAL)) AS right,
        COALESCE(SUM(tokens_in), 0)                       AS tokens_in,
        COALESCE(SUM(tokens_out), 0)                      AS tokens_out,
        SUM(usd)                                          AS usd,
@@ -401,6 +487,48 @@ GROUP BY stage
 """
 
 
+#: Labelled rows by the confidence the model reported, in tenths: `0.9` holds
+#: 0.9 up to and including 1.0, and a row with no confidence is `none`. This
+#: is the read a floor is chosen from; reported confidence is not accuracy,
+#: and this is where the two are put side by side.
+BANDS = """
+SELECT stage,
+       CASE WHEN confidence IS NULL THEN 'none'
+            ELSE printf('%.1f', MIN(CAST(confidence * 10 AS INTEGER), 9) / 10.0)
+       END                                               AS band,
+       COUNT(*)                                          AS labelled,
+       SUM(answer IS NOT NULL
+           AND CAST(override AS REAL) = CAST(answer AS REAL)) AS right
+FROM judgment
+WHERE override IS NOT NULL
+  AND primitive <> :gate
+  AND (:since IS NULL OR timestamp >= :since)
+  AND (:until IS NULL OR timestamp < :until)
+GROUP BY stage, band
+ORDER BY stage, band = 'none', band
+"""
+
+#: Which rules labelled each stage, so the report can print what each rule
+#: cannot see next to the numbers it produced.
+SOURCES = """
+SELECT DISTINCT stage, override_source AS source
+FROM judgment
+WHERE override IS NOT NULL
+  AND override_source IS NOT NULL
+  AND primitive <> :gate
+  AND (:since IS NULL OR timestamp >= :since)
+  AND (:until IS NULL OR timestamp < :until)
+ORDER BY stage, source
+"""
+
+#: What a labelling rule cannot see, printed next to the stage it labelled.
+#: A rule that sees only one direction of error makes `right` an upper bound,
+#: and a reader choosing a floor from it has to know that.
+LABEL_LIMITS = {
+    "outcome.sd-review.14d": "labels see missed problems, not wasted depth",
+}
+
+
 def present(connection: sqlite3.Connection) -> bool:
     """Whether migration 011 has run on the database behind this connection."""
     return connection.execute(
@@ -435,7 +563,7 @@ def by_stage(
         return stages.setdefault(
             stage,
             {"stage": stage, "arms": {}, "declines": {}, "gates": {},
-             "paired": 0},
+             "paired": 0, "bands": [], "sources": []},
         )
 
     stages: dict[str, dict] = {}
@@ -453,6 +581,14 @@ def by_stage(
     for row in connection.execute(PAIRS, bounds):
         if row["stage"] in stages:
             stages[row["stage"]]["paired"] = row["paired"]
+    for row in connection.execute(BANDS, bounds):
+        if row["stage"] in stages:
+            stages[row["stage"]]["bands"].append(
+                {"band": row["band"], "labelled": row["labelled"],
+                 "right": row["right"] or 0})
+    for row in connection.execute(SOURCES, bounds):
+        if row["stage"] in stages:
+            stages[row["stage"]]["sources"].append(row["source"])
     return [stages[name] for name in sorted(stages)]
 
 
@@ -487,6 +623,25 @@ def _arm_line(label: str, arm: dict | None) -> str:
     )
 
 
+def _correctness_lines(entry: dict) -> list[str]:
+    """How many of a stage's rows carry a label, how many of those were
+    right, and the same by reported confidence, with each rule's limit."""
+    labelled = sum(arm.get("labelled") or 0 for arm in entry["arms"].values())
+    if not labelled:
+        return ["    correctness: no labelled rows"]
+    right = sum(arm.get("right") or 0 for arm in entry["arms"].values())
+    lines = [f"    correctness: {labelled} labelled, {right} right "
+             f"({_rate(right, labelled)})"]
+    if entry.get("bands"):
+        lines.append("    by confidence: " + ", ".join(
+            f"{band['band']} {band['right']}/{band['labelled']}"
+            for band in entry["bands"]))
+    for source in entry.get("sources", ()):
+        if source in LABEL_LIMITS:
+            lines.append(f"    {source}: {LABEL_LIMITS[source]}")
+    return lines
+
+
 def text(stages: list[dict]) -> str:
     """The comparison as a person reads it, one block per stage."""
     if not stages:
@@ -518,6 +673,7 @@ def text(stages: list[dict]) -> str:
             f"{counted['changed_no']} no, {counted['changed_unknown']} unknown; "
             f"{counted['overrides']} override(s); {counted['shadow']} shadow run(s)"
         )
+        lines.extend(_correctness_lines(entry))
     missing = unpaired(stages)
     if missing:
         lines.append(

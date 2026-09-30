@@ -19,6 +19,7 @@ lives in this library is `sd_db.shadow_sync`, the function that verb calls.
 from __future__ import annotations
 
 import getpass
+import json
 import os
 import shlex
 import sqlite3
@@ -183,6 +184,10 @@ def command_judgments(argv: list[str]) -> int:
     are compared as text against the one timestamp shape, so `--since 2026-09`
     is a month and `--since 2026-09-20` is a day.
     """
+    if argv and argv[0] == "label":
+        return _judgments_label(argv[1:])
+    if argv and argv[0] == "unlabelled":
+        return _judgments_unlabelled(argv[1:])
     since, until, as_json = None, None, False
     rest = list(argv)
     while rest:
@@ -194,8 +199,8 @@ def command_judgments(argv: list[str]) -> int:
         elif flag == "--until" and rest:
             until = rest.pop(0)
         else:
-            print("sd-db judgments: takes --since STAMP, --until STAMP and --json",
-                  file=sys.stderr)
+            print("sd-db judgments: takes --since STAMP, --until STAMP and --json, "
+                  "or `label` or `unlabelled`", file=sys.stderr)
             return 1
     connection = _open_for_read()
     try:
@@ -203,6 +208,83 @@ def command_judgments(argv: list[str]) -> int:
     finally:
         connection.close()
     sys.stdout.write(judgment.json_text(rows) if as_json else judgment.text(rows))
+    return 0
+
+
+def _judgments_label(argv: list[str]) -> int:
+    """`judgments label --row N --override NUMBER --source NAME [--replace]`.
+
+    The one write path for a label, so a labeller never opens the database
+    itself. The ledger refuses a row that does not exist, an override that is
+    not a number, a source that is not an identifier, and a different label
+    over an existing one without `--replace`; each refusal exits 1 naming it.
+    """
+    usage_line = ("sd-db judgments label: takes --row N --override NUMBER "
+                  "--source NAME [--replace]")
+    options: dict[str, str] = {}
+    replace = False
+    rest = list(argv)
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--replace":
+            replace = True
+        elif flag in ("--row", "--override", "--source") and rest:
+            options[flag[2:]] = rest.pop(0)
+        else:
+            print(usage_line, file=sys.stderr)
+            return 1
+    if set(options) != {"row", "override", "source"} or not options["row"].isdigit():
+        print(usage_line, file=sys.stderr)
+        return 1
+    row_id = int(options["row"])
+    connection = _open_for_write()
+    try:
+        changed = judgment.label(connection, row_id, options["override"],
+                                 options["source"], replace=replace)
+    finally:
+        connection.close()
+    if changed:
+        print(f"sd-db: labelled row {row_id} {options['override']} "
+              f"({options['source']})")
+    else:
+        print(f"sd-db: row {row_id} already labelled {options['override']}; unchanged")
+    return 0
+
+
+def _judgments_unlabelled(argv: list[str]) -> int:
+    """`judgments unlabelled --stage NAME [--prefix TEXT] [--json]`: the
+    decisions of one stage that carry no label, oldest first. A read."""
+    stage, prefix, as_json = None, None, False
+    rest = list(argv)
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--json":
+            as_json = True
+        elif flag == "--stage" and rest:
+            stage = rest.pop(0)
+        elif flag == "--prefix" and rest:
+            prefix = rest.pop(0)
+        else:
+            stage = None
+            break
+    if not stage:
+        print("sd-db judgments unlabelled: takes --stage NAME [--prefix TEXT] [--json]",
+              file=sys.stderr)
+        return 1
+    connection = _open_for_read()
+    try:
+        rows = judgment.unlabelled(connection, stage, prefix=prefix)
+    finally:
+        connection.close()
+    if as_json:
+        sys.stdout.write(json.dumps(rows, indent=2, sort_keys=True) + "\n")
+        return 0
+    if not rows:
+        print(f"sd-db: no unlabelled {stage} rows")
+    for row in rows:
+        print(f"{row['id']}  {row['timestamp']}  {row['arm']}  "
+              f"{row['question_id'] or '-'}  answer {row['answer'] or '-'}  "
+              f"confidence {'-' if row['confidence'] is None else row['confidence']}")
     return 0
 
 

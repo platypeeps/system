@@ -15,6 +15,7 @@ a probability. `noul` prints a probability, `choice` prints the name it picked,
 ./jev.sh score  "How urgent is this?" --levels "can wait,this week,today"
 ./jev.sh ask    --questions questions.json --state thread.json --state-format json
 ./jev.sh status
+./jev.sh label  sd-review          # label recorded review tiers; asks no model
 ./jev.sh test
 ```
 
@@ -319,6 +320,33 @@ One block per stage: both arms, their calls, outcomes, tokens, cost and
 latency, the decline reasons by name, and how many paired samples exist. A
 stage with none is named, because a reader who is not told will assume a
 delta.
+
+### Was it right? Labels from later outcomes
+
+Reported confidence is not accuracy, so a row can carry a label: the answer
+an authoritative later event says it should have been. `jev label RULE` reads
+unlabelled rows through `sd-db.sh judgments unlabelled`, finds each subject's
+outcome, and writes a label through `sd-db.sh judgments label` only when the
+outcome is final. It asks no model, and without `--apply` it writes nothing.
+
+    jev label sd-review            # what it would label, and each skip's reason
+    jev label sd-review --apply    # write them; examples/jev-label-nightly.job in local-cron-jobs
+
+A caller whose judgment can be labelled names the judged thing with
+`--subject NAME`: an identifier, recorded as the row's question id and never
+sent. `--id` stays a key of the request, so a subject must not go there.
+
+`sd-review` is the first rule. Its subject is
+`sd-review-tier:<owner>.<repo>:<sha12>`, the repository and the head commit it
+reviewed. The rule finds the merged pull request with `gh`, waits 14 days after
+the merge, then reads the default branch in the registered checkout. A commit
+in those 14 days that touches a file of the pull request and whose subject
+starts with `fix` or says `revert` means the tier was one too shallow, and the
+label is the next deeper position. At the deepest tier (`--deepest N`, default
+4) a later fix is not the tier's fault. It skips, with a reason, a change not
+merged (`abandoned` after 30 days), a window still open, a repository with no
+checkout here, a checkout behind GitHub, and any row `gh` could not answer.
+The rule sees a missed problem, never wasted depth, and the report says so.
 
 ## What it never does
 

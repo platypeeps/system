@@ -1,6 +1,6 @@
 #!/bin/sh
 # Ask Jev one typed question from the shell, and print the answer.
-# Usage: jev.sh ask|noul|choice|score|status|record|test
+# Usage: jev.sh ask|noul|choice|score|status|record|label|test
 #
 # Exit codes: 0 answered, 3 not configured on this machine, 1 a real error.
 # local-health-check reads these codes.
@@ -68,9 +68,16 @@ case "$1" in
   ask|noul|choice|score|status|enabled|on|off|record)
     exec "${PYTHON:-python3}" "$DIR/jev.py" "$@"
     ;;
+  label)
+    # Asks no model: it reads the ledger through sd-db.sh, the pull request
+    # through gh and the default branch through git, and lives beside jev.py
+    # rather than in it so jev.py stays standalone.
+    shift
+    exec "${PYTHON:-python3}" "$DIR/jev_label.py" "$@"
+    ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: jev.sh ask|noul|choice|score|status|enabled|on|off|record|test
+usage: jev.sh ask|noul|choice|score|status|enabled|on|off|record|label|test
 
 Jev is TypeSafe's System One model. It answers a narrow question about some
 state with a type and a probability, in about the time a shell pipeline takes
@@ -101,6 +108,11 @@ to do with the number.
                           make: what your own mechanism answered, how long it
                           took, and why Jev was not used. Sends nothing, needs
                           no key, prints nothing, always exits 0.
+  label sd-review         write whether each recorded sd-review tier was
+                          right, from what happened after the merge: a fix
+                          to its files within 14 days means one tier too
+                          shallow. Asks no model; reads sd-db.sh, gh and
+                          git. Writes nothing without --apply.
   test                    run the unittest suite in tests/
 
 Jev is experimental, so nothing may depend on it. Every caller keeps its old
@@ -150,6 +162,8 @@ shared options:
   --state FILE|-          what the question is about; stdin by default
   --state-format text|json    json parses the file; text sends it as a string
   --id NAME               question id, which code sees and the model does not
+  --subject NAME          what was judged, for the ledger only; never sent.
+                          Recorded as the row's question id in place of --id
   --json                  print the whole answer, distribution included
   --model NAME            default jev-latest
 
@@ -183,7 +197,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") ask|noul|choice|score|status|enabled|on|off|test" >&2
+    echo "usage: $(basename "$0") ask|noul|choice|score|status|enabled|on|off|record|label|test" >&2
     exit 1
     ;;
 esac

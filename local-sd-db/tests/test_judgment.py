@@ -479,6 +479,239 @@ class AnIdentifierIsNotContent(JudgmentCase):
         self.write(provider="anthropic", model="anthropic/claude-opus-5")
 
 
+#: The subject a labelled stage writes, and the rule that labels it.
+SUBJECT = "sd-review-tier:example.widgets:0123456789ab"
+SOURCE = "outcome.sd-review.14d"
+LATER = "2026-10-05T12:00:00+00:00"
+
+
+class TheLabel(JudgmentCase):
+    """A later, authoritative answer, written through the one door the ledger
+    owns. The refusals are the same privacy contract as a row's: a number,
+    an identifier, and nothing that was submitted."""
+
+    def judged(self, **extra):
+        fields = dict(stage="JEV_SD_REVIEW", primitive="choice",
+                      question_id=SUBJECT, answer="2", confidence=0.93)
+        fields.update(extra)
+        return self.write(**fields)
+
+    def test_a_label_is_written_with_its_source_and_its_moment(self):
+        row_id = self.judged()
+        self.assertTrue(judgment.label(self.connection, row_id, "3", SOURCE,
+                                       now=LATER))
+        row = self.row(row_id)
+        self.assertEqual(
+            (row["override"], row["override_source"], row["override_at"]),
+            ("3", SOURCE, LATER))
+
+    def test_the_same_label_again_changes_nothing(self):
+        row_id = self.judged()
+        judgment.label(self.connection, row_id, "2", SOURCE, now=LATER)
+        self.assertFalse(judgment.label(self.connection, row_id, "2", SOURCE,
+                                        now="2026-11-01T00:00:00+00:00"))
+        self.assertEqual(self.row(row_id)["override_at"], LATER)
+
+    def test_a_different_label_is_refused_without_replace(self):
+        row_id = self.judged()
+        judgment.label(self.connection, row_id, "2", SOURCE, now=LATER)
+        with self.assertRaises(JudgmentRefused) as caught:
+            judgment.label(self.connection, row_id, "3", SOURCE, now=LATER)
+        self.assertIn("already labelled", str(caught.exception))
+        self.assertEqual(self.row(row_id)["override"], "2")
+
+    def test_replace_writes_the_different_label(self):
+        row_id = self.judged()
+        judgment.label(self.connection, row_id, "2", SOURCE, now=LATER)
+        self.assertTrue(judgment.label(self.connection, row_id, "3", "operator",
+                                       replace=True, now=LATER))
+        row = self.row(row_id)
+        self.assertEqual((row["override"], row["override_source"]),
+                         ("3", "operator"))
+
+    def test_a_label_that_is_not_a_number_is_refused(self):
+        row_id = self.judged()
+        for value in ("deep", "/srv/example.test/private.txt", "", None):
+            with self.subTest(value=value):
+                with self.assertRaises(JudgmentRefused):
+                    judgment.label(self.connection, row_id, value, SOURCE)
+        self.assertIsNone(self.row(row_id)["override"])
+
+    def test_a_source_that_is_not_an_identifier_is_refused(self):
+        row_id = self.judged()
+        for value in ("a later fix", "/tmp/rule", "", None):
+            with self.subTest(value=value):
+                with self.assertRaises(JudgmentRefused):
+                    judgment.label(self.connection, row_id, "3", value)
+        self.assertIsNone(self.row(row_id)["override_source"])
+
+    def test_a_row_that_does_not_exist_is_refused(self):
+        with self.assertRaises(JudgmentRefused) as caught:
+            judgment.label(self.connection, 999, "3", SOURCE)
+        self.assertIn("no judgment row 999", str(caught.exception))
+
+    def test_a_gate_event_cannot_be_labelled(self):
+        """A gate row is not a decision, so there is nothing to be right about."""
+        row_id = self.write(arm="baseline", provider="local-fallback",
+                            primitive=GATE_PRIMITIVE, outcome="fallback",
+                            cause="unkeyed")
+        with self.assertRaises(JudgmentRefused):
+            judgment.label(self.connection, row_id, "1", SOURCE)
+
+
+class TheUnlabelled(JudgmentCase):
+    def test_only_unlabelled_rows_of_the_stage_under_the_prefix_oldest_first(self):
+        later = self.write(stage="JEV_SD_REVIEW", question_id=SUBJECT,
+                           answer="1", now="2026-09-22T00:00:00+00:00")
+        earlier = self.write(stage="JEV_SD_REVIEW", question_id=SUBJECT[:-1] + "c",
+                             answer="2", now="2026-09-21T00:00:00+00:00")
+        done = self.write(stage="JEV_SD_REVIEW", question_id=SUBJECT, answer="3")
+        judgment.label(self.connection, done, "3", SOURCE)
+        self.write(stage="JEV_SD_REVIEW", question_id="sd-review-tier", answer="1")
+        self.write(stage="JEV_NOTIFY", question_id=SUBJECT, answer="1")
+        self.write(stage="JEV_SD_REVIEW", arm="baseline", provider="local",
+                   primitive=GATE_PRIMITIVE, outcome="fallback", cause="unkeyed")
+        found = judgment.unlabelled(self.connection, "JEV_SD_REVIEW",
+                                    prefix="sd-review-tier:")
+        self.assertEqual([row["id"] for row in found], [earlier, later])
+        self.assertEqual(found[0]["answer"], "2")
+        self.assertEqual(found[0]["question_id"], SUBJECT[:-1] + "c")
+
+    def test_no_prefix_means_every_unlabelled_decision_of_the_stage(self):
+        self.write(stage="JEV_SD_REVIEW", question_id=SUBJECT, answer="1")
+        self.write(stage="JEV_SD_REVIEW", answer="1")
+        self.assertEqual(len(judgment.unlabelled(self.connection, "JEV_SD_REVIEW")), 2)
+
+
+class TheCorrectnessReport(JudgmentCase):
+    """Labelled and right per arm, and the same by reported confidence, so a
+    floor can be read off the report instead of guessed."""
+
+    def setUp(self):
+        super().setUp()
+        rows = (("2", 0.95, "2"), ("2", 0.93, "3"), ("4", 0.62, "4"),
+                ("1", None, "1"), ("3", 0.97, None))
+        for answer, confidence, override in rows:
+            row_id = self.write(stage="JEV_SD_REVIEW", primitive="choice",
+                                question_id=SUBJECT, answer=answer,
+                                confidence=confidence)
+            if override is not None:
+                judgment.label(self.connection, row_id, override, SOURCE)
+        # A label that equals the answer in another spelling is still right.
+        row_id = self.write(stage="JEV_SD_REVIEW", arm="baseline",
+                            provider="local", primitive="baseline", answer="2")
+        judgment.label(self.connection, row_id, "2.0", SOURCE)
+        self.entry = {entry["stage"]: entry
+                      for entry in by_stage(self.connection)}["JEV_SD_REVIEW"]
+
+    def test_labelled_and_right_are_counted_per_arm(self):
+        jev = self.entry["arms"]["jev"]
+        self.assertEqual((jev["labelled"], jev["right"]), (4, 3))
+        baseline = self.entry["arms"]["baseline"]
+        self.assertEqual((baseline["labelled"], baseline["right"]), (1, 1))
+
+    def test_the_bands_are_reported_confidence_in_tenths(self):
+        bands = {band["band"]: (band["labelled"], band["right"])
+                 for band in self.entry["bands"]}
+        self.assertEqual(bands, {"0.6": (1, 1), "0.9": (2, 1), "none": (2, 2)})
+        self.assertEqual([band["band"] for band in self.entry["bands"]],
+                         ["0.6", "0.9", "none"])
+
+    def test_a_confidence_of_one_is_in_the_top_band(self):
+        row_id = self.write(stage="JEV_SD_REVIEW", answer="1", confidence=1.0)
+        judgment.label(self.connection, row_id, "1", SOURCE)
+        entry = {e["stage"]: e for e in by_stage(self.connection)}["JEV_SD_REVIEW"]
+        self.assertEqual({b["band"]: b["labelled"] for b in entry["bands"]}["0.9"], 3)
+
+    def test_the_text_prints_correctness_and_the_rule_s_limit(self):
+        printed = text(by_stage(self.connection))
+        self.assertIn("correctness: 5 labelled, 4 right (80%)", printed)
+        self.assertIn("by confidence: 0.6 1/1, 0.9 1/2, none 2/2", printed)
+        self.assertIn("outcome.sd-review.14d: labels see missed problems, "
+                      "not wasted depth", printed)
+
+    def test_a_stage_with_no_labels_says_so(self):
+        self.write(stage="plain", answer="1")
+        printed = text(by_stage(self.connection))
+        self.assertIn("correctness: no labelled rows", printed)
+
+    def test_the_json_carries_the_counts(self):
+        parsed = json.loads(json_text(by_stage(self.connection)))
+        entry = {e["stage"]: e for e in parsed["stages"]}["JEV_SD_REVIEW"]
+        self.assertEqual(entry["arms"]["jev"]["right"], 3)
+        self.assertEqual(entry["sources"], [SOURCE])
+
+
+class TheLabelVerbs(JudgmentCase):
+    """`sd-db.sh judgments label` and `judgments unlabelled`: the command
+    surface a labeller uses instead of opening the database itself."""
+
+    def cli(self, *argv):
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+
+        from sd_db.jobs import cli
+
+        home = Path(self.tmp.name) / "home"
+        target = home / ".local/share/sd/sd.db"
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(self.path)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": str(home)}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_label_then_unlabelled_then_the_report(self):
+        row_id = self.write(stage="JEV_SD_REVIEW", question_id=SUBJECT,
+                            answer="2", confidence=0.9)
+        code, out, _ = self.cli("judgments", "unlabelled", "--stage",
+                                "JEV_SD_REVIEW", "--prefix", "sd-review-tier:",
+                                "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual([row["id"] for row in json.loads(out)], [row_id])
+        code, out, _ = self.cli("judgments", "label", "--row", str(row_id),
+                                "--override", "3", "--source", SOURCE)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"labelled row {row_id}", out)
+        code, out, _ = self.cli("judgments", "unlabelled", "--stage",
+                                "JEV_SD_REVIEW", "--json")
+        self.assertEqual(json.loads(out), [])
+        code, out, _ = self.cli("judgments")
+        self.assertIn("correctness: 1 labelled, 0 right (0%)", out)
+
+    def test_a_changed_label_is_refused_without_replace(self):
+        row_id = self.write(stage="JEV_SD_REVIEW", answer="2")
+        self.cli("judgments", "label", "--row", str(row_id), "--override", "2",
+                 "--source", SOURCE)
+        code, _, err = self.cli("judgments", "label", "--row", str(row_id),
+                                "--override", "3", "--source", SOURCE)
+        self.assertEqual(code, 1)
+        self.assertIn("already labelled", err)
+        code, out, _ = self.cli("judgments", "label", "--row", str(row_id),
+                                "--override", "3", "--source", SOURCE,
+                                "--replace")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.row(row_id)["override"], "3")
+
+    def test_the_same_label_again_says_unchanged(self):
+        row_id = self.write(stage="JEV_SD_REVIEW", answer="2")
+        self.cli("judgments", "label", "--row", str(row_id), "--override", "2",
+                 "--source", SOURCE)
+        code, out, _ = self.cli("judgments", "label", "--row", str(row_id),
+                                "--override", "2", "--source", SOURCE)
+        self.assertEqual(code, 0)
+        self.assertIn("unchanged", out)
+
+    def test_a_label_without_its_three_fields_is_a_usage_error(self):
+        code, _, err = self.cli("judgments", "label", "--row", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("--row N --override NUMBER --source NAME", err)
+
+
 class AReaderOnAnOlderSchema(unittest.TestCase):
     """REGRESSION (the #489 Copilot review). `_open_for_read` allows a
     database that has not run migration 011, and a reader may not migrate

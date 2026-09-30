@@ -7,13 +7,16 @@ item: sd:2107
 
 ## Order
 
-Two pull requests: the pack change is small and independent.
+Two pull requests. The system change lands first: the pack passes
+`--subject`, which an older `jev` refuses. `sd-review` then declines the
+reading loudly and keeps the routed tier, so the wrong order loses readings
+and never picks a wrong tier.
 
-**Pack (`sd-ai-command-pack`):**
+**Pack (`sd-ai-command-pack`), landing after System:**
 
-1. Test first: the captured `jev` argv carries
-   `--id sd-review-tier:<owner>.<repo>:<sha12>` for a GitHub remote, and
-   `sd-review-tier` for a non-GitHub remote.
+1. Test first: the captured `jev` argv carries `--id sd-review-tier` and
+   `--subject sd-review-tier:<owner>.<repo>:<sha12>` for a GitHub remote,
+   and no `--subject` for a non-GitHub remote.
 2. `bin/sd_jev.py` builds the id.
    Check: the test passes; `make check` green.
 
@@ -24,7 +27,9 @@ Two pull requests: the pack change is small and independent.
 2. `sd_db.judgment.label`, `unlabelled`, the counts and bands, and the two
    `sd-db.sh judgments` verbs, with help lines.
    Check: `sd-db.sh test` green.
-3. Tests first for `jev label sd-review` on a fixture repository.
+3. Tests first for `jev --subject` (absent from the request, present as
+   the row's `question_id`) and for `jev label sd-review` on a fixture
+   repository.
 4. The labeller in `local-jev`, `label` in `jev help`, and a README section.
    Check: the `local-jev` suite green.
 5. The cron example and its README line.

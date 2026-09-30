@@ -30,8 +30,10 @@ later event says whether the judgment held.
    row that does not exist, a value that is not a number, and a source that is
    not an identifier. Writing a label twice with the same value is a no-op;
    a different value is refused unless the caller says to replace it.
-3. A caller whose judgment can be labelled passes a subject in its `--id`:
-   an identifier that names the judged thing, never submitted content.
+3. A caller whose judgment can be labelled passes a subject in `--subject`:
+   an identifier that names the judged thing, never submitted content. It is
+   recorded as the row's `question_id` and never sent. `--id` keeps its role
+   as a key of the request, so a subject there would leave the machine.
 4. `sd-review` is the first labelled stage. Its subject is the repository and
    the head commit it reviewed.
 5. A labeller reads unlabelled rows of one stage, finds each subject's outcome,
@@ -60,4 +62,5 @@ later event says whether the judgment held.
   with no later fix as right, one with a later fix touching its files as
   wrong, and skips an unmerged or too-recent change with a reason.
 - `sd-review` rows written after the pack change carry
-  `sd-review-tier:<owner>.<repo>:<sha12>` as their `question_id`.
+  `sd-review-tier:<owner>.<repo>:<sha12>` as their `question_id`, and the
+  request `jev` sends carries no part of it.
