@@ -4,7 +4,7 @@ What this slice promises: `/fleet-health` answers under the shared policy and
 loads its script before `shell.js` (`/health` stays the service's own check);
 `/api/health` is every area of the design, in its order, each saying whether a
 reader covers it. Worktrees come from the fleet child's registrations, grouped
-per checkout, and Attribution from `reads.missing_trailers`. An area with no
+per checkout, and Attribution from `reads.trailer_scan`. An area with no
 reader, or whose reader failed, is unknown on the page and names what it does
 not read, never a clean lamp. Ports is Operations > Ports' reader with its
 counts and warnings; Protection is `protection.rows` as a matrix, one column
@@ -57,8 +57,9 @@ def fleet_of(trees, root="/checkouts"):
     return read
 
 
-def trailers_of(count):
-    return lambda connection, *, now: count
+def trailers_of(count, *, no_default=(), no_author=()):
+    scan = {"missing": count, "commits": 10, "repos": 2, "no_default": list(no_default), "no_author": list(no_author)}
+    return lambda connection, *, now: scan
 
 
 def ports_snapshot():
@@ -133,17 +134,26 @@ class TheDocument(ScreenCase):
 
     def test_the_trailer_count_is_a_caution_row_or_an_ok_check(self):
         (row,) = self.doc(count=3)["areas"][2]["rows"]
-        self.assertEqual((row["id"], row["state"], row["type"], row["facts"]["Missing"]), ("attr:week", "caution", "attribution gap", "3"))
-        self.assertEqual(row["what"], "3 commits of the last 7 days lack Authored-with")
+        self.assertEqual((row["id"], row["state"], row["type"], row["facts"]["Missing"]), ("attr:weeks", "caution", "attribution gap", "3"))
+        self.assertEqual(row["what"], "3 of 10 of your commits in 5 weeks lack Authored-with")
         (row,) = self.doc(count=0)["areas"][2]["rows"]
         self.assertEqual((row["id"], row["state"], row["type"]), ("attr:ok", "ok", "check"))
+
+    def test_a_repo_with_no_default_branch_or_no_author_is_named_in_its_own_row(self):
+        rows = {row["id"]: row for row in self.doc(trailers=trailers_of(
+            0, no_default=["/checkouts/alpha"], no_author=["/checkouts/beta"]))["areas"][2]["rows"]}
+        self.assertEqual(list(rows), ["attr:ok", "attr:no_default", "attr:no_author"])
+        self.assertEqual(rows["attr:no_default"]["state"], "unknown")
+        self.assertIn("/checkouts/alpha", str(rows["attr:no_default"]))
+        self.assertIn("remote set-head origin --auto", str(rows["attr:no_default"]))
+        self.assertIn("/checkouts/beta", str(rows["attr:no_author"]))
 
     def test_a_reader_that_fails_is_its_area_error_and_the_other_still_answers(self):
         def broken(area):
             raise ValueError("fleet collection was stopped at its budget: sessions")
         areas = self.doc(fleet=broken)["areas"]
         self.assertEqual((areas[3]["error"], areas[3]["rows"]), ("fleet collection was stopped at its budget: sessions", []))
-        self.assertEqual(areas[2]["rows"][0]["id"], "attr:week")
+        self.assertEqual(areas[2]["rows"][0]["id"], "attr:weeks")
         areas = self.doc(fleet=lambda area: {"root": "/checkouts", "worktrees": [{"repo": "x"}]})["areas"]
         self.assertEqual(areas[3]["error"], "fleet collector returned an incomplete sessions document")
 
@@ -234,8 +244,13 @@ class TheDocument(ScreenCase):
                "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
                "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
         subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.test"], check=True, env=env)
         for message in ("no trailer", "with trailer\n\nAuthored-with: human"):
             subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", message], check=True, env=env)
+        # The default branch as a clone knows it: origin/HEAD, not the checkout's HEAD.
+        subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True, env=env)
+        subprocess.run(["git", "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+                       check=True, env=env)
         self.repo(str(repo))
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot)
         self.assertEqual(doc["areas"][2]["rows"][0]["facts"]["Missing"], "1")
@@ -336,6 +351,7 @@ class TheScript(ScreenCase):
             self.assertRegex(lamps, rf'data-area="{area}" data-state="unknown"[^>]*>.*?no reader', area)
         self.assertRegex(lamps, r'data-area="wt" data-state="caution"[^>]*>.*?<b>2</b> dir gone')
         self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?<b>3</b> missing')
+        self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?your commits · 5 weeks · default branch')
         areas = out["R"]["areas"]
         self.assertIn("<b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: volume use (df -k)", areas)
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
@@ -473,7 +489,7 @@ shellRun(cmd('worktree registrations.prune'), o); await flush();""")
 
     def test_the_first_read_opens_the_first_row_in_details(self):
         out = self.run_page("R.d = document.getElementById('details').html || '';")
-        self.assertIn("<h2>3 commits of the last 7 days lack Authored-with</h2>", out["R"]["d"],
+        self.assertIn("<h2>3 of 10 of your commits in 5 weeks lack Authored-with</h2>", out["R"]["d"],
                       "Details still say the fleet is being read after the rows arrived")
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):

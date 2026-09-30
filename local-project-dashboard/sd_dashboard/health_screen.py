@@ -8,10 +8,12 @@ port adds no collector:
   Today's Now read. A registration whose directory is gone is a row per
   checkout, carrying the registrations behind it; one whose files could not
   be read is a row of its own, in the unknown state.
-- Attribution: `reads.missing_trailers`, the count Operations > Progress
-  shows: commits of the last seven days, in every registered repository,
-  with no `Authored-with:` trailer. The walk runs inside `TRAILER_SECONDS`;
-  past it the area is the refusal, not a stall.
+- Attribution: `reads.trailer_scan`, the scope the design decided on
+  2026-09-30: your commits (each repository's `user.email`) of the last five
+  weeks on each default branch (`origin/HEAD`), merges left out, with no
+  `Authored-with:` trailer. A repository with no `origin/HEAD`, or no
+  `user.email`, is a row that says so. The walk runs inside
+  `TRAILER_SECONDS`; past it the area is the refusal and no count.
 - Ports: `ports_screen.port_rows` over `collect_ports`, Operations > Ports'
   reader, with its counts and warnings; collected for the request.
 - Protection: `protection.rows`, what the nightly `sd shadow sync` left in
@@ -51,8 +53,8 @@ AREAS = (
      ("volume use (df -k)", "repo-storage folder sizes", "build output left in worktrees")),
     ("cred", "Credentials", None,
      ("GitHub PAT presence and expiry", "gh CLI sign-in", "HA_TOKEN test", "MCP server status (claude mcp list)")),
-    ("attr", "Attribution", "git log --since=7 days per registered repo · %(trailers)",
-     ("counts per repo", "the five-week history", "your commits only: the count covers every author")),
+    ("attr", "Attribution", "git log origin/HEAD --no-merges --since='5 weeks ago' --author=<user.email> per registered repo · %(trailers)",
+     ("counts per repo", "the per-week history")),
     ("wt", "Worktrees", "the fleet's .git/worktrees registrations",
      ("merged worktrees still on disk (merge-base --is-ancestor)",)),
     ("br", "Branches", None, ("local branches merged into origin's default branch",)),
@@ -120,21 +122,34 @@ def _worktree_rows(document) -> list[dict]:
     return rows
 
 
-def _attribution_rows(count: int) -> list[dict]:
-    if count:
-        return [{
-            "id": "attr:week", "state": "caution", "type": "attribution gap",
-            "what": f"{count} {_plural(count, 'commit', 'commits')} of the last 7 days lack Authored-with",
-            "detail": "every registered repo, every author, merges left out",
-            "kind": "Attribution · last 7 days", "facts": {"Missing": str(count), "Window": "7 days to the reading"},
-        }]
-    return [{
-        "id": "attr:ok", "state": "ok", "type": "check",
-        "what": "Every commit of the last 7 days carries Authored-with",
-        "detail": "every registered repo, every author, merges left out",
-        "kind": "Attribution · last 7 days", "facts": {"Missing": "0", "Window": "7 days to the reading"},
-        "cli": "git log --since='7 days ago' --no-merges --format='%(trailers:key=Authored-with,valueonly)'  # per repo",
-    }]
+def _attribution_rows(scan: dict) -> list[dict]:
+    """The count as one caution or ok row, and one unknown row per reason a repository was not read."""
+    missing, commits, repos = scan["missing"], scan["commits"], scan["repos"]
+    scope = f"your commits on the default branch of {repos} {_plural(repos, 'repo', 'repos')} · 5 weeks · merges left out"
+    facts = {"Missing": str(missing), "Commits": str(commits), "Window": "5 weeks to the reading", "Branch": "origin/HEAD",
+             "Author": "each repo's git config user.email"}
+    cli = "git -C <repo> log origin/HEAD --no-merges -z --since='5 weeks ago' --author=<you> -i --format='%H%x1f%(trailers)'"
+    if missing:
+        rows = [{"id": "attr:weeks", "state": "caution", "type": "attribution gap",
+                 "what": f"{missing} of {commits} of your commits in 5 weeks lack Authored-with",
+                 "detail": scope, "kind": "Attribution · 5 weeks", "facts": facts}]
+    else:
+        rows = [{"id": "attr:ok", "state": "ok", "type": "check",
+                 "what": f"Each of your {commits} {_plural(commits, 'commit', 'commits')} in 5 weeks carries Authored-with",
+                 "detail": scope, "kind": "Attribution · 5 weeks", "facts": facts, "cli": cli}]
+    for key, reason, fix in (
+            ("no_default", "no origin/HEAD, so the default branch is unknown and nothing was read",
+             "git -C <repo> remote set-head origin --auto"),
+            ("no_author", "no git config user.email, so there is no author to count",
+             "git -C <repo> config user.email <address>")):
+        found = scan.get(key) or []
+        if found:
+            count = len(found)
+            rows.append({"id": f"attr:{key}", "state": "unknown", "type": "check",
+                         "what": f"{count} {_plural(count, 'repo has', 'repos have')} {reason.split(',')[0]}: not counted",
+                         "detail": reason, "kind": "Attribution · not read", "facts": {"Repos": str(count)},
+                         "list": list(found), "cli": fix})
+    return rows
 
 
 def _port_rows(snapshot) -> tuple[list[dict], dict]:
@@ -241,14 +256,14 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
     """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, `trailers`
-    `reads.missing_trailers`'s, `ports` `collect_ports`' (no argument) and
+    `reads.trailer_scan`'s, `ports` `collect_ports`' (no argument) and
     `protection` `protection.rows`'; each is a seam a test fills. Each reader
     is guarded on its own, so one failure is its area's `error` and the
     others still answer. A reader returns its rows, or its rows and what the
     page draws above them (`extra`).
     """
     read_fleet = fleet or fleet_module.collect
-    count_trailers = trailers or (lambda connection, *, now: reads.missing_trailers(
+    count_trailers = trailers or (lambda connection, *, now: reads.trailer_scan(
         connection, now=now, within=TRAILER_SECONDS))
     collect_ports = ports or ports_screen._collect
     read_protection = protection or protection_module.rows

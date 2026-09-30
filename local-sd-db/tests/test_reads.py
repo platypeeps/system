@@ -32,14 +32,16 @@ WHEN = "2026-09-04T09:00:00+00:00"
 TRAILERED = "Authored-with: claude/anthropic"
 
 
-def commit_with(root: Path, message: str) -> None:
-    """A commit at a fixed date, with whatever trailers `message` carries.
+def commit_with(root: Path, message: str, *, author: str | None = None, when: str = WHEN) -> None:
+    """A commit at a fixed date, with whatever trailers `message` carries; `author` is an email.
 
     Both dates are pinned: `git log --since/--until` filters on the committer
     date, and a fixture that only pinned the author date would drift back into
     depending on the clock.
     """
-    environment = dict(os.environ, GIT_AUTHOR_DATE=WHEN, GIT_COMMITTER_DATE=WHEN)
+    environment = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+    if author:
+        environment.update(GIT_AUTHOR_EMAIL=author, GIT_AUTHOR_NAME="Other")
     (root / f"{abs(hash(message)) % 10**8}.txt").write_text(message, encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
@@ -88,7 +90,7 @@ class TheItemShadow(unittest.TestCase):
 
 
 class MissingTrailers(unittest.TestCase):
-    """A trailer that is not the first trailer is still a trailer.
+    """A trailer that is not the first trailer is still a trailer; the scope is yours, five weeks, origin/HEAD.
 
     The bug: the count was parsed by splitting `%H%x00%(trailers)` on newlines
     and skipping any line without a NUL. `%(trailers)` is *one field spanning
@@ -122,7 +124,14 @@ class MissingTrailers(unittest.TestCase):
         self.connection = connect(self.database)
         self.addCleanup(self.connection.close)
 
+    def publish(self) -> None:
+        """Make the checkout's HEAD the default branch as origin/HEAD names it, which is what the count reads."""
+        subprocess.run(["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD",
+                        "refs/remotes/origin/main"], check=True)
+
     def count(self) -> int:
+        self.publish()
         return reads.missing_trailers(
             self.connection, now=NOW, repo_paths=[str(self.repo)]
         )
@@ -177,6 +186,49 @@ class MissingTrailers(unittest.TestCase):
         )
         self.assertEqual(self.count(), 0)
 
+    def test_only_your_commits_count(self):
+        commit_with(self.repo, "another author's, no trailer\n", author="other@example.test")
+        self.assertEqual(self.count(), 0, "another author's commit was counted as yours")
+        commit_with(self.repo, "yours, no trailer\n")
+        self.assertEqual(self.count(), 1)
+
+    def test_your_address_matches_in_any_case(self):
+        # git stores the author as typed; a commit made under a differently cased address is still yours.
+        commit_with(self.repo, "yours, cased differently, no trailer\n", author="FIXTURE@Example.Invalid")
+        self.assertEqual(self.count(), 1, "a differently cased address was read as another author")
+
+    def test_a_commit_older_than_five_weeks_is_not_counted(self):
+        commit_with(self.repo, "six weeks back, no trailer\n", when="2026-07-26T09:00:00+00:00")
+        commit_with(self.repo, "four weeks back, no trailer\n", when="2026-08-10T09:00:00+00:00")
+        self.assertEqual(self.count(), 1)
+
+    def test_a_merge_is_not_counted(self):
+        git = lambda *args: subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True,
+                                           env=dict(os.environ, GIT_AUTHOR_DATE=WHEN, GIT_COMMITTER_DATE=WHEN))
+        git("switch", "-q", "-c", "side")
+        commit_with(self.repo, f"side work\n\n{TRAILERED}\n")
+        git("switch", "-q", "main")
+        git("merge", "-q", "--no-ff", "-m", "a merge with no trailer", "side")
+        self.assertEqual(self.count(), 0, "the merge commit was counted")
+
+    def test_the_default_branch_is_read_not_the_checkout(self):
+        self.publish()
+        commit_with(self.repo, "on the checkout only, no trailer\n")
+        scan = reads.trailer_scan(self.connection, now=NOW, repo_paths=[str(self.repo)])
+        self.assertEqual((scan["missing"], scan["repos"]), (0, 1), "a commit origin/HEAD does not hold was counted")
+
+    def test_a_repository_with_no_origin_head_is_named_not_read_on_its_head(self):
+        commit_with(self.repo, "no trailer\n")
+        scan = reads.trailer_scan(self.connection, now=NOW, repo_paths=[str(self.repo)])
+        self.assertEqual((scan["missing"], scan["no_default"], scan["repos"]), (0, [str(self.repo)], 0))
+
+    def test_a_repository_with_no_user_email_has_no_author_to_count(self):
+        self.publish()
+        subprocess.run(["git", "-C", str(self.repo), "config", "--unset", "user.email"], check=True)
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}):
+            scan = reads.trailer_scan(self.connection, now=NOW, repo_paths=[str(self.repo)])
+        self.assertEqual((scan["no_author"], scan["repos"]), ([str(self.repo)], 0))
+
     def test_a_walk_past_its_budget_is_refused_not_a_partial_count(self):
         """One slow repository spends a caller's budget: the read raises, it does not return 0."""
         stub = Path(self.tmp.name) / "bin"
@@ -195,6 +247,7 @@ class MissingTrailers(unittest.TestCase):
 
     def test_a_budget_the_walk_fits_changes_nothing(self):
         commit_with(self.repo, "no trailers here\n")
+        self.publish()
         self.assertEqual(reads.missing_trailers(self.connection, now=NOW, repo_paths=[str(self.repo)], within=30), 1)
 
     def test_a_repository_that_cannot_be_read_is_not_a_crash(self):

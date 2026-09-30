@@ -125,8 +125,8 @@ def _usage_section(connection, now, parameters, bills, month, month_error):
     numbers = reads.weekly_numbers(connection, now=now)
     tiles = [tile(number.label, _format(number), detail=_number_detail(number)) for number in numbers]
     tiles.append(tile("commits missing a trailer", reads.missing_trailers(connection, now=now),
-        detail=tag("p", "Commits in the week across the registered repositories whose "
-                   "message carries no `Authored-with:` trailer.")))
+        detail=tag("p", "Your commits (each repository's user.email) of the last five weeks on each "
+                   "default branch, merges left out, whose message carries no `Authored-with:` trailer.")))
     scorecard = reads.scorecard(connection, now=now)
     scorecard_rows = tag("table", tag("thead", tag("tr", join(tag("th", label, scope="col")
         for label in ("Provider", "Author", "Reviewer", "Passes", "Blocking", "$/pass", "Skipped", "State")))),

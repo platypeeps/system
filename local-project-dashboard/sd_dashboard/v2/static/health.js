@@ -1,6 +1,6 @@
 // Health v2 (sd:2115): the page script. It loads before shell.js, which reads what it declares.
 // Rows: /api/health, the document health_screen.document builds from the fleet child (worktree registrations),
-// reads.missing_trailers (attribution), Operations > Ports' reader (ports) and protection.rows (branch protection).
+// reads.trailer_scan (attribution), Operations > Ports' reader (ports) and protection.rows (branch protection).
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
 // The design's other areas have no reader yet: each shows as unknown with what it does not read, never as a clean lamp.
 // Nothing here writes. Every fix is a CLI line for Copy; Re-check reads the document again.
@@ -14,7 +14,7 @@
   const LOOK = {
     disk: ['hard-drive', '<b>Where the space went.</b> Volume use from df, then the biggest items the fleet itself creates: repo-storage folders and build output left in worktrees. A merged worktree must not keep build output (rule of 2026-09-25).'],
     cred: ['key-round', '<b>Presence and expiry only.</b> Token values are never read into this page. GitHub reports a classic PAT expiry in a response header; Home Assistant tokens carry none the dashboard can read.'],
-    attr: ['signature', '<b>Who wrote each commit.</b> Every commit carries <code>Authored-with:</code> in its last paragraph; sd-review reads a missing one as “authored unknown” and blocks readiness. The count here is every author’s commits of the last 7 days in the registered repos.'],
+    attr: ['signature', '<b>Who wrote each commit.</b> Every commit carries <code>Authored-with:</code> in its last paragraph; sd-review reads a missing one as “authored unknown” and blocks readiness. The count is your commits (each repo’s user.email) of the last 5 weeks on each default branch (origin/HEAD), merges left out. It walks every repo inside a 10 s budget; past it the area says it stopped rather than waited on, and shows no count.'],
     wt: ['folder-x', '<b>Registered is not present.</b> A worktree whose directory is gone still holds its branch. Prune clears the registration only; it never touches a directory that exists.'],
     br: ['git-branch', '<b>Merged but not deleted.</b> Local branches already contained in origin’s default branch. <code>git branch -d</code> refuses any branch that is not merged, so the fix cannot lose work.'],
     dep: ['package', '<b>Dependabot, per repo.</b> Open alerts on the unarchived repos. A repo whose alerts could not be read is unknown, never clean.'],
@@ -42,7 +42,8 @@
   const lampValue = a => !a.read ? html`<span class="ph">no reader</span>`
     : a.error ? html`<span class="ph">not read</span>`
     : a.id === 'wt' ? html`<span class="ph"><b>${sumFact(a, 'Registered')}</b> dir gone</span>`
-    : a.id === 'attr' ? html`<span class="ph"><b>${sumFact(a, 'Missing')}</b> missing</span> <span class="ph">7 days</span>`
+    // The scope decided 2026-09-30 (design 63c9d0c): the operator's own commits, 5 weeks, each repo's default branch.
+    : a.id === 'attr' ? html`<span class="ph"><b>${sumFact(a, 'Missing')}</b> missing</span> <span class="ph">your commits · 5 weeks · default branch</span>`
     : a.id === 'ports' ? html`<span class="ph"><b>${a.extra.counts.unknown}</b> unknown</span> · <span class="ph">${a.extra.counts.listening} listening</span>`
     : html`<span class="ph"><b>${a.rows.length}</b> rows</span>`;
 
