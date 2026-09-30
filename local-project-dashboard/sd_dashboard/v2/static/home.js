@@ -1,10 +1,8 @@
-// Home (sd:2117): the design source's products/system/designs/v2/home.html script, ported. Each change from the reference is marked
+// Home (sd:2117): the design source's products/system/designs/v2/home.js at d82daa1, ported; home-kiosk.js sets the wall display flag. Each change from the reference is marked
 // "build:". The tiles are /api/home (home_screen.py): the entities <config>/project-dashboard/home-tiles.conf names, never sample
 // data. The dashboard reads no Home Assistant state yet, so every tile is unknown with the document's reason and every command is
 // off with it: the page sends nothing.
 const { html, put, plural } = window.markup;
-// build: the kiosk flag was an inline script in the head, which the policy refuses; it is set here, before the shell draws.
-if (new URLSearchParams(location.search).get('kiosk') === '1') document.documentElement.setAttribute('data-kiosk', '');
 // Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
 window.PAGE_COMMANDS = [{ label: 'Wall display', icon: 'maximize-2', run: () => document.dispatchEvent(new CustomEvent('home:kiosk', { detail: true })) }];
 // build: no state is read, so the page claims nothing for the rail or Today.

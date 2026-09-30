@@ -33,6 +33,7 @@ from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
 HOME_JS = (V2 / "static" / "home.js").read_text(encoding="utf-8")
+KIOSK_JS = (V2 / "static" / "home-kiosk.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 EXAMPLE = Path(home_screen.__file__).resolve().parents[1] / "home-tiles.conf.example"
 
@@ -104,7 +105,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Home · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "home.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "home.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -124,7 +125,7 @@ class ThePage(BrowserSession):
         self.assertFalse(doc["reader"]["available"])
 
 
-# The stand-in additions home.js needs beyond test_v2_tasks: a root element with attributes, a clock, and the shell's row, url and
+# The stand-in additions home.js and home-kiosk.js need beyond test_v2_tasks: a root element with attributes, a clock, and the shell's row, url and
 # closePane.
 ROOT = r"""
 var ROOT_ATTRS = {};
@@ -146,7 +147,7 @@ class TheScript(ScreenCase):
 
     def run_page(self, body, answer=None, search=""):
         answer = answer or f"() => [200, {json.dumps(self.doc)}]"
-        script = (STAND_IN + ROOT + f"location.search = {json.dumps(search)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
+        script = (STAND_IN + ROOT + f"location.search = {json.dumps(search)};\n" + KIOSK_JS + "\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
                   + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + HOME_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"

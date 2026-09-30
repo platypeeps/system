@@ -1,5 +1,5 @@
-/* Build (sd:2117): the design source's products/system/designs/v2/home.html page style, moved to a file (the policy refuses inline
- * <style>), unchanged below the critique line. */
+/* Build (sd:2117): the design source's products/system/designs/v2/home.css at d82daa1, unchanged below
+ * this comment. */
 /* Hallmark · pre-emit critique: P5 H4 E4 S4 R5 V4 */
 /* Home: annunciator lamp grid for Home Assistant's critical entities. Dark cockpit: normal tiles stay unlit.
  * Kiosk (html[data-kiosk]): no rail, no pane, big clock, 64px+ targets. Tokens only. */
@@ -98,4 +98,3 @@ html[data-kiosk] .headline .what b { font-size: var(--text-xl); }
   .tile[data-state="caution"], .tile[data-state="warning"], .headline[data-state="caution"], .headline[data-state="warning"] { outline: 3px solid CanvasText; outline-offset: -3px; }
   .tile[data-state="unknown"] { outline: 1px dashed CanvasText; outline-offset: -2px; }
 }
-
