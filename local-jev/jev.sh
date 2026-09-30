@@ -150,6 +150,8 @@ shared options:
   --state FILE|-          what the question is about; stdin by default
   --state-format text|json    json parses the file; text sends it as a string
   --id NAME               question id, which code sees and the model does not
+  --subject NAME          what was judged, for the ledger only; never sent.
+                          Recorded as the row's question id in place of --id
   --json                  print the whole answer, distribution included
   --model NAME            default jev-latest
 
@@ -183,7 +185,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") ask|noul|choice|score|status|enabled|on|off|test" >&2
+    echo "usage: $(basename "$0") ask|noul|choice|score|status|enabled|on|off|record|test" >&2
     exit 1
     ;;
 esac

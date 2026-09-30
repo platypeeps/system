@@ -212,6 +212,52 @@ class NoContent(MeteringCase):
         self.assertEqual(self.only()["question_id"], "notify-route")
 
 
+class TheSubject(MeteringCase):
+    """`--subject` names the judged thing for the ledger and never leaves the
+    machine (sd:2107). `--id` is a key of the request body, so a repository
+    name in it would reach the endpoint; the subject goes to the row alone."""
+
+    SUBJECT = "sd-review-tier:example.widgets:0123456789ab"
+
+    def test_the_subject_is_the_row_s_question_id_and_not_in_the_payload(self):
+        Stub.choice_value = "deep"
+        self.run_main(["choice", "how deep?", "--criteria", "cheap,deep",
+                       "--id", "sd-review-tier", "--subject", self.SUBJECT,
+                       "--stage", "JEV_SD_REVIEW"])
+        self.assertEqual(self.only()["question_id"], self.SUBJECT)
+        sent = json.dumps(Stub.seen[-1]["payload"])
+        self.assertNotIn("example.widgets", sent)
+        self.assertIn("sd-review-tier", Stub.seen[-1]["payload"]["questions"])
+
+    def test_without_a_subject_the_id_is_the_question_id(self):
+        self.run_main(["noul", "is it?", "--id", "notify-route"])
+        self.assertEqual(self.only()["question_id"], "notify-route")
+
+    def test_a_subject_that_is_not_an_identifier_is_dropped(self):
+        self.run_main(["noul", "is it?", "--id", "notify-route",
+                       "--subject", f"/srv/example.test/{SENTINEL}"])
+        self.assertIsNone(self.only()["question_id"])
+        self.assertNotIn(SENTINEL.encode(), self.store.read_bytes())
+
+    def test_a_fallback_row_carries_the_subject(self):
+        """The declined arm is the one a labeller most needs to compare."""
+        self.run_main(["noul", "is it?", "--subject", self.SUBJECT,
+                       "--fallback", "0.5"], TYPESAFE_API_KEY="")
+        self.assertEqual(self.only()["question_id"], self.SUBJECT)
+
+    def test_a_shadow_pair_carries_the_subject_on_both_arms(self):
+        self.run_main(["noul", "is it?", "--subject", self.SUBJECT,
+                       "--shadow", "1"])
+        self.assertEqual([row["question_id"] for row in self.rows()],
+                         [self.SUBJECT, self.SUBJECT])
+
+    def test_record_takes_a_subject(self):
+        self.run_main(["record", "--caller", "sd-review", "--stage",
+                       "JEV_SD_REVIEW", "--answer", "2", "--subject",
+                       self.SUBJECT])
+        self.assertEqual(self.only()["question_id"], self.SUBJECT)
+
+
 class WhenTheStoreIsGone(MeteringCase):
     """A missing or unwritable database degrades to no recording, never to a
     failed or slowed judgment."""

@@ -320,6 +320,22 @@ latency, the decline reasons by name, and how many paired samples exist. A
 stage with none is named, because a reader who is not told will assume a
 delta.
 
+### Was it right? Labels from later outcomes
+
+Reported confidence is not accuracy, so a row can carry a label: the answer
+an authoritative later source says it should have been, written through
+`sd-db.sh judgments label` (see `local-sd-db/README.md`). `sd-db.sh judgments`
+then reports how many labelled rows were right, by stage and by reported
+confidence.
+
+A caller whose judgment can be labelled names the judged thing with
+`--subject NAME`: an identifier, recorded as the row's question id and never
+sent. `--id` stays a key of the request, so a subject must not go there.
+
+No labeller ships yet. A label must come from independent evidence of the
+right answer, never from the prediction under test; a later fix in a shared
+file is not that evidence for a review tier (sd:2107).
+
 ## What it never does
 
 It never prints the key, never logs it, and never puts it in an error message.

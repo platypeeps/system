@@ -311,7 +311,17 @@ Usage: sd-db.sh <command>
               how many judgments are known to have changed anything. A read
               only. The bounds are compared as text against the one
               timestamp shape, so --since 2026-09 is a month and
-              --since 2026-09-20 is a day.
+              --since 2026-09-20 is a day. Each stage also says how many
+              rows carry a label and how many of those were right, overall
+              and by reported confidence in tenths.
+  judgments label --row N --override NUMBER --source NAME [--replace]
+              Record the later, authoritative answer for one judgment row,
+              in the answer's shape (a number), and the rule that gave it.
+              The same label again changes nothing; a different one is
+              refused unless --replace. The one write path for a label.
+  judgments unlabelled --stage NAME [--prefix TEXT] [--json]
+              The decisions of one stage with no label yet, oldest first;
+              --prefix keeps the rows whose question id starts with TEXT.
   serve --loopback [--port N] [--database PATH]
               Serve the database to `sd_db.remote` connections on
               127.0.0.1 (default port 8769, 0 picks a free one). Loopback

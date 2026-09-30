@@ -285,6 +285,7 @@ def cmd_record(args, conf, out, env=None, **kw) -> int:
         "stage": whose(args, env, "stage"),
         "arm": args.arm,
         "pair": named(args.pair),
+        "question_id": named(args.subject),
         "shadow": args.shadow,
         "provider": args.provider,
         "primitive": args.primitive,
@@ -360,7 +361,7 @@ def measure(args, env) -> None:
         "provider": PROVIDER,
         "primitive": args.verb,
         "model": None,
-        "question_id": named(getattr(args, "id", None)),
+        "question_id": subject_of(args),
         "questions": None,
         "answer": None,
         "confidence": None,
@@ -454,6 +455,18 @@ def named(value) -> str | None:
     if len(token) > MAX_NAME or not IDENTIFIER.match(token):
         return None
     return token
+
+
+def subject_of(args) -> str | None:
+    """The row's question id: `--subject` when given, else `--id`.
+
+    A subject that is not an identifier is dropped, not replaced by `--id`,
+    so the row says plainly that it names no subject.
+    """
+    subject = getattr(args, "subject", None)
+    if subject is not None:
+        return named(subject)
+    return named(getattr(args, "id", None))
 
 
 def whose(args, env, field: str) -> str:
@@ -1117,6 +1130,19 @@ def add_measurement(parser) -> None:
     parser.add_argument("--shadow-ms", type=int, default=None, dest="shadow_ms",
                         metavar="N",
                         help="how long your own path took, for the paired row")
+    add_subject(parser)
+
+
+#: `--subject` names the judged thing for the ledger, so a later outcome can be
+#: matched to the row (sd:2107). It is never part of the request: `--id` is a
+#: key of the payload, so a repository name there would leave the machine, and
+#: this option exists so that it does not have to. An identifier or nothing,
+#: like every name the ledger keeps.
+def add_subject(parser) -> None:
+    parser.add_argument("--subject", default=None, metavar="NAME",
+                        help="what was judged, for the judgment ledger only; "
+                             "never sent. Recorded as the row's question id "
+                             "in place of --id")
 
 
 def add_common(parser) -> None:
@@ -1228,6 +1254,7 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--pair", default=None, metavar="ID",
                      help="ties this row to the other arm of the same decision")
     rec.add_argument("--shadow", action="store_true")
+    add_subject(rec)
     rec.add_argument("--changed", choices=("yes", "no", "unknown"), default=None)
     rec.add_argument("--why", action="store_true",
                      help="say on stderr what the recorder did")
@@ -1316,6 +1343,7 @@ def main(argv=None, out=None, env=None, **kw) -> int:
             "stage": whose(args, env, "stage"),
             "arm": "baseline",
             "pair": named(pair),
+            "question_id": named(getattr(args, "subject", None)),
             "shadow": True,
             "provider": BASELINE_PROVIDER,
             "primitive": "baseline",

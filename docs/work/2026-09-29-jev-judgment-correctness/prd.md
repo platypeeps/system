@@ -1,0 +1,68 @@
+---
+title: Record whether each Jev judgment was right, from later outcomes
+created: 2026-09-29
+item: sd:2107
+---
+# PRD — Jev judgment correctness from later outcomes
+
+## Problem
+
+The meter (sd:2087) writes one `judgment` row per Jev decision. It records the
+answer and the confidence the model reported, but never whether the answer was
+right. The `override`, `override_source` and `override_at` columns exist for
+that, and every row has them empty: nothing writes them.
+
+Reported confidence is not accuracy. jev-kit reports a set of all-wrong answers
+with a mean reported confidence of 0.9744. Each caller sets `--unsure-below`
+by guess; `sd-review` uses a fixed value. Without labels, no floor can be
+checked and no stage can be shown to help.
+
+A per-call human label does not scale and is not needed. For most stages a
+later event says whether the judgment held.
+
+## Requirements
+
+1. A judgment row can carry a later, authoritative answer: `override` holds it
+   in the same shape as `answer` (a number: a probability, a score or a
+   position). `override_source` names the rule that produced it, and
+   `override_at` says when.
+2. The ledger owns the one write path for a label. It refuses a label for a
+   row that does not exist, a value that is not a number, and a source that is
+   not an identifier. Writing a label twice with the same value is a no-op;
+   a different value is refused unless the caller says to replace it.
+3. A caller whose judgment can be labelled passes a subject in `--subject`:
+   an identifier that names the judged thing, never submitted content. It is
+   recorded as the row's `question_id` and never sent. `--id` keeps its role
+   as a key of the request, so a subject there would leave the machine.
+4. `sd-review` passes a subject: the repository and the head commit it
+   reviewed. No rule labels it yet (see Out of scope).
+5. A label comes only from independent evidence of the right answer, never
+   from the prediction under test. A labeller reads unlabelled rows through
+   `sd-db.sh judgments unlabelled` and writes through `judgments label`.
+6. `sd-db judgments` reports, per stage, how many rows are labelled and how
+   many of those were right, and the same by reported-confidence band.
+7. Nothing may depend on Jev: a labeller calls no model.
+
+## Out of scope
+
+- A labeller for the `sd-review` tier. The first cut was withdrawn in review
+  (2026-09-29): a later fix in a file the change shared is not evidence that
+  the review missed it, and deriving the "right" tier from the chosen one made
+  the label depend on the prediction it scored. The tier's right answer is not
+  observable from later commits. Recording escaped defects as outcome
+  evidence, apart from `override`, is a follow-up.
+
+- Review-finding triage (sd:2092), ordering stages (sd:2091, sd:2094, sd:2095)
+  and duplicate hints (sd:2093). Each needs its caller to exist first. Triage
+  is the first rule to write: the final `sd-receive-review` disposition is its
+  right answer, independent of the prediction.
+- Setting floors. A floor is chosen from the report after about 50–100
+  labelled rows per stage; that is a follow-up, not code here.
+
+## Acceptance
+
+- A label written through the ledger shows in `sd-db judgments` for its stage.
+- A second, different label for the same row is refused without `--replace`.
+- `sd-review` rows written after the pack change carry
+  `sd-review-tier:<owner>.<repo>:<sha12>` as their `question_id`, and the
+  request `jev` sends carries no part of it.
