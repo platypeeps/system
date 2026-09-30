@@ -48,7 +48,7 @@ class DirectRemoteAccess(test_remote_access.RemoteAccess):
         self.lookup_login = self.operator
         self.peer_calls = []
         self.runner_backend = Mock(return_value={"control": {"signalled_owned_group": True}})
-        with patch.object(server, "ThreadingHTTPServer", side_effect=self.child_server):
+        with patch.object(server, "Listener", side_effect=self.child_server):
             self.listening = server.build(self.path, port=0, frontdoor=self.frontdoor,
                                           frontdoor_check=self.check_frontdoor,
                                           peer_lookup=self.peer_lookup,
@@ -245,7 +245,7 @@ class DirectRemoteAccess(test_remote_access.RemoteAccess):
             created.append(instance)
             return instance
         with patch.object(server, "DashboardServer", side_effect=primary), \
-                patch.object(server, "ThreadingHTTPServer", side_effect=OSError("occupied")):
+                patch.object(server, "Listener", side_effect=OSError("occupied")):
             with self.assertRaisesRegex(OSError, "occupied"):
                 server.build(self.path, port=0, frontdoor=self.frontdoor,
                              frontdoor_check=self.check_frontdoor, peer_lookup=self.peer_lookup)
@@ -253,7 +253,7 @@ class DirectRemoteAccess(test_remote_access.RemoteAccess):
         self.assertEqual(created[0].socket.fileno(), -1)
 
     def test_thread_start_failure_closes_both_sockets(self):
-        with patch.object(server, "ThreadingHTTPServer", side_effect=self.child_server):
+        with patch.object(server, "Listener", side_effect=self.child_server):
             candidate = server.build(self.path, port=0, frontdoor=self.frontdoor,
                                      frontdoor_check=self.check_frontdoor, peer_lookup=self.peer_lookup)
         self.addCleanup(candidate.server_close)

@@ -83,7 +83,10 @@ class ClientLeaves(ScreenCase):
 
 
 class DirectClientLeaves(ClientLeaves):
-    """The same on the optional direct IP listener, which `build` makes from the stdlib class."""
+    """The same on the optional direct IP listener, which `build` makes from `server.Listener`."""
+
+    #: What the fixture binds in place of the direct listener; the burst test needs the real class.
+    direct_class = ThreadingHTTPServer
 
     def build(self):
         config = {"origin": "https://fixture.tail-example.ts.net:8443", "operator_login": "operator@example.test",
@@ -93,8 +96,8 @@ class DirectClientLeaves(ClientLeaves):
                  "AllowFunnel": {}}
         frontdoor = auth.validate_frontdoor(config, serve, 8767)
         # The fixture IP is not on this host; bind the direct socket to loopback instead.
-        with patch.object(server, "ThreadingHTTPServer",
-                          side_effect=lambda address, handler: ThreadingHTTPServer(("127.0.0.1", 0), handler)):
+        with patch.object(server, "Listener",
+                          side_effect=lambda address, handler: self.direct_class(("127.0.0.1", 0), handler)):
             return server.build(self.path, port=0, frontdoor=frontdoor, frontdoor_check=lambda: True,
                                 peer_lookup=lambda peer: "operator@example.test",
                                 operations_backend=Mock(names=lambda: []))
