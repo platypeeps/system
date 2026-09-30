@@ -225,6 +225,12 @@ function shellRun(c, o) {
   document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } }));
 }
 C.run = shellRun;
+// shell.js's bulk bar: one run per picked object in the same tick, then the shell's own toast whose Undo undoes every pick.
+function shellBulk(c, objs) {
+  objs.forEach(o => c.run(o));
+  OUT.toasts.push({ msg: `${c.label} · ${objs.length} items`, undo: c.risk === 'undo' && c.undo ? () => objs.forEach(o => c.undo(o)) : null });
+  document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: 'bulk' } }));
+}
 window.shell = { commands: C, ICON: () => mk`<svg></svg>`, toast: (msg, undo) => OUT.toasts.push({ msg: msg, undo: undo || null }),
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a) };
@@ -232,6 +238,7 @@ const cmd = id => REG.find(c => c.id === id);
 const flush = async () => { for (let i = 0; i < 400; i++) await null; };
 const open = key => document.dispatchEvent(new CustomEvent('shell:open', { detail: String(key) }));
 const lastToast = () => OUT.toasts[OUT.toasts.length - 1];
+const lastUndo = () => OUT.toasts.filter(t => t.undo).pop();
 """
 
 
@@ -250,6 +257,9 @@ class TheScript(ScreenCase):
         self.ids = seed(self)
         self.doc = tasks_screen.document(self.connection, now=NOW)
         self.details = {str(i): tasks_screen.details(self.connection, i, now=NOW) for i in self.ids.values()}
+
+    def row(self, name):
+        return next(r for r in self.doc["rows"] if r["id"] == self.ids[name])
 
     def run_page(self, body, answer="null", *, prelude="", env=None):
         """Load tasks.js, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R."""
@@ -277,6 +287,7 @@ class TheScript(ScreenCase):
         statuses = [[f"item.status.{s}", "item", "undo", str(i + 1), None, True, True]
                     for i, s in enumerate(["planning", "ready", "in_progress", "blocked", "done"])]
         self.assertEqual(out["R"]["reg"], statuses + [
+            ["item.complete", "item", "confirm", "5", None, True, False],
             ["item.edit", "item", "safe", "e", None, True, False],
             ["item.move", "item", "safe", "m", None, True, False],
             ["item.p2", "item", "undo", None, None, True, True],
@@ -459,6 +470,84 @@ R.matrix = ELS['view-matrix'].html;""")
         # Every card (role="option") sits in a quadrant's drop list, and every drop list is a listbox.
         self.assertEqual(out["R"]["matrix"].count('<div class="drop" role="listbox"'), 4)
         self.assertNotIn('<div class="drop">', out["R"]["matrix"])
+
+    def test_a_bulk_undo_reverses_only_the_writes_that_landed(self):
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = f"""(path, body) => path === '/api/items/{ask}/status' && body.status === 'in_progress'
+  ? [409, {{ error: 'The item changed. Reload it.' }}]
+  : [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-09', recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"""
+        # The Undo is taken at once, before any write answered: it must wait, and skip the refused one.
+        out = self.run_page(f"""shellBulk(cmd('item.status.in_progress'), [C.get('{plan}'), C.get('{ask}')]);
+lastUndo().undo(); await flush();""", answer)
+        self.assertEqual([p[:2] for p in out["posts"]], [
+            [f"/api/items/{plan}/status", {"status": "in_progress", "revision": self.row("plan")["revision"]}],
+            [f"/api/items/{ask}/status", {"status": "in_progress", "revision": self.row("ask")["revision"]}],
+            [f"/api/items/{plan}/status", {"status": "ready", "revision": "b" * 64}],
+        ])
+        self.assertIn("Status → In progress undone · 1 item", [t[0] for t in out["toasts"]])
+
+    def test_a_bulk_failure_toast_offers_undo_for_the_landed_writes_only(self):
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = f"""(path, body) => path === '/api/items/{ask}/status'
+  ? [409, {{ error: 'The item changed. Reload it.' }}]
+  : [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-09', recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"""
+        out = self.run_page(f"""shellBulk(cmd('item.status.blocked'), [C.get('{plan}'), C.get('{ask}')]); await flush();
+R.gets = OUT.gets.length; lastUndo().undo(); await flush();""", answer)
+        self.assertEqual(out["R"]["gets"], 2, "the refused write did not read the rows again")
+        self.assertIn(["1 of 2 not changed: The item changed. Reload it. · Undo reverses the 1 that landed", True], out["toasts"])
+        self.assertEqual([p[0] for p in out["posts"]].count(f"/api/items/{ask}/status"), 1, "Undo wrote the refused item")
+        # The stand-in reads back the seeded rows, so the Undo sends the seeded revision; the real read sends the new one.
+        self.assertEqual([out["posts"][-1][0], out["posts"][-1][1]["status"]], [f"/api/items/{plan}/status", "ready"])
+
+    def test_each_undo_reverses_its_own_operation(self):
+        ask = self.ids["ask"]
+        answer = f"""(path, body) => new Promise(r => HOLD.push(() => r([200, {{ item: {{ id: {ask}, status: body.status, priority: 3,
+  due: null, recurrence: null }}, notes: [], revision: body.status.slice(0, 1).repeat(64).replace(/[^a-f0-9]/g, 'd') }}])))"""
+        # Ready, then In progress, both sent before either answered: the second Undo goes back to Ready, not Planning.
+        out = self.run_page(f"""shellRun(cmd('item.status.ready'), C.get('{ask}')); shellRun(cmd('item.status.in_progress'), C.get('{ask}'));
+await flush(); HOLD.splice(0).forEach(f => f()); await flush(); HOLD.splice(0).forEach(f => f()); await flush();
+R.toasts = OUT.toasts.map(t => t.msg); OUT.toasts[1].undo(); await flush(); HOLD.splice(0).forEach(f => f()); await flush();""",
+                            answer, prelude="var HOLD = [];\n")
+        self.assertEqual(out["R"]["toasts"][:2], [f"#{ask} Planning → Ready · sd task status {ask} ready",
+                                                  f"#{ask} Ready → In progress · sd task status {ask} in_progress"])
+        self.assertEqual([p[1]["status"] for p in out["posts"]], ["ready", "in_progress", "ready"])
+        self.assertEqual(out["toasts"][-1], [f"Status → In progress undone · #{ask}", False])
+
+    def test_an_edit_undo_restores_the_fields_its_own_write_changed(self):
+        ask = self.ids["ask"]
+        answer = f"""(path, body) => new Promise(r => HOLD.push(() => r([200, {{ item: {{ id: {ask}, status: 'planning', priority: body.priority,
+  due: null, recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}])))"""
+        # Two P2 edits sent before either answered: the second one found P2, so its Undo sets P2, not the P3 before the first.
+        out = self.run_page(f"""shellRun(cmd('item.p2'), C.get('{ask}')); shellRun(cmd('item.p2'), C.get('{ask}'));
+await flush(); HOLD.splice(0).forEach(f => f()); await flush(); HOLD.splice(0).forEach(f => f()); await flush();
+OUT.toasts[1].undo(); await flush(); HOLD.splice(0).forEach(f => f()); await flush();""", answer, prelude="var HOLD = [];\n")
+        self.assertEqual([p[1]["priority"] for p in out["posts"]], [2, 2, 2])
+        self.assertEqual(out["toasts"][-1], [f"Edit → P2 undone · #{ask}", False])
+
+    def test_completing_a_repeating_task_is_confirmed_shows_the_next_occurrence_and_has_no_undo(self):
+        plan = self.ids["plan"]
+        row = self.row("plan")
+        row["recurrence"] = "FREQ=WEEKLY"
+        successor = {**row, "id": 99, "status": "planning", "due": "2026-09-16", "revision": "e" * 64}
+        answer = f"""(path, body) => {{ DOC.rows.push({json.dumps(successor)});
+  return [200, {{ item: {{ id: {plan}, status: 'done', priority: 2, due: '2026-09-09', recurrence: null }}, notes: [],
+    revision: 'b'.repeat(64), next_occurrence: 99, next_occurrence_reason: null }}]; }}"""
+        out = self.run_page(f"""R.done = cmd('item.status.done').when(C.get('{plan}'));
+R.complete = cmd('item.complete').when(C.get('{plan}')); R.key = cmd('item.complete').key;
+shellRun(cmd('item.complete'), C.get('{plan}')); await flush(); R.listed = !!C.get('99');""", answer)
+        self.assertEqual(out["R"]["done"], "it repeats: Complete occurrence opens the next one, and has no Undo")
+        self.assertEqual(out["R"]["complete"], True)
+        self.assertEqual(out["R"]["key"], "5")
+        self.assertEqual(out["confirms"], ["item.complete"])
+        self.assertEqual(out["posts"], [[f"/api/items/{plan}/status", {"status": "done", "revision": row["revision"]}, 64]])
+        self.assertEqual(out["gets"], ["/api/tasks", "/api/tasks"], "the rows were not read again for the next occurrence")
+        self.assertTrue(out["R"]["listed"], "the next occurrence is not listed")
+        self.assertEqual(out["toasts"], [[f"#{plan} Ready → Done · next occurrence #99 due Sep 16 · sd task status {plan} done", False]])
+
+    def test_a_task_that_does_not_repeat_has_no_complete_occurrence(self):
+        ask = self.ids["ask"]
+        out = self.run_page(f"R.when = cmd('item.complete').when(C.get('{ask}')); R.done = cmd('item.status.done').when(C.get('{ask}'));")
+        self.assertEqual(out["R"], {"when": "the task does not repeat; Status → Done completes it", "done": True})
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", TASKS_JS)
