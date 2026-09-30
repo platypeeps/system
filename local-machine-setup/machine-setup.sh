@@ -779,23 +779,36 @@ stage_repos() {
   fi
 }
 
-# Jobs only this machine sees: those in the extra and host folders that
-# cron-jobs.sh reads before the shared one. No profile names them, since a
-# profile is shared between machines; where they live says they belong here.
-# The folders come from cron_job_dirs in lib/system_tools_config.py, so the
-# host rule is not repeated here.
+# Jobs only this machine sees: those in its own folder, cron-jobs/jobs/<host>/.
+# No profile names them, since a profile is shared between machines; where
+# they live says they belong here. CRON_JOBS_EXTRA_DIRS is not included: those
+# folders only define jobs, and the profile picks which of them run (sd:2221).
+# The folder comes from cron_job_dirs in lib/system_tools_config.py, so the
+# host rule is not repeated here. A folder that does not exist lists nothing;
+# one that cannot be read, or a python3 or lib that fails, exits non-zero,
+# because a caller that sweeps must not read a failure as "no host jobs".
 host_cron_jobs() {
-  PYTHONPATH="$ROOT/lib" python3 -c 'import system_tools_config as stc
-for d in stc.cron_job_dirs()[:-1]:
-    for f in sorted(d.glob("*.job")):
-        print(f.stem)' 2>/dev/null | sort -u
+  PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+dirs = stc.cron_job_dirs()
+host = dirs[-2] if len(dirs) > 1 and dirs[-2].parent == dirs[-1] else None
+if host is not None and os.path.lexists(host):
+    for name in sorted(os.listdir(host)):
+        if name.endswith(".job"):
+            print(name[:-4])'
 }
 
 stage_cron() {
   echo "== cron"
   # Without its host jobs, the sweep below read each one as an orphan and
-  # uninstalled it every night: nas-full-copy on 2026-09-29 (sd:2221).
-  jobs=$( { manifest cron; host_cron_jobs; } | awk 'NF && !seen[$0]++')
+  # uninstalled it every night (sd:2221). When they cannot be listed, the
+  # wanted list is incomplete, so the sweep is skipped rather than guessed.
+  sweep=1
+  if ! host_jobs=$(host_cron_jobs); then
+    echo "  MISSING host job list — could not read this host's cron-jobs folder; nothing is uninstalled this run"
+    host_jobs=
+    sweep=0
+  fi
+  jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; } | awk 'NF && !seen[$0]++')
   if [ -z "$jobs" ]; then
     echo "  no jobs in this profile"
     return 0
@@ -830,6 +843,7 @@ stage_cron() {
   # plist there whose job the manifest no longer lists is an orphan.
   # uninstall derives label and plist from the name alone, so it works even
   # when the .job file itself is gone.
+  [ "$sweep" = 1 ] || return 0
   for xp in "$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron."*.plist; do
     [ -e "$xp" ] || continue
     xj=$(basename "$xp" .plist)
@@ -1750,7 +1764,11 @@ cmd_capture() {
   # This host's own jobs stay out of the profile too: the cron stage installs
   # them from their folder, and another machine sharing the profile has no
   # such job file to install.
-  { common_manifest cron; host_cron_jobs; } | sort -u > "$tmp/common.cron"
+  if ! host_cron_jobs > "$tmp/host.cron"; then
+    echo "capture: cannot list the host cron jobs in cron-jobs/jobs/<host>/; nothing captured" >&2
+    exit 1
+  fi
+  { common_manifest cron; cat "$tmp/host.cron"; } | sort -u > "$tmp/common.cron"
   comm -23 "$tmp/have.cron" "$tmp/common.cron" > "$tmp/out.cron"
 
   if command -v mas >/dev/null 2>&1; then

@@ -97,6 +97,17 @@ class StageTest(unittest.TestCase):
     def install_plist(self, job):
         (self.agents / f"{fixture_config.LABEL_PREFIX}.cron.{job}.plist").write_text("<plist/>\n")
 
+    def break_discovery(self):
+        """Make the host job listing fail the way a broken python3 or lib does."""
+        (self.folder.parent / "lib/system_tools_config.py").write_text(
+            "raise ImportError('broken for the test')\n")
+
+    def lock_host_folder(self):
+        """An unreadable host folder: a glob would read it as empty."""
+        host = self.jobs / HOST
+        host.chmod(0)
+        self.addCleanup(host.chmod, 0o755)
+
 
 class AppStoreTest(StageTest):
     def setUp(self):
@@ -164,13 +175,70 @@ class CronTest(StageTest):
         self.assertNotIn("uninstall host-job", log)
 
 
+class CronDiscoveryTest(CronTest):
+    """The sweep uninstalls; it must not run on an incomplete wanted list."""
+
+    def assert_nothing_uninstalled(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MISSING host job list", result.stdout)
+        self.assertIn("ok      shared-job", result.stdout)
+        self.assertNotIn("uninstall", self.cron_log.read_text())
+
+    def test_a_broken_discovery_uninstalls_nothing(self):
+        for job in ("shared-job", "host-job", "dropped-job"):
+            self.install_plist(job)
+        self.break_discovery()
+        self.assert_nothing_uninstalled(self.run_stage("cron", "--apply"))
+
+    def test_an_unreadable_host_folder_uninstalls_nothing(self):
+        for job in ("shared-job", "host-job"):
+            self.install_plist(job)
+        self.lock_host_folder()
+        self.assert_nothing_uninstalled(self.run_stage("cron", "--apply"))
+
+    def test_no_host_folder_is_not_a_failure(self):
+        (self.jobs / HOST / "host-job.job").unlink()
+        (self.jobs / HOST).rmdir()
+        self.install_plist("shared-job")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("MISSING", result.stdout)
+
+
+class CronExtraDirsTest(CronTest):
+    """CRON_JOBS_EXTRA_DIRS defines jobs; the profile still picks which run."""
+
+    def setUp(self):
+        super().setUp()
+        self.extra = pathlib.Path(self.tmp.name) / "extra"
+        self.extra.mkdir()
+        for job in ("picked", "unpicked"):
+            (self.extra / f"{job}.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+        (self.profiles / "personal.cron").write_text("shared-job\npicked\n")
+
+    def test_an_extra_dir_job_needs_a_profile_entry(self):
+        for job in ("shared-job", "host-job", "picked", "unpicked"):
+            self.install_plist(job)
+        result = self.run_stage("cron", "--apply", CRON_JOBS_EXTRA_DIRS=str(self.extra))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        log = self.cron_log.read_text()
+        self.assertIn("uninstall unpicked", log)
+        self.assertNotIn("uninstall picked", log)
+        self.assertNotIn("uninstall host-job", log)
+
+    def test_an_unpicked_extra_dir_job_is_not_installed(self):
+        self.install_plist("shared-job")
+        self.install_plist("host-job")
+        self.run_stage("cron", "--apply", CRON_JOBS_EXTRA_DIRS=str(self.extra))
+        log = self.cron_log.read_text()
+        self.assertIn("install picked", log)
+        self.assertNotIn("install unpicked", log)
+
+
 class CaptureTest(StageTest):
     """capture must not write a host job or a beta's id 0 into a shared profile."""
 
-    def test_capture_leaves_host_jobs_and_id_0_out_of_the_profile(self):
-        (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')
-        for job in ("host-job", "own-job"):
-            self.install_plist(job)
+    def capture(self, **extra):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -181,10 +249,17 @@ class CaptureTest(StageTest):
             "CRON_JOBS_HOST": HOST,
             "MAS_LIST": "111  Alpha  (1.0)\n0  Beta App  (2.0b1)\n",
             "MAS_LOG": str(self.mas_log),
+            **extra,
         }
-        result = subprocess.run([str(self.folder / "machine-setup.sh"), "capture", "--apply"],
-                                env=env, capture_output=True, text=True, cwd=self.tmp.name,
-                                stdin=subprocess.DEVNULL, timeout=120)
+        return subprocess.run([str(self.folder / "machine-setup.sh"), "capture", "--apply"],
+                              env=env, capture_output=True, text=True, cwd=self.tmp.name,
+                              stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_capture_leaves_host_jobs_and_id_0_out_of_the_profile(self):
+        (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')
+        for job in ("host-job", "own-job"):
+            self.install_plist(job)
+        result = self.capture()
         self.assertIn("cron: 1 entries", result.stdout, result.stdout + result.stderr)
         cron = (self.profiles / "personal.cron").read_text()
         self.assertIn("own-job", cron)
@@ -192,6 +267,26 @@ class CaptureTest(StageTest):
         mas = (self.profiles / "personal.mas").read_text()
         self.assertIn("111 Alpha", mas)
         self.assertNotIn("Beta App", mas)
+
+    def test_capture_keeps_an_extra_dir_job_in_the_profile(self):
+        extra = pathlib.Path(self.tmp.name) / "extra"
+        extra.mkdir()
+        (extra / "picked.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+        self.install_plist("picked")
+        result = self.capture(CRON_JOBS_EXTRA_DIRS=str(extra))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("picked", (self.profiles / "personal.cron").read_text())
+
+    def test_capture_stops_when_host_jobs_cannot_be_listed(self):
+        (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')
+        self.install_plist("host-job")
+        before = (self.profiles / "personal.cron").read_text() if (self.profiles / "personal.cron").exists() else None
+        self.lock_host_folder()
+        result = self.capture()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("host cron jobs", result.stderr)
+        after = (self.profiles / "personal.cron").read_text() if (self.profiles / "personal.cron").exists() else None
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":
