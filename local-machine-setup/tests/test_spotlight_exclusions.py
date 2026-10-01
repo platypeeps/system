@@ -103,6 +103,9 @@ class SpotlightExclusionsTest(unittest.TestCase):
         base = pathlib.Path(self.tmp.name)
         self.folder = base / "repo/local-machine-setup"
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        # capture lists host cron jobs through lib/, and stops when it cannot.
+        shutil.copytree(FOLDER.parent / "lib", self.folder.parent / "lib",
+                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
         self.config_root = fixture_config.copy_config(base)
         self.profiles = self.config_root / "machine-setup/profiles"
         self.manifest = self.profiles / "personal.spotlight"

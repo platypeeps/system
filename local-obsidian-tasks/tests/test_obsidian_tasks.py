@@ -137,6 +137,69 @@ class DigestTest(unittest.TestCase):
         self.assertEqual(sorted(re.findall(r">([^<>]+)</a>", plain)),
                          sorted(re.findall(r">([^<>]+)</a>", ranked)))
 
+    # --- an unreachable signer is a bounded failure, not a crash ---------
+
+    def test_a_hanging_signer_does_not_kill_the_digest(self):
+        """sd:1770. The nightly died on one `url` call that hit its timeout.
+
+        `except OSError` never caught `subprocess.TimeoutExpired`, so a slow
+        `tailscale funnel status` killed the whole digest. It must now mail
+        the same Open-only digest it mails when the signer is absent.
+        """
+        out, html = self.digest({**OFF, "ACTIONS_STUB_HANG": "30"})
+        self.assertEqual(out, GOLDEN_LIST)
+        self.assertEqual(html, GOLDEN_HTML)
+
+    def test_a_hanging_signer_says_so_once(self):
+        import os
+        import subprocess
+        env = dict(os.environ)
+        env.update({
+            "OBSIDIAN_VAULT": str(self.root / "vault"),
+            "NOTIFY_RECORD": str(self.root / "notify.args"),
+            "JEV_OBSIDIAN_TASKS": "0",
+            "ACTIONS_STUB_HANG": "30",
+        })
+        proc = subprocess.run(
+            ["sh", str(self.root / "local-obsidian-tasks" / "obsidian-tasks.sh"),
+             "run"],
+            capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("TimeoutExpired", proc.stderr)
+        self.assertIn("did not answer within", proc.stderr)
+        self.assertEqual(proc.stderr.count("action links unsigned"), 1)
+
+    def test_the_signer_is_asked_for_a_base_url_once_and_never_again(self):
+        """One tailscale probe a run, not one a button (sd:1770, as sd:1203).
+
+        Each `url` call probed `tailscale funnel status` itself, three times a
+        card. The base is now discovered once by `base-url` and handed down in
+        TASK_ACTIONS_BASE_URL; this reads the stub's log of its calls.
+        """
+        record = self.root / "actions.calls"
+        self.digest({**OFF,
+                     "ACTIONS_STUB_RECORD": str(record),
+                     "ACTIONS_STUB_SIGNS": "https://signer.example.test"})
+        calls = [line.split(" ", 1) for line in
+                 record.read_text().splitlines() if line]
+        verbs = [verb for verb, _ in calls]
+        self.assertEqual(verbs.count("base-url"), 1, calls)
+        self.assertGreater(verbs.count("url"), 1, calls)
+        self.assertEqual(
+            {base for verb, base in calls if verb == "url"},
+            {"https://signer.example.test"})
+
+    def test_one_signing_timeout_retires_the_signer_for_the_run(self):
+        record = self.root / "actions.calls"
+        self.digest({**OFF,
+                     "ACTIONS_STUB_RECORD": str(record),
+                     "ACTIONS_STUB_SIGNS": "https://signer.example.test",
+                     "ACTIONS_STUB_SIGN_HANG": "30"})
+        verbs = [line.split(" ", 1)[0] for line in
+                 record.read_text().splitlines() if line]
+        self.assertEqual(verbs.count("base-url"), 1, verbs)
+        self.assertEqual(verbs.count("url"), 1, verbs)
+
     # --- what leaves the machine -----------------------------------------
 
     def test_only_titles_and_dates_leave_the_machine(self):

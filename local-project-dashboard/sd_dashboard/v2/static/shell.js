@@ -321,7 +321,43 @@
   // See products/system/commands.md. A page registers commands and puts its row objects:
   //   shell.commands.register({ id, on, label, key, cli: o => '…', risk: 'safe'|'undo'|'confirm', primary: o => bool, when: o => true|'reason', run: o => 'result', undo: o => {} })
   //   shell.commands.put({ id, type, label, …facts })   shell.commands.select(id)
+  // build (sd:2124): run may return a promise for a write; see settleOne and settleBulk below.
   const REG = [], OBJ = new Map(), picked = new Set();
+  // bulk:start
+  // build (sd:2124, review of PR #50): the run contract for writes. run(o) returns a string (done: the shell toasts it), null
+  // (a form opened, or the page toasts), or a promise. The promise resolves when the write landed, to a toast text or to
+  // { text, … }, and rejects with the reason it did not. Undo is offered only for what landed: c.undo(o, answer) gets
+  // what that run answered, may return a promise, and resolves false when it had nothing to reverse.
+  const whyOf = e => (e && e.message) || String(e);
+  const thenable = v => !!v && typeof v.then === 'function';
+  const textOf = (v, fallback) => (typeof v === 'string' && v) || (v && typeof v.text === 'string' && v.text) || fallback;
+  const undoOne = (c, o, v) => Promise.resolve().then(() => c.undo(o, v));
+  function settleOne(c, o, p, { toast }) {
+    return p.then(v => {
+      const undo = c.risk === 'undo' && c.undo ? () => undoOne(c, o, v).then(
+        ok => toast(ok === false ? `${c.label} not undone · ${o.label}: nothing to reverse` : `${c.label} undone · ${o.label}`),
+        e => toast(`${c.label} not undone · ${o.label}: ${whyOf(e)}`)) : null;
+      toast(textOf(v, `${c.label} · ${o.label}`), undo);
+      return true;
+    }, e => { toast(`${o.label} not changed: ${whyOf(e)}`); return false; });
+  }
+  // A bulk run waits for every run, then toasts once: how many landed, and how many did not with the first reason. Its Undo
+  // reverses only the rows that landed, waits for each, and says how many of the group were reversed and which were not.
+  function settleBulk(c, objs, results, { toast, plural }) {
+    return Promise.allSettled(results.map(r => Promise.resolve(r))).then(rs => {
+      const landed = [], failed = [];
+      rs.forEach((r, i) => r.status === 'fulfilled' ? landed.push({ o: objs[i], v: r.value }) : failed.push({ o: objs[i], why: whyOf(r.reason) }));
+      const text = `${c.label} · ${plural(landed.length, c.on)}${failed.length ? ` · ${failed.length} of ${objs.length} not changed: ${failed[0].why}` : ''}`;
+      const undo = c.risk === 'undo' && c.undo && landed.length ? () => Promise.allSettled(landed.map(x => undoOne(c, x.o, x.v))).then(us => {
+        const not = failed.map(x => `${x.o.label} (its change did not land)`).concat(us.map((u, i) => u.status === 'rejected' ? `${landed[i].o.label} (${whyOf(u.reason)})`
+          : u.value === false ? `${landed[i].o.label} (nothing to reverse)` : '').filter(Boolean));
+        toast(`${c.label} undone · ${objs.length - not.length} of ${objs.length} reversed${not.length ? ` · not reversed: ${not.join(', ')}` : ''}`);
+      }) : null;
+      toast(text, undo);
+      return { landed: landed.length, failed: failed.length };
+    });
+  }
+  // bulk:end
   // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
   const { plural } = window.markup;
   let selId = null;
@@ -383,6 +419,7 @@
   function run(c, o) {
     const go = () => {
       const msg = c.run ? c.run(o) : '';
+      if (thenable(msg)) { settleOne(c, o, msg, { toast }); return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } })); }
       if (msg === null) return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id, form: true } })); // opened a form
       const text = msg || `${c.label} · ${o.label}`;
       // Undo only where the command declares one: a toast that says "undone" over nothing is worse than no Undo.
@@ -492,14 +529,17 @@
   bulk.addEventListener('click', e => {
     if (e.target.closest('[data-bulk-clear]')) { picked.clear(); return renderBulk(); }
     const b = e.target.closest('[data-bulk]'); if (!b) return;
-    const c = REG.find(x => x.id === b.dataset.bulk), objs = [...picked].map(i => OBJ.get(i));
+    runBulk(REG.find(x => x.id === b.dataset.bulk), [...picked].map(i => OBJ.get(i)));
+  });
+  function runBulk(c, objs) {
     const group = { id: 'bulk', type: plural(2, c.on).replace(/^2 /, ''), label: plural(objs.length, c.on) };
     // The confirm dialog gets the group, which has no row fields, so consequence is rebuilt from the real objects: one line each, repeats folded.
     const consequence = c.consequence && (() => { const lines = [...new Set(objs.map(o => c.consequence(o)))]; return lines.length > 4 ? `${lines.slice(0, 4).join(' ')} And ${lines.length - 4} more.` : lines.join(' '); });
-    const one = { ...c, cli: () => objs.map(o => cliOf(c, o)).join(' && '), run: () => { objs.forEach(o => c.run?.(o)); picked.clear(); renderBulk(); return `${c.label} · ${group.label}`; }, undo: c.undo && (() => objs.forEach(o => c.undo(o))),
+    // build (sd:2124): the group's toast and Undo wait for every run (settleBulk); run() sees null and toasts nothing itself.
+    const one = { ...c, cli: () => objs.map(o => cliOf(c, o)).join(' && '), run: () => { const rs = objs.map(o => c.run?.(o)); picked.clear(); renderBulk(); settleBulk(c, objs, rs, { toast, plural }); return null; },
       consequence, askFirst: objs.length > 25, risk: c.risk };
     run(one, group);
-  });
+  }
   const commands = {
     register: (...defs) => { REG.push(...defs); },
     // Every declaration on this page, with a sample CLI from one object of its type: the first object the command is on for
@@ -517,7 +557,7 @@
     get: id => OBJ.get(id),
     select: id => { const changed = id !== selId; selId = id; const o = OBJ.get(id); setContext(o?.label); writeRow(id); if (changed) { details?.querySelector('.asked')?.remove(); renderAsked(); } },
     selected: () => OBJ.get(selId),
-    rowActions, bar, openMenu, run,
+    rowActions, bar, openMenu, run, runBulk,
     pick: id => { const o = OBJ.get(id); if (!o) return; if (!REG.some(c => c.on === o.type && c.bulk)) { toast(`No bulk command for a ${o.type}.`); return; } picked.has(id) ? picked.delete(id) : picked.add(id); renderBulk(); },
   };
 
