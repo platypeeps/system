@@ -29,6 +29,8 @@
 # has answered the mount question, so the check stands aside, as it does for
 # the nightly job.
 JOB_SCHEDULE="50 * * * *"
+# Inside the hour, so a hung backup frees its lock before the next slot.
+JOB_TIMEOUT="20m"
 SD_DB_BACKUP_HOURLY_MOUNT=""
 [ -n "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || SD_DB_BACKUP_HOURLY_MOUNT=" --require-mount /Volumes/local"
 JOB_COMMAND="\"$ROOT/../local-sd-db/sd-db.sh\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep-days 7 --no-row-prune"
