@@ -194,6 +194,11 @@ run against the real machine, which is where the suite's wall time goes
 (`log show --last 24h` is most of it). `make check` runs it
 as one `run_suite` line in `tests/ci-native.sh`; a skip fails there.
 
+The suites start each run in its own session and end it with `kill_group`
+from `tests/procgroup.py`. A group that is already gone is no error there:
+on macOS `killpg` answers EPERM, not ESRCH, while the exited leader is an
+unreaped zombie (sd:2261). `tests/test_procgroup.py` covers both sides.
+
 `tests/test_jev_order.py` covers the Jev ordering with the call stubbed —
 nothing in the suite reaches the network. It runs `check` once per case against
 a fixture tools root, a stub `jev.sh` (`HEALTH_CHECK_JEV`) and a stub `PATH`

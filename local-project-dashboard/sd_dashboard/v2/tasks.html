@@ -42,7 +42,7 @@
         <button type="button" data-view="board" aria-pressed="true"><svg class="i" aria-hidden="true"><use href="#i-kanban"/></svg><span class="txt">Board</span> <kbd>v b</kbd></button>
         <button type="button" data-view="matrix" aria-pressed="false"><svg class="i" aria-hidden="true"><use href="#i-grid-2x2"/></svg><span class="txt">Matrix</span> <kbd>v m</kbd></button>
       </div>
-      <button class="help" type="button" aria-label="Help: views" data-help="<b>List</b> sorts and filters every open task. <b>Board</b> has one column per status; a move saves at once with Undo. <b>Matrix</b> places tasks by importance (priority 1–2) and urgency (due within 7 days or overdue, the rule in <code>reads.is_urgent</code>); a drop there edits priority or due."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+      <button class="help" type="button" aria-label="Help: views" data-help="<b>List</b> sorts and filters every open task. <b>Board</b> has one column per status; a move saves at once with Undo, except Done on a repeating task, which asks first: it opens the next occurrence. <b>Matrix</b> places tasks by importance (priority 1–2) and urgency (the rule in <code>reads.is_urgent</code>: due within 7 days or overdue, a message ready to send for over 3 days, or a report that needs attention); a drop there edits priority or due."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
     </div>
   </div>
 

@@ -22,10 +22,11 @@ that exits 1: the claim is about what the two programs do together.
 import os
 import pathlib
 import shutil
-import signal
 import subprocess
 import tempfile
 import unittest
+
+from .procgroup import kill_group
 
 HERE = pathlib.Path(__file__).resolve().parent
 # REGRESSION means the case fails against the code from before its fix, and
@@ -123,7 +124,7 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         try:
             cls.out, cls.err = proc.communicate(timeout=RUN_TIMEOUT)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            kill_group(proc.pid)
             proc.communicate()
             raise
         cls.rc = proc.returncode

@@ -730,18 +730,66 @@ def inventory(connection, *, screen, item=None, home=None):
             "assignments": assignments, "providers": providers}
 
 
-def executions(connection, *, limit=100):
+#: The two writers of an `exec` note (sd:2183). `prepare` writes a palette
+#: descriptor, `version` 1 JSON whose `note` is its own id; retention and a
+#: backup restore rewrite it in the same shape. `runner.release` writes the
+#: outcome of an author, reviewer or merge run as plain text, session `runner`,
+#: with the run's start and end. Anything else is counted and skipped.
+RUNNER_SESSION = "runner"
+
+
+def _runner_role(connection, record):
+    """The assignment and role of the run `runner.release` wrote this note for.
+
+    The note keeps no run id, but release stamps the run's `created_at` as the
+    note's `started` and its own `released_at` as `ended`, on the item's
+    assignment. None when no one run matches, so a pruned run still lists.
+    """
+    runs = connection.execute(
+        "SELECT assignment.id,assignment.role FROM runner_run JOIN assignment ON assignment.id=runner_run.assignment"
+        " WHERE assignment.item=? AND runner_run.created_at=? AND runner_run.released_at=?",
+        (record["item"], record["started"], record["ended"])).fetchall()
+    return tuple(runs[0]) if len(runs) == 1 else (None, None)
+
+
+def _journal_entry(connection, record, body):
+    """(entry, None) for a note a known writer wrote, else (None, reason)."""
+    try:
+        value = json.loads(body)
+    except (ValueError, TypeError):
+        value = None
+    if isinstance(value, dict) and value.get("version") == 1 and value.get("note") == record["id"]:
+        record["command"] = value.get("command")
+        record["scope"] = value.get("scope")
+        record["output_expired"] = value.get("output_expired") if isinstance(value.get("output_expired"), str) else None
+        return record, None
+    if record["session"] == RUNNER_SESSION and isinstance(body, str) and not isinstance(value, dict):
+        if not record["ended"]:
+            return None, "runner outcome without an end"
+        assignment, role = _runner_role(connection, record)
+        record.update(command=f"runner {role}" if role else "runner", scope="runner", output_expired=None,
+                      source="runner", assignment=assignment, detail=body)
+        return record, None
+    if isinstance(value, dict):
+        if value.get("version") != 1:
+            return None, "unknown version"
+        return None, "palette record for another note"
+    return None, "unknown writer"
+
+
+def execution_journal(connection, *, limit=100):
+    """The latest `exec` notes from every writer, and the skipped ones counted by reason."""
     rows = connection.execute("SELECT note.id,note.item,note.timestamp,note.started,note.ended,note.exit_code,note.body,note.session,item.title FROM note LEFT JOIN item ON item.id=note.item WHERE note.kind='exec' ORDER BY note.id DESC LIMIT ?", (min(100, max(1, limit)),)).fetchall()
-    result = []
+    result, skipped = [], {}
     for row in rows:
         record = dict(row)
-        try:
-            value = json.loads(record.pop("body"))
-        except ValueError:
-            continue
-        if isinstance(value, dict) and value.get("version") == 1 and value.get("note") == row["id"]:
-            record["command"] = value.get("command")
-            record["scope"] = value.get("scope")
-            record["output_expired"] = value.get("output_expired") if isinstance(value.get("output_expired"), str) else None
-            result.append(record)
-    return result
+        entry, reason = _journal_entry(connection, record, record.pop("body"))
+        if entry is None:
+            skipped[reason] = skipped.get(reason, 0) + 1
+        else:
+            result.append(entry)
+    return {"executions": result, "skipped": skipped}
+
+
+def executions(connection, *, limit=100):
+    return execution_journal(connection, limit=limit)["executions"]
