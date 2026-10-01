@@ -253,8 +253,8 @@ login and restart it after a crash; `ThrottleInterval` keeps a crash loop from
 spinning while weights are missing.
 
 - `install`: clone or fast-forward `KEV_REPO_URL` into `KEV_DIR` (default
-  `~/repos/ai/kev`), then `uv sync --extra serve`. The checkout lives outside
-  this repository, like `local-llama-cpp`'s.
+  `kev/` beside `kev.sh`), then `uv sync --extra serve`. The root
+  `.gitignore` excludes that checkout, so none of Kev enters this repository.
 - `serve`: `exec uv run --extra serve python -m kev.serve --run "$KEV_MODEL"
   --host 127.0.0.1 --port "$KEV_PORT"`, in the foreground, as the agent runs it.
 - `status`: 3 when the checkout is missing or nothing listens; 0 when

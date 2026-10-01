@@ -112,6 +112,7 @@ class KevCase(unittest.TestCase):
                 "KEV_DIR": str(self.checkout),
                 "KEV_PORT": str(self.port)}
         base.update(env or {})
+        base = {key: value for key, value in base.items() if value is not None}
         return subprocess.run(["sh", str(self.script), *args], env=base,
                               capture_output=True, text=True, timeout=60)
 
@@ -132,6 +133,16 @@ class TheEntrypoint(KevCase):
 
     def test_unknown_subcommand_exits_1(self):
         self.assertEqual(self.run_script("bogus").returncode, 1)
+
+
+class TheDefaultCheckout(KevCase):
+    def test_unset_kev_dir_runs_the_checkout_beside_the_wrapper(self):
+        beside = self.folder / "kev"
+        beside.mkdir()
+        (beside / "pyproject.toml").write_text("")
+        result = self.run_script("serve", env={"KEV_DIR": None})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"uv [{beside}] run", self.calls.read_text())
 
 
 class TheStatus(KevCase):

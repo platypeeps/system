@@ -7,8 +7,8 @@ Kev is Jared Palmer's open reproduction. It answers typed questions about a
 state (`noul`, `choice`, `score`) with probabilities, as its hosted peer does.
 `local-jev` sends it a copy of every live call, so the two answer the same
 question and the ledger can compare them. Kev itself is not part of this
-repository: `install` clones it to `~/repos/ai/kev`, and this folder holds the
-wrapper and the LaunchAgent.
+repository: `install` clones it to `kev/` in this folder, which the root
+`.gitignore` excludes. This folder holds the wrapper and the LaunchAgent.
 
 ## Usage
 
@@ -48,7 +48,7 @@ over the file.
 | --- | --- | --- |
 | `KEV_MODEL` | `jaredpalmer/kev-4b@v1.0` | The checkpoint: a Hub id, optionally `@revision`, or a run directory |
 | `KEV_PORT` | `8009` | The loopback port |
-| `KEV_DIR` | `~/repos/ai/kev` | The checkout `install` makes and `serve` runs |
+| `KEV_DIR` | `kev/` beside `kev.sh` | The checkout `install` makes and `serve` runs |
 | `KEV_REPO_URL` | Kev's GitHub repository | Where `install` clones from |
 | `KEV_API_KEY` | unset | A bearer token the server then requires |
 | `HF_HOME` | see above | The Hugging Face cache |

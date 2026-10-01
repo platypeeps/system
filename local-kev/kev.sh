@@ -1,7 +1,7 @@
 #!/bin/sh
 # Kev: a small open-weights System One model, served on this Mac by Kev's own
-# server (MLX on Apple Silicon). The checkout lives outside this repository,
-# in ~/repos/ai/kev by default; this folder holds the wrapper and the
+# server (MLX on Apple Silicon). The checkout lives in kev/ beside this
+# script by default, ignored by git; this folder holds the wrapper and the
 # LaunchAgent template. The server binds 127.0.0.1:8009.
 # Usage: kev.sh install|serve|agent-install|agent-uninstall|status|test|help
 #
@@ -26,7 +26,7 @@ done
 
 KEV_MODEL="${KEV_MODEL:-jaredpalmer/kev-4b@v1.0}"
 KEV_PORT="${KEV_PORT:-8009}"
-KEV_DIR="${KEV_DIR:-$HOME/repos/ai/kev}"
+KEV_DIR="${KEV_DIR:-$DIR/kev}"
 KEV_REPO_URL="${KEV_REPO_URL:-https://github.com/jaredpalmer/kev.git}"
 case "${KEV_API_KEY:-}" in
   change-me|changeme) KEV_API_KEY="" ;;
@@ -169,7 +169,7 @@ case "${1:-}" in
 usage: kev.sh install|serve|agent-install|agent-uninstall|status|test|help
 
 Kev is a small open-weights model with TypeSafe's System One API. This runs
-Kev's own server on 127.0.0.1:$KEV_PORT, from a checkout outside this repository.
+Kev's own server on 127.0.0.1:$KEV_PORT, from the git-ignored checkout in $KEV_DIR.
 
   install          clone or fast-forward $KEV_DIR, then uv sync --extra serve
   serve            run the server in the foreground (what the agent runs);
