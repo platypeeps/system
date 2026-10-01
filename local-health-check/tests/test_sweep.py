@@ -20,11 +20,12 @@ suites: the CI wrapper asserts a unittest summary and refuses skips.
 import os
 import pathlib
 import shutil
-import signal
 import subprocess
 import tempfile
 import time
 import unittest
+
+from .procgroup import kill_group
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "health-check.sh"
@@ -190,7 +191,7 @@ esac
         try:
             out, err = proc.communicate(timeout=RUN_TIMEOUT)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            kill_group(proc.pid)
             proc.communicate()
             raise
         cls.finished_at = time.time()
@@ -409,7 +410,7 @@ class StatusBoundIsValidated(unittest.TestCase):
                 try:
                     out, err = proc.communicate(timeout=self.REFUSE_TIMEOUT)
                 except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
+                    kill_group(proc.pid)
                     proc.communicate()
                     self.fail(f"HEALTH_CHECK_STATUS_BOUND={bad!r} was not "
                               f"refused within {self.REFUSE_TIMEOUT}s")
@@ -435,10 +436,7 @@ class StatusBoundIsValidated(unittest.TestCase):
                                     proc.stderr.read() if proc.poll() is not None
                                     else "state dir never created")
                 finally:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    kill_group(proc.pid)
                     proc.communicate()
 
 
