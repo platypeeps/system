@@ -73,6 +73,8 @@ __all__ = [
     "MAX_ANSWER",
     "MAX_NAME",
     "NUMBER",
+    "MAX_DISTRIBUTION",
+    "MAX_OPTIONS",
     "MAX_ORDERING",
     "OUTCOMES",
     "by_stage",
@@ -163,6 +165,14 @@ POSITIONS = re.compile(r"^\d+(,\d+)*$")
 #: The keys are never stored, for the reason `answer` holds a position.
 DISTRIBUTION = re.compile(r"^\d+(\.\d+)?(,\d+(\.\d+)?)*$")
 
+#: The most options one question may have: Kev's API limit, and so the most
+#: values a distribution carries. It is counted, not inferred from a length.
+MAX_OPTIONS = 255
+
+#: Room for `MAX_OPTIONS` values of up to 15 characters each, plus commas.
+#: Sized from the option count; `MAX_ORDERING` is a different thing's bound.
+MAX_DISTRIBUTION = MAX_OPTIONS * 16
+
 
 class JudgmentRefused(SdDbError):
     """A row the ledger will not write, naming the field and what it found."""
@@ -250,10 +260,14 @@ def _probabilities(value: object) -> str | None:
         return None
     if not isinstance(value, str):
         raise JudgmentRefused(f"probabilities must be a string; got {value!r}")
-    if len(value) > MAX_ORDERING:
+    if len(value) > MAX_DISTRIBUTION:
         raise JudgmentRefused(
             f"probabilities is {len(value)} characters and the ledger caps it at "
-            f"{MAX_ORDERING}")
+            f"{MAX_DISTRIBUTION}")
+    if value.count(",") + 1 > MAX_OPTIONS:
+        raise JudgmentRefused(
+            f"probabilities has {value.count(',') + 1} values and a question has "
+            f"at most {MAX_OPTIONS} options")
     if not DISTRIBUTION.match(value):
         raise JudgmentRefused(
             f"probabilities must be numbers separated by commas, in option "
@@ -436,7 +450,8 @@ def unlabelled(
     `prefix` narrows them to the rows whose `question_id` starts with it,
     which is how a labeller finds the rows that name a subject it can look
     up. Gate events are not decisions, and a row with no answer cannot be
-    labelled, so neither is returned.
+    labelled, so neither is returned. Nor is a comparison arm's row: a pair's
+    label lives on its Jev row, and `compare` reads it from there.
     """
     stage = _identifier("stage", stage, required=True)
     if not present(connection):
@@ -445,10 +460,10 @@ def unlabelled(
         "SELECT id, timestamp, caller, stage, arm, primitive, question_id, "
         "outcome, answer, confidence FROM judgment "
         "WHERE stage = ? AND override IS NULL AND answer IS NOT NULL "
-        "AND primitive <> ? "
+        "AND primitive <> ? AND arm IN (?, ?) "
         "AND (? IS NULL OR substr(question_id, 1, length(?)) = ?) "
         "ORDER BY timestamp, id",
-        (stage, GATE_PRIMITIVE, prefix, prefix, prefix))
+        (stage, GATE_PRIMITIVE, *DECISION_ARMS, prefix, prefix, prefix))
     return [dict(row) for row in rows]
 
 

@@ -56,6 +56,45 @@ def switched_on(env) -> bool:
     return (env.get("JEV_METER") or "").strip().lower() not in OFF
 
 
+#: What `ready` returns when a row for that arm would be accepted.
+READY = "ready"
+NO_ARM = "this sd_db does not know the arm"
+
+
+def ready(arm: str, env=None) -> str:
+    """Whether a row for `arm` has somewhere to go, asked before it costs
+    anything. Never raises.
+
+    A comparison arm makes a call that may be billed and exists only to write
+    its row, so the ledger is checked first: the meter is on, `sd_db` is
+    installed and names the arm, and the database opens for writing at the
+    library's schema. `connect` refuses an older or newer schema, which is
+    the window between a library upgrade and its migration.
+    """
+    env = os.environ if env is None else env
+    if not switched_on(env):
+        return SWITCHED_OFF
+    try:
+        from sd_db.database import connect
+        from sd_db.judgment import ARMS
+    except Exception:
+        return NO_LIBRARY
+    if arm not in ARMS:
+        return NO_ARM
+    path = (env.get("JEV_METER_DB") or "").strip() or None
+    try:
+        connection = connect(path, busy_timeout=busy_ms(env))
+    except OperationalError:
+        return CONTENDED
+    except Exception:
+        return NO_STORE
+    try:
+        connection.close()
+    except Exception:
+        pass
+    return READY
+
+
 def busy_ms(env) -> int:
     """`BUSY_MS`, or what `JEV_METER_BUSY_MS` says; a value that does not
     parse is the default, because a typo here may not cost the caller."""

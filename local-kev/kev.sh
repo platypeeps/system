@@ -95,7 +95,10 @@ cmd_serve() {
 cmd_agent_install() {
   require_checkout
   mkdir -p "$AGENT_DIR" "$DIR/logs"
+  # launchd passes the agent only the environment the plist names, so the
+  # config root this install read goes in it, or `serve` would read another.
   sed -e "s|@LABEL@|$LABEL|g" -e "s|@DIR@|$DIR|g" -e "s|@HOME@|$HOME|g" \
+    -e "s|@CONFIG@|$SYSTEM_TOOLS_CONFIG|g" \
     "$SRC_PLIST" > "$DST_PLIST"
   if is_loaded; then
     launchctl bootout "$SERVICE" 2>/dev/null || true
@@ -139,12 +142,24 @@ cmd_status() {
   else
     body=$(curl -s --max-time 5 -w '\n%{http_code}' "$URL/v1/models" 2>/dev/null) || code=$?
   fi
-  if [ -n "${code:-}" ] && [ "${code:-0}" -ne 0 ]; then
-    # Nothing listens: not running, which is nothing to check. A loaded agent
-    # that never answers shows up in its own log, not here.
-    echo "kev: not running on $URL"
-    exit 3
-  fi
+  case "${code:-0}" in
+    0) ;;
+    7)
+      # Connection refused: nothing listens, which is nothing to check.
+      echo "kev: not running on $URL"
+      exit 3
+      ;;
+    28)
+      # Something accepted the connection and never answered: a hung server
+      # is a broken one, and local-health-check must hear about it.
+      echo "kev: $URL did not answer within 5 seconds"
+      exit 1
+      ;;
+    *)
+      echo "kev: $URL failed (curl exit $code)"
+      exit 1
+      ;;
+  esac
   status=$(printf '%s\n' "$body" | tail -n 1)
   if [ "$status" = 200 ] && printf '%s\n' "$body" | grep -q '"models"'; then
     echo "kev: ok  $URL  model=$KEV_MODEL"

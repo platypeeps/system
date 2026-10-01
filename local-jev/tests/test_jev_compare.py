@@ -232,6 +232,45 @@ class TheKevArm(CompareCase):
         time.sleep(0.5)
         self.assertEqual(Arm.seen, [])
 
+    def test_no_arm_calls_out_when_there_is_no_ledger_to_record_in(self):
+        missing = Path(tempfile.mkdtemp()) / "absent.db"
+        self.run_main(["noul", "is it?"], JEV_METER_DB=str(missing),
+                      JEV_COMPARE_HAIKU_VIA="anthropic", JEV_COMPARE_ANTHROPIC_KEY="k")
+        time.sleep(1.0)
+        self.assertEqual(Arm.seen, [])
+
+    def test_no_arm_calls_out_when_the_ledger_predates_the_arms(self):
+        old = Path(tempfile.mkdtemp()) / "old.db"
+        old.write_bytes(self.store.read_bytes())
+        connection = connect(old)
+        connection.execute("PRAGMA user_version = 16")
+        connection.close()
+        self.run_main(["noul", "is it?"], JEV_METER_DB=str(old),
+                      JEV_COMPARE_HAIKU_VIA="anthropic", JEV_COMPARE_ANTHROPIC_KEY="k")
+        time.sleep(1.0)
+        self.assertEqual(Arm.seen, [])
+
+    def test_no_arm_calls_out_when_the_library_predates_the_arms(self):
+        # An sd_db from before migration 017: it names two arms and would
+        # refuse a kev or haiku row after the call had been paid for.
+        lib = Path(tempfile.mkdtemp())
+        (lib / "sd_db").mkdir()
+        (lib / "sd_db" / "__init__.py").write_text("")
+        (lib / "sd_db" / "database.py").write_text(
+            "class Connection:\n"
+            "    def close(self):\n"
+            "        pass\n"
+            "def connect(path=None, busy_timeout=0, **kw):\n"
+            "    return Connection()\n")
+        (lib / "sd_db" / "judgment.py").write_text(
+            "ARMS = ('jev', 'baseline')\n"
+            "def record(connection, **event):\n"
+            "    raise ValueError('arm must be one of jev, baseline')\n")
+        self.run_main(["noul", "is it?"], PYTHONPATH=str(lib),
+                      JEV_COMPARE_HAIKU_VIA="anthropic", JEV_COMPARE_ANTHROPIC_KEY="k")
+        time.sleep(1.0)
+        self.assertEqual(Arm.seen, [])
+
     def test_no_arm_runs_when_jev_is_not_called(self):
         self.run_main(["noul", "is it?", "--fallback", "0.5"], TYPESAFE_API_KEY="")
         time.sleep(0.5)
@@ -384,6 +423,22 @@ class TheHaikuArm(CompareCase):
         schema = Arm.seen[0]["body"]["output_config"]["format"]["schema"]
         self.assertEqual(schema["properties"]["probabilities"]["required"],
                          ["desk", "phone", "mail"])
+
+    def test_a_choice_reply_missing_an_option_is_invalid(self):
+        Arm.reply = json.dumps({"probabilities": {"phone": 1.0}})
+        row = self.haiku("anthropic", ("choice", "which?", "--criteria", "desk,phone,mail"),
+                         JEV_COMPARE_ANTHROPIC_KEY="k")
+        self.assertEqual((row["outcome"], row["cause"]), ("invalid", "invalid"))
+        self.assertIsNone(row["answer"])
+        self.assertIsNone(row["probabilities"])
+
+    def test_a_choice_reply_with_an_option_nobody_asked_for_is_invalid(self):
+        Arm.reply = json.dumps({"probabilities": {"desk": 0.1, "phone": 0.6,
+                                                  "mail": 0.2, "fax": 0.1}})
+        row = self.haiku("anthropic", ("choice", "which?", "--criteria", "desk,phone,mail"),
+                         JEV_COMPARE_ANTHROPIC_KEY="k")
+        self.assertEqual((row["outcome"], row["cause"]), ("invalid", "invalid"))
+        self.assertIsNone(row["answer"])
 
     def test_a_score_is_the_expected_level(self):
         Arm.reply = json.dumps({"probabilities": {"0": 0.0, "1": 0.5, "2": 0.5}})

@@ -164,6 +164,18 @@ class TheStatus(KevCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(handler.seen, [("/v1/models", None)])
 
+    def test_a_listener_that_never_answers_is_broken(self):
+        # Accepted but never answered: curl times out (exit 28), and a hung
+        # server is a broken one, not one that is not running.
+        self.installed()
+        hung = socket.socket()
+        hung.bind(("127.0.0.1", self.port))
+        hung.listen(1)
+        self.addCleanup(hung.close)
+        result = self.run_script("status")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("did not answer", result.stdout)
+
     def test_an_error_answer_is_broken(self):
         self.installed()
         self.serve(status=500, body=b'{"error": "loading"}')
@@ -218,6 +230,17 @@ class TheAgent(KevCase):
         self.assertIn(f"launchctl bootstrap gui/{os.getuid()} {plist}", calls)
         self.assertIn(f"launchctl kickstart gui/{os.getuid()}/example.test.kev", calls)
         self.assertTrue((self.folder / "logs").is_dir())
+
+    def test_the_agent_reads_the_config_root_agent_install_read(self):
+        # run_script points SYSTEM_TOOLS_CONFIG at a root of its own; launchd
+        # passes the agent only what the plist names, so the plist names it.
+        self.installed()
+        result = self.run_script("agent-install")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        text = (self.home / "Library" / "LaunchAgents"
+                / "local.system-tools.kev.plist").read_text()
+        self.assertIn("<key>SYSTEM_TOOLS_CONFIG</key>\n"
+                      f"        <string>{self.config}</string>", text)
 
     def test_agent_install_needs_a_checkout(self):
         result = self.run_script("agent-install")

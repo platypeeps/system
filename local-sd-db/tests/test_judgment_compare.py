@@ -21,6 +21,7 @@ from sd_db.judgment import (
     compare_text,
     label,
     record,
+    unlabelled,
 )
 from sd_db.migrate import initialise, migrate
 from sd_db.schema import SCHEMA_DIR
@@ -72,6 +73,25 @@ class TheArms(CompareCase):
                                   probabilities="0.47,0.28,0.25"))
         self.assertEqual(row["server_ms"], 495)
         self.assertEqual(row["probabilities"], "0.47,0.28,0.25")
+
+    def test_a_distribution_over_every_option_kev_supports_is_stored(self):
+        # Kev's API takes up to 255 options; 0.0000 for each is 1784 characters.
+        value = ",".join(["0.0000"] * 254 + ["1.0000"])
+        row = self.row(self.write(primitive="choice", answer="255", probabilities=value))
+        self.assertEqual(row["probabilities"], value)
+
+    def test_a_distribution_over_more_options_than_kev_supports_is_refused(self):
+        with self.assertRaises(JudgmentRefused):
+            self.write(probabilities=",".join(["0"] * 256))
+
+    def test_the_labelling_queue_holds_no_comparison_arm_row(self):
+        jev_row = self.write(arm="jev", pair="p1", answer="0.9", question_id="q1")
+        base = self.write(arm="baseline", provider="local", answer="1", question_id="q2")
+        self.write(arm="kev", provider="local", pair="p1", answer="0.8", question_id="q1")
+        self.write(arm="haiku", provider="anthropic", pair="p1", answer="0.7",
+                   question_id="q1")
+        found = unlabelled(self.connection, "JEV_NOTIFY")
+        self.assertEqual(sorted(row["id"] for row in found), sorted([jev_row, base]))
 
     def test_probabilities_that_are_not_numbers_are_refused(self):
         for value in ("returns,shipping", "0.5;0.5", "0.5, 0.5", "/home/x", ""):

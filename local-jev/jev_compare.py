@@ -255,7 +255,12 @@ def parse_reply(reply, question: dict) -> list[float]:
         if question["type"] == "noul":
             return [float(reply["probability"])]
         found = reply["probabilities"]
-        return [float(found.get(key, 0.0)) for key in options(question)]
+        keys = options(question)
+        # Exactly the options asked about. A transport may ignore the schema,
+        # and an option filled in as zero would be scored as an answer.
+        if set(found) != set(keys):
+            raise KeyError(f"options {sorted(found)} are not {keys}")
+        return [float(found[key]) for key in keys]
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise Declined("invalid", "invalid", f"the reply has no usable probabilities ({exc})")
 
@@ -596,8 +601,17 @@ def main(argv=None, env=None) -> int:
     via = haiku_via(env)
     if via:
         work.append(("haiku", lambda: haiku_arm(job, env, via)))
+    # Each arm's row needs a ledger that takes it. Without one the call would
+    # be paid for and then thrown away, so the arm does not run.
+    runnable = []
+    for name, fn in work:
+        said = jev_meter.ready(name, env) if jev_meter is not None else "no meter"
+        if jev_meter is not None and said == jev_meter.READY:
+            runnable.append((name, fn))
+        else:
+            sys.stderr.write(f"jev-compare: {name}: not run, {said}\n")
     threads = [threading.Thread(target=run_arm, args=(name, job, env, fn), daemon=True)
-               for name, fn in work]
+               for name, fn in runnable]
     for thread in threads:
         thread.start()
     # Each arm bounds its own requests. This bounds the child as a whole, so

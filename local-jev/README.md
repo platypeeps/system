@@ -357,7 +357,12 @@ attempt, and does not wait for: the caller's output, exit code and timing are
 Jev's alone, and a hung arm costs the caller nothing. The child writes one
 judgment row per arm, with arm `kev` or `haiku`, the same pair id as the Jev
 row, the answer, the probabilities, the model's own latency where it reports
-one, tokens and cost. An unreachable or unkeyed arm records a decline.
+one, tokens and cost. An unreachable or unkeyed arm records a decline, and
+so does a reply that does not carry exactly the options asked about.
+Before any arm calls out, the child checks that the ledger would take its
+row: `sd_db` installed and naming the arm, and the database at the
+library's schema. Without that, the arm does not run, so no paid call goes
+unrecorded.
 
 Haiku answers one question per request, with a JSON schema for the answer's
 probabilities, so no question sees another's answer: the isolation Jev's

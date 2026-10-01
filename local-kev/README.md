@@ -31,8 +31,8 @@ One request by hand:
 ```sh
 curl -s http://127.0.0.1:8009/v1/systemone -H 'Content-Type: application/json' -d '{
   "model": "kev-latest",
-  "state": {"format": "text", "content": "The deploy failed twice tonight."},
-  "questions": [{"id": "q", "type": "noul", "question": "Does this need a human?"}]
+  "state": "The deploy failed twice tonight.",
+  "questions": {"q": {"type": "noul", "instructions": "Does this need a human?"}}
 }'
 ```
 
@@ -71,7 +71,7 @@ restart: `agent-install` again.
 `status` asks `GET /v1/models`. An answer with a model list is healthy (0).
 No checkout, or nothing listening, is nothing to check (3), so a machine that
 never installed Kev stays silent in `local-health-check`. A port that answers
-something else, or an error, is broken (1).
+something else, an error, or no answer within 5 seconds is broken (1).
 
 ## Tests
 

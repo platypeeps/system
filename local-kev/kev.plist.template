@@ -28,6 +28,8 @@
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>@HOME@</string>
+        <key>SYSTEM_TOOLS_CONFIG</key>
+        <string>@CONFIG@</string>
     </dict>
     <key>ProcessType</key>
     <string>Background</string>
