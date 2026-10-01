@@ -17,6 +17,11 @@
 #   JOB_CLAUDE_ARGS optional extra flags for the claude CLI
 #   JOB_RESULT_OK  optional ERE (JOB_PROMPT jobs only): the reply's last
 #                  `RESULT: ` line must match it, or the run fails
+#   JOB_TIMEOUT    optional run limit: seconds, or N followed by s, m or h;
+#                  0 turns it off. Default: CRON_JOBS_JOB_TIMEOUT, else 2h.
+#                  A run past it has its process group sent TERM, then KILL
+#                  after CRON_JOBS_TIMEOUT_GRACE seconds (default 10), and
+#                  fails with exit 124.
 #
 # Usage:
 #   cron-jobs.sh list                     jobs, schedules, installed/loaded state, folder
@@ -46,6 +51,8 @@
 #                             not read.
 #   SYSTEM_TOOLS_LABEL_PREFIX launchd label prefix (default local.system-tools);
 #                             labels are <prefix>.cron.<job>.
+#   CRON_JOBS_JOB_TIMEOUT     the run limit for a job that sets no JOB_TIMEOUT
+#                             (default 2h; same format as JOB_TIMEOUT).
 set -eu
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -63,11 +70,13 @@ CONF_DIR="$(st_config_dir cron-jobs)"
 _cj_extra="${CRON_JOBS_EXTRA_DIRS:-}"
 _cj_prefix="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
 _cj_host="${CRON_JOBS_HOST:-}"
+_cj_timeout="${CRON_JOBS_JOB_TIMEOUT:-}"
 st_source_env cron-jobs
 [ -z "$_cj_extra" ] || CRON_JOBS_EXTRA_DIRS="$_cj_extra"
 [ -z "$_cj_prefix" ] || SYSTEM_TOOLS_LABEL_PREFIX="$_cj_prefix"
 [ -z "$_cj_host" ] || CRON_JOBS_HOST="$_cj_host"
-unset _cj_extra _cj_prefix _cj_host
+[ -z "$_cj_timeout" ] || CRON_JOBS_JOB_TIMEOUT="$_cj_timeout"
+unset _cj_extra _cj_prefix _cj_host _cj_timeout
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 JOBS_DIR="$CONF_DIR/jobs"
 # This machine's own jobs: jobs/<host>/, lower-cased so the folder name does
@@ -184,11 +193,30 @@ job_file() {
   echo "${found:-$JOBS_DIR/$1.job}"
 }
 
+# A run's limit when neither the job nor CRON_JOBS_JOB_TIMEOUT sets one. Long
+# enough for the slowest prompt job; short enough that a hung run frees its
+# lock the same night rather than holding it until someone looks (sd:2018).
+DEFAULT_JOB_TIMEOUT=2h
+
+# A limit as whole seconds: N, Ns, Nm or Nh. Leading zeros are dropped
+# first, since `$(( ))` reads 010 as octal.
+timeout_seconds() { # value
+  local n="${1%[smh]}"
+  case "$n" in '' | *[!0-9]*) return 1 ;; esac
+  n="${n#"${n%%[!0]*}"}"
+  n="${n:-0}"
+  case "$1" in
+    *h) echo $((n * 3600)) ;;
+    *m) echo $((n * 60)) ;;
+    *) echo "$n" ;;
+  esac
+}
+
 load_job() {
   local f; f="$(job_file "$1")"
   [ -f "$f" ] || { echo "ERROR: no such job '$1' (expected $f)" >&2; exit 1; }
   JOB_SCHEDULE="" JOB_PROMPT="" JOB_COMMAND="" JOB_DIR="" JOB_MODEL="" JOB_CLAUDE_ARGS=""
-  JOB_RESULT_OK=""
+  JOB_RESULT_OK="" JOB_TIMEOUT=""
   # shellcheck source=/dev/null
   # shellcheck disable=SC1090
   . "$f"
@@ -198,6 +226,11 @@ load_job() {
   if [ -n "$JOB_PROMPT" ] && [ -n "$JOB_COMMAND" ]; then
     echo "ERROR: $f sets both JOB_PROMPT and JOB_COMMAND — pick one" >&2; exit 1
   fi
+  local limit="${JOB_TIMEOUT:-${CRON_JOBS_JOB_TIMEOUT:-$DEFAULT_JOB_TIMEOUT}}"
+  JOB_TIMEOUT_SECONDS="$(timeout_seconds "$limit")" || {
+    echo "ERROR: $f: JOB_TIMEOUT (or CRON_JOBS_JOB_TIMEOUT) '$limit' is not N, Ns, Nm or Nh" >&2
+    exit 1
+  }
 }
 
 # Does the installed plist still match what the generator produces? A setup
@@ -561,6 +594,81 @@ lock_is_live() { # lock file
   [ -f "$1" ] && [ -w "$1" ] || return 1
   ( exec 8>>"$1" && perl -e "$LOCK_TAKE" ) 2>/dev/null || rc=$?
   [ "$rc" -eq 1 ]
+}
+
+# The job's workload, bounded by its JOB_TIMEOUT (sd:2018). Before this a
+# hung run held the lock above for as long as it hung, and every later slot
+# logged "skipped: previous run still active" and exited 0 -- hours of
+# silence with nothing failing. Perl, for the reason the lock uses it: macOS
+# ships no timeout(1).
+#
+# The workload runs in a process group of its own, so the limit ends all of
+# it: a `bash -c` whose children run on, or claude's MCP servers, would
+# otherwise keep the lock after their shell was killed. TERM first, then KILL
+# for whatever is left after the grace period, and exit 124, the code GNU
+# timeout uses. The lines go to stderr, which is the log, and never into the
+# reply file a JOB_RESULT_OK run sends stdout to.
+#
+# A group of its own also leaves the group launchd signals on `bootout`, and
+# a terminal's ^C. So perl passes INT, TERM and HUP on to the job's group and
+# waits for it as before. A SIGKILL to perl itself cannot be passed on: the
+# job then runs on, holding the lock, as it did before this.
+#
+# Perl closes its copy of the lock (fd 8) once the job has its own: it is a
+# helper, like tee, and the job alone decides how long the lock is held.
+#
+# A terminal on stdin is swapped for /dev/null: a background group that reads
+# it is stopped, and a hand-run would hang where a scheduled one, whose stdin
+# is /dev/null already, does not.
+# shellcheck disable=SC2016 # perl source, expanded by perl
+RUN_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
+my ($job, $limit, $grace, @cmd) = @ARGV;
+sub say_log { printf STDERR "[%s] %s %s\n", $job, POSIX::strftime("%Y-%m-%dT%H:%M:%S%z", localtime), $_[0] }
+my $pid = fork;
+defined $pid or do { say_log("cannot start the job: $!"); exit 1 };
+if (!$pid) {
+  setpgrp(0, 0);
+  open(STDIN, "<", "/dev/null") if -t STDIN;
+  exec { $cmd[0] } @cmd;
+  say_log("cannot run $cmd[0]: $!");
+  POSIX::_exit(127);
+}
+setpgrp($pid, $pid);
+POSIX::close(8);
+for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { kill $sig, -$pid } }
+my $status;
+eval {
+  local $SIG{ALRM} = sub { die "limit\n" };
+  alarm $limit;
+  $status = $? if waitpid($pid, 0) == $pid;
+  alarm 0;
+};
+if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8) }
+say_log("timed out after ${limit}s (JOB_TIMEOUT); sending TERM to process group $pid");
+kill "TERM", -$pid;
+my $end = Time::HiRes::time() + $grace;
+while (1) {
+  waitpid($pid, POSIX::WNOHANG());
+  last unless kill 0, -$pid;
+  if (Time::HiRes::time() >= $end) {
+    say_log("process group $pid still running ${grace}s after TERM; sending KILL");
+    kill "KILL", -$pid;
+    last;
+  }
+  Time::HiRes::sleep(0.1);
+}
+waitpid($pid, 0);
+exit 124;'
+
+# Runs a command under the job's limit; 0 runs it directly, as before sd:2018.
+run_bounded() { # job, seconds, command...
+  local job="$1" limit="$2"
+  shift 2
+  if [ "$limit" -eq 0 ]; then
+    "$@"
+    return
+  fi
+  perl -e "$RUN_BOUNDED" "$job" "$limit" "${CRON_JOBS_TIMEOUT_GRACE:-10}" "$@"
 }
 
 exec_exit() {
@@ -1013,7 +1121,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') starting (cwd: $PWD)"
   local rc=0 claude_bin debug_file="$LOG_DIR/$job.debug.$report_run.log"
   if [ -n "$JOB_COMMAND" ]; then
-    bash -c "$JOB_COMMAND" || rc=$?
+    run_bounded "$job" "$JOB_TIMEOUT_SECONDS" bash -c "$JOB_COMMAND" || rc=$?
   # Resolved here and not at the top of the script: a missing agent is this
   # job's failure, and it reaches the log, failures.log and the notification
   # like any other non-zero exit instead of killing the script before the
@@ -1031,7 +1139,9 @@ cmd_exec() { # invoked by launchd (and by `run`)
     # has said since the hook shipped that this script exports the variable;
     # until 2026-09-11 nothing here did. On this command and not `export`ed
     # for the whole run: a JOB_COMMAND job runs whatever it names, and what
-    # that inherits is its own business.
+    # that inherits is its own business. Through `env`, because an
+    # assignment before a shell function such as run_bounded is not scoped
+    # to that call in sh.
     # JOB_RESULT_OK: `claude -p` exits 0 whatever the prompt concluded, so a
     # job whose prompt ends its reply with a `RESULT: ` line can have that
     # line judged. The reply is kept in a file for the check and printed
@@ -1039,7 +1149,8 @@ cmd_exec() { # invoked by launchd (and by `run`)
     local reply="$LOG_DIR/.$job.reply"
     # shellcheck disable=SC2086 # word-splitting of extra args is deliberate
     if [ -n "$JOB_RESULT_OK" ]; then
-      SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
+      run_bounded "$job" "$JOB_TIMEOUT_SECONDS" \
+        env SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
         --dangerously-skip-permissions \
         --debug-file "$debug_file" \
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
@@ -1058,7 +1169,8 @@ cmd_exec() { # invoked by launchd (and by `run`)
       fi
       rm -f "$reply"
     else
-      SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
+      run_bounded "$job" "$JOB_TIMEOUT_SECONDS" \
+        env SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
         --dangerously-skip-permissions \
         --debug-file "$debug_file" \
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
