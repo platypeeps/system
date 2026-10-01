@@ -7,12 +7,16 @@ fails under launchd, and used to take the whole run down under `set -e`.
 cron: a job in this host's own folder, <config>/cron-jobs/jobs/<host>/, is in
 no profile, so the orphan sweep used to uninstall it every night.
 
+cron: another repository's installer can label its agent <prefix>.cron.<name>
+too, and the sweep used to uninstall that agent as an orphan (sd:2321).
+
 The script runs from a copy of this folder under a temporary root, beside a
 copy of lib/ and a stub cron-jobs.sh that only logs, so no case touches
 launchd or the checkout. `mas` and `launchctl` are stubs on PATH.
 """
 
 import pathlib
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -94,8 +98,25 @@ class StageTest(unittest.TestCase):
                               env=env, capture_output=True, text=True, cwd=self.tmp.name,
                               stdin=subprocess.DEVNULL, timeout=120)
 
+    def plist_path(self, job):
+        return self.agents / f"{fixture_config.LABEL_PREFIX}.cron.{job}.plist"
+
     def install_plist(self, job):
-        (self.agents / f"{fixture_config.LABEL_PREFIX}.cron.{job}.plist").write_text("<plist/>\n")
+        """A plist in the shape local-cron-jobs' write_plist renders."""
+        self.plist_path(job).write_bytes(plistlib.dumps({
+            "Label": f"{fixture_config.LABEL_PREFIX}.cron.{job}",
+            "ProgramArguments": ["/bin/bash", "/opt/example/local-cron-jobs/cron-jobs.sh",
+                                 "exec", job],
+            "RunAtLoad": False,
+        }))
+
+    def install_foreign_plist(self, job):
+        """Another repository's installer, using the same label shape."""
+        self.plist_path(job).write_bytes(plistlib.dumps({
+            "Label": f"{fixture_config.LABEL_PREFIX}.cron.{job}",
+            "ProgramArguments": ["/opt/example/foreign/run.sh"],
+            "RunAtLoad": False,
+        }))
 
     def break_discovery(self):
         """Make the host job listing fail the way a broken python3 or lib does."""
@@ -243,6 +264,88 @@ class CronExtraDirsTest(CronTest):
         self.assertNotIn("install unpicked", log)
 
 
+class CronOwnershipTest(StageTest):
+    """The sweep uninstalls only what local-cron-jobs installed (sd:2321)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.profiles / "personal.cron").write_text("shared-job\n")
+        (self.jobs / "shared-job.job").write_text('JOB_SCHEDULE="0 1 * * *"\n')
+        (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')
+        # The wanted jobs are in place, so the sweep is all a case exercises.
+        for job in ("shared-job", "host-job"):
+            self.install_plist(job)
+
+    def test_a_foreign_agent_under_the_prefix_is_left_in_place(self):
+        self.install_foreign_plist("foreign-job")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FOREIGN foreign-job — not installed by local-cron-jobs; left in place",
+                      result.stdout)
+        self.assertNotIn("EXTRA", result.stdout)
+        self.assertNotIn("uninstall", self.cron_log.read_text())
+        self.assertTrue(self.plist_path("foreign-job").exists())
+
+    def test_a_dropped_job_is_uninstalled_beside_a_foreign_agent(self):
+        self.install_foreign_plist("foreign-job")
+        self.install_plist("dropped-job")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("EXTRA   dropped-job — installed but no longer in this profile", result.stdout)
+        log = self.cron_log.read_text()
+        self.assertIn("uninstall dropped-job", log)
+        self.assertNotIn("uninstall foreign-job", log)
+
+    def test_a_plist_that_runs_another_job_is_not_ours(self):
+        # The right shape under the wrong name: the mark binds label and job.
+        self.install_plist("renamed-job")
+        path = self.plist_path("renamed-job")
+        plist = plistlib.loads(path.read_bytes())
+        plist["ProgramArguments"][3] = "other-name"
+        path.write_bytes(plistlib.dumps(plist))
+        result = self.run_stage("cron", "--apply")
+        self.assertIn("FOREIGN renamed-job", result.stdout)
+        self.assertNotIn("uninstall", self.cron_log.read_text())
+
+    def test_an_unreadable_plist_is_left_in_place(self):
+        # Fail closed: a plist nobody can parse is not proven ours.
+        self.plist_path("garbled-job").write_text("not a plist\n")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("UNKNOWN garbled-job — cannot tell who installed it; left in place",
+                      result.stdout)
+        self.assertNotIn("uninstall", self.cron_log.read_text())
+        self.assertTrue(self.plist_path("garbled-job").exists())
+
+    def test_a_plist_the_real_generator_rendered_is_recognised(self):
+        # Ties the mark to write_plist: render with the real cron-jobs.sh, then
+        # drop the job from the profile. A generator change that loses the mark
+        # fails here instead of leaving dropped jobs firing on every machine.
+        base = pathlib.Path(self.tmp.name) / "real"
+        shutil.copytree(FOLDER.parent / "local-cron-jobs", base / "local-cron-jobs",
+                        ignore=shutil.ignore_patterns("tests", "__pycache__", "logs"))
+        shutil.copytree(LIB, base / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        (self.jobs / "dropped-job.job").write_text('JOB_SCHEDULE="0 4 * * *"\nJOB_COMMAND="true"\n')
+        env = {
+            "HOME": str(self.home),
+            "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "LANG": "en_US.UTF-8",
+            **fixture_config.env(self.config_root),
+            "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX,
+            "CRON_JOBS_HOST": HOST,
+        }
+        rendered = subprocess.run(
+            ["/bin/bash", str(base / "local-cron-jobs/cron-jobs.sh"), "install", "dropped-job"],
+            env=env, capture_output=True, text=True, cwd=self.tmp.name,
+            stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(rendered.returncode, 0, rendered.stdout + rendered.stderr)
+        self.assertTrue(self.plist_path("dropped-job").exists())
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("EXTRA   dropped-job", result.stdout)
+        self.assertIn("uninstall dropped-job", self.cron_log.read_text())
+
+
 class CaptureTest(StageTest):
     """capture must not write a host job or a beta's id 0 into a shared profile."""
 
@@ -275,6 +378,17 @@ class CaptureTest(StageTest):
         mas = (self.profiles / "personal.mas").read_text()
         self.assertIn("111 Alpha", mas)
         self.assertNotIn("Beta App", mas)
+
+    def test_capture_leaves_a_foreign_agent_out_of_the_profile(self):
+        # A profile naming it would send the cron stage to install a job with
+        # no job file, every night (sd:2321).
+        self.install_plist("own-job")
+        self.install_foreign_plist("foreign-job")
+        result = self.capture()
+        self.assertIn("cron: 1 entries", result.stdout, result.stdout + result.stderr)
+        cron = (self.profiles / "personal.cron").read_text()
+        self.assertIn("own-job", cron)
+        self.assertNotIn("foreign-job", cron)
 
     def test_capture_keeps_a_profile_app_now_installed_as_a_beta(self):
         # update counts "222 Beta App" as installed by its id-0 name; capture
