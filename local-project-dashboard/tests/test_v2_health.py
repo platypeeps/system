@@ -396,6 +396,26 @@ R.areas = ELS.areas.html; R.lamps = ELS.annunciator.html;""")
         self.assertNotIn("data-id=", out["R"]["areas"], "rows from the last read stayed on screen")
         self.assertIn("not read", out["R"]["lamps"])
 
+    def test_an_older_read_that_answers_last_does_not_replace_the_newer_one(self):
+        # Two re-reads overlap on the threaded server and the first one answers last: once as a failed request, once
+        # as an older reading.
+        out = self.run_page("""var pending = [];
+ANSWER = () => new Promise((answer, fail) => pending.push({ answer, fail }));
+const refresh = () => ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: 'refresh', dataset: {} } : null } });
+refresh(); refresh(); await flush();
+pending[1].answer([200, DOC]); await flush();
+pending[0].fail(new Error('an older read that failed')); await flush();
+R.areas = ELS.areas.html;
+refresh(); refresh(); await flush();
+pending[3].answer([200, DOC]); await flush();
+pending[2].answer([200, { ...DOC, read: '2026-09-01T00:00:00Z' }]); await flush();
+R.observed = document.body.dataset.observed;""")
+        self.assertEqual(out["gets"], ["/api/health"] * 5)
+        self.assertNotEqual(out["R"]["observed"], "2026-09-01T00:00:00Z", "an older answer replaced the newer reading")
+        self.assertNotIn("an older read that failed", json.dumps(out["states"]), "an older reading replaced the newer one")
+        self.assertIsNone(out["states"][-1])
+        self.assertIn('data-id="gone:group/alpha"', out["R"]["areas"])
+
     def test_a_lamp_shows_its_area_only_and_a_state_chip_narrows_the_rows(self):
         click = "ELS.{el}.listeners.click[0]({{ target: {{ closest: s => s === '{sel}' ? {{ id: '', dataset: {data} }} : null }} }});"
         out = self.run_page(click.format(el="annunciator", sel="button.cell", data="{ area: 'disk' }")
@@ -447,6 +467,11 @@ R.areas = ELS.areas.html; R.lamps = ELS.annunciator.html;""")
         self.assertIn("<b>GAP</b> <span class=\"sent\">no approving review is required</span>", table)
         self.assertIn("<th scope=\"row\">/checkouts/beta</th>", table)
         self.assertEqual(table.count("<td>token does not reach it</td>"), 1)
+        # An unread repository has no cells: each of its checks reads "not read", never — (does not apply).
+        gamma = re.search(r'<tr><th scope="row"><a [^>]*>group/gamma</a></th>.*?</tr>', table, re.S).group(0)
+        self.assertEqual(gamma.count("<td>not read</td>"), 11, gamma)
+        self.assertEqual(gamma.count("<td>—</td>"), 1, "only the Branch cell, which an unread repository has none of")
+        self.assertIn("— does not apply; not read where the repository was not read.", table)
 
     def test_a_matrix_column_opens_its_repo_with_every_check_in_details(self):
         out = self.run_page("""ELS.areas.listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/alpha' } } : null } });

@@ -104,10 +104,10 @@
       </div>
       <details class="pmx-table"><summary>Table: ${cols.length} repositories × ${x.checks.length} checks</summary>
         <div class="tscroll" role="region" aria-labelledby="pmx-cap" tabindex="0"><table>
-          <caption id="pmx-cap">Branch protection per registered repository, unprotected first, then unknown, then protected. GAP carries its sentence; — does not apply.</caption>
+          <caption id="pmx-cap">Branch protection per registered repository, unprotected first, then unknown, then protected. GAP carries its sentence; — does not apply; not read where the repository was not read.</caption>
           <thead><tr><th scope="col">Repository</th><th scope="col">Status</th><th scope="col">Branch</th>${x.checks.map(l => html`<th scope="col">${l}</th>`)}<th scope="col">Reason</th></tr></thead>
           <tbody>${cols.map(r => html`<tr><th scope="row">${r.slug ? html`<a href="https://github.com/${r.slug}/settings/branches" target="_blank" rel="noopener noreferrer">${r.slug}</a>` : r.facts.Repository}</th><td>${r.status}</td><td>${r.branch}</td>
-            ${x.checks.map((_, i) => { const c = r.cells[i]; return html`<td>${c?.[1] === 'gap' ? html`<b>GAP</b> <span class="sent">${c[2]}</span>` : c?.[1] === 'ok' ? 'ok' : '—'}</td>`; })}<td>${r.reason}</td></tr>`)}</tbody>
+            ${x.checks.map((_, i) => { const c = r.cells[i]; return html`<td>${r.status === 'unknown' ? 'not read' : c?.[1] === 'gap' ? html`<b>GAP</b> <span class="sent">${c[2]}</span>` : c?.[1] === 'ok' ? 'ok' : '—'}</td>`; })}<td>${r.reason}</td></tr>`)}</tbody>
         </table></div></details>` : ''}`;
   }
   const cellText = c => c[1] === 'gap' ? `GAP · ${c[2]}` : c[1] === 'ok' ? 'ok' : '—';
@@ -161,11 +161,16 @@
     return [w, c];
   }
 
+  // Each read takes a generation; only the newest one draws. Re-reads overlap on the threaded server and can answer out
+  // of order, and an older answer, or an older failure, must not replace a newer reading.
+  let generation = 0;
   async function load() {
+    const mine = ++generation;
     shell.state({ kind: 'loading', text: 'Reading the fleet. Rows appear when /api/health answers.', source: '/api/health' });
     try {
       const r = await fetch('/api/health', { headers: { Accept: 'application/json' } });
       const doc = await r.json();
+      if (mine !== generation) return;
       if (!r.ok) throw new Error(doc.error || `HTTP ${r.status}`);
       DOC = doc; AREAS = doc.areas;
       AREAS.forEach(a => a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]));
@@ -179,6 +184,7 @@
       const want = [w ? `${w} warning` : '', c ? `${c} caution` : ''].filter(Boolean).join(', ') || 'no';
       put($('subhead'), html`${AREAS.length} areas · ${want} ${w + c === 1 ? 'row wants' : 'rows want'} you · ${plural(unread, 'area')} with no reader yet · read <time class="rel" datetime="${doc.read}"></time>`);
     } catch (e) {
+      if (mine !== generation) return;
       // Nothing from the last read stays on screen: rows, lamps, the observed time, the selection and the badge.
       DOC = null; AREAS = []; ROWS = [];
       delete document.body.dataset.observed;
