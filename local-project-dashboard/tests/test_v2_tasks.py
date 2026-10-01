@@ -23,8 +23,9 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from sd_db import reads, set_item_fields, workflow
+from sd_db import connect, reads, set_item_fields, workflow
 from sd_dashboard import server, tasks_screen, v2
 
 from support import NOW, ScreenCase, upsert_shadow
@@ -64,6 +65,29 @@ class TheDocuments(ScreenCase):
     def setUp(self):
         super().setUp()
         self.ids = seed(self)
+
+    def test_each_row_pairs_its_fields_with_the_revision_of_the_same_read(self):
+        # An edit commits through a second connection after the row read and before the revisions are read. One snapshot
+        # holds both, so the row shows the old title with the old revision; the edit's revision would let a write chosen
+        # from the old title pass (review, PR #46).
+        ask = self.ids["ask"]
+        old = workflow.item_state(self.connection, ask)["revision"]
+        writer = connect(self.path)
+        self.addCleanup(writer.close)
+        real = reads.backlog_items
+
+        def rows_then_edit(connection, **arguments):
+            rows = real(connection, **arguments)
+            set_item_fields(writer, ask, title="Edited elsewhere")
+            writer.commit()
+            return rows
+
+        with patch.object(reads, "backlog_items", rows_then_edit):
+            doc = tasks_screen.document(self.connection, now=NOW)
+        row = next(r for r in doc["rows"] if r["id"] == ask)
+        self.assertEqual((row["title"], row["revision"]), ("Answer the question", old))
+        self.assertFalse(self.connection.in_transaction)
+        self.assertNotEqual(next(r for r in tasks_screen.document(self.connection, now=NOW)["rows"] if r["id"] == ask)["revision"], old)
 
     def test_the_rows_are_the_backlog_rows_with_revision_and_allowed_statuses(self):
         doc = tasks_screen.document(self.connection, now=NOW)
@@ -236,9 +260,9 @@ function shellRun(c, o) {
   document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } }));
 }
 C.run = shellRun;
-// shell.js's runBulk: one run per picked object in the same tick, settled by settleBulk.
+// shell.js's runBulk: runEach starts one run per picked object in the same tick, settled by settleBulk.
 function shellBulk(c, objs) {
-  var rs = objs.map(o => c.run(o));
+  var rs = runEach(c, objs);
   settleBulk(c, objs, rs, { toast: shellToast, plural: window.markup.plural });
   document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: 'bulk', form: true } }));
 }
@@ -288,6 +312,16 @@ OUT.toasts[0].undo(); await flush();""")
         self.assertEqual(out["undone"], [["1", "a1"], ["3", "sync"]])
         self.assertEqual(out["toasts"], [["Move · 2 items · 1 of 3 not changed: stale", True],
                                          ["Move undone · 2 of 3 reversed · not reversed: #2 (its change did not land)", False]])
+
+    def test_a_run_that_throws_fails_its_own_row_and_the_rows_after_it_still_run(self):
+        # A picked row gone in a refresh makes a run throw before it returns. It is that row's failure, not the group's
+        # end: the next row runs, and the group's toast names the thrown reason (review, PR #46).
+        out = self.settle(self.COMMAND + """const ran = [], objs = [obj(1), obj(2), obj(3)];
+c.run = o => { if (o.id === '2') throw new Error('the task is no longer listed'); ran.push(o.id); return Promise.resolve(o.id); };
+OUT.result = await settleBulk(c, objs, runEach(c, objs), { toast, plural }); OUT.ran = ran;""")
+        self.assertEqual(out["ran"], ["1", "3"])
+        self.assertEqual(out["result"], {"landed": 2, "failed": 1})
+        self.assertEqual(out["toasts"], [["Move · 2 items · 1 of 3 not changed: the task is no longer listed", True]])
 
     def test_a_bulk_group_with_nothing_landed_offers_no_undo(self):
         out = self.settle(self.COMMAND + """await settleBulk(c, [obj(1)], [Promise.reject(new Error('refused'))], { toast, plural });""")
@@ -521,7 +555,7 @@ R.cancel = cmd('asg.cancel').when(C.get('asg:{asg["id"]}'));""")
         self.assertIn("Answer the question", other[1])
         self.assertIn("data-other", out["R"]["board"])
 
-    def test_the_matrix_places_by_reads_is_urgent_and_each_quadrant_owns_its_options(self):
+    def test_the_matrix_places_by_reads_is_urgent_and_each_quadrant_owns_its_cards(self):
         ask = self.ids["ask"]
         for row in self.doc["rows"]:
             if row["id"] == ask:
@@ -530,10 +564,23 @@ R.cancel = cmd('asg.cancel').when(C.get('asg:{asg["id"]}'));""")
 R.matrix = ELS['view-matrix'].html;""")
         quads = dict(re.findall(r'data-q="(\w+)"(.*?)(?=data-q="|$)', out["R"]["matrix"], re.S))
         self.assertIn("Answer the question", quads["delegate"])
-        self.assertEqual(out["R"]["matrix"].count('role="listbox"'), 4)
-        # Every card (role="option") sits in a quadrant's drop list, and every drop list is a listbox.
-        self.assertEqual(out["R"]["matrix"].count('<div class="drop" role="listbox"'), 4)
+        # Every card sits in a quadrant's drop list, a labelled group; a card is an article, not an option.
+        self.assertEqual(out["R"]["matrix"].count('<div class="drop" role="group"'), 4)
         self.assertNotIn('<div class="drop">', out["R"]["matrix"])
+
+    def test_a_card_holding_controls_is_an_article_and_the_selection_is_aria_current(self):
+        # An option's descendants are presentational to assistive technology, so a card with a checkbox and buttons
+        # is no option, and no list holding cards is a listbox (review, PR #46).
+        plan = self.ids["plan"]
+        out = self.run_page(f"""open({plan}); await flush();
+document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'board' }})); await flush(); R.board = ELS['view-board'].html;
+document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); await flush(); R.matrix = ELS['view-matrix'].html;""")
+        for view in ("board", "matrix"):
+            html = out["R"][view]
+            self.assertNotIn('role="option"', html, view)
+            self.assertNotIn('role="listbox"', html, view)
+            self.assertNotIn("aria-selected", html, view)
+            self.assertIn(f'<article class="card" tabindex="0" data-key="{plan}" aria-current="true"', html, view)
 
     def landed_plan(self, refused):
         """A write answer: `refused` gets a 409; a write to `plan` lands, and the stored row moves with it, as a re-read sees."""
@@ -644,7 +691,7 @@ OUT.toasts[1].undo(); await flush(); HOLD.splice(0).forEach(f => f()); await flu
     def test_completing_a_repeating_task_is_confirmed_shows_the_next_occurrence_and_has_no_undo(self):
         plan = self.ids["plan"]
         row = self.row("plan")
-        row["recurrence"] = "FREQ=WEEKLY"
+        row["recurrence"], row["next_due"] = "FREQ=WEEKLY", "2026-09-16"
         successor = {**row, "id": 99, "status": "planning", "due": "2026-09-16", "revision": "e" * 64}
         answer = f"""(path, body) => {{ DOC.rows.push({json.dumps(successor)});
   return [200, {{ item: {{ id: {plan}, status: 'done', priority: 2, due: '2026-09-09', recurrence: null }}, notes: [],
@@ -681,6 +728,26 @@ HOLD.splice(0).forEach(f => f()); await flush(); HOLD.splice(0).forEach(f => f()
         self.doc = tasks_screen.document(self.connection, now=NOW)
         self.details = {str(i): tasks_screen.details(self.connection, i, now=NOW) for i in self.ids.values()}
 
+    def test_a_completion_reads_the_rows_again_after_a_read_already_in_flight(self):
+        # A 409 on ask starts a re-read; plan's completion lands while that read is in flight, and the server then lists
+        # the next occurrence. The completion's re-read must not join the older read, which was sent before it.
+        self.repeat_plan()
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        successor = {**self.row("plan"), "id": 99, "status": "planning", "due": "2026-09-16", "recurrence": None, "revision": "e" * 64}
+        answer = f"""(path, body) => path === '/api/items/{ask}/status' ? [409, {{ error: 'The item changed. Reload it.' }}]
+  : (DOC.rows.push({json.dumps(successor)}), [200, {{ item: {{ id: {plan}, status: 'done', priority: 2, due: '2026-09-09', recurrence: null }},
+     notes: [], revision: 'b'.repeat(64), next_occurrence: 99, next_occurrence_reason: null }}])"""
+        out = self.run_page(f"""const A = ANSWER, HELD = [];
+ANSWER = (path, body) => {{ if (path !== '/api/tasks') return A(path, body); const snap = JSON.parse(JSON.stringify(A(path, body)));
+  return new Promise(r => HELD.push(() => r(snap))); }};
+shellRun(cmd('item.status.ready'), C.get('{ask}')); await flush();
+shellRun(cmd('item.complete'), C.get('{plan}')); await flush();
+for (let i = 0; i < 4; i++) {{ HELD.splice(0).forEach(f => f()); await flush(); }}
+R.listed = !!C.get('99');""", answer)
+        self.assertEqual(out["gets"].count("/api/tasks"), 3, "the completion joined the read sent before it")
+        self.assertTrue(out["R"]["listed"], "the next occurrence is not listed")
+        self.assertIn(f"#{plan} Ready → Done · next occurrence #99 due Sep 16 · sd task status {plan} done", [t[0] for t in out["toasts"]])
+
     def test_exactly_one_key_5_command_is_on_for_a_repeating_and_a_plain_row(self):
         self.repeat_plan()
         plan, ask = self.ids["plan"], self.ids["ask"]
@@ -696,9 +763,12 @@ R.plan = five('{plan}'); R.ask = five('{ask}');""")
         out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}'));")
         self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and opens the next occurrence, due Sep 16 (FREQ=WEEKLY)."), out["R"]["text"])
         self.assertEqual(out["posts"], [])
+        # No next date (workflow.next_occurrence_due returned None): the completion ends the series, and both the confirm
+        # and Done's off reason say so instead of promising an occurrence (review, PR #46).
         self.row("plan")["next_due"] = None
-        out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}'));")
-        self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and opens the next occurrence (FREQ=WEEKLY)."), out["R"]["text"])
+        out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}')); R.done = cmd('item.status.done').when(C.get('{plan}'));")
+        self.assertEqual(out["R"]["text"], f"Completes #{plan} and ends the series: its rule (FREQ=WEEKLY) gives no next date, so no next occurrence opens. There is no Undo.")
+        self.assertEqual(out["R"]["done"], "it repeats: 5 completes it and ends the series, since its rule gives no next date")
 
     def test_5_on_a_mixed_selection_moves_the_plain_rows_and_skips_the_repeating_ones(self):
         self.repeat_plan()
@@ -726,8 +796,10 @@ R.text = (await cmd('item.run').run(C.get('{plan}'))).text;""",
         self.doc = tasks_screen.document(self.connection, now=NOW)
         plan = self.ids["plan"]
         out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}'));")
+        # The library computes no BYDAY date, so the completion ends that series; the confirm names the rule and says so.
+        self.assertIsNone(self.row("plan")["next_due"])
         self.assertIn("(FREQ=WEEKLY;BYDAY=MO,TH)", out["R"]["text"])
-        self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and opens the next occurrence"), out["R"]["text"])
+        self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and ends the series"), out["R"]["text"])
 
     def test_work_ops_and_done_rows_have_neither_key_5_command(self):
         port, ask, plan = self.ids["port"], self.ids["ask"], self.ids["plan"]
@@ -744,6 +816,15 @@ R.work = five('{port}'); R.done = five('{ask}'); R.ops = five('{plan}');""")
         ask = self.ids["ask"]
         out = self.run_page(f"R.when = cmd('item.complete').when(C.get('{ask}')); R.done = cmd('item.status.done').when(C.get('{ask}'));")
         self.assertEqual(out["R"], {"when": "the task does not repeat; Status → Done completes it", "done": True})
+
+    def test_the_narrow_board_is_a_carousel_with_or_without_the_other_lane(self):
+        # `.board[data-other]` outranks `.board`, so the narrow-screen rule names both, or a board with an Other lane keeps
+        # its six columns on a phone (review, PR #46).
+        css = (V2 / "static" / "tasks.css").read_text(encoding="utf-8")
+        narrow = re.search(r"^@media \(max-width: 719px\) \{\n(.*?)^\}", css, re.S | re.M).group(1)
+        rule = re.search(r"^  ([^{]*)\{[^}]*grid-template-columns: none;", narrow, re.M)
+        self.assertIsNotNone(rule, "the narrow block sets no carousel")
+        self.assertEqual({sel.strip() for sel in rule.group(1).split(",")}, {".board", ".board[data-other]"})
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", TASKS_JS)

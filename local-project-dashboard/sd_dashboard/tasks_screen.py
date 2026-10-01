@@ -46,7 +46,19 @@ def _assignment_states(connection, *, now: str) -> dict[int, str]:
 
 
 def document(connection, *, now: str) -> dict:
-    """The Tasks rows: one object per `reads.backlog_items` row, in its order."""
+    """The Tasks rows: one object per `reads.backlog_items` row, in its order.
+
+    One read snapshot holds every read below (`operations_screen._one_snapshot`). Each was its own before, so an edit
+    committed between the row read and its `item_state` paired the old fields with the new revision, and a write chosen
+    from the old fields passed the revision check (review, PR #46).
+    """
+    from .operations_screen import _one_snapshot
+
+    with _one_snapshot(connection):
+        return _document(connection, now=now)
+
+
+def _document(connection, *, now: str) -> dict:
     from .screens import _repo_labels
 
     rows = reads.backlog_items(connection, now=now)

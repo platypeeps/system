@@ -56,7 +56,7 @@ addEventListener('DOMContentLoaded', () => {
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
   function absorb(key, state) {
     const t = byKey(key); if (!t || !state?.item) return;
-    if (t.due !== state.item.due || t.recurrence !== state.item.recurrence) t.nextDue = null; // the next date is read with the rows
+    if (t.due !== state.item.due || t.recurrence !== state.item.recurrence) t.nextDue = undefined; // not known until the rows are read again
     const dueMoved = t.due !== state.item.due;
     Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence, revision: state.revision });
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
@@ -156,7 +156,7 @@ addEventListener('DOMContentLoaded', () => {
       if (rev !== undefined && t.revision !== rev) throw new Error(CHANGED);
       const on = check ? check(t) : true; if (on !== true) throw new Error(on);
       sent?.(t); return post(path(t), { ...body, revision: t.revision }); })
-      .then(out => { absorb(key, out); render(); return out; });
+      .then(out => { wrote++; absorb(key, out); render(); return out; });
     pending.set(key, p.catch(() => {}));
     return p;
   }
@@ -164,9 +164,17 @@ addEventListener('DOMContentLoaded', () => {
   const edit = (key, ch, opts) => write(key, t => `/api/items/${t.id}`, Object.fromEntries(Object.entries(ch).map(([k, v]) => [k === 'p' ? 'priority' : k, v])), opts);
   const moveTo = (key, to, opts) => write(key, t => `/api/items/${t.id}/status`, { status: to }, opts);
   function failed(name, err) { toast(`${name ? name + ' ' : ''}not changed: ${err.message}`); }
-  // A refused stale write re-reads the rows once, however many writes in a group were refused.
-  let rereading = null;
-  const reread = () => rereading || (rereading = load().finally(() => { rereading = null; }));
+  // A refused stale write re-reads the rows once, however many writes in a group were refused. A re-read joins the one in
+  // flight only while no write of this page has landed since that one was asked for; after one did, it reads again once
+  // that read ends, so a completion's next occurrence is never missed by a read sent before it (review, PR #46).
+  let rereading = null, wrote = 0;
+  function reread() {
+    if (rereading && rereading.wrote === wrote) return rereading.p;
+    const before = rereading ? rereading.p.catch(() => {}) : Promise.resolve();
+    const p = before.then(() => load()).finally(() => { if (rereading?.p === p) rereading = null; });
+    rereading = { wrote, p };
+    return p;
+  }
   // ---------- Undo (build, review of PR #46 and #50) ----------
   // A command's run returns landing(...): the shell contract in shell.js (bulk:start) waits for it, toasts its text, and
   // offers Undo only when it landed, for a bulk group too. The Undo it resolves to belongs to this operation: `inverse` gets
@@ -211,6 +219,8 @@ addEventListener('DOMContentLoaded', () => {
   // action menu (. or ⋯), the Details bar with its CLI lines, the palette and the bulk bar from it.
   const C = window.shell.commands;
   const T = o => byKey(o.id);
+  // A run's row: a picked row a refresh removed fails that row's run with this reason (review, PR #46).
+  const must = o => { const t = T(o); if (!t) throw new Error('the task is no longer listed'); return t; };
   // Details beyond the row (sd:2180). build: /api/tasks/<id>, read when a task is selected, kept until a write changes it.
   // Each read carries the item's generation; a write bumps it, so an answer sent before the write is dropped, not cached.
   const DET = { items: {}, reading: {}, failed: {}, gen: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
@@ -246,14 +256,15 @@ addEventListener('DOMContentLoaded', () => {
   // Status moves: keys 1–5 in the menu, as on the board. The list row shows the next status as its button.
   // build: run returns the move's landing, so the toast (with Undo) comes when the write lands; undo moves it back to
   // the status this move left, read as the write is sent. The `when` test runs again as the write leaves.
-  const moveOn = (s, t) => { if (s === 'done' && repeats(t)) return 'it repeats: 5 completes it and opens the next occurrence';
+  const moveOn = (s, t) => { if (s === 'done' && repeats(t)) return t.nextDue === null ? 'it repeats: 5 completes it and ends the series, since its rule gives no next date'
+      : 'it repeats: 5 completes it and opens the next occurrence';
     const L = legal(t, s); return L.ok || L.reason; };
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
     id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban',
     primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
     when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
     cli: o => idOr(o, t => cliMove(t, s)),
-    run: o => { const t = T(o); let from = t.status;
+    run: o => { const t = must(o); let from = t.status;
       return landing(moveTo(t.key, s, { sent: r => { from = r.status; }, check: r => moveOn(s, r) }).then(v => { landed(t.key); return v; }),
         () => `${label(t)} ${slabel(from)} → ${name} · ${cliMove(t, s)}`, v => moveTo(t.key, from, { rev: v.revision })); },
     undo: undoOf,
@@ -268,9 +279,12 @@ addEventListener('DOMContentLoaded', () => {
     primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
     when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
     cli: o => idOr(o, t => cliMove(t, 'done')),
-    // build: next_due is workflow.next_occurrence_due, the date the completion computes; without it the rule is named.
+    // build: next_due is workflow.next_occurrence_due, the date the completion computes. null is its "none": the
+    // completion then ends the series and opens nothing, so the confirm says that (review, PR #46). Not yet read again
+    // after an edit (undefined), the rule is named.
     consequence: o => { const t = T(o);
-      return `Completes ${label(t)} and opens the next occurrence${t.nextDue ? `, due ${fmt(t.nextDue)}` : ''} (${t.recurrence}). A move back would leave two open tasks, so there is no Undo.`; },
+      if (t.nextDue === null) return `Completes ${label(t)} and ends the series: its rule (${t.recurrence}) gives no next date, so no next occurrence opens. There is no Undo.`;
+      return `Completes ${label(t)} and opens the next occurrence${t.nextDue ? `, due ${fmt(t.nextDue)}` : ' its rule gives'} (${t.recurrence}). A move back would leave two open tasks, so there is no Undo.`; },
     run: o => { const t = T(o); let from = t.status;
       const next = v => v?.next_occurrence ? `next occurrence #${v.next_occurrence}${byKey(String(v.next_occurrence))?.due ? ` due ${fmt(byKey(String(v.next_occurrence)).due)}` : ''}`
         : `the series ended: ${v?.next_occurrence_reason || 'no next occurrence was made'}`;
@@ -298,7 +312,7 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'item.p2', on: 'item', label: 'Edit → P2', risk: 'undo', bulk: true, icon: 'flag-triangle-right',
       when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : !EDITABLE(t) ? `a ${t.kind} item uses its own editing workflow` : t.p === 2 ? 'it is already P2' : true; },
       cli: o => idOr(o, t => `sd task edit ${t.id} --priority 2`),
-      run: o => { const t = T(o), was = t.p; return editRun(t, { p: 2 }, () => `${label(t)} P${was || '–'} → P2`); },
+      run: o => { const t = must(o), was = t.p; return editRun(t, { p: 2 }, () => `${label(t)} P${was || '–'} → P2`); },
       undo: undoOf },
     { id: 'item.note', on: 'item', label: 'Note', key: 'n', risk: 'safe', icon: 'notebook-pen',
       when: o => !!T(o)?.id || 'this row has no sd id to attach a note to',
@@ -376,7 +390,7 @@ addEventListener('DOMContentLoaded', () => {
   let checked = new Set(); // mirror of the shell's picked rows
   function card(t, compact) {
     const st = state(t), [dt, dc] = dueText(t);
-    return html`<article class="card" tabindex="0" role="option" data-key="${t.key}" aria-selected="${String(t.key === selected)}"${checked.has(t.key) ? html` data-picked` : ''}${st ? html` data-state="${st}"` : ''} aria-label="${label(t) + ' ' + t.title}">
+    return html`<article class="card" tabindex="0" data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}${st ? html` data-state="${st}"` : ''} aria-label="${label(t) + ' ' + t.title}">
       <div class="top">
         <label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label>
         ${st ? html`<span class="g g-${st}" aria-hidden="true">${GLYPH[st]}</span>` : ''}
@@ -394,7 +408,7 @@ addEventListener('DOMContentLoaded', () => {
     // build: backlog_items also returns statuses with no column (a message's ready_to_send); they get one lane, which
     // takes no drop and no key, so every row the page counts is on the board (review, PR #46).
     const other = v.filter(t => !SLABEL[t.status]);
-    put(document.getElementById('view-board'), html`<div class="board" id="board" role="listbox" aria-label="Tasks by status" aria-multiselectable="false"${other.length ? html` data-other` : ''}>${STATUSES.map(([s, name], i) => {
+    put(document.getElementById('view-board'), html`<div class="board" id="board" role="group" aria-label="Tasks by status"${other.length ? html` data-other` : ''}>${STATUSES.map(([s, name], i) => {
       const rows = v.filter(t => t.status === s);
       return html`<div class="col" data-drop="status:${s}" role="group" aria-label="${name}">
         <header><span class="label">${name}</span><kbd>${i + 1}</kbd><span class="n">${rows.length}</span></header>
@@ -412,7 +426,7 @@ addEventListener('DOMContentLoaded', () => {
       const worst = rows.some(t => state(t) === 'warning') ? 'warning' : rows.some(t => state(t) === 'caution') ? 'caution' : '';
       return html`<div class="quad" data-q="${k}" data-drop="quad:${k}">
         <header><h3>${name}</h3><span class="sub">${sub}</span><span class="n">${rows.length}</span><span class="lamp"${worst ? html` data-state="${worst}"` : ''}></span></header>
-        <div><div class="drop" role="listbox" aria-label="${name}: ${sub}">${(rows.length ? rows.map(t => card(t, true)) : html`<p class="empty">Empty.</p>`)}</div><p class="refusal" role="note"></p></div>
+        <div><div class="drop" role="group" aria-label="${name}: ${sub}">${(rows.length ? rows.map(t => card(t, true)) : html`<p class="empty">Empty.</p>`)}</div><p class="refusal" role="note"></p></div>
         ${k === 'do' ? html`<span class="reticle" aria-hidden="true"></span>` : ''}
       </div>`;
     });
@@ -434,7 +448,7 @@ addEventListener('DOMContentLoaded', () => {
     });
     const th = (k, name) => html`<th scope="col"${sortKey === k ? html` aria-sort="${sortDir > 0 ? 'ascending' : 'descending'}"` : ''}><button type="button" data-sort="${k}">${name}${ICON(sortKey === k ? (sortDir > 0 ? 'arrow-up' : 'arrow-down') : 'arrow-up-down')}</button></th>`;
     put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list"><caption class="sr">Tasks</caption><thead><tr><th scope="col"><span class="sr">Select</span></th><th scope="col"><span class="sr">State</span></th><th scope="col" class="label">Id</th><th scope="col" class="label">Title</th><th scope="col" class="label">Repo</th><th scope="col" class="label">Status</th>${th('p', 'P')}${th('due', 'Due')}<th scope="col" aria-label="Actions"></th></tr></thead><tbody>
-      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}" aria-selected="${String(t.key === selected)}"${checked.has(t.key) ? html` data-picked` : ''}><td><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st}">${st ? GLYPH[st] : ''}</td><td class="mono">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button></td><td class="mono">${t.repo}</td><td>${slabel(t.status)}</td><td><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${dt}</td><td>${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="9" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
+      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st}">${st ? GLYPH[st] : ''}</td><td class="mono">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button></td><td class="mono">${t.repo}</td><td>${slabel(t.status)}</td><td><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${dt}</td><td>${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="9" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
     </tbody></table></div>`);
   }
   document.getElementById('view-list').addEventListener('click', e => {
@@ -509,7 +523,9 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Selection ----------
   function select(key, open) {
     selected = key;
-    document.querySelectorAll('[data-key]').forEach(n => n.setAttribute('aria-selected', n.dataset.key === key));
+    // The selected card or row is aria-current: a card holds a checkbox and buttons, so it is an article, not a listbox
+    // option, whose descendants assistive technology treats as presentational (review, PR #46).
+    document.querySelectorAll('[data-key]').forEach(n => n.dataset.key === key ? n.setAttribute('aria-current', 'true') : n.removeAttribute('aria-current'));
     C.select(key);
     readDet(byKey(key)?.id); // build: the Details reading, once per task until a write changes it
     renderDetails();
@@ -520,7 +536,7 @@ addEventListener('DOMContentLoaded', () => {
     if (e.target.closest('.rowact, .pick')) return;
     const c = e.target.closest('.card'); if (c && !suppressClick) select(c.dataset.key, true);
   });
-  // Selection follows focus on a card (a listbox option), so Enter, which the shell sends as shell:open, opens the focused one.
+  // Selection follows focus on a card, so Enter, which the shell sends as shell:open, opens the focused one.
   document.getElementById('main').addEventListener('focusin', e => { const c = e.target.closest('.card'); if (c && e.target === c && c.dataset.key !== selected) select(c.dataset.key, false); });
   document.getElementById('main').addEventListener('change', e => {
     const k = e.target.dataset.check; if (!k) return;
