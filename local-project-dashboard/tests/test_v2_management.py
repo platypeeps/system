@@ -308,7 +308,7 @@ class TheScript(PageScript):
     def test_a_repo_flip_posts_the_verb_with_before_toasts_after_the_write_and_undoes(self):
         path = self.ids["checkout"]
         out = self.run_page(f"""C.run(cmd('repo.runner-merge'), C.get('repo:{path}')); R.early = OUT.toasts.length; await flush();
-R.toast = lastToast().msg; await lastToast().undo(); await flush();""", answer="(p, b) => [200, {}]")
+R.toast = lastToast().msg; const undo = lastToast().undo; await undo(); await flush(); await undo(); await flush();""", answer="(p, b) => [200, {}]")
         posts = [(p, b) for p, b, _ in out["posts"]]
         self.assertEqual(out["R"]["early"], 0, "the toast came before the write landed")
         self.assertEqual(posts, [("/api/repos/runner-merge", {"path": path, "value": "auto", "before": "manual"}),
@@ -320,7 +320,7 @@ R.toast = lastToast().msg; await lastToast().undo(); await flush();""", answer="
         path = self.ids["checkout"]
         out = self.run_page(f"C.run(cmd('repo.managed'), C.get('repo:{path}')); await flush();",
                             answer="(p, b) => [409, {error: 'managed is yes now, not no'}]")
-        self.assertEqual(out["toasts"][-1], ["Not changed: managed is yes now, not no", False])
+        self.assertEqual(out["toasts"][-1], [f"{path} not changed: managed is yes now, not no", False])
         self.assertEqual(out["gets"], ["/api/management", "/api/management"])
 
     def test_requeue_and_cancel_post_the_runner_routes_with_the_queue_revision(self):
@@ -379,3 +379,18 @@ R.sched = ELS['view-schedules'].html;""")
                 self.assertIn("busy", out["R"]["repos"])
         out = self.run_page("view = 'constructor'; try { render(); R.drew = true; } catch (e) { R.refused = e.message; }")
         self.assertEqual(out["R"], {"refused": "no such view: constructor"})
+
+    def test_a_bulk_flip_toasts_once_after_every_write_and_undoes_only_what_landed(self):
+        """Copilot 5eccfcac7af7 on PR #50: the shell's bulk group waits for each run's promise (sd:2124's contract)."""
+        a, b = self.ids["checkout"], "/repos/system"
+        out = self.run_page(f"""C.runBulk(cmd('repo.runner-merge'), [C.get('repo:{a}'), C.get('repo:{b}')]); R.early = OUT.toasts.length;
+await flush(); R.group = OUT.toasts.map(t => t.msg); await lastUndo().undo(); await flush(); R.after = OUT.toasts.map(t => t.msg);""",
+                            answer=f"(p, b) => b.path === {json.dumps(b)} ? [409, {{error: 'runner_merge is auto now'}}] : [200, {{}}]")
+        self.assertEqual(out["R"]["early"], 0, "the group toast came before the writes landed")
+        self.assertEqual(out["R"]["group"], ["Switch runner-merge · 1 repo · 1 of 2 not changed: runner_merge is auto now"])
+        self.assertEqual([(p, body) for p, body, _ in out["posts"]], [
+            ("/api/repos/runner-merge", {"path": a, "value": "auto", "before": "manual"}),
+            ("/api/repos/runner-merge", {"path": b, "value": "auto", "before": "manual"}),
+            ("/api/repos/runner-merge", {"path": a, "value": "manual", "before": "auto"})])
+        self.assertEqual(out["R"]["after"][-1],
+                         f"Switch runner-merge undone · 1 of 2 reversed · not reversed: {b} (its change did not land)")

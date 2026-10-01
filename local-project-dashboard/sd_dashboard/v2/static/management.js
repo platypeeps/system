@@ -383,29 +383,32 @@ document.getElementById('view-repos').addEventListener('click', e => {
 });
 
 // ---------- Writes (build) ----------
-// landing(): the command returns null so the shell does not toast; the toast (with Undo) follows the write, and a failure
-// says why. A 409 reads the document again, since the row it named has moved.
-function landing(promise, msg, undo) {
-  promise.then(() => shell.toast(msg(), undo || undefined), err => { shell.toast(`Not changed: ${err.message}`); if (err.stale) load(); });
-  return null;
+// landing(): the run returns the write's promise, the shell's run contract (shell.js, bulk:start; sd:2124). The shell toasts
+// the text once the write landed, offers Undo only then, and folds a bulk group into one toast. `inverse` reverses this
+// write, once. A 409 reads the document again, since the row it named has moved.
+function landing(promise, msg, inverse) {
+  const stale = err => { if (err.stale) load(); throw err; };
+  return promise.then(() => {
+    let spent = false;
+    const undo = inverse && (() => { if (spent) return Promise.resolve(false); spent = true; return inverse().catch(stale); });
+    return { text: msg(), undo };
+  }, stale);
 }
+// The command's undo: the shell passes what the run answered.
+const undoOf = (o, r) => r && r.undo ? r.undo() : false;
 async function setRepo(field, r, value, before) {
   await post(`/api/repos/${field}`, { path: r.path, value, before });
   await load();
 }
 const wordOf = (f, r) => f === 'runner-merge' ? r.merge : r.managed;
 const other = (f, v) => f === 'runner-merge' ? (v === 'auto' ? 'manual' : 'auto') : (v === 'yes' ? 'no' : 'yes');
-// A flip records what it wrote on the object, so its Undo (the toast's, or the shell's for a bulk run) writes the old value back.
+// A flip's Undo writes the old value back, with the value this flip wrote as its before.
 function flipRepo(field, o) {
   const r = o.row, before = wordOf(field, r), value = other(field, before);
-  o.flipped = { field, before, value };
-  return landing(setRepo(field, r, value, before), () => `${colOf(field)} ${value} · ${o.label}`, () => unflip(o));
+  return landing(setRepo(field, r, value, before), () => `${colOf(field)} ${value} · ${o.label}`,
+    () => setRepo(field, REPOS.find(x => x.path === o.path) || r, before, value));
 }
 const colOf = field => field === 'runner-merge' ? 'runner_merge' : 'managed';
-function unflip(o) {
-  const f = o.flipped; if (!f) return null; o.flipped = null;
-  return landing(setRepo(f.field, REPOS.find(x => x.path === o.path) || o.row, f.before, f.value), () => `${colOf(f.field)} ${f.before} again · ${o.label}`);
-}
 const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.latest || [])].find(a => a.id === n);
 async function runner(o, verb) {
   const a = asgOf(o.n); if (!a) throw new Error(`assignment #${o.n} was not read`);
@@ -431,17 +434,17 @@ function registerCommands() {
     // Repo rows: the two sd-db verbs, each an Undo-able flip of one column. build: they post /api/repos/<verb>.
     { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db.sh repo add registers it first',
       cli: o => `${SDDB} repo runner-merge ${shq(o.path)} ${o.row.merge === 'auto' ? 'manual' : 'auto'}`, executes: true,
-      run: o => flipRepo('runner-merge', o), undo: o => unflip(o) },
+      run: o => flipRepo('runner-merge', o), undo: undoOf },
     { id: 'repo.managed', on: 'repo', label: 'Switch managed', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db.sh repo add registers it first',
       cli: o => `${SDDB} repo managed ${shq(o.path)} ${o.row.managed === 'yes' ? 'no' : 'yes'}`, executes: true,
-      run: o => flipRepo('managed', o), undo: o => unflip(o) },
+      run: o => flipRepo('managed', o), undo: undoOf },
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
     { id: 'repo.pull', on: 'repo', label: 'Pull', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
     { id: 'sddb.run', on: 'sd-db change', label: 'Run', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
-      run: o => { dropProposal(o); o.path = o.repo.path; o.row = o.repo; o.flipped = { field: o.verb, before: o.before, value: o.value };
-        return landing(setRepo(o.verb, o.repo, o.value, o.before), () => `Ran locally · ${o.title}`, () => unflip(o)); },
-      undo: o => unflip(o) },
+      run: o => { dropProposal(o);
+        return landing(setRepo(o.verb, o.repo, o.value, o.before), () => `Ran locally · ${o.title}`, () => setRepo(o.verb, o.repo, o.before, o.value)); },
+      undo: undoOf },
     // build: copy only. sd-ship prepare opens a branch and a pull request, which the dashboard does not start.
     { id: 'file.prepare', on: 'file change', label: 'Prepare', key: 'p', risk: 'safe', primary: () => true, executes: false,
       cli: o => `sd-ship prepare --no-item --review-id ${o.branch.replace('/', '-')} --path .github/sd-review.json --title ${shq(o.title)}`,
@@ -449,10 +452,11 @@ function registerCommands() {
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
     // Assignments. build: requeue and cancel post the runner routes with the assignment's queue revision.
+    // Requeue's Undo is sd runner cancel while the run is still queued (commands.md).
     { id: 'asg.requeue', on: 'assignment', label: 'Requeue', key: 'q', risk: 'undo', bulk: true, primary: o => o.status === 'blocked',
       when: o => o.status === 'blocked' || `the assignment is ${o.status}`, cli: o => `sd runner requeue ${o.n}`,
-      run: o => landing(runner(o, 'requeue'), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, () => undoRequeue(o)),
-      undo: o => undoRequeue(o) },
+      run: o => landing(runner(o, 'requeue'), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, () => runner(o, 'cancel')),
+      undo: undoOf },
     { id: 'asg.cancel', on: 'assignment', label: 'Cancel', key: 'x', risk: 'confirm',
       when: o => ['queued', 'running'].includes(o.status) || `the assignment is ${o.status}, not queued or running`, cli: o => `sd runner cancel ${o.n}`,
       consequence: o => `Stops assignment #${o.n} in ${o.repo} and releases its lease.`,
@@ -483,8 +487,6 @@ function registerCommands() {
 }
 async function service(o, action) { await post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await load(); }
 async function job(o, action) { await post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await load(); }
-// Requeue's Undo puts the assignment back: sd runner cancel while the run is still queued (commands.md).
-function undoRequeue(o) { return landing(runner(o, 'cancel'), () => `Requeue undone · #${o.n} cancelled while queued`); }
 document.addEventListener('shell:open', e => {
   const id = e.detail;
   if (id.startsWith('repo:') && repoParam) shell.openPane('tab-details');
