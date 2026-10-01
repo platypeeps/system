@@ -241,19 +241,33 @@ def drain_path(database: Path) -> Path:
     return database.parent / "runner-drain.json"
 
 
-def drain_request(database: Path) -> str | None:
-    """The token of an unexpired drain marker, or None.
+def restart_lock_path(database: Path) -> Path:
+    """The lock one `runner.sh restart` holds from before its marker to after its removal."""
+    return database.parent / "runner-restart.lock"
 
-    A marker that does not read, or whose `expires_at` has passed, is
-    ignored: a restart that died without removing it must not stop the
-    queue for good.
+
+def drain_request(database: Path) -> str | None:
+    """The token of a drain marker whose restart still runs, or None.
+
+    The drain is latched to the restart lock, not to a clock: it holds for
+    as long as the verb that wrote it lives, and the kernel drops the lock
+    when that verb dies. A marker that does not read, or that no restart
+    holds the lock for, is ignored, so a dead restart never stops the queue.
+    A lock that cannot be taken for any other reason is one the verb cannot
+    take either, so no kick can follow and the marker is ignored too.
     """
     try:
         marker = json.loads(drain_path(database).read_text())
-        token, expires = marker["token"], float(marker["expires_at"])
+        token = marker["token"]
     except (OSError, ValueError, TypeError, KeyError):
         return None
-    return token if isinstance(token, str) and token and expires > time.time() else None
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        with journal.lock(restart_lock_path(database), blocking=False, noun="restart"):
+            return None
+    except store.RunnerRefused as refusal:
+        return token if isinstance(refusal.__cause__, BlockingIOError) else None
 
 
 class Runner:

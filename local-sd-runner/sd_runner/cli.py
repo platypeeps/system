@@ -13,7 +13,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import uuid
 from dataclasses import replace
@@ -91,13 +90,8 @@ def heartbeat_state(config: Config) -> dict:
 
 #: Seconds `restart` waits for the new daemon's healthy heartbeat.
 RESTART_WAIT = 180
-#: A drain marker lives `2 * wait` plus this many seconds past its last renewal.
-DRAIN_GRACE = 60
-#: Seconds between the verb's renewals of its drain marker.
-DRAIN_RENEW = 10
-#: A marker this close to its expiry is not renewed and does not permit the
-#: kick: the daemon may read it expired before the write lands.
-DRAIN_MARGIN = 10
+#: Seconds the verb retries its lock while the daemon probes it.
+RESTART_LOCK_WAIT = 2.0
 
 
 def agent_pid(label: str = LABEL) -> int | None:
@@ -133,13 +127,13 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
     expires on its own. `runner_commit` is None from a daemon that does
     not write it.
 
-    The drain must hold from the acknowledgement to the kick. A thread
-    renews the marker while the verb lives, and only a marker that has not
-    expired: once it lapses the daemon may have claimed, and nothing makes
-    it unexpired again. So the check just before the kick, that the marker
-    still holds this verb's token well ahead of its expiry, proves the
-    drain never lapsed; a lapse refuses. One restart at a time holds the
-    lock beside the database from before the marker to after its removal.
+    The drain must hold from the acknowledgement to the kick, however long
+    the verb sleeps in between. So it has no expiry: the daemon honours the
+    marker only while this verb holds the restart lock beside the database
+    (`runtime.drain_request`), and the kernel drops that lock when the verb
+    dies. The marker is written once and never renewed, so a lapsed token
+    cannot come back. Just before the kick the verb checks that the marker
+    still names its token; a removed or replaced marker refuses.
     """
     if not agent_loaded(label):
         return {"ok": False, "reason": f"the {label} agent is not loaded; install it first (runner.sh install-plan)"}
@@ -152,38 +146,30 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
         return {"ok": False, "reason": f"the 1-minute load average {load:.1f} is at or above {limit:g}; "
                 "a cold start under load can stall on diskutil, so restart when the machine is quieter",
                 "load": load, "max_load": limit}
-    from .runtime import drain_path, drain_request
+    from .runtime import drain_path, restart_lock_path
     marker = drain_path(config.database)
     with contextlib.ExitStack() as held:
         lock = restart_lock_path(config.database)
         try:
             # The one lock opener both packages share; no other module reaches fcntl.
-            held.enter_context(journal.lock(lock, blocking=False, noun="restart",
+            # The short wait rides over the daemon's own probe of this lock.
+            held.enter_context(journal.lock(lock, blocking=False, noun="restart", wait=RESTART_LOCK_WAIT, poll=0.05,
                                             held=f"another restart is running ({lock}); wait for it"))
         except store.RunnerRefused as refusal:
             return {"ok": False, "reason": str(refusal)}
-        if drain_request(config.database) is not None:
-            return {"ok": False, "reason": f"another restart is draining ({marker}); wait for it or for the marker to expire"}
+        # Any marker here is stale: its restart no longer holds the lock.
         token = uuid.uuid4().hex
-        ttl = 2 * wait + DRAIN_GRACE
-        _publish(marker, token, time.time() + ttl)
+        _publish(marker, token)
         held.callback(_withdraw, marker, token)
-        renewal = _Renewal(marker, token, ttl)
-        held.callback(renewal.stop)
         return _drained_restart(config, token, agent, wait=wait, label=label, clock=clock, sleep=sleep)
 
 
-def restart_lock_path(database: Path) -> Path:
-    """The lock one `runner.sh restart` holds for its whole run."""
-    return database.parent / "runner-restart.lock"
-
-
-def _publish(marker: Path, token: str, expires_at: float) -> None:
+def _publish(marker: Path, token: str) -> None:
     """Write the marker atomically, through a temporary file of this writer's own."""
     handle, name = tempfile.mkstemp(dir=marker.parent, prefix=f".{marker.name}.", suffix=".partial")
     try:
         with os.fdopen(handle, "w") as partial:
-            json.dump({"token": token, "expires_at": expires_at, "by": "runner.sh restart"}, partial)
+            json.dump({"token": token, "pid": os.getpid(), "by": "runner.sh restart"}, partial)
         os.replace(name, marker)
     except BaseException:
         Path(name).unlink(missing_ok=True)
@@ -191,7 +177,7 @@ def _publish(marker: Path, token: str, expires_at: float) -> None:
 
 
 def _withdraw(marker: Path, token: str) -> None:
-    """Remove the marker when it is this verb's, expired or not."""
+    """Remove the marker when it is this verb's."""
     try:
         mine = json.loads(marker.read_text()).get("token") == token
     except (OSError, ValueError, AttributeError):
@@ -200,33 +186,12 @@ def _withdraw(marker: Path, token: str) -> None:
         marker.unlink(missing_ok=True)
 
 
-def _drain_holds(marker: Path, token: str) -> bool:
-    """Whether the marker names `token` and stays unexpired for DRAIN_MARGIN seconds more."""
+def _marker_names(marker: Path, token: str) -> bool:
+    """Whether the marker still names `token`."""
     try:
-        value = json.loads(marker.read_text())
-        return value["token"] == token and float(value["expires_at"]) > time.time() + DRAIN_MARGIN
+        return json.loads(marker.read_text())["token"] == token
     except (OSError, ValueError, TypeError, KeyError):
         return False
-
-
-class _Renewal:
-    """Renew the verb's marker every DRAIN_RENEW seconds while it still holds."""
-
-    def __init__(self, marker: Path, token: str, ttl: float):
-        self.marker, self.token, self.ttl = marker, token, ttl
-        self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.run, name="drain-renewal", daemon=True)
-        self.thread.start()
-
-    def run(self):
-        while not self.stopped.wait(DRAIN_RENEW):
-            if not _drain_holds(self.marker, self.token):
-                return
-            _publish(self.marker, self.token, time.time() + self.ttl)
-
-    def stop(self):
-        self.stopped.set()
-        self.thread.join()
 
 
 def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clock, sleep) -> dict:
@@ -256,9 +221,9 @@ def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clo
                 f"{len(plan['journal_issues'])} journal issues, restore pending {plan['restore_pending']}); "
                 "read runner.sh recovery-plan and resolve it first"}
     from .runtime import drain_path
-    if not _drain_holds(drain_path(config.database), token):
-        return {"ok": False, "reason": "the drain lapsed before the kick; the daemon may have claimed work, "
-                "so run runner.sh restart again"}
+    if not _marker_names(drain_path(config.database), token):
+        return {"ok": False, "reason": "the drain marker was removed or replaced before the kick; the daemon may "
+                "have claimed work, so run runner.sh restart again"}
     kick = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
                           capture_output=True, text=True, check=False)
     if kick.returncode:

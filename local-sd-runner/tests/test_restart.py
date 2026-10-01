@@ -18,6 +18,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -157,66 +158,82 @@ class Restart(unittest.TestCase):
         result = self.restart()
         self.assertEqual(result, {"ok": True, "pid": 424242, "previous_pid": os.getpid(), "runner_commit": "fixture-commit"})
 
-    def test_a_restart_already_draining_refuses(self):
-        runtime.drain_path(self.fixture.database).write_text(json.dumps({"token": "other", "expires_at": 4e9}))
-        result = self.restart()
-        self.assertIn("another restart is draining", result["reason"])
-        self.assertEqual(json.loads(runtime.drain_path(self.fixture.database).read_text())["token"], "other")
-
-    def test_a_drain_that_lapses_during_inspection_refuses_without_a_kick(self):
-        """The marker expires while `recovery-plan` scans (a machine sleep, a slow journal): the daemon claims."""
-        store.enqueue(self.fixture.db, [self.fixture.item], who="operator")
+    def test_a_marker_removed_before_the_kick_refuses_without_a_kick(self):
+        """Only the verb's own marker permits the kick: a hand-removed one may have let the daemon claim."""
         marker = runtime.drain_path(self.fixture.database)
         real = reconciliation.plan
 
-        def slow(config):
+        def removed(config):
             clean = real(config)
-            marker.write_text(json.dumps({**json.loads(marker.read_text()), "expires_at": time.time() - 1}))
-            self.step(0)
+            marker.unlink()
             return clean
 
-        with patch.object(cli, "DRAIN_RENEW", 3600), patch.object(reconciliation, "plan", slow):
+        with patch.object(reconciliation, "plan", removed):
             result = self.restart()
-        self.assertEqual(len(self.claimed), 1, "the fixture's daemon claims once the drain lapses")
         self.assertFalse(result["ok"], result)
-        self.assertIn("the drain lapsed before the kick", result["reason"])
+        self.assertIn("removed or replaced before the kick", result["reason"])
         self.assert_not_kicked()
 
-    def test_renewal_keeps_the_drain_past_its_first_expiry(self):
-        real = reconciliation.plan
+    def test_a_drain_holds_while_its_restart_lives_however_long(self):
+        """Review: the daemon could claim once wall time passed the marker's expiry, mid-restart."""
+        store.enqueue(self.fixture.db, [self.fixture.item], who="operator")
+        real, now = reconciliation.plan, time.time
+
+        def suspended(config):
+            clean = real(config)
+            # A day passes while the verb sleeps between its checks; the daemon ticks.
+            with patch.object(time, "time", lambda: now() + 86400):
+                self.step(0)
+            return clean
+
+        with patch.object(reconciliation, "plan", suspended):
+            result = self.restart()
+        self.assertEqual(self.claimed, [], "the daemon claimed while the restart that drained it still lived")
+        self.assertTrue(result["ok"], result)
+
+    def test_the_marker_is_published_once_and_never_renewed(self):
+        """Review: a renewal could rewrite a lapsed marker, reviving the same token after a claim."""
+        real_plan, real_publish = reconciliation.plan, cli._publish
+        writes = []
 
         def slow(config):
-            time.sleep(1.5)
-            return real(config)
-
-        with patch.object(cli, "DRAIN_GRACE", 0), patch.object(cli, "DRAIN_MARGIN", 0.2), \
-                patch.object(cli, "DRAIN_RENEW", 0.1), patch.object(reconciliation, "plan", slow):
-            result = self.restart(wait=0.5)
-        self.assertTrue(result["ok"], result)
-        self.assertFalse(runtime.drain_path(self.fixture.database).exists())
-
-    def test_renewal_never_revives_a_lapsed_marker(self):
-        marker = runtime.drain_path(self.fixture.database)
-        lapsed = {"token": "mine", "expires_at": time.time() - 1}
-        marker.write_text(json.dumps(lapsed))
-        with patch.object(cli, "DRAIN_RENEW", 0.05):
-            renewal = cli._Renewal(marker, "mine", 60)
             time.sleep(0.3)
-            renewal.stop()
-        self.assertEqual(json.loads(marker.read_text()), lapsed)
+            return real_plan(config)
+
+        def counted(marker, token, *rest):
+            writes.append(token)
+            return real_publish(marker, token, *rest)
+
+        # The renewal interval the reviewed code read; a renewing verb would write again here.
+        with patch.object(cli, "DRAIN_RENEW", 0.05, create=True), \
+                patch.object(cli, "_publish", counted), patch.object(reconciliation, "plan", slow):
+            self.assertTrue(self.restart()["ok"])
+        self.assertEqual(len(writes), 1, "the drain token was written more than once")
+
+    def test_a_marker_whose_restart_died_is_ignored_and_replaced(self):
+        """The drain ends when its restart dies: the kernel drops the restart lock, not a clock."""
+        marker = runtime.drain_path(self.fixture.database)
+        script = ("import json, sys; from pathlib import Path; from sd_db import runner_journal as journal\n"
+                  "with journal.lock(Path(sys.argv[1]), blocking=False):\n"
+                  "    Path(sys.argv[2]).write_text(json.dumps({'token': 'dead'}))\n")
+        subprocess.run([sys.executable, "-c", script, str(runtime.restart_lock_path(self.fixture.database)),
+                        str(marker)], check=True, env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)})
+        self.assertIsNone(self.runner.pulse(self.fixture.db)["drain"], "a dead restart's marker still drains")
+        result = self.restart()
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(marker.exists())
 
     def test_a_second_restart_during_the_first_refuses(self):
         """The second starts after the first holds the lock, before the first's marker exists."""
-        real = runtime.drain_request
+        real = cli._publish
         second = []
 
-        def racing(database):
+        def racing(marker, token):
             if not second:
-                second.append(None)
-                second[0] = cli.restart(self.fixture.config, wait=5.0, sleep=self.step)
-            return real(database)
+                second.append(cli.restart(self.fixture.config, wait=5.0, sleep=self.step))
+            return real(marker, token)
 
-        with patch.object(runtime, "drain_request", racing):
+        with patch.object(cli, "_publish", racing), patch.object(cli, "RESTART_LOCK_WAIT", 0.1):
             first = self.restart()
         self.assertIn("another restart is running", second[0].get("reason", ""), second[0])
         self.assertTrue(first["ok"], first)
@@ -243,9 +260,14 @@ class Drain(unittest.TestCase):
         self.enterContext(patch.object(runtime.storage, "preflight", return_value=REPORT))
         self.enterContext(patch.object(runtime.gitops, "head", return_value="fixture-pack-head"))
 
+    def held(self):
+        """Stand in for a live `runner.sh restart`: hold its lock, as the verb does throughout."""
+        return self.enterContext(journal.lock(runtime.restart_lock_path(self.fixture.database), blocking=False))
+
     def test_a_drain_marker_withholds_dispatch_and_is_acknowledged(self):
+        self.held()
         marker = runtime.drain_path(self.fixture.database)
-        marker.write_text(json.dumps({"token": "fixture-token", "expires_at": 4e9}))
+        marker.write_text(json.dumps({"token": "fixture-token"}))
         pulse = self.runner.pulse(self.fixture.db)
         self.assertEqual(pulse["drain"], "fixture-token")
         self.assertIs(pulse["storage"]["dispatch_allowed"], False)
@@ -254,13 +276,26 @@ class Drain(unittest.TestCase):
         with patch.object(store, "claim", side_effect=AssertionError("a draining tick claimed")):
             self.runner.tick(self.fixture.db)
 
-    def test_an_expired_or_unreadable_marker_is_ignored(self):
+    def test_a_marker_without_a_live_restart_is_ignored(self):
         marker = runtime.drain_path(self.fixture.database)
-        for content in (json.dumps({"token": "old", "expires_at": 1.0}), "not json"):
+        marker.write_text(json.dumps({"token": "orphan"}))
+        pulse = self.runner.pulse(self.fixture.db)
+        self.assertIsNone(pulse["drain"])
+        self.assertIs(pulse["storage"]["dispatch_allowed"], True)
+
+    def test_an_unreadable_marker_is_ignored_even_under_a_live_restart(self):
+        self.held()
+        marker = runtime.drain_path(self.fixture.database)
+        for content in ("not json", json.dumps({"token": ""}), json.dumps({"by": "runner.sh restart"})):
             marker.write_text(content)
             pulse = self.runner.pulse(self.fixture.db)
-            self.assertIsNone(pulse["drain"])
+            self.assertIsNone(pulse["drain"], content)
             self.assertIs(pulse["storage"]["dispatch_allowed"], True)
+    def test_a_lock_no_restart_could_take_does_not_drain(self):
+        """A lock that refuses for any reason but contention refuses the verb too, so no kick follows."""
+        runtime.restart_lock_path(self.fixture.database).mkdir()
+        runtime.drain_path(self.fixture.database).write_text(json.dumps({"token": "unreachable"}))
+        self.assertIsNone(self.runner.pulse(self.fixture.db)["drain"])
 
 
 class _Clock:
