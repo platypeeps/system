@@ -142,9 +142,9 @@ class TheDocument(ScreenCase):
         """
         import sqlite3
 
-        from sd_db import repos
+        from sd_db import connect, repos
 
-        other = sqlite3.connect(self.path, isolation_level=None, timeout=0)
+        other = connect(self.path, busy_timeout=0)
         self.addCleanup(other.close)
         seen = []
         read = repos.row_for
