@@ -45,10 +45,16 @@ PORT="${PORT:-3033}"
 GENAI_TRACES_GRPC_PORT="${GENAI_TRACES_GRPC_PORT:-4337}"
 traces_env() {
   case "${AURA_TRACES:-1}" in 0|off|false|no|disabled) return 0 ;; esac
-  OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://127.0.0.1:$GENAI_TRACES_GRPC_PORT}"
-  OTEL_RECORD_CONTENT="${OTEL_RECORD_CONTENT:-true}"
+  # Content recording follows the local default only. A caller's own
+  # endpoint may leave the machine, so its recording stays the caller's call
+  # (Aura's default is off).
+  if [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
+    OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$GENAI_TRACES_GRPC_PORT"
+    OTEL_RECORD_CONTENT="${OTEL_RECORD_CONTENT:-true}"
+    export OTEL_RECORD_CONTENT
+  fi
   OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-aura}"
-  export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_RECORD_CONTENT OTEL_SERVICE_NAME
+  export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME
 }
 
 # The experiment runs only this locally built image, never the published one,
@@ -206,6 +212,10 @@ case "$1" in
         ;;
     esac
     ;;
+  test)
+    shift
+    exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
+    ;;
   -h|--help|help)
     cat <<'HELPEOF'
 usage: aura.sh install|server|server-repo|cli|health|models|prompt [text]
@@ -229,10 +239,12 @@ usage: aura.sh install|server|server-repo|cli|health|models|prompt [text]
   experiment inspect [summary|tree]  summarise the aura spans in
                      local-genai-traces' raw file
   experiment stop|ps stop the experiment, or list its containers
+  test               run this folder's tests
 
 traces: server, server-repo and the experiment export OTLP to
   local-genai-traces (127.0.0.1:4337) with content recorded. An exported
-  OTEL_EXPORTER_OTLP_ENDPOINT wins; AURA_TRACES=0 turns the default off.
+  OTEL_EXPORTER_OTLP_ENDPOINT wins and leaves recording to the caller;
+  AURA_TRACES=0 turns the default off.
 
 config:
   <config>/aura/.env         OPENAI_API_KEY, MEZMO_API_KEY, AURA_REPO, and
@@ -245,7 +257,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") install|server|server-repo|cli|health|models|prompt [text]|image|experiment" >&2
+    echo "usage: $(basename "$0") install|server|server-repo|cli|health|models|prompt [text]|image|experiment|test" >&2
     exit 1
     ;;
 esac
