@@ -132,6 +132,13 @@ entries and loads `<prefix>.cron.<name>` into `gui/$UID` (prefix from
 `SYSTEM_TOOLS_LABEL_PREFIX`, default `local.system-tools`). Re-run `install`
 after editing a job to apply changes.
 
+Every plist runs `/bin/bash <dir>/local-cron-jobs/cron-jobs.sh exec <name>`.
+The `local-machine-setup` cron stage reads that command to tell its own agents
+from another installer's agent under the same label prefix. It uninstalls only
+its own. Change the command in `write_plist` together with `cron_plist_ours` in
+`local-machine-setup/machine-setup.sh`; a test there renders a plist with this
+script and fails when the two disagree.
+
 ## Failure reporting
 
 On non-zero exit the wrapper:
