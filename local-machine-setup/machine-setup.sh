@@ -804,6 +804,36 @@ for name in sorted(names):
         print(name[:-4])'
 }
 
+# Did local-cron-jobs write this plist? The <prefix>.cron.<name> label does not
+# say: another repository's installer used the same label shape, and the sweep
+# below uninstalled its agent as an orphan (sd:2321). write_plist in
+# local-cron-jobs runs every job as `/bin/bash <dir>/local-cron-jobs/cron-jobs.sh
+# exec <job>` under the label <prefix>.cron.<job>, and that pair is the mark.
+# Every plist local-cron-jobs has rendered carries it, so an agent installed
+# before this check is recognised without being rewritten. A new marker key
+# would have made every installed plist STALE and reloaded every job at once.
+# Exits 0 for ours, 1 for another installer's, and anything else when it
+# cannot tell (an unreadable plist, no python3); callers treat that as not ours.
+cron_plist_ours() { # plist path, job name
+  python3 - "$1" "$LABEL_PREFIX.cron.$2" "$2" <<'PY'
+import plistlib, sys
+path, label, job = sys.argv[1:]
+try:
+    with open(path, "rb") as f:
+        plist = plistlib.load(f)
+except Exception as e:
+    print(f"cannot read {path}: {e}", file=sys.stderr)
+    sys.exit(2)
+args = plist.get("ProgramArguments") if isinstance(plist, dict) else None
+ours = (isinstance(plist, dict) and plist.get("Label") == label
+        and isinstance(args, list) and len(args) == 4
+        and args[0] == "/bin/bash"
+        and isinstance(args[1], str) and args[1].endswith("/local-cron-jobs/cron-jobs.sh")
+        and args[2] == "exec" and args[3] == job)
+sys.exit(0 if ours else 1)
+PY
+}
+
 stage_cron() {
   echo "== cron"
   # Without its host jobs, the sweep below read each one as an orphan and
@@ -846,8 +876,11 @@ stage_cron() {
   done
   # The reverse direction: a job dropped from (or renamed in) the profile
   # leaves its installed plist firing forever — nothing above ever looks at
-  # it again. The <prefix>.cron.* namespace is exclusively ours, so any
-  # plist there whose job the manifest no longer lists is an orphan.
+  # it again. A plist under <prefix>.cron.* whose job the manifest no longer
+  # lists is an orphan only when local-cron-jobs wrote it: another installer
+  # can share the namespace (sd:2321), so cron_plist_ours decides, and an
+  # agent it cannot place is left alone. FOREIGN and UNKNOWN are not drift
+  # words: this stage cannot fix another installer's agent.
   # uninstall derives label and plist from the name alone, so it works even
   # when the .job file itself is gone.
   [ "$sweep" = 1 ] || return 0
@@ -856,8 +889,14 @@ stage_cron() {
     xj=$(basename "$xp" .plist)
     xj=${xj#"$LABEL_PREFIX.cron."}
     if ! echo "$jobs" | grep -qx "$xj"; then
-      echo "  EXTRA   $xj — installed but no longer in this profile"
-      run "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$xj"
+      owner=0
+      cron_plist_ours "$xp" "$xj" || owner=$?
+      case "$owner" in
+        0) echo "  EXTRA   $xj — installed but no longer in this profile"
+           run "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$xj" ;;
+        1) echo "  FOREIGN $xj — not installed by local-cron-jobs; left in place" ;;
+        *) echo "  UNKNOWN $xj — cannot tell who installed it; left in place" ;;
+      esac
     fi
   done
 }
@@ -1763,10 +1802,14 @@ cmd_capture() {
   brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
   common_manifest cask > "$tmp/common.cask"
   comm -23 "$tmp/have.cask" "$tmp/common.cask" > "$tmp/out.cask"
+  # Only agents local-cron-jobs installed: another installer's agent under the
+  # same prefix has no job file, so a profile naming it could never install it.
   for p in "$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron."*.plist; do
     [ -e "$p" ] || continue
-    p=$(basename "$p" .plist)
-    printf '%s\n' "${p#"$LABEL_PREFIX.cron."}"
+    n=$(basename "$p" .plist)
+    n=${n#"$LABEL_PREFIX.cron."}
+    cron_plist_ours "$p" "$n" 2>/dev/null || continue
+    printf '%s\n' "$n"
   done | sort > "$tmp/have.cron"
   # This host's own jobs stay out of the profile too: the cron stage installs
   # them from their folder, and another machine sharing the profile has no
