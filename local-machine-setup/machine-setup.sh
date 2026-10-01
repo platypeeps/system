@@ -542,7 +542,12 @@ stage_appstore() {
 
   # `mas list` prints "<id>  <name>  (<version>)"; compare on the id alone,
   # since names carry spaces and versions drift.
-  installed_apps=$(mas list 2>/dev/null | awk '{print $1}' | sort)
+  mas_listing=$(mas list 2>/dev/null || :)
+  installed_apps=$(printf '%s\n' "$mas_listing" | awk '{print $1}' | sort)
+  # A beta or TestFlight build lists under id 0, so the id alone reads it as
+  # missing. Its name still matches: "<id>  <name>  (<version>)", name trimmed.
+  installed_names=$(printf '%s\n' "$mas_listing" \
+    | sed -e 's/^[[:space:]]*[0-9][0-9]*[[:space:]]*//' -e 's/[[:space:]]*([^()]*)[[:space:]]*$//')
   echo "$apps" | while read -r line; do
     id=$(echo "$line" | awk '{print $1}')
     name=$(echo "$line" | cut -d' ' -f2-)
@@ -551,12 +556,19 @@ stage_appstore() {
     esac
     if echo "$installed_apps" | grep -qx "$id"; then
       echo "  ok      $id $name"
+    elif [ -n "$name" ] && printf '%s\n' "$installed_names" | grep -qxF "$name"; then
+      echo "  ok      $id $name (installed under another id, such as a beta)"
     else
       # Said out loud, not left implicit in the `run` line. A dry run printed
       # only "[dry-run] mas install <id>", which `status` does not count, so a
       # missing App Store app added nothing to the drift number.
       echo "  MISSING $id $name"
-      run mas install "$id"
+      # `mas install` can need sudo, which a nightly run under launchd does
+      # not have. A failure here used to end the loop and, under set -e, the
+      # whole run: every later stage was skipped. Report it and go on.
+      if ! run mas install "$id"; then
+        echo "  FAILED  mas install $id $name — install it by hand"
+      fi
     fi
   done
 }
@@ -767,9 +779,43 @@ stage_repos() {
   fi
 }
 
+# Jobs only this machine sees: those in its own folder, cron-jobs/jobs/<host>/.
+# No profile names them, since a profile is shared between machines; where
+# they live says they belong here. CRON_JOBS_EXTRA_DIRS is not included: those
+# folders only define jobs, and the profile picks which of them run (sd:2221).
+# The folder comes from cron_job_dirs in lib/system_tools_config.py, so the
+# host rule is not repeated here. A folder that does not exist lists nothing;
+# one that cannot be read, or a python3 or lib that fails, exits non-zero,
+# because a caller that sweeps must not read a failure as "no host jobs".
+# os.listdir, not os.path.lexists first: lexists reads a PermissionError on
+# an ancestor folder as "absent", which failed open the same way.
+host_cron_jobs() {
+  PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+dirs = stc.cron_job_dirs()
+host = dirs[-2] if len(dirs) > 1 and dirs[-2].parent == dirs[-1] else None
+names = []
+if host is not None:
+    try:
+        names = os.listdir(host)
+    except FileNotFoundError:
+        pass
+for name in sorted(names):
+    if name.endswith(".job"):
+        print(name[:-4])'
+}
+
 stage_cron() {
   echo "== cron"
-  jobs=$(manifest cron)
+  # Without its host jobs, the sweep below read each one as an orphan and
+  # uninstalled it every night (sd:2221). When they cannot be listed, the
+  # wanted list is incomplete, so the sweep is skipped rather than guessed.
+  sweep=1
+  if ! host_jobs=$(host_cron_jobs); then
+    echo "  MISSING host job list — could not read this host's cron-jobs folder; nothing is uninstalled this run"
+    host_jobs=
+    sweep=0
+  fi
+  jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; } | awk 'NF && !seen[$0]++')
   if [ -z "$jobs" ]; then
     echo "  no jobs in this profile"
     return 0
@@ -804,6 +850,7 @@ stage_cron() {
   # plist there whose job the manifest no longer lists is an orphan.
   # uninstall derives label and plist from the name alone, so it works even
   # when the .job file itself is gone.
+  [ "$sweep" = 1 ] || return 0
   for xp in "$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron."*.plist; do
     [ -e "$xp" ] || continue
     xj=$(basename "$xp" .plist)
@@ -1721,7 +1768,14 @@ cmd_capture() {
     p=$(basename "$p" .plist)
     printf '%s\n' "${p#"$LABEL_PREFIX.cron."}"
   done | sort > "$tmp/have.cron"
-  common_manifest cron > "$tmp/common.cron"
+  # This host's own jobs stay out of the profile too: the cron stage installs
+  # them from their folder, and another machine sharing the profile has no
+  # such job file to install.
+  if ! host_cron_jobs > "$tmp/host.cron"; then
+    echo "capture: cannot list the host cron jobs in cron-jobs/jobs/<host>/; nothing captured" >&2
+    exit 1
+  fi
+  { common_manifest cron; cat "$tmp/host.cron"; } | sort -u > "$tmp/common.cron"
   comm -23 "$tmp/have.cron" "$tmp/common.cron" > "$tmp/out.cron"
 
   if command -v mas >/dev/null 2>&1; then
@@ -1733,7 +1787,20 @@ cmd_capture() {
     # orders diverge exactly when IDs differ in length: lexicographically
     # "1289583905" precedes "302584613", numerically it follows. Every other
     # kind here already sorts this way; mas was the only exception.
-    mas list 2>/dev/null | sed -e 's/ *([^)]*)$//' -e 's/  */ /g' -e 's/^ *//' | sort > "$tmp/have.mas"
+    # Id 0 is a beta or TestFlight build: `mas install 0` installs nothing, so
+    # it has no place in a profile. A profile entry with the same name stays,
+    # though: update counts it as installed, and a rebuild needs its store id.
+    mas list 2>/dev/null | sed -e 's/ *([^)]*)$//' -e 's/  */ /g' -e 's/^ *//' \
+      > "$tmp/all.mas"
+    { grep -v '^0 ' "$tmp/all.mas" || :; } > "$tmp/have.pre"
+    if [ -f "$PROFILE_DIR/$PROFILE.mas" ]; then
+      sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/  */ /g' \
+        "$PROFILE_DIR/$PROFILE.mas" \
+        | awk 'NR == FNR { if (sub(/^0 /, "")) beta[$0] = 1; next }
+               NF { n = $0; sub(/^[0-9]+ /, "", n); if (n in beta) print }' \
+          "$tmp/all.mas" - >> "$tmp/have.pre"
+    fi
+    sort -u "$tmp/have.pre" > "$tmp/have.mas"
     common_manifest mas > "$tmp/common.mas"
     comm -23 "$tmp/have.mas" "$tmp/common.mas" > "$tmp/out.mas"
   else
