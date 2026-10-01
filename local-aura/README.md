@@ -25,12 +25,13 @@ source checkout), CLI, and quick curl smoke tests.
 ## Traces
 
 Every Aura run here exports its traces to `local-genai-traces`
-(`127.0.0.1:4337`, Phoenix on `:6016`), with content recorded.
-`server` and `server-repo` set `OTEL_EXPORTER_OTLP_ENDPOINT`,
-`OTEL_RECORD_CONTENT=true` and `OTEL_SERVICE_NAME=aura` unless they are
-already exported. An exported endpoint may leave the machine, so with one
-set the script leaves `OTEL_RECORD_CONTENT` alone; Aura's default is off.
-`AURA_TRACES=0` turns the local default off for one run.
+(`127.0.0.1:4337`, Phoenix on `:6016`).
+`server` and `server-repo` set `OTEL_EXPORTER_OTLP_ENDPOINT` and
+`OTEL_SERVICE_NAME=aura` unless they are already exported.
+`AURA_TRACES=0` turns that default off for one run.
+They do not record prompts and answers: a server may carry real work, and
+the collector may forward it. Export `OTEL_RECORD_CONTENT=true` to record.
+The experiment records them, since its requests are fixed test prompts.
 
 The experiment runs only `$AURA_IMAGE` (default `aura-local:instrumented`),
 a local build of the `$AURA_REPO` checkout, never the published image.

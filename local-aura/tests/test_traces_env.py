@@ -1,9 +1,9 @@
 """Which OTLP settings `aura.sh server` hands the server.
 
 `aura-web-server` is a stub on PATH that prints its OTEL_ environment, so the
-suite runs no Aura and needs no key. Three cases: the local default records
-content; a caller's own endpoint, which may leave the machine, keeps
-recording off unless the caller asked; AURA_TRACES=0 sets nothing.
+suite runs no Aura and needs no key. The local default exports spans
+without content; recording is the caller's choice; a caller's endpoint wins;
+AURA_TRACES=0 sets nothing.
 """
 
 import os
@@ -45,10 +45,11 @@ class ServerEnvironment(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         return dict(line.split("=", 1) for line in done.stdout.splitlines())
 
-    def test_the_local_default_records_content(self):
+    def test_the_local_default_does_not_record_content(self):
+        # Ship-lane review: a server may carry real work and the collector
+        # may forward, so prompts and answers stay opt-in.
         self.assertEqual(self.otel(), {
             "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4337",
-            "OTEL_RECORD_CONTENT": "true",
             "OTEL_SERVICE_NAME": "aura",
         })
 

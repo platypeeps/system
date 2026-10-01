@@ -49,7 +49,9 @@ partly running or failing. `local-health-check` reads those codes.
 - **Containers reach it through the host.** A container exports to
   `http://host.docker.internal:4337`; `127.0.0.1` inside a container is the
   container itself.
-- **Content is recorded.** Experiments here set `OTEL_RECORD_CONTENT=true`,
-  so prompts and answers sit in Phoenix and the raw file. Both live under
-  `storage/`, which git ignores. Do not point production traffic here.
+- **Content may be recorded.** `aura.sh experiment` sets
+  `OTEL_RECORD_CONTENT=true`, so its prompts and answers sit in Phoenix and
+  the raw file. `aura.sh server` does not, unless that variable is exported.
+  Both stores live under `storage/`, which git ignores. Do not point
+  production traffic here.
 - `update` deletes both images; Phoenix data in `storage/phoenix` survives.
