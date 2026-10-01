@@ -32,7 +32,20 @@ ENV_JEV_TIMEOUT="${JEV_TIMEOUT:-}"
 ENV_JEV_RETRIES="${JEV_RETRIES:-}"
 ENV_JEV_ENABLED="${JEV_ENABLED:-}"
 ENV_JEV_FLAG_FILE="${JEV_FLAG_FILE:-}"
+# The comparison arms' settings (jev_compare.py) follow the same rule.
+COMPARE_VARS="JEV_COMPARE_KEV JEV_COMPARE_KEV_URL JEV_COMPARE_KEV_MODEL KEV_API_KEY KEV_MODEL
+  JEV_COMPARE_HAIKU_VIA JEV_COMPARE_HAIKU_MODEL JEV_COMPARE_HAIKU_USD_IN JEV_COMPARE_HAIKU_USD_OUT
+  JEV_COMPARE_ANTHROPIC_KEY JEV_COMPARE_ANTHROPIC_URL JEV_COMPARE_OPENROUTER_KEY
+  JEV_COMPARE_OPENROUTER_URL OPENROUTER_API_KEY JEV_COMPARE_BASETEN_KEY JEV_COMPARE_BASETEN_URL
+  JEV_COMPARE_BASETEN_MODEL BASETEN_API_KEY JEV_COMPARE_CLAUDE JEV_COMPARE_TIMEOUT JEV_COMPARE_LOG"
+for var in $COMPARE_VARS; do
+  eval "ENV_$var=\"\${$var:-}\""
+done
 st_source_env jev
+for var in $COMPARE_VARS; do
+  eval "value=\"\${ENV_$var:-}\""
+  [ -z "$value" ] || eval "$var=\"\$value\""
+done
 [ -n "$ENV_TYPESAFE_API_KEY" ] && TYPESAFE_API_KEY="$ENV_TYPESAFE_API_KEY"
 [ -n "$ENV_JEV_URL" ]     && JEV_URL="$ENV_JEV_URL"
 [ -n "$ENV_JEV_MODEL" ]   && JEV_MODEL="$ENV_JEV_MODEL"
@@ -178,6 +191,11 @@ environment:
   JEV_RETRIES        retries for 429/529/5xx, doubling backoff (default 3)
   JEV_ENABLED        1/0 for one call or one session; beats the switch file
   JEV_FLAG_FILE      switch file (default ~/.config/jev/enabled)
+  JEV_COMPARE_KEV    0/off/false/no/disabled: no Kev arm (unset means on)
+  JEV_COMPARE_HAIKU_VIA  anthropic (default), openrouter, claude-cli,
+                     baseten, or an off-word: the second comparison arm
+  JEV_COMPARE_*      keys, endpoints, prices and timeout of the arms;
+                     see .env.example and the README
 Defaults for these may also sit in <config>/jev/.env (<config> is
 $SYSTEM_TOOLS_CONFIG, default ~/.config/system; copy local-jev/.env.example);
 an exported value wins over the file.

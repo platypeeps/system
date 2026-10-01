@@ -322,6 +322,14 @@ Usage: sd-db.sh <command>
   judgments unlabelled --stage NAME [--prefix TEXT] [--json]
               The decisions of one stage with no label yet, oldest first;
               --prefix keeps the rows whose question id starts with TEXT.
+  judgments compare [--stage NAME] [--since STAMP] [--until STAMP] [--json]
+              The comparison arms (sd:2366): per stage, one line per arm
+              (jev, kev, haiku) and provider, with calls, declines by cause,
+              p50 and p95 latency, the model-reported p50, tokens, cost,
+              agreement with the jev row of the same pair (for a noul, the
+              same side of 0.5 and the mean |dp|), and accuracy and Brier on
+              pairs that carry a label. The old `judgments` report reads only
+              the jev and baseline arms. A read only.
   serve --loopback [--port N] [--database PATH]
               Serve the database to `sd_db.remote` connections on
               127.0.0.1 (default port 8769, 0 picks a free one). Loopback

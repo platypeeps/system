@@ -76,6 +76,9 @@ __all__ = [
     "MAX_ORDERING",
     "OUTCOMES",
     "by_stage",
+    "compare",
+    "compare_json",
+    "compare_text",
     "document",
     "json_text",
     "label",
@@ -86,8 +89,21 @@ __all__ = [
 
 #: Which mechanism answered. `jev` is the judgment model's arm, whatever the
 #: vendor; `baseline` is whatever the caller did before it, and does after it
-#: when the model declines.
-ARMS = ("jev", "baseline")
+#: when the model declines. `kev` and `haiku` are the comparison arms of
+#: sd:2366: a local System One server and a frontier model behind a prompt
+#: adapter, asked the same request beside every live call. They only record;
+#: neither answer is ever used. They are roles, not vendors: the transport or
+#: host is the row's `provider` and the checkpoint its `model`.
+ARMS = ("jev", "baseline", "kev", "haiku")
+
+#: The two arms the per-stage report compares. The comparison arms have
+#: their own report, `compare`, so a stage's call counts and paired samples
+#: keep the meaning they had before those arms existed.
+DECISION_ARMS = ("jev", "baseline")
+
+#: The arms `compare` reads: the model whose answer is used, and the two that
+#: are asked beside it.
+MODEL_ARMS = ("jev", "kev", "haiku")
 
 #: How it ended. The five classes, in one column.
 OUTCOMES = ("ok", "timeout", "fallback", "unavailable", "invalid")
@@ -142,6 +158,10 @@ MAX_ORDERING = 512
 #: An ordering is whole numbers separated by commas, and nothing else. The
 #: shape is the guarantee: a value that matches this cannot be content.
 POSITIONS = re.compile(r"^\d+(,\d+)*$")
+
+#: A distribution: numbers in the caller's option order, separated by commas.
+#: The keys are never stored, for the reason `answer` holds a position.
+DISTRIBUTION = re.compile(r"^\d+(\.\d+)?(,\d+(\.\d+)?)*$")
 
 
 class JudgmentRefused(SdDbError):
@@ -225,6 +245,23 @@ def _ordering(value: object) -> str | None:
     return value
 
 
+def _probabilities(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise JudgmentRefused(f"probabilities must be a string; got {value!r}")
+    if len(value) > MAX_ORDERING:
+        raise JudgmentRefused(
+            f"probabilities is {len(value)} characters and the ledger caps it at "
+            f"{MAX_ORDERING}")
+    if not DISTRIBUTION.match(value):
+        raise JudgmentRefused(
+            f"probabilities must be numbers separated by commas, in option "
+            f"order, e.g. `0.47,0.28,0.25`; got {value!r}. The option keys are "
+            f"text the caller wrote, and this table never stores them")
+    return value
+
+
 def _answer(value: object) -> str | None:
     if value is None:
         return None
@@ -270,6 +307,8 @@ def record(
     duration_ms: int | None = None,
     usd: float | None = None,
     changed: str = "unknown",
+    server_ms: int | None = None,
+    probabilities: str | None = None,
     now: str | None = None,
 ) -> int:
     """Write one row and return its id.
@@ -306,6 +345,8 @@ def record(
     tokens_out = _count("tokens_out", tokens_out)
     duration_ms = _count("duration_ms", duration_ms)
     questions = _count("questions", questions)
+    server_ms = _count("server_ms", server_ms)
+    probabilities = _probabilities(probabilities)
     if usd is not None and (type(usd) not in (int, float) or usd < 0):
         raise JudgmentRefused(f"usd must be a number of zero or more; got {usd!r}")
     moment = _now() if now is None else stamp(now)
@@ -314,12 +355,13 @@ def record(
             "INSERT INTO judgment (timestamp, caller, stage, arm, pair, shadow, "
             "provider, model, primitive, question_id, questions, outcome, cause, "
             "answer, confidence, ordering, tokens_in, tokens_out, duration_ms, "
-            "usd, changed) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "usd, changed, server_ms, probabilities) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (moment, caller, stage, arm, pair, 1 if shadow else 0, provider,
              model, primitive, question_id, questions, outcome, cause, answer,
              confidence, ordering, tokens_in, tokens_out, duration_ms,
-             None if usd is None else float(usd), changed),
+             None if usd is None else float(usd), changed, server_ms,
+             probabilities),
         )
     return int(cursor.lastrowid)
 
@@ -447,6 +489,7 @@ SELECT stage, arm,
        MAX(duration_ms)                                  AS max_ms
 FROM judgment
 WHERE primitive <> :gate
+  AND arm IN ('jev', 'baseline')
   AND (:since IS NULL OR timestamp >= :since)
   AND (:until IS NULL OR timestamp < :until)
 GROUP BY stage, arm
@@ -460,6 +503,7 @@ SELECT stage, cause, COUNT(*) AS n
 FROM judgment
 WHERE cause IS NOT NULL
   AND primitive <> :gate
+  AND arm IN ('jev', 'baseline')
   AND (:since IS NULL OR timestamp >= :since)
   AND (:until IS NULL OR timestamp < :until)
 GROUP BY stage, cause
@@ -488,6 +532,7 @@ SELECT stage, COUNT(*) AS paired FROM (
   FROM judgment
   WHERE pair IS NOT NULL
     AND primitive <> :gate
+    AND arm IN ('jev', 'baseline')
     AND (:since IS NULL OR timestamp >= :since)
     AND (:until IS NULL OR timestamp < :until)
   GROUP BY stage, pair
@@ -506,6 +551,7 @@ FROM judgment
 WHERE override IS NOT NULL
   AND answer IS NOT NULL
   AND primitive <> :gate
+  AND arm IN ('jev', 'baseline')
   AND (:since IS NULL OR timestamp >= :since)
   AND (:until IS NULL OR timestamp < :until)
 ORDER BY stage, arm
@@ -721,3 +767,211 @@ def document(stages: list[dict]) -> dict:
 
 def json_text(stages: list[dict]) -> str:
     return json.dumps(document(stages), indent=2, sort_keys=True) + "\n"
+
+
+# --- the comparison arms (sd:2366) -------------------------------------------
+#
+# Every live Jev call can be asked of a `kev` and a `haiku` arm too, with the
+# Jev row's pair id. Agreement and accuracy are computed here, at read time,
+# from rows that hold numbers only: no arm knew another's answer when it
+# recorded its own.
+
+#: Every row the comparison reads. One stage at a time is a small read, and
+#: percentiles and exact agreement are decided in Python: SQLite has neither.
+COMPARE_ROWS = """
+SELECT stage, arm, provider, pair, primitive, outcome, cause, answer,
+       probabilities, duration_ms, server_ms, tokens_in, tokens_out, usd,
+       override
+FROM judgment
+WHERE arm IN ('jev', 'kev', 'haiku')
+  AND primitive <> :gate
+  AND (:stage IS NULL OR stage = :stage)
+  AND (:since IS NULL OR timestamp >= :since)
+  AND (:until IS NULL OR timestamp < :until)
+ORDER BY stage, timestamp, id
+"""
+
+
+def percentile(values: list, share: float):
+    """The nearest-rank percentile, or None for no values. Nearest rank and
+    not interpolation: the number printed is one a call actually took."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, -(-int(share * 100) * len(ordered) // 100))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def _distribution(row) -> list[float] | None:
+    if not row["probabilities"]:
+        return None
+    return [float(value) for value in row["probabilities"].split(",")]
+
+
+def top(row) -> int | None:
+    """The answer a row would act on, as one comparable number.
+
+    A noul is yes when its probability is at least 0.5. A choice is the
+    position that won. A score is its most likely level when the row carries
+    the distribution, and its rounded expected level when it does not.
+    """
+    if row["answer"] is None:
+        return None
+    value = float(row["answer"])
+    if row["primitive"] == "noul":
+        return 1 if value >= 0.5 else 0
+    if row["primitive"] == "score":
+        dist = _distribution(row)
+        if dist:
+            return max(range(len(dist)), key=dist.__getitem__)
+        return int(round(value))
+    return int(value)
+
+
+def _truth(primitive: str, override: str) -> int:
+    """The label as `top` reads an answer."""
+    value = float(override)
+    if primitive == "noul":
+        return 1 if value >= 0.5 else 0
+    return int(round(value))
+
+
+def brier(row, truth: int) -> float | None:
+    """The Brier score of one row against its label, or None without the
+    distribution. A noul's answer is its probability; a choice's distribution
+    counts from position 1 and a score's from level 0."""
+    if row["primitive"] == "noul" and row["answer"] is not None:
+        return (float(row["answer"]) - truth) ** 2
+    dist = _distribution(row)
+    if not dist:
+        return None
+    index = truth - 1 if row["primitive"] == "choice" else truth
+    return sum((p - (1.0 if i == index else 0.0)) ** 2 for i, p in enumerate(dist))
+
+
+def compare(
+    connection: sqlite3.Connection,
+    *,
+    stage: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict]:
+    """Per stage, one entry per arm and provider: calls, latency, cost, and
+    how often the arm agreed with the Jev row of the same pair.
+
+    A label lives on one row of a pair, usually the Jev row; a pair is one
+    decision, so the label is read from whichever row of the pair carries it.
+    """
+    if stage is not None:
+        stage = _identifier("stage", stage, required=True)
+    if not present(connection):
+        return []
+    bounds = {"since": since, "until": until, "stage": stage, "gate": GATE_PRIMITIVE}
+    rows = [dict(row) for row in connection.execute(COMPARE_ROWS, bounds)]
+    reference: dict[tuple[str, str], dict] = {}
+    labels: dict[tuple[str, str], str] = {}
+    for row in rows:
+        if row["pair"] is None:
+            continue
+        key = (row["stage"], row["pair"])
+        if row["arm"] == "jev":
+            reference[key] = row
+        if row["override"] is not None:
+            labels.setdefault(key, row["override"])
+    stages: dict[str, dict[tuple[str, str], dict]] = {}
+    for row in rows:
+        groups = stages.setdefault(row["stage"], {})
+        entry = groups.setdefault((row["arm"], row["provider"]), {
+            "arm": row["arm"], "provider": row["provider"], "calls": 0, "ok": 0,
+            "declines": {}, "tokens_in": 0, "tokens_out": 0, "usd": None,
+            "_ms": [], "_server": [], "paired": 0, "agree": None, "_dp": [],
+            "labelled": 0, "right": 0, "_brier": []})
+        entry["calls"] += 1
+        entry["ok"] += row["outcome"] == "ok"
+        if row["cause"]:
+            entry["declines"][row["cause"]] = entry["declines"].get(row["cause"], 0) + 1
+        entry["tokens_in"] += row["tokens_in"] or 0
+        entry["tokens_out"] += row["tokens_out"] or 0
+        if row["usd"] is not None:
+            entry["usd"] = (entry["usd"] or 0.0) + row["usd"]
+        if row["duration_ms"] is not None:
+            entry["_ms"].append(row["duration_ms"])
+        if row["server_ms"] is not None:
+            entry["_server"].append(row["server_ms"])
+        if row["answer"] is None or row["pair"] is None:
+            continue
+        key = (row["stage"], row["pair"])
+        jev = reference.get(key)
+        if row["arm"] != "jev" and jev is not None and jev["answer"] is not None \
+                and jev["primitive"] == row["primitive"]:
+            entry["paired"] += 1
+            entry["agree"] = (entry["agree"] or 0) + (top(row) == top(jev))
+            if row["primitive"] == "noul":
+                entry["_dp"].append(abs(float(row["answer"]) - float(jev["answer"])))
+        if key in labels:
+            truth = _truth(row["primitive"], labels[key])
+            entry["labelled"] += 1
+            entry["right"] += top(row) == truth
+            score = brier(row, truth)
+            if score is not None:
+                entry["_brier"].append(score)
+    report = []
+    for name in sorted(stages):
+        arms = []
+        for (arm, provider), entry in sorted(
+                stages[name].items(),
+                key=lambda item: (MODEL_ARMS.index(item[0][0]), item[0][1])):
+            ms, server, dp, scores = (entry.pop("_ms"), entry.pop("_server"),
+                                      entry.pop("_dp"), entry.pop("_brier"))
+            entry["p50_ms"] = percentile(ms, 0.50)
+            entry["p95_ms"] = percentile(ms, 0.95)
+            entry["server_p50_ms"] = percentile(server, 0.50)
+            entry["mean_abs_dp"] = sum(dp) / len(dp) if dp else None
+            entry["agreement"] = (entry["agree"] / entry["paired"]
+                                  if entry["paired"] else None)
+            entry["accuracy"] = (entry["right"] / entry["labelled"]
+                                 if entry["labelled"] else None)
+            entry["brier"] = sum(scores) / len(scores) if scores else None
+            arms.append(entry)
+        report.append({"stage": name, "arms": arms})
+    return report
+
+
+def _compare_line(entry: dict) -> str:
+    who = f"{entry['arm']} ({entry['provider']})"
+    declines = ", ".join(f"{n} {cause}" for cause, n in sorted(entry["declines"].items()))
+    parts = [
+        f"    {who}: {entry['calls']} call(s), {entry['ok']} ok"
+        + (f" ({declines})" if declines else ""),
+        f"latency p50 {_ms(entry['p50_ms'])} / p95 {_ms(entry['p95_ms'])}"
+        + (f", server p50 {_ms(entry['server_p50_ms'])}"
+           if entry["server_p50_ms"] is not None else ""),
+        f"tokens {entry['tokens_in']} in / {entry['tokens_out']} out",
+        f"cost {_money(entry['usd'])}",
+    ]
+    if entry["arm"] != "jev":
+        agreement = (f"agree with jev {entry['agree'] or 0}/{entry['paired']}"
+                     f" ({_rate(entry['agree'], entry['paired'])})")
+        if entry["mean_abs_dp"] is not None:
+            agreement += f", mean |Δp| {entry['mean_abs_dp']:.3f}"
+        parts.append(agreement)
+    if entry["labelled"]:
+        parts.append(f"labelled {entry['right']}/{entry['labelled']} right"
+                     + (f", Brier {entry['brier']:.3f}" if entry["brier"] is not None else ""))
+    return ", ".join(parts)
+
+
+def compare_text(report: list[dict]) -> str:
+    """The comparison as a person reads it, one block per stage."""
+    if not report:
+        return "judgments compare: no calls recorded on the jev, kev or haiku arms\n"
+    lines = ["judgments compare: each arm against the jev row of the same pair"]
+    for entry in report:
+        lines.append(f"  {entry['stage']}:")
+        lines.extend(_compare_line(arm) for arm in entry["arms"])
+    return "\n".join(lines) + "\n"
+
+
+def compare_json(report: list[dict]) -> str:
+    """The comparison as JSON, for the analysis scripts."""
+    return json.dumps({"stages": report}, indent=2, sort_keys=True) + "\n"

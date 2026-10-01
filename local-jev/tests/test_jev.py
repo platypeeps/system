@@ -138,9 +138,14 @@ class StubServer(unittest.TestCase):
         # to a temp path: without it every call in this suite would write a
         # `judgment` row into the operator's own sd.db. The metering tests
         # below turn it back on against a database of their own.
+        # The comparison arms are pinned off for the same reason: unset
+        # means on, and on would send every call in this suite to a real Kev
+        # on 127.0.0.1:8009 and a real Haiku endpoint. `test_jev_compare`
+        # turns them back on against stubs of its own.
         env = {"TYPESAFE_API_KEY": "test-key", "JEV_URL": self.url,
                "JEV_RETRIES": "3", "JEV_TIMEOUT": "10",
                "JEV_METER": "0",
+               "JEV_COMPARE_KEV": "0", "JEV_COMPARE_HAIKU_VIA": "off",
                "JEV_FLAG_FILE": self.switch,
                "SYSTEM_TOOLS_CONFIG": str(self.config)}
         env.update(extra)

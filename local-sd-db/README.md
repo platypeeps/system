@@ -42,6 +42,11 @@ backup, and the fixture harness both repositories test against.
                     every row starts at `github`, set with `repo ci`.
                     Carries its reverse in its header, run before 015's
                     (sd:1843)
+      schema/017_judgment_compare_arms.sql  `judgment.arm` gains `kev`
+                    and `haiku`, the comparison arms, and the table gains
+                    `server_ms` and `probabilities`. A rebuild, as 007's.
+                    Carries its reverse in its header, run before 016's;
+                    it drops the comparison rows (sd:2366)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -285,6 +290,23 @@ a different label is refused unless `--replace` says to overwrite it.
 
 No labeller ships yet: a label needs independent evidence of the right answer,
 never one derived from the prediction it scores (sd:2107).
+
+### The comparison arms
+
+`jev` can ask a local Kev and a Haiku model the same request beside every live
+call (`local-jev/README.md`, sd:2366). Each answer is its own row, arm `kev`
+or `haiku`, with the Jev row's pair id, the latency the model reported in
+`server_ms`, and the distribution in `probabilities`: numbers in option order,
+never the keys. The report above reads only `jev` and `baseline`; this one
+reads the three model arms:
+
+    sd-db.sh judgments compare [--stage NAME] [--since STAMP] [--until STAMP] [--json]
+
+Per stage and per arm and provider: calls, declines by cause, p50 and p95
+latency, tokens, cost, agreement with the Jev row of the same pair, and
+accuracy and Brier score on pairs whose Jev row carries a label. A noul agrees
+when both sit on the same side of 0.5, and the mean `|Δp|` is printed beside
+it. Percentiles are nearest-rank, so every printed number is one a call took.
 
 ## Automatic provider selection
 

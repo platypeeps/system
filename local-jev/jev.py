@@ -327,6 +327,11 @@ def set_flag(args, conf, out, env=None, **kw) -> int:
 #: The call being measured, or None when nothing is.
 _EVENT = None
 
+#: The environment of the call being measured, for the comparison arms that
+#: `post` starts. Kept beside `_EVENT` and not in it: every key of `_EVENT`
+#: becomes a column, and the ledger refuses a row with one it does not know.
+_ENV = None
+
 
 def write_event(event: dict, env) -> str:
     """Hand one finished event to the recorder. Never raises.
@@ -354,7 +359,8 @@ def measure(args, env) -> None:
     itself for `local-health-check`, one fixed question that no caller reads,
     and a per-stage comparison of callers is the wrong place for it.
     """
-    global _EVENT
+    global _EVENT, _ENV
+    _ENV = env
     _EVENT = {
         "caller": whose(args, env, "caller"),
         "stage": whose(args, env, "stage"),
@@ -478,6 +484,29 @@ def whose(args, env, field: str) -> str:
     """
     variable = {"caller": "JEV_CALLER", "stage": "JEV_STAGE"}[field]
     return named(getattr(args, field, None)) or named(env.get(variable)) or UNNAMED
+
+
+def distribution_of(answer: dict, definition: dict) -> str | None:
+    """The answer's distribution as the ledger stores it: numbers in the
+    caller's option order, `0.4700,0.2800,0.2500`, never the keys.
+
+    A choice's probabilities are keyed by criterion and a score's by level
+    number from 0. A noul's distribution is its answer, so it has none here.
+    Anything missing or not a number is no distribution rather than a wrong
+    one.
+    """
+    found = answer.get("probabilities")
+    kind = definition.get("type")
+    if not isinstance(found, dict) or kind not in ("choice", "score"):
+        return None
+    if kind == "choice":
+        keys = list(definition.get("criteria") or ())
+    else:
+        keys = [str(i) for i in range(len(definition.get("criteria") or ()))]
+    values = [found.get(key) for key in keys]
+    if not keys or any(type(v) not in (int, float) or v < 0 for v in values):
+        return None
+    return ",".join(f"{float(v):.4f}" for v in values)
 
 
 def position_of(key, criteria) -> str | None:
@@ -855,6 +884,9 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
     payload, taken = redacted_payload(payload, conf.get("privacy", ()))
     if taken:
         sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
+    # After redaction and refusal, before the first attempt: the arms see the
+    # bytes Jev sees, once per call however many retries follow.
+    start_arms(payload)
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         conf["url"],
@@ -887,6 +919,9 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                         note(_cause="invalid")
                         raise
                     note(model=parsed.get("model"), **usage_of(parsed))
+                    server = parsed.get("latency_ms")
+                    if type(server) is int and server >= 0:
+                        note(server_ms=server)
                     return parsed
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace").strip()[:400]
@@ -914,6 +949,64 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
         raise JevError(last or "request failed")
     finally:
         note(duration_ms=int(round((time.monotonic() - started) * 1000)))
+
+
+def start_arms(payload: dict) -> str:
+    """Start the comparison arms for this call in a detached child, and do not
+    wait for it. Returns the request file's path, or "" when nothing started.
+
+    Only for a measured call (`status` is not one) and only with the meter
+    on: an arm exists to write a row, and with nothing to write it to it
+    would only spend money. Never raises -- an arm may not cost a caller its
+    answer, so any failure to start one is no arm at all.
+
+    The child gets a fresh interpreter, its own session, and `/dev/null` for
+    all three standard streams. A child holding the caller's stdout would
+    keep a `$(jev ...)` waiting until the slowest arm finished; that is the
+    case `test_a_hung_arm_does_not_delay_a_piped_caller` pins. The request
+    goes through a 0600 file the child deletes on read, because writing it
+    to a pipe would block here until the child had started.
+    """
+    global _EVENT
+    env = _ENV
+    if _EVENT is None or env is None or jev_meter is None:
+        return ""
+    path = ""
+    try:
+        if not jev_meter.switched_on(env):
+            return ""
+        import jev_compare
+        if not jev_compare.wanted(env):
+            return ""
+        import subprocess
+        import tempfile
+        if not _EVENT.get("pair"):
+            _EVENT["pair"] = os.urandom(8).hex()
+        job = {key: _EVENT.get(key) for key in
+               ("caller", "stage", "pair", "question_id", "primitive", "questions")}
+        job["payload"] = payload
+        fd, path = tempfile.mkstemp(prefix="jev-compare-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(job, fh)
+        log = (env.get("JEV_COMPARE_LOG") or "").strip()
+        errors = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
+        try:
+            subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve().with_name("jev_compare.py")),
+                 path],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
+                start_new_session=True, close_fds=True, env=dict(env))
+        finally:
+            if log:
+                errors.close()
+        return path
+    except Exception:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        return ""
 
 
 def answer_of(response: dict, qid: str) -> dict:
@@ -987,7 +1080,8 @@ def cmd_choice(args, conf, out, **kw) -> int:
     answer = one_question(args, conf, definition, **kw)
     # The position, never the key: see `position_of`.
     note(answer=position_of(answer.get("choice"), definition["criteria"]),
-         confidence=confidence_of(answer))
+         confidence=confidence_of(answer),
+         probabilities=distribution_of(answer, definition))
     if args.json:
         emit(answer, out)
     elif args.unsure_below is not None and answer.get("confidence", 0.0) < args.unsure_below:
@@ -1009,7 +1103,8 @@ def cmd_score(args, conf, out, **kw) -> int:
         "criteria": parse_levels(args.levels),
     }
     answer = one_question(args, conf, definition, **kw)
-    note(answer=judged(answer.get("score")), confidence=confidence_of(answer))
+    note(answer=judged(answer.get("score")), confidence=confidence_of(answer),
+         probabilities=distribution_of(answer, definition))
     if args.json:
         emit(answer, out)
     else:

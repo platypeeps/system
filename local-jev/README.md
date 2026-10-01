@@ -336,6 +336,40 @@ No labeller ships yet. A label must come from independent evidence of the
 right answer, never from the prediction under test; a later fix in a shared
 file is not that evidence for a review tier (sd:2107).
 
+### The comparison arms
+
+Every live call that reaches Jev also asks two other models the same
+question, so the ledger holds paired answers for the Jev evaluation:
+
+- **Kev**, the open-weights model `local-kev` serves on `127.0.0.1:8009`.
+  Its rows record provider `local`, the checkpoint from `KEV_MODEL`, and a
+  cost of 0.
+- **Haiku**, Claude Haiku 4.5 through one transport that
+  `JEV_COMPARE_HAIKU_VIA` names: `anthropic` (the default, keyed by
+  `JEV_COMPARE_ANTHROPIC_KEY`), `openrouter`, `claude-cli` (`claude -p
+  --model haiku`, under the operator's own `claude` login), or `baseten`, which
+  serves no Haiku and so needs `JEV_COMPARE_BASETEN_MODEL` and its own
+  prices. The row records the transport as provider and the model name.
+
+The arms get the request after redaction, exactly as Jev gets it. They run in
+a detached child process that `jev.py` starts once per call, before the first
+attempt, and does not wait for: the caller's output, exit code and timing are
+Jev's alone, and a hung arm costs the caller nothing. The child writes one
+judgment row per arm, with arm `kev` or `haiku`, the same pair id as the Jev
+row, the answer, the probabilities, the model's own latency where it reports
+one, tokens and cost. An unreachable or unkeyed arm records a decline.
+
+Haiku answers one question per request, with a JSON schema for the answer's
+probabilities, so no question sees another's answer: the isolation Jev's
+batch gives. `--fallback`, `enabled`, a meter that is off, and a call Jev
+never gets start no arm.
+
+Switch an arm off with an off-word (`JEV_COMPARE_KEV=0`,
+`JEV_COMPARE_HAIKU_VIA=off`); unset means on. The rest of the settings are in
+`.env.example`. Read the comparison with:
+
+    local-sd-db/sd-db.sh judgments compare [--stage S] [--since 2026-10] [--json]
+
 ## What it never does
 
 It never prints the key, never logs it, and never puts it in an error message.
@@ -357,6 +391,12 @@ refused whole, nothing is sent, and a `--fallback` is honoured. A pattern file t
 compiled is a setting that does not parse: nothing is sent, `enabled` exits 3,
 and a `--fallback` is honoured. Patterns catch shapes and listed values; they
 do not make a sensitive input safe to send.
+
+**The comparison arms widen who sees a request.** With the Haiku arm on, every
+redacted request Jev gets also goes to Anthropic, or to OpenRouter and
+Anthropic, or to Baseten, depending on the transport. The Kev arm stays on
+this machine. Switch the Haiku arm off where that second recipient is not
+acceptable; it never receives a request that redaction refused.
 
 ## Tests
 

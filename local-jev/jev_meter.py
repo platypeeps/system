@@ -65,6 +65,25 @@ def busy_ms(env) -> int:
         return BUSY_MS
 
 
+def accepted(write_row, event: dict) -> dict:
+    """The event without the fields this `sd_db` does not take.
+
+    `jev` and the library are installed separately, and the library `jev`
+    reads is often the command pack's copy. A field a newer `jev` measures
+    (`server_ms`, `probabilities`) would make an older library refuse the
+    whole row over a keyword it has never heard of. Dropping the field keeps
+    the row, which is the trade every other refusal here makes.
+    """
+    import inspect
+    try:
+        known = inspect.signature(write_row).parameters
+    except (TypeError, ValueError):          # pragma: no cover - a C callable
+        return event
+    if any(p.kind is p.VAR_KEYWORD for p in known.values()):
+        return event
+    return {key: value for key, value in event.items() if key in known}
+
+
 def record(event: dict, env=None) -> str:
     """Write one `judgment` row for a finished call. Never raises.
 
@@ -96,7 +115,7 @@ def record(event: dict, env=None) -> str:
     except Exception:
         return NO_STORE
     try:
-        write_row(connection, **event)
+        write_row(connection, **accepted(write_row, event))
     except OperationalError:
         # `database is locked` once the wait ran out, which is the expected
         # answer under contention rather than a fault, and is worth its own
