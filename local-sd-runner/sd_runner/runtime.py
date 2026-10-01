@@ -236,6 +236,40 @@ def checkout_commit(root: Path = CHECKOUT) -> str | None:
 COLD_START_WINDOW = 600
 
 
+def drain_path(database: Path) -> Path:
+    """The marker `runner.sh restart` writes to stop claims before it kicks the agent (sd:1951)."""
+    return database.parent / "runner-drain.json"
+
+
+def restart_lock_path(database: Path) -> Path:
+    """The lock one `runner.sh restart` holds from before its marker to after its removal."""
+    return database.parent / "runner-restart.lock"
+
+
+def drain_request(database: Path) -> str | None:
+    """The token of a drain marker whose restart still runs, or None.
+
+    The drain is latched to the restart lock, not to a clock: it holds for
+    as long as the verb that wrote it lives, and the kernel drops the lock
+    when that verb dies. A marker that does not read, or that no restart
+    holds the lock for, is ignored, so a dead restart never stops the queue.
+    A lock that cannot be taken for any other reason is one the verb cannot
+    take either, so no kick can follow and the marker is ignored too.
+    """
+    try:
+        marker = json.loads(drain_path(database).read_text())
+        token = marker["token"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        with journal.lock(restart_lock_path(database), blocking=False, noun="restart"):
+            return None
+    except store.RunnerRefused as refusal:
+        return token if isinstance(refusal.__cause__, BlockingIOError) else None
+
+
 class Runner:
     def __init__(self, config: Config, *, freezer=storage.freeze, observer=processes.survivors, transport=None):
         self.config = config
@@ -476,6 +510,9 @@ class Runner:
             connection.close()
 
     def pulse(self, connection):
+        # Read before this tick claims anything: the heartbeat that names the
+        # token tells `restart` that no claim follows it (sd:1951).
+        drain = drain_request(self.config.database)
         holds = []
         try:
             report = storage.preflight(self.config.database, self.config.work, self.config.retention, floor_gb=self.config.floor_gb,
@@ -503,7 +540,7 @@ class Runner:
                 raise ValueError("pack HEAD is unavailable")
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             holds.append({"probe": "pack_head", "reason": str(error)})
-        if holds:
+        if holds or drain:
             report = {**report, "dispatch_allowed": False}
         # Today reads the copies waiting on space from here: the floor, the free space, the space needed.
         space_holds = []
@@ -519,7 +556,7 @@ class Runner:
             "restoration_pending": self._restore_pending(connection),
             "database_holds": sorted(self.pending_endings), "probe_holds": holds, "space_holds": space_holds,
             "pack_commit": commit, "delivery_watch": self.delivery_watch_result, "executables": self.executables,
-            "archive_refresh": self.archive_watch_result, **self.deployed()})
+            "archive_refresh": self.archive_watch_result, "drain": drain, **self.deployed()})
 
     def deployed(self) -> dict:
         """The heartbeat's `runner_commit` and `runner_checkout`, which `heartbeat_state` compares (sd:1952)."""
