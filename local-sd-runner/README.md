@@ -307,6 +307,40 @@ Unknown measurements forbid dispatch. Confirmed low database space still attempt
 One failed process observation cannot abort the remaining stops or trigger unrelated restart cleanup.
 Database corruption remains fatal; SQLite contention retains its bounded retry behavior.
 
+### Deploy a change to the running daemon
+
+Python reads the runner's modules once, at start, so a merged change reaches the daemon only through a restart.
+Pull the checkout, then run `runner.sh restart`. Do not kick the agent with `launchctl` by hand.
+
+The verb first drains the daemon, because an idle queue read before the kick can be claimed before it.
+It writes `runner-drain.json` beside the database, and each pulse reads it before its tick claims anything.
+A heartbeat that names the marker's token says the daemon claims nothing more.
+That heartbeat must come from the pid `launchctl print` names for the agent.
+So a `--config` naming a database the agent does not serve refuses, and the agent is not kicked.
+The verb holds `runner-restart.lock` beside the database from before the marker to after its removal.
+The daemon honours the marker only while some process holds that lock.
+So the drain has no expiry: a machine sleep or a slow `recovery-plan` scan cannot end it.
+The kernel drops the lock when the verb dies, and the daemon then ignores the marker; the queue does not stay stopped.
+The verb writes its marker once and never renews it, so an ended drain cannot come back.
+Just before the kick the marker must still name the verb's token.
+Otherwise the verb refuses: `the drain marker was removed or replaced before the kick`.
+One restart runs at a time: a second verb refuses with `another restart is running`.
+
+The verb then refuses with a reason, removes the marker, and leaves launchd alone, unless all three guards pass:
+
+- No assignment is active. A kick ends the daemon that supervises it.
+- `runner.sh recovery-plan` is clean. The new daemon's recovery holds on what the plan lists, so it would start unhealthy.
+- The 1-minute load average is below `--max-load` (default: the core count).
+  A cold start under load stalled on `diskutil` and launchd relaunched it for six minutes (sd:1950).
+
+It then runs `launchctl kickstart -k` on the `<prefix>.sd-runner` agent.
+It waits up to `--wait` seconds (default 180) for a healthy heartbeat with a new pid.
+It removes the marker, prints that pid and the heartbeat's `runner_commit` (null from a daemon that does not write it), and exits 0.
+Otherwise it exits 1 naming the reason.
+
+A daemon that started before the drain existed never acknowledges it, so the verb refuses.
+Deploy that first change by hand, when the queue is idle.
+
 The runner refreshes kept-clone archives on a persisted 24-hour cadence.
 Each refresh creates a separate verified generation and preserves the original archive and all previous generations.
 Process holders, restore uncertainty, any standing `journal_issues` entry, changing contents, and insufficient free space hold the refresh.
