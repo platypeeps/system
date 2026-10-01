@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import os
 import plistlib
+import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
 from sd_db import runner as store
+from sd_db import runner_journal as journal
 from sd_db.database import connect, default_path
 from sd_db.errors import SdDbError
 
@@ -82,6 +88,158 @@ def heartbeat_state(config: Config) -> dict:
         connection.close()
 
 
+#: Seconds `restart` waits for the new daemon's healthy heartbeat.
+RESTART_WAIT = 180
+#: Seconds the verb retries its lock while the daemon probes it.
+RESTART_LOCK_WAIT = 2.0
+
+
+def agent_pid(label: str = LABEL) -> int | None:
+    """The pid `launchctl print` names for the agent, or None when it runs no process."""
+    try:
+        done = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                              capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    match = re.search(r"^\s*pid = (\d+)\s*$", done.stdout, re.MULTILINE) if done.returncode == 0 else None
+    return int(match.group(1)) if match else None
+
+
+def restart(config: Config, *, max_load: float | None = None, wait: float = RESTART_WAIT, label: str = LABEL,
+            clock=time.monotonic, sleep=time.sleep) -> dict:
+    """Drain the runner, then kick its agent, and wait for the new daemon (sd:1951).
+
+    A snapshot of an idle queue proves nothing about the moment of the
+    kick: the daemon can claim a queued row in between, and `kickstart -k`
+    would kill that row's supervisor. So the verb writes a drain marker
+    (`runtime.drain_path`), which every pulse reads before its tick claims,
+    and waits for a heartbeat that names the marker's token: from then on
+    the daemon claims nothing. That heartbeat must come from the agent's
+    own pid, so a `--config` naming a database the agent does not serve
+    refuses instead of kicking the agent. Then an active assignment (it
+    would lose its supervisor), a `recovery-plan` that is not clean (the
+    new daemon's recovery holds on it) or a load average at or above
+    `max_load` (default: the core count; a cold start under load stalled
+    on `diskutil`, sd:1950) refuses. Every refusal leaves launchd alone and
+    removes the marker. After `launchctl kickstart -k` the verb waits up to
+    `wait` seconds for a healthy heartbeat with a new pid, then removes the
+    marker so the new daemon dispatches. A marker left by a verb that died
+    expires on its own. `runner_commit` is None from a daemon that does
+    not write it.
+
+    The drain must hold from the acknowledgement to the kick, however long
+    the verb sleeps in between. So it has no expiry: the daemon honours the
+    marker only while this verb holds the restart lock beside the database
+    (`runtime.drain_request`), and the kernel drops that lock when the verb
+    dies. The marker is written once and never renewed, so a lapsed token
+    cannot come back. Just before the kick the verb checks that the marker
+    still names its token; a removed or replaced marker refuses.
+    """
+    if not agent_loaded(label):
+        return {"ok": False, "reason": f"the {label} agent is not loaded; install it first (runner.sh install-plan)"}
+    agent = agent_pid(label)
+    if agent is None:
+        return {"ok": False, "reason": f"the {label} agent has no running process to drain; start it with launchctl kickstart"}
+    limit = float(max_load if max_load is not None else os.cpu_count() or 1)
+    load = os.getloadavg()[0]
+    if load >= limit:
+        return {"ok": False, "reason": f"the 1-minute load average {load:.1f} is at or above {limit:g}; "
+                "a cold start under load can stall on diskutil, so restart when the machine is quieter",
+                "load": load, "max_load": limit}
+    from .runtime import drain_path, restart_lock_path
+    marker = drain_path(config.database)
+    with contextlib.ExitStack() as held:
+        lock = restart_lock_path(config.database)
+        try:
+            # The one lock opener both packages share; no other module reaches fcntl.
+            # The short wait rides over the daemon's own probe of this lock.
+            held.enter_context(journal.lock(lock, blocking=False, noun="restart", wait=RESTART_LOCK_WAIT, poll=0.05,
+                                            held=f"another restart is running ({lock}); wait for it"))
+        except store.RunnerRefused as refusal:
+            return {"ok": False, "reason": str(refusal)}
+        # Any marker here is stale: its restart no longer holds the lock.
+        token = uuid.uuid4().hex
+        _publish(marker, token)
+        held.callback(_withdraw, marker, token)
+        return _drained_restart(config, token, agent, wait=wait, label=label, clock=clock, sleep=sleep)
+
+
+def _publish(marker: Path, token: str) -> None:
+    """Write the marker atomically, through a temporary file of this writer's own."""
+    handle, name = tempfile.mkstemp(dir=marker.parent, prefix=f".{marker.name}.", suffix=".partial")
+    try:
+        with os.fdopen(handle, "w") as partial:
+            json.dump({"token": token, "pid": os.getpid(), "by": "runner.sh restart"}, partial)
+        os.replace(name, marker)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+
+
+def _withdraw(marker: Path, token: str) -> None:
+    """Remove the marker when it is this verb's."""
+    try:
+        mine = json.loads(marker.read_text()).get("token") == token
+    except (OSError, ValueError, AttributeError):
+        mine = False
+    if mine:
+        marker.unlink(missing_ok=True)
+
+
+def _marker_names(marker: Path, token: str) -> bool:
+    """Whether the marker still names `token`."""
+    try:
+        return json.loads(marker.read_text())["token"] == token
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clock, sleep) -> dict:
+    deadline = clock() + wait
+    while (state := heartbeat_state(config)).get("drain") != token:
+        if clock() >= deadline:
+            return {"ok": False, "reason": f"the daemon serving {config.database} did not acknowledge the drain within {wait:g}s; "
+                    "the agent may run code older than the drain, or not serve this database"}
+        sleep(min(2.0, max(deadline - clock(), 0.0)))
+    if state.get("pid") != agent:
+        return {"ok": False, "reason": f"the daemon serving {config.database} is pid {state.get('pid')}; "
+                f"the {label} agent runs pid {agent}; --config names a different runner"}
+    connection = connect(config.database, write=False)
+    try:
+        active = sorted({row["id"] for row in connection.execute(
+            "SELECT id FROM assignment WHERE status IN ('running', 'ending')")}
+            | {run["assignment"] for run in store.active_runs(connection)})
+    finally:
+        connection.close()
+    if active:
+        return {"ok": False, "reason": f"the queue is not idle: assignment {', '.join(map(str, active))} is active; "
+                "restart when it has ended", "active": active}
+    from . import reconciliation
+    plan = reconciliation.plan(config)
+    if plan["entries"] or plan["journal_issues"] or plan["restore_pending"]:
+        return {"ok": False, "reason": f"recovery-plan is not clean ({len(plan['entries'])} entries, "
+                f"{len(plan['journal_issues'])} journal issues, restore pending {plan['restore_pending']}); "
+                "read runner.sh recovery-plan and resolve it first"}
+    from .runtime import drain_path
+    if not _marker_names(drain_path(config.database), token):
+        return {"ok": False, "reason": "the drain marker was removed or replaced before the kick; the daemon may "
+                "have claimed work, so run runner.sh restart again"}
+    kick = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+                          capture_output=True, text=True, check=False)
+    if kick.returncode:
+        return {"ok": False, "reason": f"launchctl kickstart exited {kick.returncode}: {kick.stderr.strip()}"}
+    deadline = clock() + wait
+    while True:
+        state = heartbeat_state(config)
+        if state.get("pid") not in (None, agent) and state.get("ok"):
+            return {"ok": True, "pid": state["pid"], "previous_pid": agent,
+                    "runner_commit": state.get("runner_commit")}
+        if clock() >= deadline:
+            return {"ok": False, "previous_pid": agent, "pid": state.get("pid"), "healthy": state.get("healthy"),
+                    "reason": f"no healthy heartbeat with a new pid within {wait:g}s; read runner.sh status and the err log"}
+        sleep(min(2.0, max(deadline - clock(), 0.0)))
+
+
 def install_plan(config: Config, *, config_path=None) -> dict:
     launcher = Path(__file__).resolve().parents[1] / "runner.sh"
     label = LABEL
@@ -108,6 +266,10 @@ def main(argv=None) -> int:
         command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
         if name == "prune":
             command.add_argument("--days", type=int, default=30)
+    command = sub.add_parser("restart")
+    command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+    command.add_argument("--max-load", type=float)
+    command.add_argument("--wait", type=float, default=RESTART_WAIT)
     command = sub.add_parser("prune-apply")
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--days", type=int, default=30)
@@ -162,6 +324,8 @@ def main(argv=None) -> int:
             config = replace(config, database=args.database.resolve())
         if args.verb == "preflight":
             result = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb)
+        elif args.verb == "restart":
+            result = restart(config, max_load=args.max_load, wait=args.wait)
         elif args.verb == "install-plan":
             result = install_plan(config, config_path=args.config)
         elif args.verb in {"prune", "discard-plan"}:

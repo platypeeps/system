@@ -23,7 +23,7 @@ if [ "$method" = DELETE ]; then
   printf '%s' "$dc"; exit 0
 fi
 case "$data" in *notifications/initialized*)
-  [ -s "$FAKE_DIR/note_delay" ] && sleep "$(cat "$FAKE_DIR/note_delay")"
+  [ -s "$FAKE_DIR/note_delay" ] && /bin/sleep "$(cat "$FAKE_DIR/note_delay")"
   [ -n "$body" ] && : > "$body"; printf 202; exit 0 ;;
 esac
 # $FAKE_DIR/curl_seq, when present, answers one line per call before
@@ -36,7 +36,7 @@ if [ -s "$FAKE_DIR/curl_seq" ]; then
 fi
 [ -n "$mode" ] || mode=$(cat "$FAKE_DIR/curl_mode" 2>/dev/null || echo ok)
 # $FAKE_DIR/curl_delay: seconds an initialize takes before it answers.
-[ -s "$FAKE_DIR/curl_delay" ] && sleep "$(cat "$FAKE_DIR/curl_delay")"
+[ -s "$FAKE_DIR/curl_delay" ] && /bin/sleep "$(cat "$FAKE_DIR/curl_delay")"
 case "$mode" in
   hang)
     echo "curl: (28) Operation timed out after 10002 milliseconds with 0 bytes received" >&2
