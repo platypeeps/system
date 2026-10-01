@@ -242,12 +242,12 @@ function El(id) { var e = { id: id, html: null, hidden: false, dataset: {}, styl
   focus() {}, closest() { return null; }, matches() { return false; }, showModal() {}, remove() {},
   replaceChildren(f) { e.html = f ? f.parsed : ''; }, append(f) { e.html = (e.html || '') + (f && f.parsed || ''); }, prepend() {}, before() {} };
   return e; }
-var ELS = {}, DOC_LISTENERS = {}, WIN_LISTENERS = {};
+var ELS = {}, DOC_LISTENERS = {}, WIN_LISTENERS = {}, MADE = [];
 var document = { body: El('body'),
   getElementById(id) { return ELS[id] = ELS[id] || El(id); },
   querySelector(sel) { return /sd-csrf/.test(sel) ? { content: 'c'.repeat(64) } : null; },
   querySelectorAll() { return []; },
-  createElement(tag) { if (tag !== 'template') return El(tag);
+  createElement(tag) { if (tag !== 'template') { var made = El(tag); MADE.push(made); return made; }
     var t = {}; Object.defineProperty(t, 'innerHTML', { set: function (v) { t.content = { parsed: v }; } }); return t; },
   addEventListener(t, f) { (DOC_LISTENERS[t] = DOC_LISTENERS[t] || []).push(f); },
   dispatchEvent(e) { (DOC_LISTENERS[e.type] || []).forEach(f => f(e)); } };
@@ -649,6 +649,23 @@ R.list = ELS['view-list'].html;""", prelude=self.SEP6, env={"TZ": "America/Denve
         self.assertEqual(kept, {due for due in dues if reads.is_urgent({"due": due, "status": "planning", "kind": "task"}, now=read)})
         self.assertIn("2026-09-14", kept)
 
+    def test_the_date_dialog_bounds_are_the_servers_urgent_window(self):
+        # At 2026-09-06T12:00Z the server calls Sep 14 urgent, so out of Urgent starts on Sep 15 and into Urgent ends on
+        # Sep 14; 7 and 8 local days put the boundary a day early (review, PR #46).
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        self.doc["read"] = "2026-09-06T12:00:00Z"
+        self.row("plan").update(due="2026-09-10", urgent=True)
+        self.row("ask").update(due=None, urgent=False, urgent_otherwise=False)
+        out = self.run_page(f"""const D = MADE.find(e => /date-dlg/.test(e.className || '')); const due = El('due-in'); D.querySelector = () => due;
+document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); await flush();
+open({plan}); await flush(); document.dispatchEvent({{ type: 'keydown', key: '2', target: El('card'), preventDefault() {{}} }}); await flush();
+R.out = D.html;
+open({ask}); await flush(); document.dispatchEvent({{ type: 'keydown', key: '1', target: El('card'), preventDefault() {{}} }}); await flush();
+R.into = D.html;""", prelude=self.SEP6, env={"TZ": "America/Denver"})
+        self.assertIn('min="2026-09-15"', out["R"]["out"])
+        self.assertIn("Not urgent means due after Sep 14.", out["R"]["out"])
+        self.assertIn('min="2026-09-06" max="2026-09-14"', out["R"]["into"])
+
     def test_a_card_holding_controls_is_an_article_and_the_selection_is_aria_current(self):
         # An option's descendants are presentational to assistive technology, so a card with a checkbox and buttons
         # is no option, and no list holding cards is a listbox (review, PR #46).
@@ -862,6 +879,38 @@ R.bulk = cmd('item.complete').bulk;""", answer)
         self.assertIn([f"Skipped #{plan}: it repeats: 5 completes it and opens the next occurrence", False], out["toasts"])
         self.assertIn(["Status → Done · 1 item", True], out["toasts"])
         self.assertIsNone(out["R"].get("bulk"))
+
+    def test_run_and_its_undo_read_the_details_again(self):
+        # The Details hold the item's assignments and its run readiness: a run and its Undo each read them again, or Run
+        # stays on beside a run it already queued (review, PR #46).
+        plan = self.ids["plan"]
+        answer = "(path) => path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'r'.repeat(64) }] }] : path === '/api/runner/7/cancel' ? [200, {}] : [404, {}]"
+        out = self.run_page(f"""open({plan}); await flush(); R.opened = OUT.gets.filter(g => g === '/api/tasks/{plan}').length;
+const r = await cmd('item.run').run(C.get('{plan}')); await flush(); R.ran = OUT.gets.filter(g => g === '/api/tasks/{plan}').length;
+await r.undo(); await flush(); R.undone = OUT.gets.filter(g => g === '/api/tasks/{plan}').length;""", answer)
+        self.assertEqual((out["R"]["opened"], out["R"]["ran"], out["R"]["undone"]), (1, 2, 3))
+
+    def test_a_refused_runner_write_reads_the_assignment_again(self):
+        # A 409 means the assignment revision the Details hold is old; a retry would send it again unless they are read
+        # again (review, PR #46).
+        port = self.ids["port"]
+        (asg,) = self.details[str(port)]["assignments"]
+        answer = f"(path) => path === '/api/runner/{asg['id']}/requeue' ? [409, {{ error: 'The assignment changed. Reload it.' }}] : [404, {{}}]"
+        out = self.run_page(f"""open({port}); await flush();
+try {{ await cmd('asg.requeue').run(C.get('asg:{asg['id']}')); }} catch (e) {{ R.err = e.message; }} await flush();
+R.reads = OUT.gets.filter(g => g === '/api/tasks/{port}').length;""", answer)
+        self.assertEqual(out["R"]["err"], "The assignment changed. Reload it.")
+        self.assertEqual(out["R"]["reads"], 2, "the Details were not read again after the refusal")
+
+    def test_a_task_added_under_a_filter_that_hides_it_is_not_selected(self):
+        # Selection stays on a visible task: a new task the filters hide is added and named, not selected (review, PR #46).
+        new = {**self.row("ask"), "id": 99, "title": "Call the bank", "kind": "task", "repo": None, "repo_path": None}
+        answer = f"(path) => path === '/api/items' ? (DOC.rows.push({json.dumps(new)}), [201, {{ item: {{ id: 99, title: 'Call the bank' }} }}]) : [404, {{}}]"
+        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'kind', v: 'work' } } : null } }); await flush();
+var box = document.getElementById('shift-in'); box.value = 'Call the bank';
+box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""", answer)
+        self.assertIn(["Added #99 to Planning · the filters hide it; Clear all shows it", False], out["toasts"])
+        self.assertNotIn("/api/tasks/99", out["gets"], "the hidden task was selected and its Details read")
 
     def test_the_copied_run_line_is_a_valid_sd_run(self):
         plan = self.ids["plan"]

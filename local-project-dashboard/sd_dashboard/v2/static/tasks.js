@@ -334,8 +334,9 @@ addEventListener('DOMContentLoaded', () => {
       when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id to run' : !d ? 'run readiness was not read for this row' : d.run.allowed || d.run.reason; },
       cli: o => idOr(o, t => `sd run --sequential ${t.id}`),
       run: o => { const t = T(o);
-        const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision } }).then(out => load().then(() => out.assignments?.[0]));
-        return landing(p, () => `${label(t)} queued for the runner · sd run --sequential ${t.id}`, unqueue); },
+        // The Details hold the item's assignments and its run readiness: read them again after the run and after its Undo.
+        const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision } }).then(out => { redrawDet(t.id); return load().then(() => out.assignments?.[0]); });
+        return landing(p, () => `${label(t)} queued for the runner · sd run --sequential ${t.id}`, a => unqueue(a, t.id)); },
       undo: undoOf },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
@@ -385,16 +386,18 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: o => o.status !== 'blocked', cli: o => `sd assignments get ${o.n}`, run: o => `Assignment #${o.n} shown in Details` },
   );
   const asgOf = o => Object.values(DET.items).flatMap(d => d.assignments).find(a => a.id === o.n);
+  // A refused write reads the Details again too: they hold the assignment revision a retry sends (review, PR #46).
   async function runner(o, verb) {
     const a = asgOf(o); if (!a) throw new Error(`assignment #${o.n} was not read`);
-    await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision });
+    try { await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision }); } catch (err) { if (err.stale) redrawDet(o.item); throw err; }
     redrawDet(o.item); await load();
   }
   // Requeue's Undo puts the assignment back: sd runner cancel while the run is still queued (commands.md). Run's Undo
   // cancels the assignment that run queued.
-  function unqueue(a) {
+  function unqueue(a, item) {
     if (!a) return Promise.reject(new Error('the runner named no queued assignment'));
-    return post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => load());
+    return post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => { redrawDet(item); return load(); },
+      err => { if (err.stale) redrawDet(item); throw err; });
   }
 
   // ---------- Rendering ----------
@@ -632,10 +635,13 @@ addEventListener('DOMContentLoaded', () => {
   document.body.append(dateDlg);
   function askDate(t, dir, name, done) {
     const into = dir === 'into';
-    const min = into ? plus(0) : plus(8), max = into ? plus(7) : '';
+    // The boundary is withinWeek's, the server's rule from the read stamp, not 7 local days: the last urgent date is the day
+    // before the first one withinWeek calls not urgent, so a picked date always lands in the quadrant named (review, PR #46).
+    let n = 0; while (withinWeek({ due: plus(n + 1) }) && n < 400) n++;
+    const last = plus(n), min = into ? plus(0) : plus(n + 1), max = into ? last : '';
     put(dateDlg, html`<form method="dialog" class="date-form">
       <h2 id="date-h">${label(t)} → ${name}</h2>
-      <p class="why">${into ? 'Urgent means due within 7 days. Pick the real deadline.' : `Not urgent means due after ${fmt(plus(7))}. ${t.due ? `The current deadline is ${fmt(t.due)}; moving it changes the obligation.` : ''}`}</p>
+      <p class="why">${into ? 'Urgent means due within 7 days. Pick the real deadline.' : `Not urgent means due after ${fmt(last)}. ${t.due ? `The current deadline is ${fmt(t.due)}; moving it changes the obligation.` : ''}`}</p>
       <label class="label" for="due-in">Due date</label>
       <input id="due-in" type="date" required min="${min}"${max ? html` max="${max}"` : ''} value="">
       <div class="actions">
@@ -841,7 +847,10 @@ addEventListener('DOMContentLoaded', () => {
     // build: files it with POST /api/items (workflow.capture_task, sd task add). No verb deletes a task, so no Undo.
     const body = { title: P.title, ...(P.p ? { priority: P.p } : {}), ...(P.due ? { due: P.due } : {}), ...(P.repo ? { repo: repoFor(P.repo) } : {}) };
     inp.value = ''; showPreview();
-    post('/api/items', body).then(out => load().then(() => { select(String(out.item.id), false); landed(String(out.item.id)); toast(`Added #${out.item.id} to Planning`); }),
+    // The new task is selected only where it shows: a filter that hides it keeps the selection on a visible one (review, PR #46).
+    post('/api/items', body).then(out => load().then(() => { const key = String(out.item.id), t = byKey(key);
+      if (!t || !passes(t)) { toast(`Added #${out.item.id} to Planning · the filters hide it; Clear all shows it`); return; }
+      select(key, false); landed(key); toast(`Added #${out.item.id} to Planning`); }),
       err => { inp.value = [P.title, P.p && `p${P.p}`, P.due && `due ${P.due}`, P.repo && `#${P.repo}`].filter(Boolean).join(' '); toast(`Not added: ${err.message}`); });
   });
   prev.addEventListener('click', e => { const b = e.target.closest('[data-open-find]'); if (b) { inp.value = ''; showPreview(); select(b.dataset.openFind, true); } });
