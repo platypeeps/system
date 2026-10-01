@@ -1,0 +1,52 @@
+# Aura experiment: the math MCP server and two Aura servers (orchestration and
+# single agent), exporting traces to local-genai-traces on the host.
+# aura.sh experiment drives this file and sets every ${...} below.
+name: local-aura-experiment
+
+services:
+  math-mcp:
+    build:
+      context: ${AURA_REPO}/examples/quickstart-orchestration-math/math-mcp
+    healthcheck:
+      test: >
+        curl -sf http://localhost:8081/mcp -X POST
+        -H "Content-Type: application/json"
+        -H "Accept: application/json, text/event-stream"
+        -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"healthcheck","version":"1.0"}},"id":1}'
+        > /dev/null || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  aura-orch: &aura
+    image: ${AURA_IMAGE}
+    command: ["./aura", "webserver", "--verbose"]
+    env_file: ${AURA_ENV_FILE}
+    environment: &aura-env
+      HOST: "0.0.0.0"
+      PORT: "3030"
+      CONFIG_PATH: "/app/config/config.toml"
+      AURA_CUSTOM_EVENTS: "false"
+      AURA_EMIT_REASONING: "false"
+      TOOL_RESULT_MODE: "none"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${AURA_OTLP_ENDPOINT}
+      OTEL_RECORD_CONTENT: "true"
+      OTEL_SERVICE_NAME: "aura-orch"
+    volumes:
+      - ${AURA_EXPERIMENT_STATE}/config-orch.toml:/app/config/config.toml:ro
+    ports:
+      - "127.0.0.1:${AURA_ORCH_PORT}:3030"
+    depends_on:
+      math-mcp:
+        condition: service_healthy
+
+  aura-single:
+    <<: *aura
+    environment:
+      <<: *aura-env
+      OTEL_SERVICE_NAME: "aura-single"
+    volumes:
+      - ${AURA_EXPERIMENT_STATE}/config-single.toml:/app/config/config.toml:ro
+    ports:
+      - "127.0.0.1:${AURA_SINGLE_PORT}:3030"

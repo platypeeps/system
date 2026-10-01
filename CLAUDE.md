@@ -79,7 +79,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - Do not list the declaring tools in prose; lists go stale.
 7. **launchd labels** use the prefix in `SYSTEM_TOOLS_LABEL_PREFIX` (default `local.system-tools`); never hardcode a personal prefix.
 
-Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-cswap` and `tests/ci-native.sh` are bash; `local-gito` sources `~/.gito/.env`; `local-cron-jobs` uses `local`.
+Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-cswap` and `tests/ci-native.sh` are bash; `local-gito` sources `~/.gito/.env`; `local-cron-jobs` uses `local`; `local-genai-traces` uses compose with `restart: unless-stopped`, not `--rm`, to stay always on.
 
 ## Planned work lives in `docs/work/`
 

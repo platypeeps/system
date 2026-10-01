@@ -178,6 +178,10 @@ environment:
   JEV_RETRIES        retries for 429/529/5xx, doubling backoff (default 3)
   JEV_ENABLED        1/0 for one call or one session; beats the switch file
   JEV_FLAG_FILE      switch file (default ~/.config/jev/enabled)
+  JEV_TRACES_URL     OTLP/HTTP traces endpoint; one metadata-only span per call
+                     (off when unset; local-genai-traces takes
+                     http://127.0.0.1:4338/v1/traces)
+  JEV_TRACES_TIMEOUT seconds for that post (default 0.5)
 Defaults for these may also sit in <config>/jev/.env (<config> is
 $SYSTEM_TOOLS_CONFIG, default ~/.config/system; copy local-jev/.env.example);
 an exported value wins over the file.

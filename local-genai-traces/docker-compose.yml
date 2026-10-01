@@ -1,0 +1,32 @@
+# Always-on Gen-AI trace collection: OTLP in, Phoenix and a raw JSONL file out.
+# genai-traces.sh drives this file; the ports come from its environment.
+name: local-genai-traces
+
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: local-genai-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    # The file exporter writes as the container user; root keeps the bind
+    # mount writable without a chown on the host.
+    user: "0:0"
+    restart: unless-stopped
+    volumes:
+      - ./collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ./storage/raw:/out
+    ports:
+      - "127.0.0.1:${GENAI_TRACES_GRPC_PORT:-4337}:4317"
+      - "127.0.0.1:${GENAI_TRACES_HTTP_PORT:-4338}:4318"
+      - "127.0.0.1:${GENAI_TRACES_HEALTH_PORT:-13137}:13133"
+    depends_on: [phoenix]
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: local-genai-phoenix
+    restart: unless-stopped
+    environment:
+      PHOENIX_WORKING_DIR: /data
+    volumes:
+      - ./storage/phoenix:/data
+    ports:
+      - "127.0.0.1:${GENAI_TRACES_UI_PORT:-6016}:6006"

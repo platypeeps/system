@@ -242,6 +242,14 @@ Name yourself, or the row says `unknown`:
 `JEV_CALLER` and `JEV_STAGE` do the same, for a caller that is a shell and
 reaches this script through a wrapper that already exports its own variables.
 
+**The same row can go to a trace collector.** With `JEV_TRACES_URL` set,
+`jev_trace.py` posts it as one OTLP/HTTP JSON span, service `jev`, after the
+answer is printed. Point it at `local-genai-traces`
+(`http://127.0.0.1:4338/v1/traces`) to see Jev calls in Phoenix beside the
+other experiments. It carries the ledger's fields and nothing else, never
+raises, and waits `JEV_TRACES_TIMEOUT` seconds (default 0.5) at most.
+Unset sends nothing.
+
 **Nothing you submit is recorded.** No prompt, no state, no path, no subject,
 no body. The ledger holds identifiers and counts, and the two columns that
 could carry content by accident are **shaped**, not merely capped: a length
