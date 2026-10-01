@@ -1,4 +1,4 @@
-"""The cleanup the suites share: `kill_group` in `tests/procgroup.py`.
+"""The cleanup the suites share: `kill_group` in `local-health-check/tests/procgroup.py`.
 
 REGRESSION (sd:2261). A full gate failed in the cleanup of
 `StatusBoundIsValidated`: `os.killpg` raised `PermissionError`. The script had
