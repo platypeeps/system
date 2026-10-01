@@ -143,19 +143,26 @@ addEventListener('DOMContentLoaded', () => {
   }
 
   // ---------- Writes (build) ----------
-  // One write per task at a time: each waits for the one before it, then sends the row's revision as it is then, so an
-  // Undo right after a move sends the move's readback revision. A stale revision (409) re-reads the rows. `sent` sees the
-  // row as the write leaves: the state this write changes, after every write queued before it (review, PR #46).
+  // One write per task at a time: each waits for the one before it, then sends the row's revision as it is then. A stale
+  // revision (409) re-reads the rows. `sent` sees the row as the write leaves: the state this write changes, after every
+  // write queued before it (review, PR #46). `check` asks again, as the write leaves, whether the command is still on: a
+  // write queued behind another chose its command before that one landed (review round 3). `rev` is an Undo's: the revision
+  // its own write answered. A row whose revision moved since, by a re-read or by any other write, refuses the Undo, so it
+  // never overwrites a change it did not make (review round 3).
+  const CHANGED = 'it changed after this write, and Undo would overwrite that change';
   const pending = new Map();
-  function write(key, path, body, sent) {
-    const p = (pending.get(key) || Promise.resolve()).then(() => { const t = byKey(key); if (!t) throw new Error('the task is no longer listed'); sent?.(t); return post(path(t), { ...body, revision: t.revision }); })
+  function write(key, path, body, { sent, check, rev } = {}) {
+    const p = (pending.get(key) || Promise.resolve()).then(() => { const t = byKey(key); if (!t) throw new Error('the task is no longer listed');
+      if (rev !== undefined && t.revision !== rev) throw new Error(CHANGED);
+      const on = check ? check(t) : true; if (on !== true) throw new Error(on);
+      sent?.(t); return post(path(t), { ...body, revision: t.revision }); })
       .then(out => { absorb(key, out); render(); return out; });
     pending.set(key, p.catch(() => {}));
     return p;
   }
   // The item edit route takes workflow field names: priority, due, recurrence, recurrence_anchor.
-  const edit = (key, ch, sent) => write(key, t => `/api/items/${t.id}`, Object.fromEntries(Object.entries(ch).map(([k, v]) => [k === 'p' ? 'priority' : k, v])), sent);
-  const moveTo = (key, to, sent) => write(key, t => `/api/items/${t.id}/status`, { status: to }, sent);
+  const edit = (key, ch, opts) => write(key, t => `/api/items/${t.id}`, Object.fromEntries(Object.entries(ch).map(([k, v]) => [k === 'p' ? 'priority' : k, v])), opts);
+  const moveTo = (key, to, opts) => write(key, t => `/api/items/${t.id}/status`, { status: to }, opts);
   function failed(name, err) { toast(`${name ? name + ' ' : ''}not changed: ${err.message}`); }
   // A refused stale write re-reads the rows once, however many writes in a group were refused.
   let rereading = null;
@@ -163,8 +170,8 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Undo (build, review of PR #46 and #50) ----------
   // A command's run returns landing(...): the shell contract in shell.js (bulk:start) waits for it, toasts its text, and
   // offers Undo only when it landed, for a bulk group too. The Undo it resolves to belongs to this operation: `inverse` gets
-  // what the write answered and reverses this write, no later one, once. A write that failed has no Undo, so a refused row
-  // is never written again with the revision the re-read brought.
+  // what the write answered and reverses this write, no later one, once, with the revision that answer carried. A write
+  // that failed has no Undo, so a refused row is never written again with the revision the re-read brought.
   function landing(promise, text, inverse) {
     return promise.then(v => {
       let spent = false;
@@ -237,17 +244,18 @@ addEventListener('DOMContentLoaded', () => {
   const coarse = matchMedia('(pointer: coarse)');
   const NEXT = { planning: 'ready', ready: 'in_progress', in_progress: 'done', blocked: 'ready' };
   // Status moves: keys 1–5 in the menu, as on the board. The list row shows the next status as its button.
-  // build: run posts the move and returns null, so the toast (with Undo) comes when the write lands; undo moves it back to
-  // the status this move left, read as the write is sent.
+  // build: run returns the move's landing, so the toast (with Undo) comes when the write lands; undo moves it back to
+  // the status this move left, read as the write is sent. The `when` test runs again as the write leaves.
+  const moveOn = (s, t) => { if (s === 'done' && repeats(t)) return 'it repeats: 5 completes it and opens the next occurrence';
+    const L = legal(t, s); return L.ok || L.reason; };
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
     id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban',
     primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
-    when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; if (s === 'done' && repeats(t)) return 'it repeats: 5 completes it and opens the next occurrence';
-      const L = legal(t, s); return L.ok || L.reason; },
+    when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
     cli: o => idOr(o, t => cliMove(t, s)),
     run: o => { const t = T(o); let from = t.status;
-      return landing(moveTo(t.key, s, r => { from = r.status; }).then(() => landed(t.key)),
-        () => `${label(t)} ${slabel(from)} → ${name} · ${cliMove(t, s)}`, () => moveTo(t.key, from)); },
+      return landing(moveTo(t.key, s, { sent: r => { from = r.status; }, check: r => moveOn(s, r) }).then(v => { landed(t.key); return v; }),
+        () => `${label(t)} ${slabel(from)} → ${name} · ${cliMove(t, s)}`, v => moveTo(t.key, from, { rev: v.revision })); },
     undo: undoOf,
   }]));
   // A repeating task's completion makes workflow.change_status open the next occurrence and clear the rule on this one. A
@@ -255,10 +263,10 @@ addEventListener('DOMContentLoaded', () => {
   // again when it lands, so the next occurrence is listed at once. Key 5 is Done's too: the shell runs the first command
   // on a key that is on, so the two `when` tests split on repeats() and never are both on. Not bulk: a picked repeating
   // row is skipped with its reason (keys below).
+  const completeOn = t => { if (!repeats(t)) return 'the task does not repeat; Status → Done completes it'; const L = legal(t, 'done'); return L.ok || L.reason; };
   const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check',
     primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
-    when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; if (!repeats(t)) return 'the task does not repeat; Status → Done completes it';
-      const L = legal(t, 'done'); return L.ok || L.reason; },
+    when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
     cli: o => idOr(o, t => cliMove(t, 'done')),
     // build: next_due is workflow.next_occurrence_due, the date the completion computes; without it the rule is named.
     consequence: o => { const t = T(o);
@@ -266,13 +274,13 @@ addEventListener('DOMContentLoaded', () => {
     run: o => { const t = T(o); let from = t.status;
       const next = v => v?.next_occurrence ? `next occurrence #${v.next_occurrence}${byKey(String(v.next_occurrence))?.due ? ` due ${fmt(byKey(String(v.next_occurrence)).due)}` : ''}`
         : `the series ended: ${v?.next_occurrence_reason || 'no next occurrence was made'}`;
-      return landing(moveTo(t.key, 'done', r => { from = r.status; }).then(v => reread().then(() => v)),
+      return landing(moveTo(t.key, 'done', { sent: r => { from = r.status; }, check: completeOn }).then(v => reread().then(() => v)),
         v => `${label(t)} ${slabel(from)} → Done · ${next(v)} · ${cliMove(t, 'done')}`); } };
-  // An edit's Undo sets back the fields it changed, as they were when the edit was sent.
+  // An edit's Undo sets back the fields it changed, as they were when the edit was sent, at the revision the edit answered.
   function editRun(t, ch, msg) {
     let was = {};
     const sent = r => { was = Object.fromEntries(Object.keys(ch).map(k => [k, k === 'p' ? (r.p ?? null) : (r[k] ?? null)])); };
-    return landing(edit(t.key, ch, sent).then(() => landed(t.key)), msg, () => edit(t.key, was));
+    return landing(edit(t.key, ch, { sent }).then(v => { landed(t.key); return v; }), msg, v => edit(t.key, was, { rev: v.revision }));
   }
   C.register(
     ...Object.values(STATUS_CMD), COMPLETE,
@@ -332,7 +340,7 @@ addEventListener('DOMContentLoaded', () => {
       when: o => { const d = detOf(T(o)); return !d ? 'recurrence was not read for this row' : d.item.recurrence ? true : 'the task does not repeat'; },
       cli: o => idOr(o, t => `sd task edit ${t.id} --clear-recur`),
       run: o => { const t = T(o), was = { recurrence: detOf(t).item.recurrence, recurrence_anchor: detOf(t).item.recurrence_anchor };
-        return landing(edit(t.key, { recurrence: null }), () => `${label(t)} no longer repeats`, () => edit(t.key, was)); },
+        return landing(edit(t.key, { recurrence: null }), () => `${label(t)} no longer repeats`, v => edit(t.key, was, { rev: v.revision })); },
       undo: undoOf },
     // A followup note closes with sd note resolve. sd note has resolve and list only, so nothing reopens it: confirm, no Undo.
     // build: POST /api/notes/<note>/resolve with the item's revision; the readback is the item's state.
