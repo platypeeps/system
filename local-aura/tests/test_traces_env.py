@@ -66,6 +66,21 @@ class ServerEnvironment(unittest.TestCase):
     def test_aura_traces_off_sets_nothing(self):
         self.assertEqual(self.otel(AURA_TRACES="0"), {})
 
+    def env_file(self, text):
+        conf = Path(self.env["SYSTEM_TOOLS_CONFIG"]) / "aura"
+        conf.mkdir(parents=True)
+        (conf / ".env").write_text(text, encoding="utf-8")
+
+    def test_an_exported_endpoint_wins_over_the_env_file(self):
+        # PR #61 review: .env overwrote the caller's exported trace settings.
+        self.env_file("OTEL_EXPORTER_OTLP_ENDPOINT=http://from-file.test\n")
+        got = self.otel(OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp.example.test")
+        self.assertEqual(got["OTEL_EXPORTER_OTLP_ENDPOINT"], "https://otlp.example.test")
+
+    def test_an_exported_traces_off_wins_over_the_env_file(self):
+        self.env_file("AURA_TRACES=1\n")
+        self.assertEqual(self.otel(AURA_TRACES="0"), {})
+
 
 if __name__ == "__main__":
     unittest.main()

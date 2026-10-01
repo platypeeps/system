@@ -12,7 +12,8 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # checkout `server-repo` and `image` build, and the experiment's settings;
 # values already exported win over every one of them.
 WIN="OPENAI_API_KEY MEZMO_API_KEY AURA_REPO LLM_PROVIDER LLM_MODEL LLM_API_KEY
-  AURA_IMAGE AURA_ORCH_PORT AURA_SINGLE_PORT AURA_OTLP_ENDPOINT GENAI_TRACES_GRPC_PORT"
+  AURA_IMAGE AURA_ORCH_PORT AURA_SINGLE_PORT AURA_OTLP_ENDPOINT GENAI_TRACES_GRPC_PORT
+  AURA_TRACES OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME OTEL_RECORD_CONTENT"
 for var in $WIN; do eval "ENV_$var=\${$var:-}"; done
 st_source_env aura
 for var in $WIN; do
