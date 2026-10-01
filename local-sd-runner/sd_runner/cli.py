@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import getpass
 import json
 import os
@@ -21,6 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from sd_db import runner as store
+from sd_db import runner_journal as journal
 from sd_db.database import connect, default_path
 from sd_db.errors import SdDbError
 
@@ -155,11 +155,13 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
     from .runtime import drain_path, drain_request
     marker = drain_path(config.database)
     with contextlib.ExitStack() as held:
-        lock = held.enter_context(open(restart_lock_path(config.database), "a"))
+        lock = restart_lock_path(config.database)
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return {"ok": False, "reason": f"another restart is running ({restart_lock_path(config.database)}); wait for it"}
+            # The one lock opener both packages share; no other module reaches fcntl.
+            held.enter_context(journal.lock(lock, blocking=False, noun="restart",
+                                            held=f"another restart is running ({lock}); wait for it"))
+        except store.RunnerRefused as refusal:
+            return {"ok": False, "reason": str(refusal)}
         if drain_request(config.database) is not None:
             return {"ok": False, "reason": f"another restart is draining ({marker}); wait for it or for the marker to expire"}
         token = uuid.uuid4().hex
