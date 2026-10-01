@@ -69,8 +69,11 @@ addEventListener('DOMContentLoaded', () => {
 
   const days = t => t.due ? Math.round((new Date(t.due + 'T00:00') - TODAY) / DAY) : null;
   // Urgency is the server's reads.is_urgent decision for the row (review, PR #50): due within 7 days, a message ready to
-  // send for over 3 days, or a report that needs attention. withinWeek is its due rule, for a due edit before the re-read.
-  const withinWeek = t => t.due !== null && t.due !== undefined && days(t) <= 7;
+  // send for over 3 days, or a report that needs attention. withinWeek is its due rule, for a due edit before the re-read
+  // and for the ≤ 7 days filter: (due at UTC midnight − the document's read stamp).days <= 7, timedelta.days flooring. Not
+  // the viewer's calendar days, which put a task in another quadrant than the server's until the next read (review, PR #46).
+  const withinWeek = t => t.due !== null && t.due !== undefined
+    && Math.floor((Date.parse(t.due + 'T00:00:00Z') - Date.parse(READ || new Date().toISOString())) / DAY) <= 7;
   const urgent = t => t.overdue || t.urgent;
   const important = t => t.p !== null && t.p !== undefined && t.p <= 2;
   const quadOf = t => QUADS.find(q => q[2] === urgent(t) && q[3] === important(t))[0];
@@ -199,7 +202,7 @@ addEventListener('DOMContentLoaded', () => {
   const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set() };
   const FKEYS = Object.keys(F);
   const on = () => FKEYS.reduce((n, k) => n + F[k].size, 0);
-  const dueBucket = t => t.overdue || (t.due && days(t) < 0) ? 'overdue' : !t.due ? 'none' : days(t) <= 7 ? 'week' : 'later';
+  const dueBucket = t => t.overdue || (t.due && days(t) < 0) ? 'overdue' : !t.due ? 'none' : withinWeek(t) ? 'week' : 'later';
   const DUE_OPTS = [['overdue', 'overdue'], ['week', '≤ 7 days'], ['later', 'later'], ['none', 'no due']];
   function renderFilters() {
     const repos = [...new Set(tasks.map(t => t.repo))].sort(), kinds = [...new Set(tasks.map(t => t.kind))].sort();

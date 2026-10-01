@@ -616,6 +616,39 @@ R.matrix = ELS['view-matrix'].html;""")
         self.assertEqual(out["R"]["matrix"].count('<div class="drop" role="group"'), 4)
         self.assertNotIn('<div class="drop">', out["R"]["matrix"])
 
+    # 2026-09-06T12:00Z, 06:00 in Denver: Sep 14 is 8 calendar days away there, and 7 whole days by reads.is_urgent.
+    SEP6 = "var RealDate = Date; Date = class extends RealDate { constructor(...a) { if (a.length) super(...a); else super(2026, 8, 6, 6, 0, 0); } };\n"
+
+    def test_a_due_edit_is_urgent_by_the_servers_rule_from_the_read_stamp(self):
+        # A due edit lands before the rows are read again, so the page places it with reads.is_urgent's due rule: from the
+        # document's read stamp in whole days, not the viewer's calendar days (review, PR #46).
+        plan, read = self.ids["plan"], "2026-09-06T12:00:00Z"
+        self.doc["read"] = read
+        row = self.row("plan")
+        row.update(due="2026-12-01", urgent=False)
+        self.assertTrue(reads.is_urgent({"due": "2026-09-14", "status": "ready", "kind": "task"}, now=read))
+        answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-14', recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
+        out = self.run_page(f"""shellRun(cmd('item.status.in_progress'), C.get('{plan}')); await flush();
+document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); await flush(); R.matrix = ELS['view-matrix'].html;""",
+                            answer, prelude=self.SEP6, env={"TZ": "America/Denver"})
+        quads = dict(re.findall(r'data-q="(\w+)"(.*?)(?=data-q="|$)', out["R"]["matrix"], re.S))
+        self.assertIn("Plan the review", quads["do"], "a task due in 7 whole days is not urgent on the page")
+
+    def test_the_week_filter_is_the_servers_due_rule(self):
+        # The ≤ 7 days chip is the window the matrix calls urgent: for each due date, the rows it keeps are the ones
+        # reads.is_urgent's due rule calls urgent at the document's read stamp (review, PR #46).
+        read = "2026-09-06T12:00:00Z"
+        self.doc["read"] = read
+        base = self.row("plan")
+        dues = ["2026-09-06", "2026-09-07", "2026-09-13", "2026-09-14", "2026-09-15", "2026-10-01"]
+        self.doc["rows"] = [{**base, "id": 900 + n, "title": f"due {due}", "due": due, "urgent": False} for n, due in enumerate(dues)]
+        out = self.run_page("""document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'list' })); await flush();
+ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'due', v: 'week' } } : null } }); await flush();
+R.list = ELS['view-list'].html;""", prelude=self.SEP6, env={"TZ": "America/Denver"})
+        kept = {due for due in dues if f"due {due}" in out["R"]["list"]}
+        self.assertEqual(kept, {due for due in dues if reads.is_urgent({"due": due, "status": "planning", "kind": "task"}, now=read)})
+        self.assertIn("2026-09-14", kept)
+
     def test_a_card_holding_controls_is_an_article_and_the_selection_is_aria_current(self):
         # An option's descendants are presentational to assistive technology, so a card with a checkbox and buttons
         # is no option, and no list holding cards is a listbox (review, PR #46).
