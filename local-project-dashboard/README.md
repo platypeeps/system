@@ -50,6 +50,17 @@ allows in v2. The first page is Today, at `/` and `/today`: the same
 runs no command yet; its capture files a task through `POST /api/items`.
 Status mail, backups, HOA water, Wants you and Briefs wait for collectors.
 
+Tasks is the second page, at `/tasks` (sd:2124): the rows v1 `/backlog` reads,
+as a board, an Eisenhower matrix and a list, filtered by kind, repo, priority
+and due. `GET /api/tasks` (`tasks_screen.document`) gives each row its revision
+and the statuses the library allows it. `GET /api/tasks/<id>`
+(`tasks_screen.details`) splits the `sd task show --json` reading into status
+history and notes, and adds the item's assignments and its external context.
+A command that runs posts to the route v1 already answers, and its toast comes
+after the write lands. Status, priority, due and recurrence edits and a requeue
+carry Undo; resolving a followup note and cancelling an assignment ask first.
+`sd work relink` and `sd work cancel` are shown for Copy only.
+
 The old screens stay until their section is ported. Only the old Today moved,
 to `/classic/today`; every other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
@@ -63,7 +74,7 @@ Classic screens.
 | Section or screen | Opens |
 | --- | --- |
 | Today | `/today` (new) |
-| Tasks | `/backlog` |
+| Tasks | `/tasks` (new) |
 | Writing | `/writing` |
 | Research | `/operations?area=resources` |
 | Contributions | `/contributions` |
@@ -75,7 +86,7 @@ Classic screens.
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
 | Briefs, Notes, HOA, Home, Health, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/operations?area=…`, `/protection` |
+| Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup

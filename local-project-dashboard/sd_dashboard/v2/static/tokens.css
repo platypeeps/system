@@ -98,6 +98,10 @@
   --radius-sm:  3px;
   --radius-md:  5px;
 
+  /* Shadows: only a floating layer casts one (popover, menu, toast, bulk bar, dialog; the bottom sheet casts upward). */
+  --shadow-overlay: 0 8px 24px oklch(0% 0 0 / 0.3);
+  --shadow-sheet:   0 -8px 32px oklch(0% 0 0 / 0.35);
+
   --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in:     cubic-bezier(0.64, 0, 0.78, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
