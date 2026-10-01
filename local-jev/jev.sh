@@ -46,6 +46,28 @@ for var in $COMPARE_VARS; do
   eval "value=\"\${ENV_$var:-}\""
   [ -z "$value" ] || eval "$var=\"\$value\""
 done
+
+# The Kev arm asks the server local-kev runs, so it also reads that service's
+# <config>/kev/.env: a checkpoint, port or key changed for `kev.sh serve` is
+# the one the arm asks and records. Those values are defaults below everything
+# above -- an exported value or <config>/jev/.env wins, and JEV_COMPARE_KEV_URL
+# or JEV_COMPARE_KEV_MODEL beats them both. KEV_PORT only builds the URL.
+KEV_ENV_FILE="$(st_config_dir kev)/.env"
+kev_value() {
+  [ -f "$KEV_ENV_FILE" ] || return 0
+  ( unset "$1"; . "$KEV_ENV_FILE" >/dev/null 2>&1; eval "printf '%s' \"\${$1:-}\"" ) || true
+}
+[ -n "${KEV_MODEL:-}" ] || KEV_MODEL="$(kev_value KEV_MODEL)"
+[ -n "${KEV_API_KEY:-}" ] || KEV_API_KEY="$(kev_value KEV_API_KEY)"
+case "${KEV_API_KEY:-}" in change-me|changeme) KEV_API_KEY="" ;; esac
+if [ -z "${JEV_COMPARE_KEV_URL:-}" ]; then
+  kev_port="${KEV_PORT:-$(kev_value KEV_PORT)}"
+  [ -z "$kev_port" ] || JEV_COMPARE_KEV_URL="http://127.0.0.1:$kev_port/v1/systemone"
+fi
+for var in KEV_MODEL KEV_API_KEY JEV_COMPARE_KEV_URL; do
+  eval "value=\${$var:-}"
+  [ -z "$value" ] || export "$var"
+done
 [ -n "$ENV_TYPESAFE_API_KEY" ] && TYPESAFE_API_KEY="$ENV_TYPESAFE_API_KEY"
 [ -n "$ENV_JEV_URL" ]     && JEV_URL="$ENV_JEV_URL"
 [ -n "$ENV_JEV_MODEL" ]   && JEV_MODEL="$ENV_JEV_MODEL"

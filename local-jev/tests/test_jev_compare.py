@@ -503,6 +503,45 @@ class TheConfigFile(CompareCase):
         self.assertEqual((rows["haiku"]["provider"], rows["haiku"]["outcome"]),
                          ("openrouter", "ok"))
 
+    def via_entrypoint(self, drop=(), **extra):
+        env = dict(os.environ)
+        env.update(self.env(PYTHON=sys.executable, **extra))
+        for name in ("JEV_COMPARE_KEV_URL", "JEV_COMPARE_KEV_MODEL", "KEV_MODEL",
+                     "KEV_PORT", "KEV_API_KEY", *drop):
+            if name not in extra:
+                env.pop(name, None)
+        return subprocess.run(["sh", str(ENTRYPOINT), "noul", "is it?"],
+                              input="a sentence", capture_output=True, text=True,
+                              env=env, timeout=30)
+
+    def kev_config(self, text):
+        folder = self.config / "kev"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ".env").write_text(text)
+
+    def test_the_kev_arm_follows_the_kev_service_config(self):
+        # The service and the arm read one file: a checkpoint, port or key
+        # changed for kev.sh serve is the one the arm asks and records.
+        port = self.base.rsplit(":", 1)[1]
+        self.kev_config(f'KEV_PORT="{port}"\n'
+                        'KEV_MODEL="example/kev-other"\n'
+                        'KEV_API_KEY="kev-test-key"\n')
+        result = self.via_entrypoint()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        kev = self.by_arm(self.wait_rows(2))["kev"]
+        self.assertEqual((kev["outcome"], kev["model"]), ("ok", "example/kev-other"))
+        sent = [s for s in Arm.seen if s["path"] == "/v1/systemone"]
+        self.assertEqual(sent[0]["headers"]["authorization"], "Bearer kev-test-key")
+
+    def test_a_jev_compare_setting_beats_the_kev_service_config(self):
+        self.kev_config('KEV_PORT="9"\nKEV_MODEL="example/kev-other"\n')
+        result = self.via_entrypoint(
+            JEV_COMPARE_KEV_URL=self.base + "/v1/systemone",
+            JEV_COMPARE_KEV_MODEL="example/kev-pinned")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        kev = self.by_arm(self.wait_rows(2))["kev"]
+        self.assertEqual((kev["outcome"], kev["model"]), ("ok", "example/kev-pinned"))
+
 
 class Shaping(unittest.TestCase):
     """The adapter's arithmetic, without a process."""

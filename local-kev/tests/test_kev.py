@@ -242,6 +242,15 @@ class TheAgent(KevCase):
         self.assertIn("<key>SYSTEM_TOOLS_CONFIG</key>\n"
                       f"        <string>{self.config}</string>", text)
 
+    def test_the_agent_finds_a_user_local_uv(self):
+        # install runs uv from the login shell's PATH; launchd gives the agent
+        # only the plist's, so a uv in ~/.local/bin must be on it too.
+        self.installed()
+        self.assertEqual(self.run_script("agent-install").returncode, 0)
+        text = (self.home / "Library" / "LaunchAgents"
+                / "local.system-tools.kev.plist").read_text()
+        self.assertIn(f"<string>{self.home}/.local/bin:/opt/homebrew/bin:", text)
+
     def test_agent_install_needs_a_checkout(self):
         result = self.run_script("agent-install")
         self.assertEqual(result.returncode, 3)
