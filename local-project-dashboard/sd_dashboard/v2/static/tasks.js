@@ -172,12 +172,14 @@ addEventListener('DOMContentLoaded', () => {
   function failed(name, err) { toast(`${name ? name + ' ' : ''}not changed: ${err.message}`); }
   // A refused stale write re-reads the rows once, however many writes in a group were refused. A re-read joins the one in
   // flight only while no write of this page has landed since that one was asked for; after one did, it reads again once
-  // that read ends, so a completion's next occurrence is never missed by a read sent before it (review, PR #46).
+  // that read ends, so a completion's next occurrence is never missed by a read sent before it (review, PR #46). The open
+  // Details are read again with the rows: a conflict means the item changed elsewhere, and they show it (review, PR #46).
   let rereading = null, wrote = 0;
   function reread() {
     if (rereading && rereading.wrote === wrote) return rereading.p;
     const before = rereading ? rereading.p.catch(() => {}) : Promise.resolve();
-    const p = before.then(() => load()).finally(() => { if (rereading?.p === p) rereading = null; });
+    const p = before.then(() => load()).then(() => { const id = byKey(selected)?.id; if (id) redrawDet(id); })
+      .finally(() => { if (rereading?.p === p) rereading = null; });
     rereading = { wrote, p };
     return p;
   }
@@ -603,6 +605,9 @@ addEventListener('DOMContentLoaded', () => {
     askDate(t, Q.needsDate, name, due => commit({ ...Q.ch, due }));
     return false;
   }
+  // build: workflow._recurring refuses a repeating item with no due date, so neither dialog offers Remove due date on one;
+  // it says why instead (review, PR #46).
+  const NO_CLEAR = 'Remove due date is off: a repeating task needs a due date. Stop repeating first to remove it.';
   // Edit: priority and due date. Save applies both with Undo; Cancel changes nothing.
   function askEdit(t) {
     put(dateDlg, html`<form method="dialog" class="date-form">
@@ -611,10 +616,11 @@ addEventListener('DOMContentLoaded', () => {
       <select id="pri-in">${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(v => html`<option value="${v}"${t.p === v ? html` selected` : ''}>P${v}</option>`)}</select>
       <label class="label" for="due-in">Due date</label>
       <input id="due-in" type="date" value="${String(t.due || '')}">
+      ${t.due && repeats(t) ? html`<p class="why">${NO_CLEAR}</p>` : ''}
       <div class="cli"><code id="edit-cli"></code></div>
       <div class="actions">
         <button class="btn" value="set" type="submit">Save</button>
-        ${t.due ? html`<button class="btn quiet" value="clear" type="submit" formnovalidate>Remove due date</button>` : ''}
+        ${t.due && !repeats(t) ? html`<button class="btn quiet" value="clear" type="submit" formnovalidate>Remove due date</button>` : ''}
         <button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
       </div></form>`);
     const f = dateDlg.querySelector('form');
@@ -642,11 +648,12 @@ addEventListener('DOMContentLoaded', () => {
     put(dateDlg, html`<form method="dialog" class="date-form">
       <h2 id="date-h">${label(t)} → ${name}</h2>
       <p class="why">${into ? 'Urgent means due within 7 days. Pick the real deadline.' : `Not urgent means due after ${fmt(last)}. ${t.due ? `The current deadline is ${fmt(t.due)}; moving it changes the obligation.` : ''}`}</p>
+      ${!into && repeats(t) ? html`<p class="why">${NO_CLEAR}</p>` : ''}
       <label class="label" for="due-in">Due date</label>
       <input id="due-in" type="date" required min="${min}"${max ? html` max="${max}"` : ''} value="">
       <div class="actions">
         <button class="btn" value="set" type="submit">Set date and move</button>
-        ${!into ? html`<button class="btn quiet" value="none" type="submit" formnovalidate>Remove due date</button>` : ''}
+        ${!into && !repeats(t) ? html`<button class="btn quiet" value="none" type="submit" formnovalidate>Remove due date</button>` : ''}
         <button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
       </div></form>`);
     dateDlg.onclose = () => {

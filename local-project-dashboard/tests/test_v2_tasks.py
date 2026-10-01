@@ -487,6 +487,35 @@ lastToast().undo(); await flush();""", answer)
         self.assertEqual(out["gets"], ["/api/tasks", "/api/tasks"])
         self.assertEqual(out["toasts"], [[f"#{ask} Answer the question not changed: The item changed. Reload it.", False]])
 
+    def test_a_conflict_reads_the_open_details_again(self):
+        # A 409 means the item changed elsewhere: the rows are read again, and so are the open Details, or the pane keeps
+        # showing what the conflict replaced (review, PR #46).
+        ask = self.ids["ask"]
+        after = json.loads(json.dumps(self.details[str(ask)]))
+        after["notes"] = [{"id": 77, "kind": "comment", "at": "2026-09-06T12:00:00Z", "body": "Written elsewhere", "session": "other", "resolved": None}]
+        out = self.run_page(f"""var reads = 0; DETAIL = id => ++reads === 1 ? [200, DETAILS[id]] : [200, AFTER];
+open({ask}); await flush(); shellRun(cmd('item.status.ready'), C.get('{ask}')); await flush(); R.html = ELS.details.html;""",
+                            "() => [409, { error: 'The item changed. Reload it.' }]", prelude=f"var AFTER = {json.dumps(after)};\n")
+        self.assertEqual(out["gets"], ["/api/tasks", f"/api/tasks/{ask}", "/api/tasks", f"/api/tasks/{ask}"])
+        self.assertIn("Written elsewhere", out["R"]["html"])
+
+    def test_a_repeating_task_offers_no_remove_due_date(self):
+        # workflow._recurring refuses a repeating item with no due date, so neither the Edit dialog nor the move out of
+        # Urgent offers Remove due date on one; each says why instead (review, PR #46).
+        self.repeat_plan()
+        plan = self.ids["plan"]
+        why = "Remove due date is off: a repeating task needs a due date. Stop repeating first to remove it."
+        out = self.run_page(f"""const D = MADE.find(e => /date-dlg/.test(e.className || ''));
+D.querySelector = sel => {{ const e = El(sel); e.querySelector = () => El('in'); return e; }};
+open({plan}); await flush(); shellRun(cmd('item.edit'), C.get('{plan}')); await flush(); R.edit = D.html;
+document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); await flush();
+document.dispatchEvent({{ type: 'keydown', key: '2', target: El('card'), preventDefault() {{}} }}); await flush(); R.out = D.html;""")
+        self.assertIn(f"Edit #{plan}", out["R"]["edit"])
+        self.assertIn(f"#{plan} → Schedule", out["R"]["out"])
+        for dialog in ("edit", "out"):
+            self.assertNotIn("Remove due date</button>", out["R"][dialog], dialog)
+            self.assertIn(why, out["R"][dialog], dialog)
+
     def test_resolve_confirms_first_posts_the_item_revision_and_offers_no_undo(self):
         plan = self.ids["plan"]
         note = self.details[str(plan)]["notes"][0]["id"]
@@ -900,7 +929,8 @@ await r.undo(); await flush(); R.undone = OUT.gets.filter(g => g === '/api/tasks
 try {{ await cmd('asg.requeue').run(C.get('asg:{asg['id']}')); }} catch (e) {{ R.err = e.message; }} await flush();
 R.reads = OUT.gets.filter(g => g === '/api/tasks/{port}').length;""", answer)
         self.assertEqual(out["R"]["err"], "The assignment changed. Reload it.")
-        self.assertEqual(out["R"]["reads"], 2, "the Details were not read again after the refusal")
+        # The runner's own refusal path and the rows' re-read each read the open Details again.
+        self.assertGreaterEqual(out["R"]["reads"], 2, "the Details were not read again after the refusal")
 
     def test_a_task_added_under_a_filter_that_hides_it_is_not_selected(self):
         # Selection stays on a visible task: a new task the filters hide is added and named, not selected (review, PR #46).
