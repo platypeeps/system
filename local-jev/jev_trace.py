@@ -13,6 +13,8 @@ a listener that most machines do not run.
 **What leaves.** Only the event's fields: caller, stage, primitive, model,
 outcome, cause, the numeric answer, confidence, token counts and duration.
 The event never holds the question or the state, so neither can reach a span.
+A text field goes only when it is an identifier (`IDENTIFIER`); anything
+else, such as a path or a sentence passed to `jev record`, is dropped.
 
 **What it costs a caller.** One POST after the answer is printed, bounded in wall clock by
 `JEV_TRACES_TIMEOUT` seconds (default 0.5). A refused connection returns at
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -79,9 +82,29 @@ def value_of(value) -> dict | None:
     return None
 
 
+#: The only shape of text a span may carry: an identifier, a model name, a
+#: word. The ledger refuses a field it cannot store, but this runs whether or
+#: not the ledger does, so it holds its own line: text that could be a path,
+#: a subject or a sentence is dropped, never sent.
+IDENTIFIER = re.compile(r"[A-Za-z0-9_.:+-]{1,128}")
+
+
+def safe(value):
+    """The value when a span may carry it, else None."""
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value if IDENTIFIER.fullmatch(value) else None
+    if isinstance(value, (list, tuple)) and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+        return list(value)
+    return None
+
+
 def attributes(pairs) -> list:
     out = []
     for key, value in pairs:
+        value = safe(value)
         if value is None:
             continue
         encoded = value_of(value)
@@ -118,11 +141,11 @@ def span_of(event: dict, now_ns: int | None = None) -> dict:
     status = {"code": STATUS_OK}
     if outcome not in (None, "ok"):
         status = {"code": STATUS_ERROR,
-                  "message": f"{outcome}: {event.get('cause') or 'unknown'}"}
+                  "message": f"{safe(outcome) or 'failed'}: {safe(event.get('cause')) or 'unknown'}"}
     span = {
         "traceId": secrets.token_hex(16),
         "spanId": secrets.token_hex(8),
-        "name": f"jev.{event.get('primitive') or 'call'}",
+        "name": f"jev.{safe(event.get('primitive')) or 'call'}",
         "kind": KIND_CLIENT,
         "startTimeUnixNano": str(start),
         "endTimeUnixNano": str(end),

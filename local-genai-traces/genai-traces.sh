@@ -51,7 +51,13 @@ case "$1" in
     date '+%Y-%m-%dT%H:%M:%S%z' > "$STARTED"
     ;;
   stop)
-    compose down 2>/dev/null || true
+    # Keep the record when the containers may still be there: with
+    # restart unless-stopped they come back with Docker, and a cleared
+    # marker would let status call them "never started".
+    if ! compose down; then
+      echo "local-genai-traces: stop failed; the containers may still run (is Docker up?)" >&2
+      exit 1
+    fi
     rm -f "$STARTED"
     ;;
   status)

@@ -22,9 +22,11 @@ services:
   aura-orch: &aura
     image: ${AURA_IMAGE}
     command: ["./aura", "webserver", "--verbose"]
-    env_file: ${AURA_ENV_FILE}
     environment: &aura-env
       HOST: "0.0.0.0"
+      LLM_PROVIDER: ${LLM_PROVIDER}
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_API_KEY: ${LLM_API_KEY}
       PORT: "3030"
       CONFIG_PATH: "/app/config/config.toml"
       AURA_CUSTOM_EVENTS: "false"

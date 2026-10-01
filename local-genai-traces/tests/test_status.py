@@ -28,7 +28,8 @@ case "$1" in
   compose)
     case "$*" in
       *" up "*|*" up") : > "$STUB_DIR/%(c)s"; : > "$STUB_DIR/%(p)s" ;;
-      *" down"*) rm -f "$STUB_DIR/%(c)s" "$STUB_DIR/%(p)s" ;;
+      *" down"*) [ -f "$STUB_DIR/docker-down" ] && exit 1
+                 rm -f "$STUB_DIR/%(c)s" "$STUB_DIR/%(p)s" ;;
     esac ;;
   ps)
     # docker ps -q -f name=^NAME$
@@ -166,6 +167,15 @@ class AContainerThatIsGone(StatusCase):
         self.run_verb("stop", expect=0)
         self.assertFalse(self.marker().exists())
         self.run_verb("status", expect=3)
+
+    def test_a_failed_stop_keeps_the_record(self):
+        # PR #61 review: with Docker down, `compose down` fails and the
+        # containers come back with Docker; clearing the marker would make
+        # status call them never started.
+        self.run_verb("start", expect=0)
+        (self.containers / "docker-down").write_text("", encoding="utf-8")
+        self.run_verb("stop", expect=1)
+        self.assertTrue(self.marker().is_file())
 
     def test_partly_running_without_a_record_is_broken(self):
         (self.containers / COLLECTOR).write_text("", encoding="utf-8")

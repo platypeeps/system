@@ -114,6 +114,22 @@ class TheSpan(TraceCase):
         self.assertEqual(len(Collector.bodies), 1)
         self.assertNotIn(SENTINEL, Collector.bodies[0])
 
+    def test_text_that_is_not_an_identifier_never_leaves(self):
+        # PR #61 review: the span is built whether or not the ledger takes
+        # the row, so a path or a sentence given to `jev record` must be
+        # dropped here, not trusted to the ledger's refusal.
+        body = json.dumps(jev_trace.span_of({
+            "primitive": f"/tmp/{SENTINEL}.txt",
+            "caller": f"a sentence about {SENTINEL}",
+            "stage": "JEV_OK_STAGE",
+            "outcome": "refused",
+            "cause": f"{SENTINEL} because",
+            "ordering": [1, 2],
+        }))
+        self.assertNotIn(SENTINEL, body)
+        self.assertIn("JEV_OK_STAGE", body)
+        self.assertIn('"name": "jev.call"', body)
+
     def test_a_failed_call_is_an_error_span(self):
         Stub.status = 500
         self.run_main(["noul", "Is this urgent?"], JEV_RETRIES="0",

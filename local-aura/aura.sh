@@ -8,15 +8,16 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
 
-# <config>/aura/.env provides the API keys config.toml templates in and the
-# checkout `server-repo` builds; values already exported win.
-ENV_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-ENV_MEZMO_API_KEY="${MEZMO_API_KEY:-}"
-ENV_AURA_REPO="${AURA_REPO:-}"
+# <config>/aura/.env provides the API keys config.toml templates in, the
+# checkout `server-repo` and `image` build, and the experiment's settings;
+# values already exported win over every one of them.
+WIN="OPENAI_API_KEY MEZMO_API_KEY AURA_REPO LLM_PROVIDER LLM_MODEL LLM_API_KEY
+  AURA_IMAGE AURA_ORCH_PORT AURA_SINGLE_PORT AURA_OTLP_ENDPOINT GENAI_TRACES_GRPC_PORT"
+for var in $WIN; do eval "ENV_$var=\${$var:-}"; done
 st_source_env aura
-[ -n "$ENV_OPENAI_API_KEY" ] && OPENAI_API_KEY="$ENV_OPENAI_API_KEY"
-[ -n "$ENV_MEZMO_API_KEY" ] && MEZMO_API_KEY="$ENV_MEZMO_API_KEY"
-[ -n "$ENV_AURA_REPO" ] && AURA_REPO="$ENV_AURA_REPO"
+for var in $WIN; do
+  if eval "[ -n \"\$ENV_$var\" ]"; then eval "$var=\$ENV_$var"; fi
+done
 [ -n "${OPENAI_API_KEY:-}" ] && export OPENAI_API_KEY
 [ -n "${MEZMO_API_KEY:-}" ] && export MEZMO_API_KEY
 
@@ -93,7 +94,9 @@ render_configs() {
       "$EXP/state/config-orch.toml" > "$EXP/state/config-single.toml"
   # An upstream change to the example would leave a config that silently
   # runs another model or mode; refuse it instead.
-  grep -q '^api_key = "{{ env.LLM_API_KEY }}"' "$EXP/state/config-orch.toml" &&
+  grep -q '^provider = "{{ env.LLM_PROVIDER }}"' "$EXP/state/config-orch.toml" &&
+    grep -q '^api_key = "{{ env.LLM_API_KEY }}"' "$EXP/state/config-orch.toml" &&
+    grep -q '^model = "{{ env.LLM_MODEL }}"' "$EXP/state/config-orch.toml" &&
     grep -q '^enabled = false' "$EXP/state/config-single.toml" || {
     echo "aura.sh: $AURA_REPO/$EXAMPLE/config.toml changed shape; update render_configs" >&2
     exit 1
@@ -101,8 +104,9 @@ render_configs() {
 }
 
 experiment_env() {
-  export AURA_REPO AURA_IMAGE
-  export AURA_ENV_FILE="$(st_config_dir aura)/.env"
+  # Compose passes these into the servers by name, so an exported-only setup
+  # with no .env works, and no other key in .env reaches the containers.
+  export AURA_REPO AURA_IMAGE LLM_PROVIDER LLM_MODEL LLM_API_KEY
   export AURA_EXPERIMENT_STATE="$EXP/state"
   export AURA_ORCH_PORT="${AURA_ORCH_PORT:-3101}"
   export AURA_SINGLE_PORT="${AURA_SINGLE_PORT:-3102}"
