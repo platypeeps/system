@@ -352,6 +352,8 @@ calendar_xml() { # cron expression -> StartCalendarInterval plist XML
   printf '    </array>\n'
 }
 
+# The Label and the ProgramArguments below are how local-machine-setup's cron
+# stage knows a plist as ours (cron_plist_ours): change them together.
 write_plist() { # job name
   local job="$1" label plist
   label="$(label_for "$job")"
