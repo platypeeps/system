@@ -8,4 +8,7 @@
 # Exits 1 when the restart did not bring it back.
 #   cron-jobs.sh status workspace-mcp-watch
 JOB_SCHEDULE="*/10 * * * *"
+# Its worst case is about five minutes (90s probing, 150s after a restart);
+# the limit keeps a hung probe from skipping the next slots.
+JOB_TIMEOUT="8m"
 JOB_COMMAND="sh \"$ROOT/../local-workspace-mcp/workspace-mcp.sh\" watch"

@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -283,11 +284,14 @@ class MergedCaps(Seeds, BrowserSession):
         provider_controls.snapshot(self.connection)  # seeds the rows the bare UPDATE below needs
         with self.connection:
             self.assertEqual(self.connection.execute("UPDATE bill SET cap_usd_month = 5.0 WHERE name = 'a'").rowcount, 1)
-        self.cost("run", at="2026-09-01T10:00:00Z", provider="claude", bill="a", role="author", usd=2)
-        self.cost("run", at="2026-09-02T10:00:00Z", provider="minimax", bill="c", role="reviewer", usd=4)
+        # The served page reads the wall clock, and its cost tile sums the current month, so the costs fall at the start
+        # of the current UTC month: a pinned month fails every run outside it (sd:2288).
+        self.this_month = datetime.now(timezone.utc).strftime("%Y-%m")
+        self.cost("run", at=f"{self.this_month}-01T00:00:00Z", provider="claude", bill="a", role="author", usd=2)
+        self.cost("run", at=f"{self.this_month}-01T00:00:01Z", provider="minimax", bill="c", role="reviewer", usd=4)
 
     def page(self):
-        return self.request("/operations?area=usage&month=2026-09")[2]
+        return self.request(f"/operations?area=usage&month={self.this_month}")[2]
 
     def card(self, page, bill):
         return re.search(r'<article\b[^>]*data-bill="' + bill + r'"[^>]*>.*?</article>', page, re.S).group(0)
@@ -307,10 +311,10 @@ class MergedCaps(Seeds, BrowserSession):
         self.assertIn('data-cap="20.00"', control)
 
     def test_the_api_and_the_verb_carry_the_merged_caps_in_the_same_bytes(self):
-        body = self.request("/api/usage?month=2026-09", headers={"Cookie": self.cookie})[2]
+        body = self.request(f"/api/usage?month={self.this_month}", headers={"Cookie": self.cookie})[2]
         environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB)}
         environment.pop("XDG_STATE_HOME", None)
-        verb = subprocess.run([str(SD_DB / "sd-db.sh"), "usage", "--month", "2026-09", "--json"],
+        verb = subprocess.run([str(SD_DB / "sd-db.sh"), "usage", "--month", self.this_month, "--json"],
                               capture_output=True, text=True, input="", env=environment)
         self.assertEqual(verb.returncode, 0, verb.stdout + verb.stderr)
         self.assertEqual(body, verb.stdout)
