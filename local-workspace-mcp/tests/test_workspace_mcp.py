@@ -57,10 +57,15 @@ class WorkspaceMcpCase(unittest.TestCase):
             "WORKSPACE_MCP_NOTIFY_TIMEOUT": "2",
             **extra,
         }
-        # 20s: well under a stalled notifier's 30s, so a notifier that is
-        # not bounded, or a child of it left holding stdout, times out here.
+        # The stub sleep skips the poll sleep; keep it apart from NOTIFY_TIMEOUT's.
+        env["FAKE_POLL_SLEEP"] = env["WORKSPACE_MCP_POLL"]
+        # 60s is a hang guard, not a speed check: a watch here sleeps for real
+        # only in its 2s watchdog, so the rest is process work, which a loaded
+        # gate machine slows past 20s. It stays well under a stalled
+        # notifier's 300s, so a notifier that is not bounded, or a child of it
+        # left holding stdout, still times out here.
         return subprocess.run(["sh", str(SCRIPT), *args], env=env, capture_output=True,
-                              text=True, timeout=20)
+                              text=True, timeout=60)
 
     def journal(self, prefix: str) -> list[str]:
         path = self.fake / "journal"
@@ -337,6 +342,18 @@ class WatchTests(WorkspaceMcpCase):
         self.run_sh("watch")
         # one probe, GRACE / POLL = 2 in the grace window, then
         # RESTART_WAIT / POLL = 2 after the restart
+        self.assertEqual(len(self.journal("curl")), 5)
+
+    def test_the_windows_count_sleeps_not_wall_time(self) -> None:
+        # Production-sized windows: four 30s sleeps would be two minutes of
+        # wall time. The stub sleep skips the poll sleep, so the watch costs
+        # only its process work, and the count of sleeps still bounds it.
+        self.given(curl="hang")
+        r = self.run_sh("watch", WORKSPACE_MCP_POLL="30", WORKSPACE_MCP_GRACE="60",
+                        WORKSPACE_MCP_RESTART_WAIT="60")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        # Four poll sleeps (GRACE / POLL, then RESTART_WAIT / POLL), then the notifier's 2s watchdog.
+        self.assertEqual(self.journal("sleep"), ["sleep 30"] * 4 + ["sleep 2"])
         self.assertEqual(len(self.journal("curl")), 5)
 
     def test_recovery_clears_the_outage_marker(self) -> None:

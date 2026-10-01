@@ -1,8 +1,14 @@
 #!/bin/sh
-# Stub sleep, first on PATH: runs /bin/sleep, except that a sleep for the
-# number in $FAKE_DIR/sleep_killed dies by SIGTERM at once, as the watchdog's
-# sleep does when notify_bounded cancels it.
+# Stub sleep, first on PATH: journals its argument, then runs /bin/sleep, with
+# two exceptions. A sleep for $FAKE_POLL_SLEEP (the poll interval) returns at
+# once: the grace and restart windows count sleeps, not wall time, so a watch
+# under test costs its process work only and a loaded machine cannot push it
+# past the test's guard. A sleep for the number in $FAKE_DIR/sleep_killed dies
+# by SIGTERM at once, as the watchdog's sleep does when notify_bounded cancels
+# it. The curl double's delays stand in for a slow server and use /bin/sleep.
+printf 'sleep %s\n' "$*" >> "$FAKE_DIR/journal"
 if [ -e "$FAKE_DIR/sleep_killed" ] && [ "$1" = "$(cat "$FAKE_DIR/sleep_killed")" ]; then
   kill -TERM $$
 fi
+[ -n "$FAKE_POLL_SLEEP" ] && [ "$1" = "$FAKE_POLL_SLEEP" ] && exit 0
 exec /bin/sleep "$@"
