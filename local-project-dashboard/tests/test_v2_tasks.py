@@ -25,7 +25,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import connect, reads, set_item_fields, workflow
+from sd_db import connect, reads, set_item_fields, upsert_repo, workflow
 from sd_dashboard import server, tasks_screen, v2
 
 from support import NOW, ScreenCase, upsert_shadow
@@ -88,6 +88,25 @@ class TheDocuments(ScreenCase):
         self.assertEqual((row["title"], row["revision"]), ("Answer the question", old))
         self.assertFalse(self.connection.in_transaction)
         self.assertNotEqual(next(r for r in tasks_screen.document(self.connection, now=NOW)["rows"] if r["id"] == ask)["revision"], old)
+
+    def test_each_row_says_whether_edit_item_takes_its_fields_and_why_not(self):
+        # The seeded work row's repository keeps the schema default, status_source `file`, so edit_item refuses it; a work
+        # row in a repository the database owns is editable. Each row's `edit` is checked against edit_item itself
+        # (review, PR #46).
+        owned = self.repo("/repos/owned")
+        upsert_repo(self.connection, owned, status_source="row")
+        mine = self.item("Owned work", kind="work", repo=owned, path="docs/work/mine/prd.md")
+        rows = {row["id"]: row for row in tasks_screen.document(self.connection, now=NOW)["rows"]}
+        self.assertEqual(rows[self.ids["port"]]["edit"],
+                         {"allowed": False, "reason": "work metadata belongs to its file owner until database cutover completes"})
+        self.assertEqual(rows[mine]["edit"], {"allowed": True, "reason": None})
+        for item, row in rows.items():
+            try:
+                workflow.edit_item(self.connection, item, {}, who="test")
+                said = {"allowed": True, "reason": None}
+            except workflow.WorkflowError as refused:
+                said = {"allowed": False, "reason": str(refused)}
+            self.assertEqual(row["edit"], said, f"item {item} ({row['kind']})")
 
     def test_the_rows_are_the_backlog_rows_with_revision_and_allowed_statuses(self):
         doc = tasks_screen.document(self.connection, now=NOW)
@@ -544,6 +563,35 @@ R.cancel = cmd('asg.cancel').when(C.get('asg:{asg["id"]}'));""")
             "cancel": "a legacy running assignment has no owned runner attempt to stop"})
         self.assertTrue(out["R"]["run"])
 
+    def test_edit_controls_are_off_for_a_work_row_its_files_own(self):
+        # The seeded work row's repository lets its files own status, so edit_item refuses every field edit: Edit, P2 and a
+        # matrix placement are off with the library's reason, and nothing is posted (review, PR #46).
+        port = self.ids["port"]
+        why = "work metadata belongs to its file owner until database cutover completes"
+        out = self.run_page(f"""open({port}); await flush();
+R.edit = cmd('item.edit').when(C.get('{port}')); R.p2 = cmd('item.p2').when(C.get('{port}'));
+document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); await flush();
+document.dispatchEvent({{ type: 'keydown', key: '1', target: El('card'), preventDefault() {{}} }}); await flush();""")
+        self.assertEqual((out["R"]["edit"], out["R"]["p2"]), (why, why))
+        self.assertEqual(out["posts"], [])
+        self.assertIn([f"#{port} not moved: {why}", False], out["toasts"])
+
+    def test_a_second_stop_repeating_queued_behind_the_first_sends_nothing(self):
+        # Two quick Stop repeating: the second waits for the first, and by then the task no longer repeats. It refuses as
+        # it leaves, so no empty write goes out and no Undo sets back the rule the first one cleared (review, PR #46).
+        self.repeat_plan()
+        plan, row = self.ids["plan"], self.row("plan")
+        answer = f"""(path, body) => new Promise(r => HOLD.push(() => r([200, {{ item: {{ id: {plan}, status: 'ready', priority: 2,
+  due: '2026-09-09', recurrence: body.recurrence, recurrence_anchor: body.recurrence_anchor ?? null }}, notes: [], revision: 'b'.repeat(64) }}])))"""
+        out = self.run_page(f"""open({plan}); await flush();
+shellRun(cmd('item.recur.clear'), C.get('{plan}')); shellRun(cmd('item.recur.clear'), C.get('{plan}')); await flush();
+for (let i = 0; i < 3; i++) {{ HOLD.splice(0).forEach(f => f()); await flush(); }}
+OUT.toasts.find(t => t.undo).undo(); await flush(); HOLD.splice(0).forEach(f => f()); await flush();""", answer, prelude="var HOLD = [];\n")
+        self.assertEqual(out["posts"], [
+            [f"/api/items/{plan}", {"recurrence": None, "revision": row["revision"]}, 64],
+            [f"/api/items/{plan}", {"recurrence": "FREQ=WEEKLY", "recurrence_anchor": row["recurrence_anchor"], "revision": "b" * 64}, 64]])
+        self.assertIn([f"#{plan} Plan the review not changed: the task does not repeat", False], out["toasts"])
+
     def test_a_status_with_no_column_gets_the_other_lane(self):
         ask = self.ids["ask"]
         for row in self.doc["rows"]:
@@ -825,6 +873,16 @@ R.work = five('{port}'); R.done = five('{ask}'); R.ops = five('{plan}');""")
         rule = re.search(r"^  ([^{]*)\{[^}]*grid-template-columns: none;", narrow, re.M)
         self.assertIsNotNone(rule, "the narrow block sets no carousel")
         self.assertEqual({sel.strip() for sel in rule.group(1).split(",")}, {".board", ".board[data-other]"})
+
+    def test_a_plain_toast_clears_a_live_undo_and_the_bulk_bar(self):
+        # The bar lifts both toasts one layer, and a plain message over a live Undo is one more: with all three up, the plain
+        # one sits two layers above the bar's, or "Copied" covers the Undo (review, PR #46).
+        css = (V2 / "static" / "shell.css").read_text(encoding="utf-8")
+        layer = r"\{ bottom: calc\(var\(--space-lg\) \+ (\S+) \+ env\(safe-area-inset-bottom\)\); \}"
+        offsets = {sel.strip(): size for sels, size in re.findall(r"^([^{\n]*)" + layer, css, re.M) for sel in sels.split(",")}
+        self.assertEqual(offsets.get(".toast:has(~ .bulkbar:not([hidden]))"), "3.5rem")
+        self.assertEqual(offsets.get(".toast:not([hidden]) ~ .toast.plain:has(~ .bulkbar:not([hidden]))"), "7rem",
+                         "a plain toast over a live Undo with the bulk bar up shares the Undo's offset")
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", TASKS_JS)

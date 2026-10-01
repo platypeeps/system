@@ -8,7 +8,9 @@ query of the store:
   /backlog (unparked open items, and `done` for the week), each with the
   revision a write sends back and the statuses `workflow.allowed_statuses`
   accepts for it, so the board refuses a move for the reason the library
-  would, before it posts.
+  would, before it posts. Each row also carries whether `workflow.edit_item`
+  takes its fields (`_edit_capability`), so Edit, P2, recurrence and a
+  matrix drop are off, with the library's reason, where the edit would fail.
 - `/api/tasks/<id>` is `details`: what `sd task show <id> --json` prints
   (`item`, `notes`, `revision`, from `workflow.item_state`), split into the
   status history and the other notes as v1's item page splits them, plus the
@@ -26,7 +28,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sd_db import reads, workflow
+from sd_db import reads, repos, workflow
 
 __all__ = ["details", "document"]
 
@@ -43,6 +45,25 @@ def _assignment_states(connection, *, now: str) -> dict[int, str]:
     live = {row["item"]: "queued" for row in board["queued"] if row["item"] is not None}
     live.update({row["item"]: "running" for row in board["running"] if row["item"] is not None})
     return live
+
+
+def _edit_capability(connection, row) -> dict:
+    """Whether `workflow.edit_item` takes this row's fields, with the reason it gives when it refuses.
+
+    The two refusals `edit_item` makes for a field edit before it reads the changes: a kind outside
+    `workflow.DETAIL_KINDS`, and a work item whose repository still lets its files own status (`repo.status_source` is
+    not `row`; the schema default is `file`). Without this, a file-owned work row showed Edit, P2 and the matrix drop,
+    and every save failed (review, PR #46). `test_v2_tasks` checks it against `edit_item` itself.
+    """
+    reason = None
+    if row["kind"] not in workflow.DETAIL_KINDS:
+        reason = f"{row['kind']} items use their own editing workflow"
+    elif row["kind"] == "work":
+        # `repos.row_for`, as `register_work_item` reads it: the dashboard issues no SQL of its own (test_criterion_12).
+        owner = repos.row_for(connection, row["repo"]) if row["repo"] else None
+        if owner is None or owner["status_source"] != "row":
+            reason = "work metadata belongs to its file owner until database cutover completes"
+    return {"allowed": reason is None, "reason": reason}
 
 
 def document(connection, *, now: str) -> dict:
@@ -71,7 +92,8 @@ def _document(connection, *, now: str) -> dict:
             "id": row["id"], "title": row["title"], "kind": row["kind"], "status": row["status"],
             "priority": row["priority"], "due": row["due"],
             "repo": label(row["repo"]) if row["repo"] else None, "repo_path": row["repo"],
-            "recurrence": row["recurrence"], "assignment": live.get(row["id"]),
+            "recurrence": row["recurrence"], "recurrence_anchor": state["item"]["recurrence_anchor"],
+            "assignment": live.get(row["id"]),
             # The due date a completion today gives the next occurrence, for the confirm to name before it writes.
             "next_due": workflow.next_occurrence_due(state["item"]) if row["recurrence"] else None,
             "status_since": row["status_since"], "revision": state["revision"],
@@ -80,6 +102,7 @@ def _document(connection, *, now: str) -> dict:
             "urgent": reads.is_urgent(row, now=now),
             "urgent_otherwise": reads.is_urgent({**dict(row), "due": None}, now=now),
             "allowed": workflow.allowed_statuses(connection, row["id"]),
+            "edit": _edit_capability(connection, row),
         })
     return {"read": now, "statuses": list(STATUSES), "rows": out}
 

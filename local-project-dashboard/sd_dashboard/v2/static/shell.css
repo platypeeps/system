@@ -348,6 +348,8 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 }
 .bulkbar[hidden] { display: none; }
 .bulkbar:not([hidden]) ~ .toast, .toast:has(~ .bulkbar:not([hidden])) { bottom: calc(var(--space-lg) + 3.5rem + env(safe-area-inset-bottom)); }
+/* The third layer: with the bar up, a plain message stacks above a live Undo that already sits above the bar (review, PR #46). */
+.bulkbar:not([hidden]) ~ .toast:not([hidden]) ~ .toast.plain, .toast:not([hidden]) ~ .toast.plain:has(~ .bulkbar:not([hidden])) { bottom: calc(var(--space-lg) + 7rem + env(safe-area-inset-bottom)); }
 @media (pointer: coarse) {
   .rowact .btn.sm, .rowact .icon-btn, .actmenu [role="menuitem"], .seg span { min-height: var(--row-touch); min-width: var(--row-touch); }
   .bulkbar .btn.sm { min-height: var(--row-touch); }

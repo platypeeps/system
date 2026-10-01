@@ -38,7 +38,7 @@ addEventListener('DOMContentLoaded', () => {
   const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
   let tasks = [], READ = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, recurrence: r.recurrence, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, real: true });
+    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   const label = t => t.id ? `#${t.id}` : (t.kind === 'ops' ? 'ops' : 'no id');
   async function post(path, body) {
@@ -58,7 +58,8 @@ addEventListener('DOMContentLoaded', () => {
     const t = byKey(key); if (!t || !state?.item) return;
     if (t.due !== state.item.due || t.recurrence !== state.item.recurrence) t.nextDue = undefined; // not known until the rows are read again
     const dueMoved = t.due !== state.item.due;
-    Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence, revision: state.revision });
+    Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence,
+      anchor: state.item.recurrence_anchor ?? null, revision: state.revision });
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
     // applies that rule to the new date until the rows are read again.
     if (dueMoved) t.urgent = t.urgentOtherwise || withinWeek(t);
@@ -116,7 +117,7 @@ addEventListener('DOMContentLoaded', () => {
   function quadChange(t, q) {
     const Q = QUADS.find(x => x[0] === q);
     if (t.kind === 'ops') return { ok: false, reason: 'An ops row has no priority or due date to set.' };
-    if (!EDITABLE(t)) return { ok: false, reason: `a ${t.kind} item uses its own editing workflow` };
+    if (!EDITABLE(t)) return { ok: false, reason: noEdit(t) };
     if (quadOf(t) === q) return { ok: false, reason: 'Already here.' };
     if (!Q[2] && t.urgentOtherwise) return { ok: false, reason: 'It is urgent for a reason a due date does not change (a waiting message or a report that needs attention).' };
     const ch = {}, words = [];
@@ -128,8 +129,10 @@ addEventListener('DOMContentLoaded', () => {
     if (!Q[2] && urgent(t)) { needsDate = 'out'; words.push(`you pick a later due date${t.due ? ` (now ${fmt(t.due)})` : ''}`); }
     return { ok: true, ch, words, needsDate };
   }
-  // build: sd_db.workflow.DETAIL_KINDS; edit_item refuses every other kind.
-  const EDITABLE = t => ['task', 'followup', 'work'].includes(t.kind);
+  // build: the row carries what sd_db.workflow.edit_item takes (tasks_screen._edit_capability): a kind in DETAIL_KINDS, and
+  // for a work item a repository whose status_source is row. A file-owned work row's every edit fails (review, PR #46).
+  const EDITABLE = t => !!t?.edit?.allowed;
+  const noEdit = t => t.edit?.reason || `a ${t.kind} item uses its own editing workflow`;
   // build: sd_db.workflow.TASK_STATUS_KINDS; workflow._recurring refuses a rule on any other kind.
   const RECURS = ['task', 'personal', 'followup'];
   const repeats = t => !!t?.recurrence;
@@ -290,17 +293,20 @@ addEventListener('DOMContentLoaded', () => {
         : `the series ended: ${v?.next_occurrence_reason || 'no next occurrence was made'}`;
       return landing(moveTo(t.key, 'done', { sent: r => { from = r.status; }, check: completeOn }).then(v => reread().then(() => v)),
         v => `${label(t)} ${slabel(from)} → Done · ${next(v)} · ${cliMove(t, 'done')}`); } };
-  // An edit's Undo sets back the fields it changed, as they were when the edit was sent, at the revision the edit answered.
-  function editRun(t, ch, msg) {
+  // An edit's Undo sets back the fields it changed (`keep`, the row's names), as they were when the edit was sent, at the
+  // revision the edit answered. `check` asks as the edit leaves whether it still changes anything: a second one queued
+  // behind the first would write nothing, and its Undo would set back what the first one changed (review, PR #46).
+  const FIELD = { anchor: 'recurrence_anchor' };
+  function editRun(t, ch, msg, { check, keep = Object.keys(ch) } = {}) {
     let was = {};
-    const sent = r => { was = Object.fromEntries(Object.keys(ch).map(k => [k, k === 'p' ? (r.p ?? null) : (r[k] ?? null)])); };
-    return landing(edit(t.key, ch, { sent }).then(v => { landed(t.key); return v; }), msg, v => edit(t.key, was, { rev: v.revision }));
+    const sent = r => { was = Object.fromEntries(keep.map(k => [FIELD[k] || k, r[k] ?? null])); };
+    return landing(edit(t.key, ch, { sent, check }).then(v => { landed(t.key); return v; }), msg, v => edit(t.key, was, { rev: v.revision }));
   }
   C.register(
     ...Object.values(STATUS_CMD), COMPLETE,
     // Edit sets priority and due date in one dialog. Its save carries the Undo, so the shell's own feedback stays safe.
     { id: 'item.edit', on: 'item', label: 'Edit', key: 'e', risk: 'safe', icon: 'pen-line',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : EDITABLE(t) || `a ${t.kind} item uses its own editing workflow`; },
+      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : EDITABLE(t) || noEdit(t); },
       cli: o => idOr(o, t => `sd task edit ${t.id} --priority ${t.p || 'N'} ${t.due ? '--due ' + t.due : '--due YYYY-MM-DD'}`),
       run: o => { askEdit(T(o)); return `Editing ${label(T(o))}`; } },
     // Move to: the status moves without drag (touch, or anyone). One form lists every column; a refused one is off with its reason.
@@ -310,7 +316,7 @@ addEventListener('DOMContentLoaded', () => {
       cli: o => idOr(o, t => `sd task status ${t.id} <status>`),
       run: o => { askMove(T(o)); return null; } },
     { id: 'item.p2', on: 'item', label: 'Edit → P2', risk: 'undo', bulk: true, icon: 'flag-triangle-right',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : !EDITABLE(t) ? `a ${t.kind} item uses its own editing workflow` : t.p === 2 ? 'it is already P2' : true; },
+      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : !EDITABLE(t) ? noEdit(t) : t.p === 2 ? 'it is already P2' : true; },
       cli: o => idOr(o, t => `sd task edit ${t.id} --priority 2`),
       run: o => { const t = must(o), was = t.p; return editRun(t, { p: 2 }, () => `${label(t)} P${was || '–'} → P2`); },
       undo: undoOf },
@@ -346,15 +352,18 @@ addEventListener('DOMContentLoaded', () => {
     // Recurrence: sd task edit --recur needs a due date; --clear-recur stops the series and clears its anchor, which Undo sets again.
     { id: 'item.recur', on: 'item', label: 'Edit → repeat weekly', risk: 'undo', icon: 'calendar-clock',
       when: o => { const t = T(o), d = detOf(t); if (!t?.id) return 'this row has no sd id to edit'; if (!RECURS.includes(t.kind)) return `a ${t.kind} item cannot recur`;
+        if (!EDITABLE(t)) return noEdit(t);
         if (!d) return 'recurrence was not read for this row';
         return d.item.recurrence ? `it repeats already: ${d.item.recurrence}` : t.due ? true : '--recur needs a due date'; },
       cli: o => idOr(o, t => `sd task edit ${t.id} --recur FREQ=WEEKLY`),
-      run: o => { const t = T(o); return editRun(t, { recurrence: 'FREQ=WEEKLY' }, () => `${label(t)} repeats weekly`); }, undo: undoOf },
+      run: o => { const t = must(o); return editRun(t, { recurrence: 'FREQ=WEEKLY' }, () => `${label(t)} repeats weekly`,
+        { check: r => !repeats(r) || `it repeats already: ${r.recurrence}` }); }, undo: undoOf },
     { id: 'item.recur.clear', on: 'item', label: 'Edit → stop repeating', risk: 'undo', icon: 'calendar-clock',
-      when: o => { const d = detOf(T(o)); return !d ? 'recurrence was not read for this row' : d.item.recurrence ? true : 'the task does not repeat'; },
+      when: o => { const t = T(o), d = detOf(t); return !d ? 'recurrence was not read for this row' : !EDITABLE(t) ? noEdit(t) : d.item.recurrence ? true : 'the task does not repeat'; },
       cli: o => idOr(o, t => `sd task edit ${t.id} --clear-recur`),
-      run: o => { const t = T(o), was = { recurrence: detOf(t).item.recurrence, recurrence_anchor: detOf(t).item.recurrence_anchor };
-        return landing(edit(t.key, { recurrence: null }), () => `${label(t)} no longer repeats`, v => edit(t.key, was, { rev: v.revision })); },
+      // The rule and anchor Undo sets again are the row's as the edit leaves, after any edit queued before it.
+      run: o => { const t = must(o); return editRun(t, { recurrence: null }, () => `${label(t)} no longer repeats`,
+        { check: r => repeats(r) || 'the task does not repeat', keep: ['recurrence', 'anchor'] }); },
       undo: undoOf },
     // A followup note closes with sd note resolve. sd note has resolve and list only, so nothing reopens it: confirm, no Undo.
     // build: POST /api/notes/<note>/resolve with the item's revision; the readback is the item's state.
