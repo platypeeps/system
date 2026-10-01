@@ -226,12 +226,14 @@ class TheMergedCaps(UsageCase):
         self.assertEqual([(bill.name, bill.cap, bill.room) for bill in found.bills],
                          [("capped", 10.0, 5.0), ("open", None, None)])
         self.assertEqual(usage.report(self.db, month="2026-09", sweep=False)[0], found)
-        tile = usage.bills(self.db)
+        # The tile sums the current month, so it reads at a fixed time in the rows' month (sd:2288).
+        now = "2026-09-16T12:00:00Z"
+        tile = usage.bills(self.db, now=now)
         self.assertEqual([(row["name"], row["cap_usd_month"], row["spent"]) for row in tile],
                          [("capped", 10.0, 2.0), ("open", None, 0.5)])
         # The overlay is the statement's: the rows are still the module's `sqlite3.Row`s.
         self.assertIsInstance(tile[0], sqlite3.Row)
-        self.assertEqual(tile, reads.cost_by_bill(self.db, caps=usage.caps(self.db)))
+        self.assertEqual(tile, reads.cost_by_bill(self.db, now=now, caps=usage.caps(self.db)))
         # Without `caps` the read is the row, which is what the panel's clear form asks for.
         self.assertEqual([row["cap_usd_month"] for row in reads.cost_by_bill(self.db)], [10.0, 5.0])
         self.assertEqual(reads.usage_month(self.db, month="2026-09").bills[1].cap, 5.0)

@@ -218,6 +218,24 @@ def verify_skill_source(request: dict) -> None:
         raise store.RunnerRefused("skill source changed since the reviewed selection; refresh before dispatch")
 
 
+#: The checkout this runner runs from: its modules, the program launchd starts.
+CHECKOUT = Path(__file__).resolve().parents[2]
+
+
+def checkout_commit(root: Path = CHECKOUT) -> str | None:
+    """The checkout's HEAD, or None when `root` is not a checkout (sd:1952).
+
+    Read from its files, as `status` reads it: `serve` runs this before its
+    first pulse, and a `git` child polls the global `time.sleep` while it
+    waits, which a slow start under load reaches (sd:2254).
+    """
+    return store.checkout_head(root)
+
+
+#: Seconds a cold start waits for `diskutil` to answer before it refuses (sd:1950).
+COLD_START_WINDOW = 600
+
+
 class Runner:
     def __init__(self, config: Config, *, freezer=storage.freeze, observer=processes.survivors, transport=None):
         self.config = config
@@ -243,6 +261,8 @@ class Runner:
         self.executables = {}
         #: `storage.preflight`'s remembered `diskutil` answers by mount identity (sd:1941).
         self.storage_verified = {}
+        #: The checkout's HEAD when `serve` started, the code this process runs (sd:1952).
+        self.runner_commit = None
 
     @property
     def search_path(self) -> str:
@@ -499,7 +519,11 @@ class Runner:
             "restoration_pending": self._restore_pending(connection),
             "database_holds": sorted(self.pending_endings), "probe_holds": holds, "space_holds": space_holds,
             "pack_commit": commit, "delivery_watch": self.delivery_watch_result, "executables": self.executables,
-            "archive_refresh": self.archive_watch_result})
+            "archive_refresh": self.archive_watch_result, **self.deployed()})
+
+    def deployed(self) -> dict:
+        """The heartbeat's `runner_commit` and `runner_checkout`, which `heartbeat_state` compares (sd:1952)."""
+        return {"runner_commit": self.runner_commit, "runner_checkout": str(CHECKOUT)}
 
     def refresh_archives(self):
         from .archive_refresh import refresh
@@ -1022,19 +1046,53 @@ class Runner:
             database_write(connection, store.heartbeat, {**pulse, "healthy": False, "runtime_holds": holds})
         return results
 
+    def await_storage(self, report: dict) -> None:
+        """Ask the first preflight again while its only problem is `diskutil` giving no answer (sd:1950).
+
+        The cache is empty at a cold start, so under load a `diskutil` timeout
+        refused it, and launchd's KeepAlive relaunched the daemon into the
+        same timeout every ThrottleInterval, writing no heartbeat. Here no
+        answer is "not yet verified": each interval writes an unhealthy
+        heartbeat naming the problems, dispatches nothing, and asks again,
+        for COLD_START_WINDOW seconds, after which no answer refuses the
+        start as before (sd:970). A definitive problem refuses at once. The
+        caller holds `runner.lock`, so the heartbeat is this owner's.
+        """
+        config = self.config
+        deadline = time.monotonic() + COLD_START_WINDOW
+        with closing(connect(config.database)) as connection:
+            while not report["ok"]:
+                unverified = report.get("unverified", [])
+                if any(problem not in unverified for problem in report["problems"]) or time.monotonic() >= deadline:
+                    raise store.RunnerRefused("; ".join(report["problems"]))
+                try:
+                    database_write(connection, store.heartbeat, {"pid": os.getpid(), "owner": self.owner,
+                        "interval_seconds": config.interval, "healthy": False, "storage": report,
+                        "starting": {"reason": "work volume not yet verified", "window_seconds": COLD_START_WINDOW,
+                                     "remaining_seconds": round(deadline - time.monotonic())}})
+                except sqlite3.Error:
+                    # The heartbeat only reports the wait; a busy store does not end it.
+                    pass
+                time.sleep(config.interval)
+                report = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb,
+                                           verified=self.storage_verified)
+
     def serve(self, *, once=False):
         config = self.config
-        # The cache is empty here, so a `diskutil` with no answer refuses the
-        # start (sd:970); an answer seeds the pulses that follow (sd:1941).
+        # The cache is empty here (sd:1941), so an answer seeds the pulses that
+        # follow, and no answer is waited out for a bounded window (sd:1950).
         report = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb,
                                    verified=self.storage_verified)
-        if not report["ok"]:
+        if not report["ok"] and any(problem not in report.get("unverified", []) for problem in report["problems"]):
             raise store.RunnerRefused("; ".join(report["problems"]))
         # Serial ownership of reconciliation prevents a second daemon treating a
         # first daemon's live runs as abandoned. Parallel sessions are children.
         with journal.lock(config.database.parent / "runner.lock", blocking=False):
+            self.await_storage(report)
             self.resolve_tools()
             connection = connect(config.database)
+            # Read once: Python keeps the modules it loaded, whatever a pull changes on disk.
+            self.runner_commit = checkout_commit()
             try:
                 try:
                     holds = self.recover(connection)
@@ -1042,7 +1100,8 @@ class Runner:
                     holds = [{"reason": str(error)}]
                 if holds:
                     try:
-                        database_write(connection, store.heartbeat, {"healthy": False, "interval_seconds": config.interval, "restore_holds": holds})
+                        database_write(connection, store.heartbeat, {"healthy": False, "interval_seconds": config.interval, "restore_holds": holds,
+                                                                     **self.deployed()})
                     except sqlite3.Error as error:
                         raise store.RunnerRefused(f"runner recovery held: {holds}; diagnostic heartbeat unavailable: {error}") from error
                     raise store.RunnerRefused("runner recovery has unresolved durable-journal holds")

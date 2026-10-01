@@ -405,14 +405,23 @@ def requeue(connection, assignment: int, *, expected_revision: str, who) -> dict
 
 
 def heartbeat(connection, body: dict) -> dict:
+    # A writer that copies a read state back (the long-preserve beat) would store a stale derivation.
+    body = {key: value for key, value in body.items() if key not in DERIVED_HEARTBEAT}
     with transaction(connection):
         connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('heartbeat', 'runner', ?, ?) "
             "ON CONFLICT(key) WHERE kind = 'heartbeat' AND key = 'runner' DO UPDATE SET timestamp = excluded.timestamp, body = excluded.body",
             (now(), json.dumps(body, sort_keys=True)))
-    return heartbeat_state(connection)
+    # The writer's answer leaves out `deployment`, which is for readers, not every pulse.
+    return _stored_heartbeat(connection)
 
 
 def heartbeat_state(connection) -> dict:
+    """The stored heartbeat, its freshness verdict, and `deployment` (sd:1952)."""
+    state = _stored_heartbeat(connection)
+    return state if "timestamp" not in state else {**state, **deployment(state)}
+
+
+def _stored_heartbeat(connection) -> dict:
     row = connection.execute("SELECT timestamp, body FROM state WHERE kind = 'heartbeat' AND key = 'runner'").fetchone()
     if row is None:
         return {"ok": False, "reason": "runner has never reported a heartbeat"}
@@ -420,6 +429,74 @@ def heartbeat_state(connection) -> dict:
     age = (datetime.now(UTC) - datetime.fromisoformat(row["timestamp"])).total_seconds()
     return {**body, "timestamp": row["timestamp"], "age_seconds": age,
             "ok": age <= 3 * body.get("interval_seconds", 10) and body.get("healthy", False)}
+
+
+#: Heartbeat fields `deployment` derives on read; `heartbeat` never stores them.
+DERIVED_HEARTBEAT = ("checkout_commit", "deploy_warning")
+
+
+_OBJECT_NAME = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def checkout_head(root: Path) -> str | None:
+    """The commit a checkout's HEAD names, read from its files, or None.
+
+    Read, not asked of `git`: every heartbeat read runs this, the runtime's
+    own keepalive among them, and a `git` with a timeout polls the global
+    `time.sleep` and can stall under load. A checkout, a linked worktree
+    (`.git` is a `gitdir:` file) and packed refs are read; anything else,
+    a reftable repository among them, is None.
+    """
+    try:
+        dotgit = root / ".git"
+        if dotgit.is_dir():
+            gitdir = dotgit
+        elif dotgit.is_file() and (text := dotgit.read_text().strip()).startswith("gitdir:"):
+            gitdir = (root / text[len("gitdir:"):].strip()).resolve()
+        else:
+            return None
+        common = (gitdir / (gitdir / "commondir").read_text().strip()).resolve() if (gitdir / "commondir").is_file() else gitdir
+        head = (gitdir / "HEAD").read_text().strip()
+        if not head.startswith("ref: "):
+            return head if _OBJECT_NAME.fullmatch(head) else None
+        ref = head[len("ref: "):]
+        for base in (gitdir, common):
+            if (base / ref).is_file():
+                value = (base / ref).read_text().strip()
+                return value if _OBJECT_NAME.fullmatch(value) else None
+        if (common / "packed-refs").is_file():
+            for line in (common / "packed-refs").read_text().splitlines():
+                name, _, packed = line.partition(" ")
+                if packed == ref and _OBJECT_NAME.fullmatch(name):
+                    return name
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def deployment(body: dict) -> dict:
+    """Whether the daemon runs its checkout's current commit (sd:1952).
+
+    Python reads the runner's modules once, at start, so after a `git pull`
+    the daemon keeps the old code until a restart; it ran 11 hours three
+    merges old with nothing saying so. `serve` writes `runner_commit` and
+    `runner_checkout` once, at start. This compares that commit with the
+    checkout's HEAD on disk, with no fetch. A moved checkout is a
+    `deploy_warning`, not an unhealthy runner. A heartbeat without the
+    commit, from an older daemon or one started outside a checkout, reads
+    `runner_commit unknown`.
+    """
+    started = body.get("runner_commit")
+    if not isinstance(started, str) or not started:
+        return {"deploy_warning": "runner_commit unknown"}
+    checkout = body.get("runner_checkout")
+    current = checkout_head(Path(checkout)) if isinstance(checkout, str) and checkout else None
+    if not current:
+        return {"checkout_commit": None, "deploy_warning": f"runner started at {started[:7]}; checkout HEAD unreadable"}
+    if current != started:
+        return {"checkout_commit": current,
+                "deploy_warning": f"runner started at {started[:7]}, checkout at {current[:7]}; restart to deploy"}
+    return {"checkout_commit": current}
 
 
 def _heartbeat_body(stored) -> dict:
