@@ -111,7 +111,23 @@ JOB_PROMPT="/some-skill or any prompt"
 JOB_MODEL=""                 # optional
 JOB_CLAUDE_ARGS=""           # optional extra claude CLI flags
 JOB_RESULT_OK=""             # optional ERE the reply's last `RESULT: ` line must match
+JOB_TIMEOUT=""               # optional run limit: N seconds, or Ns, Nm, Nh; 0 = none
 ```
+
+A run that hangs would hold the job's lock, and every later slot would log
+`skipped: previous run still active` and exit 0. `JOB_TIMEOUT` bounds each run.
+A job that sets none gets `CRON_JOBS_JOB_TIMEOUT` from `.env`, else two hours.
+The job runs in a process group of its own. At the limit, the log gets
+`timed out after <N>s (JOB_TIMEOUT); sending TERM to process group <pgid>`.
+Anything still running 10 seconds later gets KILL, with a second log line.
+The run then fails with exit 124, and the failure reporting below applies.
+Killing the group releases the lock, so the next slot runs as scheduled.
+Set `JOB_TIMEOUT` below the job's interval: `20m` for a job that runs hourly.
+`JOB_TIMEOUT=0` runs the job without a limit, as before.
+A limit that is not `N`, `Ns`, `Nm` or `Nh` fails the run and names the variable.
+The runner passes INT, TERM and HUP on to the job's group, so `bootout` and ^C
+still stop the job. A hand-run from a terminal gives the job `/dev/null` as
+stdin, as launchd does.
 
 `claude -p` exits 0 whatever the prompt concluded. A prompt that ends its reply
 with a `RESULT: ...` line can set `JOB_RESULT_OK` to an extended regex. The run
