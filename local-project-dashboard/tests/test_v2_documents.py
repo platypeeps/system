@@ -314,6 +314,23 @@ echo "$*" >> {shlex.quote(str(log))}
             self.assertNotEqual(failed.returncode, 0)
             self.assertFalse(log.exists(), "sd run ran after sd task add failed")
 
+    def test_a_request_names_only_a_repository_it_can_resolve(self):
+        # An unknown or ambiguous repo: never falls back to the selected row's repository; an exact key or a unique prefix wins.
+        self.doc["roots"].append({"key": "lab-two", "label": "Lab Two", "path": "~/repos/lab-two/docs/dashboard", "n": 0, "research": False})
+        out = self.run_page("""const input = ELS.shift, r = cmd('document.request'), d = C.get('draft:request');
+const ask = v => { input.value = ''; input.listeners.beforeinput.forEach(f => f()); input.value = v;
+  input.listeners.input.forEach(f => f()); input.listeners.input.forEach(f => f()); return [r.when(d), d.repo, r.cli(d)]; };
+R.unknown = ask('request memo repo:nowhere'); R.ambiguous = ask('request memo repo:la');
+R.exact = ask('request memo repo:lab'); R.unique = ask('request memo repo:ci');""")
+        R = out["R"]
+        for got, word in ((R["unknown"], "nowhere"), (R["ambiguous"], "lab, lab-two")):
+            self.assertIsInstance(got[0], str)
+            self.assertIn(word, got[0])
+            self.assertEqual(got[1:], [None, ""])
+        self.assertEqual(R["exact"][:2], [True, "lab"])
+        self.assertEqual(R["unique"][:2], [True, "civic"])
+        self.assertNotIn("repo:", R["exact"][2])
+
     def test_a_request_takes_the_skill_its_hint_asks_for(self):
         # A report has no skill; the hint says to name one with skill:, so that token names it and leaves the title.
         out = self.run_page("""const input = ELS.shift; input.value = 'request budget memo repo:civic skill:sd-writer';

@@ -163,7 +163,7 @@ const NO_SWITCH = 'no render switch: SD_SKIP_RENDER skips every render';
 const DRAFT = { id: 'draft:request', type: 'document request draft', label: 'new document request', title: '', cmd: '' };
 // build: copy only. Filing the item and queueing the runner are two writes, and no verb deletes an item, so no Undo is declared.
 const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Run', key: 'r', icon: 'plus', risk: 'undo', primary: () => true, executes: false,
-  when: o => (!o.title ? 'type what you need first' : !o.repo ? 'name the repository: add repo:<name>' : true), cli: o => o.cmd,
+  when: o => (o.repoError || (!o.title ? 'type what you need first' : !o.repo ? 'name the repository: add repo:<name>' : true)), cli: o => o.cmd,
   run: () => 'Copy the two lines: the dashboard does not file document requests yet' };
 const TAG = { id: 'document.tag', on: 'document', label: 'Tag', key: 't', icon: 'tag', risk: 'undo', bulk: true,
   when: storeOff, cli: () => 'no CLI: tags live in the document store, which does not exist yet' };
@@ -256,11 +256,21 @@ function writeURL() {
 const input = document.getElementById('shift'), prev = document.getElementById('shift-preview'), as = document.getElementById('shift-as'), ghost = document.getElementById('ghost');
 const chipsEl = document.getElementById('shift-chips'), reqEl = document.getElementById('req');
 let mode = 'search', lastGuess = 'search', streak = 0;
+// build: repo: names a root by its key or label exactly, else by a prefix only one key has. The design took the first
+// prefix match, and an unknown name fell back to the selected row's repository: a request for the wrong repository.
+function repoOf(name) {
+  const n = name.toLowerCase(), keys = ROOTS.map(r => r.key);
+  const exact = keys.find(k => k.toLowerCase() === n || (LABEL[k] || '').toLowerCase() === n);
+  if (exact) return { key: exact };
+  const some = keys.filter(k => k.toLowerCase().startsWith(n));
+  if (some.length === 1) return { key: some[0] };
+  return { why: some.length ? `repo:${name} matches ${some.join(', ')}: name one` : `repo:${name} names no document root` };
+}
 function parse(v) {
-  const out = { repo: [], kind: [], fresh: [], pinned: false, hidden: false, words: [], due: '', skill: '' };
+  const out = { repo: [], kind: [], fresh: [], pinned: false, hidden: false, words: [], due: '', skill: '', repoError: '' };
   v.split(/\s+/).filter(Boolean).forEach(t => {
     let m;
-    if ((m = t.match(/^repo:(.+)$/i))) { const k = ROOTS.map(r => r.key).find(x => x.startsWith(m[1].toLowerCase()) || (LABEL[x] || '').toLowerCase() === m[1].toLowerCase()); k ? out.repo.push(k) : out.words.push(t); }
+    if ((m = t.match(/^repo:(.+)$/i))) { const k = repoOf(m[1]); if (k.key) out.repo.push(k.key); else if (mode === 'request') out.repoError ||= k.why; else out.words.push(t); }
     else if ((m = t.match(/^kind:(\w+)$/i)) && KINDS.includes(m[1].toLowerCase())) out.kind.push(m[1].toLowerCase());
     else if (/^(stale|is:stale)$/i.test(t)) out.fresh.push('stale');
     else if ((m = t.match(/^age[:>](today|week|older|\d+d)$/i))) out.fresh.push(/^\d+d$/.test(m[1]) ? (parseInt(m[1]) > 7 ? 'older' : 'week') : m[1].toLowerCase());
@@ -292,6 +302,14 @@ function renderShift() {
   } else {
     const title = p.words.filter((w, i) => !(i === 0 && /^(request|need|write|generate|make)$/i.test(w))).join(' ').replace(/^(a|an)\s+/i, '');
     // A write names where it runs: repo:, else the row selected when typing began, never a silent default.
+    if (p.repoError) {
+      put(as, html`${I('plus')} request “${title || '…'}”`);
+      put(chipsEl, html`<span class="chip" aria-pressed="false">repo: none</span>`); reqEl.hidden = false;
+      Object.assign(DRAFT, { title, repo: null, cmd: '', repoError: p.repoError });
+      put(reqEl, html`<p class="why">${p.repoError}. The request goes nowhere until <code>repo:</code> names one root.</p>`);
+      F.text = ''; render(); return;
+    }
+    DRAFT.repoError = '';
     const repo = p.repo[0] || reqScope;
     if (!repo) {
       put(as, html`${I('plus')} request “${title || '…'}”`);
