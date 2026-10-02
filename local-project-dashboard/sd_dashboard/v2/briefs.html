@@ -1,0 +1,90 @@
+<!doctype html>
+<!--
+  Briefs (sd:2112), at /briefs. Built from the design source's products/system/designs/v2/briefs.html, briefs.js and briefs.css at
+  b2b8c2b, with design.md and commands.md.
+  Data: /api/briefs (briefs_screen.document: the brief notes the vault's System/AI Generated/Briefs folder holds, read by the child
+  Research > Resources > Briefs runs), read when the page opens. The design's rows are brief mail; the dashboard has no mail reader,
+  so unread state, follow-up flags and the watchdog's failures are left out or shown unknown with the reason. Nothing here is sample
+  data. The one write is Make task, through the shell's capture form and POST /api/items.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Briefs · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/briefs.css">
+</head>
+<body data-page="Briefs" data-scope="briefs" data-scope-note="vault briefs">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+  <main id="main">
+    <header class="head">
+      <div>
+        <h1>Briefs</h1>
+        <p><span id="sub">Reading the briefs…</span> · notes the scheduled jobs file in the vault</p>
+      </div>
+      <div class="shift">
+        <label class="field">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr">Filter, capture or ask</span>
+          <input id="shift" placeholder="Filter briefs, capture a task, or ask" autocomplete="off" aria-describedby="shift-hint">
+          <span class="ghost" id="ghost"></span>
+          <kbd>/</kbd>
+        </label>
+        <div class="preview" id="shift-preview" hidden>
+          <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
+          <div class="chips" role="group" aria-label="Interpret as">
+            <button class="chip" type="button" data-as="filter" aria-pressed="true">filter rows</button>
+            <button class="chip" type="button" data-as="task" aria-pressed="false">new task</button>
+            <button class="chip" type="button" data-as="ask" aria-pressed="false">ask chat</button>
+          </div>
+          <p class="hint" id="shift-hint">→ changes mode · Enter runs · Esc clears</p>
+        </div>
+      </div>
+    </header>
+    <div id="state" hidden></div>
+
+    <h2 class="sr">Brief sources</h2>
+    <ul class="annunciator" id="annunciator"></ul>
+
+    <section class="cadence" aria-labelledby="cad-h">
+      <div class="sec-head">
+        <h2 id="cad-h">Cadence <button class="help" type="button" aria-label="Help: Cadence" data-help="<b>One lane per source.</b> A source is the kind in the note's file name. Each tick is one brief at the time its note was written. A blank day is a quiet day, not a fault: no watchdog reader says otherwise. Tap a lane to filter the list; tap a tick to open that brief.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <div class="tally"><div class="chips" role="group" aria-label="Range" id="range"></div></div>
+      </div>
+      <div class="lanes" id="lanes"></div>
+      <p class="legend"><span><span class="sw t"></span>brief written</span><span><span class="sw h"></span>watchdog not read (unknown)</span><span>times UTC</span></p>
+      <details class="fallback"><summary>Cadence as a table</summary><div class="tbl-wrap" id="cad-table"></div></details>
+    </section>
+
+    <section aria-labelledby="list-h">
+      <div class="sec-head">
+        <h2 id="list-h">Briefs <button class="help" type="button" aria-label="Help: Briefs" data-help="<b>One row per brief note,</b> newest first. The source is the kind in the file name; the time is when the note was last written, shown only when that falls on the note's own day. Status reports live on Reports, not here.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <div class="filters" id="filters" aria-label="Filters"></div>
+      <table class="ledger" aria-labelledby="list-h">
+        <colgroup><col class="c-g"><col><col class="c-src"><col class="c-at"><col class="c-act"></colgroup>
+        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Brief</th><th scope="col">Source</th><th scope="col" class="r">Written (UTC)</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="empty" id="empty" hidden></p>
+      <div class="pager" id="pager"></div>
+      <p class="note">Status mail (job reports, run and review reports) is not a brief. It lives on <a href="/operations?area=reports">Reports</a>. The same notes, as a table, are under <a href="/operations?area=resources&amp;resource=briefs">Research › Briefs</a>.</p>
+    </section>
+  </main>
+
+  <div class="details" id="details"><p class="why">Select a brief to see its note.</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/briefs.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>
