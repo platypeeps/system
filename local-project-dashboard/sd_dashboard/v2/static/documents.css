@@ -13,7 +13,8 @@
 .facet .chips { margin: 0; }
 .chip .n { color: var(--color-muted); }
 .chip[aria-pressed="true"] .n { color: var(--color-ink-2); }
-.chip:disabled { cursor: not-allowed; opacity: 1; color: var(--color-muted); background: transparent; border-style: dashed; }
+/* build: an unavailable chip is aria-disabled so it keeps focus and its reason. */
+.chip:disabled, .chip[aria-disabled="true"] { cursor: not-allowed; opacity: 1; color: var(--color-muted); background: transparent; border-style: dashed; }
 .chip .g-caution { font-family: var(--font-data); }
 .active { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); margin: 0 0 var(--space-xs); font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); min-height: 1.75rem; }
 .active .chip .i { width: 0.8rem; height: 0.8rem; }

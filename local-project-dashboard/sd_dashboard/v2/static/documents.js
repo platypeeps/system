@@ -50,7 +50,9 @@ function renderFacets() {
     const on = F[field].has(v), n = facetCount(field, v);
     const root = field === 'repo' ? ROOTS.find(r => r.key === v) : null;
     const why = field === 'kind' ? KIND_OFF(v) : '';
-    const dis = why ? html` disabled title="${why}"` : root && root.n === 0 ? html` disabled title="Nothing generated yet in ${root.path}"` : '';
+    const off = why || (root && root.n === 0 ? `Nothing generated yet in ${root.path}` : '');
+    // build: aria-disabled, not disabled: a disabled button leaves the tab order, and its reason with it.
+    const dis = off ? html` aria-disabled="true" title="${off}"` : '';
     return html`<button class="chip" type="button" data-f="${field}" data-v="${v}" aria-pressed="${String(on)}"${dis}>${extra}${label} <span class="n">${n}</span></button>`;
   };
   put(facets, html`
@@ -62,7 +64,7 @@ function renderFacets() {
       <button class="chip" type="button" id="f-hidden" aria-pressed="${String(F.hidden)}">${I('eye-off')}Hidden <span class="n">${DOCS.filter(d => d.hidden).length}</span></button></div></div>`);
 }
 facets.addEventListener('click', e => {
-  const c = e.target.closest('.chip'); if (!c || c.disabled) return;
+  const c = e.target.closest('.chip'); if (!c || c.getAttribute('aria-disabled') === 'true') return;
   if (c.id === 'f-pinned') F.pinned = !F.pinned;
   else if (c.id === 'f-hidden') F.hidden = !F.hidden;
   else { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); }

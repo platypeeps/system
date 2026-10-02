@@ -292,6 +292,24 @@ R.r = [r.executes, r.when(d), r.cli(d)]; shellRun(r, d); await flush();""")
         self.assertEqual(failed["kind"], "error")
         self.assertIn("boom", failed["text"])
 
+    def test_an_unavailable_chip_stays_focusable_says_why_and_does_nothing(self):
+        out = self.run_page("""R.facets = ELS.facets.html;
+const chip = (f, v) => ({ id: '', dataset: { f: f, v: v }, getAttribute: a => a === 'aria-disabled' ? 'true' : null });
+['kind:design', 'repo:quiet'].forEach(fv => { const [f, v] = fv.split(':'), c = chip(f, v);
+  ELS.facets.listeners.click.forEach(h => h({ target: { closest: () => c } })); });
+R.picked = [...F.kind, ...F.repo];""")
+        facets = out["R"]["facets"]
+        # A native disabled button leaves the tab order, and its title with it; the reason must stay reachable.
+        self.assertNotRegex(facets, r"<button[^>]*\sdisabled[\s>]")
+        design = re.search(r'<button[^>]*data-v="design"[^>]*>', facets).group(0)
+        quiet = re.search(r'<button[^>]*data-v="quiet"[^>]*>', facets).group(0)
+        for tag in (design, quiet):
+            self.assertIn('aria-disabled="true"', tag)
+        self.assertIn("No design documents", design)
+        self.assertIn("Nothing generated yet in ~/repos/quiet/docs/dashboard", quiet)
+        self.assertNotIn("aria-disabled", re.search(r'<button[^>]*data-v="research"[^>]*>', facets).group(0))
+        self.assertEqual(out["R"]["picked"], [])
+
     def test_the_row_in_the_address_is_selected_and_details_name_its_facts(self):
         out = self.run_page("R.det = ELS.details.html;", row="'lab/plan.html'")
         det = out["R"]["det"]
