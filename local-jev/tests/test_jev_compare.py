@@ -350,6 +350,20 @@ class TheHaikuArm(CompareCase):
         self.assertIn("is it?", sent["body"]["messages"][0]["content"])
         self.assertIn("a sentence", sent["body"]["messages"][0]["content"])
 
+    def test_haiku_prices_apply_only_to_the_haiku_model(self):
+        # Another model's tokens cost what that model costs: without its
+        # prices the row has no cost, as on Baseten.
+        Arm.reply = json.dumps({"probability": 0.25})
+        row = self.haiku("anthropic", JEV_COMPARE_ANTHROPIC_KEY="k",
+                         JEV_COMPARE_HAIKU_MODEL="claude-sonnet-4-5")
+        self.assertEqual((row["outcome"], row["model"]), ("ok", "claude-sonnet-4-5"))
+        self.assertEqual((row["tokens_in"], row["tokens_out"]), (120, 9))
+        self.assertIsNone(row["usd"])
+        row = self.haiku("anthropic", JEV_COMPARE_ANTHROPIC_KEY="k",
+                         JEV_COMPARE_HAIKU_MODEL="claude-sonnet-4-5",
+                         JEV_COMPARE_HAIKU_USD_IN="3", JEV_COMPARE_HAIKU_USD_OUT="15")
+        self.assertAlmostEqual(row["usd"], (120 * 3 + 9 * 15) / 1e6)
+
     def test_the_operator_key_variable_is_never_read(self):
         row = self.haiku("anthropic", ANTHROPIC_API_KEY="from-the-profile")
         self.assertEqual((row["outcome"], row["cause"]), ("unavailable", "unkeyed"))
@@ -595,6 +609,17 @@ class TheConfigFile(CompareCase):
         self.assertEqual((kev["outcome"], kev["model"]), ("ok", "example/kev-other"))
         sent = [s for s in Arm.seen if s["path"] == "/v1/systemone"]
         self.assertEqual(sent[0]["headers"]["authorization"], "Bearer kev-test-key")
+
+    def test_an_exported_empty_key_beats_the_kev_service_config(self):
+        # An exported empty KEV_API_KEY switches auth off: the service key
+        # must not reach a server the caller pointed the arm at.
+        port = self.base.rsplit(":", 1)[1]
+        self.kev_config(f'KEV_PORT="{port}"\nKEV_API_KEY="kev-test-key"\n')
+        result = self.via_entrypoint(KEV_API_KEY="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.by_arm(self.wait_rows(2))["kev"]["outcome"], "ok")
+        sent = [s for s in Arm.seen if s["path"] == "/v1/systemone"]
+        self.assertNotIn("authorization", sent[0]["headers"])
 
     def test_a_jev_compare_setting_beats_the_kev_service_config(self):
         self.kev_config('KEV_PORT="9"\nKEV_MODEL="example/kev-other"\n')

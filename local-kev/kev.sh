@@ -12,16 +12,18 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
 
 # <config>/kev/.env provides defaults only: a value already in the environment
-# wins. Read it before anything below uses a value it may set.
+# wins. Read it before anything below uses a value it may set. Set-ness is
+# kept apart from the value, so an exported empty value wins too: KEV_API_KEY=
+# switches auth off and HF_HOME= clears a cache path the file names.
 for var in KEV_MODEL KEV_PORT KEV_DIR KEV_REPO_URL KEV_API_KEY HF_HOME \
            SYSTEM_TOOLS_LABEL_PREFIX; do
-  eval "ENV_$var=\"\${$var:-}\""
+  eval "SET_$var=\${$var+set}; ENV_$var=\"\${$var:-}\""
 done
 st_source_env kev
 for var in KEV_MODEL KEV_PORT KEV_DIR KEV_REPO_URL KEV_API_KEY HF_HOME \
            SYSTEM_TOOLS_LABEL_PREFIX; do
-  eval "saved=\"\${ENV_$var:-}\""
-  [ -z "$saved" ] || eval "$var=\"\$saved\""
+  eval "was=\"\${SET_$var:-}\"; saved=\"\${ENV_$var:-}\""
+  [ "$was" != set ] || eval "$var=\"\$saved\""
 done
 
 KEV_MODEL="${KEV_MODEL:-jaredpalmer/kev-4b@v1.0}"
@@ -33,11 +35,12 @@ case "${KEV_API_KEY:-}" in
 esac
 
 # On a machine with the /Volumes/models disk, weights live there and not on
-# the boot volume: the rule local-llama-cpp follows. A value already set wins.
-if [ -z "${HF_HOME:-}" ] && [ -d /Volumes/models/huggingface ]; then
+# the boot volume: the rule local-llama-cpp follows. A value already set wins,
+# even an empty one, which leaves Hugging Face its own default.
+if [ -z "${HF_HOME+set}" ] && [ -d /Volumes/models/huggingface ]; then
   HF_HOME=/Volumes/models/huggingface
 fi
-[ -z "${HF_HOME:-}" ] || export HF_HOME
+if [ -n "${HF_HOME:-}" ]; then export HF_HOME; else unset HF_HOME; fi
 
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="$LABEL_PREFIX.kev"

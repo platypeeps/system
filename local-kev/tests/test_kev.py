@@ -32,6 +32,7 @@ exit 0
 # Logs its working directory and arguments; `git clone` makes the target.
 STUB = """#!/bin/sh
 echo "$(basename "$0") [$(pwd)] $*" >> "$KEV_TEST_CALLS"
+[ -z "${KEV_TEST_ENV:-}" ] || echo "HF_HOME=${HF_HOME-<unset>}" >> "$KEV_TEST_ENV"
 if [ "$(basename "$0")" = git ] && [ "$1" = clone ]; then
   mkdir -p "$3/.git"
   : > "$3/pyproject.toml"
@@ -200,6 +201,14 @@ class TheStatus(KevCase):
         self.run_script("status", env={"KEV_API_KEY": "change-me"})
         self.assertEqual(handler.seen, [("/v1/models", None)])
 
+    def test_an_exported_empty_key_beats_the_config_file(self):
+        # "An exported value wins" holds for an empty one: it switches auth off.
+        self.installed()
+        handler = self.serve()
+        (self.config / "kev" / ".env").write_text('KEV_API_KEY="config-key"\n')
+        self.run_script("status", env={"KEV_API_KEY": ""})
+        self.assertEqual(handler.seen, [("/v1/models", None)])
+
     def test_the_port_comes_from_the_config_file(self):
         self.installed()
         handler = self.serve()
@@ -301,6 +310,23 @@ class TheInstallAndServe(KevCase):
         self.assertEqual(self.run_script("serve").returncode, 3)
         self.assertEqual(self.calls.read_text(), "")
 
+
+
+class TheCachePath(KevCase):
+    def serve_env(self, env):
+        self.installed()
+        seen = self.tmp / "env.txt"
+        result = self.run_script("serve", env={"KEV_TEST_ENV": str(seen), **env})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return seen.read_text().strip()
+
+    def test_the_cache_path_comes_from_the_config_file(self):
+        (self.config / "kev" / ".env").write_text('HF_HOME="/example/hf"\n')
+        self.assertEqual(self.serve_env({}), "HF_HOME=/example/hf")
+
+    def test_an_exported_empty_cache_path_clears_the_config_file_one(self):
+        (self.config / "kev" / ".env").write_text('HF_HOME="/example/hf"\n')
+        self.assertEqual(self.serve_env({"HF_HOME": ""}), "HF_HOME=<unset>")
 
 if __name__ == "__main__":
     unittest.main()

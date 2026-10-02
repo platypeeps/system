@@ -190,6 +190,8 @@ incomparable to the other three.
 per million tokens, defaults 1 and 5, Haiku 4.5's list price.
 Baseten serves no Haiku, so it has no default price: without both variables
 its rows carry tokens and no cost, rather than a cost that is Haiku's.
+The same holds on any transport when `JEV_COMPARE_HAIKU_MODEL` names a model
+other than that transport's Haiku: the defaults apply to Haiku only.
 
 ## Privacy
 

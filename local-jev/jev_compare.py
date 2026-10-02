@@ -57,7 +57,9 @@ KEV_REQUEST_MODEL = "kev-latest"
 
 #: Haiku 4.5's list price, US dollars per million tokens, for a transport
 #: that does not report its own cost. A transport whose model is not Haiku
-#: has no default (`"usd": None` below): its cost needs the configured prices.
+#: has no default (`"usd": None` below), and neither has a configured
+#: `JEV_COMPARE_HAIKU_MODEL` other than the transport's own: its cost needs
+#: the configured prices.
 DEFAULT_USD_IN = 1.0
 DEFAULT_USD_OUT = 5.0
 
@@ -620,7 +622,10 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
     if reported and all(c is not None for c in reported):
         event["usd"] = sum(reported)
     elif event.get("tokens_in") is not None or event.get("tokens_out") is not None:
-        usd_in, usd_out = TRANSPORTS[via]["usd"] or (None, None)
+        # Haiku's list price is only Haiku's: another model needs its prices.
+        spec = TRANSPORTS[via]
+        usd_in, usd_out = (spec["usd"] if spec["usd"] and conf["model"] == spec["model"]
+                           else (None, None))
         usd_in = price(env, "JEV_COMPARE_HAIKU_USD_IN", usd_in)
         usd_out = price(env, "JEV_COMPARE_HAIKU_USD_OUT", usd_out)
         if usd_in is not None and usd_out is not None:

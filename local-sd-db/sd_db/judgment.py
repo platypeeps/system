@@ -822,6 +822,14 @@ ORDER BY stage, timestamp, id
 """
 
 
+def _has_arms(connection: sqlite3.Connection) -> bool:
+    """Whether migration 017 has run. A reader may open a schema 11-16
+    database it does not migrate; that table holds no kev or haiku row and
+    has neither column the comparison reads, so it has nothing to compare."""
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(judgment)")}
+    return {"server_ms", "probabilities"} <= columns
+
+
 def percentile(values: list, share: float):
     """The nearest-rank percentile, or None for no values. Nearest rank and
     not interpolation: the number printed is one a call actually took."""
@@ -904,7 +912,7 @@ def compare(
     """
     if stage is not None:
         stage = _identifier("stage", stage, required=True)
-    if not present(connection):
+    if not present(connection) or not _has_arms(connection):
         return []
     bounds = {"since": since, "until": until, "stage": stage, "gate": GATE_PRIMITIVE}
     rows = [dict(row) for row in connection.execute(COMPARE_ROWS, bounds)]

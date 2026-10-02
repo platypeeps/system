@@ -167,6 +167,26 @@ class TheMigration(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_a_database_before_017_has_no_comparison_rows(self):
+        # A reader may open a schema 11-16 database it does not migrate.
+        # That table has no comparison columns and no kev or haiku rows.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sd.db"
+            initialise(path)
+            raw = sqlite3.connect(path, isolation_level=None)
+            text = (SCHEMA_DIR / "017_judgment_compare_arms.sql").read_text()
+            raw.executescript("\n".join(line[4:] for line in text.splitlines()
+                                        if line.startswith("--   ")))
+            raw.execute(
+                "INSERT INTO judgment (id, timestamp, caller, stage, arm, provider, "
+                "primitive, outcome, answer) "
+                "VALUES (7, ?, 'c', 's', 'jev', 'typesafe', 'noul', 'ok', '0.4')", (AT,))
+            raw.row_factory = sqlite3.Row
+            try:
+                self.assertEqual(compare(raw), [])
+            finally:
+                raw.close()
+
 
 class TheComparison(CompareCase):
     """Three noul decisions and one choice, each asked of all three arms."""

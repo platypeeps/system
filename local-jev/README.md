@@ -351,6 +351,9 @@ are off unless switched on**, one at a time:
   --model haiku`, under the operator's own `claude` login), or `baseten`, which
   serves no Haiku and so needs `JEV_COMPARE_BASETEN_MODEL` and its own
   prices. The row records the transport as provider and the model name.
+  Haiku's list price is the default only for the transport's own Haiku model;
+  `JEV_COMPARE_HAIKU_MODEL` naming another model needs
+  `JEV_COMPARE_HAIKU_USD_IN` and `_OUT`, or its rows carry no cost.
 
 The arms get the request after redaction, exactly as Jev gets it. They run in
 a detached child process that `jev.py` starts once per call, before the first

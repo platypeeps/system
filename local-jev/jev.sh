@@ -60,8 +60,10 @@ kev_value() {
   [ -f "$KEV_ENV_FILE" ] || return 0
   ( unset "$1"; . "$KEV_ENV_FILE" >/dev/null 2>&1; eval "printf '%s' \"\${$1:-}\"" ) || true
 }
-[ -n "${KEV_MODEL:-}" ] || KEV_MODEL="$(kev_value KEV_MODEL)"
-[ -n "${KEV_API_KEY:-}" ] || KEV_API_KEY="$(kev_value KEV_API_KEY)"
+# Set-ness decides the fallback, not the value: an exported empty KEV_API_KEY
+# switches auth off, and the service key must not reach an overridden URL.
+[ -n "${KEV_MODEL+set}" ] || KEV_MODEL="$(kev_value KEV_MODEL)"
+[ -n "${KEV_API_KEY+set}" ] || KEV_API_KEY="$(kev_value KEV_API_KEY)"
 case "${KEV_API_KEY:-}" in change-me|changeme) KEV_API_KEY="" ;; esac
 if [ -z "${JEV_COMPARE_KEV_URL:-}" ]; then
   kev_port="${KEV_PORT:-$(kev_value KEV_PORT)}"

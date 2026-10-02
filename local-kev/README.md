@@ -44,7 +44,8 @@ The answer carries `latency_ms`, the server's own time for the request.
 
 Every value is optional. Copy `.env.example` to `<config>/kev/.env` (`<config>`
 is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`); an exported value wins
-over the file.
+over the file, an empty one too: `KEV_API_KEY=` switches auth off, and
+`HF_HOME=` leaves Hugging Face its own default cache.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
