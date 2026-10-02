@@ -51,13 +51,32 @@ addEventListener('DOMContentLoaded', () => {
     if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
     return out;
   }
+  // Each read takes a generation; only the newest one draws. Re-reads overlap on the threaded server and can answer out
+  // of order, and an older answer, or an older failure, must not replace a newer reading (as Health does).
+  let generation = 0;
+  // The shell's object map only grows and keeps its picks, so each accepted reading retires what it no longer lists: the
+  // pick is dropped and the object becomes a type no command is on, so a bulk run cannot send a stale revision.
+  let putIds = new Set(), picks = [];
+  function retire(keep) {
+    picks.filter(id => !keep.has(id)).forEach(id => C.pick(id));
+    putIds.forEach(id => { if (!keep.has(id)) { C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); delete OUTPUT[id]; } });
+    putIds = keep;
+  }
   async function load() {
+    const mine = ++generation;
     if (!DOC) window.shell.state({ kind: 'loading', text: 'Reading the last 24 hours.', source: '/api/activity' });
     let doc;
     try { doc = await getJSON('/api/activity'); } catch (err) {
+      if (mine !== generation) return;
+      // Nothing from the last read stays on screen or in reach of a command: rows, objects, picks and the observed time.
+      DOC = null; EVENTS = []; REPOS = [];
+      retire(new Set());
+      delete document.body.dataset.observed;
       window.shell.state({ kind: 'error', text: `Activity did not answer, so nothing below is current: ${err.message}`, source: '/api/activity' });
+      update();
       return;
     }
+    if (mine !== generation) return;
     DOC = doc; EVENTS = doc.events; OBSERVED = Date.parse(doc.read); RANGE = { from: Date.parse(doc.from), to: Date.parse(doc.to) };
     document.body.dataset.observed = doc.read;
     REPOS = Object.entries(EVENTS.reduce((a, e) => (e.repo && (a[e.repo] = (a[e.repo] || 0) + 1), a), {})).sort((a, b) => b[1] - a[1]);
@@ -77,7 +96,8 @@ addEventListener('DOMContentLoaded', () => {
     (p.get('kind') || '').split(',').filter(Boolean).forEach(v => F.kind.add(v));
     (p.get('repo') || '').split(',').filter(Boolean).forEach(v => F.repo.add(v));
     F.state = p.get('state') || ''; F.q = p.get('q') || ''; F.hour = p.get('range') === '1h'; F.all = p.get('range') === 'all';
-    page = +p.get('page') || 1; size = [25, 50, 100, 200].includes(+p.get('size')) ? +p.get('size') : 50;
+    const asked = Number(p.get('page'));
+    page = Number.isInteger(asked) && asked > 0 ? asked : 1; // a page is a positive integer; anything else is the first page size = [25, 50, 100, 200].includes(+p.get('size')) ? +p.get('size') : 50;
     selected = window.shell.row() || null;
   }
   function writeURL() {
@@ -102,6 +122,7 @@ addEventListener('DOMContentLoaded', () => {
   function pageAttention() {
     // The badge says "in 24 h", so it counts the window only: an old journal record never lights it.
     const day = EVENTS.filter(inWindow), w = day.filter(e => e.s === 'warning').length, c = day.filter(e => e.s === 'caution').length;
+    if (!DOC) { window.shell.attention?.({ state: 'unknown', n: 0, what: 'events' }); return; }
     window.shell.attention?.({ state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: w ? 'failed events in 24 h' : 'caution events in 24 h' });
   }
   function renderAnnunciator() {
@@ -260,7 +281,8 @@ addEventListener('DOMContentLoaded', () => {
   function update() {
     renderRange(); renderAnnunciator(); renderLanes(); renderFilters(); renderRows(); writeURL(); window.shell.views(VIEWS);
     // Selection follows the filter (design.md, Page contract): a hidden row gives way to the first visible one.
-    const kept = window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => select(id, false) });
+    const kept = window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => select(id, false),
+      clear: () => { selected = null; put(details, html`<p class="why">${DOC ? 'No event matches the filters, so nothing is selected.' : 'Activity was not read, so nothing is selected.'}</p>`); } });
     if (kept !== undefined) selected = kept;
   }
 
@@ -309,6 +331,7 @@ addEventListener('DOMContentLoaded', () => {
   // revision, the job and its revision and retry capability, the execution record.
   const TYPE = { merge: 'pull request', command: 'command' };
   function registerObjects() {
+    retire(new Set(EVENTS.map(e => e.id)));
     EVENTS.forEach(e => C.put({ ...e, id: e.id, type: e.k === 'run' ? (e.job ? 'job' : 'assignment') : TYPE[e.k], label: e.what, event: e.id }));
   }
   const ev = o => EVENTS.find(e => e.id === o.event) || o;
@@ -364,7 +387,7 @@ addEventListener('DOMContentLoaded', () => {
     } catch (err) { OUTPUT[o.id] = { error: `The output was not read: ${err.message}` }; throw err; } finally { select(o.id, true); }
   }
   document.addEventListener('shell:open', e => { if (EVENTS.some(v => v.id === e.detail)) select(e.detail, true); });
-  document.addEventListener('shell:picked', e => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
+  document.addEventListener('shell:picked', e => (picks = e.detail, tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id)))));
 
   // ---------- Shapeshift bar ----------
   const input = $('shift'), prev = $('shift-preview'), as = $('shift-as'), ghost = $('ghost');

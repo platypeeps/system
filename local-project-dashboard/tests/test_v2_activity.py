@@ -228,9 +228,11 @@ class TheScript(ScreenCase):
         self.ids = seed(self)
         self.doc = activity_screen.document(self.connection, now=NOW, jobs_backend=backend(self))
 
-    def run_page(self, body, answer="null", doc=None):
-        """Load activity.js, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R."""
-        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE
+    def run_page(self, body, answer="null", doc=None, pre=""):
+        """Load activity.js, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R.
+
+        `pre` runs before activity.js does, as a page address does."""
+        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + pre + "\n"
                   + f"\nconst DOC = {json.dumps(doc or self.doc)};\n"
                   + "const WRITE = " + answer + ";\n"
                   + """ANSWER = (path, body) => {
@@ -406,6 +408,67 @@ R.table = ELS['chart-table'].html; R.lanes = ELS.lanes.html;""")
         out = self.run_page("R.ann = ELS.annunciator.html;", doc=doc)
         self.assertIn(f"<b>{failed_jobs}</b> jobs failed", out["R"]["ann"])
         self.assertIn(f"{blocked_runs} of {assignments} runs blocked", out["R"]["ann"])
+
+    REFRESH = ("const refresh = () => ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' "
+               "? { id: 'refresh', dataset: {} } : null } });\n")
+
+    def test_an_older_read_that_answers_last_does_not_replace_a_newer_one(self):
+        newer = json.loads(json.dumps(self.doc))
+        newer["events"] = [e for e in newer["events"] if e["id"] == f"run:{self.ids['blocked']}"]
+        for older in ("[200, DOC]", "[500, { error: 'database locked' }]"):
+            out = self.run_page(self.REFRESH + f"""const held = [];
+ANSWER = path => new Promise(res => held.push(res));
+refresh(); refresh(); await flush();
+held[1]([200, {json.dumps(newer)}]); await flush();
+held[0]({older}); await flush();
+R.rows = ELS.rows.html;""")
+            self.assertIn(f'data-id="run:{self.ids["blocked"]}"', out["R"]["rows"], older)
+            self.assertNotIn('data-id="job:nightly-sync"', out["R"]["rows"], older)
+            self.assertIsNone(out["states"][-1], older)
+
+    def test_a_failed_refresh_leaves_no_row_object_or_pick_from_the_last_read(self):
+        n = self.ids["blocked"]
+        out = self.run_page(self.REFRESH + f"""const picked = []; C.pick = id => picked.push(id);
+document.dispatchEvent(new CustomEvent('shell:picked', {{ detail: ['run:{n}'] }}));
+ANSWER = () => [500, {{ error: 'database locked' }}]; refresh(); await flush();
+R.rows = ELS.rows.html; R.picked = picked; R.type = C.get('run:{n}').type; R.observed = document.body.dataset.observed || null;""")
+        self.assertEqual(out["states"][-1]["kind"], "error")
+        self.assertNotIn("data-id=", out["R"]["rows"])
+        self.assertEqual(out["R"]["picked"], [f"run:{n}"], "the pick is dropped")
+        self.assertEqual(out["R"]["type"], "not listed", "no command is on a retired object")
+        self.assertIsNone(out["R"]["observed"])
+        self.assertEqual(out["attention"][-1]["state"], "unknown")
+
+    def test_a_refresh_retires_the_events_it_no_longer_lists(self):
+        n, gone = self.ids["blocked"], f"run:{self.ids['done']}"
+        newer = json.loads(json.dumps(self.doc))
+        newer["events"] = [e for e in newer["events"] if e["id"] != gone]
+        out = self.run_page(self.REFRESH + f"""const picked = []; C.pick = id => picked.push(id);
+document.dispatchEvent(new CustomEvent('shell:picked', {{ detail: ['{gone}', 'run:{n}'] }}));
+ANSWER = () => [200, {json.dumps(newer)}]; refresh(); await flush();
+R.picked = picked; R.gone = C.get('{gone}').type; R.kept = C.get('run:{n}').type;""")
+        self.assertEqual(out["R"]["picked"], [gone], "only the vanished pick is dropped")
+        self.assertEqual(out["R"]["gone"], "not listed")
+        self.assertEqual(out["R"]["kept"], "assignment")
+
+    def test_a_filter_that_hides_every_row_clears_details_and_its_commands(self):
+        out = self.run_page("""window.shell.reconcile = o => { OUT.clear = typeof o.clear; if (o.clear) o.clear(); return null; };
+document.dispatchEvent(new CustomEvent('shell:open', { detail: 'job:nightly-sync' }));
+R.before = ELS.details.html;
+ELS.filters.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { f: 'repo', v: 'no-such-repo' } } : null } });
+R.after = ELS.details.html; R.current = window.PAGE_LIST.current();""")
+        self.assertIn('class="bar"', out["R"]["before"])
+        self.assertEqual(out["clear"], "function")
+        self.assertNotIn('class="bar"', out["R"]["after"])
+        self.assertIn("nothing is selected", out["R"]["after"])
+        self.assertIsNone(out["R"]["current"])
+
+    def test_a_page_number_must_be_a_positive_integer(self):
+        base = self.run_page("R.rows = ELS.rows.html;")["R"]["rows"]
+        self.assertIn("data-id=", base)
+        for bad in ("-1", "1.5", "0", "two"):
+            out = self.run_page("R.rows = ELS.rows.html;", pre=f"location.search = '?page={bad}';")
+            self.assertEqual(out["R"]["rows"], base, bad)
 
     def test_the_journal_note_says_what_the_cap_left_unread(self):
         doc = json.loads(json.dumps(self.doc)); doc["journal_unread"] = 7
