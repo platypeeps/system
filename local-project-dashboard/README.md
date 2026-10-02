@@ -303,9 +303,19 @@ collectors does not imply feature parity with the old dashboard.
 ## Documents
 
 **Documents** lists generated HTML reports and serves them whole. Everything
-else on this dashboard reads database rows and renders markup; this screen does
+else on this dashboard reads database rows and renders markup; a report does
 neither, because a generated report is already a finished page and the useful
 thing is to hand it over rather than strip it down.
+
+The page is `/documents`, the v2 Documents page (sd:2114). It reads
+`GET /api/documents` (`documents_screen.document`), which lists every file
+`/documents/<key>/<file>` serves with its title, h1, stand line, derived kind
+(research or report) and render state. Its facets, search and paged ledger come
+from the design source. Pin, hide and tag are off until a document store exists
+(docs/work/2026-09-28-documents-view-state); render and request are copy-only
+lines the dashboard does not run. The classic listing stays at
+`/classic/documents`, opened from the palette. Both read the same roots
+through the same readers, so the rules below hold for each.
 
 A domain repository that publishes reports here follows
 `docs/html-reports.md` in this folder: a markdown twin and HTML page built
@@ -401,8 +411,8 @@ They have to agree: a listing offering a link the server then refuses is worse
 than one that omits the file, because the reader believes the first.
 
 The route sits ahead of the database connection in `do_GET`, beside `/static/`,
-so a report stays readable when the workflow database is down. The listing does
-not: it renders through `route()` like every other page. That is the right way
+so a report stays readable when the workflow database is down. The listings do
+not: `/api/documents` and `/classic/documents` sit behind it like every other page. That is the right way
 round, because the report is the thing somebody needs in front of them during
 an outage.
 
