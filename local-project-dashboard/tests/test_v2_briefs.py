@@ -289,6 +289,24 @@ class TheScript(ScreenCase):
         out = self.run_page("R.rows = ELS.rows.html;", search="?q=Intel")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["2026-09-06 - Intel Brief", "2026-09-04 - Intel Brief"])
 
+    def refresh(self, body, later):
+        """Load, then click Observed with each answer of `later` held; `body` releases them and reads the page."""
+        return self.run_page(f"""const A = ANSWER, LATER = {json.dumps(later)}, HELD = [];
+C.select = id => (OUT.selects = OUT.selects || []).push(id);
+ANSWER = (path, body) => {{ if (path !== '/api/briefs') return A(path, body); const doc = LATER.shift();
+  return new Promise(r => HELD.push(() => r([200, doc]))); }};
+const click = () => ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === '#refresh' ? {{}} : null }} }});
+{body}""")
+
+    def test_an_older_refresh_that_answers_last_does_not_win(self):
+        # Review ede2f75d05ab: two Observed clicks overlap; the newer read stands whatever order they answer in.
+        older = briefs_screen.document(now=NOW, reader=lambda: {**TILE, "briefs": TILE["briefs"][:1], "total": 1})
+        out = self.refresh("""click(); click(); await flush();
+HELD[1](); await flush(); HELD[0](); await flush();
+R.rows = ELS.rows.html;""", [older, self.doc])
+        self.assertEqual(len(re.findall(r'<tr data-id=', out["R"]["rows"])), 4)
+        self.assertIsNone(out["states"][-1])
+
     def test_make_task_opens_the_capture_form_and_only_capture_files_it(self):
         out = self.run_page("""shellRun(cmd('brief.task'), C.get('2026-09-04 - Intel Brief')); await flush();
 R.cli = cmd('brief.task').cli(C.get('2026-09-04 - Intel Brief'));

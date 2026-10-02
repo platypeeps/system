@@ -261,13 +261,18 @@ addEventListener('DOMContentLoaded', () => {
   window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false), clear: () => !!active() && (clearAll(), true) };
 
   // ---------- Start (build: read /api/briefs, then draw) ----------
+  // An Observed click can start a read while one is out; only the newest read draws, whatever order they answer in.
+  let generation = 0;
   async function load() {
+    const mine = ++generation;
     shell.state({ kind: 'loading', text: 'Reading the briefs. Rows appear when /api/briefs answers.', source: '/api/briefs' });
     let doc;
     try { doc = await getJSON('/api/briefs'); } catch (err) {
+      if (mine !== generation) return;
       shell.state({ kind: 'error', text: `The briefs were not read, so nothing below is current: ${err.message}. Reload retries it.`, source: '/api/briefs' });
       return;
     }
+    if (mine !== generation) return;
     READ = doc.read; READER = doc.reader || { state: 'error', reason: 'no reader in the answer', total: 0, shown: 0 };
     WATCH = doc.watchdog?.available ? 'read' : (doc.watchdog?.reason || 'no watchdog reader');
     BRIEFS = READER.state === 'error' ? [] : (doc.briefs || []);
