@@ -102,7 +102,7 @@ addEventListener('DOMContentLoaded', () => {
         consequence: o => `This clears ${plural(o.event_ids.length, 'attention event')} on ${o.title}. No verb restores them; it completes no task and sends nothing.`,
         cli: ackCli,
         run: o => post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
-          .then(() => { landed(o, { event_ids: [] }); reread(); return `Acknowledged · ${o.label}`; }, e => { reread(); throw e; }) },
+          .then(() => { landed(o, { event_ids: [] }); reread(true); return `Acknowledged · ${o.label}`; }, e => { reread(); throw e; }) },
       { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', key: 'd', risk: 'safe', executes: false, primary: () => true,
         when: o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true,
         cli: o => `gh ${isIssue(o) ? 'issue' : 'pr'} comment ${o.url} --body-file nudge.md`,
@@ -112,7 +112,7 @@ addEventListener('DOMContentLoaded', () => {
         consequence: o => `This files a task, "${o.title}", that tracks ${o.url || o.key} as this contribution. No verb deletes it; cancel it from Tasks.`,
         cli: o => `printf '%s\\n' ${shq(taskJson(o))} > contribution.json && sd task contribution add ${shq(o.title)} --file contribution.json`,
         run: o => post('/api/contributions/task', { key: o.key, title: o.title })
-          .then(out => { landed(o, { item_id: out.item?.id }); reread(); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { reread(); throw e; }) },
+          .then(out => { landed(o, { item_id: out.item?.id }); reread(true); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { reread(); throw e; }) },
       // Copy only, as ruled: the shell still calls run, so run opens nothing. The Details link opens the page.
       { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', key: 'o', risk: 'safe', executes: false,
         when: o => github(o.url) || 'not filed on GitHub', cli: o => `gh ${kindOf(o)} view --web ${o.url}`,
@@ -270,12 +270,13 @@ addEventListener('DOMContentLoaded', () => {
     if (c.state && c.state !== 'fresh') return { kind: 'partial', title: 'GitHub sync not fresh', text: `The GitHub sync is ${c.state}${c.reason ? ': ' + c.reason : ''}. Rows show what the last sync saw.`, source: 'progress.tracker_freshness' };
     return null;
   }
-  async function reread() {
+  // `wrote` says the write before this reread landed; a refused write rereads too, and its failure must not claim one.
+  async function reread(wrote) {
     const mine = ++generation;
     let doc;
     try { doc = await getJSON('/api/contributions/page'); } catch (err) {
       if (mine !== generation) return;
-      window.shell.state({ kind: 'error', text: `The write landed, but the contributions were not read again: ${err.message}. The rows show the read before it; Reload retries it.`, source: '/api/contributions/page' });
+      window.shell.state({ kind: 'error', text: `${wrote ? 'The write landed, but the' : 'The'} contributions were not read again: ${err.message}. The rows show the last read; Reload retries it.`, source: '/api/contributions/page' });
       return;
     }
     if (mine !== generation) return;

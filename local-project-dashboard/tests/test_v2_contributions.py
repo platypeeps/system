@@ -300,6 +300,16 @@ R.off = [cmd('contribution.task').when(ext), cmd('contribution.ack').when(one)];
         self.assertEqual(out["states"][-1]["kind"], "error")
         self.assertIn("The write landed, but the contributions were not read again: gone", out["states"][-1]["text"])
 
+    def test_a_refused_write_whose_reread_fails_does_not_say_it_landed(self):
+        # Review 4 of PR #72 (005e99951263): both rejection handlers reread, and a failed reread said the write landed.
+        answer = """(() => { let n = 0; return path => path === '/api/contributions/page' ? (n++ ? [500, { error: 'gone' }] : [200, DOC])
+          : [409, { error: 'Events changed', reload: true }]; })()"""
+        out = self.run_page("""shellRun(cmd('contribution.ack'), C.get('github:https://github.com/example/project/pull/1')); await flush();""", answer=answer)
+        self.assertEqual(out["toasts"][-1], ["Fix it's $HOME not changed: Events changed", False])
+        self.assertEqual(out["states"][-1]["kind"], "error")
+        self.assertNotIn("landed", out["states"][-1]["text"])
+        self.assertIn("The contributions were not read again: gone", out["states"][-1]["text"])
+
     def test_after_a_bulk_acknowledge_only_the_newest_reread_draws(self):
         # Review 2 of PR #72 (903bc49868b2): one reread per row, and an older answer that lands last replaced the newer one.
         ext = next(r for r in self.doc["rows"] if r["key"] == "github:" + EXTERNAL)
