@@ -201,7 +201,9 @@ def project(item: dict, root: Path, *, dirs=None) -> dict:
 
 def board(collectors) -> dict:
     root = Path(collectors.REPO_ROOT)
-    return {"root": _shown(root), "projects": [project(item, root) for item in collectors.collect_research()]}
+    # Only the checkouts `checkout` accepts, so the board lists no row whose ledger is a 404 and nothing linked out of the root.
+    items = [item for item in collectors.collect_research() if checkout(root, _key(Path(item["path"]), root)) == Path(item["path"])]
+    return {"root": _shown(root), "projects": [project(item, root) for item in items]}
 
 
 def checkout(root: Path, key: str) -> Path | None:

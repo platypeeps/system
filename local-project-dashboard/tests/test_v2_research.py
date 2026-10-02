@@ -219,6 +219,18 @@ class TheDocument(ScreenCase):
         for key in ("research/plain", "research/missing", "../etc", "research/alpha/x"):
             self.assertIsNone(research_screen.sources(key, now=NOW), key)
 
+    def test_the_board_lists_only_the_checkouts_a_ledger_is_served_for(self):
+        # A linked checkout, or a group linked out of the root, was on the board while its ledger was a 404.
+        checkout(self.root, "research/alpha", registry=REGISTRY)
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        checkout(outside, "group/away", registry=REGISTRY)
+        (self.root / "research" / "linked").symlink_to(outside / "group" / "away")
+        (self.root / "elsewhere").symlink_to(outside / "group")
+        keys = [p["key"] for p in research_screen.document(now=NOW)["projects"]]
+        self.assertEqual(keys, ["research/alpha"])
+        for key in ("research/linked", "elsewhere/away"):
+            self.assertIsNone(research_screen.sources(key, now=NOW), key)
+
     def test_a_reader_that_fails_is_named_and_lists_nothing(self):
         def broken(*_):
             raise ValueError("research reading was stopped at its budget: python ran past its budget of 4 seconds")
