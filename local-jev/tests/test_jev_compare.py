@@ -727,6 +727,21 @@ class TheRequestFile(unittest.TestCase):
 class Shaping(unittest.TestCase):
     """The adapter's arithmetic, without a process."""
 
+    def test_a_distribution_the_ledger_would_refuse_is_no_distribution(self):
+        # Jev's choice and score take any number of options. A distribution
+        # the ledger refuses would cost the whole Jev row, so it is omitted.
+        from sd_db.judgment import MAX_OPTIONS
+        self.assertEqual(jev.MAX_DISTRIBUTION, MAX_OPTIONS)
+        many = {f"k{i}": None for i in range(MAX_OPTIONS + 1)}
+        answer = {"probabilities": {key: 1 / len(many) for key in many}}
+        self.assertIsNone(jev.distribution_of(answer, {"type": "choice", "criteria": many}))
+        fits = {f"k{i}": None for i in range(MAX_OPTIONS)}
+        answer = {"probabilities": {key: 1 / len(fits) for key in fits}}
+        self.assertIsNotNone(jev.distribution_of(answer, {"type": "choice", "criteria": fits}))
+        self.assertIsNone(jev.distribution_of(
+            {"probabilities": {"a": 1.2, "b": 0.0}},
+            {"type": "choice", "criteria": {"a": None, "b": None}}))
+
     def test_a_distribution_that_is_not_finite_is_no_distribution(self):
         for bad in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(value=bad):

@@ -487,6 +487,11 @@ def whose(args, env, field: str) -> str:
     return named(getattr(args, field, None)) or named(env.get(variable)) or UNNAMED
 
 
+#: The most values the ledger's `probabilities` takes (`sd_db.judgment.MAX_OPTIONS`).
+#: Kept here too, since `jev` runs without `sd_db`; the suite checks they agree.
+MAX_DISTRIBUTION = 255
+
+
 def distribution_of(answer: dict, definition: dict) -> str | None:
     """The answer's distribution as the ledger stores it: numbers in the
     caller's option order, `0.4700,0.2800,0.2500`, never the keys.
@@ -505,10 +510,12 @@ def distribution_of(answer: dict, definition: dict) -> str | None:
     else:
         keys = [str(i) for i in range(len(definition.get("criteria") or ()))]
     values = [found.get(key) for key in keys]
-    # NaN and Infinity parse as JSON here; the ledger refuses `nan`, and that
-    # refusal would cost the whole Jev row, so they are no distribution.
-    if not keys or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
-                       for v in values):
+    # Anything the ledger would refuse -- NaN, Infinity, a value outside 0 to
+    # 1, more values than it takes -- would cost the whole Jev row, so it is
+    # no distribution: the new field never costs the existing row.
+    if not keys or len(keys) > MAX_DISTRIBUTION or any(
+            type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1
+            for v in values):
         return None
     return ",".join(f"{float(v):.4f}" for v in values)
 
