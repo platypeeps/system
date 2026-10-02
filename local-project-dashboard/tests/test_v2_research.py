@@ -251,6 +251,25 @@ class TheDocument(ScreenCase):
         for key in ("research/linked", "elsewhere/away"):
             self.assertIsNone(research_screen.sources(key, now=NOW), key)
 
+    def test_a_ledger_is_never_served_through_a_linked_group_or_config(self):
+        # The key path took a checkout through a linked group, or one whose research.conf.py is a link; the walk skips both.
+        checkout(self.root, "research/alpha", registry=REGISTRY)
+        (self.root / "alias").symlink_to(self.root / "research")
+        linked = self.root / "research" / "conflink"
+        linked.mkdir()
+        (linked / "SOURCES.md").write_text(REGISTRY, encoding="utf-8")
+        (linked / "research.conf.py").symlink_to(self.root / "research" / "alpha" / "research.conf.py")
+        self.assertEqual([p["key"] for p in research_screen.document(now=NOW)["projects"]], ["research/alpha"])
+        self.assertEqual(research_screen.sources("research/alpha", now=NOW)["total"], 3)
+        for key in ("alias/alpha", "research/conflink"):
+            self.assertIsNone(research_screen.sources(key, now=NOW), key)
+        # REPO_ROOT itself may be a link; a checkout directly under it still serves its ledger.
+        checkout(self.root, "solo", registry=REGISTRY)
+        link = Path(self.enterContext(tempfile.TemporaryDirectory())) / "repos"
+        link.symlink_to(self.root)
+        with mock.patch.dict("os.environ", {"REPO_ROOT": str(link)}):
+            self.assertEqual(research_screen.sources("solo", now=NOW)["total"], 3)
+
     def test_a_reader_that_fails_is_named_and_lists_nothing(self):
         def broken(*_):
             raise ValueError("research reading was stopped at its budget: python ran past its budget of 4 seconds")

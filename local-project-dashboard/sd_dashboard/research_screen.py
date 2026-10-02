@@ -209,7 +209,11 @@ def board(collectors) -> dict:
 def checkout(root: Path, key: str) -> Path | None:
     """The research checkout a key names: `collect_research`'s walk, one group deep, so no other path is read."""
     repo = root / key
-    if not KEY.fullmatch(key) or repo.is_symlink() or not (repo / "research.conf.py").is_file():
+    if not KEY.fullmatch(key):
+        return None
+    # The walk's guard: a linked group, checkout or config is never read. REPO_ROOT itself may be a link, as the walk allows.
+    conf = repo / "research.conf.py"
+    if ("/" in key and repo.parent.is_symlink()) or repo.is_symlink() or conf.is_symlink() or not conf.is_file():
         return None
     return repo if repo.resolve().is_relative_to(root.resolve()) else None
 
