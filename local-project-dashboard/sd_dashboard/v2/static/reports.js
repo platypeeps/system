@@ -371,8 +371,19 @@ window.PAGE_COMMANDS = [
 // Each row is an object; each command is declared once and the shell renders row, menu, Details and palette.
 const logOf = o => /\.log$/.test(o.source.src || '');
 const capWhy = (o, action, fallback) => { const c = o.caps?.[action]; return !c ? fallback : c.allowed || c.reason || fallback; };
+// The shell's object map only grows and keeps its picks, so each accepted reading retires what it no longer lists, as
+// Health does: the pick is dropped and the object becomes a type no command is on, so the bulk bar cannot acknowledge a
+// report or retry a job from a stale reading.
+let putIds = new Set();
+function retire(keep) {
+  const C = window.shell.commands;
+  [...picks].filter(id => !keep.has(id)).forEach(id => C.pick(id));
+  putIds.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
+  putIds = keep;
+}
 function putObjects() {
   const C = window.shell.commands;
+  retire(new Set([...ROWS.map(r => r.id), ...Object.keys(JOBS).map(name => 'job:' + name)]));
   ROWS.forEach(r => C.put(Object.assign(r, { type: r.kind === 'db' ? 'report' : 'status mail', label: r.what })));
   // Each scheduled job is its own object; Retry acts on the job, not on the report (commands.md, one declaration per command).
   // build: the job is operations.inventory's, as Management puts it, with the revision and capability Retry posts and reads.

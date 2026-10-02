@@ -435,6 +435,25 @@ class TheScript(ScreenCase):
         self.assertEqual(out["states"][-1]["kind"], "error")
         self.assertIn("boom", out["states"][-1]["text"])
 
+    def test_a_reading_retires_the_reports_and_jobs_it_no_longer_lists(self):
+        clean, failed = self.ids["clean"], self.ids["failed"]
+        later = json.loads(json.dumps(self.doc))
+        later["reports"] = [r for r in later["reports"] if r["id"] != clean]
+        later["jobs"] = [j for j in later["jobs"] if j["name"] != "weekly-scan"]
+        del later["cadence"]["weekly-scan"]
+        answer = (f"(path, body) => path === '/api/reports' ? [200, SECOND ? {json.dumps(later)} : {json.dumps(self.doc)}] : [200, {{}}]")
+        out = self.run_page(f"""document.dispatchEvent(new CustomEvent('shell:picked', {{ detail: ['r{clean}', 'job:weekly-scan', 'r{failed}'] }}));
+  SECOND = true; await reload(); await flush();
+  R.types = ['r{clean}', 'job:weekly-scan', 'r{failed}', 'job:nightly-sync'].map(id => C.get(id).type);
+  R.label = C.get('r{clean}').label;
+  R.offered = ['r{clean}', 'job:weekly-scan'].map(id => REG.filter(c => c.on === C.get(id).type).map(c => c.id));""",
+                            answer="(() => { globalThis.SECOND = false; return " + answer + "; })()")
+        # The picks the reading no longer lists are dropped; the one it still lists stays picked.
+        self.assertEqual(out["picks"], [f"r{clean}", "job:weekly-scan"])
+        self.assertEqual(out["R"]["types"], ["not listed", "not listed", "report", "job"])
+        self.assertIn("(no longer listed)", out["R"]["label"])
+        self.assertEqual(out["R"]["offered"], [[], []])
+
     def test_select_clean_picks_the_servers_selection_and_names_each_decline(self):
         out = self.run_page("ELS['ack-date'].value = '2026-09-08'; await selectClean(); R.sel = ELS['ack-sel'].html; R.dec = ELS['ack-dec'].html;"
                             " R.sum = ELS['ack-sum'].textContent; R.shown = shown.map(r => r.n);")
