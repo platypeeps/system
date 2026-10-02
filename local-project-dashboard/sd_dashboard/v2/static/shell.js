@@ -332,6 +332,9 @@
   const thenable = v => !!v && typeof v.then === 'function';
   const textOf = (v, fallback) => (typeof v === 'string' && v) || (v && typeof v.text === 'string' && v.text) || fallback;
   const undoOne = (c, o, v) => Promise.resolve().then(() => c.undo(o, v));
+  // One run per picked object, each its own promise: a run that throws is that row's rejection, so the rows after it
+  // still run and the group's toast names it (review, PR #46).
+  const runEach = (c, objs) => objs.map(o => { try { return c.run?.(o); } catch (e) { return Promise.reject(e); } });
   function settleOne(c, o, p, { toast }) {
     return p.then(v => {
       const undo = c.risk === 'undo' && c.undo ? () => undoOne(c, o, v).then(
@@ -536,7 +539,7 @@
     // The confirm dialog gets the group, which has no row fields, so consequence is rebuilt from the real objects: one line each, repeats folded.
     const consequence = c.consequence && (() => { const lines = [...new Set(objs.map(o => c.consequence(o)))]; return lines.length > 4 ? `${lines.slice(0, 4).join(' ')} And ${lines.length - 4} more.` : lines.join(' '); });
     // build (sd:2124): the group's toast and Undo wait for every run (settleBulk); run() sees null and toasts nothing itself.
-    const one = { ...c, cli: () => objs.map(o => cliOf(c, o)).join(' && '), run: () => { const rs = objs.map(o => c.run?.(o)); picked.clear(); renderBulk(); settleBulk(c, objs, rs, { toast, plural }); return null; },
+    const one = { ...c, cli: () => objs.map(o => cliOf(c, o)).join(' && '), run: () => { const rs = runEach(c, objs); picked.clear(); renderBulk(); settleBulk(c, objs, rs, { toast, plural }); return null; },
       consequence, askFirst: objs.length > 25, risk: c.risk };
     run(one, group);
   }
