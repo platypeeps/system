@@ -213,6 +213,8 @@ addEventListener('DOMContentLoaded', () => {
     C.select(null); shell.suggest([`Why is ${s.id} quiet?`, 'Which jobs missed a run this week?']); shell.openPane('tab-details'); swap();
   }
   function select(id, open) { if (!show(id)) return; selected = id; if (open) shell.openPane('tab-details'); }
+  // No current row: nothing from an earlier read stays selected, and Details offers no command on it.
+  function unselect() { selected = null; C.select(null); put(details, html`<p class="why">Select a brief to see its note.</p>`); }
 
   // ---------- Commands (products/system/commands.md): declared once, rendered by the shell ----------
   // build: two of the reference's four brief commands. Acknowledge and Mark read wrote a message store that does not exist and
@@ -269,7 +271,9 @@ addEventListener('DOMContentLoaded', () => {
     let doc;
     try { doc = await getJSON('/api/briefs'); } catch (err) {
       if (mine !== generation) return;
-      shell.state({ kind: 'error', text: `The briefs were not read, so nothing below is current: ${err.message}. Reload retries it.`, source: '/api/briefs' });
+      shell.state({ kind: 'error', text: `The briefs were not read: ${err.message}. Reload retries it.`, source: '/api/briefs' });
+      // Nothing from the last read stays on screen: rows, lanes, the observed time and the selection.
+      READ = null; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; update(); unselect();
       return;
     }
     if (mine !== generation) return;
@@ -292,7 +296,7 @@ addEventListener('DOMContentLoaded', () => {
     const row = shell.row?.();
     const vis = BRIEFS.filter(match);
     const first = BRIEFS.some(b => b.id === row) ? row : (vis[0] || BRIEFS[0])?.id;
-    if (first) select(first, !!row && first === row);
+    if (first) select(first, !!row && first === row); else unselect();
   }
   readURL();
   if (F.q) input.value = F.q;

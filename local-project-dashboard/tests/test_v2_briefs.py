@@ -294,7 +294,7 @@ class TheScript(ScreenCase):
         return self.run_page(f"""const A = ANSWER, LATER = {json.dumps(later)}, HELD = [];
 C.select = id => (OUT.selects = OUT.selects || []).push(id);
 ANSWER = (path, body) => {{ if (path !== '/api/briefs') return A(path, body); const doc = LATER.shift();
-  return new Promise(r => HELD.push(() => r([200, doc]))); }};
+  return new Promise(r => HELD.push(() => r(Array.isArray(doc) ? doc : [200, doc]))); }};
 const click = () => ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === '#refresh' ? {{}} : null }} }});
 {body}""")
 
@@ -306,6 +306,21 @@ HELD[1](); await flush(); HELD[0](); await flush();
 R.rows = ELS.rows.html;""", [older, self.doc])
         self.assertEqual(len(re.findall(r'<tr data-id=', out["R"]["rows"])), 4)
         self.assertIsNone(out["states"][-1])
+
+    def test_a_refresh_with_no_rows_clears_the_selection_and_the_details(self):
+        # Review d1f41457d2b0: Details must not offer Make task on a brief the last read no longer has.
+        empty = briefs_screen.document(now=NOW, reader=lambda: {**TILE, "briefs": [], "total": 0, "shown": 0})
+        refused = briefs_screen.document(now=NOW, reader=lambda: (_ for _ in ()).throw(ValueError("Grant Full Disk Access")))
+        for doc in (empty, refused, [500, {"error": "boom"}]):
+            out = self.refresh("""R.before = window.PAGE_LIST.current();
+click(); await flush(); HELD[0](); await flush();
+R.det = ELS.details.html; R.now = window.PAGE_LIST.current(); R.rows = ELS.rows.html;""", [doc])
+            self.assertEqual(out["R"]["rows"], "")
+            self.assertEqual(out["R"]["before"], "2026-09-06 - Fun Events")
+            self.assertIsNone(out["R"]["now"])
+            self.assertEqual(out["selects"][-1], None)
+            self.assertNotIn('class="bar"', out["R"]["det"])
+            self.assertIn("Select a brief to see its note.", out["R"]["det"])
 
     def test_make_task_opens_the_capture_form_and_only_capture_files_it(self):
         out = self.run_page("""shellRun(cmd('brief.task'), C.get('2026-09-04 - Intel Brief')); await flush();
