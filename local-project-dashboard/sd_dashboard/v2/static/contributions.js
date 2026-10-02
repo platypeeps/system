@@ -163,11 +163,17 @@ addEventListener('DOMContentLoaded', () => {
       <td class="obs">${f.status === 'current' ? html`<span class="g-ok" aria-hidden="true">●</span>` : html`<span class="g-unknown" title="${f.reason}">▨</span>`}<time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time><span class="sr"> · ${f.status}</span></td>
       <td class="act"><span class="row-acts">${C.rowActions(r.key)}</span></td></tr>`;
   }
+  // No carried row in the scope: a cut document may still count open rows there, which the limit left out (review 4, PR #72).
+  function empty() {
+    const where = scope === 'all' ? 'any' : scope, left = openN(scope);
+    return left ? `${plural(left, 'open row')} in ${where} repositories ${left === 1 ? 'was' : 'were'} left out by the limit; v1 /classic/contributions lists every one.`
+      : `Nothing open in ${where} repositories`;
+  }
   function renderRows() {
     const all = scoped(), rows = shown(), v = q.value.trim();
     const head = l => html`<tr class="lane" data-lane="${l}"><td colspan="4"><span class="label">${LABEL[l]} · ${rows.filter(r => r.lane === l).length}</span></td></tr>`;
     put(tbody, html`${rows.length ? ORDER.filter(l => rows.some(r => r.lane === l)).map(l => [head(l), rows.filter(r => r.lane === l).map(rowHtml)])
-      : html`<tr class="lane"><td colspan="4"><span class="label">${all.length ? `Nothing matches${v ? ` “${v}”` : ''}` : `Nothing open in ${scope === 'all' ? 'any' : scope} repositories`}</span></td></tr>`}`);
+      : html`<tr class="lane"><td colspan="4"><span class="label">${all.length ? `Nothing matches${v ? ` “${v}”` : ''}` : empty()}</span></td></tr>`}`);
     const f = document.getElementById('filtered');
     const cut = DOC.truncated ? `The document lists ${n(DOC.rows.length)} of ${n(DOC.open_total)} open rows; v1 /classic/contributions lists every one.` : '';
     f.hidden = !(lane || v || cut);

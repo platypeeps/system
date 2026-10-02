@@ -399,6 +399,14 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         self.assertIn("7 linked items · 3 unfiled", out["R"]["source"])
         self.assertEqual(re.findall(r"<b>(\d+)</b>", out["R"]["ext"]), ["0", "0", "2"])
 
+    def test_a_cut_document_with_no_carried_row_in_the_scope_says_the_limit_left_them_out(self):
+        # Review 4 of PR #72 (9370ec932593): the ledger said "Nothing open" while the counts showed open rows.
+        self.doc["truncated"], self.doc["open_total"] = True, 900
+        self.doc["rows"] = [r for r in self.doc["rows"] if r["internal"]]
+        out = self.run_page("""document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'external' })); R.rows = ELS.rows.html;""")
+        self.assertNotIn("Nothing open", out["R"]["rows"])
+        self.assertIn("2 open rows in external repositories were left out by the limit", out["R"]["rows"])
+
     def test_a_failed_read_and_an_empty_projection_each_say_so(self):
         out = self.run_page("", answer="() => [500, { error: 'boom' }]")
         self.assertEqual(out["states"][-1]["kind"], "error")
