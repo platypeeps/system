@@ -153,6 +153,37 @@ copy only. Request a document is copy only: the page files no item. Pin, hide
 and tag are off: no document store exists yet. Disable render is off: no
 render switch exists.
 
+Reports is at `/reports` (sd:2121): job-family lamps, a seven-day run cadence
+per job, the report ledger with filters and saved views, and Details with a
+line diff against the job's previous report. `GET /api/reports`
+(`reports_screen.document`) gives the newest 200 reports v1 lists, the launchd
+jobs, and each job's runs per local day, read from its `cron-jobs.sh` log. A
+day the job's calendar leaves out is not scheduled. The families come from
+`<config>/project-dashboard/report-families.conf`, one
+`family|<key>|<label>|<icon>|<job>,<job>,...` per line. Job names are the
+operator's, so the checkout ships only `report-families.conf.example`; without
+the file no family lamp is drawn and every job is listed under "Other jobs".
+A family lamp follows each job's own last scheduled run before today, however
+rare; a job whose last scheduled run the log does not hold makes it unknown.
+Acknowledge posts v1's route with the report's revision. It is off while an
+open followup holds the report. It asks first and has no Undo: sd-db has no
+verb that reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,
+v1's preview, and the bulk bar acknowledges the picked reports one by one.
+Retry posts the job route, as Management does. No status mail is read: the
+dashboard holds no message store. The old screen stays in the palette as
+Reports (classic) for the Resources views and the attributed batch.
+
+Activity is at `/activity` (sd:2111): one timeline of the last 24 hours, as an
+annunciator, a lane per kind and a ledger banded by hour. `GET /api/activity`
+(`activity_screen.document`) reads only what the library already records:
+merges are the delivery notes `sd-ship` writes, runs are runner assignments
+and launchd jobs placed at their log time, and commands are the execution
+journal v1 Operations > Commands lists, older records too for the "All read"
+range; palette and runner runs alike (sd:2183). Reviews, deploys and mail have no
+collector; the document names each with its reason and the page draws it
+unknown, not zero. Requeue carries Undo; job retry posts the job's revision;
+Show output reads the execution record.
+
 The old screens stay until their section is ported. Three moved: the old Today
 to `/classic/today`, the old Contributions to `/classic/contributions` and the
 old Documents to `/classic/documents`. Every other old screen keeps its path.
@@ -171,6 +202,7 @@ Classic screens.
 | Tasks | `/tasks` (new) |
 | Home | `/home` (new) |
 | Research | `/research` (new) |
+| Reports | `/reports` (new) |
 | Documents | `/documents` (new) |
 | Writing | `/writing` |
 | Contributions | `/contributions` (new) |
@@ -178,11 +210,11 @@ Classic screens.
 | Metrics | `/operations?area=usage` |
 | Management | `/management` (new) |
 | Health | `/fleet-health` (new) |
-| Reports | `/operations?area=reports` |
+| Activity | `/activity` (new) |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
-| Notes, HOA, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic), Documents (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection`, `/classic/documents` |
+| Notes, HOA | no old screen; the rail says not built yet |
+| Palette: Today (classic), Backlog (classic), Reports (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic), Documents (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
