@@ -52,8 +52,11 @@ timeout on a refresh keeps the last answer and names the failure under the
 heartbeat's `storage.verification.refresh_problem`, an answer that names a problem
 replaces the last one, and an answer an hour old with no successful refresh is
 forgotten, so a stall that lasts becomes the problem again. The daemon's first
-preflight has no answer to keep, so a stalled `diskutil` still refuses the start,
-and `runner.sh preflight` asks every time.
+preflight has no answer to keep. When `diskutil` gives none (a timeout or a
+non-zero exit), the daemon writes an unhealthy heartbeat with the problem and a
+`starting` field, dispatches nothing, and asks again each interval for 10 minutes
+before it refuses the start (sd:1950). A definitive answer, not APFS or no quota,
+refuses at once. `runner.sh preflight` asks every time.
 
 The work volume `sd-work` has a **100 GB quota** in APFS container `disk3`.
 The September 8 provisioning proposal set 60 GB. On 2026-09-26 the volume was
@@ -291,6 +294,10 @@ Run `recovery-plan` again before reconciling ownership or restarting the daemon.
 Quarantine does not resume work, reconstruct missing rows, or resolve a database restore hold.
 
 `runner.sh status` prints the heartbeat state as one JSON line and answers with convention 6's codes: 0 healthy, 3 when the `<prefix>.sd-runner` agent is not loaded (`launchctl print` fails — nothing to check), 1 when the heartbeat is stale or unhealthy.
+The heartbeat's `runner_commit` is the checkout's HEAD when `serve` started: Python keeps the modules it loaded, so a `git pull` reaches the daemon only through a restart (sd:1952).
+`runner.sh status` and `sd runner status` compare it with the checkout's HEAD on disk, with no fetch, and add `checkout_commit`.
+A moved checkout adds `deploy_warning`, `runner started at <sha7>, checkout at <sha7>; restart to deploy`, and leaves the exit code alone.
+A heartbeat without the field, from an older daemon, reads `runner_commit unknown`.
 A missing interpreter follows the same split: 3 when the agent is not loaded, because that machine never provisioned the pack; 1 when it is loaded, because a runner whose virtualenv was rebuilt cannot start.
 The agent question is decided before the store is opened, so a machine that never installed the agent and holds no store answers 3, not `connect`'s 1.
 `local-health-check` reads those codes in its nightly sweep and quotes the first stdout line as the finding, so the body is one line; it is the heartbeat state whenever the store can be read.
@@ -299,6 +306,40 @@ Runtime probe and cleanup failures produce an unhealthy heartbeat while the daem
 Unknown measurements forbid dispatch. Confirmed low database space still attempts to stop every owned group.
 One failed process observation cannot abort the remaining stops or trigger unrelated restart cleanup.
 Database corruption remains fatal; SQLite contention retains its bounded retry behavior.
+
+### Deploy a change to the running daemon
+
+Python reads the runner's modules once, at start, so a merged change reaches the daemon only through a restart.
+Pull the checkout, then run `runner.sh restart`. Do not kick the agent with `launchctl` by hand.
+
+The verb first drains the daemon, because an idle queue read before the kick can be claimed before it.
+It writes `runner-drain.json` beside the database, and each pulse reads it before its tick claims anything.
+A heartbeat that names the marker's token says the daemon claims nothing more.
+That heartbeat must come from the pid `launchctl print` names for the agent.
+So a `--config` naming a database the agent does not serve refuses, and the agent is not kicked.
+The verb holds `runner-restart.lock` beside the database from before the marker to after its removal.
+The daemon honours the marker only while some process holds that lock.
+So the drain has no expiry: a machine sleep or a slow `recovery-plan` scan cannot end it.
+The kernel drops the lock when the verb dies, and the daemon then ignores the marker; the queue does not stay stopped.
+The verb writes its marker once and never renews it, so an ended drain cannot come back.
+Just before the kick the marker must still name the verb's token.
+Otherwise the verb refuses: `the drain marker was removed or replaced before the kick`.
+One restart runs at a time: a second verb refuses with `another restart is running`.
+
+The verb then refuses with a reason, removes the marker, and leaves launchd alone, unless all three guards pass:
+
+- No assignment is active. A kick ends the daemon that supervises it.
+- `runner.sh recovery-plan` is clean. The new daemon's recovery holds on what the plan lists, so it would start unhealthy.
+- The 1-minute load average is below `--max-load` (default: the core count).
+  A cold start under load stalled on `diskutil` and launchd relaunched it for six minutes (sd:1950).
+
+It then runs `launchctl kickstart -k` on the `<prefix>.sd-runner` agent.
+It waits up to `--wait` seconds (default 180) for a healthy heartbeat with a new pid.
+It removes the marker, prints that pid and the heartbeat's `runner_commit` (null from a daemon that does not write it), and exits 0.
+Otherwise it exits 1 naming the reason.
+
+A daemon that started before the drain existed never acknowledges it, so the verb refuses.
+Deploy that first change by hand, when the queue is idle.
 
 The runner refreshes kept-clone archives on a persisted 24-hour cadence.
 Each refresh creates a separate verified generation and preserves the original archive and all previous generations.

@@ -228,9 +228,10 @@ addEventListener('DOMContentLoaded', () => {
     const c = s => all.filter(e => e.s === s).length;
     put($('tally'), html`<span class="g-warning">■ ${c('warning')} failed</span><span class="g-caution">▲ ${c('caution')} caution</span><span>● ${c('ok')} ok</span>`);
     put($('sub'), html`${plural(EVENTS.filter(inWindow).length, 'event')} across the fleet · last 24 hours to ${new Date(OBSERVED).toISOString().slice(11, 16)} UTC, ${new Date(OBSERVED).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })}`);
-    // build: the design's journal note, with this document's count; the runner records are the collector's gap, not a count.
+    // build: the design's journal note, with this document's counts (sd:2183: the reader lists every writer's notes).
     const journal = EVENTS.filter(e => e.k === 'command'), older = journal.filter(e => !inWindow(e)).length;
-    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec that v1's Operations › Commands reads, the version-1 records. Runner records carry a plain-text body that reader skips (system task sd:2183), so none shows here. All read adds the ${String(older)} older than this window.`);
+    const skipped = Object.values(DOC?.journal_skipped || {}).reduce((a, n) => a + n, 0);
+    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec, palette and runner runs alike.${skipped ? ` ${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''} All read adds the ${String(older)} older than this window.`);
     const undated = DOC?.undated || [];
     $('undated').hidden = !undated.length;
     put($('undated'), undated.length ? html`${undated.join(', ')} failed with no readable log time, so ${undated.length === 1 ? 'it has' : 'they have'} no place on this timeline. Today lists failed jobs.` : html``);
@@ -272,7 +273,7 @@ addEventListener('DOMContentLoaded', () => {
     if (e.k === 'run' && e.job) Object.assign(f, { Job: e.job, 'Last run': e.rc, Detail: e.detail });
     if (e.k === 'command') Object.assign(f, { Note: String(e.note), Item: e.item ? `sd:${e.item} · ${e.title || ''}` : '—', Command: e.command, Scope: e.scope || 'not recorded',
       Started: utc(e.started), Ended: utc(e.ended), Exit: e.exit == null ? (e.ended ? 'none recorded' : 'still running') : String(e.exit), Session: e.who || '—',
-      Output: e.expired ? `expired ${e.expired}` : 'Show output reads it' });
+      Output: e.source === 'runner' ? 'in the retained clone (a runner record)' : e.expired ? `expired ${e.expired}` : 'Show output reads it' });
     f.Source = e.src;
     return f;
   }
@@ -308,17 +309,19 @@ addEventListener('DOMContentLoaded', () => {
     EVENTS.forEach(e => C.put({ ...e, id: e.id, type: e.k === 'run' ? (e.job ? 'job' : 'assignment') : TYPE[e.k], label: e.what, event: e.id }));
   }
   const ev = o => EVENTS.find(e => e.id === o.event) || o;
-  let tick = [];
-  function landing(promise, msg, undo) { const w = { promise, msg, undo }; tick.push(w); return w; }
-  document.addEventListener('shell:ran', e => {
-    const ws = tick; tick = [];
-    if (e.detail.obj !== 'bulk') { ws.forEach(w => w.promise.then(out => toast(w.msg(out), w.undo ? () => w.undo(out) : undefined), err => failed(err))); return; }
-    Promise.allSettled(ws.map(w => w.promise)).then(rs => {
-      const bad = rs.filter(r => r.status === 'rejected');
-      if (bad.length) { toast(`${bad.length} of ${ws.length} not changed: ${bad[0].reason.message}`); if (bad.some(r => r.reason.stale)) load(); }
-    });
-  });
-  function failed(err) { toast(`Not changed: ${err.message}`); if (err.stale) load(); }
+  // A command's run returns landing(...): the shell's run contract (shell.js, bulk:start) waits for the write, toasts its
+  // text, and offers Undo only for what landed, for a bulk group too. A refused write reads the document again, so a retry
+  // sends the revision the re-read brought; its Undo is spent once and reverses this write only.
+  function landing(promise, text, inverse) {
+    return promise.then(v => {
+      let spent = false;
+      const undo = inverse && (() => { if (spent) return Promise.resolve(false); spent = true;
+        return inverse(v).then(() => true, err => { if (err.stale) load(); throw err; }); });
+      return { text: text(v), undo };
+    }, err => { if (err.stale) load(); throw err; });
+  }
+  // The command's undo: the shell passes what the run answered.
+  const undoOf = (o, r) => r && r.undo ? r.undo() : false;
   // build: "Open item" goes to the item on Tasks, by the shell's section map (no page names another page's address).
   const openItem = item => { const to = window.shell.pages?.Tasks; if (!to) return 'Tasks is not built yet'; location.href = `${to}?row=${item}`; return `sd:${item} opens in Tasks`; };
   const open = u => { window.open(u, '_blank', 'noopener'); return 'Opens in a new tab'; };
@@ -330,7 +333,8 @@ addEventListener('DOMContentLoaded', () => {
     // build: requeue posts to /api/runner/<n>/requeue with the queue revision; Undo cancels the queued run with the revision it answered.
     { id: 'asg.requeue', on: 'assignment', label: 'Requeue', key: 'q', risk: 'undo', bulk: true, primary: o => ev(o).status === 'blocked',
       when: o => ev(o).status === 'blocked' || `the assignment is ${ev(o).status}`, cli: o => `sd runner requeue ${o.n}`,
-      run: o => { landing(requeue(o), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, out => undoRequeue(o, out)); return null; } },
+      run: o => landing(requeue(o), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, out => undoRequeue(o, out)),
+      undo: undoOf },
     { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: o => ev(o).status !== 'blocked', cli: o => `sd runner get ${o.n}`,
       run: o => { select(o.id, true); return `Assignment #${o.n} shown in Details`; } },
     { id: 'asg.item', on: 'assignment', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the assignment names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
@@ -338,18 +342,18 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => ev(o).failed,
       when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
       cli: o => `launchctl kickstart ${o.service || `gui/$UID/local.system-tools.cron.${o.job}`}`,
-      run: o => { landing(post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => load()), () => `Retry started · ${o.job}`); return null; } },
+      run: o => landing(post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => load()), () => `Retry started · ${o.job}`) },
     // build: Management is not built, so the log is a line to copy.
     { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => `Copy the line to read the log of ${o.job}` },
     // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
     { id: 'command.output', on: 'command', label: 'Show output', key: 'o', risk: 'safe', primary: () => true,
-      when: o => ev(o).expired ? `the output expired ${ev(o).expired}` : true,
-      cli: o => `sd runner commands output ${o.note}`, run: o => { landing(readOutput(o), () => `Output of note ${o.note} shown in Details`); return null; } },
+      when: o => ev(o).source === 'runner' ? 'a runner record keeps its log in the retained clone, not in the execution log directory'
+        : ev(o).expired ? `the output expired ${ev(o).expired}` : true,
+      cli: o => `sd runner commands output ${o.note}`, run: o => landing(readOutput(o), () => `Output of note ${o.note} shown in Details`) },
     { id: 'command.item', on: 'command', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
   );
-  function undoRequeue(o, out) {
-    post(`/api/runner/${o.n}/cancel`, { revision: out.revision }).then(() => load()).then(() => toast(`Requeue undone · #${o.n}`), failed);
-  }
+  // Undo cancels the queued run with the revision the requeue answered, then reads the document again.
+  const undoRequeue = (o, out) => post(`/api/runner/${o.n}/cancel`, { revision: out.revision }).then(() => load());
   async function readOutput(o) {
     try {
       const out = await getJSON(`/api/executions/${o.note}?offset=0`);

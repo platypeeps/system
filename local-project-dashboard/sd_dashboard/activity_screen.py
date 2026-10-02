@@ -14,11 +14,11 @@ keeps, so the port adds no collector:
   as `operations.job_state` reads it (Today's failed-job read, sd:2110).
   A failed job whose log time cannot be read has no place on a timeline;
   its name goes in `undated`, so the page says so rather than drop it.
-- **command**: the execution journal, as `runner_exec.executions` reads it
-  (v1 Operations > Commands; the design's journal, sd:2180). Every record it
-  returns comes, older ones too, so the page's "All read" range can show them;
-  the other kinds stay in the window. It reads version-1 records only: a
-  runner record's plain-text body is skipped (system task sd:2183).
+- **command**: the execution journal, `runner_exec.execution_journal`
+  (v1 Operations > Commands; the design's journal, sd:2180): palette runs and
+  runner runs alike (sd:2183), with the notes no known writer left counted in
+  `journal_skipped`. Every record it returns comes, older ones too, so the
+  page's "All read" range can show them; the other kinds stay in the window.
 
 The design's other kinds have no collector here. Each is in `unknown` with
 the reason, and the page draws it hatched: unknown is not zero.
@@ -150,10 +150,12 @@ def jobs(connection, backend, start: datetime, end: datetime) -> tuple[list[dict
     return out, undated
 
 
-def commands(connection, end: datetime) -> list[dict]:
+def commands(connection, end: datetime, skipped: dict) -> list[dict]:
     """Every journal record up to `end`, at its end time. No exit code on an ended run means it was stopped: caution."""
     out = []
-    for row in runner_exec.executions(connection, limit=100):
+    journal = runner_exec.execution_journal(connection, limit=100)
+    skipped.update(journal["skipped"])
+    for row in journal["executions"]:
         stamp = _utc(row["ended"]) or _utc(row["timestamp"])
         if stamp is None or stamp > end:
             continue
@@ -162,8 +164,9 @@ def commands(connection, end: datetime) -> list[dict]:
         text = " ".join(map(str, command)) if isinstance(command, list) else str(command or "a registered command")
         outcome = "running" if row["ended"] is None else "no exit code" if code is None else f"exit {code}"
         out.append({"id": f"cmd:{row['id']}", "k": "command", "at": _iso(stamp), "s": state, "repo": None,
-                    "what": f"{text} · {outcome}", "detail": row["title"] or "", "ref": f"note {row['id']}",
-                    "title": row["title"], "command": text,
+                    "what": f"{text} · {outcome}", "ref": f"note {row['id']}",
+                    "detail": row.get("detail") or row["title"] or "", "source": row.get("source") or "palette",
+                    "title": row["title"], "command": text, "assignment": row.get("assignment"),
                     "note": row["id"], "item": row["item"], "exit": code, "who": row["session"],
                     "scope": row.get("scope"), "started": row["started"], "ended": row["ended"],
                     "expired": row.get("output_expired"), "src": "the execution journal (runner_exec.executions)"})
@@ -177,6 +180,7 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
     events: list[dict] = []
     sources: dict[str, str] = {}
     undated: list[str] = []
+    skipped: dict[str, int] = {}
 
     def read_jobs():
         found, missing = jobs(connection, jobs_backend or operations.LaunchdBackend(), start, end)
@@ -186,7 +190,7 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
     for source, collect in (("merge", lambda: merges(connection, start, end)),
                             ("run", lambda: runs(connection, start, end)),
                             ("job", read_jobs),
-                            ("command", lambda: commands(connection, end))):
+                            ("command", lambda: commands(connection, end, skipped))):
         try:
             found = collect()
         except (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error) as failure:
@@ -196,4 +200,4 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
         events.extend(found)
     events.sort(key=lambda event: (event["at"], event["id"]), reverse=True)
     return {"read": _iso(end), "from": _iso(start), "to": _iso(end), "kinds": list(KINDS), "unknown": UNKNOWN,
-            "sources": sources, "undated": undated, "events": events}
+            "sources": sources, "undated": undated, "journal_skipped": skipped, "events": events}

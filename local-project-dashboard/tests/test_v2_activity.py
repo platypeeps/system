@@ -69,6 +69,9 @@ def seed(case):
     for note, command, at in ((ok_run, "status", INSIDE), (bad_run, "prune", INSIDE), (stopped, "sync", INSIDE), (older, "status", OUTSIDE)):
         body = {"version": 1, "note": note, "command": command, "scope": "item"}
         case.connection.execute("UPDATE note SET body = ?, timestamp = ? WHERE id = ?", (json.dumps(body), at, note))
+    runner_note = case.note(port, "clone busy; lease retained", kind="exec", started=INSIDE, ended=INSIDE, session="runner")
+    case.connection.execute("UPDATE note SET timestamp = ? WHERE id = ?", (INSIDE, runner_note))
+    case.note(port, "not a record anyone writes", kind="exec", started=INSIDE, ended=INSIDE, session="dashboard")
     # Seeding, as support.ScreenCase.age does: the library writes the real clock, and the fixture's clock is NOW.
     case.connection.execute("UPDATE note SET timestamp = ? WHERE id = ?", (INSIDE, notes[0]))
     case.connection.execute("UPDATE note SET timestamp = ? WHERE id = ?", (OUTSIDE, notes[1]))
@@ -78,7 +81,7 @@ def seed(case):
     case.connection.execute("UPDATE assignment SET started = ?, ended = ? WHERE id = ?", (OUTSIDE, OUTSIDE, stale))
     case.connection.commit()
     return {"port": port, "old": old, "merge": notes[0], "blocked": blocked, "done": done, "stale": stale,
-            "exec": exec_row, "ok_run": ok_run, "bad_run": bad_run, "stopped": stopped, "older": older}
+            "exec": exec_row, "ok_run": ok_run, "bad_run": bad_run, "stopped": stopped, "older": older, "runner": runner_note}
 
 
 def backend(case, *, refuse=""):
@@ -144,6 +147,10 @@ class TheDocument(ScreenCase):
         self.assertEqual((stopped["s"], stopped["what"]), ("caution", "sync · no exit code"))
         older = self.by_id[f"cmd:{self.ids['older']}"]
         self.assertEqual((older["at"], older["title"]), (OUTSIDE, "An old slice"))
+        runner_run = self.by_id[f"cmd:{self.ids['runner']}"]
+        self.assertEqual((runner_run["source"], runner_run["what"], runner_run["detail"], runner_run["s"]),
+                         ("runner", "runner · no exit code", "clone busy; lease retained", "caution"))
+        self.assertEqual(self.doc["journal_skipped"], {"unknown writer": 1})
         self.assertFalse(any(e["at"] < self.doc["from"] for e in self.doc["events"] if e["k"] != "command"),
                          "only the journal reaches before the window")
 
@@ -228,7 +235,7 @@ class TheScript(ScreenCase):
         self.assertEqual(out["R"]["reg"], [
             ["pr.open", "pull request", "safe", "o", None, True, False, False],
             ["pr.item", "pull request", "safe", "i", None, True, False, False],
-            ["asg.requeue", "assignment", "undo", "q", None, True, False, True],
+            ["asg.requeue", "assignment", "undo", "q", None, True, True, True],
             ["asg.get", "assignment", "safe", "o", None, True, False, False],
             ["asg.item", "assignment", "safe", "i", None, True, False, False],
             ["jobs.retry", "job", "safe", "t", None, True, False, True],
@@ -282,8 +289,19 @@ lastToast().undo(); await flush();""", answer)
         self.assertEqual(out["posts"], [[f"/api/runner/{n}/requeue", {"revision": revision}, 64],
                                         [f"/api/runner/{n}/cancel", {"revision": "b" * 64}, 64]])
         self.assertEqual(out["toasts"], [[f"Requeued · #{n}. The runner starts it on its next tick.", True],
-                                         [f"Requeue undone · #{n}", False]])
+                                         ["Requeue undone · Port the page", False]])
         self.assertEqual(out["gets"], ["/api/activity"] * 3, "the document was not read again after each write")
+
+    def test_a_bulk_requeue_counts_only_the_writes_that_landed_and_undo_reverses_those(self):
+        a, b = self.ids["blocked"], self.ids["done"]
+        answer = ("(path) => path.includes('/%d/') ? [409, { error: 'the queue moved' }]"
+                  " : [200, { status: path.endsWith('requeue') ? 'queued' : 'cancelled', revision: 'c'.repeat(64) }]") % b
+        out = self.run_page(f"""shellBulk(cmd('asg.requeue'), [C.get('run:{a}'), C.get('run:{b}')]); await flush();
+lastToast().undo(); await flush();""", answer)
+        self.assertEqual(out["toasts"][0], ["Requeue · 1 assignment · 1 of 2 not changed: the queue moved", True])
+        self.assertEqual([post[0] for post in out["posts"]],
+                         [f"/api/runner/{a}/requeue", f"/api/runner/{b}/requeue", f"/api/runner/{a}/cancel"])
+        self.assertEqual(out["posts"][-1][1], {"revision": "c" * 64})
 
     def test_retry_is_on_only_for_a_failed_job_and_posts_its_revision(self):
         failed = next(e for e in self.doc["events"] if e["id"] == "job:nightly-sync")
@@ -327,8 +345,10 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", "() =
         self.assertIn(f'data-id="cmd:{older}"', out["R"]["all"])
         self.assertIn([None, "all"], out["urls"])
         self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["back"])
-        self.assertIn("4 records", out["R"]["note"])
-        self.assertIn("sd:2183", out["R"]["note"])
+        self.assertIn("5 records", out["R"]["note"])
+        self.assertIn("palette and runner runs alike", out["R"]["note"])
+        self.assertIn("1 exec note no known writer left is skipped", out["R"]["note"])
+        self.assertNotIn("none shows here", out["R"]["note"])
         self.assertIn("Command journal", out["views"])
 
     def test_a_row_names_its_state_in_words_and_where_it_belongs(self):
@@ -337,6 +357,12 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", "() =
         row = re.search(rf'<tr data-id="cmd:{self.ids["bad_run"]}".*?</tr>', out["R"]["rows"], re.S).group(0)
         self.assertIn('<span class="sr">warning</span>', row)
         self.assertIn(f'<td class="ref">sd:{port}</td>', row)
+
+    def test_a_runner_record_has_no_output_to_show(self):
+        out = self.run_page(f"R.off = cmd('command.output').when(C.get('cmd:{self.ids['runner']}'));"
+                            f"R.on = cmd('command.output').when(C.get('cmd:{self.ids['ok_run']}'));")
+        self.assertEqual(out["R"]["off"], "a runner record keeps its log in the retained clone, not in the execution log directory")
+        self.assertIs(out["R"]["on"], True)
 
     def test_the_log_is_a_line_to_copy(self):
         out = self.run_page("R.cli = cmd('jobs.log').cli(C.get('job:nightly-sync'));")
