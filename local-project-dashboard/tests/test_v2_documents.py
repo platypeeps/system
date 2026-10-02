@@ -211,11 +211,11 @@ class TheScript(ScreenCase):
         for root in self.doc["roots"]:
             root["path"] = f"~/repos/{root['key']}/docs/dashboard"
 
-    def run_page(self, body, answer=None, search="", row="null"):
+    def run_page(self, body, answer=None, search="", row="null", shell_more=""):
         answer = answer or f"() => [200, {json.dumps(self.doc)}]"
         script = (STAND_IN + f"location.search = {json.dumps(search)}; location.origin = 'http://dash.example.test';\nvar ROW = {row};\n"
                   + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + DOCUMENTS_JS
+                  + SHELL + SHELL_MORE + shell_more + f"\nANSWER = {answer};\n" + DOCUMENTS_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.page_attention = window.PAGE_ATTENTION;"
@@ -337,6 +337,15 @@ R.picked = [...F.kind, ...F.repo];""")
         self.assertIn("notes/PLAN.md", det)
         self.assertIn("What we build next.", det)
         self.assertIn(documents_screen.STORE_REASON, det)
+
+    def test_a_linked_row_that_is_not_first_survives_the_first_render(self):
+        # The real shell: reconcile selects the first shown row when nothing is selected, and select rewrites ?row=.
+        rewrites = (r"""C.select = id => { ROW = id; };
+window.shell.reconcile = o => { if (o.current != null) return o.current;"""
+                    r""" const m = /data-id="([^"]+)"/.exec(ELS.rows.html || ''); if (m) { o.select(m[1]); return m[1]; } return null; };""")
+        out = self.run_page("R.row = ROW; R.det = ELS.details.html;", row="'lab/overview.html'", shell_more=rewrites)
+        self.assertEqual(out["R"]["row"], "lab/overview.html")
+        self.assertIn("00-overview/Overview.md", out["R"]["det"])
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", DOCUMENTS_JS)

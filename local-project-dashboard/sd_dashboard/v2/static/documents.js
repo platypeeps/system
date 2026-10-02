@@ -376,12 +376,14 @@ async function load() {
   if (!ROOTS.length && !contested.length) shell.state({ kind: 'empty', title: 'No document roots', text: `Publish into ${DOC.published} in a checkout under ${DOC.base}, or add a root| line to ${DOC.config}.`, source: DOC.config });
   else if (contested.length) shell.state({ kind: 'partial', text: `${contested.map(c => `${plural(c.paths.length, 'checkout')} claim the key ${c.key} (${c.paths.join(', ')}), so none is served`).join('; ')}. Name the one you mean with a root| line in ${DOC.config}.`, source: DOC.config });
   else shell.state(null);
+  // The linked row is read before the first render: that render's reconcile selects the first shown row, and selecting
+  // rewrites ?row=, so a link to any other row would be lost.
+  const q = shell.row();
   readURL();
   render();
   attention();
   // The row from the URL only when the filters show it; else the first shown row; else nothing, and Details says why.
   // A linked row on another page moves the list to that page; otherwise select from the rendered page only.
-  const q = shell.row();
   const shown = sorted(DOCS.filter(matches)), at = shown.findIndex(d => d.id === q);
   if (at >= 0 && Math.floor(at / size) + 1 !== pageNo) { pageNo = Math.floor(at / size) + 1; render(); }
   const first = at >= 0 ? q : shown.slice((pageNo - 1) * size, pageNo * size)[0]?.id;
