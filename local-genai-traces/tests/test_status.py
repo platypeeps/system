@@ -30,6 +30,7 @@ case "$1" in
       *" up "*|*" up") : > "$STUB_DIR/%(c)s"; : > "$STUB_DIR/%(p)s" ;;
       *" down"*) [ -f "$STUB_DIR/docker-down" ] && exit 1
                  rm -f "$STUB_DIR/%(c)s" "$STUB_DIR/%(p)s" ;;
+      *" pull"*) [ -f "$STUB_DIR/pull-fails" ] && exit 1 ;;
     esac ;;
   ps)
     # docker ps -q -f name=^NAME$
@@ -114,6 +115,40 @@ class TheUsage(StatusCase):
         self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4337", done.stdout)
         self.assertIn("PHOENIX_UI=http://127.0.0.1:6016", done.stdout)
 
+    def otel_lines(self, *args):
+        done = self.run_verb("endpoint", *args, expect=0)
+        return [line for line in done.stdout.splitlines() if line.startswith("OTEL_")]
+
+    def test_endpoint_prints_only_standard_sdk_variables(self):
+        # PR #61 review: OTEL_EXPORTER_OTLP_HTTP_ENDPOINT is no SDK variable;
+        # an endpoint goes with the protocol it speaks.
+        self.assertEqual(self.otel_lines(), [
+            "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4337",
+            "OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+        ])
+
+    def test_endpoint_http_pairs_the_http_port_with_its_protocol(self):
+        self.assertEqual(self.otel_lines("http"), [
+            "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4338",
+            "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+        ])
+
+    def test_endpoint_docker_reaches_the_host(self):
+        self.assertEqual(self.otel_lines("docker"), [
+            "OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4337",
+            "OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+        ])
+
+    def test_an_unknown_endpoint_kind_fails(self):
+        self.run_verb("endpoint", "smoke-signal", expect=1)
+
+    def test_phoenix_gets_a_retention_limit(self):
+        # PR #61 review: Phoenix keeps traces forever unless told otherwise.
+        compose = (FOLDER / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: ${GENAI_TRACES_RETENTION_DAYS:-30}",
+            compose)
+
 
 class TheProbes(StatusCase):
     def setUp(self):
@@ -175,6 +210,37 @@ class AContainerThatIsGone(StatusCase):
         self.run_verb("start", expect=0)
         (self.containers / "docker-down").write_text("", encoding="utf-8")
         self.run_verb("stop", expect=1)
+        self.assertTrue(self.marker().is_file())
+
+    def docker_calls(self):
+        log = self.root / "docker.log"
+        return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+    def test_update_pulls_and_recreates_without_removing_images(self):
+        # PR #61 review: `docker rmi` ran with no IDs, and the collector
+        # image is shared with local-opentelemetry-collector.
+        self.run_verb("start", expect=0)
+        before = len(self.docker_calls())
+        self.run_verb("update", expect=0)
+        calls = self.docker_calls()[before:]
+        self.assertTrue(any(c.endswith(" pull") for c in calls), calls)
+        self.assertTrue(any(" up -d" in c for c in calls), calls)
+        self.assertFalse(any(c.startswith(("rmi", "images")) or " down" in c
+                             for c in calls), calls)
+        self.assertTrue(self.marker().is_file())
+        self.assertTrue((self.containers / COLLECTOR).exists())
+
+    def test_update_of_a_service_never_started_only_pulls(self):
+        self.run_verb("update", expect=0)
+        calls = self.docker_calls()
+        self.assertFalse(any(" up" in c for c in calls), calls)
+        self.assertFalse(self.marker().exists())
+
+    def test_a_failed_update_fails_and_keeps_the_record(self):
+        # PR #61 review: update cleared the record after a failed down.
+        self.run_verb("start", expect=0)
+        (self.containers / "pull-fails").write_text("", encoding="utf-8")
+        self.run_verb("update", expect=1)
         self.assertTrue(self.marker().is_file())
 
     def test_partly_running_without_a_record_is_broken(self):

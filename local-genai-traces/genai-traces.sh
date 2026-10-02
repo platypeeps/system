@@ -13,7 +13,11 @@ GENAI_TRACES_GRPC_PORT="${GENAI_TRACES_GRPC_PORT:-4337}"
 GENAI_TRACES_HTTP_PORT="${GENAI_TRACES_HTTP_PORT:-4338}"
 GENAI_TRACES_UI_PORT="${GENAI_TRACES_UI_PORT:-6016}"
 GENAI_TRACES_HEALTH_PORT="${GENAI_TRACES_HEALTH_PORT:-13137}"
+# Phoenix deletes traces older than this many days (0 keeps them forever).
+# It reads the value only when it creates its default policy, on a new store.
+GENAI_TRACES_RETENTION_DAYS="${GENAI_TRACES_RETENTION_DAYS:-30}"
 export GENAI_TRACES_GRPC_PORT GENAI_TRACES_HTTP_PORT GENAI_TRACES_UI_PORT GENAI_TRACES_HEALTH_PORT
+export GENAI_TRACES_RETENTION_DAYS
 
 COLLECTOR=local-genai-collector
 PHOENIX=local-genai-phoenix
@@ -90,16 +94,32 @@ case "$1" in
     echo "local-genai-traces: OK — OTLP on $GENAI_TRACES_GRPC_PORT/$GENAI_TRACES_HTTP_PORT, Phoenix on $GENAI_TRACES_UI_PORT"
     ;;
   update)
-    compose down 2>/dev/null || true
-    rm -f "$STARTED"
-    docker images -a | grep -E "otel/opentelemetry-collector-contrib|arizephoenix/phoenix" \
-      | awk '{print $3}' | xargs docker rmi
+    # Pull, not `docker rmi`: local-opentelemetry-collector runs the same
+    # collector image, so deleting it by ID fails or breaks that service.
+    # A started service is recreated on the new images; the record stays.
+    if ! compose pull; then
+      echo "local-genai-traces: update failed; pull did not complete (is Docker up?)" >&2
+      exit 1
+    fi
+    if [ -f "$STARTED" ]; then
+      compose up -d
+    fi
     ;;
   endpoint)
-    # The lines an experiment exports to send its traces here.
-    echo "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:$GENAI_TRACES_GRPC_PORT"
-    echo "OTEL_EXPORTER_OTLP_HTTP_ENDPOINT=http://127.0.0.1:$GENAI_TRACES_HTTP_PORT"
-    echo "OTEL_EXPORTER_OTLP_DOCKER_ENDPOINT=http://host.docker.internal:$GENAI_TRACES_GRPC_PORT"
+    # The standard OTel SDK pair an experiment exports to send traces here:
+    # an endpoint and the protocol it speaks. grpc by default; `http` for
+    # OTLP/HTTP, `docker` for a container reaching the host.
+    case "${2:-grpc}" in
+      grpc) url="http://127.0.0.1:$GENAI_TRACES_GRPC_PORT"; proto=grpc ;;
+      http) url="http://127.0.0.1:$GENAI_TRACES_HTTP_PORT"; proto=http/protobuf ;;
+      docker) url="http://host.docker.internal:$GENAI_TRACES_GRPC_PORT"; proto=grpc ;;
+      *)
+        echo "usage: $(basename "$0") endpoint [grpc|http|docker]" >&2
+        exit 1
+        ;;
+    esac
+    echo "OTEL_EXPORTER_OTLP_ENDPOINT=$url"
+    echo "OTEL_EXPORTER_OTLP_PROTOCOL=$proto"
     echo "PHOENIX_UI=http://127.0.0.1:$GENAI_TRACES_UI_PORT"
     ;;
   tail)
@@ -122,14 +142,17 @@ usage: genai-traces.sh start|stop|status|update|endpoint|tail|test
                Exits 0 healthy, 3 when there is nothing to check (never
                started), 1 when started and since gone or failing —
                local-health-check reads those codes.
-  update       stop both containers and delete their local images by image ID
-               (next start pulls the latest)
-  endpoint     print the OTLP endpoints and the Phoenix URL for experiments
+  update       pull the latest images, and recreate the containers on them
+               when the service was started; Phoenix data survives
+  endpoint [grpc|http|docker]
+               print OTEL_EXPORTER_OTLP_ENDPOINT and _PROTOCOL for an
+               experiment (grpc by default), and the Phoenix URL
   tail [n]     follow the raw OTLP JSON file (storage/raw/traces.jsonl)
   test         run this folder's tests
 
 environment: GENAI_TRACES_GRPC_PORT (4337), GENAI_TRACES_HTTP_PORT (4338),
-             GENAI_TRACES_UI_PORT (6016), GENAI_TRACES_HEALTH_PORT (13137)
+             GENAI_TRACES_UI_PORT (6016), GENAI_TRACES_HEALTH_PORT (13137),
+             GENAI_TRACES_RETENTION_DAYS (30; Phoenix reads it on a new store)
 HELPEOF
     exit 0
     ;;

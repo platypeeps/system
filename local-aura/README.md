@@ -50,7 +50,8 @@ The experiment records them, since its requests are fixed test prompts.
 The experiment runs only `$AURA_IMAGE` (default `aura-local:instrumented`),
 a local build of the `$AURA_REPO` checkout, never the published image.
 `image` builds it and labels it `aura.source=<branch>@<commit>`, with
-`+dirty` when tracked files have changes; `experiment start` prints that label.
+`+dirty` when tracked files have changes. `experiment start` prints that
+label, and refuses an image without it: the tag alone may name any image.
 To change what the experiment measures, change the checkout and rebuild.
 
 `experiment start` refuses to run without the image or without a healthy
@@ -60,7 +61,8 @@ server configs into `experiment/state/` from the checkout's
 `LLM_*`, and the single-agent copy turns orchestration off. The servers
 listen on `127.0.0.1:3101` (orchestration) and `:3102` (single agent);
 `AURA_ORCH_PORT` and `AURA_SINGLE_PORT` move them. Answers go to
-`experiment/state/responses.jsonl`.
+`experiment/state/responses.jsonl`. `experiment run` sends every request,
+then exits 1 when any one failed or came back without an answer.
 
 ## Configuration
 

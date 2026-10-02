@@ -18,7 +18,7 @@ experiment --OTLP grpc :4337 / http :4338--> collector --> Phoenix :6016
 ```sh
 ./genai-traces.sh start      # once; the containers then come back with Docker
 ./genai-traces.sh status
-./genai-traces.sh endpoint   # the variables an experiment exports
+./genai-traces.sh endpoint   # the variables an experiment exports (grpc|http|docker)
 ./genai-traces.sh tail       # follow the raw file
 ```
 
@@ -33,7 +33,10 @@ partly running or failing. `local-health-check` reads those codes.
   `OTEL_EXPORTER_OTLP_ENDPOINT` to this service unless one is already exported.
 - `local-jev`: with `JEV_TRACES_URL=http://127.0.0.1:4338/v1/traces` in
   `<config>/jev/.env`, each call sends one metadata-only span.
-- Anything else: export the lines `endpoint` prints. Set
+- Anything else: export the lines `endpoint` prints: the standard
+  `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` pair.
+  `endpoint http` gives the OTLP/HTTP port, `endpoint docker` the address a
+  container uses. Set
   `openinference.project.name` as a resource attribute to get a Phoenix
   project of its own; without it, spans land in `default`.
 
@@ -54,4 +57,11 @@ partly running or failing. `local-health-check` reads those codes.
   the raw file. `aura.sh server` does not, unless that variable is exported.
   Both stores live under `storage/`, which git ignores. Do not point
   production traffic here.
-- `update` deletes both images; Phoenix data in `storage/phoenix` survives.
+- `update` pulls the latest images and recreates a started service on them.
+  It deletes no image: `local-opentelemetry-collector` runs the same
+  collector image. Phoenix data in `storage/phoenix` survives.
+- **Retention.** Phoenix deletes traces older than
+  `GENAI_TRACES_RETENTION_DAYS` (default 30; 0 keeps them forever), checked
+  weekly. Phoenix reads the value only when it creates its default policy,
+  on a new `storage/phoenix`; on an existing store, change the policy in
+  the Phoenix UI under data retention. The raw file rotates on its own.

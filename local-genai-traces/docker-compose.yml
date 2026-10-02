@@ -26,6 +26,8 @@ services:
     restart: unless-stopped
     environment:
       PHOENIX_WORKING_DIR: /data
+      # Phoenix keeps traces forever by default; genai-traces.sh sets this.
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: ${GENAI_TRACES_RETENTION_DAYS:-30}
     volumes:
       - ./storage/phoenix:/data
     ports:

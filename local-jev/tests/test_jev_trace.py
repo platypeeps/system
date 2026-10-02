@@ -12,6 +12,7 @@ import json
 import threading
 import time
 import unittest
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import jev_trace
@@ -88,6 +89,33 @@ class TraceCase(StubServer):
                                           for a in span["attributes"]}
                         out.append(span)
         return out
+
+
+class TheEnvFile(TraceCase):
+    """`jev.sh` keeps exported trace settings over <config>/jev/.env."""
+
+    def link(self):
+        from .test_jev import TestEnvFile
+        helper = TestEnvFile("test_the_config_env_is_found_through_the_symlink")
+        helper.url, helper.switch = self.url, self.switch
+        link = helper.copy("TYPESAFE_API_KEY=k\nJEV_TRACES_URL=%s\n" % self.traces_url)
+        self.addCleanup(helper.doCleanups)
+        trace = Path(__file__).resolve().parent.parent / "jev_trace.py"
+        (link.resolve().parent / "jev_trace.py").write_bytes(trace.read_bytes())
+        return helper, link
+
+    def test_the_env_file_url_is_used_when_nothing_is_exported(self):
+        helper, link = self.link()
+        done = helper.run_link(link, ["noul", "q"], {})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.spans()), 1)
+
+    def test_an_exported_off_beats_the_env_file(self):
+        # PR #61 review: JEV_TRACES_URL was not captured around the .env.
+        helper, link = self.link()
+        done = helper.run_link(link, ["noul", "q"], {"JEV_TRACES_URL": "off"})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.spans(), [])
 
 
 class TheSpan(TraceCase):

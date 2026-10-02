@@ -21,7 +21,7 @@ EXAMPLE = "examples/quickstart-orchestration-math/config.toml"
 DOCKER = """#!/bin/sh
 echo "$* | LLM_MODEL=${LLM_MODEL:-} LLM_API_KEY_SET=${LLM_API_KEY:+yes}" >> "$STUB_LOG"
 case "$1 $2" in
-  "image inspect") [ -f "$STUB_IMAGE" ] || exit 1; echo "local/test@abc" ;;
+  "image inspect") [ -f "$STUB_IMAGE" ] || exit 1; echo "${STUB_LABEL-local/test@abc}" ;;
 esac
 exit 0
 """
@@ -107,6 +107,73 @@ class TheRefusals(ExperimentCase):
         done = self.start(1)
         self.assertIn("changed shape", done.stderr)
         self.assertNotIn("compose", self.docker_calls())
+
+
+class TheImageLabel(ExperimentCase):
+    # PR #61 review: the tag alone may name any image; only `aura.sh image`
+    # writes the aura.source label.
+    def test_an_image_without_the_label_refuses(self):
+        done = self.start(1, STUB_LABEL="<no value>")
+        self.assertIn("aura.source", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+    def test_an_empty_label_refuses(self):
+        done = self.start(1, STUB_LABEL="")
+        self.assertIn("aura.source", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+    def test_the_label_is_printed(self):
+        done = self.start(0)
+        self.assertIn("(local/test@abc)", done.stdout)
+
+
+CURL = """#!/bin/sh
+echo "$*" >> "$STUB_CURL_LOG"
+case "${STUB_CURL:-ok}" in
+  fail) exit 7 ;;
+  error) echo '{"error":{"message":"upstream failed"}}' ;;
+  *) echo '{"choices":[{"message":{"content":"42"}}]}' ;;
+esac
+"""
+
+
+class ARun(ExperimentCase):
+    # PR #61 review: a failed curl was swallowed and `run` exited 0.
+    def setUp(self):
+        super().setUp()
+        shutil.copy(FOLDER / "experiment" / "scenarios.sh",
+                    self.folder / "experiment" / "scenarios.sh")
+        (self.folder / "experiment" / "state").mkdir(exist_ok=True)
+        curl = self.root / "bin" / "curl"
+        curl.write_text(CURL, encoding="utf-8")
+        curl.chmod(0o755)
+        self.curl_log = self.root / "curl.log"
+        self.env["STUB_CURL_LOG"] = str(self.curl_log)
+
+    def run_scenarios(self, mode):
+        env = dict(self.env, STUB_CURL=mode)
+        return subprocess.run(["/bin/sh", str(self.folder / "aura.sh"), "experiment", "run"],
+                              capture_output=True, text=True, env=env, timeout=60)
+
+    def requests_sent(self):
+        return len(self.curl_log.read_text(encoding="utf-8").splitlines())
+
+    def test_answers_everywhere_exit_zero(self):
+        done = self.run_scenarios("ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.requests_sent(), 6)
+
+    def test_a_failed_request_fails_the_run_after_sending_all(self):
+        done = self.run_scenarios("fail")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(self.requests_sent(), 6)
+        self.assertIn("curl exit 7", done.stderr)
+
+    def test_an_error_answer_fails_the_run(self):
+        done = self.run_scenarios("error")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        responses = self.state("responses.jsonl")
+        self.assertIn("upstream failed", responses)
 
 
 class AStart(ExperimentCase):

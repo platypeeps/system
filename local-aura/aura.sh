@@ -202,10 +202,17 @@ case "$1" in
       start)
         need_repo
         need_llm
-        if ! docker image inspect "$AURA_IMAGE" >/dev/null 2>&1; then
+        if ! source_label="$(docker image inspect -f '{{ index .Config.Labels "aura.source" }}' "$AURA_IMAGE" 2>/dev/null)"; then
           echo "aura.sh: image $AURA_IMAGE not found; build it with: aura.sh image" >&2
           exit 1
         fi
+        # A tag alone may name any image; only `image` writes this label.
+        case "$source_label" in
+          ''|'<no value>')
+            echo "aura.sh: image $AURA_IMAGE has no aura.source label, so it was not built by aura.sh image; rebuild it with: aura.sh image" >&2
+            exit 1
+            ;;
+        esac
         if ! sh "$DIR/../local-genai-traces/genai-traces.sh" status >/dev/null 2>&1; then
           echo "aura.sh: local-genai-traces is not healthy; run local-genai-traces/genai-traces.sh start" >&2
           exit 1
@@ -213,7 +220,7 @@ case "$1" in
         render_configs
         experiment_env
         experiment_compose up -d --build --wait
-        echo "image $AURA_IMAGE ($(docker image inspect -f '{{ index .Config.Labels "aura.source" }}' "$AURA_IMAGE"))"
+        echo "image $AURA_IMAGE ($source_label)"
         ;;
       stop)
         experiment_env
