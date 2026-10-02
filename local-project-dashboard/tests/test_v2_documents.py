@@ -11,8 +11,9 @@ the store's reason, Disable render is off because no switch exists, Render and
 Request are copy only, and no command declares an Undo: the page sends nothing.
 
 `documents.js` runs under JavaScriptCore (osascript) against the stand-in page
-and shell `test_v2_tasks` uses. The browser half -- the look at 375 px, focus,
-the facet chips -- is a manual check recorded on the pull request.
+and shell `test_v2_tasks` uses. The browser half is a manual check: the pull
+request records what was looked at (1440 px) and what was not verified (375 px
+and 320 px, both schemes, a coarse pointer, focus visibility).
 """
 
 from __future__ import annotations
