@@ -172,8 +172,9 @@ case "${1:-}" in
     cat <<'HELPEOF'
 usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | install | health | grants | docs | test
 
-  tile <tab>       one tab as JSON on stdout — toolbox, briefs, vault,
-                   research, ports or queues. The Resources views are
+  tile <tab>       one tab as JSON on stdout — toolbox, briefs,
+                   briefs-rows, vault, research, ports or queues. The
+                   Briefs page reads briefs-rows. The Resources views are
                    toolbox, briefs, vault, research and queues, and each
                    reads its tab this way; Ports has no view and reads
                    collect_ports in-process. Exits 1 with the reason on
