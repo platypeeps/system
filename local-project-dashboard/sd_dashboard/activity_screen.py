@@ -12,13 +12,17 @@ keeps, so the port adds no collector:
   `sd runner requeue` checks. `exec` assignments are left to `command`.
 - **job**: each launchd job whose log `cron-jobs.sh` wrote in the window,
   as `operations.job_state` reads it (Today's failed-job read, sd:2110).
-  A failed job whose log time cannot be read has no place on a timeline;
-  its name goes in `undated`, so the page says so rather than drop it.
+  A failed run is a warning; an interrupted one (a signal nobody accounted
+  for) is a caution, and both can retry, as Management shows them. Such a
+  job whose log time cannot be read has no place on a timeline; its name
+  goes in `undated`, so the page says so rather than drop it.
 - **command**: the execution journal, `runner_exec.execution_journal`
   (v1 Operations > Commands; the design's journal, sd:2180): palette runs and
   runner runs alike (sd:2183), with the notes no known writer left counted in
   `journal_skipped`. Every record it returns comes, older ones too, so the
   page's "All read" range can show them; the other kinds stay in the window.
+  The read is the latest `JOURNAL_CAP` notes: `journal_unread` counts the
+  older ones it left out, so the page says so rather than cut them silently.
 
 The design's other kinds have no collector here. Each is in `unknown` with
 the reason, and the page draws it hatched: unknown is not zero.
@@ -37,9 +41,12 @@ from pathlib import Path
 from sd_db import operations, reads, runner, runner_exec
 from sd_db.errors import SdDbError
 
-__all__ = ["KINDS", "UNKNOWN", "WINDOW", "document"]
+__all__ = ["JOURNAL_CAP", "KINDS", "UNKNOWN", "WINDOW", "document"]
 
 WINDOW = timedelta(hours=24)
+
+#: The latest exec notes the journal read takes (the library's own bound).
+JOURNAL_CAP = 100
 
 #: The kinds the page draws, in lane order.
 KINDS = ("merge", "run", "review", "deploy", "mail", "command")
@@ -134,27 +141,31 @@ def jobs(connection, backend, start: datetime, end: datetime) -> tuple[list[dict
         except SdDbError:
             continue  # A job can disappear between enumeration and read, as operations.inventory allows.
         logged = _log_stamp(root, name)
-        failed = job["state"] == "failed"
+        failed, interrupted = job["state"] == "failed", job["state"] == "interrupted"
         if logged is None or not start <= logged <= end:
-            if failed and logged is None:
+            if (failed or interrupted) and logged is None:
                 undated.append(name)
             continue
         code, killed = job.get("last_exit"), job.get("last_signal")
         outcome = _signal_name(killed) if killed is not None else f"exit {code}" if code is not None else "no exit code"
-        state = "warning" if failed else "queued" if job["state"] == "running" else "ok"
+        state = "warning" if failed else "caution" if interrupted else "queued" if job["state"] == "running" else "ok"
+        what = (f"{name} failed with {outcome}" if failed else f"{name} was interrupted ({outcome})" if interrupted
+                else f"{name} ran ({job['state']})")
         out.append({"id": f"job:{name}", "k": "run", "at": _iso(logged), "s": state, "repo": None,
-                    "what": f"{name} failed with {outcome}" if failed else f"{name} ran ({job['state']})",
+                    "what": what, "interrupted": interrupted,
                     "detail": f"launchd job · {job.get('schedule') or 'no schedule'}", "ref": name, "job": name,
-                    "service": job.get("service"), "failed": failed, "rc": outcome, "revision": job["revision"],
+                    "service": job.get("service"), "failed": failed or interrupted, "rc": outcome, "revision": job["revision"],
                     "retry": job["capabilities"]["retry"], "src": "launchd jobs and their cron-jobs.sh log time"})
     return out, undated
 
 
-def commands(connection, end: datetime, skipped: dict) -> list[dict]:
+def commands(connection, end: datetime, skipped: dict, read: dict) -> list[dict]:
     """Every journal record up to `end`, at its end time. No exit code on an ended run means it was stopped: caution."""
     out = []
-    journal = runner_exec.execution_journal(connection, limit=100)
+    journal = runner_exec.execution_journal(connection, limit=JOURNAL_CAP)
     skipped.update(journal["skipped"])
+    taken = len(journal["executions"]) + sum(journal["skipped"].values())
+    read["unread"] = max(0, reads.exec_note_count(connection) - taken)
     for row in journal["executions"]:
         stamp = _utc(row["ended"]) or _utc(row["timestamp"])
         if stamp is None or stamp > end:
@@ -181,6 +192,7 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
     sources: dict[str, str] = {}
     undated: list[str] = []
     skipped: dict[str, int] = {}
+    journal: dict[str, int] = {"unread": 0}
 
     def read_jobs():
         found, missing = jobs(connection, jobs_backend or operations.LaunchdBackend(), start, end)
@@ -190,7 +202,7 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
     for source, collect in (("merge", lambda: merges(connection, start, end)),
                             ("run", lambda: runs(connection, start, end)),
                             ("job", read_jobs),
-                            ("command", lambda: commands(connection, end, skipped))):
+                            ("command", lambda: commands(connection, end, skipped, journal))):
         try:
             found = collect()
         except (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error) as failure:
@@ -200,4 +212,5 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
         events.extend(found)
     events.sort(key=lambda event: (event["at"], event["id"]), reverse=True)
     return {"read": _iso(end), "from": _iso(start), "to": _iso(end), "kinds": list(KINDS), "unknown": UNKNOWN,
-            "sources": sources, "undated": undated, "journal_skipped": skipped, "events": events}
+            "sources": sources, "undated": undated, "journal_skipped": skipped,
+            "journal_cap": JOURNAL_CAP, "journal_unread": journal["unread"], "events": events}

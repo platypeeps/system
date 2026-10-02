@@ -100,7 +100,8 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Annunciator ----------
   // Rail badge (shell.js): the loudest state on this page and how many events carry it.
   function pageAttention() {
-    const w = EVENTS.filter(e => e.s === 'warning').length, c = EVENTS.filter(e => e.s === 'caution').length;
+    // The badge says "in 24 h", so it counts the window only: an old journal record never lights it.
+    const day = EVENTS.filter(inWindow), w = day.filter(e => e.s === 'warning').length, c = day.filter(e => e.s === 'caution').length;
     window.shell.attention?.({ state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: w ? 'failed events in 24 h' : 'caution events in 24 h' });
   }
   function renderAnnunciator() {
@@ -165,7 +166,7 @@ addEventListener('DOMContentLoaded', () => {
     const axis = html`<div class="lane"><span class="axis-label"></span><div class="axis"><svg viewBox="0 0 ${String(W)} 16" preserveAspectRatio="none" aria-hidden="true">${H24.filter((_, i) => i % 6 === 0 && i < 24).map(t => html`<text x="${((t - RANGE.from) / (RANGE.to - RANGE.from) * W + 3).toFixed(1)}" y="12">${new Date(t).toISOString().slice(11, 16)}</text>`)}</svg></div></div>`;
     put($('lanes'), html`${lanes}${axis}`);
     const bins = H24.slice(0, 24);
-    put($('chart-table'), html`<table><caption class="sr">Events per hour by kind</caption><thead><tr><th scope="col">Hour (UTC)</th>${KINDS.map(k => html`<th scope="col">${k.name}</th>`)}</tr></thead><tbody>${bins.map(t => html`<tr><td>${new Date(t).toISOString().slice(5, 16).replace('T', ' ')}</td>${KINDS.map(k => unknownWhy(k.id) ? html`<td class="u">▨</td>` : html`<td>${String(EVENTS.filter(e => e.k === k.id && Date.parse(e.at) >= t && Date.parse(e.at) < t + 36e5).length)}</td>`)}</tr>`)}</tbody></table>`);
+    put($('chart-table'), html`<table><caption class="sr">Events per hour by kind</caption><thead><tr><th scope="col">Hour (UTC)</th>${KINDS.map(k => html`<th scope="col">${k.name}</th>`)}</tr></thead><tbody>${bins.map(t => html`<tr><td>${new Date(t).toISOString().slice(5, 16).replace('T', ' ')}</td>${KINDS.map(k => unknownWhy(k.id) ? html`<td class="u">▨</td>` : html`<td>${String(EVENTS.filter(e => e.k === k.id && (!F.repo.size || F.repo.has(e.repo)) && Date.parse(e.at) >= t && Date.parse(e.at) < t + 36e5).length)}</td>`)}</tr>`)}</tbody></table>`);
   }
   $('lanes').addEventListener('click', e => {
     const t = e.target.closest('rect.tick'); if (t) return select(t.dataset.id, true);
@@ -231,10 +232,10 @@ addEventListener('DOMContentLoaded', () => {
     // build: the design's journal note, with this document's counts (sd:2183: the reader lists every writer's notes).
     const journal = EVENTS.filter(e => e.k === 'command'), older = journal.filter(e => !inWindow(e)).length;
     const skipped = Object.values(DOC?.journal_skipped || {}).reduce((a, n) => a + n, 0);
-    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec, palette and runner runs alike.${skipped ? ` ${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''} All read adds the ${String(older)} older than this window.`);
+    put($('journal-note'), html`Commands are the execution journal: ${plural(journal.length, 'record')} of kind exec, palette and runner runs alike.${skipped ? ` ${plural(skipped, 'exec note')} no known writer left ${skipped === 1 ? 'is' : 'are'} skipped.` : ''} All read adds the ${String(older)} older than this window.${DOC?.journal_unread ? ` The journal reads the latest ${String(DOC.journal_cap)} exec notes; ${String(DOC.journal_unread)} older are not read.` : ''}`);
     const undated = DOC?.undated || [];
     $('undated').hidden = !undated.length;
-    put($('undated'), undated.length ? html`${undated.join(', ')} failed with no readable log time, so ${undated.length === 1 ? 'it has' : 'they have'} no place on this timeline. Today lists failed jobs.` : html``);
+    put($('undated'), undated.length ? html`${undated.join(', ')} failed or ${undated.length === 1 ? 'was' : 'were'} interrupted with no readable log time, so ${undated.length === 1 ? 'it has' : 'they have'} no place on this timeline. Management lists every job's state.` : html``);
   }
   $('empty').addEventListener('click', e => { if (e.target.closest('[data-clear]')) clearAll(); });
   $('pager').addEventListener('click', e => {

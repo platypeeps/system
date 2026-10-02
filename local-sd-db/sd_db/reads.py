@@ -1307,4 +1307,9 @@ def recent_assignments(connection: sqlite3.Connection, *, since: str, exclude_ro
         (*exclude_roles, since[:10], since[:10]))]
 
 
-__all__ += ["delivery_notes", "recent_assignments"]
+def exec_note_count(connection: sqlite3.Connection) -> int:
+    """How many `exec` notes the journal holds, from every writer; Activity says how many its capped read left out (sd:2111)."""
+    return connection.execute("SELECT count(*) FROM note WHERE kind = 'exec'").fetchone()[0]
+
+
+__all__ += ["delivery_notes", "exec_note_count", "recent_assignments"]

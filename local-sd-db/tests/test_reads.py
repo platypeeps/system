@@ -579,6 +579,12 @@ class TheActivityReads(unittest.TestCase):
         self.assertEqual([row["id"] for row in rows], [ids[1]])
         self.assertEqual(rows[0]["title"], "A slice")
 
+    def test_exec_note_count_counts_every_exec_note_and_nothing_else(self):
+        for body in ("{}", "plain text", "{}"):
+            add_note(self.connection, self.item, "exec", body)
+        add_note(self.connection, self.item, "comment", "not an execution")
+        self.assertEqual(reads.exec_note_count(self.connection), 3)
+
     def test_recent_assignments_leave_out_exec_and_older_days(self):
         from sd_db.writes import create_assignment
 

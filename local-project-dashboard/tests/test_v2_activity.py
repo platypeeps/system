@@ -24,6 +24,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from sd_db import runner
 from sd_db.ship import note_merge
@@ -86,10 +87,13 @@ def seed(case):
 
 def backend(case, *, refuse=""):
     jobs = JobsBackend(case.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("backup", "idle", 0, None),
-                                            ("weekly", "idle", 0, None), ("lost-log", "failed", 1, None)], refuse=refuse)
+                                            ("weekly", "idle", 0, None), ("lost-log", "failed", 1, None),
+                                            ("stopped", "interrupted", None, 15), ("lost-stop", "interrupted", None, 15)],
+                       refuse=refuse)
     jobs.log("nightly-sync", stamp(INSIDE))
     jobs.log("backup", stamp("2026-09-06T02:00:00Z"))
     jobs.log("weekly", stamp(OUTSIDE))
+    jobs.log("stopped", stamp(INSIDE))
     return jobs
 
 
@@ -136,7 +140,20 @@ class TheDocument(ScreenCase):
         self.assertFalse(self.by_id["job:backup"]["retry"]["allowed"])
         self.assertNotIn("job:weekly", self.by_id)
         self.assertNotIn("job:lost-log", self.by_id)
-        self.assertEqual(self.doc["undated"], ["lost-log"])
+        self.assertEqual(self.doc["undated"], ["lost-log", "lost-stop"])
+
+    def test_an_interrupted_job_is_a_caution_that_can_retry(self):
+        stopped = self.by_id["job:stopped"]
+        self.assertEqual((stopped["s"], stopped["failed"], stopped["interrupted"]), ("caution", True, True))
+        self.assertRegex(stopped["what"], r"^stopped was interrupted \(.+\)$")
+        self.assertTrue(stopped["retry"]["allowed"])
+
+    def test_the_journal_states_its_cap_and_counts_the_notes_it_did_not_read(self):
+        self.assertEqual((self.doc["journal_cap"], self.doc["journal_unread"]), (activity_screen.JOURNAL_CAP, 0))
+        with patch.object(activity_screen, "JOURNAL_CAP", 3):
+            doc = activity_screen.document(self.connection, now=NOW, jobs_backend=backend(self))
+        self.assertEqual((doc["journal_cap"], doc["journal_unread"]), (3, 3))
+        self.assertEqual(sum(1 for e in doc["events"] if e["k"] == "command") + sum(doc["journal_skipped"].values()), 3)
 
     def test_a_command_is_a_journal_record_and_older_ones_come_too(self):
         ok_run, bad_run = self.by_id[f"cmd:{self.ids['ok_run']}"], self.by_id[f"cmd:{self.ids['bad_run']}"]
@@ -363,6 +380,24 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", "() =
                             f"R.on = cmd('command.output').when(C.get('cmd:{self.ids['ok_run']}'));")
         self.assertEqual(out["R"]["off"], "a runner record keeps its log in the retained clone, not in the execution log directory")
         self.assertIs(out["R"]["on"], True)
+
+    def test_the_rail_badge_counts_the_24_hours_only(self):
+        doc = json.loads(json.dumps(self.doc))
+        next(e for e in doc["events"] if e["id"] == f"cmd:{self.ids['older']}")["s"] = "warning"
+        out = self.run_page("", doc=doc)
+        self.assertEqual(out["attention"][-1], {"state": "warning", "n": 2, "what": "failed events in 24 h"})
+
+    def test_the_hourly_table_applies_the_repo_filter_the_lanes_apply(self):
+        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { f: 'repo', v: 'system' } } : null } });
+R.table = ELS['chart-table'].html; R.lanes = ELS.lanes.html;""")
+        cells = [int(n) for n in re.findall(r"<td>(\d+)</td>", out["R"]["table"])]
+        self.assertEqual(sum(cells), len(re.findall(r'<rect class="tick', out["R"]["lanes"])))
+        self.assertEqual(sum(cells), 1, "one merge in system in the window")
+
+    def test_the_journal_note_says_what_the_cap_left_unread(self):
+        doc = json.loads(json.dumps(self.doc)); doc["journal_unread"] = 7
+        out = self.run_page("R.note = ELS['journal-note'].html;", doc=doc)
+        self.assertIn(f"The journal reads the latest {self.doc['journal_cap']} exec notes; 7 older are not read.", out["R"]["note"])
 
     def test_the_log_is_a_line_to_copy(self):
         out = self.run_page("R.cli = cmd('jobs.log').cli(C.get('job:nightly-sync'));")
