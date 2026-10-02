@@ -365,6 +365,24 @@ R.cli = cmd('brief.open').cli(C.get('2026-09-06 - Intel Brief')); R.exec = cmd('
         self.assertIn("Showing the newest 5 of 900", out["states"][-1]["text"])
         self.assertEqual(out["R"]["sub"], "900 briefs, newest 5 read")
 
+    def test_a_lamp_with_no_read_behind_it_is_unknown_and_a_cut_count_says_at_least(self):
+        # Lead check: missing evidence never shows as healthy, and a count from a capped list says it is a floor.
+        refused = briefs_screen.document(now=NOW, reader=lambda: (_ for _ in ()).throw(ValueError("Grant Full Disk Access")))
+        for answer in (f"() => [200, {json.dumps(refused)}]", "() => [500, { error: 'boom' }]"):
+            ann = self.run_page("R.ann = ELS.annunciator.html;", answer=answer)["R"]["ann"]
+            self.assertNotIn('data-state="ok"', ann)
+            self.assertIn("<b>not read</b>", ann)
+        cut = briefs_screen.document(now=NOW, reader=lambda: {**TILE, "briefs": TILE["briefs"][:4], "total": 900})
+        out = self.run_page("""R.ann = ELS.annunciator.html;
+ELS.lanes.listeners.click[0]({ target: { closest: s => s === '.lane-btn' ? { dataset: { src: 'Intel Brief' } } : null } });
+R.det = ELS.details.html;""", answer=f"() => [200, {json.dumps(cut)}]")
+        self.assertIn("at least <b>4</b> in 7 days", out["R"]["ann"])
+        self.assertIn('data-state="ok"', out["R"]["ann"])
+        self.assertIn("Counts before 09-03 are not read.", out["states"][-1]["text"])
+        self.assertIn("<dd>2 of the newest 4</dd>", out["R"]["det"])
+        full = self.run_page("R.ann = ELS.annunciator.html;")["R"]["ann"]
+        self.assertNotIn("at least", full)
+
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", BRIEFS_JS)
         self.assertNotIn("setAttribute('style'", BRIEFS_JS)

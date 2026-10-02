@@ -75,11 +75,17 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Annunciator ----------
   // build: three lamps. The reference's follow-up, quiet-days and Slack lamps read mail and the watchdog's digest; no reader
   // supplies either here. Missed is unknown with the reason, never a count.
+  // A capped read holds the newest rows only, so a count reaching past its oldest day is a floor, not a total.
+  const capped = () => !!READER && READER.total > READER.shown;
+  const oldest = () => BRIEFS.reduce((m, b) => b.day < m ? b.day : m, '9999-12-31');
   function renderAnnunciator() {
     const n = ranged().length, srcs = new Set(ranged().map(b => b.src)).size;
+    // No read behind the lamp is unknown, never ok: a refused or failed read is not zero briefs.
+    const got = !!READER && READER.state !== 'error', floor = capped() && BRIEFS.length && oldest() >= DAYS[0];
+    const count = got ? html`<span class="ph">${floor ? 'at least ' : ''}<b>${n}</b> in ${range === '24h' ? '24 hours' : `${RANGES[range]} days`}</span> · <span class="ph">${plural(srcs, 'source')}</span>` : html`<span class="ph"><b>not read</b></span>`;
     const read = READ ? html`<span class="ph"><b>${hhmm(READ)}</b> UTC</span> · <span class="ph">${dayLabel(READ.slice(0, 10))}</span>` : html`<span class="ph"><b>not yet</b></span>`;
     put(document.getElementById('annunciator'), html`
-      <li><div class="cell" data-state="ok"><span class="lbl">Briefs${I('inbox')}</span><span class="val"><span class="ph"><b>${n}</b> in ${range === '24h' ? '24 hours' : `${RANGES[range]} days`}</span> · <span class="ph">${plural(srcs, 'source')}</span></span></div></li>
+      <li><div class="cell" data-state="${got ? 'ok' : 'unknown'}"><span class="lbl">Briefs${I('inbox')}</span><span class="val">${count}</span></div></li>
       <li><div class="cell" data-state="unknown" title="${WATCH}"><span class="lbl">Missed${I('siren')}</span><span class="val"><span class="ph"><b>unknown</b></span> · <span class="ph">no watchdog reader</span></span></div></li>
       <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val">${read}</span></button></li>`);
   }
@@ -208,7 +214,7 @@ addEventListener('DOMContentLoaded', () => {
     put(details, html`<p class="kind">Source · ${mine.length ? 'quiet days are gaps' : 'no brief in range'}</p>
       <h2>${s.id}</h2>
       <dl><dt>Briefs, ${DAYS.length} days</dt><dd>${mine.length} on ${on} of ${DAYS.length} days</dd><dt>Newest</dt><dd>${s.newest}</dd>
-        <dt>All read</dt><dd>${s.n}</dd><dt>Watchdog</dt><dd><span class="g-unknown" aria-hidden="true">▨</span> ${WATCH}</dd></dl>
+        <dt>All read</dt><dd>${s.n}${capped() ? ` of the newest ${READER.shown}` : ''}</dd><dt>Watchdog</dt><dd><span class="g-unknown" aria-hidden="true">▨</span> ${WATCH}</dd></dl>
       <p class="why">A quiet day is a gap, not a fault. Without a watchdog reader the page cannot say whether the job ran and had nothing to write, or failed. The file name gives the kind, not the job, so there is no job to retry from here.</p>`);
     C.select(null); shell.suggest([`Why is ${s.id} quiet?`, 'Which jobs missed a run this week?']); shell.openPane('tab-details'); swap();
   }
@@ -273,7 +279,7 @@ addEventListener('DOMContentLoaded', () => {
       if (mine !== generation) return;
       shell.state({ kind: 'error', text: `The briefs were not read: ${err.message}. Reload retries it.`, source: '/api/briefs' });
       // Nothing from the last read stays on screen: rows, lanes, the observed time and the selection.
-      READ = null; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; update(); unselect();
+      READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; update(); unselect();
       return;
     }
     if (mine !== generation) return;
@@ -290,7 +296,7 @@ addEventListener('DOMContentLoaded', () => {
     const source = READER.source || '/api/briefs';
     if (READER.state === 'error') shell.state({ kind: 'error', text: `The briefs were not read: ${READER.reason}. Reload retries it.`, source });
     else if (!BRIEFS.length) shell.state({ kind: 'empty', title: 'No briefs', text: 'The Briefs folder holds no note.', source });
-    else if (READER.skipped || READER.total > READER.shown) shell.state({ kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', READER.total > READER.shown ? `Showing the newest ${READER.shown} of ${READER.total}; the rest are in the folder.` : ''].filter(Boolean).join(' '), source });
+    else if (READER.skipped || READER.total > READER.shown) shell.state({ kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', READER.total > READER.shown ? `Showing the newest ${READER.shown} of ${READER.total}; the rest are in the folder. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source });
     else shell.state(null);
     renderRange(); update();
     const row = shell.row?.();
