@@ -1,0 +1,100 @@
+/* Build (sd:2117): the design source's products/system/designs/v2/home.css at d82daa1, unchanged below
+ * this comment. */
+/* Hallmark · pre-emit critique: P5 H4 E4 S4 R5 V4 */
+/* Home: annunciator lamp grid for Home Assistant's critical entities. Dark cockpit: normal tiles stay unlit.
+ * Kiosk (html[data-kiosk]): no rail, no pane, big clock, 64px+ targets. Tokens only. */
+.home-head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--space-sm) var(--space-lg); margin-bottom: var(--space-lg); }
+.home-head h1 { margin: 0; font: 600 var(--text-2xl)/1.1 var(--font-ui); letter-spacing: -0.02em; }
+.home-head p { margin: var(--space-2xs) 0 0; color: var(--color-muted); font-size: var(--text-sm); }
+.home-head .tools { display: flex; align-items: center; gap: var(--space-xs); }
+.clock { display: none; font: 300 var(--text-2xl)/1 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-ink); }
+.exit { display: none; }
+
+/* Headline lamp */
+.headline {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-sm) var(--space-md);
+  width: 100%; margin: 0 0 var(--space-xl); padding: var(--space-md); text-align: left; cursor: pointer;
+  border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md);
+  background: var(--color-panel); color: var(--color-ink); font: inherit;
+}
+.headline .i { width: var(--icon-md); height: var(--icon-md); }
+.headline .what { display: grid; gap: var(--space-3xs); min-width: 0; }
+.headline .what b { font: 600 var(--text-lg)/1.2 var(--font-ui); }
+.headline .what span { font: 400 var(--text-sm)/1.35 var(--font-data); overflow-wrap: anywhere; }
+.headline .st { font: 500 var(--text-md)/1 var(--font-data); white-space: nowrap; }
+
+/* Groups + tiles */
+.group { margin: 0 0 var(--space-xl); }
+.group h2 { margin: 0 0 var(--space-xs); }
+.lamps {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13.5rem), 1fr));
+  gap: 0; margin: 0; padding: 0; list-style: none;
+  border: var(--rule-hair) solid var(--color-rule); background: var(--color-panel); border-radius: var(--radius-md); overflow: hidden;
+}
+.lamps li { display: grid; min-width: 0; background: var(--color-panel); outline: var(--rule-hair) solid var(--color-rule); }
+.tile { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; color: var(--color-muted); }
+.tile .open {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto auto; gap: var(--space-3xs) var(--space-xs);
+  align-content: start; width: 100%; min-height: 5.25rem; padding: var(--space-sm);
+  border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.tile .open:hover { background: var(--color-well); }
+.tile .open .i { grid-row: 1 / span 3; margin-top: 2px; }
+.tile .nm { font: 600 var(--text-2xs)/1.25 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; }
+.tile .st { font: 500 var(--text-md)/1.25 var(--font-data); color: var(--color-ink); overflow-wrap: anywhere; }
+.tile .st .g { margin-right: var(--space-2xs); }
+.tile time { font-size: var(--text-xs); color: var(--color-muted); }
+.tile .act { display: flex; flex-wrap: wrap; gap: var(--space-2xs); padding: 0 var(--space-sm) var(--space-sm); }
+.tile .act:empty { display: none; }
+.tile[aria-current="true"] .open { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
+.tile[data-state="ok"] .g { color: var(--color-ok); }
+.tile[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
+.tile[data-state="caution"] .st, .tile[data-state="caution"] time { color: var(--color-caution-lamp-ink); }
+.tile[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
+.tile[data-state="warning"] .st, .tile[data-state="warning"] time { color: var(--color-warning-ink); }
+.tile[data-state="caution"] .open:hover, .tile[data-state="warning"] .open:hover { background: transparent; filter: brightness(0.96); }
+.tile[data-state="caution"] .btn.quiet, .tile[data-state="warning"] .btn.quiet { color: inherit; border-color: currentColor; }
+.tile[data-state="unknown"] { color: var(--color-ink-2); background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
+.headline[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); border-color: transparent; }
+.headline[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); border-color: transparent; }
+.headline[data-state="ok"] .g { color: var(--color-ok); }
+
+/* Details extras */
+.details .attrs { font-size: var(--text-xs); }
+.details .actions + .why { margin-bottom: var(--space-md); }
+.details .cli:not(.fold) code { white-space: pre-wrap; }
+/* Tile commands come from shell.commands.rowActions; the row may wrap inside a narrow tile. */
+.tile .act .rowact { flex-wrap: wrap; white-space: normal; }
+.tile[data-state="caution"] .icon-btn, .tile[data-state="warning"] .icon-btn { color: inherit; }
+
+/* ---------- Kiosk ---------- */
+html[data-kiosk] .rail, html[data-kiosk] .pane { display: none !important; }
+html[data-kiosk] .shell { grid-template-columns: minmax(0, 1fr); }
+html[data-kiosk] main { padding: var(--space-lg) var(--space-xl) var(--space-2xl); }
+html[data-kiosk] .clock, html[data-kiosk] .exit { display: inline-flex; }
+html[data-kiosk] .enter { display: none; }
+html[data-kiosk] .clock { font-size: calc(var(--text-2xl) * 1.8); }
+html[data-kiosk] .home-head h1 { font-size: var(--text-xl); }
+html[data-kiosk] .lamps { grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); }
+html[data-kiosk] .tile .open { min-height: 7rem; padding: var(--space-md); }
+html[data-kiosk] .tile .nm { font-size: var(--text-xs); }
+html[data-kiosk] .tile .st { font-size: var(--text-xl); }
+html[data-kiosk] .tile time { font-size: var(--text-sm); }
+html[data-kiosk] .tile .act { padding: 0 var(--space-md) var(--space-md); }
+html[data-kiosk] .tile .act .btn, html[data-kiosk] .tile .act .icon-btn, html[data-kiosk] .exit, html[data-kiosk] dialog.confirm .btn { min-height: 4rem; min-width: 4rem; padding: 0 var(--space-lg); font-size: var(--text-md); }
+html[data-kiosk] .headline { padding: var(--space-lg); }
+html[data-kiosk] .headline .what b { font-size: var(--text-xl); }
+
+@media (max-width: 599px) {
+  .headline { grid-template-columns: auto minmax(0, 1fr); }
+  .headline .st { grid-column: 2; }
+  html[data-kiosk] main { padding: var(--space-md); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tile[data-state="caution"], .tile[data-state="warning"], .headline[data-state="warning"], .headline[data-state="caution"] { animation: lamp var(--dur-lamp) var(--ease-out) both; }
+}
+@keyframes lamp { from { opacity: 0.35; } to { opacity: 1; } }
+@media (forced-colors: active) {
+  .tile[data-state="caution"], .tile[data-state="warning"], .headline[data-state="caution"], .headline[data-state="warning"] { outline: 3px solid CanvasText; outline-offset: -3px; }
+  .tile[data-state="unknown"] { outline: 1px dashed CanvasText; outline-offset: -2px; }
+}
