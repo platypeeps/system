@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/platypeeps/sd-ai-command-pack/main/.github/sd-review.schema.json",
   "copilot_review": {
-    "automatic_deep": true
+    "automatic_deep": false
   },
   "severity_floor": "high"
 }
