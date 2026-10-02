@@ -327,13 +327,13 @@ class TheScript(ScreenCase):
              mock.patch.object(reports_screen, "TAIL_BYTES", tail or reports_screen.TAIL_BYTES):
             return reports_screen.document(self.connection, now=LATER, jobs=self.jobs, tz=TZ, config=EXAMPLE)
 
-    def run_page(self, body, answer=None, doc=None):
+    def run_page(self, body, answer=None, doc=None, prelude=""):
         doc = doc or self.doc
         answer = answer or f"(path, body) => path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, {json.dumps(doc)}] : [200, {{}}]"
         clean = {"before": "2026-09-08T00:00:00+00:00", "count": 1, "max_batch": 1000, "selected": [self.ids["clean"], 99999],
                  "declined": [{"id": self.ids["failed"], "why": "it needs attention"}]}
         script = (STAND_IN + f"var CLEAN = {json.dumps(clean)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + REPORTS_JS
+                  + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + prelude + "\n" + REPORTS_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION;"
@@ -438,6 +438,21 @@ class TheScript(ScreenCase):
         doc["cadence"]["nightly-sync"].update(cut=True, read_from=None)
         out = self.run_page("R.marks = DAYS.map(d => mark('nightly-sync', d)[0]);", doc=doc)
         self.assertEqual(out["R"]["marks"], ["unknown"] * 7)
+
+    def test_the_first_load_selects_a_report_the_filtered_page_shows(self):
+        # The stand-in tbody answers from the rows the page drew, so a selection outside them is visible.
+        rows = """var TB = document.getElementById('rows');
+TB.querySelectorAll = () => [...(TB.html || '').matchAll(/<tr data-id="([^"]+)"/g)].map(m => ({ dataset: { id: m[1] }, setAttribute() {}, toggleAttribute() {} }));
+TB.querySelector = () => TB.querySelectorAll()[0] || null;
+document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: 'nightly-sync' }];"""
+        failed, clean = self.ids["failed"], self.ids["clean"]
+        for search, want in ((f"?job=weekly-scan", f"r{clean}"), (f"?job=weekly-scan&row=r{failed}", f"r{clean}"),
+                             (f"?row=r{clean}", f"r{clean}"), ("", f"r{failed}")):
+            with self.subTest(search):
+                out = self.run_page("R.sel = sel; R.drawn = TB.querySelectorAll().map(t => t.dataset.id);",
+                                    prelude=f"location.search = {json.dumps(search)};\n" + rows)
+                self.assertIn(out["R"]["sel"], out["R"]["drawn"])
+                self.assertEqual(out["R"]["sel"], want)
 
     def test_a_job_that_has_not_run_yet_today_is_not_a_gap(self):
         doc = json.loads(json.dumps(self.doc))

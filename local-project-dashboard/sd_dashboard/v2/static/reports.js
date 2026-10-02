@@ -462,9 +462,12 @@ async function load() {
     renderRows();
     // A load whose filters show no row opens with Details cleared, never on a report the list does not show (PR #31 review 2).
     if (!tbody.querySelector('tr[data-id]')) { window.shell.reconcile({ rows: [], current: null, select: () => {}, clear: clearDetails }); return; }
+    // build: the requested row and the fallback come from the rows this page drew, never from all ROWS: a filter can hide
+    // a report, and Details would then run its actions on a row the list does not show.
     const q = new URLSearchParams(location.search).get('row');
-    const first = ROWS.find(r => r.act) || ROWS[0];
-    select(ROWS.some(r => r.id === q) ? q : first.id, false);
+    const drawn = [...tbody.querySelectorAll('tr[data-id]')].map(tr => tr.dataset.id);
+    const first = drawn.find(id => ROWS.find(r => r.id === id)?.act) || drawn[0];
+    select(drawn.includes(q) ? q : first, false);
   } else {
     renderRows();
     if (sel && ROWS.some(r => r.id === sel)) show(sel);
