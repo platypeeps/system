@@ -199,6 +199,19 @@ class TheComparison(CompareCase):
         self.assertEqual(self.arm(report, "haiku")["agree"], 0)
         self.assertIsNone(self.arm(report, "kev")["mean_abs_dp"])
 
+    def test_a_score_agrees_and_is_right_on_the_recorded_score_not_the_mode(self):
+        # Kev records 2.0, its expected level; its most likely level is 0.
+        jev, _, _ = self.decision(
+            "a", "2", "2", "0", primitive="score",
+            probabilities=(None, "0.4,0.0,0.35,0.25", None))
+        label(self.connection, jev, "2", "test-rule")
+        report = compare(self.connection)
+        kev = self.arm(report, "kev")
+        self.assertEqual((kev["paired"], kev["agree"]), (1, 1))
+        self.assertEqual((kev["labelled"], kev["right"]), (1, 1))
+        # The distribution still scores Brier: 0.4^2 + 0.65^2 + 0.25^2.
+        self.assertAlmostEqual(kev["brier"], 0.16 + 0.4225 + 0.0625)
+
     def test_accuracy_and_brier_read_the_label_on_the_jev_row(self):
         jev, _, _ = self.decision("a", "0.9", "0.8", "0.3")
         label(self.connection, jev, "1", "test-rule")

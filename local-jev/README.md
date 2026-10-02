@@ -370,7 +370,8 @@ batch gives. `--fallback`, `enabled`, a meter that is off, and a call Jev
 never gets start no arm.
 
 Switch an arm off with an off-word (`JEV_COMPARE_KEV=0`,
-`JEV_COMPARE_HAIKU_VIA=off`); unset means on. The rest of the settings are in
+`JEV_COMPARE_HAIKU_VIA=off`); unset means on. A switched-off arm writes no
+row: the operator chose it, so a decline per call would only fill the ledger. The rest of the settings are in
 `.env.example`. Read the comparison with:
 
     local-sd-db/sd-db.sh judgments compare [--stage S] [--since 2026-10] [--json]

@@ -306,7 +306,8 @@ Per stage and per arm and provider: calls, declines by cause, p50 and p95
 latency, tokens, cost, agreement with the Jev row of the same pair, and
 accuracy and Brier score on pairs whose Jev row carries a label. A noul agrees
 when both sit on the same side of 0.5, and the mean `|Δp|` is printed beside
-it. Percentiles are nearest-rank, so every printed number is one a call took.
+it. A score agrees when the rounded scores are equal; its distribution feeds
+the Brier score only. Percentiles are nearest-rank, so every printed number is one a call took.
 
 ## Automatic provider selection
 

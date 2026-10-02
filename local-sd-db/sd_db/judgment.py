@@ -827,8 +827,9 @@ def top(row) -> int | None:
     """The answer a row would act on, as one comparable number.
 
     A noul is yes when its probability is at least 0.5. A choice is the
-    position that won. A score is its most likely level when the row carries
-    the distribution, and its rounded expected level when it does not.
+    position that won. A score is its recorded score, rounded as `_truth`
+    rounds a label; its distribution feeds the Brier score only, so two rows
+    with the same score always agree.
     """
     if row["answer"] is None:
         return None
@@ -836,9 +837,6 @@ def top(row) -> int | None:
     if row["primitive"] == "noul":
         return 1 if value >= 0.5 else 0
     if row["primitive"] == "score":
-        dist = _distribution(row)
-        if dist:
-            return max(range(len(dist)), key=dist.__getitem__)
         return int(round(value))
     return int(value)
 

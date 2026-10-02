@@ -89,7 +89,9 @@ Retries do not start a second set of arms. The arms start once per call.
 
 `JEV_COMPARE_KEV` is read with `stage_off`, the existing off-word reader.
 `JEV_COMPARE_HAIKU_VIA` is off when `stage_off` says so; any other unknown word
-records an `invalid` decline rather than guessing a transport.
+records an `invalid` decline rather than guessing a transport. A switched-off
+arm writes no row; only an arm that tried and could not answer records a
+decline.
 
 ## The Kev arm
 
@@ -230,7 +232,8 @@ the stage has more than one):
 - p50 and p95 of `duration_ms`, and p50 of `server_ms`;
 - tokens in and out, and the summed cost;
 - agreement with the Jev row of the same pair: the share of pairs whose
-  answer equals Jev's (for a noul, both on the same side of 0.5), and for a
+  answer equals Jev's (for a noul, both on the same side of 0.5; for a score,
+  the rounded recorded score, never the distribution's mode), and for a
   noul the mean `|Δp|`;
 - on pairs whose Jev row carries a label: accuracy, and the Brier score from
   `probabilities` (a noul's `answer` is its probability).
