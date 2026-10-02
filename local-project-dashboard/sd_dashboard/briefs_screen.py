@@ -26,6 +26,7 @@ says so, and the page shows them unknown. Nothing here writes.
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import sys
@@ -75,6 +76,12 @@ def _row(raw) -> dict | None:
     if not isinstance(day, str) or (day and not DAY.fullmatch(day)):
         return None
     if not isinstance(words, int) or isinstance(words, bool) or words < 0 or not isinstance(lead, str):
+        return None
+    try:  # The shape is not a date: 2026-02-30 matches DAY and is no day.
+        datetime.datetime.strptime(at, "%Y-%m-%dT%H:%M:%SZ")
+        if day:
+            datetime.date.fromisoformat(day)
+    except ValueError:
         return None
     day = day or at[:10]
     return {"id": stem, "subj": stem, "src": kind, "day": day, "at": at if at[:10] == day else None,

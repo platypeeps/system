@@ -149,6 +149,14 @@ class TheDocument(ScreenCase):
         odd = next(b for b in doc["briefs"] if b["src"] == "Odd")
         self.assertIsNone(odd["open"])
 
+    def test_a_date_that_is_not_on_the_calendar_is_skipped(self):
+        # Review 688b82bf83ce: the shape is not enough; 2026-02-30 has the shape and no day.
+        bad = [tile_row("2026-02-30 - Daily", "2026-03-01T07:00:00Z"), tile_row("2026-09-05 - Daily", "2026-02-30T07:00:00Z"),
+               tile_row("2026-09-05 - Late", "2026-09-05T25:00:00Z")]
+        doc = briefs_screen.document(now=NOW, reader=lambda: {**TILE, "briefs": TILE["briefs"] + bad})
+        self.assertEqual((doc["reader"]["state"], doc["reader"]["skipped"]), ("partial", 3))
+        self.assertEqual(len(doc["briefs"]), 5)
+
     def test_the_page_takes_at_most_its_row_cap_and_cuts_each_lead(self):
         many = [tile_row(f"2026-09-01 - K{i:03d}", "2026-09-01T00:00:00Z", lead="y" * 500) for i in range(briefs_screen.ROWS + 5)]
         doc = briefs_screen.document(now=NOW, reader=lambda: {"briefs": many, "total": 900})
