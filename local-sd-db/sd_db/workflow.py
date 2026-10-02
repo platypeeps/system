@@ -630,6 +630,33 @@ def _today() -> date:
     return date.today()
 
 
+def _series_start(row: dict, rule, anchor: str, today: date) -> date:
+    """The date the next occurrence is searched from: the completion day, or the item's `due` for a schedule anchor."""
+    if anchor == "completion":
+        return today
+    if row["due"] is None:
+        raise RecurrenceError(f"recurrence {rule.text()} is schedule-anchored and the item has no due date")
+    return date.fromisoformat(row["due"])
+
+
+def next_occurrence_due(row: dict, *, today: date | None = None) -> str | None:
+    """The due date that completing `row` today gives its next occurrence, or None.
+
+    It makes the computation `_next_occurrence` makes when the completion
+    lands, and writes nothing, so a page can name the date before it asks.
+    None means no rule, or no next occurrence: the completion would end the
+    series.
+    """
+    anchor = row["recurrence_anchor"] or "schedule"
+    if row["recurrence"] is None or anchor not in ANCHORS:
+        return None
+    try:
+        rule = parse_rule(row["recurrence"])
+        return next_after(rule, _series_start(row, rule, anchor, today or _today())).isoformat()
+    except (RecurrenceError, ValueError):
+        return None
+
+
 def _next_occurrence(connection: sqlite3.Connection, row: dict, *, who: str) -> tuple[int | None, str | None]:
     """Create the row a completed recurring item owes, and move the rule to it.
 
@@ -661,12 +688,7 @@ def _next_occurrence(connection: sqlite3.Connection, row: dict, *, who: str) -> 
         if anchor not in ANCHORS:
             raise RecurrenceError(f"recurrence_anchor {anchor!r} is not one of {', '.join(ANCHORS)}")
         rule = parse_rule(row["recurrence"])
-        if anchor == "completion":
-            start = _today()
-        elif row["due"] is None:
-            raise RecurrenceError(f"recurrence {rule.text()} is schedule-anchored and the item has no due date")
-        else:
-            start = date.fromisoformat(row["due"])
+        start = _series_start(row, rule, anchor, _today())
         due = next_after(rule, start).isoformat()
     except (RecurrenceError, ValueError) as error:
         searched = f", searched from {start.isoformat()}" if start is not None else ""

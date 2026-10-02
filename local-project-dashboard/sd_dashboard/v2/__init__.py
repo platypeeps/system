@@ -1,7 +1,7 @@
-"""The dashboard's default UI: the ui-design shell, and the pages built on it so far (sd:2110, sd:2163).
+"""The dashboard's default UI: the design source's shell, and the pages built on it so far (sd:2110, sd:2163, sd:2124, sd:2118, sd:2117, sd:2113, sd:2112, sd:2122, sd:2111).
 
-The design source is ui-design `products/system/` (`design.md`, `designs/v2/`,
-`foundation/`); `static/` holds its shell, tokens and fonts as the files the
+The design source is ui-design `products/system/` (`design.md`, `designs/pages/`,
+formerly `designs/v2/`, and `foundation/`); `static/` holds its shell, tokens and fonts as the files the
 dashboard policy allows (`default-src 'self'`: no inline style or script, no
 font from another origin). `static/shell.js` marks each change from the
 reference with `build:`.
@@ -28,28 +28,33 @@ HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 
 #: Route path -> page file. `/` is Today as well: the new design is the default.
-PAGES = {"/": "today.html", "/today": "today.html"}
+PAGES = {"/": "today.html", "/today": "today.html", "/tasks": "tasks.html", "/management": "management.html", "/home": "home.html",
+         "/briefs": "briefs.html", "/fleet-health": "health.html", "/contributions": "contributions.html", "/research": "research.html", "/activity": "activity.html"}
 
 #: The shell's map, and the only place a rail section names its address. A ported section opens its page; a section
 #: not yet ported opens its old screen, marked "classic" on the rail, until its port moves it into SECTIONS. A section
 #: in neither has no old screen and still says it is not built. The shell reads the three as /ui/sections.js.
-SECTIONS = {"Today": "/today"}
+SECTIONS = {"Today": "/today", "Briefs": "/briefs", "Tasks": "/tasks", "Contributions": "/contributions", "Management": "/management",
+            "Home": "/home", "Health": "/fleet-health", "Research": "/research", "Activity": "/activity"}
 CLASSIC = {
-    "Tasks": "/backlog",
     "Writing": "/writing",
-    "Research": "/operations?area=resources",
-    "Contributions": "/contributions",
     "Documents": "/documents",
     "Skills": "/skills",
     "Metrics": "/operations?area=usage",
-    "Management": "/operations?area=jobs",
     "Reports": "/operations?area=reports",
     "Commands": "/operations?area=commands",
     "Designs": "/designs",
 }
-#: Old screens with no rail section of their own; the palette offers them under "Classic screens".
+#: Old screens with no rail section of their own; the palette offers them under "Classic screens". The old Backlog stays
+#: here after Tasks moved to `SECTIONS` (sd:2124): the new page has no run selection, age buckets, paging or status
+#: filter yet, and Operations > Progress links to it. Jobs, Services, Repos, Sessions and Protection stay after Management
+#: moved (sd:2118): the new page has no job log or cancel, no service filter or paging, no pull, and no gap matrix.
+#: The old Contributions stays after its port (sd:2113): the new page shows no evidence, dependencies or notification delivery.
+#: Resources stays after Research moved (sd:2122): it also holds Toolbox, Briefs, Vault and Queues, which have no page yet.
 SCREENS = {
     "Today (classic)": "/classic/today",
+    "Backlog (classic)": "/backlog",
+    "Contributions (classic)": "/classic/contributions",
     "Jobs": "/operations?area=jobs",
     "Services": "/operations?area=services",
     "Ports": "/operations?area=ports",
@@ -58,6 +63,7 @@ SCREENS = {
     "Sessions": "/operations?area=sessions",
     "Progress": "/operations?area=progress",
     "Protection": "/protection",
+    "Resources (classic)": "/operations?area=resources",
 }
 
 TYPES = {

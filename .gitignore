@@ -72,6 +72,7 @@ local-maintenance/maintenance.conf
 local-maintenance/maintenance.*.conf
 local-mirror-sync/mirrors*.conf
 local-project-dashboard/documents.conf
+local-project-dashboard/home-tiles.conf
 local-repo-sync/repos.*.conf
 local-scan-for-secrets/scan-for-secrets.conf
 local-sd-plan/repos.*.conf

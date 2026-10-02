@@ -37,7 +37,7 @@ and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
 **The new design is the default** (sd:2163). It is the redesign from ui-design
-`products/system/` (`design.md`, `designs/v2/`), built one page at a time.
+`products/system/` (`design.md`, `designs/pages/`, formerly `designs/v2/`), built one page at a time.
 `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted IBM Plex
 under `static/`, served at `/ui/`; `shell.js` marks each change from the
 reference with `build:`. The assets take `/ui/` because the old screens own
@@ -48,10 +48,113 @@ only what `html` made; that file holds the one HTML sink criterion 12's grep
 allows in v2. The first page is Today, at `/` and `/today`: the same
 `/api/now` rows as the classic Now, as an annunciator and a ranked ledger. It
 runs no command yet; its capture files a task through `POST /api/items`.
-Status mail, backups, HOA water, Wants you and Briefs wait for collectors.
+Status mail, backups, HOA water and Wants you wait for collectors.
 
-The old screens stay until their section is ported. Only the old Today moved,
-to `/classic/today`; every other old screen keeps its path. A `/v2/` address
+Tasks is the second page, at `/tasks` (sd:2124): the rows v1 `/backlog` reads,
+as a board, an Eisenhower matrix and a list, filtered by kind, repo, priority
+and due. `GET /api/tasks` (`tasks_screen.document`) gives each row its revision
+and the statuses the library allows it. `GET /api/tasks/<id>`
+(`tasks_screen.details`) splits the `sd task show --json` reading into status
+history and notes, and adds the item's assignments and its external context.
+A command that runs posts to the route v1 already answers, and its toast comes
+after the write lands. Status, priority, due and recurrence edits and a requeue
+carry Undo; resolving a followup note and cancelling an assignment ask first.
+`sd work relink` and `sd work cancel` are shown for Copy only.
+
+Home is at `/home` (sd:2117): the design's critical Home Assistant tiles and
+its wall display (`?kiosk=1`). `GET /api/home` (`home_screen.document`) lists
+the tiles `<config>/project-dashboard/home-tiles.conf` names, one
+`headline|<entity_id>|<name>` or `tile|<group>|<entity_id>|<name>` per line.
+An optional last field, `alarm`, `lock`, `toggle` or `sensor`, sets the tile's
+commands when its domain would not. Entity ids describe a house, so the
+checkout ships only `home-tiles.conf.example`. A line the page cannot read is
+named and skipped; without the file the page says "No tile list" and draws no
+grid. The dashboard reads no Home Assistant state yet, so every tile shows as
+unknown with that reason and none shows ok. The design's arm, disarm, lock,
+unlock and toggle commands are registered but off with it, so the page sends
+nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
+`$HA_URL` and never holds a value.
+
+Contributions is at `/contributions` (sd:2113): the open rows of the
+contributions projection v1 renders, in lanes by who acts next, with each
+row's repository scope (internal when sd's repo table holds it) and settled
+rows counted per repository. `GET /api/contributions/page`
+(`contribution_screen.document`) carries at most `OPEN_LIMIT` open rows and
+says when it cut some; its per-scope counts, which the badge, lamps and tallies
+read, cover every open row. It sends no local path: a checkout reads
+`local: <folder>`, and a draft is the flag `has_draft`. The dashboard reads nothing from GitHub, so the design's
+"GitHub now" state and settled-per-day chart say they are not read.
+Acknowledge and Make task ask first, since no verb reverses either.
+Acknowledge posts to the v1 route. Make task posts `/api/contributions/task`,
+which files the task `sd task contribution add` files, with the row's URL as
+its identity: the projection links the two, and a second task for the URL is
+refused. A write's toast reports the write; the reread after it is separate,
+and only the newest reread draws. A row a reread no longer lists loses its
+pick and its commands. Settled rows count per stored repository, so two
+checkouts with one folder name stay two bars. Draft nudge, Open on GitHub and
+Re-run collector are copy only. The old screen moved to `/classic/contributions`; it still shows
+evidence, dependencies and notification delivery.
+
+Briefs is at `/briefs` (sd:2112): the brief notes the vault's
+`System/AI Generated/Briefs` folder holds, as cadence lanes per source and a
+ledger, over 24 hours, 7 or 30 days. `GET /api/briefs`
+(`briefs_screen.document`) reads them through the child Research > Resources >
+Briefs runs, `sd_tile.py briefs-rows`, under the same five seconds; the child
+stops at 200 rows or 48 KB and the page says how many it shows of how many.
+A row's source is the kind in its file name, and its time is the note's
+modification time, given only when it falls on the note's own day. The design
+reads brief mail; no mail or watchdog reader exists, so the page shows no
+unread state, follow-up flag or failure, and the Missed lamp is unknown with
+that reason. Make task opens the capture form, which files through
+`POST /api/items`; Open in Obsidian opens the note's link.
+
+Health is at `/fleet-health` (sd:2115); `/health` stays the service's own
+check. `GET /api/health` (`health_screen.document`) lists the design's nine
+areas in its order. Four have a reader: Worktrees (registrations whose directory
+is gone, from the fleet child Sessions reads), Attribution (your own commits,
+by each repository's `user.email`, of the last five weeks on its default branch
+`origin/HEAD`, merges left out, that lack `Authored-with:`; a repository with no
+`origin/HEAD` or no `user.email` is named in its own row, not read on its
+checkout's HEAD; the walk runs inside a 10-second budget, and past it the area
+says it stopped rather than waited on), Ports (Operations > Ports' reader, with
+its counts and warnings) and Protection (`protection.rows`, drawn as a matrix
+with one column per repository and a table carrying the same cells; an unread
+repository shows no cell). Disk, Credentials, Branches, Dependencies and
+Security have no collector yet; each shows as unknown and names what it does
+not read. Nothing on the page writes: Prune registrations, Attribute, Inspect
+listener and Re-run collector are CLI lines for Copy, and Re-check reads the
+document again.
+
+Research is at `/research` (sd:2122): every checkout under `REPO_ROOT`, one
+group deep, that carries a `research.conf.py`. `GET /api/research`
+(`research_screen.document`) runs `collectors.collect_research` in a child
+under a five-second budget. Each row shows the checkout's stage (the numbered
+directories that hold Markdown), its render freshness and its last commit. A
+config the collector refuses shows as unknown with the refusal.
+`GET /api/research/<checkout>` (`research_screen.sources`) reads that
+checkout's ledger: the Markdown tables in `SOURCES.md`,
+`10-sources/registry.md` and `10-sources/references.md`, up to 60 rows with
+the whole count. Any other path is a 404. Nothing reads review rounds or
+claims yet, so both show as unknown with that reason. Render and Review are
+copy only: the dashboard does not run `sd-research-kit`. Start research is
+off with its reason; the field shows the `sd task add` and `sd run` lines for
+Copy. The old view stays in the palette as Resources (classic), with Toolbox,
+Briefs, Vault and Queues.
+
+Activity is at `/activity` (sd:2111): one timeline of the last 24 hours, as an
+annunciator, a lane per kind and a ledger banded by hour. `GET /api/activity`
+(`activity_screen.document`) reads only what the library already records:
+merges are the delivery notes `sd-ship` writes, runs are runner assignments
+and launchd jobs placed at their log time, and commands are the execution
+journal v1 Operations > Commands lists, older records too for the "All read"
+range; palette and runner runs alike (sd:2183). Reviews, deploys and mail have no
+collector; the document names each with its reason and the page draws it
+unknown, not zero. Requeue carries Undo; job retry posts the job's revision;
+Show output reads the execution record.
+
+The old screens stay until their section is ported. The old Today moved to
+`/classic/today` and the old Contributions to `/classic/contributions`; every
+other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
 `/today`, `/v2/static/<file>` to `/ui/<file>`); any other `/v2/` path is a 404.
 One map in `sd_dashboard/v2/__init__.py`, served as `/ui/sections.js`, says
@@ -63,19 +166,23 @@ Classic screens.
 | Section or screen | Opens |
 | --- | --- |
 | Today | `/today` (new) |
-| Tasks | `/backlog` |
+| Briefs | `/briefs` (new) |
+| Tasks | `/tasks` (new) |
+| Home | `/home` (new) |
+| Research | `/research` (new) |
 | Writing | `/writing` |
-| Research | `/operations?area=resources` |
-| Contributions | `/contributions` |
+| Contributions | `/contributions` (new) |
 | Documents | `/documents` |
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
-| Management | `/operations?area=jobs` |
+| Management | `/management` (new) |
+| Health | `/fleet-health` (new) |
+| Activity | `/activity` (new) |
 | Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
-| Briefs, Notes, HOA, Home, Health, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/operations?area=…`, `/protection` |
+| Notes, HOA | no old screen; the rail says not built yet |
+| Palette: Today (classic), Backlog (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
@@ -112,7 +219,7 @@ still a separate CLI operation that verifies its commit. An item's external
 reference is shown with its snapshot and sync freshness; an old GitHub status
 does not control local task completion.
 
-**Contributions** at `/contributions` shows upstream activity, unfiled local work, evidence, dependencies, and notification state.
+**Contributions (classic)** at `/classic/contributions` shows upstream activity, unfiled local work, evidence, dependencies, and notification state.
 Today previews the first five contributions in the same order.
 Newly unblocked work comes first, then work awaiting you, work awaiting others, and merged contributions.
 The shared library supplies this order to both the dashboard and `sd-status`.
@@ -153,7 +260,7 @@ the selected tab travels in the URL, for example `/operations?area=services`.
 | **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
 | **Ports** | Configured service ports and locally observed TCP listeners, with visible processes, PIDs and listening addresses. Read-only; filter by port, service or process. |
 | **Progress** | Age in status for all active items across repositories, excluding completed and parked items. A bar opens the corresponding active Backlog bucket; Backlog filters do not alter this chart. |
-| **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, missing-trailer count and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db.sh usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db.sh usage` binds it. |
+| **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, missing-trailer count (walked inside the 10-second budget Health uses; past it the tile says "not read" and that the walk stopped rather than waited on) and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db.sh usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db.sh usage` binds it. |
 | **Reports** | The newest 200 recorded reports — scheduled job output with its source and findings. Open one to follow up, assign work or acknowledge it. Preview the clean reports at a date and acknowledge them in one attributed batch; the emails keep going. |
 | **Resources** | The five legacy vault and machine views — Toolbox, Briefs, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
 | **Trackers** | PRs and Issues as `sd shadow sync` last saw them, read from `sd_db.shadow` through `progress.tracker_items`, with each tracker's sync health. A row's reference is the last path segment of its URL — `LOG-23818` for a Jira ticket, `owner/repo#4321` on GitHub. Open rows only; read-only. |
@@ -402,8 +509,10 @@ A font also carries `Access-Control-Allow-Origin: *`, because a browser fetches
 fonts in CORS mode. No other file gets it: the data scripts beside the pages
 hold real notes and mail, and any site could then read them from this port.
 
-The v2 Designs mockup loads `products/system/designs/v2/data/designs-data.js`.
+The v2 Designs mockup loads `products/system/designs/pages/data/designs-data.js`.
 The tab answers that one path live, with `designs.ledger_script()`, instead of the committed file.
+A checkout from before the design source renamed `designs/v2/` to `designs/pages/` has no `pages/` folder.
+There the tab answers `designs/v2/data/designs-data.js` instead (`designs.live_ledger`), and reads `v2/` pages the same way.
 `designs.ledger()` ports ui-design's `tools/collect-designs.mjs` and lists:
 
 - per page: kind, title, bytes, last commit (sha, time, subject) and a dirty flag;
@@ -461,7 +570,7 @@ The manifest now declares only the four queue actions.
 | **Toolbox** | Cron jobs with launchd's own last-exit code **and the next time each one fires**, launch agents, docker containers, and `machine-setup` drift with the age of the measurement | `launchctl list`, `jobs/*.job`, `docker ps`, and the nightly drift job's log rather than a fresh `machine-setup.sh status`, which cost most of the five-second budget |
 | **Briefs** | Everything the scheduled routines wrote, newest first, grouped by kind, each readable inline | `System/AI Generated/Briefs` |
 | **Vault** | One card per `* Home` area with note and open-task counts, plus overdue/due-today and Inbox pressure | vault frontmatter |
-| **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus `build/` mtimes |
+| **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus the built page's mtime in `docs/dashboard/` (or the older `build/`) |
 | **Ports** | Each service's effective ports, and which of them clash with another candidate or are already held — read from `machine-setup.sh`'s own conflict lines, which the collector could not see until 6b-9 | `machine-setup.sh candidates service` |
 | **Queues** | The four vault decision databases: how many are waiting, and the oldest undecided notes across all of them | the database folders under `System/Databases/` |
 

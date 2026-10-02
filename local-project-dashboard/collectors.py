@@ -825,6 +825,10 @@ def git_facts(path):
 
 # --------------------------------------------------------------- collectors
 
+# Where a research document's page is built, newest layout first: sd-research-kit renders into docs/dashboard/, and
+# build/ is where it rendered before (sd:2122). The first that holds the page is the one compared with its source.
+RESEARCH_OUTPUT = ("docs/dashboard", "build")
+
 
 def read_research_config(path):
     """Read declared data without executing repository Python on a page GET."""
@@ -887,12 +891,13 @@ def collect_research():
     """Every checkout carrying a research.conf.py — the repos rendered by
     sd-research-kit, which is where this page's visual identity comes from."""
     items = []
-    roots = [REPO_ROOT] + [d for d in sorted(REPO_ROOT.glob("*")) if d.is_dir()]
+    # A linked group, checkout or config is never read (no config parse, no git): with none followed, the walk stays in REPO_ROOT.
+    roots = [REPO_ROOT] + [d for d in sorted(REPO_ROOT.glob("*")) if d.is_dir() and not d.is_symlink()]
     seen = set()
     for root in roots:
         for conf in sorted(root.glob("*/research.conf.py")):
             repo = conf.parent
-            if repo in seen:
+            if repo in seen or repo.is_symlink() or conf.is_symlink():
                 continue
             seen.add(repo)
             try:
@@ -904,7 +909,8 @@ def collect_research():
             docs, links = [], []
             for cfg in ns.get("DOCS", []):
                 src = repo / cfg["src"]
-                built = repo / "build" / (cfg["out"] + ".html")
+                outputs = [repo / folder / (cfg["out"] + ".html") for folder in RESEARCH_OUTPUT]
+                built = next((path for path in outputs if path.exists()), outputs[0])
                 if not src.resolve().is_relative_to(repo.resolve()) or not built.resolve().is_relative_to(repo.resolve()):
                     raise ValueError("research source or output is outside its repository")
                 if src.exists() and src.stat().st_size > 2 * 1024 * 1024:
@@ -1250,6 +1256,10 @@ def cron_next(expr, now=None):
     return None
 
 
+#: How much of a brief's body `collect_briefs` keeps as its `lead`.
+BRIEF_LEAD = 200
+
+
 def collect_briefs():
     """What the scheduled routines actually wrote. They mail these and file
     them in the vault; nothing surfaced them anywhere you would browse.
@@ -1258,6 +1268,11 @@ def collect_briefs():
     definitions and append-only run logs, which are configuration and exhaust,
     not output. Files are named `YYYY-MM-DD - Kind.md`, so the kind is the
     useful grouping — there is no routine name in the note to group by.
+
+    `at` is the note's modification time in UTC, and `lead` its first
+    `BRIEF_LEAD` characters of body text with whitespace folded: the Briefs
+    page (`sd_dashboard/briefs_screen.py`) shows both, the Resources view
+    neither.
     """
     require_vault()
     root = VAULT / "System" / "AI Generated" / "Briefs"
@@ -1269,11 +1284,14 @@ def collect_briefs():
             m = re.match(r"(\d{4}-\d{2}-\d{2})\s*-\s*(.+)$", f.stem)
             day, kind = (m.group(1), m.group(2)) if m else ("", "other")
             fm, body = frontmatter(f)
+            text = body if body is not None else f.read_text(errors="replace")
             out.append({
                 "stem": f.stem, "rel": str(rel), "kind": kind, "day": day,
                 "when": day or datetime.date.fromtimestamp(st.st_mtime).isoformat(),
+                "at": datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "age_d": age_days(day) if day else None,
-                "words": len((body or f.read_text(errors="replace")).split()),
+                "words": len(text.split()),
+                "lead": " ".join(text.split())[:BRIEF_LEAD],
                 "obsidian": obsidian_url(str(rel)[:-3]),
             })
     out.sort(key=lambda b: (b["when"], b["stem"]), reverse=True)
