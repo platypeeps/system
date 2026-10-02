@@ -598,6 +598,15 @@ class Dashboard(BaseHTTPRequestHandler):
                     return self._json(200, management_screen.document(connection, now=self.clock(), fleet=self.fleet_backend,
                                                                       jobs=self.operations_backend,
                                                                       services=self.services_backend))
+                if path == "/api/home":
+                    from . import home_screen
+
+                    # The Home page's tiles (sd:2117), from the config folder; no Home Assistant state is read yet.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Home."})
+                    if split.query:
+                        return self._json(400, {"error": "Home does not accept query parameters."})
+                    return self._json(200, home_screen.document(now=self.clock()))
                 if path == "/api/activity":
                     from . import activity_screen
 

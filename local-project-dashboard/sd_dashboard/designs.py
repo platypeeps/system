@@ -146,10 +146,14 @@ def designs(root: Path | None = None) -> dict[str, list[str]]:
 # The inputs hash: a port of ui-design's tools/inputs.mjs. Each rule below
 # mirrors one line there; a change on either side stales every screenshot.
 
+#: The mockup folder: `designs/pages/` since the design source's sd:2193, `designs/v2/` before it. The tab reads
+#: either, so it works on both sides of that rename (sd:2389).
+MOCKUP_DIRS = ("pages", "v2")
+_MOCKUP = "(?:%s)" % "|".join(MOCKUP_DIRS)
 #: Generated data files the hash treats specially, by where they sit.
-SKIP = re.compile(r"/v2/data/counts\.js$")
-STAMP = re.compile(r"/v2/data/commands\.js$")
-LEDGER = re.compile(r"/v2/data/designs-data\.js$")
+SKIP = re.compile(rf"/{_MOCKUP}/data/counts\.js$")
+STAMP = re.compile(rf"/{_MOCKUP}/data/commands\.js$")
+LEDGER = re.compile(rf"/{_MOCKUP}/data/designs-data\.js$")
 #: Ledger fields a collect or a retake rewrites, left out of the hash.
 SHOT_FIELDS = ("dirty", "shotStale", "shotTimes", "shotChanged", "shotSha", "shotOldest", "shotSize")
 #: Where shots.mjs records each screenshot's inputs hash.
@@ -299,6 +303,11 @@ def _dirty(base: Path) -> set[str]:
     return {entry[3:] for entry in entries.split("\0") if len(entry) > 3}
 
 
+def _mockup(path: str) -> bool:
+    """Whether the page sits in a product's mockup folder, under either name."""
+    return re.search(rf"/designs/{_MOCKUP}/", path) is not None
+
+
 def _kind(path: str) -> str:
     """Where the page sits says what it is."""
     if path.endswith("/template.html"):
@@ -307,7 +316,7 @@ def _kind(path: str) -> str:
         return "final"
     if "/reference/" in path:
         return "reference"
-    if "/designs/v2/" in path:
+    if _mockup(path):
         return "v2 mockup"
     if "/designs/v1-" in path:
         return "v1 mockup"
@@ -318,11 +327,12 @@ def _shots(base: Path, path: str) -> list[str]:
     """A page's screenshots, by the names shots.mjs writes, as the tab serves them.
 
     A v2 page's are exactly `v2-<page>-<width>.png`, so a one-off capture beside
-    them is not its shot; a v1 page's are every `v1-*.png`.
+    them is not its shot; a v1 page's are every `v1-*.png`. A v2 page sits in
+    either mockup folder (`MOCKUP_DIRS`); its shots sit in `designs/shots/`.
     """
-    folder = posixpath.join(re.sub(r"/v2$", "", posixpath.dirname(path)), "shots")
+    folder = posixpath.join(re.sub(rf"/{_MOCKUP}$", "", posixpath.dirname(path)), "shots")
     name = posixpath.basename(path)[:-len(".html")]
-    if "/v2/" in path:
+    if _mockup(path):
         prefix = f"v2-{name}-"
 
         def own(file: str) -> bool:
@@ -432,7 +442,7 @@ def ledger(root: Path | None = None, *, now: datetime | None = None) -> dict:
             commit = commits.get(path)
             shots = _shots(base, path)
             stale: list[str] = []
-            if "/v2/" in path and shots:
+            if _mockup(path) and shots:
                 try:
                     current = inputs_hash(base, path)
                 except (OSError, ValueError):
@@ -459,8 +469,14 @@ def ledger(root: Path | None = None, *, now: datetime | None = None) -> dict:
     return out
 
 
-#: The generated ledger the v2 Designs page loads. The tab answers it live.
-LIVE_LEDGER = "products/system/designs/v2/data/designs-data.js"
+#: The generated ledger the v2 Designs page loads, in each mockup folder, `pages/` first. The tab answers it live.
+LIVE_LEDGERS = tuple(f"products/system/designs/{folder}/data/designs-data.js" for folder in MOCKUP_DIRS)
+
+
+def live_ledger(root: Path | None = None) -> str:
+    """The ledger path the checkout holds: under `pages/` when it has one, else under `v2/`, the path before sd:2193."""
+    base = Path(ROOT if root is None else root).expanduser()
+    return next((path for path in LIVE_LEDGERS if (base / path).is_file()), LIVE_LEDGERS[-1])
 
 
 def ledger_script(root: Path | None = None) -> str:
@@ -471,7 +487,7 @@ def ledger_script(root: Path | None = None) -> str:
 def read(target: Path, root: Path | None = None) -> bytes:
     """What the tab serves for a resolved file: its bytes, or the live ledger for the committed one."""
     base = Path(ROOT if root is None else root).expanduser()
-    if target == (base / LIVE_LEDGER).resolve():
+    if target == (base / live_ledger(base)).resolve():
         return ledger_script(base).encode("utf-8")
     return target.read_bytes()
 

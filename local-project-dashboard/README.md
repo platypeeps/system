@@ -37,7 +37,7 @@ and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
 **The new design is the default** (sd:2163). It is the redesign from ui-design
-`products/system/` (`design.md`, `designs/v2/`), built one page at a time.
+`products/system/` (`design.md`, `designs/pages/`, formerly `designs/v2/`), built one page at a time.
 `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted IBM Plex
 under `static/`, served at `/ui/`; `shell.js` marks each change from the
 reference with `build:`. The assets take `/ui/` because the old screens own
@@ -60,6 +60,20 @@ A command that runs posts to the route v1 already answers, and its toast comes
 after the write lands. Status, priority, due and recurrence edits and a requeue
 carry Undo; resolving a followup note and cancelling an assignment ask first.
 `sd work relink` and `sd work cancel` are shown for Copy only.
+
+Home is at `/home` (sd:2117): the design's critical Home Assistant tiles and
+its wall display (`?kiosk=1`). `GET /api/home` (`home_screen.document`) lists
+the tiles `<config>/project-dashboard/home-tiles.conf` names, one
+`headline|<entity_id>|<name>` or `tile|<group>|<entity_id>|<name>` per line.
+An optional last field, `alarm`, `lock`, `toggle` or `sensor`, sets the tile's
+commands when its domain would not. Entity ids describe a house, so the
+checkout ships only `home-tiles.conf.example`. A line the page cannot read is
+named and skipped; without the file the page says "No tile list" and draws no
+grid. The dashboard reads no Home Assistant state yet, so every tile shows as
+unknown with that reason and none shows ok. The design's arm, disarm, lock,
+unlock and toggle commands are registered but off with it, so the page sends
+nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
+`$HA_URL` and never holds a value.
 
 Activity is at `/activity` (sd:2111): one timeline of the last 24 hours, as an
 annunciator, a lane per kind and a ledger banded by hour. `GET /api/activity`
@@ -86,18 +100,19 @@ Classic screens.
 | --- | --- |
 | Today | `/today` (new) |
 | Tasks | `/tasks` (new) |
-| Activity | `/activity` (new) |
+| Home | `/home` (new) |
 | Writing | `/writing` |
 | Research | `/operations?area=resources` |
 | Contributions | `/contributions` |
 | Documents | `/documents` |
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
-| Management | `/operations?area=jobs` |
+| Management | `/management` (new) |
+| Activity | `/activity` (new) |
 | Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
-| Briefs, Notes, HOA, Home, Health | no old screen; the rail says not built yet |
+| Briefs, Notes, HOA, Health | no old screen; the rail says not built yet |
 | Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
@@ -425,8 +440,10 @@ A font also carries `Access-Control-Allow-Origin: *`, because a browser fetches
 fonts in CORS mode. No other file gets it: the data scripts beside the pages
 hold real notes and mail, and any site could then read them from this port.
 
-The v2 Designs mockup loads `products/system/designs/v2/data/designs-data.js`.
+The v2 Designs mockup loads `products/system/designs/pages/data/designs-data.js`.
 The tab answers that one path live, with `designs.ledger_script()`, instead of the committed file.
+A checkout from before the design source renamed `designs/v2/` to `designs/pages/` has no `pages/` folder.
+There the tab answers `designs/v2/data/designs-data.js` instead (`designs.live_ledger`), and reads `v2/` pages the same way.
 `designs.ledger()` ports ui-design's `tools/collect-designs.mjs` and lists:
 
 - per page: kind, title, bytes, last commit (sha, time, subject) and a dirty flag;

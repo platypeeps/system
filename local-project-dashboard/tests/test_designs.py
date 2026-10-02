@@ -247,7 +247,7 @@ class Served(unittest.TestCase):
 
     def test_the_ledger_the_v2_page_loads_is_answered_live(self):
         v2_tree(self.root)
-        status, sent, body = self.get(self.handler(), designs.LIVE_LEDGER)
+        status, sent, body = self.get(self.handler(), f"{V2}/data/designs-data.js")
         self.assertEqual(status, 200)
         self.assertEqual(sent["Content-Type"], "text/javascript; charset=utf-8")
         self.assertEqual(sent["Cross-Origin-Resource-Policy"], "cross-origin")
@@ -276,6 +276,8 @@ class Served(unittest.TestCase):
 
 
 V2 = "products/system/designs/v2"
+#: The mockup folder after the design source renames `v2/` (sd:2389).
+PAGES = "products/system/designs/pages"
 
 #: A ledger with every field the hash drops and a float JSON.stringify writes as `2`.
 LEDGER = (
@@ -288,7 +290,7 @@ LEDGER = (
 )
 
 
-def v2_tree(base: Path) -> None:
+def v2_tree(base: Path, folder: str = V2) -> None:
     """Two v2 pages whose inputs cover every rule in ui-design's tools/inputs.mjs.
 
     `EXPECTED` holds what `node inputs.mjs` computed for them; the Python port
@@ -306,15 +308,15 @@ def v2_tree(base: Path) -> None:
     # Not UTF-8: Node hashes the buffer as a string, each bad sequence one U+FFFD.
     (foundation / "fonts" / "plex.woff2").write_bytes(
         b"wOF2\x00\x80\xff\xc3(\xe2\x82 end \xf0\x9f\x98\x80 \xed\xa0\x80 \xf4\x90\x80\x80")
-    data = base / V2 / "data"
+    data = base / folder / "data"
     data.mkdir(parents=True)
     (data / "counts.js").write_text("window.COUNTS = {tasks: 3};\n", encoding="utf-8")
     (data / "commands.js").write_text(
         '// header\nwindow.COMMANDS = {\n  "read": "2026-09-29T10:00:00Z",\n  "rows": [1, 2]\n};\n',
         encoding="utf-8")
     (data / "designs-data.js").write_text(LEDGER, encoding="utf-8")
-    (base / V2 / "shell.js").write_text("// shell \u2014 caf\u00e9\n", encoding="utf-8")
-    (base / V2 / "today.html").write_text(
+    (base / folder / "shell.js").write_text("// shell \u2014 caf\u00e9\n", encoding="utf-8")
+    (base / folder / "today.html").write_text(
         '<!doctype html><title> Today \u2014 sd </title>\n'
         '<link rel="stylesheet" href="../../../../foundation/tokens.css">\n'
         '<script src="data/counts.js"></script><script src="data/commands.js"></script>\n'
@@ -323,7 +325,7 @@ def v2_tree(base: Path) -> None:
         '<img alt="" src="https://example.test/a.png"><img src="${x}.png"><img src="#top">\n'
         '<iframe src="/frame.html"></iframe><SCRIPT src="upper.js"></SCRIPT>\n'
         '<source srcset="x.webp"><a href="designs.html">Designs</a>\n', encoding="utf-8")
-    (base / V2 / "designs.html").write_text(
+    (base / folder / "designs.html").write_text(
         '<title>Designs</title><script src="data/designs-data.js"></script>\n', encoding="utf-8")
 
 
@@ -393,6 +395,55 @@ class InputsHash(unittest.TestCase):
         (self.root / V2 / "data" / "designs-data.js").write_text(
             LEDGER.replace('"bytes": 10', '"bytes": 11'), encoding="utf-8")
         self.assertNotEqual(self.hash("designs"), before)
+
+
+class PagesFolder(unittest.TestCase):
+    """The design source renames `designs/v2/` to `designs/pages/` (its sd:2193); the tab reads either (sd:2389)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "ui-design"
+        v2_tree(self.root, PAGES)
+
+    def hash(self, page):
+        return designs.inputs_hash(self.root, f"{PAGES}/{page}.html")
+
+    def test_a_page_under_pages_is_a_v2_mockup(self):
+        self.assertEqual(designs._kind(f"{PAGES}/today.html"), "v2 mockup")
+        self.assertEqual(designs._kind(f"{V2}/today.html"), "v2 mockup")
+
+    def test_the_generated_data_rules_hold_under_pages(self):
+        today, page = self.hash("today"), self.hash("designs")
+        data = self.root / PAGES / "data"
+        (data / "counts.js").write_text("window.COUNTS = {};", encoding="utf-8")
+        path = data / "commands.js"
+        path.write_text(path.read_text(encoding="utf-8").replace("10:00:00", "11:00:00"), encoding="utf-8")
+        (data / "designs-data.js").write_text(LEDGER.replace('"abc1234"', '"def5678"').replace("[1, 2]", "[3, 4]"),
+                                              encoding="utf-8")
+        self.assertEqual((self.hash("today"), self.hash("designs")), (today, page))
+
+    def test_the_live_ledger_is_read_under_pages_first(self):
+        ledger = f"{PAGES}/data/designs-data.js"
+        self.assertEqual(designs.live_ledger(self.root), ledger)
+        body = designs.read((self.root / ledger).resolve(), self.root)
+        self.assertTrue(body.startswith(b"window.DESIGNS = {"))
+        self.assertNotIn(b"abc1234", body)  # Not the committed file's head.
+
+    def test_without_pages_the_live_ledger_falls_back_to_v2(self):
+        other = Path(self.tmp.name) / "before-rename"
+        v2_tree(other)
+        ledger = f"{V2}/data/designs-data.js"
+        self.assertEqual(designs.live_ledger(other), ledger)
+        self.assertNotIn(b"abc1234", designs.read((other / ledger).resolve(), other))
+
+    def test_a_page_under_pages_finds_its_shots(self):
+        shots = self.root / "products" / "system" / "designs" / "shots"
+        shots.mkdir(parents=True)
+        (shots / "v2-today-1440.png").write_bytes(png(1440, 900))
+        (shots / "v2-today-extra.png").write_bytes(png(1, 1))
+        self.assertEqual(designs._shots(self.root, f"{PAGES}/today.html"),
+                         ["products/system/designs/shots/v2-today-1440.png"])
 
 
 class Ledger(unittest.TestCase):
@@ -528,7 +579,7 @@ class Ledger(unittest.TestCase):
         shots = self.root / "products" / "system" / "designs" / "shots"
         (shots / "v2-designs-1440.png").write_bytes(png(1440, 900))
         self.record({"v2-designs-1440.png": self.hash("designs")})
-        (self.root / designs.LIVE_LEDGER).write_text("window.DESIGNS = {", encoding="utf-8")
+        (self.root / V2 / "data" / "designs-data.js").write_text("window.DESIGNS = {", encoding="utf-8")
         page = self.page(designs.ledger(self.root), f"{V2}/designs.html")
         self.assertEqual(page["shotStale"], ["products/system/designs/shots/v2-designs-1440.png"])
 
