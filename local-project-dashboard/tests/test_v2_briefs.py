@@ -135,7 +135,7 @@ class TheDocument(ScreenCase):
     def test_rows_keep_their_day_and_drop_a_time_off_their_day(self):
         doc = briefs_screen.document(now=NOW, reader=lambda: TILE)
         self.assertEqual(doc["reader"], {"state": "read", "reason": "", "source": "<vault>/System/AI Generated/Briefs",
-                                         "total": 5, "shown": 5, "skipped": 0})
+                                         "total": 5, "shown": 5, "skipped": 0, "capped": False})
         self.assertEqual(doc["watchdog"], {"available": False, "reason": briefs_screen.WATCHDOG_REASON})
         ids = [b["id"] for b in doc["briefs"]]
         self.assertEqual(ids, ["2026-09-06 - Fun Events", "2026-09-06 - Intel Brief", "2026-09-04 - Intel Brief",
@@ -354,6 +354,22 @@ R.cli = cmd('brief.open').cli(C.get('2026-09-06 - Intel Brief')); R.exec = cmd('
         self.assertIn(f"<code>{FOLDER}/2026-09-03 - Weekly Digest.md</code>", det)
         self.assertIn(briefs_screen.WATCHDOG_REASON, det)
         self.assertEqual(out["panes"], ["tab-details"])
+
+    def test_a_skipped_row_is_named_apart_and_is_not_a_cap(self):
+        # Review 66a49b9f8bec: total > shown also holds when rows were rejected; only a cut is "capped".
+        bad = {**TILE, "total": 6, "briefs": TILE["briefs"] + [{"stem": "x"}]}
+        doc = briefs_screen.document(now=NOW, reader=lambda: bad)
+        self.assertEqual((doc["reader"]["capped"], doc["reader"]["skipped"]), (False, 1))
+        out = self.run_page("R.sub = ELS.sub.textContent; R.ann = ELS.annunciator.html;", answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("1 row skipped: not a brief.", out["states"][-1]["text"])
+        self.assertNotIn("Showing the newest", out["states"][-1]["text"])
+        self.assertNotIn("at least", out["R"]["ann"])
+        self.assertEqual(out["R"]["sub"], "5 briefs, 1 skipped")
+        cut = briefs_screen.document(now=NOW, reader=lambda: {**TILE, "total": 9})
+        self.assertTrue(cut["reader"]["capped"])
+        many = [tile_row(f"2026-09-01 - K{i:03d}", "2026-09-01T00:00:00Z") for i in range(briefs_screen.ROWS + 1)]
+        self.assertTrue(briefs_screen.document(now=NOW, reader=lambda: {"briefs": many, "total": len(many)})["reader"]["capped"])
 
     def test_a_failed_read_a_reader_refusal_and_a_capped_read_each_say_so(self):
         out = self.run_page("R.rows = ELS.rows.html;", answer="() => [500, { error: 'boom' }]")

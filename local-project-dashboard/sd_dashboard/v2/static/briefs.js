@@ -76,7 +76,8 @@ addEventListener('DOMContentLoaded', () => {
   // build: three lamps. The reference's follow-up, quiet-days and Slack lamps read mail and the watchdog's digest; no reader
   // supplies either here. Missed is unknown with the reason, never a count.
   // A capped read holds the newest rows only, so a count reaching past its oldest day is a floor, not a total.
-  const capped = () => !!READER && READER.total > READER.shown;
+  // The reader says capped only when it cut rows; a skipped row is not a cut, so total > shown does not decide it.
+  const capped = () => !!READER && !!READER.capped;
   const oldest = () => BRIEFS.reduce((m, b) => b.day < m ? b.day : m, '9999-12-31');
   function renderAnnunciator() {
     const n = ranged().length, srcs = new Set(ranged().map(b => b.src)).size;
@@ -173,7 +174,7 @@ addEventListener('DOMContentLoaded', () => {
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${page - 1}">${I('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${page + 1}">Next${I('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
     put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span><span>${all.length} shown</span>`);
-    document.getElementById('sub').textContent = READER ? `${plural(READER.total, 'brief')}${READER.total > READER.shown ? `, newest ${READER.shown} read` : ''}` : 'Reading the briefs…';
+    document.getElementById('sub').textContent = READER ? (capped() ? `${plural(READER.total, 'brief')}, newest ${READER.shown} read` : `${plural(READER.shown, 'brief')}${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
   }
   document.getElementById('pager').addEventListener('click', e => {
     const c = e.target.closest('.chip'); if (!c) return;
@@ -296,7 +297,7 @@ addEventListener('DOMContentLoaded', () => {
     const source = READER.source || '/api/briefs';
     if (READER.state === 'error') shell.state({ kind: 'error', text: `The briefs were not read: ${READER.reason}. Reload retries it.`, source });
     else if (!BRIEFS.length) shell.state({ kind: 'empty', title: 'No briefs', text: 'The Briefs folder holds no note.', source });
-    else if (READER.skipped || READER.total > READER.shown) shell.state({ kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', READER.total > READER.shown ? `Showing the newest ${READER.shown} of ${READER.total}; the rest are in the folder. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source });
+    else if (READER.skipped || capped()) shell.state({ kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', capped() ? `Showing the newest ${READER.shown} of ${READER.total}; the rest are in the folder. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source });
     else shell.state(null);
     renderRange(); update();
     const row = shell.row?.();

@@ -111,10 +111,15 @@ def document(*, now: str, reader=None) -> dict:
         got = reader()
     except (ValueError, OSError) as error:
         return {"read": now, "reader": {"state": "error", "reason": str(error), "source": SOURCE, "total": 0, "shown": 0,
-                                        "skipped": 0}, "briefs": [], "watchdog": watchdog}
+                                        "skipped": 0, "capped": False}, "briefs": [], "watchdog": watchdog}
     briefs, bad = rows(got)
     total = got.get("total") if isinstance(got.get("total"), int) else len(briefs)
+    # Capped only when rows were cut: the tile stopped short of its total, or more briefs passed than the page takes.
+    # A rejected row is skipped, not capped.
+    raw = len(got.get("briefs", []))
+    capped = total > raw or raw - bad > ROWS
     return {"read": now,
             "reader": {"state": "partial" if bad else "read", "reason": f"{bad} rows were not briefs" if bad else "",
-                       "source": SOURCE, "total": max(total, len(briefs)), "shown": len(briefs), "skipped": bad},
+                       "source": SOURCE, "total": max(total, len(briefs)), "shown": len(briefs), "skipped": bad,
+                       "capped": capped},
             "briefs": briefs, "watchdog": watchdog}
