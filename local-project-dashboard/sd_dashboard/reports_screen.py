@@ -416,7 +416,8 @@ def job_log(path: Path, days: list[str]) -> dict:
     runs = {day: [0, 0] for day in days}
     for line in lines:
         m = OUTCOME.search(line)
-        if m and m["day"] in runs:
+        # Job output is copied verbatim, so a marker naming another job is that job's run, not this one's.
+        if m and m["job"] == path.stem and m["day"] in runs:
             runs[m["day"]][0 if m["what"] == "done" else 1] += 1
     return {"log": True, "from": begins[1] if begins else None, "read_from": read_from, "runs": runs}
 

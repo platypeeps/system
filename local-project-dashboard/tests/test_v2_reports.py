@@ -183,6 +183,17 @@ class TheDocument(ScreenCase):
         self.assertEqual(got["runs"]["2026-09-09"], [0, 1])
         self.assertEqual(got["runs"]["2026-09-10"], [1, 0])
 
+    def test_an_outcome_marker_for_another_job_in_this_jobs_output_does_not_count(self):
+        # Job output is copied verbatim, so a job that prints another job's log carries that job's markers.
+        path = self.dir / "demo.log"
+        path.write_text("[demo] 2026-09-09T02:15:00-0600 starting (cwd: /tmp)\n"
+                        "[other] 2026-09-09T01:00:00-0600 FAILED rc=1\n"
+                        "copied[other] 2026-09-08T01:00:00-0600 done\n"
+                        "[demo] 2026-09-09T02:15:01-0600 done\n", encoding="utf-8")
+        got = reports_screen.job_log(path, DAYS)
+        self.assertEqual(got["runs"]["2026-09-09"], [1, 0])
+        self.assertEqual(got["runs"]["2026-09-08"], [0, 0])
+
     def test_a_log_longer_than_the_read_says_where_the_read_began(self):
         lines = [f"[big] 2026-09-0{n}T01:00:00-0600 done" for n in range(4, 10) for _ in range(200)]
         path = self.dir / "big.log"
