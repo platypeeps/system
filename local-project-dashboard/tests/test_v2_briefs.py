@@ -284,6 +284,11 @@ class TheScript(ScreenCase):
                          ["2026-09-06 - Fun Events", "2026-09-05 - Daily, Special"])
         self.assertEqual(out["urls"][-1], [["src", "Daily, Special"], ["src", "Fun Events"]])
 
+    def test_a_search_from_the_address_matches_as_typing_it_does(self):
+        # Review 27bec38c4a96: the address keeps the case the reader typed; the match ignores case either way.
+        out = self.run_page("R.rows = ELS.rows.html;", search="?q=Intel")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["2026-09-06 - Intel Brief", "2026-09-04 - Intel Brief"])
+
     def test_make_task_opens_the_capture_form_and_only_capture_files_it(self):
         out = self.run_page("""shellRun(cmd('brief.task'), C.get('2026-09-04 - Intel Brief')); await flush();
 R.cli = cmd('brief.task').cli(C.get('2026-09-04 - Intel Brief'));

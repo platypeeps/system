@@ -69,7 +69,7 @@ addEventListener('DOMContentLoaded', () => {
   }
   const active = () => F.src.size + (F.day ? 1 : 0) + (F.q ? 1 : 0);
   const match = b => inRange(b) && (!F.src.size || F.src.has(b.src)) && (!F.day || b.day === F.day) &&
-    (!F.q || `${b.subj} ${b.src} ${b.lead}`.toLowerCase().includes(F.q));
+    (!F.q || `${b.subj} ${b.src} ${b.lead}`.toLowerCase().includes(F.q.toLowerCase()));
   const ranged = () => BRIEFS.filter(inRange);
 
   // ---------- Annunciator ----------
