@@ -378,7 +378,9 @@ R.executes = cmd('research.start').executes; R.req = ELS.req.html;
         draft = out["R"]["draft"]
         self.assertEqual((draft["q"], draft["repo"], draft["depth"]), ("how do vendors detect spans?", "research/beta", "deep"))
         self.assertEqual(draft["cmd"], "sd task add 'Research: how do vendors detect spans?' --body 'repo=beta depth=deep skill=sd-research-repo stage=draft' --json\n"
-                                       "sd run --sequential --role author --scope 'beta' --budget-minutes 60 <item>")
+                                       "sd run --sequential --role author --scope 'beta' --budget-minutes 60 \"${ITEM:?set ITEM to the id sd task add printed}\"")
+        # The copied lines run as they are: no bare <item>, which the shell reads as a redirect from a file named item.
+        self.assertNotRegex(draft["cmd"], r"(?<![\"'])<\w")
         self.assertIn("does not create items or queue runs", out["R"]["when"])
         self.assertFalse(out["R"]["executes"])
         self.assertIn('data-copy="sd task add', out["R"]["req"])
