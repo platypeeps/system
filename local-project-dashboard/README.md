@@ -37,7 +37,7 @@ and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
 **The new design is the default** (sd:2163). It is the redesign from ui-design
-`products/system/` (`design.md`, `designs/v2/`), built one page at a time.
+`products/system/` (`design.md`, `designs/pages/`, formerly `designs/v2/`), built one page at a time.
 `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted IBM Plex
 under `static/`, served at `/ui/`; `shell.js` marks each change from the
 reference with `build:`. The assets take `/ui/` because the old screens own
@@ -96,7 +96,7 @@ Classic screens.
 | Documents | `/documents` |
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
-| Management | `/operations?area=jobs` |
+| Management | `/management` (new) |
 | Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
@@ -428,8 +428,10 @@ A font also carries `Access-Control-Allow-Origin: *`, because a browser fetches
 fonts in CORS mode. No other file gets it: the data scripts beside the pages
 hold real notes and mail, and any site could then read them from this port.
 
-The v2 Designs mockup loads `products/system/designs/v2/data/designs-data.js`.
+The v2 Designs mockup loads `products/system/designs/pages/data/designs-data.js`.
 The tab answers that one path live, with `designs.ledger_script()`, instead of the committed file.
+A checkout from before the design source renamed `designs/v2/` to `designs/pages/` has no `pages/` folder.
+There the tab answers `designs/v2/data/designs-data.js` instead (`designs.live_ledger`), and reads `v2/` pages the same way.
 `designs.ledger()` ports ui-design's `tools/collect-designs.mjs` and lists:
 
 - per page: kind, title, bytes, last commit (sha, time, subject) and a dirty flag;
