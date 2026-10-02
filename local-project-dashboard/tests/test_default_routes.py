@@ -26,8 +26,9 @@ from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
 
-#: Every old screen, and where it lives now. Two moved: `/` and `/today` are the new Today's, `/documents` the new Documents' (sd:2114).
-OLD_SCREENS = ("/classic/today", "/backlog", "/contributions", "/protection", "/writing", "/skills",
+#: Every old screen, and where it lives now. Three moved: `/` and `/today` are the new Today's, `/contributions` the new
+#: Contributions' (sd:2113) and `/documents` the new Documents' (sd:2114).
+OLD_SCREENS = ("/classic/today", "/backlog", "/classic/contributions", "/protection", "/writing", "/skills",
                "/classic/documents", "/designs", "/operations",
                *(f"/operations?area={key}" for key in ("jobs", "services", "ports", "progress", "usage", "reports",
                                                         "resources", "trackers", "repos", "sessions", "commands")))
@@ -126,12 +127,12 @@ class TheDefault(BrowserSession):
         declared = dict(re.findall(r"^window\.(SHELL_\w+) = (.*);$", body, re.M))
         self.assertEqual({key: json.loads(value) for key, value in declared.items()},
                          {"SHELL_PAGES": v2.SECTIONS, "SHELL_CLASSIC": v2.CLASSIC, "SHELL_SCREENS": v2.SCREENS})
-        self.assertEqual(v2.SECTIONS, {"Today": "/today", "Briefs": "/briefs", "Tasks": "/tasks", "Management": "/management", "Home": "/home",
-                                       "Health": "/fleet-health", "Research": "/research", "Documents": "/documents"})
+        self.assertEqual(v2.SECTIONS, {"Today": "/today", "Briefs": "/briefs", "Tasks": "/tasks", "Contributions": "/contributions", "Management": "/management", "Home": "/home", "Health": "/fleet-health", "Research": "/research",
+                                       "Documents": "/documents"})
         reachable = set(v2.CLASSIC.values()) | set(v2.SCREENS.values())
         for required in ("/operations?area=jobs", "/operations?area=trackers", "/operations?area=ports",
                          "/operations?area=repos", "/protection", "/designs", "/classic/today", "/backlog",
-                         "/operations?area=resources", "/classic/documents"):
+                         "/classic/contributions", "/operations?area=resources", "/classic/documents"):
             self.assertIn(required, reachable)
         # A ported section is never also classic, and no page script names a section's address.
         self.assertEqual(set(v2.SECTIONS) & set(v2.CLASSIC), set())
