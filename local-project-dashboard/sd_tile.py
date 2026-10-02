@@ -549,10 +549,11 @@ BRIEF_FIELDS = ("stem", "rel", "kind", "day", "at", "words", "lead", "obsidian")
 def tab_brief_rows(collectors) -> dict:
     """The newest briefs as rows, within `BRIEF_ROWS` and `BRIEF_JSON_BYTES`."""
     got = collectors.collect_briefs()
-    rows, spent = [], 0
+    # The list as `json.dumps` writes it: "[]", then each row, with ", " before every row but the first.
+    rows, spent = [], len("[]")
     for brief in got["briefs"][:BRIEF_ROWS]:
         row = {key: brief.get(key) for key in BRIEF_FIELDS}
-        size = len(json.dumps(row)) + 1
+        size = len(json.dumps(row)) + (len(", ") if rows else 0)
         if spent + size > BRIEF_JSON_BYTES:
             break
         rows.append(row)

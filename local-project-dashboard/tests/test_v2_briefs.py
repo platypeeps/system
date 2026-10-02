@@ -90,9 +90,23 @@ class TheTile(unittest.TestCase):
         # The whole payload fits the 64 KB a child may write.
         self.assertLess(len(json.dumps(out)), 64 * 1024)
 
+    def test_the_byte_cap_counts_the_list_as_it_serializes(self):
+        # Every cap from one row to twelve: the rows sent fit it as JSON, brackets and separators included, and one more
+        # row would not have fit. Review 0d87b7eb24c1: counting rows alone let 200 rows serialize 200 bytes past the cap.
+        tile = load_tile()
+        rows = [tile_row(f"2026-09-01 - K{i:03d}", "2026-09-01T00:00:00Z", lead="x") for i in range(20)]
+        one = len(json.dumps({key: rows[0].get(key) for key in tile.BRIEF_FIELDS}))
+        for cap in range(one, 12 * one + 40):
+            with self.subTest(cap=cap), mock.patch.object(tile, "BRIEF_JSON_BYTES", cap):
+                sent = tile.tab_brief_rows(self.fake(rows))["briefs"]
+                self.assertLessEqual(len(json.dumps(sent)), cap)
+                more = sent + [{key: rows[len(sent)].get(key) for key in tile.BRIEF_FIELDS}]
+                self.assertGreater(len(json.dumps(more)), cap)
+
     def test_rows_stop_at_the_row_cap_and_carry_no_absolute_path(self):
         tile = load_tile()
-        short = [{**tile_row(f"2026-09-01 - K{i}", "2026-09-01T00:00:00Z", lead="x"), "root": "/home/example"} for i in range(250)]
+        short = [{**tile_row(f"2026-09-01 - K{i}", "2026-09-01T00:00:00Z", lead="x", link=False), "rel": "r", "root": "/home/example"}
+                 for i in range(250)]
         out = tile.tab_brief_rows(self.fake(short))
         self.assertEqual((out["shown"], out["total"]), (tile.BRIEF_ROWS, 250))
         self.assertNotIn("/home/example", json.dumps(out))
