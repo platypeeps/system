@@ -396,6 +396,31 @@ R.areas = ELS.areas.html; R.lamps = ELS.annunciator.html;""")
         self.assertNotIn("data-id=", out["R"]["areas"], "rows from the last read stayed on screen")
         self.assertIn("not read", out["R"]["lamps"])
 
+    def test_the_filter_finds_a_row_by_a_path_in_its_facts_or_its_list(self):
+        # The box says "repo, path, branch": a registered worktree's path is in `list`, the checkout's in `facts`.
+        out = self.run_page("""const filter = v => { ELS.q.value = v; ELS.q.listeners.input[0](); return ELS.areas.html; };
+R.list = filter('/work/wt-b'); R.facts = filter('/checkouts/group/alpha'); R.none = filter('/work/nowhere');""")
+        self.assertIn('data-id="gone:group/alpha"', out["R"]["list"], "a path in the row's list did not match")
+        self.assertIn('data-id="gone:group/alpha"', out["R"]["facts"], "a path in the row's facts did not match")
+        self.assertNotIn('data-id="gone:group/alpha"', out["R"]["none"])
+
+    def test_a_refresh_retires_the_command_objects_and_picks_of_rows_it_no_longer_lists(self):
+        # The shell keeps every object put and every pick; the bulk bar must not offer a prune built from a row that is gone.
+        out = self.run_page("""var PICKED = new Set();
+C.pick = id => { PICKED.has(id) ? PICKED.delete(id) : PICKED.add(id); document.dispatchEvent(new CustomEvent('shell:picked', { detail: [...PICKED] })); };
+const refresh = () => ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: 'refresh', dataset: {} } : null } });
+const live = id => !!OBJ.get(id) && REG.some(c => c.on === OBJ.get(id).type);
+C.pick('gone:group/alpha'); C.pick('unread:beta');
+DOC = { ...DOC, areas: DOC.areas.map(a => ({ ...a, rows: a.rows.filter(r => r.id !== 'gone:group/alpha') })) };
+refresh(); await flush();
+R.dropped = [live('gone:group/alpha'), PICKED.has('gone:group/alpha')]; R.kept = [live('unread:beta'), PICKED.has('unread:beta')];
+DOC = { error: 'Open a dashboard page before reading Health.' }; STATUS = 403;
+refresh(); await flush();
+R.failed = [live('unread:beta'), PICKED.has('unread:beta'), PICKED.size];""")
+        self.assertEqual(out["R"]["dropped"], [False, False], "a row the refresh dropped kept its command object or pick")
+        self.assertEqual(out["R"]["kept"], [True, True], "a row the refresh still lists lost its object or pick")
+        self.assertEqual(out["R"]["failed"], [False, False, 0], "a failed refresh kept a row's command object or pick")
+
     def test_an_older_read_that_answers_last_does_not_replace_the_newer_one(self):
         # Two re-reads overlap on the threaded server and the first one answers last: once as a failed request, once
         # as an older reading.

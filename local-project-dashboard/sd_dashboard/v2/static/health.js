@@ -47,8 +47,10 @@
     : a.id === 'ports' ? html`<span class="ph"><b>${a.extra.counts.unknown}</b> unknown</span> · <span class="ph">${a.extra.counts.listening} listening</span>`
     : html`<span class="ph"><b>${a.rows.length}</b> rows</span>`;
 
+  // The box says "repo, path, branch": a path can sit only in a row's facts (a checkout) or its list (registered worktrees).
+  const text = r => [r.what, r.detail, r.kind, ...Object.values(r.facts || {}), ...(r.list || [])].join(' ').toLowerCase();
   const passes = r => (!F.state.size || F.state.has(r.state)) && (!F.area.size || F.area.has(r.area))
-    && (!query || `${r.what} ${r.detail} ${r.kind}`.toLowerCase().includes(query));
+    && (!query || text(r).includes(query));
   const filtering = () => !!(F.state.size || F.area.size || query);
   // An area stays on the page while it has a row the filters pass, or when only the Area filter names it: a lamp for an area
   // with no reader then shows what that area does not read.
@@ -164,6 +166,15 @@
   // Each read takes a generation; only the newest one draws. Re-reads overlap on the threaded server and can answer out
   // of order, and an older answer, or an older failure, must not replace a newer reading.
   let generation = 0;
+  // The shell's object map only grows and keeps its picks, so each accepted reading retires what it no longer lists: the
+  // pick is dropped and the object becomes a type no command is on, and the bulk bar cannot offer a prune from stale data.
+  let putIds = new Set(), picks = [];
+  function retire(keep) {
+    const C = shell.commands;
+    picks.filter(id => !keep.has(id)).forEach(id => C.pick(id));
+    putIds.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
+    putIds = keep;
+  }
   async function load() {
     const mine = ++generation;
     shell.state({ kind: 'loading', text: 'Reading the fleet. Rows appear when /api/health answers.', source: '/api/health' });
@@ -176,6 +187,7 @@
       AREAS.forEach(a => a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]));
       ROWS = AREAS.flatMap(a => a.rows.map(r => ({ ...r, area: a.id })));
       document.body.dataset.observed = doc.read;
+      retire(new Set(ROWS.map(r => r.id)));
       ROWS.forEach(r => shell.commands.put({ ...r, label: r.what }));
       shell.commands.put({ id: 'collector:protection', type: 'collector', label: 'protection collector' });
       const failed = AREAS.filter(a => a.error);
@@ -187,6 +199,7 @@
       if (mine !== generation) return;
       // Nothing from the last read stays on screen: rows, lamps, the observed time, the selection and the badge.
       DOC = null; AREAS = []; ROWS = [];
+      retire(new Set());
       delete document.body.dataset.observed;
       shell.state({ kind: 'error', text: `Health was not read, so nothing below is current: ${e.message}. Refresh tries again.`, source: '/api/health' });
       put($('subhead'), html`Health could not be read.`);
@@ -268,7 +281,7 @@
       if (e.key === '/') { e.preventDefault(); $('q').focus(); }
     });
     document.addEventListener('shell:open', e => { if (byId(e.detail)) select(e.detail, true); });
-    document.addEventListener('shell:picked', e => document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
+    document.addEventListener('shell:picked', e => { picks = e.detail; document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))); });
 
     load();
   });

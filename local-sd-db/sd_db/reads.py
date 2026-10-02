@@ -599,8 +599,9 @@ def trailer_scan(
         if not author:
             scan["no_author"].append(path)
             continue
+        # git matches --author against "Name <address>" as a substring; the <...> make it the whole address.
         done = git(path, "log", "origin/HEAD", "--no-merges", "-z", f"--since={since}", f"--until={until}",
-                   f"--author={author}", "-i", "-F", "--format=%H%x1f%(trailers)")
+                   f"--author=<{author}>", "-i", "-F", "--format=%H%x1f%(trailers)")
         if done is None or done.returncode != 0:
             continue
         scan["repos"] += 1

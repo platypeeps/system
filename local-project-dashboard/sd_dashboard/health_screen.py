@@ -54,7 +54,7 @@ AREAS = (
      ("volume use (df -k)", "repo-storage folder sizes", "build output left in worktrees")),
     ("cred", "Credentials", None,
      ("GitHub PAT presence and expiry", "gh CLI sign-in", "HA_TOKEN test", "MCP server status (claude mcp list)")),
-    ("attr", "Attribution", "git log origin/HEAD --no-merges --since='5 weeks ago' --author=<user.email> per registered repo · %(trailers)",
+    ("attr", "Attribution", "git log origin/HEAD --no-merges --since='5 weeks ago' --author='<user.email>' -i -F per registered repo · %(trailers)",
      ("counts per repo", "the per-week history")),
     ("wt", "Worktrees", "the fleet's .git/worktrees registrations",
      ("merged worktrees still on disk (merge-base --is-ancestor)",)),
@@ -126,7 +126,7 @@ def _attribution_rows(scan: dict) -> list[dict]:
     scope = f"your commits on the default branch of {repos} {_plural(repos, 'repo', 'repos')} · 5 weeks · merges left out"
     facts = {"Missing": str(missing), "Commits": str(commits), "Window": "5 weeks to the reading", "Branch": "origin/HEAD",
              "Author": "each repo's git config user.email"}
-    cli = "git -C <repo> log origin/HEAD --no-merges -z --since='5 weeks ago' --author=<you> -i --format='%H%x1f%(trailers)'"
+    cli = "git -C <repo> log origin/HEAD --no-merges -z --since='5 weeks ago' --author=\"<$(git -C <repo> config user.email)>\" -i -F --format='%H%x1f%(trailers)'"
     if missing:
         rows = [{"id": "attr:weeks", "state": "caution", "type": "attribution gap",
                  "what": f"{missing} of {commits} of your commits in 5 weeks lack Authored-with",

@@ -192,6 +192,12 @@ class MissingTrailers(unittest.TestCase):
         commit_with(self.repo, "yours, no trailer\n")
         self.assertEqual(self.count(), 1)
 
+    def test_an_address_that_only_contains_yours_is_not_yours(self):
+        # git matches --author against "Name <address>"; the address must match whole, delimiters and all.
+        commit_with(self.repo, "a longer address, no trailer\n", author="notfixture@example.invalid")
+        commit_with(self.repo, "a longer domain, no trailer\n", author="fixture@example.invalid.test")
+        self.assertEqual(self.count(), 0, "an address containing yours was counted as yours")
+
     def test_your_address_matches_in_any_case(self):
         # git stores the author as typed; a commit made under a differently cased address is still yours.
         commit_with(self.repo, "yours, cased differently, no trailer\n", author="FIXTURE@Example.Invalid")
