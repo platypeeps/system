@@ -842,9 +842,10 @@ def top(row) -> int | None:
     """The answer a row would act on, as one comparable number.
 
     A noul is yes when its probability is at least 0.5. A choice is the
-    position that won. A score is its recorded score, rounded as `_truth`
-    rounds a label; its distribution feeds the Brier score only, so two rows
-    with the same score always agree.
+    position that won, read as a label is: a fractional one is no position.
+    A score is its recorded score, rounded as `_truth` rounds a label; its
+    distribution feeds the Brier score only, so two rows with the same score
+    always agree.
     """
     if row["answer"] is None:
         return None
@@ -853,7 +854,7 @@ def top(row) -> int | None:
         return 1 if value >= 0.5 else 0
     if row["primitive"] == "score":
         return int(round(value))
-    return int(value)
+    return _position(row["answer"])
 
 
 def _position(value: str) -> int | None:
@@ -884,6 +885,8 @@ def brier(row, truth: int) -> float | None:
     if not dist:
         return None
     index = truth - 1 if row["primitive"] == "choice" else truth
+    if not 0 <= index < len(dist):
+        return None              # a label no option matches has no Brier score
     return sum((p - (1.0 if i == index else 0.0)) ** 2 for i, p in enumerate(dist))
 
 
@@ -937,20 +940,21 @@ def compare(
             entry["_ms"].append(row["duration_ms"])
         if row["server_ms"] is not None:
             entry["_server"].append(row["server_ms"])
-        if row["answer"] is None or row["pair"] is None:
+        mine = top(row)
+        if mine is None or row["pair"] is None:
             continue
         key = (row["stage"], row["pair"])
         jev = reference.get(key)
-        if row["arm"] != "jev" and jev is not None and jev["answer"] is not None \
+        if row["arm"] != "jev" and jev is not None and top(jev) is not None \
                 and jev["primitive"] == row["primitive"]:
             entry["paired"] += 1
-            entry["agree"] = (entry["agree"] or 0) + (top(row) == top(jev))
+            entry["agree"] = (entry["agree"] or 0) + (mine == top(jev))
             if row["primitive"] == "noul":
                 entry["_dp"].append(abs(float(row["answer"]) - float(jev["answer"])))
         truth = _truth(row["primitive"], labels[key]) if key in labels else None
         if truth is not None:
             entry["labelled"] += 1
-            entry["right"] += top(row) == truth
+            entry["right"] += mine == truth
             score = brier(row, truth)
             if score is not None:
                 entry["_brier"].append(score)

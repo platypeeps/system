@@ -49,6 +49,8 @@ class Arm(BaseHTTPRequestHandler):
     reply = None
     # What OpenRouter reports the call cost; json.dumps writes inf as Infinity.
     cost = 0.000185
+    # An answer object Kev returns in place of its usual one, when set.
+    kev_answer = None
 
     def log_message(self, *args):
         pass
@@ -87,7 +89,9 @@ class Arm(BaseHTTPRequestHandler):
     def kev(body):
         answers = {}
         for qid, question in body["questions"].items():
-            if question["type"] == "noul":
+            if Arm.kev_answer is not None:
+                answers[qid] = Arm.kev_answer
+            elif question["type"] == "noul":
                 answers[qid] = {"type": "noul", "noul": 0.81}
             elif question["type"] == "choice":
                 keys = list(question["criteria"])
@@ -131,6 +135,7 @@ class CompareCase(MeteringCase):
         Arm.seen = []
         Arm.reply = None
         Arm.cost = 0.000185
+        Arm.kev_answer = None
         self.bin = Path(tempfile.mkdtemp())
 
     def env(self, **extra):
@@ -207,6 +212,19 @@ class TheKevArm(CompareCase):
         self.assertEqual(kev["probabilities"], "0.2000,0.2000,0.6000")
         # The jev row keeps its distribution too, in the caller's order.
         self.assertEqual(rows["jev"]["probabilities"], "0.0000,0.0000,0.0000")
+
+    def test_a_kev_answer_with_no_usable_value_is_invalid(self):
+        cases = ((["noul", "is it?"], {"type": "noul"}),
+                 (["choice", "which?", "--criteria", "desk,phone"],
+                  {"type": "choice", "choice": "fax", "confidence": 0.9}))
+        for argv, answer in cases:
+            with self.subTest(primitive=argv[0]):
+                Arm.kev_answer = answer
+                before = len(self.rows())
+                self.run_main(argv)
+                kev = self.by_arm(self.wait_rows(before + 2)[before:])["kev"]
+                self.assertEqual((kev["outcome"], kev["cause"]), ("invalid", "invalid"))
+                self.assertIsNone(kev["answer"])
 
     def test_a_refused_kev_records_unavailable(self):
         code, out = self.run_main(["noul", "is it?"],

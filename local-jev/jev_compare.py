@@ -523,7 +523,13 @@ def read_answers(job: dict, answers: dict) -> dict:
     qid, question = next(iter(questions.items()))
     if not isinstance(answers.get(qid), dict):
         raise Declined("invalid", "invalid", f"no answer for {qid!r}")
-    return shaped(answers[qid], question)
+    found = shaped(answers[qid], question)
+    # An answer object with no usable value (none at all, or a choice key
+    # nobody asked about) is as unusable as a missing one; recorded `ok`, it
+    # would count as a call that answered and drop out of agreement unseen.
+    if found["answer"] is None:
+        raise Declined("invalid", "invalid", f"no usable answer for {qid!r}")
+    return found
 
 
 def haiku_conf(via: str, env) -> dict:

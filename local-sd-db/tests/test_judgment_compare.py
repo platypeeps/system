@@ -238,6 +238,23 @@ class TheComparison(CompareCase):
         for name in ("kev", "haiku"):
             self.assertEqual(self.arm(report, name)["labelled"], 0)
 
+    def test_a_fractional_choice_answer_is_not_a_position(self):
+        jev, _, _ = self.decision("a", "1", "1.6", "1", primitive="choice")
+        label(self.connection, jev, "1", "test-rule")
+        report = compare(self.connection)
+        kev = self.arm(report, "kev")
+        self.assertEqual((kev["paired"], kev["labelled"]), (0, 0))
+        self.assertEqual(self.arm(report, "haiku")["paired"], 1)
+
+    def test_a_label_outside_the_distribution_has_no_brier_score(self):
+        jev, _, _ = self.decision("a", "1", "1", "1", primitive="choice",
+                                  probabilities=("0.5,0.3,0.2",) * 3)
+        label(self.connection, jev, "4", "test-rule")
+        report = compare(self.connection)
+        kev = self.arm(report, "kev")
+        self.assertEqual((kev["labelled"], kev["right"]), (1, 0))
+        self.assertIsNone(kev["brier"])
+
     def test_a_fractional_choice_label_from_before_the_check_is_ignored(self):
         jev, _, _ = self.decision("a", "2", "2", "1", primitive="choice")
         with self.connection:
