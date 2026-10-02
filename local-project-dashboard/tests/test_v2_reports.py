@@ -454,6 +454,21 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
                 self.assertIn(out["R"]["sel"], out["R"]["drawn"])
                 self.assertEqual(out["R"]["sel"], want)
 
+    def test_only_the_newest_of_overlapping_readings_applies(self):
+        failed = self.ids["failed"]
+        older = json.loads(json.dumps(self.doc))
+        older["reports"] = [r for r in older["reports"] if r["id"] == failed]
+        newer = json.dumps(self.doc)
+        overlap = f"""var CALLS = []; ANSWER = path => path === '/api/reports' ? new Promise(r => CALLS.push(r)) : [200, {{}}];
+  const a = load(), b = load(); await flush();
+  CALLS[1]([200, {newer}]); await flush(); CALLS[0](OLDER); await flush(); await a; await b;
+  R.ids = ROWS.map(r => r.id); R.state = OUT.states[OUT.states.length - 1];"""
+        for case, answer in (("older success", json.dumps([200, older])), ("older failure", json.dumps([500, {"error": "boom"}]))):
+            with self.subTest(case):
+                out = self.run_page(overlap.replace("OLDER", answer))
+                self.assertEqual(len(out["R"]["ids"]), len(self.doc["reports"]))
+                self.assertNotEqual((out["R"]["state"] or {}).get("kind"), "error")
+
     def test_a_job_that_has_not_run_yet_today_is_not_a_gap(self):
         doc = json.loads(json.dumps(self.doc))
         doc["cadence"]["nightly-sync"]["runs"][DAYS[6]] = [0, 0]
