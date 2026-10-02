@@ -165,10 +165,11 @@ OPEN_LANES = ("newly_unblocked", "awaiting_you", "awaiting_them")
 OPEN_LIMIT = 500
 #: Repositories with settled rows the document names at most; the rest fold into `settled_other`, per scope.
 SETTLED_REPOS = 100
-#: What the page may show of a row: the projection's fields it reads, nothing more (no evidence, argv or local paths).
+#: What the page may show of a row: the projection's fields it reads, nothing more (no evidence, argv, local paths or
+#: free-form notes such as `blocked_on`).
 #: `repo` is rewritten by `_shown` and `draft_path` becomes `has_draft`: the page only asks whether a draft exists.
 ROW_FIELDS = ("key", "revision", "event_ids", "reasons", "lane", "title", "url", "external_state", "local_status",
-              "item_id", "local_branch", "blocked_on", "observed_at")
+              "item_id", "local_branch", "observed_at")
 
 
 def _registered(connection):

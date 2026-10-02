@@ -85,9 +85,12 @@ class TheDocument(ScreenCase):
 
     def test_a_row_carries_only_what_the_page_shows(self):
         row = self.doc(given=[contribution(1, evidence=[{"argv": ["secret"], "cwd": "/home/example/x"}],
-                                           local_clone="/home/example/x")])["rows"][0]
+                                           local_clone="/home/example/x", blocked_on="waiting on a private note")])["rows"][0]
         self.assertEqual(set(row), set(contribution_screen.ROW_FIELDS) | {"repo", "has_draft", "freshness", "internal", "why_internal"})
         self.assertNotIn("secret", json.dumps(row))
+        # Review 4 of PR #72 (34daa6618266): blocked_on is free-form metadata the page never reads.
+        self.assertNotIn("private note", json.dumps(row))
+        self.assertNotIn("blocked_on", PAGE_JS)
 
     def test_scope_comes_from_the_repo_table(self):
         upsert_repo(self.connection, "/home/example/tools", remote="https://github.com/example/tools")
