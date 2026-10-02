@@ -131,6 +131,15 @@ class TheDocument(ScreenCase):
         rows = {r["file"]: r for r in documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)["documents"]}
         self.assertEqual(rows["overview.html"]["src"], "")
 
+    def test_a_configured_source_that_is_not_a_file_is_not_a_source(self):
+        # A missing src leaves the name match; a src that is a folder leaves the render state unknown, never fresh.
+        write(self.base / "lab" / "research.conf.py",
+              'DOCS = [{"src": "notes/GONE.md", "out": "overview"}, {"src": "notes", "out": "plan"}]\n', T0)
+        (self.base / "lab" / "notes" / "PLAN.md").unlink()
+        rows = {r["file"]: r for r in documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)["documents"]}
+        self.assertEqual((rows["overview.html"]["src"], rows["overview.html"]["stale"]), ("00-overview/Overview.md", False))
+        self.assertEqual((rows["plan.html"]["src"], rows["plan.html"]["stale"]), ("", False))
+
     def test_each_row_says_its_title_h1_and_stand_line(self):
         rows = self.rows()
         self.assertEqual([rows["lab/plan.html"][k] for k in ("title", "h1", "desc")], ["The plan", "Plan part", "What we build next."])

@@ -135,9 +135,9 @@ def _checkout(root: documents.Root) -> Path | None:
 def _sources(checkout: Path, names: list[str]) -> dict[str, Path]:
     """Each file name -> the source Markdown it renders from, for the names that have one.
 
-    research.conf.py first: an entry's `out` names the page and its `src` the source. Then, for a name the config did not
-    give, a `.md` whose stem is the page's stem in any case (`40-docs/PLAN-local-poc.md` for `plan-local-poc.html`), when
-    exactly one does. A config the reader refuses (computed data) leaves the name match, and is not a failure of the page.
+    research.conf.py first: an entry's `out` names the page and its `src` the source, when that is a file. Then, for a
+    name the config did not give, a `.md` whose stem is the page's stem in any case (`40-docs/PLAN-local-poc.md` for
+    `plan-local-poc.html`), when exactly one does. A config the reader refuses (computed data) leaves the name match, and is not a failure of the page.
     """
     base = checkout.resolve()
     found: dict[str, Path] = {}
@@ -148,7 +148,8 @@ def _sources(checkout: Path, names: list[str]) -> dict[str, Path]:
     for entry in config.get("DOCS", []):
         source = checkout / entry["src"]
         name = f"{Path(entry['out']).name}.html"
-        if name in names and source.resolve().is_relative_to(base):
+        # Only a source file that exists: a missing or folder `src` leaves the name match, else an unknown render state.
+        if name in names and source.is_file() and source.resolve().is_relative_to(base):
             found.setdefault(name, source)
     stems: dict[str, list[Path]] = {}
     for directory, folders, files in os.walk(checkout):
