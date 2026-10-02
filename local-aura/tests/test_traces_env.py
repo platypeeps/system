@@ -1,9 +1,9 @@
 """Which OTLP settings `aura.sh server` hands the server.
 
-`aura-web-server` is a stub on PATH that prints its OTEL_ environment, so the
-suite runs no Aura and needs no key. The local default exports spans
-without content; recording is the caller's choice; a caller's endpoint wins;
-AURA_TRACES=0 sets nothing.
+`aura` is a stub on PATH that prints its OTEL_ environment when called as
+`aura webserver`, so the suite runs no Aura and needs no key. The local
+default exports spans without content; recording is the caller's choice; a
+caller's endpoint wins; AURA_TRACES=0 sets nothing.
 """
 
 import os
@@ -15,7 +15,10 @@ from pathlib import Path
 FOLDER = Path(__file__).resolve().parent.parent
 ENTRYPOINT = FOLDER / "aura.sh"
 
+# AURA v0.2.18-nightly.16 deprecated the aura-web-server binary for
+# `aura webserver`; any other call fails the run.
 STUB = """#!/bin/sh
+[ "$1" = webserver ] || { echo "stub aura: unexpected args: $*" >&2; exit 9; }
 env | grep -E '^OTEL_' | sort
 """
 
@@ -26,9 +29,14 @@ class ServerEnvironment(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         (root / "bin").mkdir()
-        stub = root / "bin" / "aura-web-server"
+        stub = root / "bin" / "aura"
         stub.write_text(STUB, encoding="utf-8")
         stub.chmod(0o755)
+        # The deprecated binary fails fast instead of reaching a real install.
+        old = root / "bin" / "aura-web-server"
+        old.write_text("#!/bin/sh\necho 'aura-web-server must not run' >&2\nexit 98\n",
+                       encoding="utf-8")
+        old.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("OTEL_", "AURA_", "GENAI_TRACES_"))}
         self.env.update(

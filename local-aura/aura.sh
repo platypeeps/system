@@ -1,6 +1,7 @@
 #!/bin/sh
-# Mezmo aura: install, run the web server (brew or repo build), CLI, and
-# quick API smoke tests, and trace experiments. Server listens on :3033.
+# Mezmo aura: build and install from a checkout, run the web server
+# (`aura webserver`), CLI, quick API smoke tests, and trace experiments.
+# Server listens on :3033.
 # Every server and experiment exports its traces to local-genai-traces.
 # Usage: aura.sh install|server|server-repo|cli|health|models|prompt [text]
 #        aura.sh image | experiment start|stop|run|inspect|ps
@@ -61,6 +62,18 @@ AURA_IMAGE="${AURA_IMAGE:-aura-local:instrumented}"
 EXP="$DIR/experiment"
 EXAMPLE=examples/quickstart-orchestration-math
 
+# install and server-repo build from the checkout; they need no example.
+need_checkout() {
+  if [ -z "${AURA_REPO:-}" ]; then
+    st_missing AURA_REPO aura .env
+    exit 1
+  fi
+  if [ ! -f "$AURA_REPO/Cargo.toml" ]; then
+    echo "aura.sh: $AURA_REPO/Cargo.toml not found; AURA_REPO must be an aura checkout" >&2
+    exit 1
+  fi
+}
+
 need_repo() {
   if [ -z "${AURA_REPO:-}" ]; then
     st_missing AURA_REPO aura .env
@@ -120,29 +133,39 @@ experiment_compose() {
 
 case "$1" in
   install)
-    brew install mezmo/tap/aura
-    brew install mezmo/tap/aura-web-server
+    # Built from the checkout, not Homebrew: the tap lags the nightlies.
+    # Each version keeps its own folder, so the symlink can go back.
+    need_checkout
+    version="$(git -C "$AURA_REPO" describe --tags --always --dirty)"
+    commit="$(git -C "$AURA_REPO" rev-parse HEAD)"
+    (cd "$AURA_REPO" && cargo build --release --bin aura)
+    dest="$HOME/.local/opt/aura/$version"
+    mkdir -p "$dest" "$HOME/.local/bin"
+    # Copy then rename, so a running aura keeps its old file.
+    cp "$AURA_REPO/target/release/aura" "$dest/aura.new"
+    chmod 755 "$dest/aura.new"
+    mv -f "$dest/aura.new" "$dest/aura"
+    printf '%s %s\n' "$version" "$commit" > "$dest/SOURCE"
+    ln -sfn "$dest/aura" "$HOME/.local/bin/aura"
+    echo "installed aura $version ($commit) at $dest; ~/.local/bin/aura links to it"
     ;;
   server)
     need_keys
     traces_env
     HOST="${HOST:-0.0.0.0}"
     CONFIG_PATH="${CONFIG_PATH:-$DEFAULT_CONFIG}"
-    exec aura-web-server --config "$CONFIG_PATH" --host "$HOST" --port "$PORT"
+    exec aura webserver --config "$CONFIG_PATH" --host "$HOST" --port "$PORT"
     ;;
   server-repo)
     need_keys
-    if [ -z "${AURA_REPO:-}" ]; then
-      st_missing AURA_REPO aura .env
-      exit 1
-    fi
+    need_checkout
     traces_env
     export HOST=0.0.0.0
     export PORT="$PORT"
     export AURA_CUSTOM_EVENTS=true
     export AURA_EMIT_REASONING=true
     cd "$AURA_REPO"
-    cargo run --bin aura-web-server -- \
+    cargo run --bin aura -- webserver \
       --config "${CONFIG_PATH:-$DEFAULT_CONFIG}" \
       2>&1 | tee "$DIR/aura-output.txt"
     ;;
@@ -222,10 +245,12 @@ case "$1" in
 usage: aura.sh install|server|server-repo|cli|health|models|prompt [text]
        aura.sh image | experiment start|stop|run|inspect|ps
 
-  install      brew install aura + aura-web-server from mezmo/tap
-  server       run aura-web-server on :3033 with config.toml
-  server-repo  build and run the server from the $AURA_REPO checkout
-               (cargo), output tee'd to aura-output.txt
+  install      build aura from the $AURA_REPO checkout (cargo --release),
+               copy it to ~/.local/opt/aura/<git describe>/ with a SOURCE
+               file naming the commit, and link ~/.local/bin/aura to it
+  server       run `aura webserver` on :3033 with config.toml
+  server-repo  build and run `aura webserver` from the $AURA_REPO checkout
+               (cargo run), output tee'd to aura-output.txt
   cli          interactive aura CLI against the local server
   health       GET /health on the running server
   models       GET /v1/models

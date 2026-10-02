@@ -1,15 +1,15 @@
 # local-aura
 
-Run and poke Mezmo aura locally: web server on `:3033` (brew install or a
-source checkout), CLI, and quick curl smoke tests.
+Run and poke Mezmo aura locally: web server on `:3033` (`aura webserver`,
+installed or run from a source checkout), CLI, and quick curl smoke tests.
 `config.toml` is the default server config. It references API keys via
 `{{ env.* }}` templates only, no literals.
 
 ## Usage
 
 ```sh
-./aura.sh install            # brew install aura + aura-web-server
-./aura.sh server             # brew binary with config.toml
+./aura.sh install            # build aura from $AURA_REPO and link ~/.local/bin/aura
+./aura.sh server             # aura webserver with config.toml
 ./aura.sh server-repo        # cargo run from $AURA_REPO (tees aura-output.txt)
 ./aura.sh cli [args]         # aura CLI against the local server
 ./aura.sh health             # GET /health
@@ -21,6 +21,20 @@ source checkout), CLI, and quick curl smoke tests.
 ./aura.sh experiment inspect [summary|tree]
 ./aura.sh experiment stop
 ```
+
+## Install
+
+`install` builds `aura` from the `$AURA_REPO` checkout, not from Homebrew:
+the `mezmo/tap` formula lags the nightlies.
+It runs `cargo build --release --bin aura` and copies the binary to
+`~/.local/opt/aura/<version>/`, where `<version>` is `git describe --tags`
+(with `-dirty` for uncommitted changes).
+A `SOURCE` file there names the version and the full commit.
+`~/.local/bin/aura` then links to that copy; older versions stay, so the
+link can go back.
+No separate server binary is installed: AURA deprecated `aura-web-server`
+in `v0.2.18-nightly.16`, and `aura webserver` takes the same flags and
+environment variables.
 
 ## Traces
 
