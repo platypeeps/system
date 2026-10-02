@@ -75,8 +75,21 @@ unlock and toggle commands are registered but off with it, so the page sends
 nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
 `$HA_URL` and never holds a value.
 
-The old screens stay until their section is ported. Only the old Today moved,
-to `/classic/today`; every other old screen keeps its path. A `/v2/` address
+Documents is at `/documents` (sd:2114): the design's facets, search and
+paged ledger over every file `/documents/<key>/<file>` serves.
+`GET /api/documents` (`documents_screen.document`) gives each file its title,
+h1 and stand line, its kind and its render state. A checkout with
+`research.conf.py` makes research documents, and every other root makes
+reports. A research document is render-stale when its source Markdown changed
+after the page. The source is the one `research.conf.py` names, else the one
+`.md` with the page's name. Open document opens the served page. Render is
+copy only. Request a document is copy only: the page files no item. Pin, hide
+and tag are off: no document store exists yet. Disable render is off: no
+render switch exists.
+
+The old screens stay until their section is ported. Two moved: the old Today
+to `/classic/today` and the old Documents to `/classic/documents`. Every other
+old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
 `/today`, `/v2/static/<file>` to `/ui/<file>`); any other `/v2/` path is a 404.
 One map in `sd_dashboard/v2/__init__.py`, served as `/ui/sections.js`, says
@@ -90,10 +103,10 @@ Classic screens.
 | Today | `/today` (new) |
 | Tasks | `/tasks` (new) |
 | Home | `/home` (new) |
+| Documents | `/documents` (new) |
 | Writing | `/writing` |
 | Research | `/operations?area=resources` |
 | Contributions | `/contributions` |
-| Documents | `/documents` |
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
 | Management | `/operations?area=jobs` |
@@ -101,7 +114,7 @@ Classic screens.
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
 | Briefs, Notes, HOA, Health, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
+| Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Documents (classic) | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection`, `/classic/documents` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup

@@ -1,4 +1,4 @@
-"""The dashboard's default UI: the design source's shell, and the pages built on it so far (sd:2110, sd:2163, sd:2124, sd:2118, sd:2117).
+"""The dashboard's default UI: the design source's shell, and the pages built on it so far (sd:2110, sd:2163, sd:2124, sd:2118, sd:2117, sd:2114).
 
 The design source is ui-design `products/system/` (`design.md`, `designs/v2/`,
 `foundation/`); `static/` holds its shell, tokens and fonts as the files the
@@ -28,17 +28,16 @@ HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 
 #: Route path -> page file. `/` is Today as well: the new design is the default.
-PAGES = {"/": "today.html", "/today": "today.html", "/tasks": "tasks.html", "/management": "management.html", "/home": "home.html"}
+PAGES = {"/": "today.html", "/today": "today.html", "/tasks": "tasks.html", "/management": "management.html", "/home": "home.html", "/documents": "documents.html"}
 
 #: The shell's map, and the only place a rail section names its address. A ported section opens its page; a section
 #: not yet ported opens its old screen, marked "classic" on the rail, until its port moves it into SECTIONS. A section
 #: in neither has no old screen and still says it is not built. The shell reads the three as /ui/sections.js.
-SECTIONS = {"Today": "/today", "Tasks": "/tasks", "Management": "/management", "Home": "/home"}
+SECTIONS = {"Today": "/today", "Tasks": "/tasks", "Management": "/management", "Home": "/home", "Documents": "/documents"}
 CLASSIC = {
     "Writing": "/writing",
     "Research": "/operations?area=resources",
     "Contributions": "/contributions",
-    "Documents": "/documents",
     "Skills": "/skills",
     "Metrics": "/operations?area=usage",
     "Reports": "/operations?area=reports",
@@ -49,6 +48,7 @@ CLASSIC = {
 #: here after Tasks moved to `SECTIONS` (sd:2124): the new page has no run selection, age buckets, paging or status
 #: filter yet, and Operations > Progress links to it. Jobs, Services, Repos, Sessions and Protection stay after Management
 #: moved (sd:2118): the new page has no job log or cancel, no service filter or paging, no pull, and no gap matrix.
+#: The old Documents moved to `/classic/documents` when the new page took `/documents` (sd:2114), as the old Today did.
 SCREENS = {
     "Today (classic)": "/classic/today",
     "Backlog (classic)": "/backlog",
@@ -60,6 +60,7 @@ SCREENS = {
     "Sessions": "/operations?area=sessions",
     "Progress": "/operations?area=progress",
     "Protection": "/protection",
+    "Documents (classic)": "/classic/documents",
 }
 
 TYPES = {
