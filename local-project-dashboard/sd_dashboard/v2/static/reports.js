@@ -80,14 +80,19 @@ function famState(jobs) {
   // A partial last day (▲) is named apart; a fresh report without a log is a report that needs action, not a failing job.
   const bad = jobs.filter(j => CAD[j] && lastState(j) === 'warning');
   const partial = jobs.filter(j => CAD[j] && lastState(j) === 'caution');
-  const s = bad.length ? 'warning' : act.length || partial.length ? 'caution' : 'ok';
-  return { s, act: act.length, bad, partial };
+  // build: a job with no evidence (the cadence was not read, the job is not installed, it has no log, or its last scheduled
+  // day was not read) makes the lamp unknown, never all clear: no failure seen is not health when nothing was seen.
+  const unread = jobs.filter(j => !CAD[j]?.log || lastState(j) === 'unknown');
+  const s = bad.length ? 'warning' : act.length || partial.length ? 'caution' : unread.length ? 'unknown' : 'ok';
+  return { s, act: act.length, bad, partial, unread };
 }
 function lamps() {
   const out = FAMILIES.map(([k, label, icon, jobs]) => {
     const f = famState(jobs);
-    const val = f.s === 'ok' ? html`<span class="ph">all clear</span>` : f.bad.length ? html`<span class="ph"><b>${f.bad.length}</b> failing</span> · <span class="ph">${f.act} need action</span>` : html`<span class="ph"><b>${f.act}</b> need action</span> · <span class="ph">${f.partial.length ? `${f.partial.length} partial` : 'none failing now'}</span>`;
-    return html`<li><button class="cell" type="button" data-fam="${k}" data-state="${f.s}" aria-pressed="${String(F.fam === k)}" title="${[...f.bad, ...f.partial.map(j => j + ' (partial)')].join(', ')}"><span class="lbl">${label}${I(icon)}</span><span class="val">${val}</span></button></li>`;
+    const unread = f.unread.length ? html` · <span class="ph">${f.unread.length} not read</span>` : '';
+    const val = f.s === 'ok' ? html`<span class="ph">all clear</span>` : f.s === 'unknown' ? html`<span class="ph"><b>${f.unread.length}</b> not read</span> · <span class="ph">none failing seen</span>`
+      : f.bad.length ? html`<span class="ph"><b>${f.bad.length}</b> failing</span> · <span class="ph">${f.act} need action</span>${unread}` : html`<span class="ph"><b>${f.act}</b> need action</span> · <span class="ph">${f.partial.length ? `${f.partial.length} partial` : 'none failing now'}</span>${unread}`;
+    return html`<li><button class="cell" type="button" data-fam="${k}" data-state="${f.s}" aria-pressed="${String(F.fam === k)}" title="${[...f.bad, ...f.partial.map(j => j + ' (partial)'), ...f.unread.map(j => j + ' (not read)')].join(', ')}"><span class="lbl">${label}${I(icon)}</span><span class="val">${val}</span></button></li>`;
   });
   // build: without a family list the page draws no family lamp; this one says which file it reads.
   const fam = DOC.families || {};

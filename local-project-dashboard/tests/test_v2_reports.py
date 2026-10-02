@@ -314,6 +314,30 @@ class TheScript(ScreenCase):
         self.assertIn("■ 1 failed last run", out["R"]["tally"])
         self.assertEqual(out["attention"], {"state": "warning", "n": 1, "what": "reports want you"})
 
+    def test_a_family_lamp_without_evidence_for_a_job_is_unknown_not_all_clear(self):
+        def lamps(doc, jobs=("weekly-scan",)):
+            doc["families"]["list"] = [{"key": "scan", "label": "Scan", "icon": "bot", "jobs": list(jobs)}]
+            return self.run_page("R.lamps = ELS.annunciator.html;", doc=doc)["R"]["lamps"]
+
+        unread = json.loads(json.dumps(self.doc))
+        unread["cadence"], unread["sources"]["cadence"] = None, "no log root"
+        no_log = json.loads(json.dumps(self.doc))
+        no_log["cadence"]["weekly-scan"]["log"] = None
+        idle = json.loads(json.dumps(no_log))
+        idle["cadence"]["weekly-scan"]["scheduled"] = [False] * len(DAYS)
+        cut = json.loads(json.dumps(self.doc))
+        cut["cadence"]["weekly-scan"]["read_from"] = DAYS[3]
+        cases = {"cadence not read": lamps(unread), "job not installed": lamps(json.loads(json.dumps(self.doc)), ("weekly-scan", "gone-job")),
+                 "no log": lamps(no_log), "no log, nothing scheduled this week": lamps(idle), "its last run was not read": lamps(cut)}
+        for case, html in cases.items():
+            with self.subTest(case):
+                self.assertRegex(html, r'data-fam="scan" data-state="unknown"')
+                self.assertNotIn("all clear", html)
+                self.assertIn("not read", html)
+        self.assertIn("gone-job (not read)", cases["job not installed"])
+        # With every job's log read and no failure, the lamp is still all clear.
+        self.assertRegex(lamps(json.loads(json.dumps(self.doc))), r'data-fam="scan" data-state="ok"')
+
     def test_a_job_that_has_not_run_yet_today_is_not_a_gap(self):
         doc = json.loads(json.dumps(self.doc))
         doc["cadence"]["nightly-sync"]["runs"][DAYS[6]] = [0, 0]
