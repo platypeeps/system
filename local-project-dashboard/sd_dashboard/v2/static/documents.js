@@ -306,7 +306,8 @@ function renderShift() {
     put(chipsEl, html`${[`repo:${repo}`, `kind:${kind}`, `skill:${skill}`, 'budget:30m', p.due ? `due:${p.due}` : ''].filter(Boolean).map(c => html`<span class="chip" aria-pressed="true">${c}</span>`)}`);
     reqEl.hidden = false;
     Object.assign(DRAFT, { title, repo, kind, skill, due: p.due,
-      cmd: `sd task add ${shq('Document request: ' + title)} --body ${shq(`repo=${repo} kind=${kind} skill=${skill}`)}${p.due ? ` --due ${shq(p.due)}` : ''} --json\nsd run --sequential --role author --scope ${shq(repo)} --budget-minutes 30 <item>` });
+      // build: the run gets the id the add printed (ITEM, set here); `<item>` would be a redirect in a shell.
+      cmd: `ITEM=$(sd task add ${shq('Document request: ' + title)} --body ${shq(`repo=${repo} kind=${kind} skill=${skill}`)}${p.due ? ` --due ${shq(p.due)}` : ''} --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["item"]["id"])') &&\nsd run --sequential --role author --scope ${shq(repo)} --budget-minutes 30 "$ITEM"` });
     // build: the line is to copy; nothing is filed or queued from here.
     put(reqEl, html`<p class="why">Copy the lines: they create an item, then queue one runner assignment in ${repo}. ${skill === 'choose' ? 'No skill matches this kind yet; name one with skill:.' : `The runner uses ${skill}.`} The dashboard does not file them.</p>
       <div class="actions">${shell.commands.rowActions(DRAFT.id)}</div>`);

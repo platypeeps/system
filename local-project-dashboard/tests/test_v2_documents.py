@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -52,6 +53,9 @@ COMMANDS = [
     ["document.skip-repo", "document", "Disable render for repo", "e", "safe"],
     ["document.request", "document request draft", "Run", "r", "undo"],
 ]
+
+#: The filter the copied request pair pipes `sd task add --json` through, so `sd run` gets the new item's id.
+PICK_ID = """python3 -c 'import json, sys; print(json.load(sys.stdin)["item"]["id"])'"""
 
 #: Seconds since the epoch, a day apart: the fixture's files and sources are dated with them.
 DAY = 86400
@@ -280,18 +284,44 @@ const r = cmd('document.request'), d = C.get('draft:request');
 R.r = [r.executes, r.when(d), r.cli(d)]; shellRun(r, d); await flush();""")
         executes, when, cli = out["R"]["r"]
         self.assertEqual((executes, when), (False, True))
-        self.assertEqual(cli, "sd task add 'Document request: water summary' --body 'repo=lab kind=research skill=sd-research-repo' --json\n"
-                              "sd run --sequential --role author --scope 'lab' --budget-minutes 30 <item>")
+        self.assertEqual(cli, "ITEM=$(sd task add 'Document request: water summary' --body 'repo=lab kind=research skill=sd-research-repo' --json"
+                              f" | {PICK_ID}) &&\n"
+                              "sd run --sequential --role author --scope 'lab' --budget-minutes 30 \"$ITEM\"")
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["toasts"][-1], ["Copy the two lines: the dashboard does not file document requests yet", False])
+
+    def test_the_copied_request_lines_queue_the_item_they_create(self):
+        # `<item>` in sh redirects stdin from a file, and a stale ITEM would queue another task. Run the copied text in sh
+        # against a stand-in sd: the run must get the id the add printed, and nothing runs when the add fails.
+        out = self.run_page("""const input = ELS.shift; input.value = 'request water summary repo:lab';
+input.listeners.input.forEach(f => f()); input.listeners.input.forEach(f => f());
+R.cli = cmd('document.request').cli(C.get('draft:request'));""")
+        with tempfile.TemporaryDirectory() as bin_dir:
+            log = Path(bin_dir) / "runs"
+            stand_in = Path(bin_dir) / "sd"
+            stand_in.write_text(f"""#!/bin/sh
+if [ "$1 $2" = "task add" ]; then [ -n "$SD_ADD_FAILS" ] && exit 1; echo '{{"item": {{"id": 4242, "title": "x"}}}}'; exit 0; fi
+echo "$*" >> {shlex.quote(str(log))}
+""", encoding="utf-8")
+            stand_in.chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", ITEM="7")
+            ran = subprocess.run(["sh", "-c", out["R"]["cli"]], env=env, cwd=bin_dir, capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertEqual(log.read_text(encoding="utf-8").split()[-1], "4242")
+            log.unlink()
+            failed = subprocess.run(["sh", "-c", out["R"]["cli"]], env=dict(env, SD_ADD_FAILS="1"), cwd=bin_dir,
+                                    capture_output=True, text=True, timeout=30, check=False)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertFalse(log.exists(), "sd run ran after sd task add failed")
 
     def test_a_request_takes_the_skill_its_hint_asks_for(self):
         # A report has no skill; the hint says to name one with skill:, so that token names it and leaves the title.
         out = self.run_page("""const input = ELS.shift; input.value = 'request budget memo repo:civic skill:sd-writer';
 input.listeners.input.forEach(f => f()); input.listeners.input.forEach(f => f());
 R.cli = cmd('document.request').cli(C.get('draft:request'));""")
-        self.assertEqual(out["R"]["cli"], "sd task add 'Document request: budget memo' --body 'repo=civic kind=report skill=sd-writer' --json\n"
-                                          "sd run --sequential --role author --scope 'civic' --budget-minutes 30 <item>")
+        self.assertEqual(out["R"]["cli"], "ITEM=$(sd task add 'Document request: budget memo' --body 'repo=civic kind=report skill=sd-writer' --json"
+                                          f" | {PICK_ID}) &&\n"
+                                          "sd run --sequential --role author --scope 'civic' --budget-minutes 30 \"$ITEM\"")
 
     def test_each_read_state_is_said_in_the_slot(self):
         out = self.run_page("")
