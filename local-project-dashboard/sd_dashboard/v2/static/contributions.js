@@ -54,6 +54,9 @@ addEventListener('DOMContentLoaded', () => {
   if (u0.get('q')) q.value = u0.get('q');
   const inScope = r => scope === 'all' || (scope === 'internal') === !!r.internal;
   const scoped = () => ROWS.filter(inScope);
+  // build: counts come from the document's per-scope totals, which cover every open row; ROWS may be cut at OPEN_LIMIT.
+  const tot = (k, sc = scope) => (sc === 'all' ? ['internal', 'external'] : [sc]).reduce((a, s) => a + ((DOC.counts || {})[s]?.[k] || 0), 0);
+  const openN = sc => ORDER.reduce((a, l) => a + tot(l, sc), 0);
   const words = r => [r.title, r.repo, r.url, LABEL[r.lane], ...(r.reasons || [])].join(' ').toLowerCase();
   const shown = () => { const v = q.value.trim().toLowerCase(); return scoped().filter(r => (!lane || r.lane === lane) && (!v || words(r).includes(v))); };
   function adopt(doc) {
@@ -65,7 +68,7 @@ addEventListener('DOMContentLoaded', () => {
     C.put({ id: 'collector', type: 'collector', label: 'contributions collector' });
     document.body.dataset.observed = doc.read || '';
     // Rail badge (shell.js): rows that want the operator, in every scope.
-    const mine = ROWS.filter(r => r.s === 'caution').length;
+    const mine = tot('newly_unblocked', 'all') + tot('awaiting_you', 'all');
     window.PAGE_ATTENTION = { state: mine ? 'caution' : 'ok', n: mine, what: 'contributions want you' };
     window.shell.attention?.();
   }
@@ -106,10 +109,10 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Head: scope counts, lamps, source line ----------
   function renderHead() {
-    const rows = scoped(), c = DOC.collector || {}, st = FRESH[c.state] || 'unknown';
-    put(document.getElementById('sub'), html`Pull requests and issues you opened or owe · <span id="open-n">${n(rows.length)}</span> open · read <time class="rel" datetime="${DOC.read}"></time>`);
-    document.querySelectorAll('#scope input').forEach(i => { i.checked = i.value === scope; const b = i.nextElementSibling?.querySelector('b'); if (b) b.textContent = n(ROWS.filter(r => i.value === 'all' || (i.value === 'internal') === !!r.internal).length); });
-    const cnt = g => rows.filter(r => r.lane === g).length;
+    const c = DOC.collector || {}, st = FRESH[c.state] || 'unknown';
+    put(document.getElementById('sub'), html`Pull requests and issues you opened or owe · <span id="open-n">${n(openN(scope))}</span> open · read <time class="rel" datetime="${DOC.read}"></time>`);
+    document.querySelectorAll('#scope input').forEach(i => { i.checked = i.value === scope; const b = i.nextElementSibling?.querySelector('b'); if (b) b.textContent = n(openN(i.value)); });
+    const cnt = g => tot(g);
     const cells = [
       ['newly_unblocked', 'Newly unblocked', 'git-merge', 'caution', 'ready'],
       ['awaiting_you', 'Awaiting you', 'flag-triangle-right', 'caution', 'rows'],
@@ -124,12 +127,12 @@ addEventListener('DOMContentLoaded', () => {
     };
     // build: the reference's fourth lamp counted rows GitHub had already settled, from a gh read. The dashboard makes none.
     put(document.getElementById('annunciator'), html`${cells.map(lamp)}<li><div class="cell" data-cell="github" data-state="unknown"><span class="lbl">Settled on GitHub${I('circle-dot')}</span><span class="val"><span class="ph">not checked</span> · <span class="ph">the dashboard does not read GitHub</span></span><span class="sr">state unknown</span></div></li>`);
-    const unknown = rows.filter(r => r.freshness.status !== 'current').length;
+    const unknown = tot('unknown');
     put(document.getElementById('source'), html`<span class="g-${unknown ? 'unknown' : 'ok'}" aria-hidden="true">${GLYPH[unknown ? 'unknown' : 'ok']}</span>
       <button class="linkish" type="button" data-collector>Collector</button>
-      <span><b>${n(unknown)}</b> of ${n(rows.length)} open rows unknown freshness</span>
+      <span><b>${n(unknown)}</b> of ${n(openN(scope))} open rows unknown freshness</span>
       <span class="g-${st}">GitHub sync ${c.state || 'unknown'}${c.last_success_at ? html`, last success <time class="rel" datetime="${c.last_success_at}"></time>` : ''}</span>
-      <span>${n(rows.filter(r => r.item_id).length)} linked items · ${n(rows.filter(r => !r.url).length)} unfiled</span>`);
+      <span>${n(tot('linked'))} linked items · ${n(tot('unfiled'))} unfiled</span>`);
   }
 
   // ---------- Ledger ----------
@@ -153,8 +156,7 @@ addEventListener('DOMContentLoaded', () => {
     const cut = DOC.truncated ? `The document lists ${n(DOC.rows.length)} of ${n(DOC.open_total)} open rows; v1 /classic/contributions lists every one.` : '';
     f.hidden = !(lane || v || cut);
     f.textContent = [lane || v ? (rows.length ? `${rows.length} of ${all.length} shown${lane ? ' · ' + LABEL[lane] : ''}${v ? ` · “${v}”` : ''}. Esc clears.` : `Nothing matches${v ? ` “${v}”` : ''}. Esc clears.`) : '', cut].filter(Boolean).join(' ');
-    const tally = all.filter(r => r.s === 'caution').length;
-    put(document.getElementById('tally'), html`<span class="g-caution">▲ ${tally} yours</span><span class="g-queued">◌ ${all.filter(r => r.lane === 'awaiting_them').length} theirs</span><span class="g-unknown">▨ ${all.filter(r => r.freshness.status !== 'current').length} unknown freshness</span>`);
+    put(document.getElementById('tally'), html`<span class="g-caution">▲ ${n(tot('newly_unblocked') + tot('awaiting_you'))} yours</span><span class="g-queued">◌ ${n(tot('awaiting_them'))} theirs</span><span class="g-unknown">▨ ${n(tot('unknown'))} unknown freshness</span>`);
     window.shell.url({ ...(scope !== 'all' && { scope }), ...(lane && { lane }), ...(v && { q: v }) });
   }
 

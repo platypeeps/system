@@ -80,7 +80,9 @@ contributions projection v1 renders, in lanes by who acts next, with each
 row's repository scope (internal when sd's repo table holds it) and settled
 rows counted per repository. `GET /api/contributions/page`
 (`contribution_screen.document`) carries at most `OPEN_LIMIT` open rows and
-says when it cut some. The dashboard reads nothing from GitHub, so the design's
+says when it cut some; its per-scope counts, which the badge, lamps and tallies
+read, cover every open row. It sends no local path: a checkout reads
+`local: <folder>`, and a draft is the flag `has_draft`. The dashboard reads nothing from GitHub, so the design's
 "GitHub now" state and settled-per-day chart say they are not read.
 Acknowledge and Make task post to the v1 routes and ask first, since no verb
 reverses either. Draft nudge, Open on GitHub and Re-run collector are copy

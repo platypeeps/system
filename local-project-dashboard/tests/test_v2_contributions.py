@@ -133,6 +133,16 @@ class TheDocument(ScreenCase):
         self.assertEqual([(r["repo"], r["has_draft"]) for r in doc["rows"]], [("local: clone", True), ("local: clone-two", False)])
         self.assertEqual(doc["settled"][0]["repo"], "local: old")
 
+    def test_the_counts_cover_every_open_row_even_past_the_limit(self):
+        many = [contribution(1, "newly_unblocked"), contribution(2, "awaiting_you", repo="other/lib", url=None),
+                contribution(3, "awaiting_them", repo="other/lib", item_id=9, freshness={"status": "unknown", "reason": "x"})]
+        with mock.patch.object(contribution_screen, "OPEN_LIMIT", 1):
+            doc = self.doc(given=many)
+        self.assertEqual(len(doc["rows"]), 1)
+        self.assertEqual(doc["counts"], {
+            "internal": {"newly_unblocked": 1, "awaiting_you": 0, "awaiting_them": 0, "unknown": 0, "linked": 0, "unfiled": 0},
+            "external": {"newly_unblocked": 0, "awaiting_you": 1, "awaiting_them": 1, "unknown": 1, "linked": 1, "unfiled": 1}})
+
     def test_the_collector_is_the_github_tracker_freshness(self):
         self.assertEqual(self.doc()["collector"], {"state": "never", "last_success_at": None, "reason": ""})
 
@@ -289,6 +299,20 @@ R.ext = ELS.rows.html; R.bars = ELS.bars.html;""")
         self.doc["truncated"], self.doc["open_total"] = True, 900
         out = self.run_page("R.f = [ELS.filtered.hidden, ELS.filtered.textContent];")
         self.assertEqual(out["R"]["f"], [False, "The document lists 4 of 900 open rows; v1 /classic/contributions lists every one."])
+
+    def test_a_cut_document_counts_from_the_totals_not_the_rows_it_carries(self):
+        self.doc["truncated"], self.doc["open_total"] = True, 904
+        # Internal: 300 + 100 open, 50 unknown, 7 linked, 2 unfiled. External, from rows(): 2 awaiting them, both unknown, 1 unfiled.
+        self.doc["counts"]["internal"].update(newly_unblocked=300, awaiting_you=100, unknown=50, linked=7, unfiled=2)
+        out = self.run_page("""R.sub = ELS.sub.html; R.lamps = ELS.annunciator.html; R.tally = ELS.tally.html; R.source = ELS.source.html;
+document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'external' })); R.ext = ELS.annunciator.html;""")
+        self.assertEqual(out["attention"], {"state": "caution", "n": 400, "what": "contributions want you"})
+        self.assertIn('<span id="open-n">402</span>', out["R"]["sub"])
+        self.assertEqual(re.findall(r"<b>(\d+)</b>", out["R"]["lamps"]), ["300", "100", "2"])
+        self.assertIn("▲ 400 yours", out["R"]["tally"])
+        self.assertIn("<b>52</b> of 402 open rows unknown freshness", out["R"]["source"])
+        self.assertIn("7 linked items · 3 unfiled", out["R"]["source"])
+        self.assertEqual(re.findall(r"<b>(\d+)</b>", out["R"]["ext"]), ["0", "0", "2"])
 
     def test_a_failed_read_and_an_empty_projection_each_say_so(self):
         out = self.run_page("", answer="() => [500, { error: 'boom' }]")

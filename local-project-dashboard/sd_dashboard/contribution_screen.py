@@ -223,12 +223,19 @@ def document(connection, *, now):
     lanes = dict.fromkeys(contributions.LANES, 0)
     fresh = {"current": 0, "unknown": 0}
     opened, settled = [], {}
+    # Per scope, over every open row, so a cut list still counts in full: lanes, unknown freshness, linked and unfiled.
+    counts = {side: dict.fromkeys((*OPEN_LANES, "unknown", "linked", "unfiled"), 0) for side in ("internal", "external")}
     for row in rows:
         lanes[row["lane"]] = lanes.get(row["lane"], 0) + 1
         status = (row.get("freshness") or {}).get("status")
         fresh["current" if status == "current" else "unknown"] += 1
         why = _scope(row.get("repo"), remotes, places)
         if row["lane"] in OPEN_LANES:
+            side = counts["internal" if why is not None else "external"]
+            side[row["lane"]] += 1
+            side["unknown"] += status != "current"
+            side["linked"] += bool(row.get("item_id"))
+            side["unfiled"] += not row.get("url")
             opened.append({key: row.get(key) for key in ROW_FIELDS} | {
                 "repo": _shown(row.get("repo")), "has_draft": bool(row.get("draft_path")),
                 "freshness": {"status": status or "unknown", "reason": (row.get("freshness") or {}).get("reason") or ""},
@@ -253,6 +260,7 @@ def document(connection, *, now):
         "fresh": fresh,
         "open_total": len(opened),
         "truncated": len(opened) > OPEN_LIMIT,
+        "counts": counts,
         "rows": opened[:OPEN_LIMIT],
         "settled": ranked[:SETTLED_REPOS],
         "settled_other": other,
