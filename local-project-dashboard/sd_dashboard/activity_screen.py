@@ -7,7 +7,7 @@ keeps, so the port adds no collector:
 - **merge**: the `comment` note `ship.note_merge` writes (`reads.delivery_notes`) when `sd-ship`
   lands a pull request ("Code delivery <url> at <sha>", then the evidence
   JSON). The time is the note's, which is when the merge was observed.
-- **run**: runner assignments that started or ended in the window (`reads.recent_assignments`), as
+- **run**: runner assignments that started or ended in the window (`reads.recent_assignments`, with the item's repository), as
   `operations.assignment_state` reads them, with the queue revision
   `sd runner requeue` checks. `exec` assignments are left to `command`.
 - **job**: each launchd job whose log `cron-jobs.sh` wrote in the window,
@@ -101,17 +101,22 @@ def merges(connection, start: datetime, end: datetime) -> list[dict]:
     return out
 
 
+def _repo_label(path: str | None) -> str | None:
+    """An item's repository as merges label theirs: the last path part, which names the GitHub repository it clones."""
+    return (Path(path).name or None) if path else None
+
+
 def runs(connection, start: datetime, end: datetime) -> list[dict]:
-    ids = reads.recent_assignments(connection, since=_iso(start))
+    rows = reads.recent_assignments(connection, since=_iso(start))
     out = []
-    for ident in ids:
+    for ident, repo in rows:
         state = operations.assignment_state(connection, ident)
         at = _inside(state["ended"], start, end) or _inside(state["started"], start, end)
         if at is None:
             continue
         status = state["status"]
         out.append({"id": f"run:{ident}", "k": "run", "at": at, "s": _RUN_STATE.get(status, "unknown"),
-                    "repo": None, "what": state["title"] or f"assignment #{ident}",
+                    "repo": _repo_label(repo), "what": state["title"] or f"assignment #{ident}",
                     "detail": f"{state['role']} · {state['provider'] or 'no provider'} · {status}",
                     "ref": f"sd:{state['item']}" if state["item"] else f"assignment #{ident}",
                     "n": ident, "item": state["item"], "role": state["role"], "provider": state["provider"],

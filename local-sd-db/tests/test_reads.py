@@ -676,7 +676,17 @@ class TheActivityReads(unittest.TestCase):
                                 ("2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z", old))
         self.connection.execute("UPDATE assignment SET started = '2026-09-06T08:00:00Z' WHERE id = ?", (author,))
         self.connection.commit()
-        self.assertEqual(reads.recent_assignments(self.connection, since="2026-09-05T12:00:00Z"), [author])
+        self.assertEqual(reads.recent_assignments(self.connection, since="2026-09-05T12:00:00Z"), [(author, None)])
+
+    def test_recent_assignments_carry_their_items_repository(self):
+        from sd_db.writes import create_assignment
+
+        upsert_repo(self.connection, "/repos/system", remote="git@example.invalid:x.git")
+        item = create_item(self.connection, kind="work", title="In a repo", repo="/repos/system")
+        run = create_assignment(self.connection, item=item, role="author", status="done")
+        self.connection.execute("UPDATE assignment SET started = '2026-09-06T08:00:00Z' WHERE id = ?", (run,))
+        self.connection.commit()
+        self.assertIn((run, "/repos/system"), reads.recent_assignments(self.connection, since="2026-09-05T12:00:00Z"))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1355,15 +1355,16 @@ def delivery_notes(connection: sqlite3.Connection, *, since: str) -> list[sqlite
         "ORDER BY note.id", (since[:10],)).fetchall()
 
 
-def recent_assignments(connection: sqlite3.Connection, *, since: str, exclude_roles=("exec",)) -> list[int]:
-    """Ids of assignments that started or ended on or after the day of `since`, but for `exclude_roles`.
+def recent_assignments(connection: sqlite3.Connection, *, since: str, exclude_roles=("exec",)) -> list[tuple[int, str | None]]:
+    """(id, item repository) of assignments that started or ended on or after the day of `since`, but for `exclude_roles`.
 
-    A coarse bound, as `delivery_notes`; behind the dashboard's Activity (sd:2111).
+    A coarse bound, as `delivery_notes`; behind the dashboard's Activity (sd:2111), whose repository filter needs the item's repository.
     """
     marks = ", ".join("?" for _ in exclude_roles) or "''"
-    return [row[0] for row in connection.execute(
-        f"SELECT id FROM assignment WHERE role NOT IN ({marks}) "
-        "AND (substr(started, 1, 10) >= ? OR substr(ended, 1, 10) >= ?) ORDER BY id",
+    return [(row[0], row[1]) for row in connection.execute(
+        f"SELECT assignment.id, item.repo FROM assignment LEFT JOIN item ON item.id = assignment.item "
+        f"WHERE assignment.role NOT IN ({marks}) "
+        "AND (substr(assignment.started, 1, 10) >= ? OR substr(assignment.ended, 1, 10) >= ?) ORDER BY assignment.id",
         (*exclude_roles, since[:10], since[:10]))]
 
 

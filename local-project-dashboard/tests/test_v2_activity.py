@@ -131,6 +131,11 @@ class TheDocument(ScreenCase):
         self.assertNotIn(f"run:{self.ids['stale']}", self.by_id)
         self.assertNotIn(f"run:{self.ids['exec']}", self.by_id, "an exec assignment is the command kind's")
 
+    def test_a_run_carries_its_items_repository_under_the_label_merges_use(self):
+        merge = self.by_id[f"merge:{self.ids['merge']}"]
+        self.assertEqual(self.by_id[f"run:{self.ids['blocked']}"]["repo"], merge["repo"])
+        self.assertEqual(merge["repo"], "system")
+
     def test_a_job_is_placed_at_its_log_time_and_a_failed_one_without_a_log_says_so(self):
         failed = self.by_id["job:nightly-sync"]
         self.assertEqual((failed["k"], failed["at"], failed["s"], failed["failed"], failed["what"]),
@@ -394,7 +399,9 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", "() =
 R.table = ELS['chart-table'].html; R.lanes = ELS.lanes.html;""")
         cells = [int(n) for n in re.findall(r"<td>(\d+)</td>", out["R"]["table"])]
         self.assertEqual(sum(cells), len(re.findall(r'<rect class="tick', out["R"]["lanes"])))
-        self.assertEqual(sum(cells), 1, "one merge in system in the window")
+        inside = [e for e in self.doc["events"] if e["repo"] == "system" and e["at"] >= self.doc["from"]]
+        self.assertEqual(sum(cells), len(inside))
+        self.assertEqual(sorted(e["k"] for e in inside), ["merge", "run", "run"], "the merge and the item's two runs")
 
     def test_the_runs_cell_counts_failed_jobs_and_blocked_assignments_apart(self):
         doc = json.loads(json.dumps(self.doc))
