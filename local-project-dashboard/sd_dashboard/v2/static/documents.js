@@ -46,14 +46,18 @@ function facetCount(field, value) {
 // build: no reader tells a dashboard or a design document yet; kind is research (a checkout with research.conf.py) or report.
 const KIND_OFF = k => (k === 'design' || k === 'dashboard') && !DOCS.some(d => d.kind === k) ? `No ${k} documents: kind is derived as research (a checkout with research.conf.py) or report until the document index stores it.` : '';
 function renderFacets() {
+  let offs = 0;
   const chip = (field, v, label, extra = '') => {
     const on = F[field].has(v), n = facetCount(field, v);
     const root = field === 'repo' ? ROOTS.find(r => r.key === v) : null;
     const why = field === 'kind' ? KIND_OFF(v) : '';
     const off = why || (root && root.n === 0 ? `Nothing generated yet in ${root.path}` : '');
-    // build: aria-disabled, not disabled: a disabled button leaves the tab order, and its reason with it.
-    const dis = off ? html` aria-disabled="true" title="${off}"` : '';
-    return html`<button class="chip" type="button" data-f="${field}" data-v="${v}" aria-pressed="${String(on)}"${dis}>${extra}${label} <span class="n">${n}</span></button>`;
+    // build: aria-disabled, not disabled: a disabled button leaves the tab order, and its reason with it. The reason is
+    // an element the chip describes itself by, shown on focus; a title alone is a hover tooltip.
+    const id = off ? `facet-off-${++offs}` : '';
+    const dis = off ? html` aria-disabled="true" aria-describedby="${id}" title="${off}"` : '';
+    const chipEl = html`<button class="chip" type="button" data-f="${field}" data-v="${v}" aria-pressed="${String(on)}"${dis}>${extra}${label} <span class="n">${n}</span></button>`;
+    return off ? html`${chipEl}<span class="offwhy" id="${id}">${off}</span>` : chipEl;
   };
   put(facets, html`
     <div class="facet"><span class="label">Repo</span><div class="chips">${ROOTS.map(r => chip('repo', r.key, LABEL[r.key] || r.key))}</div></div>

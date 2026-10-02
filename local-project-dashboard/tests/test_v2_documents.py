@@ -306,8 +306,13 @@ R.picked = [...F.kind, ...F.repo];""")
         quiet = re.search(r'<button[^>]*data-v="quiet"[^>]*>', facets).group(0)
         for tag in (design, quiet):
             self.assertIn('aria-disabled="true"', tag)
-        self.assertIn("No design documents", design)
-        self.assertIn("Nothing generated yet in ~/repos/quiet/docs/dashboard", quiet)
+        # A title is a hover tooltip only; the reason is an element the chip names, so focus and a screen reader reach it.
+        for tag, reason in ((design, "No design documents"), (quiet, "Nothing generated yet in ~/repos/quiet/docs/dashboard")):
+            ref = re.search(r'aria-describedby="([^"]+)"', tag)
+            self.assertIsNotNone(ref, tag)
+            said = re.search(rf'<span[^>]*id="{re.escape(ref.group(1))}"[^>]*>([^<]*)</span>', facets)
+            self.assertIsNotNone(said, ref.group(1))
+            self.assertIn(reason, said.group(1))
         self.assertNotIn("aria-disabled", re.search(r'<button[^>]*data-v="research"[^>]*>', facets).group(0))
         self.assertEqual(out["R"]["picked"], [])
 
