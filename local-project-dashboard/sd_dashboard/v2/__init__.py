@@ -28,12 +28,13 @@ HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 
 #: Route path -> page file. `/` is Today as well: the new design is the default.
-PAGES = {"/": "today.html", "/today": "today.html", "/tasks": "tasks.html", "/management": "management.html", "/home": "home.html", "/documents": "documents.html"}
+PAGES = {"/": "today.html", "/today": "today.html", "/tasks": "tasks.html", "/management": "management.html", "/home": "home.html", "/fleet-health": "health.html", "/documents": "documents.html"}
 
 #: The shell's map, and the only place a rail section names its address. A ported section opens its page; a section
 #: not yet ported opens its old screen, marked "classic" on the rail, until its port moves it into SECTIONS. A section
 #: in neither has no old screen and still says it is not built. The shell reads the three as /ui/sections.js.
-SECTIONS = {"Today": "/today", "Tasks": "/tasks", "Management": "/management", "Home": "/home", "Documents": "/documents"}
+SECTIONS = {"Today": "/today", "Tasks": "/tasks", "Management": "/management", "Home": "/home", "Health": "/fleet-health",
+            "Documents": "/documents"}
 CLASSIC = {
     "Writing": "/writing",
     "Research": "/operations?area=resources",

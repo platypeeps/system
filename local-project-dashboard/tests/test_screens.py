@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -136,6 +137,27 @@ class Today(ScreenCase):
         page = self.render("/operations", {"area": ["usage"]})
         self.assertIn("commits missing a trailer", page)
         self.assertIn("cost-tile", page)
+
+    def test_a_slow_trailer_walk_is_stopped_at_its_budget_and_the_tile_says_so(self):
+        from sd_dashboard import operations_screen
+
+        stub = Path(self.tmp.name) / "bin"
+        stub.mkdir()
+        # Only the trailer walk's first call stalls; the page's other git reads go to the real git.
+        # exec: the process the budget kills is the one holding the pipes.
+        (stub / "git").write_text('#!/bin/sh\ncase "$*" in *"rev-parse --verify -q origin/HEAD"*) exec sleep 5;; esac\n'
+                                  f'exec {shutil.which("git")} "$@"\n')
+        (stub / "git").chmod(0o755)
+        for name in ("one", "two"):
+            self.repo(f"/checkouts/{name}")
+        with mock.patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
+                mock.patch.object(operations_screen, "TRAILER_SECONDS", 0.5):
+            started = time.monotonic()
+            page = self.render("/operations", {"area": ["usage"]})
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 3, "Progress waited on the git walk instead of stopping it")
+        self.assertIn('class="tile-value">not read', page)
+        self.assertIn("the trailer count ran past its budget of 0.5 seconds and was stopped rather than waited on", page)
 
     def test_open_followups(self):
         self.note(self.running, "chase the reviewer")

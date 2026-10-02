@@ -181,7 +181,6 @@ KNOWN_LINE_INTO_CODE = frozenset({
     ("local-sd-db/tests/support.py", 110, "sd_lib.py", 254, 254),
     ("local-sd-db/tests/test_brief.py",
      98, "local-project-dashboard/sd_dashboard/screens.py", 163, 163),
-    ("local-sd-db/tests/test_reads.py", 443, "reporting.py", 25, 25),
     ("local-sd-plan/README.md", 39, "local-sd-db/sd_db/runner.py", 53, 53),
     ("local-sd-plan/README.md", 41, "local-sd-db/sd_db/runner.py", 333, 333),
     ("local-sd-plan/README.md", 43, "local-sd-runner/sd_runner/gitops.py", 160, 160),
