@@ -412,6 +412,17 @@ const t = Date.now(); R.long = guess('?' + '!:!'.repeat(18) + ' x'); R.ms = Date
         self.assertEqual(out["R"]["long"], "filter")
         self.assertLess(out["R"]["ms"], 500)
 
+    def test_the_field_hint_says_what_enter_does_in_each_reading(self):
+        # The hint said "Enter commits" while Start is off and Enter starts nothing.
+        page = (V2 / "research.html").read_text(encoding="utf-8")
+        self.assertNotIn("Enter commits", page)
+        out = self.run_page("""const input = ELS.shift; const fire = (t, e) => (input.listeners[t] || []).forEach(f => f(e));
+input.value = 'zzz'; fire('input'); R.filter = ELS['shift-hint'].html;
+input.selectionStart = input.value.length; fire('keydown', { key: 'ArrowRight', preventDefault() {}, stopPropagation() {} }); await flush();
+R.start = ELS['shift-hint'].html;""")
+        self.assertIn("Enter keeps the filter", out["R"]["filter"])
+        self.assertIn("Enter starts nothing: Start is off", out["R"]["start"])
+
     def test_the_board_ranks_the_rows_and_shows_rounds_as_not_recorded_with_the_reason(self):
         out = self.run_page("R.rows = ELS.rows.html; R.tally = ELS.tally.html; R.sum = ELS.sum.html;")
         rows = out["R"]["rows"]

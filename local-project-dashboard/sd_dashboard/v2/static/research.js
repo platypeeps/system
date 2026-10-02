@@ -222,7 +222,7 @@ document.addEventListener('shell:picked', e => { picked = e.detail; tbody.queryS
 
 // ---------- Shapeshift: filter projects, or start research ----------
 const input = document.getElementById('shift'), prev = document.getElementById('shift-preview'), as = document.getElementById('shift-as'), ghost = document.getElementById('ghost');
-const chipsEl = document.getElementById('shift-chips'), reqEl = document.getElementById('req');
+const chipsEl = document.getElementById('shift-chips'), reqEl = document.getElementById('req'), hint = document.getElementById('shift-hint');
 let mode = 'filter', lastGuess = 'filter', streak = 0;
 // A question starts research: it opens with a start word, or a ? is followed only by key:value tags.
 // build: the reference's one regex backtracked exponentially on a long tag run; this walks the words once, with the same answers.
@@ -259,6 +259,8 @@ function renderShift() {
   prev.hidden = !v;
   prev.querySelectorAll('[data-as]').forEach(c => c.setAttribute('aria-pressed', c.dataset.as === mode));
   ghost.textContent = v ? `→ ${mode}` : '';
+  // build: the reference's hint said Enter commits; Start is off, so the hint says what Enter does in each reading.
+  put(hint, html`→ switches reading · ${mode === 'filter' ? 'Enter keeps the filter' : 'Enter starts nothing: Start is off'} · Esc clears · Tab moves on`);
   if (mode === 'filter') {
     put(as, html`${I('filter')} filter the board`); chipsEl.replaceChildren(); reqEl.hidden = true;
     filterText = v.toLowerCase(); renderBoard(); reconcile(); writeURL(); return;
