@@ -39,6 +39,8 @@ __all__ = [
     "age_bucket",
     "age_histogram",
     "age_series",
+    "assignment_counts",
+    "assignment_ledger",
     "backlog_items",
     "brief_items",
     "brief_notes",
@@ -52,6 +54,7 @@ __all__ = [
     "missing_trailers",
     "on_branch",
     "open_followups",
+    "ready_to_send",
     "runner_board",
     "scorecard",
     "status_changes",
@@ -1017,6 +1020,47 @@ def item_assignments(connection: sqlite3.Connection, item: int) -> list[sqlite3.
             (item,),
         ).fetchall()
     )
+
+
+def assignment_ledger(
+    connection: sqlite3.Connection, *, role: str | None = None, exclude_role: str | None = None,
+    live: bool = False, limit: int | None = None,
+) -> list[sqlite3.Row]:
+    """Assignments with their item's title and repository, newest first.
+
+    `live` keeps queued, running and ending rows and lists them oldest first,
+    the order the lane takes them. The Management page reads it (sd:2118).
+    """
+    clauses, params = [], []
+    if role is not None:
+        clauses.append("assignment.role = ?")
+        params.append(role)
+    if exclude_role is not None:
+        clauses.append("assignment.role != ?")
+        params.append(exclude_role)
+    if live:
+        clauses.append("assignment.status IN ('queued', 'running', 'ending')")
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    order = " ORDER BY assignment.id ASC" if live else " ORDER BY assignment.id DESC"
+    bound = ""
+    if limit is not None:
+        bound = " LIMIT ?"
+        params.append(limit)
+    return list(connection.execute(
+        "SELECT assignment.*, item.title AS title, item.repo AS repo FROM assignment"
+        " LEFT JOIN item ON item.id = assignment.item" + where + order + bound, params).fetchall())
+
+
+def assignment_counts(connection: sqlite3.Connection) -> dict[str, int]:
+    """Every assignment counted by status, the largest count first."""
+    return {row[0]: row[1] for row in connection.execute(
+        "SELECT status, count(*) FROM assignment GROUP BY status ORDER BY count(*) DESC, status")}
+
+
+def ready_to_send(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+    """The items waiting at `ready_to_send`, newest first."""
+    return list(connection.execute(
+        "SELECT id, title, repo, updated_at FROM item WHERE status = 'ready_to_send' ORDER BY id DESC").fetchall())
 
 
 def item_shadow(

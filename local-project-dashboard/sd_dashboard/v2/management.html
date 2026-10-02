@@ -1,0 +1,74 @@
+<!doctype html>
+<!--
+  Management (sd:2118), at /management. Built from the design source's products/system/designs/v2/management.html at d82daa1,
+  with design.md and commands.md.
+  Data: /api/management (management_screen.document: the sd-db repo table with each checkout's .github/sd-review.json and its
+  protection reading, the fleet's git state and sessions, the runner lane and assignments, launchd services and jobs), read when
+  the page opens and after a write. Writes: the sd-db repo verbs, runner requeue and cancel, job retry, service start, stop and
+  restart. Nothing here is sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Management · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/management.css">
+</head>
+<body data-page="Management" data-scope="fleet">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+  <main>
+    <header class="head">
+      <div>
+        <h1>Management</h1>
+        <p id="subhead">Reading repos, the lane, sessions, services and jobs…</p>
+      </div>
+      <div class="shift">
+        <label class="field">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr">Filter this view</span>
+          <input id="shift" placeholder="Filter repos, e.g. hoa or merge:auto" autocomplete="off" spellcheck="false" aria-describedby="shift-hint">
+          <span class="ghost" id="ghost"></span>
+          <kbd>/</kbd>
+        </label>
+        <p class="hint sr" id="shift-hint">Free text filters rows. managed:yes, merge:auto, source:row and state:failed become chips. Esc clears.</p>
+      </div>
+    </header>
+
+    <div class="subviews" role="tablist" aria-label="Management views" id="subviews">
+      <button class="sv" role="tab" type="button" id="sv-repos" aria-controls="view-repos" data-view="repos" data-state="unknown">
+        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-folder-code"/></svg>Repos<kbd>1</kbd></span>
+        <span class="val">▨ reading</span></button>
+      <button class="sv" role="tab" type="button" id="sv-lane" aria-controls="view-lane" data-view="lane" data-state="unknown">
+        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-git-merge"/></svg>Ship lane<kbd>2</kbd></span>
+        <span class="val">▨ reading</span></button>
+      <button class="sv" role="tab" type="button" id="sv-sessions" aria-controls="view-sessions" data-view="sessions" data-state="unknown">
+        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-bot"/></svg>Sessions<kbd>3</kbd></span>
+        <span class="val">▨ reading</span></button>
+      <button class="sv" role="tab" type="button" id="sv-deploys" aria-controls="view-deploys" data-view="deploys" data-state="unknown">
+        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-rocket"/></svg>Deploys<kbd>4</kbd></span>
+        <span class="val">▨ no deploy source</span></button>
+      <button class="sv" role="tab" type="button" id="sv-schedules" aria-controls="view-schedules" data-view="schedules" data-state="unknown">
+        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-calendar-clock"/></svg>Schedules<kbd>5</kbd></span>
+        <span class="val">▨ reading</span></button>
+    </div>
+
+    <section id="view-repos" role="tabpanel" aria-labelledby="sv-repos"></section>
+    <section id="view-lane" role="tabpanel" aria-labelledby="sv-lane" hidden></section>
+    <section id="view-sessions" role="tabpanel" aria-labelledby="sv-sessions" hidden></section>
+    <section id="view-deploys" role="tabpanel" aria-labelledby="sv-deploys" hidden></section>
+    <section id="view-schedules" role="tabpanel" aria-labelledby="sv-schedules" hidden></section>
+  </main>
+
+  <div class="details" id="details"></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/management.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>
