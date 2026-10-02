@@ -408,6 +408,17 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         out = self.run_page("R.rows = ELS.rows.html;")
         self.assertIn("local  · Unfiled issue draft", out["R"]["rows"])
 
+    def test_the_page_text_names_the_route_make_task_posts(self):
+        # Review 4 of PR #72 (0435ca1e4fbb): the help and the page note still said a followup through /api/items.
+        page = (V2 / "contributions.html").read_text(encoding="utf-8")
+        routes = re.findall(r"post\('(/api/[^']+)'", PAGE_JS)
+        self.assertEqual(routes, ["/api/contributions/acknowledge", "/api/contributions/task"])
+        for route in routes:
+            self.assertIn(f"POST {route}", page)
+        self.assertNotIn("/api/items", page)
+        self.assertNotIn("followup", page)
+        self.assertIn("Make task files a task linked to the contribution", page)
+
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", PAGE_JS)
         self.assertNotIn("setAttribute('style'", PAGE_JS)
