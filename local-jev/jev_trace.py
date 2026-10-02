@@ -88,6 +88,11 @@ def value_of(value) -> dict | None:
 #: a subject or a sentence is dropped, never sent.
 IDENTIFIER = re.compile(r"[A-Za-z0-9_.:+-]{1,128}")
 
+#: An ordering is positions, not things: the ledger's own grammar and cap
+#: (`POSITIONS` and `MAX_ORDERING` in sd_db.judgment), so `3,1,2` survives.
+POSITIONS = re.compile(r"\d+(,\d+)*")
+MAX_ORDERING = 512
+
 
 def safe(value):
     """The value when a span may carry it, else None."""
@@ -101,10 +106,17 @@ def safe(value):
     return None
 
 
+def safe_ordering(value):
+    """An ordering string the ledger would store, else what `safe` allows."""
+    if isinstance(value, str):
+        return value if len(value) <= MAX_ORDERING and POSITIONS.fullmatch(value) else None
+    return safe(value)
+
+
 def attributes(pairs) -> list:
     out = []
     for key, value in pairs:
-        value = safe(value)
+        value = safe_ordering(value) if key == "jev.ordering" else safe(value)
         if value is None:
             continue
         encoded = value_of(value)

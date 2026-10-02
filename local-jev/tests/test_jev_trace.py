@@ -158,6 +158,21 @@ class TheSpan(TraceCase):
         self.assertIn("JEV_OK_STAGE", body)
         self.assertIn('"name": "jev.call"', body)
 
+    def ordering_of(self, value):
+        body = jev_trace.span_of({"primitive": "record", "ordering": value})
+        attrs = body["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
+        return {a["key"]: a["value"] for a in attrs}.get("jev.ordering")
+
+    def test_a_positions_ordering_is_kept(self):
+        # PR #61 review: `jev record --positions 3,1,2` lost its ordering,
+        # since commas are no identifier.
+        self.assertEqual(self.ordering_of("3,1,2"), {"stringValue": "3,1,2"})
+
+    def test_an_ordering_outside_the_ledger_grammar_is_dropped(self):
+        self.assertIsNone(self.ordering_of(f"3,{SENTINEL}"))
+        self.assertIsNone(self.ordering_of("1, 2"))
+        self.assertIsNone(self.ordering_of(",".join(["1"] * 300)))
+
     def test_a_failed_call_is_an_error_span(self):
         Stub.status = 500
         self.run_main(["noul", "Is this urgent?"], JEV_RETRIES="0",
