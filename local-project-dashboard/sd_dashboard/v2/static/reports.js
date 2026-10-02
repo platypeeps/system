@@ -374,7 +374,6 @@ async function acknowledge(o) {
   try { await post(`/api/reports/${o.n}/acknowledge`, { revision: o.source.revision }); }
   catch (err) { if (err.stale) reload(); throw err; }
   await reload();
-  // build: no Undo. sd-db has no verb that reopens an acknowledged report, so the toast says so instead of offering one.
   return `Acknowledged · #${o.n}. No Undo: sd-db has no verb that reopens a report`;
 }
 function registerCommands() {
@@ -385,7 +384,10 @@ function registerCommands() {
   C.register(
     // build: Acknowledge posts /api/reports/<n>/acknowledge with the report's revision, the route v1's form posts. It is off,
     // with the library's reason, for a report an open followup holds or whose fields cannot be read.
-    { id: 'report.ack', on: 'report', label: 'Acknowledge', key: 'a', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
+    // build: risk 'confirm', not the design's 'undo' (operator ruling, sd:2121). sd-db has no verb that reopens a report,
+    // so the shell asks first and offers no Undo; it goes back to 'undo' once a reopen verb exists.
+    { id: 'report.ack', on: 'report', label: 'Acknowledge', key: 'a', risk: 'confirm', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
+      consequence: o => `Acknowledges report #${o.n}. sd-db cannot reopen it.`,
       when: o => !o.open ? 'already acknowledged' : !o.source.fields_read ? `its fields cannot be read: sd reports acknowledge ${o.n} finishes it`
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
       cli: o => `sd reports acknowledge ${o.n}`, run: acknowledge },

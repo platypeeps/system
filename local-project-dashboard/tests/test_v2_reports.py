@@ -48,7 +48,7 @@ DAYS = ["2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07", "2026-09-08", "2
 
 #: The design's Reports commands (design source products/system/designs/v2/reports.js): id, object type, label, key, risk.
 COMMANDS = [
-    ["report.ack", "report", "Acknowledge", "a", "undo"],
+    ["report.ack", "report", "Acknowledge", "a", "confirm"],  # build: confirm by operator ruling; sd-db cannot reopen a report
     ["report.show", "report", "Open item", "o", "safe"],
     ["report.log", "report", "Show log", "l", "safe"],
     ["report.task", "report", "Make task", "k", "safe"],

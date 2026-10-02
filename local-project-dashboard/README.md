@@ -86,8 +86,8 @@ day the job's calendar leaves out is not scheduled. The families come from
 operator's, so the checkout ships only `report-families.conf.example`; without
 the file no family lamp is drawn and every job is listed under "Other jobs".
 Acknowledge posts v1's route with the report's revision. It is off while an
-open followup holds the report, and it has no Undo: sd-db has no verb that
-reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,
+open followup holds the report. It asks first and has no Undo: sd-db has no
+verb that reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,
 v1's preview, and the bulk bar acknowledges the picked reports one by one.
 Retry posts the job route, as Management does. No status mail is read: the
 dashboard holds no message store. The old screen stays in the palette as
