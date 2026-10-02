@@ -474,6 +474,16 @@ R.start = ELS['shift-hint'].html;""")
         out = self.run_page("R.rows = ELS.rows.html;", search="?state=constructor")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["research/beta", "group/gamma", "research/alpha"])
 
+    def test_a_late_ledger_answer_never_draws_over_the_newer_selection(self):
+        # Alpha's read is still out when beta is selected again; alpha's answer must not take the reader or the details.
+        out = self.run_page("""PAGE_LIST.select('group/gamma'); PAGE_LIST.select('research/beta'); await flush();
+R.reader = ELS.reader.html; R.tally = ELS['reader-tally'].html; R.det = ELS.details.html; R.selected = selected;""")
+        self.assertEqual(out["gets"], ["/api/research", "/api/research/research/beta", "/api/research/group/gamma"])
+        self.assertEqual(out["R"]["selected"], "research/beta")
+        self.assertIn("Spec release — bold code", out["R"]["reader"])
+        self.assertNotIn("not read", out["R"]["reader"] + out["R"]["tally"])
+        self.assertIn("Beta", out["R"]["det"])
+
     def test_a_source_opens_its_details_and_no_claim_is_claimed(self):
         out = self.run_page("""(ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i: '1' } } : null } }));
 R.det = ELS.details.html;""")
