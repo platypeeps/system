@@ -75,6 +75,22 @@ unlock and toggle commands are registered but off with it, so the page sends
 nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
 `$HA_URL` and never holds a value.
 
+Research is at `/research` (sd:2122): every checkout under `REPO_ROOT`, one
+group deep, that carries a `research.conf.py`. `GET /api/research`
+(`research_screen.document`) runs `collectors.collect_research` in a child
+under a five-second budget. Each row shows the checkout's stage (the numbered
+directories that hold Markdown), its render freshness and its last commit. A
+config the collector refuses shows as unknown with the refusal.
+`GET /api/research/<checkout>` (`research_screen.sources`) reads that
+checkout's ledger: the Markdown tables in `SOURCES.md`,
+`10-sources/registry.md` and `10-sources/references.md`, up to 60 rows with
+the whole count. Any other path is a 404. Nothing reads review rounds or
+claims yet, so both show as unknown with that reason. Render and Review are
+copy only: the dashboard does not run `sd-research-kit`. Start research is
+off with its reason; the field shows the `sd task add` and `sd run` lines for
+Copy. The old view stays in the palette as Resources (classic), with Toolbox,
+Briefs, Vault and Queues.
+
 The old screens stay until their section is ported. Only the old Today moved,
 to `/classic/today`; every other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
@@ -90,8 +106,8 @@ Classic screens.
 | Today | `/today` (new) |
 | Tasks | `/tasks` (new) |
 | Home | `/home` (new) |
+| Research | `/research` (new) |
 | Writing | `/writing` |
-| Research | `/operations?area=resources` |
 | Contributions | `/contributions` |
 | Documents | `/documents` |
 | Skills | `/skills` |
@@ -101,7 +117,7 @@ Classic screens.
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
 | Briefs, Notes, HOA, Health, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
+| Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic) | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
@@ -489,7 +505,7 @@ The manifest now declares only the four queue actions.
 | **Toolbox** | Cron jobs with launchd's own last-exit code **and the next time each one fires**, launch agents, docker containers, and `machine-setup` drift with the age of the measurement | `launchctl list`, `jobs/*.job`, `docker ps`, and the nightly drift job's log rather than a fresh `machine-setup.sh status`, which cost most of the five-second budget |
 | **Briefs** | Everything the scheduled routines wrote, newest first, grouped by kind, each readable inline | `System/AI Generated/Briefs` |
 | **Vault** | One card per `* Home` area with note and open-task counts, plus overdue/due-today and Inbox pressure | vault frontmatter |
-| **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus `build/` mtimes |
+| **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus the built page's mtime in `docs/dashboard/` (or the older `build/`) |
 | **Ports** | Each service's effective ports, and which of them clash with another candidate or are already held — read from `machine-setup.sh`'s own conflict lines, which the collector could not see until 6b-9 | `machine-setup.sh candidates service` |
 | **Queues** | The four vault decision databases: how many are waiting, and the oldest undecided notes across all of them | the database folders under `System/Databases/` |
 

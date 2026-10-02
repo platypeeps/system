@@ -825,6 +825,10 @@ def git_facts(path):
 
 # --------------------------------------------------------------- collectors
 
+# Where a research document's page is built, newest layout first: sd-research-kit renders into docs/dashboard/, and
+# build/ is where it rendered before (sd:2122). The first that holds the page is the one compared with its source.
+RESEARCH_OUTPUT = ("docs/dashboard", "build")
+
 
 def read_research_config(path):
     """Read declared data without executing repository Python on a page GET."""
@@ -904,7 +908,8 @@ def collect_research():
             docs, links = [], []
             for cfg in ns.get("DOCS", []):
                 src = repo / cfg["src"]
-                built = repo / "build" / (cfg["out"] + ".html")
+                outputs = [repo / folder / (cfg["out"] + ".html") for folder in RESEARCH_OUTPUT]
+                built = next((path for path in outputs if path.exists()), outputs[0])
                 if not src.resolve().is_relative_to(repo.resolve()) or not built.resolve().is_relative_to(repo.resolve()):
                     raise ValueError("research source or output is outside its repository")
                 if src.exists() and src.stat().st_size > 2 * 1024 * 1024:
