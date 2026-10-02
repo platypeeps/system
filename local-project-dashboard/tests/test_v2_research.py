@@ -21,6 +21,7 @@ the Shapeshift field -- is a manual check recorded on the pull request.
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -359,6 +360,17 @@ R.selected = selected; R.req = ELS.req.html;""")
         self.assertIsNone(out["R"]["cleared"])
         self.assertEqual(out["R"]["selected"], "research/beta")
         self.assertIn("queues one author assignment in beta", out["R"]["req"])
+
+    def test_the_field_guesses_a_question_as_the_reference_did_and_in_linear_time(self):
+        # The reference's guess was one regex with a nested quantifier; a run of tags after a ? backtracked exponentially.
+        reference = re.compile(r"\?\s*(\S+:\S+\s*)*$|^(start|research|investigate|how|why|what|which|does|is|can)\b", re.I)
+        texts = sorted({"".join(t).strip() for n in range(1, 6) for t in itertools.product("a?: x", repeat=n)}
+                       | {"how do vendors detect spans? repo:beta deep", "spans? repo:beta depth:deep", "Why", "a? b:c d", "is", "isle"})
+        out = self.run_page(f"""R.got = {json.dumps(texts)}.map(guess);
+const t = Date.now(); R.long = guess('?' + '!:!'.repeat(18) + ' x'); R.ms = Date.now() - t;""")
+        self.assertEqual(out["R"]["got"], ["start" if reference.search(t) else "filter" for t in texts])
+        self.assertEqual(out["R"]["long"], "filter")
+        self.assertLess(out["R"]["ms"], 500)
 
     def test_the_board_ranks_the_rows_and_shows_rounds_as_not_recorded_with_the_reason(self):
         out = self.run_page("R.rows = ELS.rows.html; R.tally = ELS.tally.html; R.sum = ELS.sum.html;")

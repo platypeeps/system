@@ -224,7 +224,19 @@ document.addEventListener('shell:picked', e => { picked = e.detail; tbody.queryS
 const input = document.getElementById('shift'), prev = document.getElementById('shift-preview'), as = document.getElementById('shift-as'), ghost = document.getElementById('ghost');
 const chipsEl = document.getElementById('shift-chips'), reqEl = document.getElementById('req');
 let mode = 'filter', lastGuess = 'filter', streak = 0;
-function guess(v) { return /\?\s*(\S+:\S+\s*)*$|^(start|research|investigate|how|why|what|which|does|is|can)\b/i.test(v) ? 'start' : 'filter'; }
+// A question starts research: it opens with a start word, or a ? is followed only by key:value tags.
+// build: the reference's one regex backtracked exponentially on a long tag run; this walks the words once, with the same answers.
+const START_WORD = /^(start|research|investigate|how|why|what|which|does|is|can)\b/i;
+const tag = w => w.slice(1, -1).includes(':'); // \S+:\S+: a colon with a character on each side
+// The rest of the word after its first ? is empty or a tag.
+const asked = w => w.endsWith('?') || (w.includes('?') && w.indexOf('?') + 2 <= w.lastIndexOf(':', w.length - 2));
+function guess(v) {
+  if (START_WORD.test(v)) return 'start';
+  const words = v.split(/\s+/);
+  let i = words.length;
+  while (i && tag(words[i - 1])) i--;
+  return words.slice(Math.max(i - 1, 0)).some(asked) ? 'start' : 'filter';
+}
 // build: a checkout's sd scope is its folder name, the last part of its key.
 const scopeOf = key => key.replace(/^new:/, '').split('/').pop();
 function parse(v) {
