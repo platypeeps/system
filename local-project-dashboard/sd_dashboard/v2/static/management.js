@@ -85,12 +85,17 @@ function human(schedule) {
   if (!Array.isArray(schedule) || !schedule.length) return 'no calendar';
   const W = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const two = n => String(n).padStart(2, '0');
-  if (schedule.every(e => e.Hour == null && e.Minute != null && e.Weekday == null)) {
+  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  // build (review, PR #50): an entry pinned to a Month, Day or Weekday names it; daily and hourly mean no such field is set.
+  const pinned = e => e.Month != null || e.Day != null || e.Weekday != null;
+  if (schedule.every(e => e.Hour == null && e.Minute != null && !pinned(e))) {
     const mins = schedule.map(e => e.Minute);
     return mins.length > 1 ? `every ${60 / mins.length} min` : `hourly at :${two(mins[0])}`;
   }
-  const one = e => `${e.Weekday != null ? W[e.Weekday] + ' ' : ''}${e.Hour != null ? two(e.Hour) : '*'}:${e.Minute != null ? two(e.Minute) : '*'}`;
-  return schedule.length > 2 ? `daily ${schedule.length}× (${one(schedule[0])}…${one(schedule.at(-1))})` : `${schedule.some(e => e.Weekday != null) ? '' : 'daily '}${schedule.map(one).join(', ')}`;
+  const date = e => e.Month != null ? `${M[e.Month - 1]}${e.Day != null ? ` ${e.Day}` : ''}` : e.Day != null ? `day ${e.Day}` : '';
+  const one = e => [date(e), e.Weekday != null ? W[e.Weekday] : '', `${e.Hour != null ? two(e.Hour) : '*'}:${e.Minute != null ? two(e.Minute) : '*'}`].filter(Boolean).join(' ');
+  const daily = schedule.some(pinned) ? '' : 'daily ';
+  return schedule.length > 2 ? `${daily}${schedule.length}× (${one(schedule[0])}…${one(schedule.at(-1))})` : `${daily}${schedule.map(one).join(', ')}`;
 }
 // build: a job's state is operations.inventory's; failed is warning, unknown and unloaded are unknown, the rest ok.
 const stateOf = j => j.state === 'failed' ? 'warning' : ['unknown', 'unloaded'].includes(j.state) ? 'unknown' : j.state === 'interrupted' ? 'caution' : 'ok';
@@ -331,15 +336,41 @@ function propose(key, value) {
       note: key === 'runner_merge' && value === 'manual' ? 'Items for this repo will stop at ready_to_send for you.' : key === 'runner_merge' ? 'The runner may queue merges for this repo through the exclusive lane.' : 'Writes one column; no new row.' };
   } else if (key === 'severity_floor' || key === 'automatic_deep') {
     if (value === String(key === 'severity_floor' ? rv.severity_floor || '' : rv.automatic_deep)) return withdraw(key);
-    const lines = rv.file.replace(/\n$/, '').split('\n');
-    const diff = key === 'severity_floor'
-      ? (rv.severity_floor ? lines.map(l => l.includes('"severity_floor"') ? [['del', l], ...(value ? [['add', l.replace(/"[a-z]+"(,?)$/, `"${value}"$1`)]] : [])] : [['', l]]).flat()
-        : [...lines.slice(0, -1).map((l, i, a) => i === a.length - 1 ? [['del', l], ['add', l + ',']] : [['', l]]).flat(), ['add', `  "severity_floor": "${value}"`], ['', '}']])
-      : lines.map(l => l.includes('"automatic_deep"') ? [['del', l], ['add', l.replace(/true|false/, value)]] : [['', l]]).flat();
+    const diff = reviewDiff(rv.file || '', body => {
+      if (key === 'severity_floor') { if (value) body.severity_floor = value; else delete body.severity_floor; return; }
+      const copilot = body.copilot_review && typeof body.copilot_review === 'object' && !Array.isArray(body.copilot_review) ? body.copilot_review : {};
+      body.copilot_review = { ...copilot, automatic_deep: value === 'true' };
+    });
+    if (!diff) { shell.toast('Not proposed: .github/sd-review.json is not valid JSON; fix it in the checkout first'); return; }
     p = { key, value, route: 'file', icon: 'git-pull-request', title: `.github/sd-review.json · ${key} → ${value || 'unset'}`, diff, branch: `settings/sd-review-${key.replace('_', '-')}`,
       note: 'Ships as a pull request through sd-ship prepare, then the review lane. Nothing changes until it merges.' };
   }
   if (p) addProposal(p);
+}
+// build (review, PR #50): a review-file change is made on the parsed file, checked to parse again, and shown as a line
+// diff of the two texts, so a proposal is always valid JSON. The new text is JSON.stringify's two-space layout, the
+// layout these files use. null when the file is not a JSON object.
+function reviewDiff(text, change) {
+  let body;
+  try { body = JSON.parse(text); } catch { return null; }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  change(body);
+  const after = JSON.stringify(body, null, 2);
+  JSON.parse(after);
+  return lineDiff(text.replace(/\n$/, '').split('\n'), after.split('\n'));
+}
+// The longest common run of lines is kept; the rest is a del or an add (files are at most 16 KiB, REVIEW_BYTES).
+function lineDiff(a, b) {
+  const n = a.length, m = b.length, L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push(['', a[i]]); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) out.push(['del', a[i++]]); else out.push(['add', b[j++]]);
+  }
+  while (i < n) out.push(['del', a[i++]]);
+  while (j < m) out.push(['add', b[j++]]);
+  return out;
 }
 // build: the starter file names the schema another checkout's file names, read by the server, rather than a URL typed here.
 const SCHEMA = () => REPOS.map(r => r.review?.schema).find(Boolean) || '';

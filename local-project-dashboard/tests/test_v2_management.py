@@ -394,3 +394,50 @@ await flush(); R.group = OUT.toasts.map(t => t.msg); await lastUndo().undo(); aw
             ("/api/repos/runner-merge", {"path": a, "value": "manual", "before": "auto"})])
         self.assertEqual(out["R"]["after"][-1],
                          f"Switch runner-merge undone · 1 of 2 reversed · not reversed: {b} (its change did not land)")
+
+
+class TheSecondRound(PageScript):
+    """Copilot's review of f06cbf5 on PR #50: the review-file proposal and the schedule's words."""
+
+    LAST = '{\n  "copilot_review": {\n    "automatic_deep": false\n  },\n  "severity_floor": "high"\n}\n'
+
+    def proposal(self, text, calls):
+        doc = json.loads(json.dumps(self.doc))
+        row = next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])
+        body = json.loads(text) if text.startswith("{") and text.rstrip().endswith("}") and "!" not in text else {}
+        row["review"] = {"file": text, "severity_floor": body.get("severity_floor"),
+                         "automatic_deep": (body.get("copilot_review") or {}).get("automatic_deep"), "schema": None}
+        return self.run_page(calls + """
+R.texts = pending.map(p => p.diff.filter(d => d[0] !== 'del' && d[0] !== 'hd').map(d => d[1]).join('\\n'));
+R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return 'invalid: ' + e.message; } });""",
+                             doc=doc, search=f"?repo={self.ids['checkout']}")
+
+    def test_removing_the_last_property_leaves_valid_json(self):
+        out = self.proposal(self.LAST, "propose('severity_floor', '');")
+        self.assertEqual(out["R"]["parsed"], [{"copilot_review": {"automatic_deep": False}}])
+
+    def test_adding_or_changing_the_floor_and_flipping_automatic_deep_leave_valid_json(self):
+        bare = '{\n  "copilot_review": {\n    "automatic_deep": false\n  }\n}\n'
+        out = self.proposal(bare, "propose('severity_floor', 'medium');")
+        self.assertEqual(out["R"]["parsed"], [{"copilot_review": {"automatic_deep": False}, "severity_floor": "medium"}])
+        out = self.proposal(self.LAST, "propose('severity_floor', 'low');")
+        self.assertEqual(out["R"]["parsed"], [{"copilot_review": {"automatic_deep": False}, "severity_floor": "low"}])
+        out = self.proposal(self.LAST, "propose('automatic_deep', 'true');")
+        self.assertEqual(out["R"]["parsed"], [{"copilot_review": {"automatic_deep": True}, "severity_floor": "high"}])
+
+    def test_the_diff_shows_only_the_lines_that_change(self):
+        out = self.proposal(self.LAST, "propose('severity_floor', ''); R.diff = pending[0].diff;")
+        self.assertEqual([d for d in out["R"]["diff"] if d[0] in ("add", "del")],
+                         [["del", "  },"], ["del", '  "severity_floor": "high"'], ["add", "  }"]])
+
+    def test_a_review_file_that_is_not_json_is_not_proposed(self):
+        out = self.proposal('{\n  "severity_floor": "high",\n}\n!', "propose('severity_floor', 'low');")
+        self.assertEqual(out["R"]["parsed"], [])
+        self.assertEqual(out["toasts"][-1][0], "Not proposed: .github/sd-review.json is not valid JSON; fix it in the checkout first")
+
+    def test_a_date_pinned_calendar_names_its_date(self):
+        out = self.run_page("""R.got = [human([{ Day: 15, Hour: 3, Minute: 0 }]), human([{ Month: 1, Day: 1, Hour: 0, Minute: 5 }]),
+  human([{ Day: 1, Minute: 30 }]), human([{ Hour: 3, Minute: 0 }]), human([{ Minute: 30 }]), human([{ Weekday: 1, Hour: 9, Minute: 0 }]),
+  human([{ Minute: 0 }, { Minute: 30 }])];""")
+        self.assertEqual(out["R"]["got"], ["day 15 03:00", "Jan 1 00:05", "day 1 *:30", "daily 03:00", "hourly at :30", "Mon 09:00",
+                                           "every 30 min"])
