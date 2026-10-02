@@ -102,6 +102,8 @@ day the job's calendar leaves out is not scheduled. The families come from
 `family|<key>|<label>|<icon>|<job>,<job>,...` per line. Job names are the
 operator's, so the checkout ships only `report-families.conf.example`; without
 the file no family lamp is drawn and every job is listed under "Other jobs".
+A family lamp follows each job's own last scheduled run before today, however
+rare; a job whose last scheduled run the log does not hold makes it unknown.
 Acknowledge posts v1's route with the report's revision. It is off while an
 open followup holds the report. It asks first and has no Undo: sd-db has no
 verb that reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,

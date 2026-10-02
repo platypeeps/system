@@ -145,7 +145,32 @@ class TheDocument(ScreenCase):
         self.assertEqual(sync["scheduled"], [True] * 7)
         # Weekday 0 is Sunday: 2026-09-06 only.
         self.assertEqual(doc["cadence"]["weekly-scan"]["scheduled"], [d == "2026-09-06" for d in DAYS])
-        self.assertEqual(doc["cadence"]["quiet-one"], {"log": False, "from": None, "read_from": None, "runs": {}, "scheduled": [True] * 7})
+        self.assertEqual(doc["cadence"]["quiet-one"], {"log": False, "from": None, "read_from": None, "runs": {}, "scheduled": [True] * 7,
+                                                       "last": {"day": DAYS[5], "read": False, "runs": [0, 0]}})
+        # The last scheduled day before today, whatever the cadence, and whether the log holds it.
+        self.assertEqual(sync["last"], {"day": DAYS[5], "read": True, "runs": [1, 0]})
+        self.assertEqual(doc["cadence"]["weekly-scan"]["last"], {"day": "2026-09-06", "read": True, "runs": [1, 0]})
+
+    def test_a_job_scheduled_less_often_than_weekly_names_its_last_scheduled_run_and_whether_it_was_read(self):
+        logs = self.jobs.cron_root / "logs"
+        (logs / "monthly.log").write_text("\n".join(run_lines("monthly", "2026-09-01", "FAILED rc=2")) + "\n", encoding="utf-8")
+        (logs / "late-log.log").write_text("\n".join(run_lines("late-log", "2026-09-05")) + "\n", encoding="utf-8")
+        (logs / "yearly.log").write_text("\n".join(run_lines("yearly", "2026-09-05")) + "\n", encoding="utf-8")
+        jobs = [{"name": "monthly", "schedule": [{"Day": 1, "Hour": 3}]},
+                {"name": "late-log", "schedule": [{"Day": 1, "Hour": 3}]},  # its log begins after its last scheduled run
+                {"name": "yearly", "schedule": [{"Month": 1, "Day": 1, "Hour": 3}]},
+                {"name": "never", "schedule": [{"Month": 2, "Day": 30}]},
+                {"name": "no-log", "schedule": [{"Day": 1, "Hour": 3}]}]
+        got = reports_screen.cadence(jobs, logs, DAYS)
+        self.assertEqual(got["monthly"]["scheduled"], [False] * 7)
+        self.assertEqual(got["monthly"]["last"], {"day": "2026-09-01", "read": True, "runs": [0, 1]})
+        self.assertEqual(got["late-log"]["last"], {"day": "2026-09-01", "read": False, "runs": [0, 0]})
+        self.assertEqual(got["yearly"]["last"], {"day": "2026-01-01", "read": False, "runs": [0, 0]})
+        self.assertEqual(got["never"]["last"], {"day": None, "read": False, "runs": [0, 0]})
+        self.assertEqual(got["no-log"]["last"], {"day": "2026-09-01", "read": False, "runs": [0, 0]})
+        self.assertNotIn("2026-09-01", got["monthly"]["runs"])
+        with mock.patch.object(reports_screen, "TAIL_BYTES", 60):
+            self.assertEqual(reports_screen.cadence(jobs[:1], logs, DAYS)["monthly"]["last"]["read"], False)
 
     def test_a_log_longer_than_the_read_says_where_the_read_began(self):
         lines = [f"[big] 2026-09-0{n}T01:00:00-0600 done" for n in range(4, 10) for _ in range(200)]
@@ -262,6 +287,11 @@ class TheScript(ScreenCase):
         with mock.patch.object(reports_screen, "_html_folders", lambda: 2):
             self.doc = reports_screen.document(self.connection, now=LATER, jobs=self.jobs, tz=TZ, config=EXAMPLE)
 
+    def served(self, tail=None):
+        with mock.patch.object(reports_screen, "_html_folders", lambda: 2), \
+             mock.patch.object(reports_screen, "TAIL_BYTES", tail or reports_screen.TAIL_BYTES):
+            return reports_screen.document(self.connection, now=LATER, jobs=self.jobs, tz=TZ, config=EXAMPLE)
+
     def run_page(self, body, answer=None, doc=None):
         doc = doc or self.doc
         answer = answer or f"(path, body) => path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, {json.dumps(doc)}] : [200, {{}}]"
@@ -321,12 +351,14 @@ class TheScript(ScreenCase):
 
         unread = json.loads(json.dumps(self.doc))
         unread["cadence"], unread["sources"]["cadence"] = None, "no log root"
-        no_log = json.loads(json.dumps(self.doc))
-        no_log["cadence"]["weekly-scan"]["log"] = None
-        idle = json.loads(json.dumps(no_log))
-        idle["cadence"]["weekly-scan"]["scheduled"] = [False] * len(DAYS)
-        cut = json.loads(json.dumps(self.doc))
-        cut["cadence"]["weekly-scan"]["read_from"] = DAYS[3]
+        # The other cases are documents the server builds from the logs and calendars, so the page reads what it would.
+        cut = self.served(tail=60)
+        self.assertEqual(cut["cadence"]["weekly-scan"]["read_from"], "2026-09-06")
+        (self.jobs.cron_root / "logs" / "weekly-scan.log").unlink()
+        no_log = self.served()
+        self.jobs.schedules["weekly-scan"] = [{"Day": 1, "Hour": 3}]
+        idle = self.served()
+        self.assertEqual(idle["cadence"]["weekly-scan"]["scheduled"], [False] * len(DAYS))
         cases = {"cadence not read": lamps(unread), "job not installed": lamps(json.loads(json.dumps(self.doc)), ("weekly-scan", "gone-job")),
                  "no log": lamps(no_log), "no log, nothing scheduled this week": lamps(idle), "its last run was not read": lamps(cut)}
         for case, html in cases.items():
@@ -335,6 +367,19 @@ class TheScript(ScreenCase):
                 self.assertNotIn("all clear", html)
                 self.assertIn("not read", html)
         self.assertIn("gone-job (not read)", cases["job not installed"])
+        # A job scheduled less often than weekly: the lamp follows its own last scheduled run, read or not.
+        def monthly(last):
+            doc = json.loads(json.dumps(self.doc))
+            doc["cadence"]["monthly"] = {"log": True, "from": "2026-01-01", "read_from": None, "runs": {d: [0, 0] for d in DAYS},
+                                         "scheduled": [False] * len(DAYS), "last": last}
+            return lamps(doc, ("weekly-scan", "monthly"))
+        self.assertRegex(monthly({"day": "2026-09-01", "read": False, "runs": [0, 0]}), r'data-fam="scan" data-state="unknown"')
+        self.assertRegex(monthly({"day": "2026-01-01", "read": False, "runs": [0, 0]}), r'data-fam="scan" data-state="unknown"')
+        self.assertRegex(monthly({"day": None, "read": False, "runs": [0, 0]}), r'data-fam="scan" data-state="unknown"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [0, 1]}), r'data-fam="scan" data-state="warning"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [1, 1]}), r'data-fam="scan" data-state="caution"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [0, 0]}), r'data-fam="scan" data-state="caution"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [1, 0]}), r'data-fam="scan" data-state="ok"')
         # With every job's log read and no failure, the lamp is still all clear.
         self.assertRegex(lamps(json.loads(json.dumps(self.doc))), r'data-fam="scan" data-state="ok"')
 

@@ -65,10 +65,15 @@ function mark(job, day) {
   if (bad) return ['caution', '▲', `${ok} ok, ${bad} failed`];
   return ['ok', '●', n > 1 ? `${ok} ran` : 'ran'];
 }
-// build: the newest scheduled day with a mark, so a run still to come today does not hide yesterday's failure.
+// build: the newest scheduled day with a mark, so a run still to come today does not hide yesterday's failure. A job
+// scheduled less often than weekly has no mark in the seven days; its own last scheduled run, as the server read it, counts.
 function lastState(job) {
   for (let i = DAYS.length - 1; i >= 0; i--) { const s = mark(job, DAYS[i])[0]; if (s !== 'none') return s; }
-  return 'none';
+  const last = CAD[job]?.last;
+  if (!last || !last.day || last.day >= DAYS[0]) return 'none';
+  if (!last.read) return 'unknown';
+  const [ok, bad] = last.runs;
+  return bad && !ok ? 'warning' : bad || !ok ? 'caution' : 'ok';
 }
 const glyphClass = s => `g-${s === 'none' ? 'queued' : s}`;
 
@@ -80,9 +85,10 @@ function famState(jobs) {
   // A partial last day (▲) is named apart; a fresh report without a log is a report that needs action, not a failing job.
   const bad = jobs.filter(j => CAD[j] && lastState(j) === 'warning');
   const partial = jobs.filter(j => CAD[j] && lastState(j) === 'caution');
-  // build: a job with no evidence (the cadence was not read, the job is not installed, it has no log, or its last scheduled
-  // day was not read) makes the lamp unknown, never all clear: no failure seen is not health when nothing was seen.
-  const unread = jobs.filter(j => !CAD[j]?.log || lastState(j) === 'unknown');
+  // build: a job whose own last scheduled run was not read (the cadence was not read, the job is not installed, it has no
+  // log, the log begins later or its read was cut, or the calendar names no day) makes the lamp unknown, never all clear,
+  // whatever the job's cadence: no failure seen is not health when nothing was seen.
+  const unread = jobs.filter(j => !CAD[j]?.last?.read);
   const s = bad.length ? 'warning' : act.length || partial.length ? 'caution' : unread.length ? 'unknown' : 'ok';
   return { s, act: act.length, bad, partial, unread };
 }

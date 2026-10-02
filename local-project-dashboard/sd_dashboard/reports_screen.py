@@ -8,7 +8,8 @@ page (`v2/reports.html`, at `/reports`); the page holds no rows:
   characters, the revision the acknowledge route checks and its open
   followups; the scheduled jobs `operations.inventory` gives Management; each
   job's run cadence over the last seven local days, read from its
-  `cron-jobs.sh` log (`cadence`); and the job families the config folder's
+  `cron-jobs.sh` log, with its own last scheduled run before today and
+  whether the log holds it, whatever the job's cadence (`cadence`); and the job families the config folder's
   `report-families.conf` names. Each source is guarded on its own: a failed
   one is `null` with its reason in `sources`, never an empty list.
 - `/api/reports/clean?before=YYYY-MM-DD` is `clean`: the selection
@@ -294,6 +295,8 @@ DAYS = 7
 #: How much of a job log is read from its end. A log longer than this is read from the first whole line in it, and the
 #: days before that line are `not read`, never zero runs.
 TAIL_BYTES = 1 << 20
+#: How far back `last_scheduled` looks for a job's last scheduled run: a year and a little, so a yearly job has one.
+LOOKBACK = 400
 #: The outcome lines `cron-jobs.sh` writes for a run: `[<job>] <stamp> done` and `[<job>] <stamp> FAILED rc=<n>`.
 #: The stamp carries the machine's offset, so its date is the local day the run belongs to.
 OUTCOME = re.compile(r"^\[(?P<job>[^\]\s]+)\] (?P<day>\d{4}-\d{2}-\d{2})T[0-9:]+[+-]\d{4} (?P<what>done|FAILED rc=\d+)\s*$")
@@ -376,6 +379,16 @@ def scheduled(schedule: list, day: str) -> bool:
     return False
 
 
+def last_scheduled(schedule: list, before: str) -> str | None:
+    """The last day before `before` the calendar can fire on, looking back `LOOKBACK` days; None when none is."""
+    day = date.fromisoformat(before)
+    for back in range(1, LOOKBACK + 1):
+        when = (day - timedelta(days=back)).isoformat()
+        if scheduled(schedule, when):
+            return when
+    return None
+
+
 def job_log(path: Path, days: list[str]) -> dict:
     """One job's runs per local day from its log: `[done, failed]` for each day, where the log begins, and where the
     read begins when the log is longer than `TAIL_BYTES`. A job with no log is `log: false`."""
@@ -411,9 +424,16 @@ def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict
         raise ValueError("this jobs backend names no cron-jobs root, so no job log was read")
     out = {}
     for job in jobs:
-        name = job["name"]
-        out[name] = job_log(logs / f"{name}.log", days) | {
-            "scheduled": [scheduled(job.get("schedule") or [], day) for day in days]}
+        name, schedule = job["name"], job.get("schedule") or []
+        # Health follows the job's own last scheduled run, whatever its cadence: a monthly job's falls outside `days`.
+        # Today is not over, so the last run is the one before it. It is read when the log holds that day whole.
+        last = last_scheduled(schedule, days[-1])
+        log = job_log(logs / f"{name}.log", days + ([last] if last and last not in days else []))
+        runs = (log["runs"].pop(last, [0, 0]) if last not in days else log["runs"].get(last, [0, 0])) if last else [0, 0]
+        read = bool(log["log"] and last and log["from"] and last >= log["from"]
+                    and not (log["read_from"] and last <= log["read_from"]))
+        out[name] = log | {"scheduled": [scheduled(schedule, day) for day in days],
+                           "last": {"day": last, "read": read, "runs": runs if read else [0, 0]}}
     return out
 
 
