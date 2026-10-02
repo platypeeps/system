@@ -257,7 +257,7 @@ const input = document.getElementById('shift'), prev = document.getElementById('
 const chipsEl = document.getElementById('shift-chips'), reqEl = document.getElementById('req');
 let mode = 'search', lastGuess = 'search', streak = 0;
 function parse(v) {
-  const out = { repo: [], kind: [], fresh: [], pinned: false, hidden: false, words: [], due: '' };
+  const out = { repo: [], kind: [], fresh: [], pinned: false, hidden: false, words: [], due: '', skill: '' };
   v.split(/\s+/).filter(Boolean).forEach(t => {
     let m;
     if ((m = t.match(/^repo:(.+)$/i))) { const k = ROOTS.map(r => r.key).find(x => x.startsWith(m[1].toLowerCase()) || (LABEL[x] || '').toLowerCase() === m[1].toLowerCase()); k ? out.repo.push(k) : out.words.push(t); }
@@ -267,6 +267,8 @@ function parse(v) {
     else if (/^is:pinned$/i.test(t)) out.pinned = true;
     else if (/^is:hidden$/i.test(t)) out.hidden = true;
     else if ((m = t.match(/^due:(\S+)$/i))) out.due = m[1];
+    // build: the hint says to name a skill with skill:, so a request reads it; search leaves it a word.
+    else if ((m = t.match(/^skill:([\w.-]+)$/i)) && mode === 'request') out.skill = m[1];
     else if (KINDS.includes(t.toLowerCase()) && out.kind.length === 0 && mode === 'request') out.kind.push(t.toLowerCase());
     else out.words.push(t);
   });
@@ -299,7 +301,7 @@ function renderShift() {
       F.text = ''; render(); return;
     }
     const kind = p.kind[0] || (ROOTS.find(r => r.key === repo)?.research ? 'research' : 'report');
-    const skill = SKILL[kind];
+    const skill = p.skill || SKILL[kind];
     put(as, html`${I('plus')} request “${title || '…'}”`);
     put(chipsEl, html`${[`repo:${repo}`, `kind:${kind}`, `skill:${skill}`, 'budget:30m', p.due ? `due:${p.due}` : ''].filter(Boolean).map(c => html`<span class="chip" aria-pressed="true">${c}</span>`)}`);
     reqEl.hidden = false;

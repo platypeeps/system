@@ -279,6 +279,14 @@ R.r = [r.executes, r.when(d), r.cli(d)]; shellRun(r, d); await flush();""")
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["toasts"][-1], ["Copy the two lines: the dashboard does not file document requests yet", False])
 
+    def test_a_request_takes_the_skill_its_hint_asks_for(self):
+        # A report has no skill; the hint says to name one with skill:, so that token names it and leaves the title.
+        out = self.run_page("""const input = ELS.shift; input.value = 'request budget memo repo:civic skill:sd-writer';
+input.listeners.input.forEach(f => f()); input.listeners.input.forEach(f => f());
+R.cli = cmd('document.request').cli(C.get('draft:request'));""")
+        self.assertEqual(out["R"]["cli"], "sd task add 'Document request: budget memo' --body 'repo=civic kind=report skill=sd-writer' --json\n"
+                                          "sd run --sequential --role author --scope 'civic' --budget-minutes 30 <item>")
+
     def test_each_read_state_is_said_in_the_slot(self):
         out = self.run_page("")
         self.assertEqual(out["states"][0]["kind"], "loading")
