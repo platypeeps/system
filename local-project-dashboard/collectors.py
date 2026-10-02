@@ -891,12 +891,13 @@ def collect_research():
     """Every checkout carrying a research.conf.py — the repos rendered by
     sd-research-kit, which is where this page's visual identity comes from."""
     items = []
-    roots = [REPO_ROOT] + [d for d in sorted(REPO_ROOT.glob("*")) if d.is_dir()]
+    # A linked group, checkout or config is never read (no config parse, no git): with none followed, the walk stays in REPO_ROOT.
+    roots = [REPO_ROOT] + [d for d in sorted(REPO_ROOT.glob("*")) if d.is_dir() and not d.is_symlink()]
     seen = set()
     for root in roots:
         for conf in sorted(root.glob("*/research.conf.py")):
             repo = conf.parent
-            if repo in seen:
+            if repo in seen or repo.is_symlink() or conf.is_symlink():
                 continue
             seen.add(repo)
             try:

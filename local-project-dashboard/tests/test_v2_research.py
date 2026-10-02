@@ -170,6 +170,25 @@ class TheReader(unittest.TestCase):
         for key in ("group/plain", "group/link", "../group/one", "group/../group/one", ".hidden", "group/one/extra"):
             self.assertIsNone(research_screen.checkout(self.root, key), key)
 
+    def test_a_linked_checkout_or_group_is_never_read(self):
+        # The walk followed linked groups and checkouts, so it parsed a config and ran git outside the root before the board dropped the row.
+        checkout(self.root, "group/one")
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        checkout(outside, "group/away")
+        (self.root / "group" / "linked").symlink_to(outside / "group" / "away")
+        (self.root / "elsewhere").symlink_to(outside / "group")
+        (self.root / "group" / "inner").symlink_to(self.root / "group" / "one")
+        (self.root / "group" / "conf").mkdir()
+        (self.root / "group" / "conf" / "research.conf.py").symlink_to(outside / "group" / "away" / "research.conf.py")
+        collectors = collectors_module()
+        with mock.patch.object(collectors, "REPO_ROOT", self.root), \
+                mock.patch.object(collectors, "git_facts", return_value=None) as git, \
+                mock.patch.object(collectors, "read_research_config", wraps=collectors.read_research_config) as conf:
+            names = [item["name"] for item in collectors.collect_research()]
+        self.assertEqual(names, ["one"])
+        self.assertEqual([call.args[0] for call in conf.call_args_list], [self.root / "group" / "one" / "research.conf.py"])
+        self.assertEqual([call.args[0] for call in git.call_args_list], [self.root / "group" / "one"])
+
     def test_a_page_built_into_docs_dashboard_counts_as_built(self):
         # sd-research-kit renders into docs/dashboard/; the collector looked only in build/, so every document was "not built".
         repo = checkout(self.root, "group/one")
