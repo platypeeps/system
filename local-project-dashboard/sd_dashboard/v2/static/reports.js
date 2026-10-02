@@ -436,14 +436,19 @@ document.addEventListener('shell:picked', e => { picks = new Set(e.detail); tbod
 
 // ---------- Start (build: read /api/reports, then draw; again after each write) ----------
 let started = false;
+// build: a refresh can overlap another reading; only the newest one applies, as health.js does.
+let generation = 0;
 async function load() {
+  const mine = ++generation;
   if (!started) window.shell.state({ kind: 'loading', text: 'Reading reports, jobs and job logs. Rows appear when /api/reports answers.', source: '/api/reports' });
   let doc;
   try { doc = await getJSON('/api/reports'); }
   catch (err) {
+    if (mine !== generation) return;
     window.shell.state({ kind: 'error', text: `Reports were not read, so nothing below is current: ${err.message}. Reload retries it.`, source: '/api/reports' });
     return;
   }
+  if (mine !== generation) return;
   absorb(doc);
   pageState();
   putObjects();
