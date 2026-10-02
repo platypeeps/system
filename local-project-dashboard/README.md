@@ -75,6 +75,23 @@ unlock and toggle commands are registered but off with it, so the page sends
 nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
 `$HA_URL` and never holds a value.
 
+Health is at `/fleet-health` (sd:2115); `/health` stays the service's own
+check. `GET /api/health` (`health_screen.document`) lists the design's nine
+areas in its order. Four have a reader: Worktrees (registrations whose directory
+is gone, from the fleet child Sessions reads), Attribution (your own commits,
+by each repository's `user.email`, of the last five weeks on its default branch
+`origin/HEAD`, merges left out, that lack `Authored-with:`; a repository with no
+`origin/HEAD` or no `user.email` is named in its own row, not read on its
+checkout's HEAD; the walk runs inside a 10-second budget, and past it the area
+says it stopped rather than waited on), Ports (Operations > Ports' reader, with
+its counts and warnings) and Protection (`protection.rows`, drawn as a matrix
+with one column per repository and a table carrying the same cells; an unread
+repository shows no cell). Disk, Credentials, Branches, Dependencies and
+Security have no collector yet; each shows as unknown and names what it does
+not read. Nothing on the page writes: Prune registrations, Attribute, Inspect
+listener and Re-run collector are CLI lines for Copy, and Re-check reads the
+document again.
+
 The old screens stay until their section is ported. Only the old Today moved,
 to `/classic/today`; every other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
@@ -97,10 +114,11 @@ Classic screens.
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
 | Management | `/management` (new) |
+| Health | `/fleet-health` (new) |
 | Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
-| Briefs, Notes, HOA, Health, Activity | no old screen; the rail says not built yet |
+| Briefs, Notes, HOA, Activity | no old screen; the rail says not built yet |
 | Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
@@ -179,7 +197,7 @@ the selected tab travels in the URL, for example `/operations?area=services`.
 | **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
 | **Ports** | Configured service ports and locally observed TCP listeners, with visible processes, PIDs and listening addresses. Read-only; filter by port, service or process. |
 | **Progress** | Age in status for all active items across repositories, excluding completed and parked items. A bar opens the corresponding active Backlog bucket; Backlog filters do not alter this chart. |
-| **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, missing-trailer count and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db.sh usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db.sh usage` binds it. |
+| **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, missing-trailer count (walked inside the 10-second budget Health uses; past it the tile says "not read" and that the walk stopped rather than waited on) and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db.sh usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db.sh usage` binds it. |
 | **Reports** | The newest 200 recorded reports — scheduled job output with its source and findings. Open one to follow up, assign work or acknowledge it. Preview the clean reports at a date and acknowledge them in one attributed batch; the emails keep going. |
 | **Resources** | The five legacy vault and machine views — Toolbox, Briefs, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
 | **Trackers** | PRs and Issues as `sd shadow sync` last saw them, read from `sd_db.shadow` through `progress.tracker_items`, with each tracker's sync health. A row's reference is the last path segment of its URL — `LOG-23818` for a Jira ticket, `owner/repo#4321` on GitHub. Open rows only; read-only. |
