@@ -113,10 +113,12 @@ addEventListener('DOMContentLoaded', () => {
     const cell = (k, val) => unknownWhy(k.id)
       ? html`<li><div class="cell" data-kind="${k.id}" data-state="unknown"><span class="lbl">${k.name}${ICON(k.icon)}</span><span class="val"><span class="ph"><b>unknown</b></span> · <span class="ph">no source</span></span></div></li>`
       : html`<li><button class="cell" type="button" data-kind="${k.id}" data-state="${worst(k.id)}" aria-pressed="${pressed(k.id)}"><span class="lbl">${k.name}${ICON(k.icon)}</span><span class="val">${val}</span></button></li>`;
-    const asg = EVENTS.filter(e => e.k === 'run' && e.status).length;
+    // Runs mixes two sources: a job carries `job`, an assignment carries `status`; count each by its own field.
+    const asg = EVENTS.filter(e => e.k === 'run' && e.status);
+    const jobsFailed = EVENTS.filter(e => e.k === 'run' && e.job && e.s === 'warning').length;
     const VAL = {
       merge: html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(EVENTS.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`,
-      run: html`<span class="ph"><b>${n('run', 'warning')}</b> jobs failed</span> · <span class="ph">${n('run', 'caution')} of ${asg} runs blocked</span>`,
+      run: html`<span class="ph"><b>${jobsFailed}</b> jobs failed</span> · <span class="ph">${asg.filter(e => e.status === 'blocked').length} of ${asg.length} runs blocked</span>`,
       command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} in the journal</span>`,
     };
     const d = new Date(OBSERVED);

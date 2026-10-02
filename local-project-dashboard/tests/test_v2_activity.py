@@ -394,6 +394,19 @@ R.table = ELS['chart-table'].html; R.lanes = ELS.lanes.html;""")
         self.assertEqual(sum(cells), len(re.findall(r'<rect class="tick', out["R"]["lanes"])))
         self.assertEqual(sum(cells), 1, "one merge in system in the window")
 
+    def test_the_runs_cell_counts_failed_jobs_and_blocked_assignments_apart(self):
+        doc = json.loads(json.dumps(self.doc))
+        blocked = next(e for e in doc["events"] if e["id"] == f"run:{self.ids['blocked']}")
+        doc["events"].append(dict(blocked, id="run:9999", s="warning", status="failed", title="A failed run"))
+        runs = [e for e in doc["events"] if e["k"] == "run"]
+        self.assertTrue(any(e.get("job") and e["s"] == "caution" for e in runs), "the seed has an interrupted job")
+        failed_jobs = sum(1 for e in runs if e.get("job") and e["s"] == "warning")
+        blocked_runs = sum(1 for e in runs if e.get("status") == "blocked")
+        assignments = sum(1 for e in runs if e.get("status"))
+        out = self.run_page("R.ann = ELS.annunciator.html;", doc=doc)
+        self.assertIn(f"<b>{failed_jobs}</b> jobs failed", out["R"]["ann"])
+        self.assertIn(f"{blocked_runs} of {assignments} runs blocked", out["R"]["ann"])
+
     def test_the_journal_note_says_what_the_cap_left_unread(self):
         doc = json.loads(json.dumps(self.doc)); doc["journal_unread"] = 7
         out = self.run_page("R.note = ELS['journal-note'].html;", doc=doc)
