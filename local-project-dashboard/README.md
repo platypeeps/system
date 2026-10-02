@@ -61,6 +61,20 @@ after the write lands. Status, priority, due and recurrence edits and a requeue
 carry Undo; resolving a followup note and cancelling an assignment ask first.
 `sd work relink` and `sd work cancel` are shown for Copy only.
 
+Home is at `/home` (sd:2117): the design's critical Home Assistant tiles and
+its wall display (`?kiosk=1`). `GET /api/home` (`home_screen.document`) lists
+the tiles `<config>/project-dashboard/home-tiles.conf` names, one
+`headline|<entity_id>|<name>` or `tile|<group>|<entity_id>|<name>` per line.
+An optional last field, `alarm`, `lock`, `toggle` or `sensor`, sets the tile's
+commands when its domain would not. Entity ids describe a house, so the
+checkout ships only `home-tiles.conf.example`. A line the page cannot read is
+named and skipped; without the file the page says "No tile list" and draws no
+grid. The dashboard reads no Home Assistant state yet, so every tile shows as
+unknown with that reason and none shows ok. The design's arm, disarm, lock,
+unlock and toggle commands are registered but off with it, so the page sends
+nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
+`$HA_URL` and never holds a value.
+
 The old screens stay until their section is ported. Only the old Today moved,
 to `/classic/today`; every other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
@@ -75,6 +89,7 @@ Classic screens.
 | --- | --- |
 | Today | `/today` (new) |
 | Tasks | `/tasks` (new) |
+| Home | `/home` (new) |
 | Writing | `/writing` |
 | Research | `/operations?area=resources` |
 | Contributions | `/contributions` |
@@ -85,7 +100,7 @@ Classic screens.
 | Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
-| Briefs, Notes, HOA, Home, Health, Activity | no old screen; the rail says not built yet |
+| Briefs, Notes, HOA, Health, Activity | no old screen; the rail says not built yet |
 | Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
