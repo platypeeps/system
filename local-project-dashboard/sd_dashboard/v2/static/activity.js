@@ -97,7 +97,8 @@ addEventListener('DOMContentLoaded', () => {
     (p.get('repo') || '').split(',').filter(Boolean).forEach(v => F.repo.add(v));
     F.state = p.get('state') || ''; F.q = p.get('q') || ''; F.hour = p.get('range') === '1h'; F.all = p.get('range') === 'all';
     const asked = Number(p.get('page'));
-    page = Number.isInteger(asked) && asked > 0 ? asked : 1; // a page is a positive integer; anything else is the first page size = [25, 50, 100, 200].includes(+p.get('size')) ? +p.get('size') : 50;
+    page = Number.isInteger(asked) && asked > 0 ? asked : 1; // a page is a positive integer; anything else is the first page
+    size = [25, 50, 100, 200].includes(+p.get('size')) ? +p.get('size') : 50;
     selected = window.shell.row() || null;
   }
   function writeURL() {

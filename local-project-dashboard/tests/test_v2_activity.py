@@ -463,6 +463,13 @@ R.after = ELS.details.html; R.current = window.PAGE_LIST.current();""")
         self.assertIn("nothing is selected", out["R"]["after"])
         self.assertIsNone(out["R"]["current"])
 
+    def test_the_page_size_in_the_address_is_shown_and_kept(self):
+        for asked, shown, kept in (("25", "25", "25"), ("100", "100", "100"), ("7", "50", None)):
+            out = self.run_page("R.pager = ELS.pager.html;",
+                                pre=f"location.search = '?size={asked}'; window.shell.url = p => {{ OUT.size = p.get('size'); }};")
+            self.assertIn(f'data-size="{shown}" aria-pressed="true"', out["R"]["pager"], asked)
+            self.assertEqual(out.get("size"), kept, asked)
+
     def test_a_page_number_must_be_a_positive_integer(self):
         base = self.run_page("R.rows = ELS.rows.html;")["R"]["rows"]
         self.assertIn("data-id=", base)
