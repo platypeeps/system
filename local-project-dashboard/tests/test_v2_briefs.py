@@ -205,6 +205,8 @@ class ThePage(BrowserSession):
 
 # The stand-in additions briefs.js needs beyond test_v2_tasks: the shell's row, url, capture, chat, and window.open.
 SHELL_MORE = r"""
+URLSearchParams = function (q) { var m = []; (q || '').replace(/^\?/, '').split('&').filter(Boolean).forEach(p => { var kv = p.split('='); m.push([kv[0], decodeURIComponent(kv[1] || '')]); });
+  this.get = k => { var e = m.find(x => x[0] === k); return e ? e[1] : null; }; this.getAll = k => m.filter(x => x[0] === k).map(x => x[1]); };
 OUT.captures = []; OUT.opened = []; OUT.chat = []; OUT.urls = []; OUT.panes = [];
 window.shell.row = () => ROW; window.shell.url = q => OUT.urls.push(q); window.shell.capture = (o, t) => OUT.captures.push([o && o.id, t]);
 window.shell.openChat = () => {}; window.shell.send = t => OUT.chat.push(t); window.shell.openPane = p => OUT.panes.push(p);
@@ -263,6 +265,16 @@ class TheScript(ScreenCase):
                          ["2026-09-06 - Intel Brief", "2026-09-04 - Intel Brief", "2026-08-20 - Intel Brief"])
         out = self.run_page("R.rows = ELS.rows.html;", search="?range=24h")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["2026-09-06 - Fun Events", "2026-09-06 - Intel Brief"])
+
+    def test_a_source_with_a_comma_survives_the_address(self):
+        # Review 39d6c524a35c: a source is the free end of a file name, so the address repeats `src` rather than joining.
+        doc = briefs_screen.document(now=NOW, reader=lambda: {**TILE, "briefs": TILE["briefs"] + [
+            tile_row("2026-09-05 - Daily, Special", "2026-09-05T07:00:00Z")]})
+        out = self.run_page("R.rows = ELS.rows.html;", answer=f"() => [200, {json.dumps(doc)}]",
+                            search="?src=Daily%2C%20Special&src=Fun%20Events")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]),
+                         ["2026-09-06 - Fun Events", "2026-09-05 - Daily, Special"])
+        self.assertEqual(out["urls"][-1], [["src", "Daily, Special"], ["src", "Fun Events"]])
 
     def test_make_task_opens_the_capture_form_and_only_capture_files_it(self):
         out = self.run_page("""shellRun(cmd('brief.task'), C.get('2026-09-04 - Intel Brief')); await flush();

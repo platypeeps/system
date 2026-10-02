@@ -52,20 +52,20 @@ addEventListener('DOMContentLoaded', () => {
   let page = 1, size = 50, selected = null;
   function readURL() {
     const p = new URLSearchParams(location.search);
-    (p.get('src') || '').split(',').filter(Boolean).forEach(v => F.src.add(v));
+    // A source is the free end of a file name and may hold a comma, so each one is its own `src` (review 39d6c524a35c).
+    p.getAll('src').filter(Boolean).forEach(v => F.src.add(v));
     F.day = /^\d{4}-\d{2}-\d{2}$/.test(p.get('day') || '') ? p.get('day') : ''; F.q = p.get('q') || '';
     range = RANGES[p.get('range')] ? p.get('range') : '7d';
     page = Math.max(1, Math.floor(+p.get('page')) || 1); size = [25, 50, 100, 200].includes(+p.get('size')) ? +p.get('size') : 50;
   }
   function writeURL() {
-    const q = {};
-    if (F.src.size) q.src = [...F.src].join(',');
-    if (F.day) q.day = F.day;
-    if (F.q) q.q = F.q;
-    if (range !== '7d') q.range = range;
-    if (page > 1) q.page = page;
-    if (size !== 50) q.size = size;
-    shell.url(q); // the shell keeps ?row=
+    const q = [...F.src].map(s => ['src', s]);
+    if (F.day) q.push(['day', F.day]);
+    if (F.q) q.push(['q', F.q]);
+    if (range !== '7d') q.push(['range', range]);
+    if (page > 1) q.push(['page', String(page)]);
+    if (size !== 50) q.push(['size', String(size)]);
+    shell.url(q); // pairs, so a source repeats; the shell keeps ?row=
   }
   const active = () => F.src.size + (F.day ? 1 : 0) + (F.q ? 1 : 0);
   const match = b => inRange(b) && (!F.src.size || F.src.has(b.src)) && (!F.day || b.day === F.day) &&
