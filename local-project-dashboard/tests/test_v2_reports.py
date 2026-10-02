@@ -172,6 +172,17 @@ class TheDocument(ScreenCase):
         with mock.patch.object(reports_screen, "TAIL_BYTES", 60):
             self.assertEqual(reports_screen.cadence(jobs[:1], logs, DAYS)["monthly"]["last"]["read"], False)
 
+    def test_an_outcome_marker_after_job_output_with_no_newline_still_counts(self):
+        # cron-jobs.sh's own example: `JOB_COMMAND='printf error; exit 7'` writes `error[demo] ... FAILED rc=7`.
+        path = self.dir / "demo.log"
+        path.write_text("[demo] 2026-09-09T02:15:00-0600 starting (cwd: /tmp)\n"
+                        "error[demo] 2026-09-09T02:15:01-0600 FAILED rc=7\n"
+                        "[demo] 2026-09-10T02:15:00-0600 starting (cwd: /tmp)\n"
+                        "all fine[demo] 2026-09-10T02:15:01-0600 done\n", encoding="utf-8")
+        got = reports_screen.job_log(path, DAYS)
+        self.assertEqual(got["runs"]["2026-09-09"], [0, 1])
+        self.assertEqual(got["runs"]["2026-09-10"], [1, 0])
+
     def test_a_log_longer_than_the_read_says_where_the_read_began(self):
         lines = [f"[big] 2026-09-0{n}T01:00:00-0600 done" for n in range(4, 10) for _ in range(200)]
         path = self.dir / "big.log"

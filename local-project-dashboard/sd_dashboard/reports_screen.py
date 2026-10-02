@@ -298,8 +298,9 @@ TAIL_BYTES = 1 << 20
 #: How far back `last_scheduled` looks for a job's last scheduled run: a year and a little, so a yearly job has one.
 LOOKBACK = 400
 #: The outcome lines `cron-jobs.sh` writes for a run: `[<job>] <stamp> done` and `[<job>] <stamp> FAILED rc=<n>`.
-#: The stamp carries the machine's offset, so its date is the local day the run belongs to.
-OUTCOME = re.compile(r"^\[(?P<job>[^\]\s]+)\] (?P<day>\d{4}-\d{2}-\d{2})T[0-9:]+[+-]\d{4} (?P<what>done|FAILED rc=\d+)\s*$")
+#: The stamp carries the machine's offset, so its date is the local day the run belongs to. The marker ends the line
+#: but need not start it: a job whose output has no trailing newline gets `error[demo] <stamp> FAILED rc=7`.
+OUTCOME = re.compile(r"\[(?P<job>[^\]\s]+)\] (?P<day>\d{4}-\d{2}-\d{2})T[0-9:]+[+-]\d{4} (?P<what>done|FAILED rc=\d+)\s*$")
 STAMP = re.compile(r"^\[[^\]\s]+\] (\d{4}-\d{2}-\d{2})T")
 #: A family line: `family|<key>|<label>|<icon>|<job>,<job>,...`.
 KEY = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
@@ -410,7 +411,7 @@ def job_log(path: Path, days: list[str]) -> dict:
         read_from = next((m[1] for m in map(STAMP.match, lines) if m), None)
     runs = {day: [0, 0] for day in days}
     for line in lines:
-        m = OUTCOME.match(line)
+        m = OUTCOME.search(line)
         if m and m["day"] in runs:
             runs[m["day"]][0 if m["what"] == "done" else 1] += 1
     return {"log": True, "from": begins[1] if begins else None, "read_from": read_from, "runs": runs}
