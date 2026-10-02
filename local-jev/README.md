@@ -367,7 +367,9 @@ unrecorded.
 
 Haiku answers one question per request, with a JSON schema for the answer's
 probabilities, so no question sees another's answer: the isolation Jev's
-batch gives. `--fallback`, `enabled`, a meter that is off, and a call Jev
+batch gives. A batch of more than 8 questions (`MAX_HAIKU_QUESTIONS`) is
+declined as `invalid` before any request, so one call never fans out into a
+pile of paid ones. `--fallback`, `enabled`, a meter that is off, and a call Jev
 never gets start no arm.
 
 Switch the Kev arm on with an on-word (`JEV_COMPARE_KEV=1`) and the Haiku arm

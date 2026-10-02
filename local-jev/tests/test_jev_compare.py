@@ -645,6 +645,27 @@ class TheOutputCap(CompareCase):
         self.assertEqual(Arm.seen, [])
 
 
+class TheHaikuBatchLimit(CompareCase):
+    """One Haiku request per question, so a batch is bounded before any call."""
+
+    def ask(self, count):
+        job = {"payload": {"state": "s", "questions": {
+            f"q{i}": {"type": "noul", "instructions": "is it?"} for i in range(count)}}}
+        env = {"JEV_COMPARE_ANTHROPIC_URL": self.base + "/v1/messages",
+               "JEV_COMPARE_ANTHROPIC_KEY": "k", "JEV_COMPARE_TIMEOUT": "10"}
+        return jev_compare.haiku_arm(job, env, "anthropic")
+
+    def test_a_batch_at_the_limit_is_asked(self):
+        self.ask(jev_compare.MAX_HAIKU_QUESTIONS)
+        self.assertEqual(len(Arm.seen), jev_compare.MAX_HAIKU_QUESTIONS)
+
+    def test_a_batch_over_the_limit_is_declined_before_any_call(self):
+        with self.assertRaises(jev_compare.Declined) as caught:
+            self.ask(getattr(jev_compare, "MAX_HAIKU_QUESTIONS", 8) + 1)
+        self.assertEqual(caught.exception.cause, "invalid")
+        self.assertEqual(Arm.seen, [])
+
+
 class TheRequestFile(unittest.TestCase):
     """The redacted request never outlives the spawn."""
 

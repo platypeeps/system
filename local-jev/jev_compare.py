@@ -66,6 +66,9 @@ DEFAULT_USD_OUT = 5.0
 MAX_OUTPUT_TOKENS = 64000
 #: Room beyond the reply itself: whitespace and a code fence.
 OUTPUT_SLACK = 256
+#: The Haiku arm asks one request per question, concurrently. A larger batch
+#: is declined before any call: no thread pile-up, no fan-out of paid calls.
+MAX_HAIKU_QUESTIONS = 8
 
 #: The transports, their endpoints, the variables holding their keys (the
 #: first set one wins), and their model names for Claude Haiku 4.5.
@@ -552,6 +555,10 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
         if not conf["model"]:
             raise Declined("unavailable", "unkeyed", f"no model named for {via}")
         questions = job["payload"]["questions"]
+        if len(questions) > MAX_HAIKU_QUESTIONS:
+            raise Declined("invalid", "invalid",
+                           f"{len(questions)} questions; the Haiku arm asks at most "
+                           f"{MAX_HAIKU_QUESTIONS} per call")
         state = job["payload"].get("state")
         results: dict[str, object] = {}
 

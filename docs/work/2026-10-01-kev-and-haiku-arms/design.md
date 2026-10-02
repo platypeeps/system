@@ -125,7 +125,9 @@ cannot see each other. A prompt that held all of them would let the model read
 one answer into another. So the adapter sends one model request per question,
 concurrently, and sums the tokens and the cost. The row's latency is the
 arm's wall clock, which is the slowest question. Most calls carry one question,
-so this costs nothing extra for them.
+so this costs nothing extra for them. `jev ask` takes a batch of any size, so
+the arm declines one over `MAX_HAIKU_QUESTIONS` (8) as `invalid` before any
+request: no thread per question past that, and no fan-out of paid calls.
 
 ### The prompt
 
