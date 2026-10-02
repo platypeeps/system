@@ -626,6 +626,20 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Documents does not accept query parameters."})
                     return self._json(200, documents_screen.document(now=self.clock()))
+                if path == "/api/research" or path.startswith("/api/research/"):
+                    from . import research_screen
+
+                    # The Research page's board and one checkout's source registry (sd:2122): collect_research, in a child.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Research."})
+                    if split.query:
+                        return self._json(400, {"error": "Research does not accept query parameters."})
+                    if path == "/api/research":
+                        return self._json(200, research_screen.document(now=self.clock()))
+                    found = research_screen.sources(path[len("/api/research/"):], now=self.clock())
+                    if found is None:
+                        return self._json(404, {"error": "No research checkout at this address."})
+                    return self._json(200, found)
                 if path == "/api/briefs":
                     from . import briefs_screen
 

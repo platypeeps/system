@@ -1,0 +1,89 @@
+<!doctype html>
+<!--
+  Research (sd:2122), at /research. Built from the design source's products/system/designs/v2/research.html, research.js and
+  research.css at 7f50ad4 (last changed af211c7), with design.md and commands.md.
+  Data: /api/research (research_screen.document: collectors.collect_research, every checkout with a research.conf.py) when the
+  page opens, and /api/research/<checkout> (research_screen.sources: its SOURCES.md and 10-sources/ ledgers) per selection.
+  The design's data/research-sources.js and its project list are sample data and do not ship. Nothing reads review rounds or
+  claims yet, so both say so; Render and Review are copy only, and Start research is off: nothing here writes.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Research · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/research.css">
+</head>
+<body data-page="Research" data-scope="research">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+  <main id="main">
+    <header class="head">
+      <div>
+        <h1>Research</h1>
+        <p><span id="sum">Reading the checkouts…</span></p>
+      </div>
+      <div class="shift">
+        <label class="field">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr">Filter projects or start research</span>
+          <input id="shift" placeholder="Filter, or start: a question? repo:&lt;checkout&gt;" autocomplete="off" aria-describedby="shift-hint">
+          <span class="ghost" id="ghost"></span>
+          <kbd>/</kbd>
+        </label>
+        <div class="preview" id="shift-preview" hidden>
+          <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
+          <div class="chips" id="shift-chips" role="group" aria-label="Parsed"></div>
+          <div class="chips" role="group" aria-label="Interpret as">
+            <button class="chip" type="button" data-as="filter" aria-pressed="true">filter projects</button>
+            <button class="chip" type="button" data-as="start" aria-pressed="false">start research</button>
+          </div>
+          <div class="req" id="req" hidden></div>
+          <p class="hint" id="shift-hint">→ switches reading · Enter keeps the filter · Esc clears · Tab moves on</p>
+        </div>
+      </div>
+    </header>
+    <div id="state" hidden></div>
+
+    <section aria-labelledby="board-h">
+      <div class="sec-head">
+        <h2 id="board-h">Projects <button class="help" type="button" aria-label="Help: Projects" data-help="<b>Every checkout with research.conf.py.</b> Stage is the furthest numbered directory holding Markdown. Render compares each declared document with its built page. Rounds count independent review passes after the brief; the cap is 2.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <table class="ledger" aria-labelledby="board-h">
+        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Project</th><th scope="col">Stage</th><th scope="col">Render</th><th scope="col">Rounds / cap</th><th scope="col" class="last">Last commit</th><th scope="col" class="acts"><span class="sr">Actions</span></th></tr></thead>
+        <tbody id="rows"></tbody></table>
+      <p class="empty why" id="empty" hidden>No project matches. Clear the filter or type another word.</p>
+    </section>
+
+    <section aria-labelledby="reader-h">
+      <div class="sec-head">
+        <h2 id="reader-h">Sources <span class="for" id="reader-for"></span> <button class="help" type="button" aria-label="Help: Sources" data-help="<b>The project's own ledger, as written.</b> Grade or ID comes from the registry: A primary, B secondary, C summary only, U unverified, M measured here. A mark means a claim below cites it.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="reader-tally"></p>
+      </div>
+      <div id="reader"></div>
+    </section>
+
+    <section aria-labelledby="claims-h">
+      <div class="sec-head">
+        <h2 id="claims-h">Claim map <span class="for" id="claims-for"></span> <button class="help" type="button" aria-label="Help: Claim map" data-help="<b>Claims against their sources.</b> Read from the START HERE document's Status section. Supported ●, inferred ▲, corrected ■ (the earlier text was wrong), unverified ▨. Tap a claim to light its sources.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+      </div>
+      <div id="claims"></div>
+    </section>
+  </main>
+
+  <div class="details" id="details"><p class="why">Select a project to see its checkout, render and review state.</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/research.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>
