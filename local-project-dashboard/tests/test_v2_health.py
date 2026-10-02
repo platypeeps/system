@@ -49,10 +49,10 @@ TREES = [
 ]
 
 
-def fleet_of(trees, root="/checkouts"):
+def fleet_of(trees, root="/checkouts", exists=True):
     def read(area):
         assert area == "sessions", area
-        return {"root": root, "rootExists": True, "worktrees": trees, "processes": [], "processes_error": "",
+        return {"root": root, "rootExists": exists, "worktrees": trees, "processes": [], "processes_error": "",
                 "processes_truncated": False, "abandoned": 0, "counts": {}}
     return read
 
@@ -156,6 +156,12 @@ class TheDocument(ScreenCase):
         self.assertEqual(areas[2]["rows"][0]["id"], "attr:weeks")
         areas = self.doc(fleet=lambda area: {"root": "/checkouts", "worktrees": [{"repo": "x"}]})["areas"]
         self.assertEqual(areas[3]["error"], "fleet collector returned an incomplete sessions document")
+
+    def test_a_checkout_root_that_does_not_exist_is_not_read_rather_than_healthy(self):
+        # The collector answers a missing REPO_ROOT with no worktrees, which would read as "checked 0 registrations".
+        worktrees = self.doc(fleet=fleet_of([], root="/checkouts/missing", exists=False))["areas"][3]
+        self.assertEqual(worktrees["rows"], [], "a missing checkout root was reported as a reading")
+        self.assertEqual(worktrees["error"], "the checkout root /checkouts/missing does not exist; REPO_ROOT names it")
 
     def test_ports_are_the_operations_rows_with_its_counts_and_warnings(self):
         ports = self.doc()["areas"][7]

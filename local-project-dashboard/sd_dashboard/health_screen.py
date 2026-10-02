@@ -82,6 +82,9 @@ def _worktree_rows(document) -> list[dict]:
             not isinstance(tree, dict) or not isinstance(tree.get("state"), str) or not isinstance(tree.get("repo"), str)
             for tree in trees):
         raise ValueError("fleet collector returned an incomplete sessions document")
+    # A missing root comes back as no worktrees at all, which must not read as "checked 0 registrations".
+    if document.get("rootExists") is not True:
+        raise ValueError(f"the checkout root {root} does not exist; REPO_ROOT names it")
     by_repo: dict[tuple[str, str], list[dict]] = {}
     for tree in trees:
         if tree["state"] in ("abandoned", "unknown"):
