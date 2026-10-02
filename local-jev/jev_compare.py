@@ -98,8 +98,6 @@ TRANSPORTS = {
                    "usd": (DEFAULT_USD_IN, DEFAULT_USD_OUT)},
 }
 
-DEFAULT_VIA = "anthropic"
-
 
 class Declined(Exception):
     """An arm that ended without an answer, with the ledger's outcome and cause."""
@@ -448,18 +446,27 @@ def price(env, name: str, default: float | None) -> float | None:
     return value if math.isfinite(value) and value >= 0 else default
 
 
+# The arms are opt-in, unlike a Jev stage ("unset means on"): an arm sends
+# every live Jev request to a second endpoint, and that is a change the
+# operator turns on, one arm at a time.
+
+def kev_on(env) -> bool:
+    """The Kev arm runs only when `JEV_COMPARE_KEV` is one of `jev.py`'s
+    on-words; unset, an off-word or anything else is off."""
+    return (env.get("JEV_COMPARE_KEV") or "").strip().lower() in jev.FLAG_ON
+
+
 def haiku_via(env) -> str:
-    """The selected transport, or "" when the arm is switched off. The
-    off-words are `jev.py`'s, read through `stage_off`; an unknown word is
-    returned as given and declined as `invalid` rather than guessed at."""
-    if jev.stage_off("JEV_COMPARE_HAIKU_VIA", env):
-        return ""
-    return (env.get("JEV_COMPARE_HAIKU_VIA") or "").strip().lower() or DEFAULT_VIA
+    """The selected transport, or "" when the arm is off: unset or one of
+    `jev.py`'s off-words. Any other word is returned as given; one that names
+    no transport is declined as `invalid`, with no call, rather than guessed at."""
+    word = (env.get("JEV_COMPARE_HAIKU_VIA") or "").strip().lower()
+    return "" if not word or word in jev.FLAG_OFF else word
 
 
 def wanted(env) -> bool:
     """Whether any arm is on here. `jev.py` asks this before it starts one."""
-    return not jev.stage_off("JEV_COMPARE_KEV", env) or bool(haiku_via(env))
+    return kev_on(env) or bool(haiku_via(env))
 
 
 def kev_arm(job: dict, env) -> dict:
@@ -643,7 +650,7 @@ def main(argv=None, env=None) -> int:
             except OSError:
                 pass
     work = []
-    if not jev.stage_off("JEV_COMPARE_KEV", env):
+    if kev_on(env):
         work.append(("kev", lambda: kev_arm(job, env)))
     via = haiku_via(env)
     if via:

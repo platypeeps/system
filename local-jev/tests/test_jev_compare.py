@@ -570,6 +570,55 @@ class TheConfigFile(CompareCase):
         self.assertEqual((kev["outcome"], kev["model"]), ("ok", "example/kev-pinned"))
 
 
+class TheArmsAreOptIn(CompareCase):
+    """Unset means off for both arms: a live Jev call stays what it was."""
+
+    def call_with(self, **settings):
+        from unittest import mock
+        env = self.env()
+        for name in ("JEV_COMPARE_KEV", "JEV_COMPARE_HAIKU_VIA"):
+            env.pop(name, None)
+        env.update(settings)
+        spawned = []
+        saved = sys.stdin
+        with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as fake, \
+                mock.patch("subprocess.Popen",
+                           side_effect=lambda argv, **kw: spawned.append(argv)):
+            fake.write("a sentence")
+            fake.seek(0)
+            sys.stdin = fake
+            try:
+                code = jev.main(["noul", "is it?"], out=out, env=env,
+                                sleep=lambda _s: None)
+            finally:
+                sys.stdin = saved
+        self.assertEqual(code, 0)
+        return spawned
+
+    def test_with_nothing_set_no_arm_starts_and_no_row_is_written(self):
+        self.assertEqual(self.call_with(), [])
+        self.assertEqual(Arm.seen, [])
+        rows = self.rows()
+        self.assertEqual([row["arm"] for row in rows], ["jev"])
+        self.assertIsNone(rows[0]["pair"])
+
+    def test_only_an_on_word_starts_the_kev_arm(self):
+        for word in ("1", "on", "true", "yes", "enabled"):
+            with self.subTest(word=word):
+                self.assertEqual(len(self.call_with(JEV_COMPARE_KEV=word)), 1)
+        for word in ("", "0", "off", "maybe"):
+            with self.subTest(word=word):
+                self.assertEqual(self.call_with(JEV_COMPARE_KEV=word), [])
+
+    def test_only_a_named_transport_starts_the_haiku_arm(self):
+        for via in ("anthropic", "openrouter", "claude-cli", "baseten"):
+            with self.subTest(via=via):
+                self.assertEqual(len(self.call_with(JEV_COMPARE_HAIKU_VIA=via)), 1)
+        for word in ("", "off", "0", "disabled"):
+            with self.subTest(word=word):
+                self.assertEqual(self.call_with(JEV_COMPARE_HAIKU_VIA=word), [])
+
+
 class TheOutputCap(CompareCase):
     """The Haiku request's output cap holds the whole reply it asks for."""
 

@@ -296,8 +296,8 @@ never one derived from the prediction it scores (sd:2107).
 
 ### The comparison arms
 
-`jev` can ask a local Kev and a Haiku model the same request beside every live
-call (`local-jev/README.md`, sd:2366). Each answer is its own row, arm `kev`
+`jev` can ask a local Kev and a Haiku model the same request beside each live
+call, once each arm is switched on (`local-jev/README.md`, sd:2366). Each answer is its own row, arm `kev`
 or `haiku`, with the Jev row's pair id, the latency the model reported in
 `server_ms`, and the distribution in `probabilities`: numbers in option order,
 never the keys. The report above reads only `jev` and `baseline`; this one

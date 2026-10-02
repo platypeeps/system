@@ -5,8 +5,10 @@ as TypeSafe's hosted model.
 
 Kev is Jared Palmer's open reproduction. It answers typed questions about a
 state (`noul`, `choice`, `score`) with probabilities, as its hosted peer does.
+With the Kev arm switched on (`JEV_COMPARE_KEV=1`, off by default),
 `local-jev` sends it a copy of every live call, so the two answer the same
-question and the ledger can compare them. Kev itself is not part of this
+question and the ledger can compare them. Install and start this server
+when you switch the arm on, not before. Kev itself is not part of this
 repository: `install` clones it to `kev/` in this folder, which the root
 `.gitignore` excludes. This folder holds the wrapper and the LaunchAgent.
 

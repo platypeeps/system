@@ -338,14 +338,15 @@ file is not that evidence for a review tier (sd:2107).
 
 ### The comparison arms
 
-Every live call that reaches Jev also asks two other models the same
-question, so the ledger holds paired answers for the Jev evaluation:
+Two comparison arms can ask other models the same question as each live
+Jev call, so the ledger holds paired answers for the Jev evaluation. **Both
+are off unless switched on**, one at a time:
 
 - **Kev**, the open-weights model `local-kev` serves on `127.0.0.1:8009`.
   Its rows record provider `local`, the checkpoint from `KEV_MODEL`, and a
   cost of 0.
 - **Haiku**, Claude Haiku 4.5 through one transport that
-  `JEV_COMPARE_HAIKU_VIA` names: `anthropic` (the default, keyed by
+  `JEV_COMPARE_HAIKU_VIA` names: `anthropic` (keyed by
   `JEV_COMPARE_ANTHROPIC_KEY`), `openrouter`, `claude-cli` (`claude -p
   --model haiku`, under the operator's own `claude` login), or `baseten`, which
   serves no Haiku and so needs `JEV_COMPARE_BASETEN_MODEL` and its own
@@ -369,10 +370,13 @@ probabilities, so no question sees another's answer: the isolation Jev's
 batch gives. `--fallback`, `enabled`, a meter that is off, and a call Jev
 never gets start no arm.
 
-Switch an arm off with an off-word (`JEV_COMPARE_KEV=0`,
-`JEV_COMPARE_HAIKU_VIA=off`); unset means on. A switched-off arm writes no
-row: the operator chose it, so a decline per call would only fill the ledger. The rest of the settings are in
-`.env.example`. Read the comparison with:
+Switch the Kev arm on with an on-word (`JEV_COMPARE_KEV=1`) and the Haiku arm
+by naming a transport (`JEV_COMPARE_HAIKU_VIA=anthropic`). Unset or an
+off-word is off: unlike a Jev stage, where unset means on, an arm sends every
+live request to a second endpoint, so it is opt-in. An off arm starts no
+child and writes no row. Install the Kev server (`local-kev/kev.sh install`,
+then `agent-install`) when you switch the Kev arm on, not before. The rest of
+the settings are in `.env.example`. Read the comparison with:
 
     local-sd-db/sd-db.sh judgments compare [--stage S] [--since 2026-10] [--json]
 

@@ -213,9 +213,9 @@ environment:
   JEV_RETRIES        retries for 429/529/5xx, doubling backoff (default 3)
   JEV_ENABLED        1/0 for one call or one session; beats the switch file
   JEV_FLAG_FILE      switch file (default ~/.config/jev/enabled)
-  JEV_COMPARE_KEV    0/off/false/no/disabled: no Kev arm (unset means on)
-  JEV_COMPARE_HAIKU_VIA  anthropic (default), openrouter, claude-cli,
-                     baseten, or an off-word: the second comparison arm
+  JEV_COMPARE_KEV    1/on/true/yes/enabled: run the Kev arm (unset means off)
+  JEV_COMPARE_HAIKU_VIA  anthropic, openrouter, claude-cli or baseten: run
+                     the second comparison arm (unset means off)
   JEV_COMPARE_*      keys, endpoints, prices and timeout of the arms;
                      see .env.example and the README
 Defaults for these may also sit in <config>/jev/.env (<config> is

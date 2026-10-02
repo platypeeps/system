@@ -31,9 +31,10 @@ machine.
    code, and no added wait beyond starting one process.
 5. Four Haiku transports are configurable: OpenRouter, the Anthropic Messages
    API, `claude -p --model haiku`, and Baseten. `JEV_COMPARE_HAIKU_VIA`
-   selects one, or `off`.
-6. Each arm can be switched off on its own. Unset means on. Only the off-words
-   in `local-jev/jev.py` switch an arm off.
+   selects one; unset or an off-word is off.
+6. Each arm is opt-in and switched on on its own: unset means off, unlike a
+   Jev stage. `JEV_COMPARE_KEV` takes the on-words in `local-jev/jev.py`; the
+   off-words switch either arm off. With both off, a Jev call is unchanged.
 7. An unreachable Kev or an unkeyed Haiku transport costs the caller nothing
    and records a decline reason.
 8. Every arm writes its own `judgment` row with an arm name, its provider and

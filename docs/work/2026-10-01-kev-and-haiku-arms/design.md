@@ -84,15 +84,24 @@ Retries do not start a second set of arms. The arms start once per call.
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
-| `JEV_COMPARE_KEV` | Kev arm; an off-word switches it off | on |
-| `JEV_COMPARE_HAIKU_VIA` | `anthropic`, `openrouter`, `claude-cli`, `baseten`, or an off-word | `anthropic` |
+| `JEV_COMPARE_KEV` | Kev arm; an on-word (`1 on true yes enabled`) switches it on | off |
+| `JEV_COMPARE_HAIKU_VIA` | `anthropic`, `openrouter`, `claude-cli` or `baseten` switches it on | off |
 | `JEV_COMPARE_TIMEOUT` | seconds per arm | 60 |
 
-`JEV_COMPARE_KEV` is read with `stage_off`, the existing off-word reader.
-`JEV_COMPARE_HAIKU_VIA` is off when `stage_off` says so; any other unknown word
-records an `invalid` decline rather than guessing a transport. A switched-off
-arm writes no row; only an arm that tried and could not answer records a
-decline.
+The arms are opt-in, and this departs on purpose from the Jev stage rule
+(unset means on). That rule is for Jev stages, where on keeps a caller's
+existing behaviour. An arm that is on sends every live Jev request to a
+second endpoint, which changes current behaviour, so the operator switches
+each arm on, one at a time (operator ruling, 2026-10-01).
+
+`JEV_COMPARE_KEV` is on only for one of `jev.py`'s on-words (`FLAG_ON`).
+`JEV_COMPARE_HAIKU_VIA` is off when unset or one of the off-words
+(`FLAG_OFF`); any other word that names no transport records an `invalid`
+decline, with no call, rather than guessing a transport. With both off,
+`jev.post` starts no child, writes no row and calls nothing. An off arm
+writes no row; only an arm that tried and could not answer records a
+decline. The Kev LaunchAgent is installed when the Kev arm is switched on,
+not when this lands.
 
 ## The Kev arm
 
@@ -186,9 +195,10 @@ The arms receive the payload after `redacted_payload`, so a key that matches a
 redaction pattern refuses the whole call before any arm starts. The Kev arm
 stays on this machine. The Haiku arm sends the same state to Anthropic,
 OpenRouter or Baseten: a second third party beside TypeSafe. That is the cost
-of the comparison, and the README section "What it never does" says it. A
-caller that must not send its state to a second party switches the Haiku arm
-off with `JEV_COMPARE_HAIKU_VIA=off`.
+of the comparison, and the README section "What it never does" says it. The
+Haiku arm is off unless `JEV_COMPARE_HAIKU_VIA` names a transport, and a
+caller that must not send its state to a second party switches it off with
+`JEV_COMPARE_HAIKU_VIA=off`.
 
 The rows hold the same shapes as every other row: numbers and identifiers.
 The per-option probabilities are numbers in the caller's criteria order, never
