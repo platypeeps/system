@@ -24,6 +24,12 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class ArmServer(ThreadingHTTPServer):
+    # The Haiku arm opens MAX_HAIKU_QUESTIONS connections at once; the default
+    # listen backlog of 5 lets macOS reset the rest under load.
+    request_queue_size = 64
 from pathlib import Path
 
 import jev
@@ -117,7 +123,7 @@ class CompareCase(MeteringCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.arms = ThreadingHTTPServer(("127.0.0.1", 0), Arm)
+        cls.arms = ArmServer(("127.0.0.1", 0), Arm)
         cls.arms.daemon_threads = True
         threading.Thread(target=cls.arms.serve_forever, daemon=True).start()
         cls.base = "http://127.0.0.1:%d" % cls.arms.server_address[1]
