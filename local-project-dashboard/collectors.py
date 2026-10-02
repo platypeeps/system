@@ -1250,6 +1250,10 @@ def cron_next(expr, now=None):
     return None
 
 
+#: How much of a brief's body `collect_briefs` keeps as its `lead`.
+BRIEF_LEAD = 200
+
+
 def collect_briefs():
     """What the scheduled routines actually wrote. They mail these and file
     them in the vault; nothing surfaced them anywhere you would browse.
@@ -1258,6 +1262,11 @@ def collect_briefs():
     definitions and append-only run logs, which are configuration and exhaust,
     not output. Files are named `YYYY-MM-DD - Kind.md`, so the kind is the
     useful grouping — there is no routine name in the note to group by.
+
+    `at` is the note's modification time in UTC, and `lead` its first
+    `BRIEF_LEAD` characters of body text with whitespace folded: the Briefs
+    page (`sd_dashboard/briefs_screen.py`) shows both, the Resources view
+    neither.
     """
     require_vault()
     root = VAULT / "System" / "AI Generated" / "Briefs"
@@ -1269,11 +1278,14 @@ def collect_briefs():
             m = re.match(r"(\d{4}-\d{2}-\d{2})\s*-\s*(.+)$", f.stem)
             day, kind = (m.group(1), m.group(2)) if m else ("", "other")
             fm, body = frontmatter(f)
+            text = body if body is not None else f.read_text(errors="replace")
             out.append({
                 "stem": f.stem, "rel": str(rel), "kind": kind, "day": day,
                 "when": day or datetime.date.fromtimestamp(st.st_mtime).isoformat(),
+                "at": datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "age_d": age_days(day) if day else None,
-                "words": len((body or f.read_text(errors="replace")).split()),
+                "words": len(text.split()),
+                "lead": " ".join(text.split())[:BRIEF_LEAD],
                 "obsidian": obsidian_url(str(rel)[:-3]),
             })
     out.sort(key=lambda b: (b["when"], b["stem"]), reverse=True)
