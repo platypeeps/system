@@ -217,10 +217,13 @@ class TheDocument(ScreenCase):
             "family|a|Again|bot|four",
             "family|d|D|bot|Not A Job",
             "family|e|E|heart-pulse|five",
+            "family|f|F|bot|six,seven,six",
         ]))
         self.assertEqual([f["key"] for f in found], ["a", "e"])
-        self.assertEqual([p.split(":", 1)[0] for p in problems], ["line 2", "line 3", "line 4", "line 5", "line 6"])
+        self.assertEqual([p.split(":", 1)[0] for p in problems], ["line 2", "line 3", "line 4", "line 5", "line 6", "line 8"])
         self.assertIn("two is already in the family a", problems[2])
+        # A job twice within one line is refused too: the cadence table would list it twice and the lamp count it twice.
+        self.assertIn("six is listed twice in the family f", problems[5])
 
     def test_the_clean_preview_is_the_librarys_and_writes_nothing(self):
         before = tuple(self.connection.iterdump())

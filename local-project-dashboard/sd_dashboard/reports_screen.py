@@ -335,6 +335,10 @@ def parse_families(text: str) -> tuple[list[dict], list[str]]:
         if any(f["key"] == key for f in families):
             problems.append(f"line {number}: the family {key} is listed twice")
             continue
+        repeated = next((name for at, name in enumerate(jobs) if name in jobs[:at]), None)
+        if repeated:
+            problems.append(f"line {number}: {repeated} is listed twice in the family {key}")
+            continue
         twice = [name for name in jobs if name in owner]
         if twice:
             problems.append(f"line {number}: {twice[0]} is already in the family {owner[twice[0]]}")
