@@ -147,6 +147,12 @@ class TheDocument(ScreenCase):
         self.assertEqual([rows["civic/brief.html"][k] for k in ("title", "h1", "desc")], ["Brief", "Civic brief part", "The meta line wins."])
         self.assertEqual([rows["lab/orphan.html"][k] for k in ("title", "h1", "desc")], ["", "", ""])
 
+    def test_an_empty_meta_description_leaves_the_stand_line(self):
+        # The meta wins only when it says something; an empty one falls back to the stand-class element.
+        path = write(self.base / "page.html", '<html><head><meta name="description" content="  "></head>'
+                     '<body><p class="lede">The lede line.</p></body></html>', T0)
+        self.assertEqual(documents_screen.facts(path)["desc"], "The lede line.")
+
     def test_no_store_is_claimed(self):
         self.assertEqual(self.doc["store"], {"available": False, "reason": documents_screen.STORE_REASON})
         self.assertEqual((self.doc["read"], self.doc["config"]), (NOW, "<config>/project-dashboard/documents.conf"))

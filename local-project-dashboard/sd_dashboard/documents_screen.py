@@ -71,7 +71,8 @@ class _Head(HTMLParser):
             self.depth += name == self.element
             return
         if name == "meta" and (attributes.get("name") or "").lower() == "description" and self.found["desc"] is None:
-            self.found["desc"] = " ".join((attributes.get("content") or "").split())
+            # An empty description says nothing, so the stand-class element still may.
+            self.found["desc"] = " ".join((attributes.get("content") or "").split()) or None
             return
         if name in ("svg", "math") and self.found["title"] is None:
             # An inline chart carries its own <title> elements; none of them names the page.
