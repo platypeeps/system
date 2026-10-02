@@ -396,7 +396,8 @@ def last_scheduled(schedule: list, before: str) -> str | None:
 
 def job_log(path: Path, days: list[str]) -> dict:
     """One job's runs per local day from its log: `[done, failed]` for each day, where the log begins, and where the
-    read begins when the log is longer than `TAIL_BYTES`. A job with no log is `log: false`."""
+    read begins when the log is longer than `TAIL_BYTES`. A job with no log is `log: false`. `cut` says the read began
+    partway through the log; a cut read with no whole stamped line (`read_from` None) read no day at all."""
     try:
         with path.open("rb") as handle:
             first = handle.readline(4096).decode("utf-8", "replace")
@@ -405,7 +406,7 @@ def job_log(path: Path, days: list[str]) -> dict:
             handle.seek(start)
             tail = handle.read().decode("utf-8", "replace")
     except FileNotFoundError:
-        return {"log": False, "from": None, "read_from": None, "runs": {}}
+        return {"log": False, "from": None, "read_from": None, "cut": False, "runs": {}}
     lines = tail.splitlines()
     if start:
         lines = lines[1:]  # the first line of a cut read is a part line
@@ -419,7 +420,7 @@ def job_log(path: Path, days: list[str]) -> dict:
         # Job output is copied verbatim, so a marker naming another job is that job's run, not this one's.
         if m and m["job"] == path.stem and m["day"] in runs:
             runs[m["day"]][0 if m["what"] == "done" else 1] += 1
-    return {"log": True, "from": begins[1] if begins else None, "read_from": read_from, "runs": runs}
+    return {"log": True, "from": begins[1] if begins else None, "read_from": read_from, "cut": bool(start), "runs": runs}
 
 
 def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict:
@@ -437,7 +438,7 @@ def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict
         log = job_log(logs / f"{name}.log", days + ([last] if last and last not in days else []))
         runs = (log["runs"].pop(last, [0, 0]) if last not in days else log["runs"].get(last, [0, 0])) if last else [0, 0]
         read = bool(log["log"] and last and log["from"] and last >= log["from"]
-                    and not (log["read_from"] and last <= log["read_from"]))
+                    and not (log["cut"] and (not log["read_from"] or last <= log["read_from"])))
         out[name] = log | {"scheduled": [scheduled(schedule, day) for day in days],
                            "last": {"day": last, "read": read, "runs": runs if read else [0, 0]}}
     return out

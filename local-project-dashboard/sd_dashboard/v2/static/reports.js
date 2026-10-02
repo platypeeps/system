@@ -56,8 +56,9 @@ function mark(job, day) {
   if (!c || i < 0) return ['unknown', '▨', 'not read'];
   if (!c.scheduled[i]) return ['none', '·', 'not scheduled'];
   if (!c.log || (c.from && day < c.from)) return ['unknown', '▨', 'no log yet'];
-  // build: a cut read can begin partway through its first day, so that day is not read either (as the server's `last`).
-  if (c.read_from && day <= c.read_from) return ['unknown', '▨', 'not read'];
+  // build: a cut read can begin partway through its first day, so that day is not read either (as the server's `last`);
+  // a cut with no whole stamped line (no read_from) read no day at all.
+  if (c.cut && (!c.read_from || day <= c.read_from)) return ['unknown', '▨', 'not read'];
   const [ok, bad] = c.runs[day] || [0, 0], n = ok + bad;
   // build: today is not over; a job that has not run yet today is not a gap.
   if (!n && i === DAYS.length - 1) return ['none', '·', 'no run yet today'];

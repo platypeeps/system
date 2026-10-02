@@ -145,7 +145,7 @@ class TheDocument(ScreenCase):
         self.assertEqual(sync["scheduled"], [True] * 7)
         # Weekday 0 is Sunday: 2026-09-06 only.
         self.assertEqual(doc["cadence"]["weekly-scan"]["scheduled"], [d == "2026-09-06" for d in DAYS])
-        self.assertEqual(doc["cadence"]["quiet-one"], {"log": False, "from": None, "read_from": None, "runs": {}, "scheduled": [True] * 7,
+        self.assertEqual(doc["cadence"]["quiet-one"], {"log": False, "from": None, "read_from": None, "cut": False, "runs": {}, "scheduled": [True] * 7,
                                                        "last": {"day": DAYS[5], "read": False, "runs": [0, 0]}})
         # The last scheduled day before today, whatever the cadence, and whether the log holds it.
         self.assertEqual(sync["last"], {"day": DAYS[5], "read": True, "runs": [1, 0]})
@@ -204,6 +204,16 @@ class TheDocument(ScreenCase):
         self.assertEqual(got["read_from"], "2026-09-08")
         self.assertEqual(got["runs"]["2026-09-04"], [0, 0])
         self.assertEqual(got["runs"]["2026-09-09"], [200, 0])
+
+    def test_a_cut_inside_one_line_longer_than_the_read_reads_no_day(self):
+        # The read starts inside a line longer than TAIL_BYTES, so no whole line, and no day, was read.
+        logs = self.jobs.cron_root / "logs"
+        (logs / "wide.log").write_text("\n".join(run_lines("wide", "2026-09-06")) + "\n" + "y" * 500 + "\n", encoding="utf-8")
+        with mock.patch.object(reports_screen, "TAIL_BYTES", 60):
+            got = reports_screen.cadence([{"name": "wide", "schedule": [{"Weekday": 0, "Hour": 7}]}], logs, DAYS)["wide"]
+        self.assertEqual((got["cut"], got["read_from"]), (True, None))
+        self.assertEqual(got["last"], {"day": "2026-09-06", "read": False, "runs": [0, 0]})
+        self.assertFalse(reports_screen.job_log(logs / "wide.log", DAYS)["cut"])
 
     def test_a_failed_source_is_null_with_its_reason_and_the_rest_still_count(self):
         self.jobs.refuse = "launchctl is not here"
@@ -412,7 +422,7 @@ class TheScript(ScreenCase):
         # A cut read can start partway through its first day, so that day was not read in full.
         doc = json.loads(json.dumps(self.doc))
         sync = doc["cadence"]["nightly-sync"]
-        sync["read_from"] = DAYS[4]
+        sync["read_from"], sync["cut"] = DAYS[4], True
         sync["runs"][DAYS[3]], sync["runs"][DAYS[4]], sync["runs"][DAYS[5]] = [0, 0], [1, 0], [0, 0]
         cases = {"clean": [1, 0], "failed": [0, 1], "no run logged": [0, 0]}
         for case, runs in cases.items():
@@ -422,6 +432,12 @@ class TheScript(ScreenCase):
                 self.assertEqual(out["R"]["marks"][0], ["unknown", "▨", "not read"])
                 self.assertEqual(out["R"]["marks"][1], ["unknown", "▨", "not read"])
                 self.assertEqual(out["R"]["marks"][2], ["caution", "▲", "no run logged"])
+
+    def test_a_cut_read_with_no_whole_line_marks_every_day_not_read(self):
+        doc = json.loads(json.dumps(self.doc))
+        doc["cadence"]["nightly-sync"].update(cut=True, read_from=None)
+        out = self.run_page("R.marks = DAYS.map(d => mark('nightly-sync', d)[0]);", doc=doc)
+        self.assertEqual(out["R"]["marks"], ["unknown"] * 7)
 
     def test_a_job_that_has_not_run_yet_today_is_not_a_gap(self):
         doc = json.loads(json.dumps(self.doc))
