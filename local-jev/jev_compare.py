@@ -69,6 +69,10 @@ OUTPUT_SLACK = 256
 #: The Haiku arm asks one request per question, concurrently. A larger batch
 #: is declined before any call: no thread pile-up, no fan-out of paid calls.
 MAX_HAIKU_QUESTIONS = 8
+#: The most options a question may have: Kev's API limit, and the most
+#: values the ledger's `probabilities` takes. A larger question is declined
+#: before the paid call, whose row the ledger would refuse.
+MAX_OPTIONS = 255
 
 #: The transports, their endpoints, the variables holding their keys (the
 #: first set one wins), and their model names for Claude Haiku 4.5.
@@ -339,6 +343,14 @@ def count(value) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+def millis(value) -> int | None:
+    """A reported latency: Kev sends a float rounded to one decimal, so any
+    finite number of zero or more counts, rounded to whole milliseconds."""
+    if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+        return int(round(value))
+    return None
+
+
 def ask_anthropic(conf: dict, user: str, schema: dict) -> dict:
     reply = http_json(conf["url"], {
         "model": conf["model"],
@@ -490,7 +502,7 @@ def kev_arm(job: dict, env) -> dict:
         finally:
             event["duration_ms"] = int(round((time.monotonic() - started) * 1000))
         event.update(jev.usage_of(response))
-        event["server_ms"] = count(response.get("latency_ms"))
+        event["server_ms"] = millis(response.get("latency_ms"))
         answers = response.get("answers")
         if not isinstance(answers, dict):
             raise Declined("invalid", "invalid", "the response carries no answers")
@@ -559,6 +571,11 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
             raise Declined("invalid", "invalid",
                            f"{len(questions)} questions; the Haiku arm asks at most "
                            f"{MAX_HAIKU_QUESTIONS} per call")
+        for qid, question in questions.items():
+            if question.get("type") != "noul" and len(options(question)) > MAX_OPTIONS:
+                raise Declined("invalid", "invalid",
+                               f"{qid!r} has {len(options(question))} options; the "
+                               f"ledger records at most {MAX_OPTIONS}")
         state = job["payload"].get("state")
         results: dict[str, object] = {}
 

@@ -98,7 +98,9 @@ class Arm(BaseHTTPRequestHandler):
                 answers[qid] = {"type": "score", "score": 1.44, "confidence": 0.34,
                                 "probabilities": {"0": 0.0, "1": 0.56, "2": 0.44}}
         return {"model": body["model"], "answers": answers,
-                "usage": {"input_tokens": 101, "output_tokens": 16}, "latency_ms": 495}
+                "usage": {"input_tokens": 101, "output_tokens": 16},
+                # Kev's server reports a float rounded to one decimal.
+                "latency_ms": 495.4}
 
     @staticmethod
     def text(body):
@@ -309,9 +311,10 @@ class TheHaikuArm(CompareCase):
     def haiku(self, via, argv=("noul", "is it?"), **extra):
         env = {"JEV_COMPARE_KEV": "0", "JEV_COMPARE_HAIKU_VIA": via}
         env.update(extra)
+        before = len(self.rows())    # a subtest's earlier rows must not count
         code, _out = self.run_main(list(argv), **env)
         self.assertEqual(code, 0)
-        return self.by_arm(self.wait_rows(2))["haiku"]
+        return self.by_arm(self.wait_rows(before + 2)[before:])["haiku"]
 
     def test_anthropic_messages(self):
         Arm.reply = json.dumps({"probability": 0.25})
@@ -530,6 +533,21 @@ class TheConfigFile(CompareCase):
         self.assertEqual((rows["haiku"]["provider"], rows["haiku"]["outcome"]),
                          ("openrouter", "ok"))
 
+    def test_an_exported_empty_switch_beats_an_on_value_in_the_config_file(self):
+        folder = self.config / "jev"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ".env").write_text(
+            'JEV_COMPARE_KEV="1"\n'
+            'JEV_COMPARE_HAIKU_VIA="openrouter"\n'
+            'JEV_COMPARE_OPENROUTER_KEY="or-key"\n')
+        result = self.via_entrypoint(JEV_COMPARE_KEV="", JEV_COMPARE_HAIKU_VIA="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(self.rows()) < 2:
+            time.sleep(0.05)
+        self.assertEqual([row["arm"] for row in self.rows()], ["jev"])
+        self.assertEqual(Arm.seen, [])
+
     def via_entrypoint(self, drop=(), **extra):
         env = dict(os.environ)
         env.update(self.env(PYTHON=sys.executable, **extra))
@@ -641,6 +659,20 @@ class TheOutputCap(CompareCase):
         keys = [f"{i:03d}-" + "x" * 600 for i in range(255)]
         with self.assertRaises(jev_compare.Declined) as caught:
             self.ask(keys)
+        self.assertEqual(caught.exception.cause, "invalid")
+        self.assertEqual(Arm.seen, [])
+
+
+class TheHaikuOptionLimit(CompareCase):
+    def test_a_choice_over_the_ledgers_option_limit_is_declined_before_any_call(self):
+        job = {"payload": {"state": "s", "questions": {"q": {
+            "type": "choice", "instructions": "which?",
+            "criteria": {f"k{i:03d}": None for i in range(256)}}}}}
+        env = {"JEV_COMPARE_ANTHROPIC_URL": self.base + "/v1/messages",
+               "JEV_COMPARE_ANTHROPIC_KEY": "k", "JEV_COMPARE_TIMEOUT": "10"}
+        Arm.reply = json.dumps({"probabilities": {f"k{i:03d}": 1 / 256 for i in range(256)}})
+        with self.assertRaises(jev_compare.Declined) as caught:
+            jev_compare.haiku_arm(job, env, "anthropic")
         self.assertEqual(caught.exception.cause, "invalid")
         self.assertEqual(Arm.seen, [])
 

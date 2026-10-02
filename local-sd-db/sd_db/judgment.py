@@ -274,6 +274,11 @@ def _probabilities(value: object) -> str | None:
             f"probabilities must be numbers separated by commas, in option "
             f"order, e.g. `0.47,0.28,0.25`; got {value!r}. The option keys are "
             f"text the caller wrote, and this table never stores them")
+    # The shape admits a 4,000-digit integer, which `compare` would read as
+    # infinity and `compare --json` would print as `Infinity`.
+    if any(not 0.0 <= float(part) <= 1.0 for part in value.split(",")):
+        raise JudgmentRefused(
+            f"each probability must be a number from 0 to 1; got {value[:40]!r}")
     return value
 
 

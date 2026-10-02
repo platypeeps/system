@@ -115,6 +115,12 @@ class TheArms(CompareCase):
         score = self.write(arm="jev", primitive="score", answer="1.6")
         self.assertTrue(label(self.connection, score, "1.6", "test-rule"))
 
+    def test_a_probability_outside_zero_to_one_is_refused(self):
+        for value in ("9" * 4000, "1.5,0", "0.5,2", "1" + "0" * 400):
+            with self.subTest(value=value[:12]), self.assertRaises(JudgmentRefused):
+                self.write(probabilities=value)
+        self.write(probabilities="0,1,0.5")
+
     def test_probabilities_that_are_not_numbers_are_refused(self):
         for value in ("returns,shipping", "0.5;0.5", "0.5, 0.5", "/home/x", ""):
             with self.subTest(value=value), self.assertRaises(JudgmentRefused):

@@ -38,13 +38,16 @@ COMPARE_VARS="JEV_COMPARE_KEV JEV_COMPARE_KEV_URL JEV_COMPARE_KEV_MODEL KEV_API_
   JEV_COMPARE_ANTHROPIC_KEY JEV_COMPARE_ANTHROPIC_URL JEV_COMPARE_OPENROUTER_KEY
   JEV_COMPARE_OPENROUTER_URL OPENROUTER_API_KEY JEV_COMPARE_BASETEN_KEY JEV_COMPARE_BASETEN_URL
   JEV_COMPARE_BASETEN_MODEL BASETEN_API_KEY JEV_COMPARE_CLAUDE JEV_COMPARE_TIMEOUT JEV_COMPARE_LOG"
+# Set-ness is kept apart from the value: an exported empty switch, such as
+# `JEV_COMPARE_HAIKU_VIA= jev ...`, is an off arm and must beat an on-value
+# in the .env, so it is restored even when empty.
 for var in $COMPARE_VARS; do
-  eval "ENV_$var=\"\${$var:-}\""
+  eval "SET_$var=\${$var+set}; ENV_$var=\"\${$var:-}\""
 done
 st_source_env jev
 for var in $COMPARE_VARS; do
-  eval "value=\"\${ENV_$var:-}\""
-  [ -z "$value" ] || eval "$var=\"\$value\""
+  eval "was=\"\${SET_$var:-}\"; value=\"\${ENV_$var:-}\""
+  [ "$was" != set ] || eval "$var=\"\$value\"; export $var"
 done
 
 # The Kev arm asks the server local-kev runs, so it also reads that service's
