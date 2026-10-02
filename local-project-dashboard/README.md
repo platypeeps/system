@@ -81,7 +81,7 @@ Classic screens.
 | Documents | `/documents` |
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
-| Management | `/operations?area=jobs` |
+| Management | `/management` (new) |
 | Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
