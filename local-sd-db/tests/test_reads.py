@@ -594,3 +594,35 @@ class TheActivityReads(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class TheAssignmentLedger(unittest.TestCase):
+    """The Management page's reads (sd:2118): the ledger filters, the counts, and `ready_to_send`."""
+
+    def setUp(self):
+        from sd_db.writes import create_assignment
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = Path(self.tmp.name) / "sd.db"
+        initialise(path)
+        self.connection = connect(path)
+        self.addCleanup(self.connection.close)
+        self.item = create_item(self.connection, kind="task", title="A thing")
+        self.done = create_assignment(self.connection, role="merge", status="done", item=self.item)
+        self.queued = create_assignment(self.connection, role="author", status="queued", item=self.item)
+        self.blocked = create_assignment(self.connection, role="author", status="blocked", item=self.item)
+
+    def test_the_filters_and_the_order(self):
+        ids = lambda rows: [row["id"] for row in rows]
+        self.assertEqual(ids(reads.assignment_ledger(self.connection)), [self.blocked, self.queued, self.done])
+        self.assertEqual(ids(reads.assignment_ledger(self.connection, role="merge")), [self.done])
+        self.assertEqual(ids(reads.assignment_ledger(self.connection, exclude_role="merge", limit=1)), [self.blocked])
+        self.assertEqual(ids(reads.assignment_ledger(self.connection, live=True)), [self.queued])
+        self.assertEqual(reads.assignment_ledger(self.connection)[0]["title"], "A thing")
+
+    def test_the_counts_and_the_items_ready_to_send(self):
+        self.assertEqual(reads.assignment_counts(self.connection), {"blocked": 1, "done": 1, "queued": 1})
+        self.assertEqual(reads.ready_to_send(self.connection), [])
+        self.connection.execute("UPDATE item SET status = 'ready_to_send' WHERE id = ?", (self.item,))
+        self.assertEqual([row["id"] for row in reads.ready_to_send(self.connection)], [self.item])
