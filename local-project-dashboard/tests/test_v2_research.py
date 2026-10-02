@@ -382,6 +382,23 @@ R.executes = cmd('research.start').executes; R.req = ELS.req.html;
         self.assertIn("The ledger was not read: No research checkout at this address.", out["R"]["reader"])
         self.assertIn("could not read research.conf.py: “computed data”", out["R"]["det"])
 
+    def test_a_checkout_named_like_an_object_property_reads_its_own_ledger(self):
+        # The ledger cache was a plain object: "constructor" looked cached, so its ledger was never read.
+        doc = research_screen.document(now=NOW, backend=lambda *_: {"root": "~/repos", "projects": [
+            project("constructor", "Constructor", {"s": "ok", "txt": "1 of 1 fresh", "sub": ""})]})
+        ledger = dict(self.ledger, key="constructor")
+        answer = (f"(path) => path === '/api/research' ? [200, {json.dumps(doc)}]"
+                  f" : path === '/api/research/constructor' ? [200, {json.dumps(ledger)}] : [404, {{ error: 'none' }}]")
+        out = self.run_page("R.reader = ELS.reader.html; R.tally = ELS['reader-tally'].html;", answer=answer)
+        self.assertEqual(out["gets"], ["/api/research", "/api/research/constructor"])
+        self.assertIn("Spec release — bold code", out["R"]["reader"])
+        self.assertIn("A 1", out["R"]["tally"])
+
+    def test_a_state_named_like_an_object_property_filters_nothing(self):
+        # ?state=constructor passed the plain-object check, so the board showed no row.
+        out = self.run_page("R.rows = ELS.rows.html;", search="?state=constructor")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["research/beta", "group/gamma", "research/alpha"])
+
     def test_a_source_opens_its_details_and_no_claim_is_claimed(self):
         out = self.run_page("""(ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i: '1' } } : null } }));
 R.det = ELS.details.html;""")

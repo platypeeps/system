@@ -12,7 +12,7 @@ let DIRS = ['00-overview', '10-sources', '20-map', '30-brief', '40-docs'];
 let CAP = 2;
 // build: the reference's project list, data/research-sources.js and claims were sample data. These fill from the two documents.
 let PROJECTS = [], ROUNDS = '', CLAIMS = '', READ = null;
-const SOURCES = {};
+const SOURCES = new Map(); // a Map, so a checkout named like an object property (constructor) is not already cached
 const RANK = { caution: 0, unknown: 1, queued: 2, ok: 3 };
 // Page attention, from the rows the board renders. An unread config is unknown, not a caution, so it does not count.
 // build: nothing is claimed until /api/research answers.
@@ -60,7 +60,7 @@ function renderBoard() {
     stateFilter ? html`<button class="linkbtn" type="button" data-clear-state>Clear</button>` : ''}`);
 }
 function setState(s) {
-  stateFilter = s && STATE_WORDS[s] ? s : null;
+  stateFilter = s && Object.hasOwn(STATE_WORDS, s) ? s : null;
   renderBoard(); reconcile();
 }
 // Keep the selection on a row the viewer can see: the first shown row, or none (Details says so).
@@ -98,8 +98,8 @@ async function getJSON(path) {
 // build: the ledger is read per project, when it is selected, and kept for the page's life.
 const sourcesPath = key => `/api/research/${key.split('/').map(encodeURIComponent).join('/')}`;
 function loadSources(key) {
-  if (!SOURCES[key]) SOURCES[key] = getJSON(sourcesPath(key)).then(s => (SOURCES[key] = s), err => (SOURCES[key] = { error: err.message, files: [], rows: [], total: 0 }));
-  return Promise.resolve(SOURCES[key]);
+  if (!SOURCES.has(key)) SOURCES.set(key, getJSON(sourcesPath(key)).then(s => (SOURCES.set(key, s), s), err => { const s = { error: err.message, files: [], rows: [], total: 0 }; SOURCES.set(key, s); return s; }));
+  return Promise.resolve(SOURCES.get(key));
 }
 
 // ---------- Source reader ----------
@@ -110,12 +110,12 @@ async function readerFor(key) {
   document.getElementById('reader-for').textContent = p ? `· ${p.label}` : '';
   document.getElementById('reader-tally').textContent = '';
   if (!p) return;
-  if (!(SOURCES[key] && !SOURCES[key].then)) put(reader, html`<p class="why">Reading the ledger in ${p.path}…</p>`);
+  if (!(SOURCES.has(key) && !SOURCES.get(key).then)) put(reader, html`<p class="why">Reading the ledger in ${p.path}…</p>`);
   const s = await loadSources(key);
   if (selected !== key) return; // a newer selection owns the reader
   if (s.error) {
     put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error}. Reselect the project to retry.</p>`);
-    delete SOURCES[key]; document.getElementById('reader-tally').textContent = 'not read'; return;
+    SOURCES.delete(key); document.getElementById('reader-tally').textContent = 'not read'; return;
   }
   if (!s.files.length) {
     put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>No source registry in ${p.path}: neither SOURCES.md nor 10-sources/registry.md exists. The standard expects one; the reader cannot show provenance without it.</p>`);
@@ -175,7 +175,7 @@ function showProject(key) {
   swap();
 }
 function showSource(i) {
-  const s = SOURCES[selected]?.rows?.[i]; if (!s) return;
+  const s = SOURCES.get(selected)?.rows?.[i]; if (!s) return;
   put(details, html`<p class="kind">${I('book-open')} Source · ${s.h[0] || 'grade'} ${s.id}</p><h2>${s.title}</h2>
     <dl><dt>Ledger</dt><dd>${s.f}</dd><dt>Section</dt><dd>${s.sec || 'none'}</dd><dt>${s.h[2] || 'Used for'}</dt><dd>${s.c3 || '—'}</dd>${s.c4 ? html`<dt>${s.h[3] || 'Note'}</dt><dd>${s.c4}</dd>` : ''}
       ${s.url ? html`<dt>Link</dt><dd><a class="ext" href="${s.url}" target="_blank" rel="noopener">${s.url.replace(/^https?:\/\//, '').slice(0, 60)} ${I('arrow-up-right')}</a></dd>` : ''}</dl>
@@ -320,7 +320,7 @@ async function load() {
   else if (!PROJECTS.length) shell.state({ kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' });
   else if (unknown) shell.state({ kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds and claims are not read: ${ROUNDS}; ${CLAIMS}.`, source: '/api/research' });
   else shell.state({ kind: 'partial', title: 'No rounds or claims read', text: `${ROUNDS}; ${CLAIMS}.`, source: '/api/research' });
-  stateFilter = STATE_WORDS[u.get('state')] ? u.get('state') : null;
+  stateFilter = Object.hasOwn(STATE_WORDS, u.get('state') ?? '') ? u.get('state') : null; // own keys only: ?state=constructor is no state
   if (u.get('q')) { input.value = u.get('q'); filterText = u.get('q').toLowerCase(); }
   renderBoard();
   attention();
