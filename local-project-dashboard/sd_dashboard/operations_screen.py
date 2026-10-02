@@ -24,6 +24,10 @@ from .pages import page, tile
 #: would take answering 404). `_bill_caps` renders a form only for a name
 #: it matches, so no form posts to a path that answers 404.
 BILL_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}"
+#: The trailer walk's overall budget, for Progress and Health alike: one `git log` per registered repo on a page
+#: load must not stall the page. Measured on 2026-09-30 at load 150: 58 repos in 0.75-0.78 s warm. Past it the
+#: page says the walk stopped rather than waited on, and shows no count.
+TRAILER_SECONDS = 10.0
 
 AREAS = (("jobs", "Jobs"), ("services", "Services"), ("ports", "Ports"), ("progress", "Progress"),
          ("usage", "Usage"), ("reports", "Reports"), ("resources", "Resources"), ("trackers", "Trackers"),
@@ -124,9 +128,15 @@ def _usage_section(connection, now, parameters, bills, month, month_error):
         for row in bills) or tag("p", "No bills yet.", class_="cost-line"), class_="cost-tile")
     numbers = reads.weekly_numbers(connection, now=now)
     tiles = [tile(number.label, _format(number), detail=_number_detail(number)) for number in numbers]
-    tiles.append(tile("commits missing a trailer", reads.missing_trailers(connection, now=now),
-        detail=tag("p", "Commits in the week across the registered repositories whose "
-                   "message carries no `Authored-with:` trailer.")))
+    scope = tag("p", "Your commits (each repository's user.email) of the last five weeks on each "
+                "default branch, merges left out, whose message carries no `Authored-with:` trailer.")
+    try:
+        missing = reads.missing_trailers(connection, now=now, within=TRAILER_SECONDS)
+    except reads.OverBudget as refused:
+        tiles.append(tile("commits missing a trailer", "not read",
+                          detail=join((tag("p", f"{refused} and was stopped rather than waited on."), scope))))
+    else:
+        tiles.append(tile("commits missing a trailer", missing, detail=scope))
     scorecard = reads.scorecard(connection, now=now)
     scorecard_rows = tag("table", tag("thead", tag("tr", join(tag("th", label, scope="col")
         for label in ("Provider", "Author", "Reviewer", "Passes", "Blocking", "$/pass", "Skipped", "State")))),
