@@ -348,6 +348,18 @@ R.executes = cmd('research.start').executes; R.req = ELS.req.html;
         self.assertEqual(out["confirms"], [])
         self.assertEqual([t[0] for t in out["toasts"]], [f"Not started: {out['R']['when']}"])
 
+    def test_start_mode_after_an_empty_filter_selects_a_shown_row_again(self):
+        # Start mode cleared the filter and redrew the board but kept the selection the empty filter had cleared.
+        out = self.run_page("""window.shell.reconcile = o => { const keys = visible().map(p => p.key);
+  if (!keys.includes(o.current)) { if (keys.length) o.select(keys[0]); else o.clear(); } };
+const input = ELS.shift; const fire = (t, e) => (input.listeners[t] || []).forEach(f => f(e));
+input.value = 'zzz'; fire('input'); R.cleared = selected;
+input.selectionStart = input.value.length; fire('keydown', { key: 'ArrowRight', preventDefault() {}, stopPropagation() {} }); await flush();
+R.selected = selected; R.req = ELS.req.html;""")
+        self.assertIsNone(out["R"]["cleared"])
+        self.assertEqual(out["R"]["selected"], "research/beta")
+        self.assertIn("queues one author assignment in beta", out["R"]["req"])
+
     def test_the_board_ranks_the_rows_and_shows_rounds_as_not_recorded_with_the_reason(self):
         out = self.run_page("R.rows = ELS.rows.html; R.tally = ELS.tally.html; R.sum = ELS.sum.html;")
         rows = out["R"]["rows"]

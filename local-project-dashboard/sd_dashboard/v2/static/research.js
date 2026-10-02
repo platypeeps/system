@@ -251,7 +251,7 @@ function renderShift() {
     put(as, html`${I('filter')} filter the board`); chipsEl.replaceChildren(); reqEl.hidden = true;
     filterText = v.toLowerCase(); renderBoard(); reconcile(); writeURL(); return;
   }
-  filterText = ''; renderBoard(); writeURL();
+  filterText = ''; renderBoard(); reconcile(); // the shown rows changed: a selection an empty filter cleared comes back
   const o = parse(v), repo = o.repo || selected;
   put(as, html`${I('flask-conical')} start research “${o.q || '…'}”`);
   // With no row selected and no repo: token there is no project to research; say so instead of building a command.
