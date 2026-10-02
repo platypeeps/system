@@ -41,7 +41,7 @@ class Section:
 SECTIONS = (
     Section("today", "Today", "/"),
     Section("backlog", "Backlog", "/backlog"),
-    Section("contributions", "Contributions", "/contributions"),
+    Section("contributions", "Contributions", "/classic/contributions"),
     Section("writing", "Writing", "/writing"),
     Section("operations", "Operations", "/operations"),
     Section("protection", "Protection", "/protection"),

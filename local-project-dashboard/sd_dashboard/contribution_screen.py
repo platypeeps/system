@@ -2,6 +2,7 @@
 
 import json
 import shlex
+import sqlite3
 from urllib.parse import urlsplit
 
 from sd_db import contributions
@@ -146,9 +147,104 @@ def render(connection, *, parameters):
         Column("observed_at", "Last observation", lambda row: tag("div",
             tag("p", _text(row.get("observed_at"))),
             tag("p", row["freshness"]["status"], ": ", row["freshness"].get("reason") or "Complete observation", class_="hint"))),
-    ], rows, path="/contributions", query=query, page_number=number, selected=selected,
+    ], rows, path="/classic/contributions", query=query, page_number=number, selected=selected,
         empty="No contributions recorded. Register local work or collect authored pull requests.")
     return page("Contributions", "contributions",
         tag("p", "Newly unblocked work comes first, followed by work awaiting you, awaiting others, and merged contributions.", class_="lead"),
         tag("p", "Unknown or stale observations remain visible. Acknowledging events does not complete tasks or send notifications.", class_="hint"),
         listing.render(), cli_equivalents=False)
+
+
+# ---------- The default UI's Contributions page (sd:2113) ----------
+# `v2/contributions.html` holds no rows. It reads one JSON document, `/api/contributions/page`, built here by `document`
+# from the same `contributions.projection` the screen above renders; nothing here reads GitHub or writes.
+
+#: Lanes that list rows on the page, in the order the page shows them; merged and closed rows are counted, never listed.
+OPEN_LANES = ("newly_unblocked", "awaiting_you", "awaiting_them")
+#: Open rows the document carries at most; `open_total` still counts every one, and `truncated` says rows were left out.
+OPEN_LIMIT = 500
+#: Repositories with settled rows the document names at most; the rest fold into `settled_other`, per scope.
+SETTLED_REPOS = 100
+#: What the page may show of a row: the projection's fields it reads, nothing more (no evidence, argv or local paths).
+ROW_FIELDS = ("key", "revision", "event_ids", "reasons", "lane", "title", "repo", "url", "external_state", "local_status",
+              "item_id", "local_branch", "draft_path", "blocked_on", "observed_at")
+
+
+def _registered(connection):
+    """The sd repo table as two lookups: remote identity -> managed, and stored path -> managed."""
+    from sd_db import repos
+
+    remotes, places = {}, {}
+    for row in repos.registered(connection):
+        identity = repos.remote_identity(row["remote"])
+        if identity:
+            remotes[identity] = remotes.get(identity, False) or bool(row["managed"])
+        places[row["path"]] = places.get(row["path"], False) or bool(row["managed"])
+    return remotes, places
+
+
+def _scope(repo, remotes, places):
+    """`managed` or `registered` when sd's repo table holds the row's repository, else None (external)."""
+    from sd_db import paths
+
+    text = str(repo or "")
+    if contributions.REPO.fullmatch(text):
+        found = remotes.get(f"github.com/{text.lower()}")
+    else:
+        found = next((places[key] for key in paths.keys(text) if key in places), None) if text else None
+    return None if found is None else "managed" if found else "registered"
+
+
+def _freshness(connection, now):
+    from datetime import datetime
+
+    from sd_db import progress
+
+    try:
+        found = progress.tracker_freshness(connection, tracker="github", now=datetime.fromisoformat(now.replace("Z", "+00:00")))
+    except (ValueError, sqlite3.Error) as error:
+        return {"state": "unknown", "last_success_at": None, "reason": f"not read: {error}"}
+    return {"state": found["state"], "last_success_at": found["last_success_at"], "reason": found["reason"]}
+
+
+def document(connection, *, now):
+    """The Contributions page's document: open rows by lane, settled rows counted per repository, collector freshness."""
+    rows = contributions.projection(connection)
+    remotes, places = _registered(connection)
+    lanes = dict.fromkeys(contributions.LANES, 0)
+    fresh = {"current": 0, "unknown": 0}
+    opened, settled = [], {}
+    for row in rows:
+        lanes[row["lane"]] = lanes.get(row["lane"], 0) + 1
+        status = (row.get("freshness") or {}).get("status")
+        fresh["current" if status == "current" else "unknown"] += 1
+        why = _scope(row.get("repo"), remotes, places)
+        if row["lane"] in OPEN_LANES:
+            opened.append({key: row.get(key) for key in ROW_FIELDS} | {
+                "freshness": {"status": status or "unknown", "reason": (row.get("freshness") or {}).get("reason") or ""},
+                "internal": why is not None, "why_internal": why})
+        else:
+            entry = settled.setdefault(str(row.get("repo") or "local"), {"repo": str(row.get("repo") or "local"),
+                                                                         "internal": why is not None, "merged": 0, "closed": 0})
+            entry["merged" if row["lane"] == "merged" else "closed"] += 1
+    # Newest observation first within a lane, never-observed rows last: two stable sorts.
+    opened.sort(key=lambda row: str(row["observed_at"] or ""), reverse=True)
+    opened.sort(key=lambda row: OPEN_LANES.index(row["lane"]))
+    ranked = sorted(settled.values(), key=lambda entry: (-(entry["merged"] + entry["closed"]), entry["repo"]))
+    other = {"internal": {"merged": 0, "closed": 0}, "external": {"merged": 0, "closed": 0}}
+    for entry in ranked[SETTLED_REPOS:]:
+        side = other["internal" if entry["internal"] else "external"]
+        side["merged"] += entry["merged"]
+        side["closed"] += entry["closed"]
+    return {
+        "read": now,
+        "total": len(rows),
+        "lanes": lanes,
+        "fresh": fresh,
+        "open_total": len(opened),
+        "truncated": len(opened) > OPEN_LIMIT,
+        "rows": opened[:OPEN_LIMIT],
+        "settled": ranked[:SETTLED_REPOS],
+        "settled_other": other,
+        "collector": _freshness(connection, now),
+    }

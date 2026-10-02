@@ -98,8 +98,8 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
     from . import v2
 
     # The new design is the default (sd:2163): `/` and `/today` are its Today, a static page whose rows come from
-    # /api/now. The old Today moved to /classic/today; every other old screen keeps its path until its section is
-    # ported. `v2.CLASSIC` maps each unported rail section to its old screen.
+    # /api/now. The old Today moved to /classic/today, and the old Contributions to /classic/contributions (sd:2113);
+    # every other old screen keeps its path until its section is ported. `v2.CLASSIC` maps each unported rail section to its old screen.
     found = v2.page(path)
     if found is not None:
         return found
@@ -107,7 +107,7 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
         return screens.today(connection, now=now, parameters=parameters)
     if path == "/backlog":
         return screens.backlog(connection, now=now, parameters=parameters)
-    if path == "/contributions":
+    if path == "/classic/contributions":
         from .contribution_screen import render
 
         return render(connection, parameters=parameters)
@@ -541,6 +541,15 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Contribution projection does not accept query parameters."})
                     return self._json(200, {"contributions": contributions.projection(connection)})
+                if path == "/api/contributions/page":
+                    from . import contribution_screen
+
+                    # The Contributions page's one reading (sd:2113): the projection v1 renders, open rows capped.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Contributions."})
+                    if split.query:
+                        return self._json(400, {"error": "Contributions does not accept query parameters."})
+                    return self._json(200, contribution_screen.document(connection, now=self.clock()))
                 if path == "/api/palette" or re.fullmatch(r"/api/executions/[1-9][0-9]{0,18}", path):
                     from sd_db import runner_exec
 

@@ -75,8 +75,21 @@ unlock and toggle commands are registered but off with it, so the page sends
 nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
 `$HA_URL` and never holds a value.
 
-The old screens stay until their section is ported. Only the old Today moved,
-to `/classic/today`; every other old screen keeps its path. A `/v2/` address
+Contributions is at `/contributions` (sd:2113): the open rows of the
+contributions projection v1 renders, in lanes by who acts next, with each
+row's repository scope (internal when sd's repo table holds it) and settled
+rows counted per repository. `GET /api/contributions/page`
+(`contribution_screen.document`) carries at most `OPEN_LIMIT` open rows and
+says when it cut some. The dashboard reads nothing from GitHub, so the design's
+"GitHub now" state and settled-per-day chart say they are not read.
+Acknowledge and Make task post to the v1 routes and ask first, since no verb
+reverses either. Draft nudge, Open on GitHub and Re-run collector are copy
+only. The old screen moved to `/classic/contributions`; it still shows
+evidence, dependencies and notification delivery.
+
+The old screens stay until their section is ported. The old Today moved to
+`/classic/today` and the old Contributions to `/classic/contributions`; every
+other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
 `/today`, `/v2/static/<file>` to `/ui/<file>`); any other `/v2/` path is a 404.
 One map in `sd_dashboard/v2/__init__.py`, served as `/ui/sections.js`, says
@@ -92,7 +105,7 @@ Classic screens.
 | Home | `/home` (new) |
 | Writing | `/writing` |
 | Research | `/operations?area=resources` |
-| Contributions | `/contributions` |
+| Contributions | `/contributions` (new) |
 | Documents | `/documents` |
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
@@ -101,7 +114,7 @@ Classic screens.
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
 | Briefs, Notes, HOA, Health, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
+| Palette: Today (classic), Backlog (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
@@ -138,7 +151,7 @@ still a separate CLI operation that verifies its commit. An item's external
 reference is shown with its snapshot and sync freshness; an old GitHub status
 does not control local task completion.
 
-**Contributions** at `/contributions` shows upstream activity, unfiled local work, evidence, dependencies, and notification state.
+**Contributions (classic)** at `/classic/contributions` shows upstream activity, unfiled local work, evidence, dependencies, and notification state.
 Today previews the first five contributions in the same order.
 Newly unblocked work comes first, then work awaiting you, work awaiting others, and merged contributions.
 The shared library supplies this order to both the dashboard and `sd-status`.
