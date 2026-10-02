@@ -2,7 +2,7 @@
 // reference is marked "build:". The rows are /api/contributions/page (contribution_screen.document): the projection v1
 // /classic/contributions renders, never sample data. The dashboard reads nothing from GitHub, so the reference's "GitHub now"
 // chip, its "settled on GitHub" lane and its settled-per-day chart have no reading here and say so. Acknowledge and Make task run
-// through the v1 routes and ask first: neither has a verb that reverses it. Draft nudge, Open on GitHub and Re-run collector are
+// through dashboard routes and ask first: neither has a verb that reverses it. Draft nudge, Open on GitHub and Re-run collector are
 // copy only. The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
 const { html, put, plural } = window.markup;
 // Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
@@ -59,11 +59,21 @@ addEventListener('DOMContentLoaded', () => {
   const openN = sc => ORDER.reduce((a, l) => a + tot(l, sc), 0);
   const words = r => [r.title, r.repo, r.url, LABEL[r.lane], ...(r.reasons || [])].join(' ').toLowerCase();
   const shown = () => { const v = q.value.trim().toLowerCase(); return scoped().filter(r => (!lane || r.lane === lane) && (!v || words(r).includes(v))); };
+  // The shell's object map only grows and keeps its picks, so each adopted reading retires what it no longer lists, as Health
+  // does: the pick is dropped and the object becomes a type no command is on, so no stale Acknowledge can act.
+  let putIds = new Set(), picks = [];
+  document.addEventListener('shell:picked', e => { picks = e.detail || []; });
+  function retire(keep) {
+    picks.filter(id => !keep.has(id)).forEach(id => C.pick(id));
+    putIds.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
+    putIds = keep;
+  }
   function adopt(doc) {
     DOC = doc;
     ROWS = (doc.rows || []).filter(r => ORDER.includes(r.lane)).map(r => ({ ...r, id: r.key, type: 'contribution', label: r.title, s: STATE[r.lane],
       event_ids: r.event_ids || [], reasons: r.reasons || [], freshness: r.freshness || { status: 'unknown', reason: '' } }));
     BY = new Map(ROWS.map(r => [r.key, r]));
+    retire(new Set(BY.keys()));
     ROWS.forEach(r => C.put(r));
     C.put({ id: 'collector', type: 'collector', label: 'contributions collector' });
     document.body.dataset.observed = doc.read || '';
@@ -76,9 +86,14 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Commands (products/system/commands.md) ----------
   // build: Acknowledge and Make task ask first, since no verb un-acknowledges or deletes a task; the reference gave both Undo.
   // Draft nudge is the gh line to copy: the reference's chat proposal posted on Approve, and the dashboard posts nothing.
+  // A write's answer is its own: the reread after it is started, not awaited, so a failed reread never reports a landed write
+  // as "not changed". Until the reread lands, the row itself records the write, so the command that made it goes off.
+  const landed = (o, change) => { Object.assign(o, change); C.put(o); if (DOC) { renderRows(); if (selected === o.key) show(o.key); } };
   const ackCli = o => `sd task contribution ack ${shq(o.key)} ${o.event_ids.map(e => `--event ${shq(e)}`).join(' ')} --if-revision ${o.revision}`;
-  const taskTitle = o => 'Follow up: ' + String(o.title).slice(0, 80);
-  const taskBody = o => o.url || o.repo || 'local contribution';
+  // build: Make task files the contribution task `sd task contribution add` files: the row's URL is its identity, so the
+  // projection links the task to the row after a reread, and the library refuses a second task for the same URL.
+  const linkOf = o => /^github:/.test(o.key) ? 'pull_url' : /^issue:/.test(o.key) ? 'issue_url' : null;
+  const taskJson = o => JSON.stringify({ [linkOf(o)]: o.key.slice(o.key.indexOf(':') + 1) });
   const kindOf = o => isIssue(o) ? 'issue' : 'pr';
   function registerCommands() {
     C.register(
@@ -87,20 +102,21 @@ addEventListener('DOMContentLoaded', () => {
         consequence: o => `This clears ${plural(o.event_ids.length, 'attention event')} on ${o.title}. No verb restores them; it completes no task and sends nothing.`,
         cli: ackCli,
         run: o => post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
-          .then(() => reload().then(() => `Acknowledged · ${o.label}`), e => reload().then(() => { throw e; })) },
+          .then(() => { landed(o, { event_ids: [] }); reread(); return `Acknowledged · ${o.label}`; }, e => { reread(); throw e; }) },
       { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', key: 'd', risk: 'safe', executes: false, primary: () => true,
         when: o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true,
         cli: o => `gh ${isIssue(o) ? 'issue' : 'pr'} comment ${o.url} --body-file nudge.md`,
         run: () => 'Copy the line and write nudge.md: the dashboard posts nothing' },
-      { id: 'contribution.task', on: 'contribution', label: 'Make task', key: 'k', risk: 'confirm',
-        when: o => !o.item_id || `already tracked as item #${o.item_id}`,
-        consequence: o => `This files a followup item, "${taskTitle(o)}", with no repository. No verb deletes it; cancel it from Tasks.`,
-        cli: o => `sd task add ${shq(taskTitle(o))} --kind followup --no-repo --body ${shq(taskBody(o))}`,
-        run: o => post('/api/items', { title: taskTitle(o), body: taskBody(o), kind: 'followup' })
-          .then(out => reload().then(() => `Followup #${out.item?.id} filed · ${o.label.slice(0, 48)}`)) },
+      { id: 'contribution.task', on: 'contribution', label: 'Make task', key: 'k', risk: 'confirm', executes: true,
+        when: o => o.item_id ? `already tracked as item #${o.item_id}` : linkOf(o) ? true : 'not filed on GitHub',
+        consequence: o => `This files a task, "${o.title}", that tracks ${o.url || o.key} as this contribution. No verb deletes it; cancel it from Tasks.`,
+        cli: o => `printf '%s\\n' ${shq(taskJson(o))} > contribution.json && sd task contribution add ${shq(o.title)} --file contribution.json`,
+        run: o => post('/api/contributions/task', { key: o.key, title: o.title })
+          .then(out => { landed(o, { item_id: out.item?.id }); reread(); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { reread(); throw e; }) },
+      // Copy only, as ruled: the shell still calls run, so run opens nothing. The Details link opens the page.
       { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', key: 'o', risk: 'safe', executes: false,
         when: o => github(o.url) || 'not filed on GitHub', cli: o => `gh ${kindOf(o)} view --web ${o.url}`,
-        run: o => { window.open?.(o.url, '_blank', 'noopener,noreferrer'); return 'Opens in a new tab'; } },
+        run: () => 'Copy the line, or use the link in Details: the dashboard opens nothing itself' },
       // Copy only until the dashboard has a route that runs sd shadow sync (sd:2207, as the reference has it).
       { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: () => 'sd shadow sync', run: () => 'Copy it into a terminal: the dashboard has no route that runs sd shadow sync yet (sd:2207)' },
@@ -245,25 +261,41 @@ addEventListener('DOMContentLoaded', () => {
     clear: () => { if (!lane) return false; lane = null; renderHead(); applyFilter(); return true; } };
 
   // ---------- Start (build: read /api/contributions/page, then draw) ----------
-  async function reload() {
-    const doc = await getJSON('/api/contributions/page');
-    adopt(doc); render();
+  // Each read takes a generation; only the newest one draws. A bulk Acknowledge starts one reread per row, and the reads can
+  // answer out of order: the newest started after the last write landed, so it alone may replace the rows.
+  let generation = 0;
+  function stateOf(doc) {
+    const c = doc.collector || {};
+    if (!doc.total) return { kind: 'empty', title: 'No contributions', text: 'The projection has no rows. Register local work or run sd shadow sync to collect authored pull requests.', source: '/api/contributions/page' };
+    if (c.state && c.state !== 'fresh') return { kind: 'partial', title: 'GitHub sync not fresh', text: `The GitHub sync is ${c.state}${c.reason ? ': ' + c.reason : ''}. Rows show what the last sync saw.`, source: 'progress.tracker_freshness' };
+    return null;
+  }
+  async function reread() {
+    const mine = ++generation;
+    let doc;
+    try { doc = await getJSON('/api/contributions/page'); } catch (err) {
+      if (mine !== generation) return;
+      window.shell.state({ kind: 'error', text: `The write landed, but the contributions were not read again: ${err.message}. The rows show the read before it; Reload retries it.`, source: '/api/contributions/page' });
+      return;
+    }
+    if (mine !== generation) return;
+    adopt(doc); window.shell.state(stateOf(doc)); render();
     if (selected && selected !== 'collector' && !BY.has(selected)) selected = null;
     applyFilter();
     if (selected) show(selected);
   }
   async function load() {
+    const mine = ++generation;
     window.shell.state({ kind: 'loading', text: 'Reading the contributions. Rows appear when /api/contributions/page answers.', source: '/api/contributions/page' });
     let doc;
     try { doc = await getJSON('/api/contributions/page'); } catch (err) {
+      if (mine !== generation) return;
       window.shell.state({ kind: 'error', text: `The contributions were not read: ${err.message}. Reload retries it.`, source: '/api/contributions/page' });
       return;
     }
+    if (mine !== generation) return;
     adopt(doc);
-    const c = doc.collector || {};
-    if (!doc.total) window.shell.state({ kind: 'empty', title: 'No contributions', text: 'The projection has no rows. Register local work or run sd shadow sync to collect authored pull requests.', source: '/api/contributions/page' });
-    else if (c.state && c.state !== 'fresh') window.shell.state({ kind: 'partial', title: 'GitHub sync not fresh', text: `The GitHub sync is ${c.state}${c.reason ? ': ' + c.reason : ''}. Rows show what the last sync saw.`, source: 'progress.tracker_freshness' });
-    else window.shell.state(null);
+    window.shell.state(stateOf(doc));
     render();
     const row = window.shell.row?.();
     if (row && (row === 'collector' || BY.has(row))) select(row, false);

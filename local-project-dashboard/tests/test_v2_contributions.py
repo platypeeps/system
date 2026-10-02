@@ -4,7 +4,7 @@ What this slice promises: `/contributions` answers under the shared policy and l
 old screen moves to `/classic/contributions`, which the palette lists. `/api/contributions/page` is the projection v1
 renders: open rows in lane order with only the fields the page shows, settled rows counted per repository, open rows
 capped at `OPEN_LIMIT` with the cut said, each row's scope from sd's repo table, and the GitHub tracker's freshness. The
-page registers the design's Contributions commands; Acknowledge and Make task ask first and post to the v1 routes, and
+page registers the design's Contributions commands; Acknowledge and Make task ask first and post, Make task a linked task, and
 Draft nudge, Open on GitHub and Re-run collector are copy only and post nothing. Nothing claims a GitHub reading.
 
 `contributions.js` runs under JavaScriptCore (osascript) against the stand-in page and shell `test_v2_tasks` uses. The
@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_db import upsert_repo
+from sd_db import contributions, upsert_repo
 
 from sd_dashboard import contribution_screen, server, v2
 
@@ -143,6 +143,14 @@ class TheDocument(ScreenCase):
             "internal": {"newly_unblocked": 1, "awaiting_you": 0, "awaiting_them": 0, "unknown": 0, "linked": 0, "unfiled": 0},
             "external": {"newly_unblocked": 0, "awaiting_you": 1, "awaiting_them": 1, "unknown": 1, "linked": 1, "unfiled": 1}})
 
+    def test_settled_checkouts_named_alike_stay_two_entries(self):
+        # Review 2 of PR #72 (aa5a4f3222ed): the label `local: project` keyed the fold, so two checkouts became one entry.
+        doc = self.doc(given=[contribution(1, "merged", repo="/home/example/a/project"),
+                              contribution(2, "merged", repo="/home/example/a/project"),
+                              contribution(3, "closed", repo="/home/example/b/project")])
+        self.assertEqual(doc["settled"], [{"repo": "local: project", "internal": False, "merged": 2, "closed": 0},
+                                          {"repo": "local: project", "internal": False, "merged": 0, "closed": 1}])
+
     def test_the_collector_is_the_github_tracker_freshness(self):
         self.assertEqual(self.doc()["collector"], {"state": "never", "last_success_at": None, "reason": ""})
 
@@ -193,8 +201,34 @@ class ThePage(BrowserSession):
         self.assertEqual(self.post("/api/contributions/acknowledge", payload)[0], 409)
 
 
+    def test_make_task_files_a_task_the_projection_links_to_the_row(self):
+        # Review 2 of PR #72 (42fa0e59c1bf): a standalone followup never linked, so the row still offered Make task.
+        url = "https://github.com/example/project/pull/21"
+        contributions.observe_pull(self.connection, url, {"complete": True, "observed_at": "2026-09-09T12:00:00Z",
+            "operator": {"id": "1", "login": "author"}, "author": {"id": "1", "login": "author"}, "repo": "example/project",
+            "title": "Upstream patch", "state": "open", "head": "a" * 40, "base": "b" * 40, "draft": False,
+            "mergeable": "mergeable", "ci": "success", "ci_head": "a" * 40, "ci_ids": ["check:1"], "why": ["author"],
+            "blocking_labels": [], "labels": [], "reviews": [], "events": []},
+            expected_revision=contributions.snapshot(self.connection, "github:" + url)["revision"])
+        self.connection.commit()
+        read = lambda: next(r for r in json.loads(self.request("/api/contributions/page", headers={"Cookie": self.cookie})[2])["rows"]
+                            if r["url"] == url)
+        row = read()
+        self.assertIsNone(row["item_id"])
+        status, _, out = self.post("/api/contributions/task", {"key": row["key"], "title": row["title"]})
+        self.assertEqual(status, 200, out)
+        self.assertEqual(read()["item_id"], out["item"]["id"])
+        status, _, again = self.post("/api/contributions/task", {"key": row["key"], "title": row["title"]})
+        self.assertEqual(status, 400)
+        self.assertIn("already belongs", again["error"])
+        self.assertEqual(self.post("/api/contributions/task", {"key": "item:4", "title": "x"})[0], 400)
+
+
 SHELL_MORE = r"""
 window.shell.row = () => null; window.shell.closePane = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
+OUT.picks = []; C.pick = id => OUT.picks.push(id); OUT.opened = []; window.open = u => OUT.opened.push(u);
+// An answer that settles after k more turns, so a test can make an older read land after a newer one.
+const later = (v, k) => { let p = Promise.resolve(v); for (let i = 0; i < k; i++) p = p.then(x => x); return p; };
 """
 
 
@@ -208,7 +242,7 @@ class TheScript(ScreenCase):
             self.doc = contribution_screen.document(self.connection, now=NOW)
 
     def run_page(self, body, answer=None, search=""):
-        answer = answer or ("(path, body) => path === '/api/contributions/page' ? [200, DOC] : path === '/api/items'"
+        answer = answer or ("(path, body) => path === '/api/contributions/page' ? [200, DOC] : path === '/api/contributions/task'"
                             " ? [200, { item: { id: 42, title: body.title } }] : [200, { ok: true }]")
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(self.doc)};\n" + MARKUP_JS
                   + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + PAGE_JS
@@ -242,16 +276,52 @@ class TheScript(ScreenCase):
         self.assertEqual(out["toasts"][-1], ["Fix it's $HOME not changed: Events changed", False])
         self.assertEqual(len(out["gets"]), 2)
 
-    def test_make_task_asks_first_files_a_followup_and_is_off_for_a_tracked_row(self):
-        out = self.run_page("""R.when = cmd('contribution.task').when(C.get('issue:""" + ISSUE + """'));
+    def test_make_task_asks_first_files_a_linked_task_and_is_off_for_a_tracked_row(self):
+        out = self.run_page("""R.when = [cmd('contribution.task').when(C.get('issue:""" + ISSUE + """')), cmd('contribution.task').when(C.get('item:4'))];
 R.cli = cmd('contribution.task').cli(C.get('github:https://github.com/example/project/pull/1'));
 shellRun(cmd('contribution.task'), C.get('github:""" + EXTERNAL + """')); await flush();""")
-        self.assertEqual(out["R"]["when"], "already tracked as item #7")
-        self.assertEqual(out["R"]["cli"], "sd task add 'Follow up: Fix it'\\''s $HOME' --kind followup --no-repo"
-                                          " --body 'https://github.com/example/project/pull/1'")
+        self.assertEqual(out["R"]["when"], ["already tracked as item #7", "not filed on GitHub"])
+        self.assertEqual(out["R"]["cli"], """printf '%s\\n' '{"pull_url":"https://github.com/example/project/pull/1"}' > contribution.json"""
+                                          " && sd task contribution add 'Fix it'\\''s $HOME' --file contribution.json")
         self.assertEqual(out["confirms"], ["contribution.task"])
-        self.assertEqual(out["posts"], [["/api/items", {"title": "Follow up: Contribution 3", "body": EXTERNAL, "kind": "followup"}, 64]])
-        self.assertEqual(out["toasts"][-1][0], "Followup #42 filed · Contribution 3")
+        self.assertEqual(out["posts"], [["/api/contributions/task", {"key": "github:" + EXTERNAL, "title": "Contribution 3"}, 64]])
+        self.assertEqual(out["toasts"][-1][0], "Task #42 filed · Contribution 3")
+
+    def test_a_landed_write_whose_reread_fails_still_says_it_landed_and_turns_its_command_off(self):
+        # Review 2 of PR #72 (84cde549031a): the reread sat inside the write's promise, so a failed GET reported a committed
+        # POST as "not changed", and Make task stayed on for a retry that files a second task.
+        answer = """(() => { let n = 0; return path => path === '/api/contributions/page' ? (n++ ? [500, { error: 'gone' }] : [200, DOC])
+          : path === '/api/contributions/task' ? [200, { item: { id: 42 } }] : [200, { ok: true }]; })()"""
+        out = self.run_page("""const ext = C.get('github:""" + EXTERNAL + """'), one = C.get('github:https://github.com/example/project/pull/1');
+shellRun(cmd('contribution.task'), ext); await flush(); shellRun(cmd('contribution.ack'), one); await flush();
+R.off = [cmd('contribution.task').when(ext), cmd('contribution.ack').when(one)];""", answer=answer)
+        self.assertEqual([t[0] for t in out["toasts"]], ["Task #42 filed · Contribution 3", "Acknowledged · Fix it's $HOME"])
+        self.assertEqual(out["R"]["off"], ["already tracked as item #42", "no attention event on this row"])
+        self.assertEqual(out["states"][-1]["kind"], "error")
+        self.assertIn("The write landed, but the contributions were not read again: gone", out["states"][-1]["text"])
+
+    def test_after_a_bulk_acknowledge_only_the_newest_reread_draws(self):
+        # Review 2 of PR #72 (903bc49868b2): one reread per row, and an older answer that lands last replaced the newer one.
+        ext = next(r for r in self.doc["rows"] if r["key"] == "github:" + EXTERNAL)
+        ext["event_ids"] = ["event-3"]
+        newer = dict(self.doc, rows=[r for r in self.doc["rows"] if r["key"] != ext["key"]])
+        answer = """(() => { let n = 0; return path => path !== '/api/contributions/page' ? [200, { ok: true }]
+          : (n++, n === 2 ? later([200, DOC], 60) : n === 3 ? [200, """ + json.dumps(newer) + """] : [200, DOC]); })()"""
+        out = self.run_page("""shellBulk(cmd('contribution.ack'), [C.get('github:https://github.com/example/project/pull/1'), C.get('github:""" + EXTERNAL + """')]);
+await flush(); R.rows = ELS.rows.html;""", answer=answer)
+        self.assertEqual(len(out["gets"]), 3)
+        self.assertNotIn(EXTERNAL, out["R"]["rows"])
+
+    def test_a_row_a_reread_no_longer_lists_is_retired_and_unpicked(self):
+        # Review 2 of PR #72 (c714acabd3ed): the object map kept the vanished row, so a stale Acknowledge could still act on it.
+        newer = dict(self.doc, rows=[r for r in self.doc["rows"] if r["key"] != "github:" + EXTERNAL])
+        answer = """(() => { let n = 0; return path => path !== '/api/contributions/page' ? [200, { ok: true }]
+          : n++ ? [200, """ + json.dumps(newer) + """] : [200, DOC]; })()"""
+        out = self.run_page("""document.dispatchEvent(new CustomEvent('shell:picked', { detail: ['github:""" + EXTERNAL + """'] }));
+shellRun(cmd('contribution.ack'), C.get('github:https://github.com/example/project/pull/1')); await flush();
+const gone = C.get('github:""" + EXTERNAL + """'); R.gone = [gone.type, gone.label, REG.filter(c => c.on === gone.type).length];""", answer=answer)
+        self.assertEqual(out["R"]["gone"], ["not listed", "Contribution 3 (no longer listed)", 0])
+        self.assertEqual(out["picks"], ["github:" + EXTERNAL])
 
     def test_the_copy_only_commands_post_nothing(self):
         out = self.run_page("""const ext = C.get('github:""" + EXTERNAL + """');
@@ -261,6 +331,8 @@ shellRun(cmd('contribution.nudge'), ext); shellRun(cmd('contribution.open'), ext
         self.assertEqual(out["R"]["exec"], [False, False, False])
         self.assertEqual(out["R"]["cli"], [f"gh pr comment {EXTERNAL} --body-file nudge.md", f"gh pr view --web {EXTERNAL}", "sd shadow sync"])
         self.assertEqual((out["posts"], out["confirms"]), ([], []))
+        # Review 2 of PR #72 (8af737dffde4): the shell calls run for a copy-only command too, and run opened a tab.
+        self.assertEqual(out["opened"], [])
 
     def test_off_commands_name_their_reason(self):
         out = self.run_page("""const w = (id, key) => cmd(id).when(C.get(key));

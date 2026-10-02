@@ -241,8 +241,9 @@ def document(connection, *, now):
                 "freshness": {"status": status or "unknown", "reason": (row.get("freshness") or {}).get("reason") or ""},
                 "internal": why is not None, "why_internal": why})
         else:
-            name = _shown(row.get("repo")) or "local"
-            entry = settled.setdefault(name, {"repo": name, "internal": why is not None, "merged": 0, "closed": 0})
+            # Keyed on the repository as stored, shown by its label: two checkouts named alike stay two entries.
+            entry = settled.setdefault(str(row.get("repo") or ""), {
+                "repo": _shown(row.get("repo")) or "local", "internal": why is not None, "merged": 0, "closed": 0})
             entry["merged" if row["lane"] == "merged" else "closed"] += 1
     # Newest observation first within a lane, never-observed rows last: two stable sorts.
     opened.sort(key=lambda row: str(row["observed_at"] or ""), reverse=True)

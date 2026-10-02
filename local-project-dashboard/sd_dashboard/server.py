@@ -206,6 +206,19 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
             raise ValueError("Provide the contribution key, current revision and exact event IDs.")
         return lambda connection: contributions.acknowledge(connection, values["key"], values["event_ids"],
             expected_revision=values["revision"], who="dashboard")
+    if path == "/api/contributions/task":
+        from sd_db import contributions
+
+        # Make task (sd:2113): the task carries the row's URL as its contribution identity, as `sd task contribution add`
+        # writes it, so the projection links the two after a reread and a second filing for the same URL is refused.
+        if (set(values) != {"key", "title"} or not isinstance(values["key"], str) or not isinstance(values["title"], str)
+                or not values["title"].strip()):
+            raise ValueError("Provide the contribution key and a title.")
+        field = next((name for prefix, name in contributions.OBSERVED.items() if values["key"].startswith(prefix)), None)
+        if field is None:
+            raise ValueError("Only a contribution filed on GitHub takes a task; local work already has one.")
+        changes = {field: values["key"].split(":", 1)[1]}
+        return lambda connection: contributions.capture(connection, title=values["title"].strip(), changes=changes, who="dashboard")
     if path == "/api/palette/prepare":
         from sd_db import runner_exec
 
