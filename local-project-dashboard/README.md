@@ -141,6 +141,26 @@ off with its reason; the field shows the `sd task add` and `sd run` lines for
 Copy. The old view stays in the palette as Resources (classic), with Toolbox,
 Briefs, Vault and Queues.
 
+Reports is at `/reports` (sd:2121): job-family lamps, a seven-day run cadence
+per job, the report ledger with filters and saved views, and Details with a
+line diff against the job's previous report. `GET /api/reports`
+(`reports_screen.document`) gives the newest 200 reports v1 lists, the launchd
+jobs, and each job's runs per local day, read from its `cron-jobs.sh` log. A
+day the job's calendar leaves out is not scheduled. The families come from
+`<config>/project-dashboard/report-families.conf`, one
+`family|<key>|<label>|<icon>|<job>,<job>,...` per line. Job names are the
+operator's, so the checkout ships only `report-families.conf.example`; without
+the file no family lamp is drawn and every job is listed under "Other jobs".
+A family lamp follows each job's own last scheduled run before today, however
+rare; a job whose last scheduled run the log does not hold makes it unknown.
+Acknowledge posts v1's route with the report's revision. It is off while an
+open followup holds the report. It asks first and has no Undo: sd-db has no
+verb that reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,
+v1's preview, and the bulk bar acknowledges the picked reports one by one.
+Retry posts the job route, as Management does. No status mail is read: the
+dashboard holds no message store. The old screen stays in the palette as
+Reports (classic) for the Resources views and the attributed batch.
+
 Activity is at `/activity` (sd:2111): one timeline of the last 24 hours, as an
 annunciator, a lane per kind and a ledger banded by hour. `GET /api/activity`
 (`activity_screen.document`) reads only what the library already records:
@@ -170,6 +190,7 @@ Classic screens.
 | Tasks | `/tasks` (new) |
 | Home | `/home` (new) |
 | Research | `/research` (new) |
+| Reports | `/reports` (new) |
 | Writing | `/writing` |
 | Contributions | `/contributions` (new) |
 | Documents | `/documents` |
@@ -178,11 +199,10 @@ Classic screens.
 | Management | `/management` (new) |
 | Health | `/fleet-health` (new) |
 | Activity | `/activity` (new) |
-| Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
 | Notes, HOA | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
+| Palette: Today (classic), Backlog (classic), Reports (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
