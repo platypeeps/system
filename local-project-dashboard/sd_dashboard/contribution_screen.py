@@ -166,8 +166,9 @@ OPEN_LIMIT = 500
 #: Repositories with settled rows the document names at most; the rest fold into `settled_other`, per scope.
 SETTLED_REPOS = 100
 #: What the page may show of a row: the projection's fields it reads, nothing more (no evidence, argv or local paths).
-ROW_FIELDS = ("key", "revision", "event_ids", "reasons", "lane", "title", "repo", "url", "external_state", "local_status",
-              "item_id", "local_branch", "draft_path", "blocked_on", "observed_at")
+#: `repo` is rewritten by `_shown` and `draft_path` becomes `has_draft`: the page only asks whether a draft exists.
+ROW_FIELDS = ("key", "revision", "event_ids", "reasons", "lane", "title", "url", "external_state", "local_status",
+              "item_id", "local_branch", "blocked_on", "observed_at")
 
 
 def _registered(connection):
@@ -193,6 +194,14 @@ def _scope(repo, remotes, places):
     else:
         found = next((places[key] for key in paths.keys(text) if key in places), None) if text else None
     return None if found is None else "managed" if found else "registered"
+
+
+def _shown(repo):
+    """The repository as the page shows it: `owner/name`, or `local: <folder>` for a checkout path, never the path itself."""
+    text = str(repo or "")
+    if not text or contributions.REPO.fullmatch(text):
+        return text or None
+    return "local: " + (text.rstrip("/").rpartition("/")[2] or "checkout")
 
 
 def _freshness(connection, now):
@@ -221,11 +230,12 @@ def document(connection, *, now):
         why = _scope(row.get("repo"), remotes, places)
         if row["lane"] in OPEN_LANES:
             opened.append({key: row.get(key) for key in ROW_FIELDS} | {
+                "repo": _shown(row.get("repo")), "has_draft": bool(row.get("draft_path")),
                 "freshness": {"status": status or "unknown", "reason": (row.get("freshness") or {}).get("reason") or ""},
                 "internal": why is not None, "why_internal": why})
         else:
-            entry = settled.setdefault(str(row.get("repo") or "local"), {"repo": str(row.get("repo") or "local"),
-                                                                         "internal": why is not None, "merged": 0, "closed": 0})
+            name = _shown(row.get("repo")) or "local"
+            entry = settled.setdefault(name, {"repo": name, "internal": why is not None, "merged": 0, "closed": 0})
             entry["merged" if row["lane"] == "merged" else "closed"] += 1
     # Newest observation first within a lane, never-observed rows last: two stable sorts.
     opened.sort(key=lambda row: str(row["observed_at"] or ""), reverse=True)

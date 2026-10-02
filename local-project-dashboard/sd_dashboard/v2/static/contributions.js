@@ -42,7 +42,7 @@ addEventListener('DOMContentLoaded', () => {
   // build: only an https github.com URL becomes a link, as v1's _link allows.
   const github = u => /^https:\/\/github\.com\/[^/@\s]+\/[^/@\s]+\//.test(String(u || ''));
   const isIssue = r => /\/issues\/\d+$/.test(String(r.url || ''));
-  const filed = r => r.url ? (isIssue(r) ? 'Issue' : 'Pull request') : r.draft_path ? 'Unfiled issue draft' : 'Unfiled local work';
+  const filed = r => r.url ? (isIssue(r) ? 'Issue' : 'Pull request') : r.has_draft ? 'Unfiled issue draft' : 'Unfiled local work';
   const num = r => r.url ? '#' + String(r.url).split('/').pop() : '';
 
   // ---------- Data (build: /api/contributions/page) ----------

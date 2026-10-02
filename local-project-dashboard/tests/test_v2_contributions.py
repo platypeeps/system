@@ -86,7 +86,7 @@ class TheDocument(ScreenCase):
     def test_a_row_carries_only_what_the_page_shows(self):
         row = self.doc(given=[contribution(1, evidence=[{"argv": ["secret"], "cwd": "/home/example/x"}],
                                            local_clone="/home/example/x")])["rows"][0]
-        self.assertEqual(set(row), set(contribution_screen.ROW_FIELDS) | {"freshness", "internal", "why_internal"})
+        self.assertEqual(set(row), set(contribution_screen.ROW_FIELDS) | {"repo", "has_draft", "freshness", "internal", "why_internal"})
         self.assertNotIn("secret", json.dumps(row))
 
     def test_scope_comes_from_the_repo_table(self):
@@ -112,6 +112,26 @@ class TheDocument(ScreenCase):
             doc = self.doc(given=settled)
         self.assertEqual([e["repo"] for e in doc["settled"]], ["example/project", "other/r1"])
         self.assertEqual(doc["settled_other"], {"internal": {"merged": 0, "closed": 0}, "external": {"merged": 2, "closed": 0}})
+
+    def test_no_field_holds_a_local_path_or_a_draft_digest(self):
+        draft = {"path": "/home/example/drafts/issue.md", "sha256": "f" * 64}
+        doc = self.doc(given=[contribution(1, url=None, repo="/home/example/clone", draft_path=draft),
+                              contribution(2, url=None, repo="~/clone-two"), contribution(3, "merged", repo="/home/example/old")])
+
+        def strings(value):
+            if isinstance(value, dict):
+                for key, inner in value.items():
+                    yield key
+                    yield from strings(inner)
+            elif isinstance(value, list):
+                for inner in value:
+                    yield from strings(inner)
+            elif isinstance(value, str):
+                yield value
+        leaked = [text for text in strings(doc) if text.startswith(("/", "~")) or "/home/example" in text or "f" * 64 in text]
+        self.assertEqual(leaked, [])
+        self.assertEqual([(r["repo"], r["has_draft"]) for r in doc["rows"]], [("local: clone", True), ("local: clone-two", False)])
+        self.assertEqual(doc["settled"][0]["repo"], "local: old")
 
     def test_the_collector_is_the_github_tracker_freshness(self):
         self.assertEqual(self.doc()["collector"], {"state": "never", "last_success_at": None, "reason": ""})
@@ -285,6 +305,12 @@ R.ext = ELS.rows.html; R.bars = ELS.bars.html;""")
         self.assertIn('href="https://github.com/example/project/pull/1"', out["R"]["a"])
         self.assertIn("local · external", out["R"]["b"])
         self.assertNotIn("href=", out["R"]["b"])
+
+    def test_an_unfiled_draft_reads_as_a_draft_from_the_flag_alone(self):
+        row = next(r for r in self.doc["rows"] if r["key"] == "item:4")
+        row["has_draft"] = True
+        out = self.run_page("R.rows = ELS.rows.html;")
+        self.assertIn("local  · Unfiled issue draft", out["R"]["rows"])
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", PAGE_JS)
