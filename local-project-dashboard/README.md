@@ -141,6 +141,17 @@ off with its reason; the field shows the `sd task add` and `sd run` lines for
 Copy. The old view stays in the palette as Resources (classic), with Toolbox,
 Briefs, Vault and Queues.
 
+Activity is at `/activity` (sd:2111): one timeline of the last 24 hours, as an
+annunciator, a lane per kind and a ledger banded by hour. `GET /api/activity`
+(`activity_screen.document`) reads only what the library already records:
+merges are the delivery notes `sd-ship` writes, runs are runner assignments
+and launchd jobs placed at their log time, and commands are the execution
+journal v1 Operations > Commands lists, older records too for the "All read"
+range; palette and runner runs alike (sd:2183). Reviews, deploys and mail have no
+collector; the document names each with its reason and the page draws it
+unknown, not zero. Requeue carries Undo; job retry posts the job's revision;
+Show output reads the execution record.
+
 The old screens stay until their section is ported. The old Today moved to
 `/classic/today` and the old Contributions to `/classic/contributions`; every
 other old screen keeps its path. A `/v2/` address
@@ -166,10 +177,11 @@ Classic screens.
 | Metrics | `/operations?area=usage` |
 | Management | `/management` (new) |
 | Health | `/fleet-health` (new) |
+| Activity | `/activity` (new) |
 | Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
-| Notes, HOA, Activity | no old screen; the rail says not built yet |
+| Notes, HOA | no old screen; the rail says not built yet |
 | Palette: Today (classic), Backlog (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.

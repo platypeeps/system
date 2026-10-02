@@ -1341,3 +1341,36 @@ def _usage_reads(
         meter=tuple(dict(row) for row in meter),
         spent=round(sum(bill.spent for bill in bills), 6), held=round(sum(bill.held for bill in bills), 6),
     )
+
+
+def delivery_notes(connection: sqlite3.Connection, *, since: str) -> list[sqlite3.Row]:
+    """The delivery notes `ship.note_merge` wrote on or after the day of `since`, oldest first, with the item's title.
+
+    The day is a coarse bound, since note stamps carry either `Z` or `+00:00`;
+    the caller compares each stamp exactly. Behind the dashboard's Activity (sd:2111).
+    """
+    return connection.execute(
+        "SELECT note.id, note.item, note.timestamp, note.body, item.title FROM note LEFT JOIN item ON item.id = note.item "
+        "WHERE note.kind = 'comment' AND note.body LIKE 'Code delivery %' AND substr(note.timestamp, 1, 10) >= ? "
+        "ORDER BY note.id", (since[:10],)).fetchall()
+
+
+def recent_assignments(connection: sqlite3.Connection, *, since: str, exclude_roles=("exec",)) -> list[tuple[int, str | None]]:
+    """(id, item repository) of assignments that started or ended on or after the day of `since`, but for `exclude_roles`.
+
+    A coarse bound, as `delivery_notes`; behind the dashboard's Activity (sd:2111), whose repository filter needs the item's repository.
+    """
+    marks = ", ".join("?" for _ in exclude_roles) or "''"
+    return [(row[0], row[1]) for row in connection.execute(
+        f"SELECT assignment.id, item.repo FROM assignment LEFT JOIN item ON item.id = assignment.item "
+        f"WHERE assignment.role NOT IN ({marks}) "
+        "AND (substr(assignment.started, 1, 10) >= ? OR substr(assignment.ended, 1, 10) >= ?) ORDER BY assignment.id",
+        (*exclude_roles, since[:10], since[:10]))]
+
+
+def exec_note_count(connection: sqlite3.Connection) -> int:
+    """How many `exec` notes the journal holds, from every writer; Activity says how many its capped read left out (sd:2111)."""
+    return connection.execute("SELECT count(*) FROM note WHERE kind = 'exec'").fetchone()[0]
+
+
+__all__ += ["delivery_notes", "exec_note_count", "recent_assignments"]
