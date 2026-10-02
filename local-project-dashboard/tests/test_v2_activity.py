@@ -331,9 +331,12 @@ lastToast().undo(); await flush();""", answer)
         failed = next(e for e in self.doc["events"] if e["id"] == "job:nightly-sync")
         out = self.run_page("""R.off = cmd('jobs.retry').when(C.get('job:backup'));
 R.cli = cmd('jobs.retry').cli(C.get('job:nightly-sync'));
+R.sends = cmd('jobs.retry').sends ? cmd('jobs.retry').sends(C.get('job:nightly-sync')) : null;
 shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", "() => [200, {}]")
         self.assertEqual(out["R"]["off"], "no failed run to retry")
-        self.assertEqual(out["R"]["cli"], "launchctl kickstart fixture/nightly-sync")
+        # The line to copy is the sd verb, which passes the operation gate and the audit; kickstart is only what it sends.
+        self.assertEqual(out["R"]["cli"], "sd jobs retry nightly-sync")
+        self.assertEqual(out["R"]["sends"], "launchctl kickstart fixture/nightly-sync")
         self.assertEqual(out["posts"], [["/api/jobs/nightly-sync/retry", {"revision": failed["revision"]}, 64]])
         self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]])
 

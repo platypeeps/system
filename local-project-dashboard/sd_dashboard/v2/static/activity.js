@@ -365,10 +365,11 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: o => ev(o).status !== 'blocked', cli: o => `sd runner get ${o.n}`,
       run: o => { select(o.id, true); return `Assignment #${o.n} shown in Details`; } },
     { id: 'asg.item', on: 'assignment', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the assignment names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
+    // Retry is `sd jobs retry`, which sends the kickstart (commands.md, one declaration, as Management declares it).
     // build: retry posts to /api/jobs/<job>/retry with the job's revision, as Operations > Jobs does; launchd starts the run.
     { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => ev(o).failed,
       when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
-      cli: o => `launchctl kickstart ${o.service || `gui/$UID/local.system-tools.cron.${o.job}`}`,
+      cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
       run: o => landing(post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => load()), () => `Retry started · ${o.job}`) },
     // build: Management is not built, so the log is a line to copy.
     { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => `Copy the line to read the log of ${o.job}` },
