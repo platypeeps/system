@@ -75,6 +75,24 @@ unlock and toggle commands are registered but off with it, so the page sends
 nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
 `$HA_URL` and never holds a value.
 
+Reports is at `/reports` (sd:2121): job-family lamps, a seven-day run cadence
+per job, the report ledger with filters and saved views, and Details with a
+line diff against the job's previous report. `GET /api/reports`
+(`reports_screen.document`) gives the newest 200 reports v1 lists, the launchd
+jobs, and each job's runs per local day, read from its `cron-jobs.sh` log. A
+day the job's calendar leaves out is not scheduled. The families come from
+`<config>/project-dashboard/report-families.conf`, one
+`family|<key>|<label>|<icon>|<job>,<job>,...` per line. Job names are the
+operator's, so the checkout ships only `report-families.conf.example`; without
+the file no family lamp is drawn and every job is listed under "Other jobs".
+Acknowledge posts v1's route with the report's revision. It is off while an
+open followup holds the report, and it has no Undo: sd-db has no verb that
+reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,
+v1's preview, and the bulk bar acknowledges the picked reports one by one.
+Retry posts the job route, as Management does. No status mail is read: the
+dashboard holds no message store. The old screen stays in the palette as
+Reports (classic) for the Resources views and the attributed batch.
+
 The old screens stay until their section is ported. Only the old Today moved,
 to `/classic/today`; every other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
@@ -90,6 +108,7 @@ Classic screens.
 | Today | `/today` (new) |
 | Tasks | `/tasks` (new) |
 | Home | `/home` (new) |
+| Reports | `/reports` (new) |
 | Writing | `/writing` |
 | Research | `/operations?area=resources` |
 | Contributions | `/contributions` |
@@ -97,11 +116,10 @@ Classic screens.
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
 | Management | `/operations?area=jobs` |
-| Reports | `/operations?area=reports` |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
 | Briefs, Notes, HOA, Health, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
+| Palette: Today (classic), Backlog (classic), Reports (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup

@@ -1,16 +1,38 @@
-"""Database reports and bounded, read-only legacy resource views."""
+"""Database reports and bounded, read-only legacy resource views.
+
+Since sd:2121 it also builds the documents behind the default UI's Reports
+page (`v2/reports.html`, at `/reports`); the page holds no rows:
+
+- `/api/reports` is `document`: the newest 200 reports `reporting.reports`
+  gives v1, each with its provenance, its body's last `BODY_CHARS`
+  characters, the revision the acknowledge route checks and its open
+  followups; the scheduled jobs `operations.inventory` gives Management; each
+  job's run cadence over the last seven local days, read from its
+  `cron-jobs.sh` log (`cadence`); and the job families the config folder's
+  `report-families.conf` names. Each source is guarded on its own: a failed
+  one is `null` with its reason in `sources`, never an empty list.
+- `/api/reports/clean?before=YYYY-MM-DD` is `clean`: the selection
+  `reporting.clean_reports` makes for v1's preview, which writes nothing.
+
+Status mail has no reader: the dashboard holds no message store, so
+`mail.available` is false with the reason.
+"""
 
 import importlib.util
 import json
+import re
+import sqlite3
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
-from sd_db import reporting, workflow
+from sd_db import operations, reporting, workflow
+from sd_db.errors import SdDbError
 
 from .controls import field, form
+from .documents import _config_dir
 from .listing import Column, Listing
 from .markup import Markup, escape, join, tag
 
@@ -257,3 +279,224 @@ def report_controls(connection, row, revision):
         tag("p", "Output was truncated. The complete source remains in the log.", class_="notice") if provenance.get("truncated") else "",
         form(f"/api/reports/{row['id']}/acknowledge", label="Acknowledge report", command=f"sd reports acknowledge {row['id']}", revision=revision)
         if row["status"] != "done" else tag("p", "Acknowledged"), class_="control-panel")
+
+
+
+# ---------- The default UI's Reports page (sd:2121) ----------
+
+#: The family list: in this machine's config directory, never supplied by a request. Job names are the operator's, and
+#: this repository is public, so the checkout ships `report-families.conf.example` only.
+FAMILIES_CONFIG = _config_dir() / "report-families.conf"
+#: How much of a report's body the page shows: the end, where a failing run says why.
+BODY_CHARS = 1400
+#: The local days the run cadence covers, ending today.
+DAYS = 7
+#: How much of a job log is read from its end. A log longer than this is read from the first whole line in it, and the
+#: days before that line are `not read`, never zero runs.
+TAIL_BYTES = 1 << 20
+#: The outcome lines `cron-jobs.sh` writes for a run: `[<job>] <stamp> done` and `[<job>] <stamp> FAILED rc=<n>`.
+#: The stamp carries the machine's offset, so its date is the local day the run belongs to.
+OUTCOME = re.compile(r"^\[(?P<job>[^\]\s]+)\] (?P<day>\d{4}-\d{2}-\d{2})T[0-9:]+[+-]\d{4} (?P<what>done|FAILED rc=\d+)\s*$")
+STAMP = re.compile(r"^\[[^\]\s]+\] (\d{4}-\d{2}-\d{2})T")
+#: A family line: `family|<key>|<label>|<icon>|<job>,<job>,...`.
+KEY = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+JOB = re.compile(reporting.JOB_NAME)
+MAIL_REASON = "no status mail reader: the dashboard holds no message store, and Gmail holds the only copy"
+FAILURES = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
+
+
+def parse_families(text: str) -> tuple[list[dict], list[str]]:
+    """The families in file order, and one problem per line that was not read."""
+    families, problems, owner = [], [], {}
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = [f.strip() for f in line.split("|")]
+        if len(fields) != 5 or fields[0] != "family":
+            problems.append(f"line {number}: expected family|<key>|<label>|<icon>|<job>,<job>,...")
+            continue
+        _, key, label, icon, names = fields
+        jobs = [name.strip() for name in names.split(",") if name.strip()]
+        if not KEY.fullmatch(key) or not KEY.fullmatch(icon):
+            problems.append(f"line {number}: the key and the icon are lower-case words joined by hyphens")
+            continue
+        if not label or not jobs:
+            problems.append(f"line {number}: a family needs a label and at least one job")
+            continue
+        bad = [name for name in jobs if not JOB.fullmatch(name)]
+        if bad:
+            problems.append(f"line {number}: {bad[0]!r} is not a job name")
+            continue
+        if any(f["key"] == key for f in families):
+            problems.append(f"line {number}: the family {key} is listed twice")
+            continue
+        twice = [name for name in jobs if name in owner]
+        if twice:
+            problems.append(f"line {number}: {twice[0]} is already in the family {owner[twice[0]]}")
+            continue
+        owner.update({name: key for name in jobs})
+        families.append({"key": key, "label": label, "icon": icon, "jobs": jobs})
+    return families, problems
+
+
+def families(config: Path | None = None) -> dict:
+    config = FAMILIES_CONFIG if config is None else config
+    source = f"<config>/project-dashboard/{config.name}"
+    try:
+        text = config.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"state": "missing", "source": source, "problems": [], "list": []}
+    except (OSError, UnicodeDecodeError) as error:
+        return {"state": "error", "source": source, "problems": [f"not read: {error.__class__.__name__}"], "list": []}
+    found, problems = parse_families(text)
+    return {"state": "partial" if problems else "read", "source": source, "problems": problems, "list": found}
+
+
+def local_days(now: str, *, tz=None) -> list[str]:
+    """The last `DAYS` local dates, oldest first, ending on the local date of `now`."""
+    today = datetime.fromisoformat(now.replace("Z", "+00:00")).astimezone(tz).date()
+    return [(today - timedelta(days=back)).isoformat() for back in range(DAYS - 1, -1, -1)]
+
+
+def scheduled(schedule: list, day: str) -> bool:
+    """Whether a launchd calendar can fire on the day: an empty one (an interval job) always can."""
+    if not schedule:
+        return True
+    when = date.fromisoformat(day)
+    weekday = (when.weekday() + 1) % 7  # launchd: 0 and 7 are Sunday
+    for entry in schedule:
+        if "Weekday" in entry and entry["Weekday"] % 7 != weekday:
+            continue
+        if "Day" in entry and entry["Day"] != when.day:
+            continue
+        if "Month" in entry and entry["Month"] != when.month:
+            continue
+        return True
+    return False
+
+
+def job_log(path: Path, days: list[str]) -> dict:
+    """One job's runs per local day from its log: `[done, failed]` for each day, where the log begins, and where the
+    read begins when the log is longer than `TAIL_BYTES`. A job with no log is `log: false`."""
+    try:
+        with path.open("rb") as handle:
+            first = handle.readline(4096).decode("utf-8", "replace")
+            size = handle.seek(0, 2)
+            start = max(0, size - TAIL_BYTES)
+            handle.seek(start)
+            tail = handle.read().decode("utf-8", "replace")
+    except FileNotFoundError:
+        return {"log": False, "from": None, "read_from": None, "runs": {}}
+    lines = tail.splitlines()
+    if start:
+        lines = lines[1:]  # the first line of a cut read is a part line
+    begins = STAMP.match(first)
+    read_from = None
+    if start:
+        read_from = next((m[1] for m in map(STAMP.match, lines) if m), None)
+    runs = {day: [0, 0] for day in days}
+    for line in lines:
+        m = OUTCOME.match(line)
+        if m and m["day"] in runs:
+            runs[m["day"]][0 if m["what"] == "done" else 1] += 1
+    return {"log": True, "from": begins[1] if begins else None, "read_from": read_from, "runs": runs}
+
+
+def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict:
+    """Each job's runs per local day, and the days its schedule leaves out."""
+    if jobs is None:
+        raise ValueError("the job list was not read, so no job log was")
+    if logs is None:
+        raise ValueError("this jobs backend names no cron-jobs root, so no job log was read")
+    out = {}
+    for job in jobs:
+        name = job["name"]
+        out[name] = job_log(logs / f"{name}.log", days) | {
+            "scheduled": [scheduled(job.get("schedule") or [], day) for day in days]}
+    return out
+
+
+def _report(connection, row) -> dict:
+    state = workflow.item_state(connection, row["id"])
+    try:
+        fields = reporting.fields_document(connection, row["fields"])
+        readable = isinstance(fields, dict)
+    except reporting.UnreadableFields:
+        fields, readable = {}, False
+    fields = fields if readable else {}
+    provenance = fields.get("report") if isinstance(fields.get("report"), dict) else {}
+    repeats = fields.get("repeats") if isinstance(fields.get("repeats"), dict) else None
+    try:
+        body = json.loads(row["body"] or "{}")
+    except ValueError:
+        body = {}
+    text = body.get("text") if isinstance(body, dict) and isinstance(body.get("text"), str) else ""
+    return {
+        "id": row["id"], "title": row["title"], "status": row["status"], "at": row["created_at"],
+        "source": row["source"], "revision": state["revision"], "fields_read": readable,
+        "attention": fields.get("attention") is True, "record": "record" in fields,
+        "job": provenance.get("job") or None, "run": provenance.get("run_id"),
+        "started": provenance.get("started"), "ended": provenance.get("ended"), "exit": provenance.get("exit_code"),
+        "src": provenance.get("source_path"), "basis": provenance.get("attention_basis"),
+        "truncated": provenance.get("truncated") is True,
+        "repeats": {"count": repeats.get("count"), "last": repeats.get("last_ended")} if repeats else None,
+        "body": text[-BODY_CHARS:], "cut": len(text) > BODY_CHARS,
+        "followups": [note["id"] for note in state["notes"] if note["kind"] == "followup" and not note["resolved_at"]],
+    }
+
+
+def _reports(connection) -> list[dict]:
+    from .operations_screen import _one_snapshot
+
+    with _one_snapshot(connection):
+        return [_report(connection, row) for row in reporting.reports(connection)]
+
+
+def _jobs(connection, backend) -> list[dict]:
+    keep = ("name", "service", "schedule", "state", "last_exit", "revision", "capabilities")
+    return [{key: job.get(key) for key in keep} for job in operations.inventory(connection, backend=backend)["jobs"]]
+
+
+def _html_folders() -> int:
+    from . import documents
+
+    return len(documents.enumerated())
+
+
+def document(connection, *, now: str, jobs=None, tz=None, config: Path | None = None) -> dict:
+    """Every source the page reads, and the reason for each one that could not be read.
+
+    `jobs` is the operations backend, the launchd one by default; its `cron_root` places the job logs. `tz` is the
+    zone the local days are in, the machine's by default.
+    """
+    backend = jobs or operations.LaunchdBackend()
+    days = local_days(now, tz=tz)
+    out: dict = {"read": now, "limit": 200, "days": days, "sources": {},
+                 "mail": {"available": False, "reason": MAIL_REASON}, "families": families(config)}
+    root = getattr(backend, "cron_root", None)
+    logs = None if root is None else Path(root) / "logs"
+    for source, collect in (("reports", lambda: _reports(connection)),
+                            ("jobs", lambda: _jobs(connection, backend)),
+                            ("cadence", lambda: cadence(out["jobs"], logs, days)),
+                            ("html", _html_folders)):
+        try:
+            out[source] = collect()
+        except FAILURES as failure:
+            out[source] = None
+            out["sources"][source] = str(failure) or f"{source} could not be read"
+            continue
+        out["sources"][source] = ""
+    return out
+
+
+def clean(connection, before: str, *, now: str) -> dict:
+    """v1's clean preview for one date: which open reports retention would settle, and why each other one waits.
+
+    Writes nothing. A date `reporting.cutoff` refuses, or one later than `now`, raises `WorkflowError`.
+    """
+    preview = reporting.clean_reports(connection, before=reporting.cutoff(before),
+                                      now=datetime.fromisoformat(now.replace("Z", "+00:00")))
+    return {"before": preview["before"], "count": preview["count"], "max_batch": preview["max_batch"],
+            "selected": [entry["id"] for entry in preview["selected"]],
+            "declined": [{"id": entry["id"], "why": entry["why"]} for entry in preview["declined"]]}
