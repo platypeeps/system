@@ -407,10 +407,14 @@ def label(
     moment = _now() if now is None else stamp(now)
     with transaction(connection):
         row = connection.execute(
-            "SELECT primitive, answer, override FROM judgment WHERE id = ?", (row_id,)
+            "SELECT arm, primitive, answer, override FROM judgment WHERE id = ?", (row_id,)
         ).fetchone()
         if row is None:
             raise JudgmentRefused(f"no judgment row {row_id}")
+        if row["arm"] not in DECISION_ARMS:
+            raise JudgmentRefused(
+                f"row {row_id} is a {row['arm']} comparison row; a pair's label "
+                f"lives on its jev row, and compare reads it there")
         if row["primitive"] == GATE_PRIMITIVE:
             raise JudgmentRefused(
                 f"row {row_id} is a gate event, not a decision; there is "
@@ -872,8 +876,7 @@ def compare(
     """Per stage, one entry per arm and provider: calls, latency, cost, and
     how often the arm agreed with the Jev row of the same pair.
 
-    A label lives on one row of a pair, usually the Jev row; a pair is one
-    decision, so the label is read from whichever row of the pair carries it.
+    A pair is one decision, and its label is read from its Jev row only.
     """
     if stage is not None:
         stage = _identifier("stage", stage, required=True)
@@ -889,8 +892,10 @@ def compare(
         key = (row["stage"], row["pair"])
         if row["arm"] == "jev":
             reference[key] = row
-        if row["override"] is not None:
-            labels.setdefault(key, row["override"])
+            # The pair's label lives on its Jev row; `label` refuses an arm
+            # row, and one that reached an arm row some other way is ignored.
+            if row["override"] is not None:
+                labels[key] = row["override"]
     stages: dict[str, dict[tuple[str, str], dict]] = {}
     for row in rows:
         groups = stages.setdefault(row["stage"], {})

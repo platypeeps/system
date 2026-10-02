@@ -403,6 +403,15 @@ class TheHaikuArm(CompareCase):
         self.assertEqual((row["outcome"], row["cause"]), ("invalid", "invalid"))
         self.assertEqual(Arm.seen, [])
 
+    def test_a_probability_that_is_not_a_finite_number_is_invalid(self):
+        # json.loads reads NaN and Infinity, and float() takes a bool or a string.
+        for value in ("NaN", "Infinity", "-Infinity", "true", '"0.5"'):
+            with self.subTest(value=value):
+                Arm.reply = '{"probability": %s}' % value
+                row = self.haiku("anthropic", JEV_COMPARE_ANTHROPIC_KEY="k")
+                self.assertEqual((row["outcome"], row["cause"]), ("invalid", "invalid"))
+                self.assertIsNone(row["answer"])
+
     def test_a_reply_that_is_not_json_is_invalid(self):
         Arm.reply = "I think probably yes."
         row = self.haiku("anthropic", JEV_COMPARE_ANTHROPIC_KEY="k")

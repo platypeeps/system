@@ -24,6 +24,7 @@ Run as `python3 jev_compare.py REQUEST_FILE`; the file is deleted on read.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -235,6 +236,14 @@ def prompt(state, question: dict) -> tuple[str, dict]:
 FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
 
+def finite(value) -> float:
+    """A JSON number that is finite. `json.loads` reads NaN and Infinity, and
+    `float()` takes a bool or a string; none of those is a probability."""
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValueError(f"{value!r} is not a finite number")
+    return float(value)
+
+
 def parse_reply(reply, question: dict) -> list[float]:
     """The distribution a reply carries, over `options(question)`.
 
@@ -253,14 +262,14 @@ def parse_reply(reply, question: dict) -> list[float]:
         raise Declined("invalid", "invalid", "the reply is not a JSON object")
     try:
         if question["type"] == "noul":
-            return [float(reply["probability"])]
+            return [finite(reply["probability"])]
         found = reply["probabilities"]
         keys = options(question)
         # Exactly the options asked about. A transport may ignore the schema,
         # and an option filled in as zero would be scored as an answer.
         if set(found) != set(keys):
             raise KeyError(f"options {sorted(found)} are not {keys}")
-        return [float(found[key]) for key in keys]
+        return [finite(found[key]) for key in keys]
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise Declined("invalid", "invalid", f"the reply has no usable probabilities ({exc})")
 

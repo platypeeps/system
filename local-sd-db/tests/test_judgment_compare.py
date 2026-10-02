@@ -93,6 +93,14 @@ class TheArms(CompareCase):
         found = unlabelled(self.connection, "JEV_NOTIFY")
         self.assertEqual(sorted(row["id"] for row in found), sorted([jev_row, base]))
 
+    def test_a_label_on_a_comparison_arm_row_is_refused(self):
+        self.write(arm="jev", pair="p1", answer="0.9")
+        for arm, provider in (("kev", "local"), ("haiku", "anthropic")):
+            row = self.write(arm=arm, provider=provider, pair="p1", answer="0.8")
+            with self.subTest(arm=arm), self.assertRaises(JudgmentRefused):
+                label(self.connection, row, "1", "test-rule")
+            self.assertIsNone(self.row(row)["override"])
+
     def test_probabilities_that_are_not_numbers_are_refused(self):
         for value in ("returns,shipping", "0.5;0.5", "0.5, 0.5", "/home/x", ""):
             with self.subTest(value=value), self.assertRaises(JudgmentRefused):
@@ -198,6 +206,17 @@ class TheComparison(CompareCase):
         self.assertEqual(self.arm(report, "kev")["agree"], 1)
         self.assertEqual(self.arm(report, "haiku")["agree"], 0)
         self.assertIsNone(self.arm(report, "kev")["mean_abs_dp"])
+
+    def test_only_the_jev_row_carries_the_label_of_a_pair(self):
+        # A label that reached an arm row some other way is not the pair's truth.
+        _, kev, _ = self.decision("a", "0.9", "0.8", "0.3")
+        with self.connection:
+            self.connection.execute(
+                "UPDATE judgment SET override = '0', override_source = 'test-rule' "
+                "WHERE id = ?", (kev,))
+        report = compare(self.connection)
+        for name in ("kev", "haiku"):
+            self.assertEqual(self.arm(report, name)["labelled"], 0)
 
     def test_a_score_agrees_and_is_right_on_the_recorded_score_not_the_mode(self):
         # Kev records 2.0, its expected level; its most likely level is 0.

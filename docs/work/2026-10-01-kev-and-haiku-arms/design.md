@@ -239,8 +239,9 @@ the stage has more than one):
   `probabilities` (a noul's `answer` is its probability).
 
 A label lives on the Jev row. A pair shares one decision, so the report reads
-the label from the pair's Jev row for every arm. `judgments label` keeps
-labelling one row.
+the label from the pair's Jev row for every arm, and ignores one found on an
+arm row. `judgments label` keeps labelling one row, and refuses a `kev` or
+`haiku` row.
 
 Percentiles are computed in Python: SQLite has none, and the read is per
 stage.
