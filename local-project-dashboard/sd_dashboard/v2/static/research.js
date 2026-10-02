@@ -279,7 +279,8 @@ function renderShift() {
   put(chipsEl, html`${[`repo:${scope}`, `depth:${o.depth}`, 'stage:draft', 'skill:sd-research-repo', `budget:${o.budget}m`, o.due ? `due:${o.due}` : ''].filter(Boolean).map(c => html`<span class="chip" aria-pressed="true">${c}</span>`)}`);
   reqEl.hidden = false;
   Object.assign(DRAFT, { q: o.q, repo, depth: o.depth, budget: o.budget, due: o.due,
-    cmd: `sd task add ${shq('Research: ' + o.q)} --body ${shq(`repo=${scope} depth=${o.depth} skill=sd-research-repo stage=draft`)}${o.due ? ` --due ${shq(o.due)}` : ''} --json\nsd run --sequential --role author --scope ${shq(scope)} --budget-minutes ${o.budget} "\${ITEM:?set ITEM to the id sd task add printed}"` });
+    // build: the run takes the id the add prints (its --json is {"item": {"id": …}}), so the two lines are one runnable copy.
+    cmd: `ITEM=$(sd task add ${shq('Research: ' + o.q)} --body ${shq(`repo=${scope} depth=${o.depth} skill=sd-research-repo stage=draft`)}${o.due ? ` --due ${shq(o.due)}` : ''} --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["item"]["id"])') &&\nsd run --sequential --role author --scope ${shq(scope)} --budget-minutes ${o.budget} "$ITEM"` });
   // build: Start is off, so the preview shows the two lines with Copy in place of the Run button.
   const why = START.when(DRAFT);
   put(reqEl, html`<p class="why">Creates an item and queues one author assignment in ${scope}${repo.startsWith('new:') ? ' (a new checkout: the runner lays the numbered layout first)' : ''}. Review rounds start at 0 of ${CAP}.</p>

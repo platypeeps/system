@@ -75,6 +75,10 @@ Not a row | after the table
 """
 
 
+def shq_path(path: Path) -> str:
+    return "'" + str(path).replace("'", "'\\''") + "'"
+
+
 def collectors_module():
     spec = importlib.util.spec_from_file_location("test_research_collectors", COLLECTORS)
     module = importlib.util.module_from_spec(spec)
@@ -408,13 +412,14 @@ R.executes = cmd('research.start').executes; R.req = ELS.req.html;
 (input.listeners.keydown || []).forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""")
         draft = out["R"]["draft"]
         self.assertEqual((draft["q"], draft["repo"], draft["depth"]), ("how do vendors detect spans?", "research/beta", "deep"))
-        self.assertEqual(draft["cmd"], "sd task add 'Research: how do vendors detect spans?' --body 'repo=beta depth=deep skill=sd-research-repo stage=draft' --json\n"
-                                       "sd run --sequential --role author --scope 'beta' --budget-minutes 60 \"${ITEM:?set ITEM to the id sd task add printed}\"")
+        self.assertEqual(draft["cmd"], "ITEM=$(sd task add 'Research: how do vendors detect spans?' --body 'repo=beta depth=deep skill=sd-research-repo stage=draft' --json"
+                                       " | python3 -c 'import json, sys; print(json.load(sys.stdin)[\"item\"][\"id\"])') &&\n"
+                                       "sd run --sequential --role author --scope 'beta' --budget-minutes 60 \"$ITEM\"")
         # The copied lines run as they are: no bare <item>, which the shell reads as a redirect from a file named item.
         self.assertNotRegex(draft["cmd"], r"(?<![\"'])<\w")
         self.assertIn("does not create items or queue runs", out["R"]["when"])
         self.assertFalse(out["R"]["executes"])
-        self.assertIn('data-copy="sd task add', out["R"]["req"])
+        self.assertIn('data-copy="ITEM=$(sd task add', out["R"]["req"])
         self.assertIn("Not started here:", out["R"]["req"])
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["confirms"], [])
@@ -453,6 +458,30 @@ input.selectionStart = input.value.length; fire('keydown', { key: 'ArrowRight', 
 R.start = ELS['shift-hint'].html;""")
         self.assertIn("Enter keeps the filter", out["R"]["filter"])
         self.assertIn("Enter starts nothing: Start is off", out["R"]["start"])
+
+    def test_the_copied_start_lines_queue_the_item_they_create(self):
+        # The copied sd run line read ITEM, which nothing set: unset it stopped after the task was made, and a stale ITEM queued
+        # another task. Run the copied text in sh against a stand-in sd: the run must get the id the add printed.
+        out = self.run_page("""const input = ELS.shift; input.value = 'how do vendors detect spans? repo:beta';
+(input.listeners.input || []).forEach(f => f()); (input.listeners.input || []).forEach(f => f());
+R.cmd = C.get('draft:research').cmd;""")
+        with tempfile.TemporaryDirectory() as bin_dir:
+            log = Path(bin_dir) / "runs"
+            stand_in = Path(bin_dir) / "sd"
+            stand_in.write_text(f"""#!/bin/sh
+if [ "$1 $2" = "task add" ]; then [ -n "$SD_ADD_FAILS" ] && exit 1; echo '{{"item": {{"id": 4242, "title": "x"}}}}'; exit 0; fi
+echo "$*" >> {shq_path(log)}
+""", encoding="utf-8")
+            stand_in.chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", ITEM="7")
+            ran = subprocess.run(["sh", "-c", out["R"]["cmd"]], env=env, capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertEqual(log.read_text(encoding="utf-8").split()[-1], "4242")
+            log.unlink()
+            failed = subprocess.run(["sh", "-c", out["R"]["cmd"]], env=dict(env, SD_ADD_FAILS="1"), capture_output=True, text=True,
+                                    timeout=30, check=False)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertFalse(log.exists(), "sd run ran after sd task add failed")
 
     def test_the_board_ranks_the_rows_and_shows_rounds_as_not_recorded_with_the_reason(self):
         out = self.run_page("R.rows = ELS.rows.html; R.tally = ELS.tally.html; R.sum = ELS.sum.html;")
