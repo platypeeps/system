@@ -617,6 +617,15 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Home does not accept query parameters."})
                     return self._json(200, home_screen.document(now=self.clock()))
+                if path == "/api/briefs":
+                    from . import briefs_screen
+
+                    # The Briefs page's rows (sd:2112): the vault's brief notes, read by the child Resources > Briefs runs.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Briefs."})
+                    if split.query:
+                        return self._json(400, {"error": "Briefs does not accept query parameters."})
+                    return self._json(200, briefs_screen.document(now=self.clock()))
                 if path in ("/api/reports", "/api/reports/clean"):
                     from . import reports_screen
 

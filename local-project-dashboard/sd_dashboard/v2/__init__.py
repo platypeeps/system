@@ -1,4 +1,4 @@
-"""The dashboard's default UI: the design source's shell, and the pages built on it so far (sd:2110, sd:2163, sd:2124, sd:2118, sd:2117, sd:2121).
+"""The dashboard's default UI: the design source's shell, and the pages built on it so far (sd:2110, sd:2163, sd:2124, sd:2118, sd:2117, sd:2112, sd:2121).
 
 The design source is ui-design `products/system/` (`design.md`, `designs/pages/`,
 formerly `designs/v2/`, and `foundation/`); `static/` holds its shell, tokens and fonts as the files the
@@ -28,12 +28,12 @@ HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 
 #: Route path -> page file. `/` is Today as well: the new design is the default.
-PAGES = {"/": "today.html", "/today": "today.html", "/tasks": "tasks.html", "/management": "management.html", "/home": "home.html", "/fleet-health": "health.html", "/reports": "reports.html"}
+PAGES = {"/": "today.html", "/today": "today.html", "/tasks": "tasks.html", "/management": "management.html", "/home": "home.html", "/briefs": "briefs.html", "/fleet-health": "health.html", "/reports": "reports.html"}
 
 #: The shell's map, and the only place a rail section names its address. A ported section opens its page; a section
 #: not yet ported opens its old screen, marked "classic" on the rail, until its port moves it into SECTIONS. A section
 #: in neither has no old screen and still says it is not built. The shell reads the three as /ui/sections.js.
-SECTIONS = {"Today": "/today", "Tasks": "/tasks", "Management": "/management", "Home": "/home", "Health": "/fleet-health", "Reports": "/reports"}
+SECTIONS = {"Today": "/today", "Briefs": "/briefs", "Tasks": "/tasks", "Management": "/management", "Home": "/home", "Health": "/fleet-health", "Reports": "/reports"}
 CLASSIC = {
     "Writing": "/writing",
     "Research": "/operations?area=resources",
