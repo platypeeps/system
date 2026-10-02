@@ -170,6 +170,24 @@ class TheReader(unittest.TestCase):
         for key in ("group/plain", "group/link", "../group/one", "group/../group/one", ".hidden", "group/one/extra"):
             self.assertIsNone(research_screen.checkout(self.root, key), key)
 
+    def test_the_board_cuts_documents_then_projects_to_stay_under_its_print_bound(self):
+        docs = "".join(f"dict(src='{'s' * 300}.md', out='o{i}', title='{'t' * 700}'),\n" for i in range(100))
+        for n in range(3):
+            checkout(self.root, f"deep/w{n}", conf=f"DOCS=[\n{docs}]\n")
+        for n in range(220):
+            checkout(self.root, f"many/{'m' * 90}{n:03}", conf="DOCS=[]\n")
+        collectors = collectors_module()
+        with mock.patch.object(collectors, "REPO_ROOT", self.root), mock.patch.object(collectors, "git_facts", return_value=None):
+            found = research_screen.board(collectors)
+        self.assertLessEqual(len(json.dumps(found, ensure_ascii=False, separators=(",", ":")).encode("utf-8")), research_screen.PRINT_BYTES)
+        listed = found["projects"]
+        self.assertEqual(found["cut"], 223 - len(listed))
+        self.assertGreater(found["cut"], 0)
+        self.assertTrue(all(p["docs_total"] == 100 for p in listed if p["key"].startswith("deep/")))
+        # Documents go before projects: the three wide checkouts sort first and stay listed with their whole count.
+        self.assertEqual([p["key"] for p in listed[:3]], ["deep/w0", "deep/w1", "deep/w2"])
+        self.assertTrue(all(len(p["docs"]) < 100 for p in listed[:3]))
+
     def test_a_linked_checkout_or_group_is_never_read(self):
         # The walk followed linked groups and checkouts, so it parsed a config and ran git outside the root before the board dropped the row.
         checkout(self.root, "group/one")
@@ -269,6 +287,19 @@ class TheDocument(ScreenCase):
         link.symlink_to(self.root)
         with mock.patch.dict("os.environ", {"REPO_ROOT": str(link)}):
             self.assertEqual(research_screen.sources("solo", now=NOW)["total"], 3)
+
+    def test_an_accepted_config_at_its_limits_still_fits_the_board(self):
+        # 100 documents with 700-character titles printed 75,763 bytes; the 64 KiB read killed the child and the board was empty.
+        docs = "".join(f"dict(src='index.md', out='o{i}', title='{'t' * 700}'),\n" for i in range(100))
+        checkout(self.root, "research/wide", conf=f"DOCS=[\n{docs}]\n")
+        checkout(self.root, "research/alpha")
+        doc = research_screen.document(now=NOW)
+        self.assertEqual(doc["error"], "")
+        rows = {p["key"]: p for p in doc["projects"]}
+        self.assertEqual(set(rows), {"research/alpha", "research/wide"})
+        wide = rows["research/wide"]
+        self.assertEqual((wide["docs_total"], wide["render"]["txt"]), (100, "100 of 100 documents not fresh"))
+        self.assertTrue(all(len(d["title"]) <= research_screen.CELL for d in wide["docs"]))
 
     def test_a_reader_that_fails_is_named_and_lists_nothing(self):
         def broken(*_):
@@ -483,6 +514,18 @@ R.reader = ELS.reader.html; R.tally = ELS['reader-tally'].html; R.det = ELS.deta
         self.assertIn("Spec release — bold code", out["R"]["reader"])
         self.assertNotIn("not read", out["R"]["reader"] + out["R"]["tally"])
         self.assertIn("Beta", out["R"]["det"])
+
+    def test_a_cut_board_says_what_it_did_not_list(self):
+        # Past its print bound the board lists fewer documents and projects; the page says so instead of showing a short list as whole.
+        board = {"root": self.doc["root"], "projects": self.doc["projects"], "cut": 2}
+        self.doc = research_screen.document(now=NOW, backend=lambda *_: board)
+        self.assertEqual(self.doc["cut"], 2)
+        beta = next(p for p in self.doc["projects"] if p["key"] == "research/beta")
+        beta["docs_total"] = 40
+        out = self.run_page("R.det = ELS.details.html; R.sum = ELS.sum.html;")
+        self.assertIn("40 documents in research.conf.py · 1 listed: the board passed its print bound", out["R"]["det"])
+        self.assertIn("2 projects not listed", out["R"]["sum"])
+        self.assertIn("2 projects not listed: the board passed its print bound", out["states"][-1]["text"])
 
     def test_a_source_opens_its_details_and_no_claim_is_claimed(self):
         out = self.run_page("""(ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i: '1' } } : null } }));

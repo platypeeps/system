@@ -62,6 +62,7 @@ ROWS = 60
 PRINT_BYTES = 56 * 1024
 #: Longest cell the reader keeps; the page shows a cut cell with an ellipsis.
 CELL = 200
+CONF_CHARS = 1000
 #: A checkout key: its path under REPO_ROOT, one group deep. The first character rules out `.` and `..`.
 KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,99})?")
 
@@ -117,6 +118,7 @@ def document(*, now: str, backend=None) -> dict:
         "error": error,
         "root": found.get("root", ""),
         "projects": projects,
+        "cut": found.get("cut", 0) if isinstance(found.get("cut"), int) else 0,
         "cap": CAP,
         "dirs": list(DIRS),
         "rounds": {"available": False, "reason": ROUNDS_REASON},
@@ -186,16 +188,20 @@ def project(item: dict, root: Path, *, dirs=None) -> dict:
     if isinstance(label, dict):
         label = label.get("name") or label.get("title")
     git = item.get("git")
+    docs = item.get("docs") or []
+    # Every free-text cell is cut at CELL: a config may declare 100 documents with titles of any length.
     return {
         "key": _key(repo, root),
-        "label": label if isinstance(label, str) and label.strip() else item["name"],
+        "label": _cut(label if isinstance(label, str) and label.strip() else item["name"]),
         "path": _shown(repo),
         "dirs": stage(repo) if dirs is None else dirs,
         "render": render(item),
-        "conf": item.get("error") or None,
-        "docs": [{"title": d.get("title", ""), "src": d.get("src", ""), "state": d.get("state", ""),
-                  "updated": d.get("updated", "")} for d in item.get("docs") or []],
-        "git": None if not git else {key: git.get(key) for key in ("branch", "dirty", "behind", "last_iso", "subject")},
+        "conf": _cut(str(item["error"]), CONF_CHARS) if item.get("error") else None,
+        "docs": [{"title": _cut(str(d.get("title", ""))), "src": _cut(str(d.get("src", ""))), "state": d.get("state", ""),
+                  "updated": d.get("updated", "")} for d in docs],
+        "docs_total": len(docs),
+        "git": None if not git else {key: _cut(value) if isinstance(value := git.get(key), str) else value
+                                     for key in ("branch", "dirty", "behind", "last_iso", "subject")},
     }
 
 
@@ -203,7 +209,27 @@ def board(collectors) -> dict:
     root = Path(collectors.REPO_ROOT)
     # Only the checkouts `checkout` accepts, so the board lists no row whose ledger is a 404 and nothing linked out of the root.
     items = [item for item in collectors.collect_research() if checkout(root, _key(Path(item["path"]), root)) == Path(item["path"])]
-    return {"root": _shown(root), "projects": [project(item, root) for item in items]}
+    out = {"root": _shown(root), "projects": [project(item, root) for item in items], "cut": 0}
+    # The page reads the child through a 64 KiB budget: past PRINT_BYTES, drop listed documents from the longest list first
+    # (docs_total and render keep the whole count), then whole projects from the end, counted in "cut".
+    projects, size = out["projects"], _printed(out)
+    while size > PRINT_BYTES and projects:
+        longest = max(projects, key=lambda p: len(p["docs"]))
+        listed = longest["docs"] if longest["docs"] else projects
+        size -= _printed(listed[-1]) + (len(listed) > 1)  # the element and its comma
+        if listed is projects:
+            out["cut"] += 1
+            size += len(str(out["cut"])) - len(str(out["cut"] - 1))
+        listed.pop()
+    return out
+
+
+def _printed(found) -> int:
+    return len(json.dumps(found, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _cut(text: str, limit: int = CELL) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def checkout(root: Path, key: str) -> Path | None:

@@ -163,7 +163,7 @@ function showProject(key) {
       <dt>Last commit</dt><dd>${p.git?.last_iso ? html`<time class="rel" datetime="${p.git.last_iso}"></time> · ${p.git.subject}` : 'not read'}</dd>
       <dt>Stage</dt><dd>${p.dirs ? (p.dirs.join(' · ') || 'numbered layout, no Markdown yet') : 'no numbered layout'}</dd>
       <dt>Render</dt><dd>${p.render.txt}${p.render.sub ? ` · ${p.render.sub}` : ''}</dd>
-      <dt>Documents</dt><dd>${plural(p.docs.length, 'document')} in research.conf.py · <a href="/documents">Documents</a></dd>
+      <dt>Documents</dt><dd>${plural(p.docs_total ?? p.docs.length, 'document')} in research.conf.py${p.docs.length < (p.docs_total ?? 0) ? ` · ${p.docs.length} listed: the board passed its print bound` : ''} · <a href="/documents">Documents</a></dd>
       <dt>Rounds</dt><dd>${ROUNDS}</dd></dl>
     ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until the config declares its data.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
@@ -329,11 +329,13 @@ async function load() {
   PROJECTS = (doc.projects || []).map(p => ({ ...p, s: p.render.s === 'caution' ? 'caution' : p.render.s === 'ok' && !p.conf ? 'ok' : 'unknown' }));
   PROJECTS.forEach(p => shell.commands.put(Object.assign(p, { id: p.key, type: 'research project' })));
   const unknown = PROJECTS.filter(p => p.s === 'unknown').length;
-  put(document.getElementById('sum'), html`${plural(PROJECTS.length, 'project')} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'}`);
+  // build: past its print bound the board lists fewer projects (research_screen.board); say how many are missing.
+  const cut = doc.cut ? ` ${plural(doc.cut, 'project')} not listed: the board passed its print bound.` : '';
+  put(document.getElementById('sum'), html`${plural(PROJECTS.length, 'project')}${doc.cut ? ` · ${plural(doc.cut, 'project')} not listed` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'}`);
   if (doc.error) shell.state({ kind: 'error', text: `The checkouts were not read: ${doc.error}. Reload retries it.`, source: 'collectors.collect_research' });
   else if (!PROJECTS.length) shell.state({ kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' });
-  else if (unknown) shell.state({ kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds and claims are not read: ${ROUNDS}; ${CLAIMS}.`, source: '/api/research' });
-  else shell.state({ kind: 'partial', title: 'No rounds or claims read', text: `${ROUNDS}; ${CLAIMS}.`, source: '/api/research' });
+  else if (unknown) shell.state({ kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds and claims are not read: ${ROUNDS}; ${CLAIMS}.${cut}`, source: '/api/research' });
+  else shell.state({ kind: 'partial', title: 'No rounds or claims read', text: `${ROUNDS}; ${CLAIMS}.${cut}`, source: '/api/research' });
   stateFilter = Object.hasOwn(STATE_WORDS, u.get('state') ?? '') ? u.get('state') : null; // own keys only: ?state=constructor is no state
   if (u.get('q')) { input.value = u.get('q'); filterText = u.get('q').toLowerCase(); }
   renderBoard();
