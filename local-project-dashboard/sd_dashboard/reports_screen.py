@@ -293,7 +293,7 @@ BODY_CHARS = 1400
 #: The local days the run cadence covers, ending today.
 DAYS = 7
 #: How much of a job log is read from its end. A log longer than this is read from the first whole line in it, and the
-#: days before that line are `not read`, never zero runs.
+#: days up to and including that line's day are `not read`, never zero runs: the line can fall partway through its day.
 TAIL_BYTES = 1 << 20
 #: How far back `last_scheduled` looks for a job's last scheduled run: a year and a little, so a yearly job has one.
 LOOKBACK = 400

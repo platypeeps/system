@@ -394,6 +394,21 @@ class TheScript(ScreenCase):
         # With every job's log read and no failure, the lamp is still all clear.
         self.assertRegex(lamps(json.loads(json.dumps(self.doc))), r'data-fam="scan" data-state="ok"')
 
+    def test_the_day_a_cut_read_begins_on_is_unknown_not_clean_failed_or_missing(self):
+        # A cut read can start partway through its first day, so that day was not read in full.
+        doc = json.loads(json.dumps(self.doc))
+        sync = doc["cadence"]["nightly-sync"]
+        sync["read_from"] = DAYS[4]
+        sync["runs"][DAYS[3]], sync["runs"][DAYS[4]], sync["runs"][DAYS[5]] = [0, 0], [1, 0], [0, 0]
+        cases = {"clean": [1, 0], "failed": [0, 1], "no run logged": [0, 0]}
+        for case, runs in cases.items():
+            with self.subTest(case):
+                sync["runs"][DAYS[4]] = runs
+                out = self.run_page(f"R.marks = [3, 4, 5].map(i => mark('nightly-sync', DAYS[i]));", doc=doc)
+                self.assertEqual(out["R"]["marks"][0], ["unknown", "▨", "not read"])
+                self.assertEqual(out["R"]["marks"][1], ["unknown", "▨", "not read"])
+                self.assertEqual(out["R"]["marks"][2], ["caution", "▲", "no run logged"])
+
     def test_a_job_that_has_not_run_yet_today_is_not_a_gap(self):
         doc = json.loads(json.dumps(self.doc))
         doc["cadence"]["nightly-sync"]["runs"][DAYS[6]] = [0, 0]
