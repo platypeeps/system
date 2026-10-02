@@ -18,7 +18,8 @@ README says so, and `JEV_COMPARE_HAIKU_VIA=off` stops it.
 **Nothing may depend on it.** Every failure here is a row with a decline
 reason, or nothing at all. Stdlib only, like `jev.py`.
 
-Run as `python3 jev_compare.py REQUEST_FILE`; the file is deleted on read.
+Run as `python3 jev_compare.py -` with the request on stdin, as `jev.py`
+starts it, or as `python3 jev_compare.py REQUEST_FILE`, deleted on read.
 """
 
 from __future__ import annotations
@@ -60,7 +61,11 @@ KEV_REQUEST_MODEL = "kev-latest"
 DEFAULT_USD_IN = 1.0
 DEFAULT_USD_OUT = 5.0
 
-MAX_TOKENS = 1024
+#: Haiku 4.5's largest output, in tokens. A reply that could need more is
+#: declined before the paid call rather than cut off after it.
+MAX_OUTPUT_TOKENS = 64000
+#: Room beyond the reply itself: whitespace and a code fence.
+OUTPUT_SLACK = 256
 
 #: The transports, their endpoints, the variables holding their keys (the
 #: first set one wins), and their model names for Claude Haiku 4.5.
@@ -137,6 +142,31 @@ def score_confidence(p: list[float]) -> float:
     mode = max(range(levels), key=p.__getitem__)
     spread = sum(abs(i - (levels - 1) / 2) for i in range(levels)) / levels
     return max(0.0, 1.0 - sum(pi * abs(i - mode) for i, pi in enumerate(p)) / spread)
+
+
+def output_cap(question: dict) -> int:
+    """The output tokens a full reply to `question` can need.
+
+    The reply repeats every option key with a probability beside it. A token
+    is at least one byte, so the reply's UTF-8 length bounds its tokens.
+    """
+    if question["type"] == "noul":
+        widest = {"probability": 0.123456}
+    else:
+        widest = {"probabilities": {key: 0.123456 for key in options(question)}}
+    cap = len(json.dumps(widest, indent=2).encode("utf-8")) + OUTPUT_SLACK
+    if cap > MAX_OUTPUT_TOKENS:
+        raise Declined("invalid", "invalid",
+                       f"a full reply could need {cap} output tokens; "
+                       f"Haiku writes at most {MAX_OUTPUT_TOKENS}")
+    return cap
+
+
+def money(value) -> float | None:
+    """A reported cost: a finite JSON number of zero or more, else none."""
+    if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+        return float(value)
+    return None
 
 
 def options(question: dict) -> list[str]:
@@ -311,7 +341,7 @@ def count(value) -> int | None:
 def ask_anthropic(conf: dict, user: str, schema: dict) -> dict:
     reply = http_json(conf["url"], {
         "model": conf["model"],
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": conf["max_tokens"],
         "system": SYSTEM,
         "messages": [{"role": "user", "content": user}],
         "output_config": {"format": {"type": "json_schema", "schema": schema}},
@@ -327,7 +357,7 @@ def ask_openai_compatible(conf: dict, user: str, schema: dict) -> dict:
     """OpenRouter and Baseten: OpenAI-compatible chat completions."""
     body = {
         "model": conf["model"],
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": conf["max_tokens"],
         "messages": [{"role": "system", "content": SYSTEM},
                      {"role": "user", "content": user}],
         "response_format": {"type": "json_schema",
@@ -347,7 +377,7 @@ def ask_openai_compatible(conf: dict, user: str, schema: dict) -> dict:
     cost = usage.get("cost")
     return {"reply": text, "tokens_in": count(usage.get("prompt_tokens")),
             "tokens_out": count(usage.get("completion_tokens")),
-            "usd": float(cost) if type(cost) in (int, float) and cost >= 0 else None}
+            "usd": money(cost)}
 
 
 def ask_claude_cli(conf: dict, user: str, schema: dict) -> dict:
@@ -388,7 +418,7 @@ def ask_claude_cli(conf: dict, user: str, schema: dict) -> dict:
             "tokens_in": sum(c for c in counted if c is not None) if any(
                 c is not None for c in counted) else None,
             "tokens_out": count(usage.get("output_tokens")),
-            "usd": float(cost) if type(cost) in (int, float) and cost >= 0 else None,
+            "usd": money(cost),
             "server_ms": count(result.get("duration_api_ms"))}
 
 
@@ -403,7 +433,7 @@ def timeout_of(env) -> float:
         value = float((env.get("JEV_COMPARE_TIMEOUT") or "").strip() or DEFAULT_TIMEOUT)
     except ValueError:
         return DEFAULT_TIMEOUT
-    return value if value > 0 else DEFAULT_TIMEOUT
+    return value if math.isfinite(value) and value > 0 else DEFAULT_TIMEOUT
 
 
 def price(env, name: str, default: float | None) -> float | None:
@@ -415,7 +445,7 @@ def price(env, name: str, default: float | None) -> float | None:
         value = float(text)
     except ValueError:
         return default
-    return value if value >= 0 else default
+    return value if math.isfinite(value) and value >= 0 else default
 
 
 def haiku_via(env) -> str:
@@ -521,16 +551,20 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
         # One request per question, concurrently: Jev answers each question
         # of a request in isolation, and one prompt holding them all would
         # let the model read one answer into another.
+        # A reply that arrived and could not be used was still billed, so it
+        # keeps its tokens and cost beside the decline.
         def one(qid, question):
+            reply = None
             try:
                 user, schema = prompt(state, question)
-                reply = ASK[via](conf, user, schema)
+                ask = dict(conf, max_tokens=output_cap(question))
+                reply = ASK[via](ask, user, schema)
                 reply["answer"] = to_answer(question, parse_reply(reply["reply"], question))
                 results[qid] = reply
-            except Declined as exc:
-                results[qid] = exc
             except Exception as exc:                 # a defect here is a decline
-                results[qid] = Declined("invalid", "invalid", repr(exc))
+                if not isinstance(exc, Declined):
+                    exc = Declined("invalid", "invalid", repr(exc))
+                results[qid] = dict(reply, declined=exc) if reply else exc
 
         threads = [threading.Thread(target=one, args=item, daemon=True)
                    for item in questions.items()]
@@ -558,7 +592,8 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
     servers = [r.get("server_ms") for r in replies if isinstance(r, dict)]
     if servers and all(s is not None for s in servers):
         event["server_ms"] = max(servers)
-    failed = next((r for r in replies if isinstance(r, Declined)), None)
+    failed = next((r if isinstance(r, Declined) else r["declined"] for r in replies
+                   if isinstance(r, Declined) or "declined" in r), None)
     if failed is not None:
         raise failed
     event.update(read_answers(job, {qid: r["answer"] for qid, r in zip(questions, replies)}))
@@ -594,16 +629,19 @@ def main(argv=None, env=None) -> int:
     env = os.environ if env is None else env
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) != 1:
-        sys.stderr.write("usage: jev_compare.py REQUEST_FILE\n")
+        sys.stderr.write("usage: jev_compare.py -|REQUEST_FILE\n")
         return 1
-    path = Path(argv[0])
-    try:
-        job = json.loads(path.read_text(encoding="utf-8"))
-    finally:
+    if argv[0] == "-":
+        job = json.load(sys.stdin)
+    else:
+        path = Path(argv[0])
         try:
-            path.unlink()
-        except OSError:
-            pass
+            job = json.loads(path.read_text(encoding="utf-8"))
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
     work = []
     if not jev.stage_off("JEV_COMPARE_KEV", env):
         work.append(("kev", lambda: kev_arm(job, env)))

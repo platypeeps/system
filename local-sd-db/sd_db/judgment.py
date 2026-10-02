@@ -56,6 +56,7 @@ that is an identifier naming the rule that produced it (sd:2107).
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 from decimal import Decimal
@@ -361,8 +362,9 @@ def record(
     questions = _count("questions", questions)
     server_ms = _count("server_ms", server_ms)
     probabilities = _probabilities(probabilities)
-    if usd is not None and (type(usd) not in (int, float) or usd < 0):
-        raise JudgmentRefused(f"usd must be a number of zero or more; got {usd!r}")
+    if usd is not None and (type(usd) not in (int, float) or not math.isfinite(usd)
+                            or usd < 0):
+        raise JudgmentRefused(f"usd must be a finite number of zero or more; got {usd!r}")
     moment = _now() if now is None else stamp(now)
     with transaction(connection):
         cursor = connection.execute(
@@ -423,6 +425,10 @@ def label(
             raise JudgmentRefused(
                 f"row {row_id} recorded no answer (a failed call or a batch); "
                 f"a label on it could only ever count as wrong")
+        if row["primitive"] == "choice" and _position(override) is None:
+            raise JudgmentRefused(
+                f"a choice is labelled with the position that was right, a whole "
+                f"number from 1; got {override!r}")
         if row["override"] is not None:
             if same_number(row["override"], override):
                 return False
@@ -845,11 +851,21 @@ def top(row) -> int | None:
     return int(value)
 
 
-def _truth(primitive: str, override: str) -> int:
-    """The label as `top` reads an answer."""
+def _position(value: str) -> int | None:
+    """A choice's position, a whole number from 1, or None."""
+    number = float(value)
+    return int(number) if number.is_integer() and number >= 1 else None
+
+
+def _truth(primitive: str, override: str) -> int | None:
+    """The label as `top` reads an answer. Only a score rounds: a choice
+    label is a position, and one that is not whole (written before `label`
+    checked) is no label rather than the nearest position."""
     value = float(override)
     if primitive == "noul":
         return 1 if value >= 0.5 else 0
+    if primitive == "choice":
+        return _position(override)
     return int(round(value))
 
 
@@ -926,8 +942,8 @@ def compare(
             entry["agree"] = (entry["agree"] or 0) + (top(row) == top(jev))
             if row["primitive"] == "noul":
                 entry["_dp"].append(abs(float(row["answer"]) - float(jev["answer"])))
-        if key in labels:
-            truth = _truth(row["primitive"], labels[key])
+        truth = _truth(row["primitive"], labels[key]) if key in labels else None
+        if truth is not None:
             entry["labelled"] += 1
             entry["right"] += top(row) == truth
             score = brier(row, truth)

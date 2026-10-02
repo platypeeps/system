@@ -285,7 +285,8 @@ prints each rule's known blind spot beside the stage it labelled.
 instead of opening the database itself. The same label twice changes nothing;
 a different label is refused unless `--replace` says to overwrite it.
 A `kev` or `haiku` comparison row is refused: a pair's label lives on its
-Jev row.
+Jev row. A choice is labelled with a whole position from 1; a fractional
+choice label written before that check is ignored, not rounded.
 
     sd-db.sh judgments unlabelled --stage JEV_SD_REVIEW --prefix sd-review-tier: --json
     sd-db.sh judgments label --row 42 --override 3 --source outcome.example

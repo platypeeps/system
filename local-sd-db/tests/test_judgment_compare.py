@@ -101,6 +101,20 @@ class TheArms(CompareCase):
                 label(self.connection, row, "1", "test-rule")
             self.assertIsNone(self.row(row)["override"])
 
+    def test_a_cost_that_is_not_finite_is_refused(self):
+        for value in (float("inf"), float("nan")):
+            with self.subTest(value=value), self.assertRaises(JudgmentRefused):
+                self.write(usd=value)
+
+    def test_a_choice_label_must_be_a_whole_position(self):
+        row = self.write(arm="jev", primitive="choice", answer="2")
+        for value in ("1.6", "0", "2.5"):
+            with self.subTest(value=value), self.assertRaises(JudgmentRefused):
+                label(self.connection, row, value, "test-rule")
+        self.assertTrue(label(self.connection, row, "2", "test-rule"))
+        score = self.write(arm="jev", primitive="score", answer="1.6")
+        self.assertTrue(label(self.connection, score, "1.6", "test-rule"))
+
     def test_probabilities_that_are_not_numbers_are_refused(self):
         for value in ("returns,shipping", "0.5;0.5", "0.5, 0.5", "/home/x", ""):
             with self.subTest(value=value), self.assertRaises(JudgmentRefused):
@@ -216,6 +230,16 @@ class TheComparison(CompareCase):
                 "WHERE id = ?", (kev,))
         report = compare(self.connection)
         for name in ("kev", "haiku"):
+            self.assertEqual(self.arm(report, name)["labelled"], 0)
+
+    def test_a_fractional_choice_label_from_before_the_check_is_ignored(self):
+        jev, _, _ = self.decision("a", "2", "2", "1", primitive="choice")
+        with self.connection:
+            self.connection.execute(
+                "UPDATE judgment SET override = '1.6', override_source = 'test-rule' "
+                "WHERE id = ?", (jev,))
+        report = compare(self.connection)
+        for name in ("jev", "kev", "haiku"):
             self.assertEqual(self.arm(report, name)["labelled"], 0)
 
     def test_a_score_agrees_and_is_right_on_the_recorded_score_not_the_mode(self):

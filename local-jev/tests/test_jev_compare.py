@@ -47,6 +47,8 @@ class Arm(BaseHTTPRequestHandler):
     seen = []
     # What a prompt-adapted model answers, as the JSON text it would write.
     reply = None
+    # What OpenRouter reports the call cost; json.dumps writes inf as Infinity.
+    cost = 0.000185
 
     def log_message(self, *args):
         pass
@@ -73,7 +75,7 @@ class Arm(BaseHTTPRequestHandler):
                    "usage": {"prompt_tokens": 130, "completion_tokens": 11}}
             # OpenRouter reports the call's cost; Baseten does not.
             if self.path.startswith("/api/"):
-                out["usage"]["cost"] = 0.000185
+                out["usage"]["cost"] = Arm.cost
         data = json.dumps(out).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -126,6 +128,7 @@ class CompareCase(MeteringCase):
         Arm.status = 200
         Arm.seen = []
         Arm.reply = None
+        Arm.cost = 0.000185
         self.bin = Path(tempfile.mkdtemp())
 
     def env(self, **extra):
@@ -412,6 +415,21 @@ class TheHaikuArm(CompareCase):
                 self.assertEqual((row["outcome"], row["cause"]), ("invalid", "invalid"))
                 self.assertIsNone(row["answer"])
 
+    def test_an_unusable_reply_keeps_the_tokens_and_cost_it_was_billed(self):
+        Arm.reply = "I think probably yes."
+        row = self.haiku("anthropic", JEV_COMPARE_ANTHROPIC_KEY="k")
+        self.assertEqual((row["outcome"], row["cause"]), ("invalid", "invalid"))
+        self.assertEqual((row["tokens_in"], row["tokens_out"]), (120, 9))
+        self.assertAlmostEqual(row["usd"], (120 * 1 + 9 * 5) / 1e6)
+
+    def test_a_reported_cost_that_is_not_finite_is_no_cost(self):
+        Arm.cost = float("inf")    # 1.0 would read as one dollar, not as a fallback
+        row = self.haiku("openrouter", JEV_COMPARE_OPENROUTER_KEY="k")
+        self.assertEqual(row["outcome"], "ok")
+        self.assertEqual((row["tokens_in"], row["tokens_out"]), (130, 11))
+        # The reported cost is dropped, so the list price prices the tokens.
+        self.assertAlmostEqual(row["usd"], (130 * 1 + 11 * 5) / 1e6)
+
     def test_a_reply_that_is_not_json_is_invalid(self):
         Arm.reply = "I think probably yes."
         row = self.haiku("anthropic", JEV_COMPARE_ANTHROPIC_KEY="k")
@@ -552,8 +570,74 @@ class TheConfigFile(CompareCase):
         self.assertEqual((kev["outcome"], kev["model"]), ("ok", "example/kev-pinned"))
 
 
+class TheOutputCap(CompareCase):
+    """The Haiku request's output cap holds the whole reply it asks for."""
+
+    def ask(self, keys):
+        job = {"payload": {"state": "s", "questions": {"q": {
+            "type": "choice", "instructions": "which?",
+            "criteria": {key: None for key in keys}}}}}
+        env = {"JEV_COMPARE_ANTHROPIC_URL": self.base + "/v1/messages",
+               "JEV_COMPARE_ANTHROPIC_KEY": "k", "JEV_COMPARE_TIMEOUT": "10"}
+        return jev_compare.haiku_arm(job, env, "anthropic")
+
+    def test_the_cap_fits_a_reply_over_every_option_kev_takes(self):
+        keys = [f"option-number-{i:03d}" for i in range(255)]
+        reply = json.dumps({"probabilities": {key: 0.0039 for key in keys}})
+        Arm.reply = reply
+        self.ask(keys)
+        self.assertGreaterEqual(Arm.seen[0]["body"]["max_tokens"], len(reply.encode()))
+
+    def test_a_reply_no_cap_could_hold_is_declined_before_the_call(self):
+        keys = [f"{i:03d}-" + "x" * 600 for i in range(255)]
+        with self.assertRaises(jev_compare.Declined) as caught:
+            self.ask(keys)
+        self.assertEqual(caught.exception.cause, "invalid")
+        self.assertEqual(Arm.seen, [])
+
+
+class TheRequestFile(unittest.TestCase):
+    """The redacted request never outlives the spawn."""
+
+    def test_no_request_file_is_left_when_the_child_never_reads_it(self):
+        from unittest import mock
+        folder = tempfile.mkdtemp()
+        self.addCleanup(os.rmdir, folder)
+        started = []
+        saved = (jev._EVENT, jev._ENV, tempfile.tempdir)
+        self.addCleanup(lambda: (setattr(jev, "_EVENT", saved[0]),
+                                 setattr(jev, "_ENV", saved[1]),
+                                 setattr(tempfile, "tempdir", saved[2])))
+        jev._EVENT = {"caller": "c", "stage": "S", "primitive": "noul", "questions": 1}
+        jev._ENV = {"JEV_METER": "1", "JEV_COMPARE_KEV": "1",
+                    "JEV_COMPARE_HAIKU_VIA": "off"}
+        tempfile.tempdir = folder
+        # A child that dies before it reads: Popen starts nothing.
+        with mock.patch("subprocess.Popen",
+                        side_effect=lambda argv, **kw: started.append((argv, kw))):
+            jev.start_arms({"questions": {"q": {"type": "noul"}}})
+        self.assertEqual(len(started), 1)
+        self.assertEqual(os.listdir(folder), [])
+        argv, kw = started[0]
+        self.assertNotIn(folder, " ".join(argv))
+
+
 class Shaping(unittest.TestCase):
     """The adapter's arithmetic, without a process."""
+
+    def test_a_distribution_that_is_not_finite_is_no_distribution(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=bad):
+                self.assertIsNone(jev.distribution_of(
+                    {"probabilities": {"a": bad, "b": 0.5}},
+                    {"type": "choice", "criteria": {"a": None, "b": None}}))
+
+    def test_a_price_or_timeout_that_is_not_finite_is_the_default(self):
+        for text in ("inf", "Infinity", "1e309", "nan", "-inf"):
+            with self.subTest(text=text):
+                self.assertEqual(jev_compare.price({"P": text}, "P", 1.0), 1.0)
+                self.assertEqual(jev_compare.timeout_of({"JEV_COMPARE_TIMEOUT": text}),
+                                 jev_compare.DEFAULT_TIMEOUT)
 
     def test_confidences_mirror_the_reference_adapter(self):
         self.assertAlmostEqual(jev_compare.choice_confidence([0.47, 0.28, 0.25]),

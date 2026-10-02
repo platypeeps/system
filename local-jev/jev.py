@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -504,7 +505,10 @@ def distribution_of(answer: dict, definition: dict) -> str | None:
     else:
         keys = [str(i) for i in range(len(definition.get("criteria") or ()))]
     values = [found.get(key) for key in keys]
-    if not keys or any(type(v) not in (int, float) or v < 0 for v in values):
+    # NaN and Infinity parse as JSON here; the ledger refuses `nan`, and that
+    # refusal would cost the whole Jev row, so they are no distribution.
+    if not keys or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
+                       for v in values):
         return None
     return ",".join(f"{float(v):.4f}" for v in values)
 
@@ -953,7 +957,7 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
 
 def start_arms(payload: dict) -> str:
     """Start the comparison arms for this call in a detached child, and do not
-    wait for it. Returns the request file's path, or "" when nothing started.
+    wait for it. Returns "started", or "" when nothing started.
 
     Only for a measured call (`status` is not one) and only with the meter
     on: an arm exists to write a row, and with nothing to write it to it
@@ -964,14 +968,14 @@ def start_arms(payload: dict) -> str:
     all three standard streams. A child holding the caller's stdout would
     keep a `$(jev ...)` waiting until the slowest arm finished; that is the
     case `test_a_hung_arm_does_not_delay_a_piped_caller` pins. The request
-    goes through a 0600 file the child deletes on read, because writing it
-    to a pipe would block here until the child had started.
+    goes through an unnamed 0600 file, already unlinked, that the child gets
+    as its stdin: a pipe would block here until the child had started, and a
+    named file would outlive a child that died before reading it.
     """
     global _EVENT
     env = _ENV
     if _EVENT is None or env is None or jev_meter is None:
         return ""
-    path = ""
     try:
         if not jev_meter.switched_on(env):
             return ""
@@ -985,27 +989,23 @@ def start_arms(payload: dict) -> str:
         job = {key: _EVENT.get(key) for key in
                ("caller", "stage", "pair", "question_id", "primitive", "questions")}
         job["payload"] = payload
-        fd, path = tempfile.mkstemp(prefix="jev-compare-", suffix=".json")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(job, fh)
         log = (env.get("JEV_COMPARE_LOG") or "").strip()
-        errors = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
-        try:
-            subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve().with_name("jev_compare.py")),
-                 path],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
-                start_new_session=True, close_fds=True, env=dict(env))
-        finally:
-            if log:
-                errors.close()
-        return path
-    except Exception:
-        if path:
+        with tempfile.TemporaryFile("w+", encoding="utf-8", prefix="jev-compare-") as fh:
+            json.dump(job, fh)
+            fh.flush()
+            fh.seek(0)
+            errors = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
             try:
-                os.unlink(path)
-            except OSError:
-                pass
+                subprocess.Popen(
+                    [sys.executable,
+                     str(Path(__file__).resolve().with_name("jev_compare.py")), "-"],
+                    stdin=fh, stdout=subprocess.DEVNULL, stderr=errors,
+                    start_new_session=True, close_fds=True, env=dict(env))
+            finally:
+                if log:
+                    errors.close()
+        return "started"
+    except Exception:
         return ""
 
 

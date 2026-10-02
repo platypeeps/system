@@ -52,11 +52,12 @@ caller's process-group kill from taking the arms with it.
 call runs CoreFoundation proxy lookup in a process that forked, which is the
 known Objective-C fork-safety crash. A fresh interpreter has no such state.
 
-The request reaches the child through a `0600` temporary file that the child
-deletes as soon as it has read it. A pipe was rejected: a payload over the pipe
-buffer would block the parent's write until the child had started, which is
-time the caller waits. The file holds the payload after redaction, exactly the
-bytes that leave the machine; it lives for the child's start-up time only.
+The request reaches the child as its stdin: a `0600` temporary file, unlinked
+before the child starts, so no name is left behind if the child dies before
+reading it. A pipe was rejected: a payload over the pipe buffer would block
+the parent's write until the child had started, which is time the caller
+waits. The file holds the payload after redaction, exactly the bytes that
+leave the machine, and the disk space goes when the child closes it.
 
 The child bounds itself. Each arm has `JEV_COMPARE_TIMEOUT` seconds (default
 60), and the child exits when every arm has finished or timed out.
