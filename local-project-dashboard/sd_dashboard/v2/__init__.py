@@ -1,7 +1,7 @@
 """The dashboard's default UI: the design source's shell, and the pages built on it so far (sd:2110, sd:2163, sd:2124, sd:2118, sd:2117, sd:2114).
 
-The design source is ui-design `products/system/` (`design.md`, `designs/v2/`,
-`foundation/`); `static/` holds its shell, tokens and fonts as the files the
+The design source is ui-design `products/system/` (`design.md`, `designs/pages/`,
+formerly `designs/v2/`, and `foundation/`); `static/` holds its shell, tokens and fonts as the files the
 dashboard policy allows (`default-src 'self'`: no inline style or script, no
 font from another origin). `static/shell.js` marks each change from the
 reference with `build:`.
