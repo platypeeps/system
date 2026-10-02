@@ -125,6 +125,10 @@ class TheTile(unittest.TestCase):
         self.assertEqual((row["stem"], row["kind"], row["day"], row["lead"]),
                          ("2026-09-06 - Intel Brief", "Intel Brief", "2026-09-06", "# Intel Three items worth reading."))
         self.assertRegex(row["at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        # Lead check: no local path reaches the browser; the note is vault-relative and the link names the vault only.
+        sent = json.dumps(briefs_screen.document(now=NOW, reader=lambda: got))
+        self.assertNotIn(directory, sent)
+        self.assertNotIn(str(Path(directory).resolve()), sent)
 
 
 class TheDocument(ScreenCase):
