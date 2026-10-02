@@ -75,6 +75,26 @@ unlock and toggle commands are registered but off with it, so the page sends
 nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
 `$HA_URL` and never holds a value.
 
+Contributions is at `/contributions` (sd:2113): the open rows of the
+contributions projection v1 renders, in lanes by who acts next, with each
+row's repository scope (internal when sd's repo table holds it) and settled
+rows counted per repository. `GET /api/contributions/page`
+(`contribution_screen.document`) carries at most `OPEN_LIMIT` open rows and
+says when it cut some; its per-scope counts, which the badge, lamps and tallies
+read, cover every open row. It sends no local path: a checkout reads
+`local: <folder>`, and a draft is the flag `has_draft`. The dashboard reads nothing from GitHub, so the design's
+"GitHub now" state and settled-per-day chart say they are not read.
+Acknowledge and Make task ask first, since no verb reverses either.
+Acknowledge posts to the v1 route. Make task posts `/api/contributions/task`,
+which files the task `sd task contribution add` files, with the row's URL as
+its identity: the projection links the two, and a second task for the URL is
+refused. A write's toast reports the write; the reread after it is separate,
+and only the newest reread draws. A row a reread no longer lists loses its
+pick and its commands. Settled rows count per stored repository, so two
+checkouts with one folder name stay two bars. Draft nudge, Open on GitHub and
+Re-run collector are copy only. The old screen moved to `/classic/contributions`; it still shows
+evidence, dependencies and notification delivery.
+
 Briefs is at `/briefs` (sd:2112): the brief notes the vault's
 `System/AI Generated/Briefs` folder holds, as cadence lanes per source and a
 ledger, over 24 hours, 7 or 30 days. `GET /api/briefs`
@@ -141,8 +161,9 @@ Retry posts the job route, as Management does. No status mail is read: the
 dashboard holds no message store. The old screen stays in the palette as
 Reports (classic) for the Resources views and the attributed batch.
 
-The old screens stay until their section is ported. Only the old Today moved,
-to `/classic/today`; every other old screen keeps its path. A `/v2/` address
+The old screens stay until their section is ported. The old Today moved to
+`/classic/today` and the old Contributions to `/classic/contributions`; every
+other old screen keeps its path. A `/v2/` address
 that names a page or an asset answers 301 with its new one (`/v2/today` to
 `/today`, `/v2/static/<file>` to `/ui/<file>`); any other `/v2/` path is a 404.
 One map in `sd_dashboard/v2/__init__.py`, served as `/ui/sections.js`, says
@@ -160,7 +181,7 @@ Classic screens.
 | Research | `/research` (new) |
 | Reports | `/reports` (new) |
 | Writing | `/writing` |
-| Contributions | `/contributions` |
+| Contributions | `/contributions` (new) |
 | Documents | `/documents` |
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
@@ -169,7 +190,7 @@ Classic screens.
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
 | Notes, HOA, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Reports (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic) | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
+| Palette: Today (classic), Backlog (classic), Reports (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
@@ -206,7 +227,7 @@ still a separate CLI operation that verifies its commit. An item's external
 reference is shown with its snapshot and sync freshness; an old GitHub status
 does not control local task completion.
 
-**Contributions** at `/contributions` shows upstream activity, unfiled local work, evidence, dependencies, and notification state.
+**Contributions (classic)** at `/classic/contributions` shows upstream activity, unfiled local work, evidence, dependencies, and notification state.
 Today previews the first five contributions in the same order.
 Newly unblocked work comes first, then work awaiting you, work awaiting others, and merged contributions.
 The shared library supplies this order to both the dashboard and `sd-status`.
