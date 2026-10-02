@@ -415,13 +415,13 @@ document.getElementById('view-repos').addEventListener('click', e => {
 
 // ---------- Writes (build) ----------
 // landing(): the run returns the write's promise, the shell's run contract (shell.js, bulk:start; sd:2124). The shell toasts
-// the text once the write landed, offers Undo only then, and folds a bulk group into one toast. `inverse` reverses this
-// write, once. A 409 reads the document again, since the row it named has moved.
+// the text once the write landed, offers Undo only then, and folds a bulk group into one toast. `inverse` gets what the
+// write answered and reverses this write, once. A 409 reads the document again, since the row it named has moved.
 function landing(promise, msg, inverse) {
   const stale = err => { if (err.stale) load(); throw err; };
-  return promise.then(() => {
+  return promise.then(v => {
     let spent = false;
-    const undo = inverse && (() => { if (spent) return Promise.resolve(false); spent = true; return inverse().catch(stale); });
+    const undo = inverse && (() => { if (spent) return Promise.resolve(false); spent = true; return inverse(v).catch(stale); });
     return { text: msg(), undo };
   }, stale);
 }
@@ -443,7 +443,19 @@ const colOf = field => field === 'runner-merge' ? 'runner_merge' : 'managed';
 const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.latest || [])].find(a => a.id === n);
 async function runner(o, verb) {
   const a = asgOf(o.n); if (!a) throw new Error(`assignment #${o.n} was not read`);
-  await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision });
+  const answer = await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision });
+  await load();
+  return answer;
+}
+// build (local review of PR #50): requeue's Undo cancels the queued attempt the requeue made, with the revision the requeue
+// answered and never a later read's. Once the runner claimed it, or anything else moved it, Undo refuses and Cancel (which
+// asks first) is the way to stop it; the server refuses that revision too.
+async function unrequeue(o, answer) {
+  if (!answer || answer.status !== 'queued' || !answer.revision) throw new Error('the requeue answered no queued attempt to reverse');
+  const now = asgOf(o.n);
+  if (!now || now.status !== 'queued' || now.revision !== answer.revision)
+    throw new Error(`assignment #${o.n} is ${now ? now.status : 'not read'} now; Undo cancels only the queued attempt the requeue made, so use Cancel`);
+  await post(`/api/runner/${o.n}/cancel`, { revision: answer.revision });
   await load();
 }
 
@@ -486,7 +498,7 @@ function registerCommands() {
     // Requeue's Undo is sd runner cancel while the run is still queued (commands.md).
     { id: 'asg.requeue', on: 'assignment', label: 'Requeue', key: 'q', risk: 'undo', bulk: true, primary: o => o.status === 'blocked',
       when: o => o.status === 'blocked' || `the assignment is ${o.status}`, cli: o => `sd runner requeue ${o.n}`,
-      run: o => landing(runner(o, 'requeue'), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, () => runner(o, 'cancel')),
+      run: o => landing(runner(o, 'requeue'), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, answer => unrequeue(o, answer)),
       undo: undoOf },
     { id: 'asg.cancel', on: 'assignment', label: 'Cancel', key: 'x', risk: 'confirm',
       when: o => ['queued', 'running'].includes(o.status) || `the assignment is ${o.status}, not queued or running`, cli: o => `sd runner cancel ${o.n}`,

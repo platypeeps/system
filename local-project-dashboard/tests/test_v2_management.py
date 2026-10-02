@@ -441,3 +441,26 @@ R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return '
   human([{ Minute: 0 }, { Minute: 30 }])];""")
         self.assertEqual(out["R"]["got"], ["day 15 03:00", "Jan 1 00:05", "day 1 *:30", "daily 03:00", "hourly at :30", "Mon 09:00",
                                            "every 30 min"])
+
+
+class TheRequeueUndo(PageScript):
+    """The lane's local review of f06cbf5: requeue's Undo cancels only the queued attempt the requeue made."""
+
+    def requeue_then(self, between):
+        n = self.ids["blocked"]
+        return n, self.run_page(f"""const asg = () => DOC0.assignments.latest.find(a => a.id === {n});
+C.run(cmd('asg.requeue'), C.get('asg:{n}')); await flush();
+const undo = lastUndo().undo; {between} await load(); await flush();
+await undo(); await flush(); R.toast = lastToast().msg;""",
+                                answer="(p, b) => p.endsWith('/requeue') ? [200, {id: 1, status: 'queued', revision: 'queued-rev'}] : [200, {}]")
+
+    def test_undo_refuses_once_the_runner_claimed_the_assignment(self):
+        n, out = self.requeue_then("Object.assign(asg(), {status: 'running', revision: 'running-rev'});")
+        self.assertEqual([p for p, _, _ in out["posts"]], [f"/api/runner/{n}/requeue"], "Undo cancelled running work")
+        self.assertEqual(out["R"]["toast"],
+                         f"Requeue not undone · #{n} Port the page: assignment #{n} is running now; Undo cancels only the queued attempt the requeue made, so use Cancel")
+
+    def test_undo_cancels_the_queued_attempt_with_the_revision_the_requeue_answered(self):
+        n, out = self.requeue_then("Object.assign(asg(), {status: 'queued', revision: 'queued-rev'});")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]][1:], [(f"/api/runner/{n}/cancel", {"revision": "queued-rev"})])
+        self.assertEqual(out["R"]["toast"], f"Requeue undone · #{n} Port the page")
