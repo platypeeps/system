@@ -15,7 +15,8 @@ calls `collect_ports` in-process (`ports_screen.py`).
 Five when this file was written; Queues joined at 6b-6, and the count is now
 `TABS` rather than a number in a sentence. A new view is a builder and its
 line in that dict, plus its name and ceiling in `reports_screen.py` (`VIEWS`,
-`VIEW_SECONDS`).
+`VIEW_SECONDS`). `briefs-rows` is a tab and not a view: the Briefs page
+(`sd_dashboard/briefs_screen.py`) runs it for its rows as data (sd:2112).
 
 **One invocation per tab.** A Resources view runs `sd_tile.py <name>` once per
 view, under five seconds and 64KB, as the pack's loader ran
@@ -536,6 +537,30 @@ def tab_briefs(collectors) -> dict:
     return {"title": "Briefs", "html": "".join(parts), "rows": []}
 
 
+# The Briefs page's rows (`sd_dashboard/briefs_screen.py`), as data rather than
+# a table: the same reader, the same five seconds, and its own cap on bytes.
+# A row carries its lead, so the 200-row cap alone could pass the 64KB budget;
+# rows stop at whichever cap comes first, and `shown` says where they stopped.
+BRIEF_JSON_BYTES = 48 * 1024
+#: The fields a row carries to the page; the vault's absolute path is not one.
+BRIEF_FIELDS = ("stem", "rel", "kind", "day", "at", "words", "lead", "obsidian")
+
+
+def tab_brief_rows(collectors) -> dict:
+    """The newest briefs as rows, within `BRIEF_ROWS` and `BRIEF_JSON_BYTES`."""
+    got = collectors.collect_briefs()
+    rows, spent = [], 0
+    for brief in got["briefs"][:BRIEF_ROWS]:
+        row = {key: brief.get(key) for key in BRIEF_FIELDS}
+        size = len(json.dumps(row)) + 1
+        if spent + size > BRIEF_JSON_BYTES:
+            break
+        rows.append(row)
+        spent += size
+    return {"title": "Briefs", "briefs": rows, "total": got["total"], "shown": len(rows),
+            "folder": "System/AI Generated/Briefs"}
+
+
 def tab_vault(collectors) -> dict:
     """Vault areas, and the task and inbox pressure behind them."""
     got = collectors.collect_areas()
@@ -849,6 +874,7 @@ def tab_queues(collectors) -> dict:
 TABS = {
     "toolbox": tab_toolbox,
     "briefs": tab_briefs,
+    "briefs-rows": tab_brief_rows,
     "vault": tab_vault,
     "research": tab_research,
     "ports": tab_ports,
