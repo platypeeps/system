@@ -315,6 +315,7 @@ class SetupAndStatusTest(unittest.TestCase):
         self.fixture = Fixture()
         self.fixture.serve_status.write_text(ROUTE_ABSENT)
         self.addCleanup(self.fixture.destroy)
+        fixture_config.seal(self, self.fixture.stubs)
 
     def stage_lines(self, verb, stage, **extra):
         result = self.fixture.run(verb, *(["personal"] if verb == "setup" else []), stage, **extra)
@@ -416,6 +417,7 @@ class DoctorTest(unittest.TestCase):
     def setUp(self):
         self.fixture = Fixture()
         self.addCleanup(self.fixture.destroy)
+        fixture_config.seal(self, self.fixture.stubs)
 
     def doctor(self, **extra):
         result = self.fixture.run("doctor", "sd", **extra)

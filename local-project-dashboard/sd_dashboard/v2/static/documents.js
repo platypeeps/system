@@ -157,8 +157,8 @@ tbody.addEventListener('click', e => {
 // page memory, which a reload loses.
 const NO_STORE = 'no CLI: view state; no document store yet';
 const storeOff = () => STORE || 'no document store yet';
-// build: Disable render has no switch to set. SD_SKIP_RENDER skips every render, documents.conf does not read skip|<key>|<file>
-// yet (sd:1904), and a skip|<key> line hides a root from this list without stopping its render. Both are off with that reason.
+// build: Disable render has no switch to set. SD_SKIP_RENDER skips every render, and a skip|<key>|<file> or skip|<key> line in
+// documents.conf hides a document or a root from this list without stopping its render (sd:1904). Both are off with that reason.
 const NO_SWITCH = 'no render switch: SD_SKIP_RENDER skips every render';
 const DRAFT = { id: 'draft:request', type: 'document request draft', label: 'new document request', title: '', cmd: '' };
 // build: copy only. Filing the item and queueing the runner are two writes, and no verb deletes an item, so no Undo is declared.
@@ -185,8 +185,8 @@ function registerCommands() {
     { id: 'document.untag', on: 'document tag', label: 'Untag', key: 'u', icon: 'x', risk: 'undo', when: storeOff,
       cli: () => 'no CLI: tags live in the document store, which does not exist yet' },
     { id: 'document.skip', on: 'document', label: 'Disable render', key: 's', icon: 'ban', risk: 'safe',
-      when: () => `${NO_SWITCH}, and documents.conf does not read skip|<key>|<file> yet (sd:1904)`,
-      cli: o => `no CLI: proposes skip|${o.key}|${o.file} in documents.conf (a line the dashboard does not read yet, sd:1904)` },
+      when: () => `${NO_SWITCH}, and skip|<key>|<file> in documents.conf hides a document from this list without stopping its render`,
+      cli: o => `no CLI: proposes skip|${o.key}|${o.file} in documents.conf` },
     { id: 'document.skip-repo', on: 'document', label: 'Disable render for repo', key: 'e', icon: 'ban', risk: 'safe',
       when: () => `${NO_SWITCH}, and skip|<key> in documents.conf hides a root from this list without stopping its render`,
       cli: o => `no CLI: proposes skip|${o.key} in documents.conf` },
@@ -239,7 +239,8 @@ function readURL() {
   F.text = (q.get('q') || '').trim().toLowerCase(); F.pinned = q.get('pinned') === '1'; F.hidden = q.get('hidden') === '1';
   const [col, dir] = (q.get('sort') || '').split('.'); if (SORTS.includes(col)) sort = { col, dir: dir === 'asc' ? 1 : -1 };
   if (SIZES.includes(+q.get('size'))) size = +q.get('size');
-  if (+q.get('page') > 1) pageNo = +q.get('page');
+  // A page is decimal digits: ?page=1.5 sliced mid-page and pressed no pager button, and Number('0x2') is 2 (sd:2427).
+  const page = q.get('page') || ''; if (/^[1-9]\d*$/.test(page) && Number.isSafeInteger(+page)) pageNo = +page;
   if (F.text) input.value = F.text;
 }
 function writeURL() {
@@ -365,51 +366,57 @@ window.PAGE_COMMANDS = [
   { label: 'Show hidden documents', icon: 'eye-off', run: () => { F.hidden = true; render(); } },
 ];
 
-// ---------- Start (build: read /api/documents, then draw) ----------
-async function getJSON(path) {
-  const r = await fetch(path, { headers: { Accept: 'application/json' } });
-  const out = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-  return out;
-}
+// ---------- Start (build: read /api/documents through shell.read, then draw) ----------
+// The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws, a document the read no longer
+// lists runs no command, and a failed read clears the rows, the rail and Details.
 function attention() {
   const n = DOCS.filter(d => d.stale && !d.hidden).length;
-  window.PAGE_ATTENTION = n ? { state: 'caution', n, what: 'render-stale documents' } : { state: 'ok', n: 0, what: 'render-stale documents' };
+  window.PAGE_ATTENTION = !DOC ? { state: 'unknown', n: 0, what: 'documents not read' }
+    : n ? { state: 'caution', n, what: 'render-stale documents' } : { state: 'ok', n: 0, what: 'render-stale documents' };
   window.shell.attention?.(window.PAGE_ATTENTION);
 }
-async function load() {
-  shell.state({ kind: 'loading', text: 'Reading the document roots. Rows appear when /api/documents answers.', source: '/api/documents' });
-  try { DOC = await getJSON('/api/documents'); } catch (err) {
-    shell.state({ kind: 'error', text: `The documents were not read: ${err.message}. Reload retries it.`, source: '/api/documents' });
-    return;
-  }
+const shownPage = () => sorted(DOCS.filter(matches)).slice((pageNo - 1) * size, pageNo * size);
+let reading = null, linked = false;
+function adopt(doc) {
+  DOC = doc;
   OBSERVED = Date.parse(DOC.read) || Date.now();
   document.body.dataset.observed = DOC.read; // shell time cells count from the reading, not from now
   ROOTS = DOC.roots || []; LABEL = Object.fromEntries(ROOTS.map(r => [r.key, r.label])); STORE = DOC.store?.available ? '' : (DOC.store?.reason || 'no document store yet');
   DOCS = (DOC.documents || []).map(r => ({ id: `${r.key}/${r.file}`, type: 'document', label: r.title || r.file, key: r.key, file: r.file, href: r.href,
     bytes: r.bytes, mod: r.modified, kind: r.kind, src: r.src, stale: !!r.stale, title: r.title || r.file, h1: r.h1, desc: r.desc, tags: [], pinned: false, hidden: false }));
-  DOCS.forEach(d => shell.commands.put(d));
-  shell.commands.put(DRAFT);
+  if (!linked) {
+    // The address is read before the first draw: that draw's reconcile selects the first shown row, and selecting rewrites
+    // ?row=, so a link to any other row would be lost. A linked row the filters show moves the list to its page.
+    linked = true;
+    const q = shell.row();
+    readURL();
+    const at = sorted(DOCS.filter(matches)).findIndex(d => d.id === q);
+    if (at >= 0) { pageNo = Math.floor(at / size) + 1; selected = q; }
+  }
   const contested = DOC.contested || [];
   // build: a key two checkouts claim is served by neither (documents.py, contested); the state slot names each one.
-  if (!ROOTS.length && !contested.length) shell.state({ kind: 'empty', title: 'No document roots', text: `Publish into ${DOC.published} in a checkout under ${DOC.base}, or add a root| line to ${DOC.config}.`, source: DOC.config });
-  else if (contested.length) shell.state({ kind: 'partial', text: `${contested.map(c => `${plural(c.paths.length, 'checkout')} claim the key ${c.key} (${c.paths.join(', ')}), so none is served`).join('; ')}. Name the one you mean with a root| line in ${DOC.config}.`, source: DOC.config });
-  else shell.state(null);
-  // The linked row is read before the first render: that render's reconcile selects the first shown row, and selecting
-  // rewrites ?row=, so a link to any other row would be lost.
-  const q = shell.row();
-  readURL();
-  render();
-  attention();
-  // The row from the URL only when the filters show it; else the first shown row; else nothing, and Details says why.
-  // A linked row on another page moves the list to that page; otherwise select from the rendered page only.
-  const shown = sorted(DOCS.filter(matches)), at = shown.findIndex(d => d.id === q);
-  if (at >= 0 && Math.floor(at / size) + 1 !== pageNo) { pageNo = Math.floor(at / size) + 1; render(); }
-  const first = at >= 0 ? q : shown.slice((pageNo - 1) * size, pageNo * size)[0]?.id;
-  if (first) select(first, false);
-  else if (DOCS.length) { shell.commands.select(null); put(details, html`<p class="why">No document matches the filters in this link. Clear them to see the list.</p>`); }
+  const state = !ROOTS.length && !contested.length ? { kind: 'empty', title: 'No document roots', text: `Publish into ${DOC.published} in a checkout under ${DOC.base}, or add a root| line to ${DOC.config}.`, source: DOC.config }
+    : contested.length ? { kind: 'partial', text: `${contested.map(c => `${plural(c.paths.length, 'checkout')} claim the key ${c.key} (${c.paths.join(', ')}), so none is served`).join('; ')}. Name the one you mean with a root| line in ${DOC.config}.`, source: DOC.config }
+    : null;
+  return { objects: [...DOCS, DRAFT], state };
 }
+function unselect() {
+  selected = null;
+  put(details, html`<p class="why">${!DOC ? 'The documents were not read, so nothing is selected.'
+    : !DOCS.length ? 'No document is published yet, so nothing is selected.' : 'No document matches these filters. Clear them to see the list.'}</p>`);
+}
+// Only the newest of overlapping loads draws; nothing on this page writes, so it never rereads.
+const load = () => reading.load();
 document.addEventListener('DOMContentLoaded', () => {
   registerCommands();
+  reading = shell.read({
+    source: '/api/documents', what: 'the documents', adopt,
+    clear: () => { DOC = null; ROOTS = []; LABEL = {}; DOCS = []; delete document.body.dataset.observed; },
+    draw: () => { render(); attention(); },
+    current: () => selected,
+    first: () => shownPage()[0]?.id,
+    select: id => select(id, false),
+    unselect,
+  });
   load();
 });

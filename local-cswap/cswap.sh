@@ -16,6 +16,8 @@ set -euo pipefail
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 LABEL="$LABEL_PREFIX.cswap-auto"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/config.sh
+. "$ROOT/../lib/config.sh"
 LOG_DIR="$ROOT/logs"
 OUT_LOG="$LOG_DIR/cswap-auto.log"
 ERR_LOG="$LOG_DIR/cswap-auto.err.log"
@@ -68,11 +70,15 @@ sed_escape() {
   printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'
 }
 
-# Render the committed template with this machine's label, folder and home.
+# Render the committed template with this machine's label, folder, home and
+# config root. launchd passes the agent only the environment the plist names;
+# cswap reads nothing from the config root today, but every agent from this
+# repository gets the root it was installed under.
 render_plist() {
   sed -e "s|@LABEL@|$(sed_escape "$LABEL")|g" \
       -e "s|@DIR@|$(sed_escape "$ROOT")|g" \
       -e "s|@HOME@|$(sed_escape "$HOME")|g" \
+      -e "s|@CONFIG@|$(sed_escape "$SYSTEM_TOOLS_CONFIG")|g" \
       "$PLIST_TEMPLATE"
 }
 

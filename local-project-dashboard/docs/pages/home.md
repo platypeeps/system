@@ -12,4 +12,5 @@ grid. The dashboard reads no Home Assistant state yet, so every tile shows as
 unknown with that reason and none shows ok. The design's arm, disarm, lock,
 unlock and toggle commands are registered but off with it, so the page sends
 nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
-`$HA_URL` and never holds a value.
+`$HA_URL` and never holds a value. The page reads `/api/home` once, through the
+shell's reader (`read.js`); a failed read draws no tile and says why.

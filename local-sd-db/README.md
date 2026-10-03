@@ -1048,7 +1048,9 @@ detail's `bypass` and `admin_bypass` lists carry the same scope — plus the
 `BASELINE_OWNERS`, the two baseline flags of sd:1741: `protection_source`,
 raised unless rulesets alone protect the branch, and `required_check`,
 raised unless `ci` is among the required contexts (other names may stand
-beside it); `produced_contexts` reads the registered
+beside it); for a repository whose `repo.ci` is `local` that check is
+`sd/local-gate`, and it is the one context such a repository produces
+(sd:1992); otherwise `produced_contexts` reads the registered
 checkout's `.github/workflows/*.yml` (files only, never git) for the checks
 it produces, and a job that a required job gates through `needs` in the
 same file is not `produced_not_required`. Gating needs more than `needs`,

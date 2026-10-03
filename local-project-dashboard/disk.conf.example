@@ -1,0 +1,17 @@
+# Health > Disk: the storage folders whose biggest subfolders the page lists.
+#
+# Copy this file to <config>/project-dashboard/disk.conf and edit it
+# (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system). Folder paths
+# describe a machine, so the real list stays outside the checkout. Without a
+# disk.conf the Disk area still shows volume use and build output, and one
+# unknown row names this file.
+#
+# One folder per line; ~ and $HOME expand:
+#
+#   storage|<path>
+#
+# Each folder costs one `du -k -d 1` inside the Disk area's 8 second budget.
+# A folder du cannot finish in what is left is a row that says so; a folder
+# that does not exist (an ejected volume) is one too. A line the page cannot
+# read is named on the page and skipped.
+storage|/Volumes/change-me/repo-storage
