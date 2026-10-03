@@ -231,8 +231,12 @@ waited, the judgment, its confidence, how the call ended, and whether it
 changed anything. A machine with no database, an unmigrated one or a
 read-only one records nothing and behaves exactly as it did before; there is
 no path through the recorder that raises. `JEV_METER=0` switches it off and
-`JEV_METER_DB` points it somewhere else. A locked ledger is waited on for
-250 ms and then the row is dropped; `JEV_METER_BUSY_MS` sets another bound.
+`JEV_METER_DB` points it somewhere else. The row's cost comes from the
+`price` that `providers.yaml` beside the database gives a `typesafe` entry;
+with no such entry the row carries tokens and no cost
+(`local-sd-db/README.md`, section `judgments`). Leave the entry's `model` out
+to price every Jev model; the row records the model the response names.
+A locked ledger is waited on for 250 ms and then the row is dropped; `JEV_METER_BUSY_MS` sets another bound.
 The row needs `sd_db`, so `jev.sh` runs the interpreter `sd-db.sh` would:
 `PYTHON`, `SD_DB_PYTHON`, then the command pack's venv, then `python3`.
 
