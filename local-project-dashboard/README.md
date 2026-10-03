@@ -135,6 +135,19 @@ remains a separate reviewed operation; there is no generic publish button.
 Park sets a piece aside without changing its stage or files; revive brings it
 back to the active writing list.
 
+The page is `/writing`, the v2 Writing page (sd:2125): a board by stage with
+four gate lamps per piece, read from `GET /api/writing`
+(`writing_screen.document`). Its Stage, Correct, Park and Revive post the item
+routes above; Publish and Capture are copy only. The filtered list stays at
+`/classic/writing`; [`docs/pages/writing.md`](docs/pages/writing.md) names
+what the page does not read yet.
+
+**Skills** is `/skills`, the v2 Skills page (sd:2123): the command pack's skill
+catalog with each skill's use in the last three weeks, read from
+`GET /api/skills` (`skills_screen.document`). Try, Review, Promote and Demote
+post the routes the classic screen posts; Run, Schedule, Adopt and Scan are copy
+only. The classic screen stays at `/classic/skills`; [`docs/pages/skills.md`](docs/pages/skills.md) has the detail.
+
 **Operations** has eleven tabs (`operations_screen.AREAS`). Jobs is the default;
 the selected tab travels in the URL, for example `/operations?area=services`.
 
@@ -383,6 +396,12 @@ this applies to the `root|` lines only.
 for review, for example from an iPad over the dashboard's Tailscale address.
 The checkout is `DESIGNS_ROOT`, by default `$REPO_ROOT/platypeeps/ui-design`.
 The listing shows every `.html` page under `products/`, one section per product.
+
+The page is `/designs`, the v2 Designs page (sd:2126). It reads
+`GET /api/designs` (`designs.ledger`): each drawn page's kind, last commit and
+screenshot state, and each product with a brief and no page. History, Retake
+screenshots and Read brief are copy-only lines the dashboard does not run. The
+classic listing stays at `/classic/designs`; [`docs/pages/designs.md`](docs/pages/designs.md) has the detail.
 
 A mockup is served at its path in the tree, under `/designs/`. Its relative
 links, such as `../../../foundation/tokens.css`, therefore resolve to files in
