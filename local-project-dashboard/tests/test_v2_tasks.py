@@ -124,6 +124,22 @@ class TheDocuments(ScreenCase):
         port = rows[self.ids["port"]]
         self.assertEqual((port["assignment"], port["allowed"]), ("running", []))
 
+    def test_each_row_reads_its_history_once(self):
+        # sd:2380: allowed_statuses takes the row's item_state, read in the same snapshot, instead of reading it again.
+        calls, real = [], workflow.item_state
+
+        def counted(connection, item):
+            calls.append(item)
+            return real(connection, item)
+
+        with patch.object(workflow, "item_state", counted):
+            doc = tasks_screen.document(self.connection, now=NOW)
+        self.assertEqual(sorted(calls), sorted(row["id"] for row in doc["rows"]), "a row's history was read more than once")
+        for row in doc["rows"]:
+            self.assertEqual(row["allowed"], workflow.allowed_statuses(self.connection, row["id"]), row["id"])
+        details = tasks_screen.details(self.connection, self.ids["plan"], now=NOW)
+        self.assertEqual(details["allowed"], workflow.allowed_statuses(self.connection, self.ids["plan"]))
+
     def test_the_details_split_the_show_reading_into_its_sections(self):
         got = tasks_screen.details(self.connection, self.ids["plan"], now=NOW)
         state = workflow.item_state(self.connection, self.ids["plan"])
