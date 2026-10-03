@@ -262,8 +262,14 @@ It is deliberately not a `cost` row. `cost` is money against a `bill` and its
 `provider` is a foreign key into the registry; a judgment model is on neither,
 so writing there would need a bill invented to satisfy the key and every sum
 the Usage screen takes would have to learn to skip a source it never asked
-about. `judgment.usd` stays NULL until there is a price list; the token counts
-are the record until then.
+about. A row's `usd` is the cost its caller reports. Without one, `record`
+prices the tokens at the `price` (`in` and `out`, dollars per million) that
+`providers.yaml` beside the database gives the row's provider. An entry that
+names a `model` prices that model only. With no usable price, `usd` stays NULL
+and the token counts are the record; the report names those rows per arm as
+`unpriced`, with their providers. A judgment model needs its own entry to be
+priced: `local-jev` rows name provider `typesafe`, and its price is the
+operator's to enter. An entry with `roles: []` is never chosen for a role.
 
     sd-db.sh judgments                 # every stage, both arms
     sd-db.sh judgments --since 2026-09 # a month; bounds are compared as text

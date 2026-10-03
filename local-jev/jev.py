@@ -74,6 +74,9 @@ DEFAULT_RETRIES = 3
 # retrying it just spends the budget twice.
 RETRY_STATUS = {429, 500, 502, 503, 504, 529}
 BACKOFF = 2.0
+# The longest wait a server's Retry-After may ask for. A caller is a hook or a
+# cron job waiting on one answer; an hour-long wait is an outage, not a retry.
+RETRY_AFTER_MAX = 60.0
 
 ANSWER_KEY = "answer"
 
@@ -888,13 +891,17 @@ def settings(env=None) -> dict:
 
 
 def retry_after(headers, attempt: int) -> float:
-    """Honour Retry-After when it is a plain number, else back off."""
+    """Honour Retry-After when it is a finite, non-negative number, capped at
+    RETRY_AFTER_MAX; else back off. `float` reads "inf" and "nan" too, and
+    either one reaching `sleep` hangs or raises instead of retrying."""
     raw = headers.get("Retry-After") if headers else None
     if raw:
         try:
-            return max(0.0, float(raw))
+            wait = float(raw)
         except ValueError:
-            pass
+            wait = -1.0
+        if math.isfinite(wait) and wait >= 0:
+            return min(wait, RETRY_AFTER_MAX)
     return BACKOFF * (2 ** attempt)
 
 
