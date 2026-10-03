@@ -1374,3 +1374,43 @@ def exec_note_count(connection: sqlite3.Connection) -> int:
 
 
 __all__ += ["delivery_notes", "exec_note_count", "recent_assignments"]
+
+
+def meter_days(connection: sqlite3.Connection, *, window_minutes: int, since: str) -> list[sqlite3.Row]:
+    """The last `meter` reading of each day for one window length, per provider, from the day of `since` on.
+
+    Newest by `timestamp` then `id` within a day, the rule `meter.latest` applies; the day is the stamp's first ten
+    characters, as `delivery_notes` bounds it. Behind the dashboard's Metrics window trend (sd:2119).
+    """
+    return connection.execute(
+        "SELECT provider, bill, day, used_percent, timestamp FROM ("
+        " SELECT provider, bill, substr(timestamp, 1, 10) AS day, used_percent, timestamp,"
+        "  row_number() OVER (PARTITION BY provider, substr(timestamp, 1, 10) ORDER BY timestamp DESC, id DESC) AS newest"
+        " FROM cost WHERE source = 'meter' AND window_minutes = ? AND substr(timestamp, 1, 10) >= ?)"
+        " WHERE newest = 1 ORDER BY provider, day", (window_minutes, since[:10])).fetchall()
+
+
+def skill_use_days(connection: sqlite3.Connection, *, since: str) -> list[sqlite3.Row]:
+    """Skill uses per day and skill from the day of `since` on, oldest day first. Behind the dashboard's Metrics (sd:2119)."""
+    return connection.execute(
+        "SELECT substr(timestamp, 1, 10) AS day, skill, count(*) AS uses FROM skill_use"
+        " WHERE substr(timestamp, 1, 10) >= ? GROUP BY day, skill ORDER BY day, skill", (since[:10],)).fetchall()
+
+
+__all__ += ["meter_days", "skill_use_days"]
+
+
+def status_change_notes(connection: sqlite3.Connection, *, since: str, until: str) -> list[sqlite3.Row]:
+    """Every `status_change` note stamped in [since, until), oldest first, with its item's title, kind and repository.
+
+    The body is the writer's: `opened as <status>` for a new item, `<from> -> <to> by <who>[: reason]` for a move.
+    Behind the dashboard's Notes days (sd:2120).
+    """
+    return connection.execute(
+        "SELECT note.id, note.item, note.timestamp, note.body, item.title, item.kind, item.repo"
+        " FROM note JOIN item ON item.id = note.item"
+        " WHERE note.kind = 'status_change' AND note.timestamp >= ? AND note.timestamp < ?"
+        " ORDER BY note.timestamp, note.id", (since, until)).fetchall()
+
+
+__all__ += ["status_change_notes"]

@@ -75,14 +75,12 @@
     put($('observed'), html`<b>${d.toISOString().slice(11, 16)}</b> UTC`);
   }
 
-  function registerObjects() {
-    const C = shell.commands;
-    ROWS.forEach(r => {
-      const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
-      const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
-      C.put({ id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
-              repo: pr && pr[1], number: pr && +pr[2] });
-    });
+  // build (sd:2483): one object per row, for shell.read to put, and to retire once a read stops listing the row.
+  function objectOf(r) {
+    const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
+    const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
+    return { id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
+             repo: pr && pr[1], number: pr && +pr[2] };
   }
 
   function render() {
@@ -102,10 +100,11 @@
     window.PAGE_ATTENTION = { state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: w ? 'warning rows' : 'caution rows' };
     shell.attention();
     lamps();
-    applyFilter();
+    hideRows();
   }
 
-  function applyFilter() {
+  // The filter hides rows; it moves no selection. applyFilter() also moves the selection off a row the filter hid.
+  function hideRows() {
     const tb = $('rows'); let n = 0;
     tb.querySelectorAll('tr[data-id]').forEach(tr => {
       const hide = (srcFilter && tr.dataset.src !== srcFilter) || (query && !tr.textContent.toLowerCase().includes(query));
@@ -115,33 +114,41 @@
     f.hidden = !(srcFilter || query);
     f.textContent = n ? `${n} of ${ROWS.length} shown${srcFilter ? ' · source ' + srcFilter : ''}${query ? ` · “${query}”` : ''}. Esc clears.`
       : `Nothing matches${query ? ` “${query}”` : ''}. Press → to capture it as a task instead.`;
-    shell.reconcile({ rows: tb.querySelectorAll('tr[data-id]'), current: new URLSearchParams(location.search).get('row'),
-      select: id => select(id, false),
-      clear: () => { const u = new URL(location.href); u.searchParams.delete('row'); history.replaceState(null, '', u);
-        put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Now could not be read.' : ROWS.length ? 'No row matches the filter, so nothing is selected. Esc clears it.' : 'Nothing is selected: Now has no rows.'}</p>`); } });
+    return tb;
   }
+  function unselect() {
+    const u = new URL(location.href); u.searchParams.delete('row'); history.replaceState(null, '', u);
+    put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Now could not be read.' : ROWS.length ? 'No row matches the filter, so nothing is selected. Esc clears it.' : 'Nothing is selected: Now has no rows.'}</p>`);
+  }
+  const reconcile = () => shell.reconcile({ rows: $('rows').querySelectorAll('tr[data-id]'), current: new URLSearchParams(location.search).get('row'),
+    select: id => select(id, false), clear: unselect });
+  function applyFilter() { hideRows(); reconcile(); }
 
-  async function load() {
-    $('refresh').setAttribute('aria-busy', 'true');
-    try {
-      const r = await fetch('/api/now', { headers: { Accept: 'application/json' } });
-      const doc = await r.json();
-      if (!r.ok) throw new Error(doc.error || `HTTP ${r.status}`);
-      DOC = doc; ROWS = doc.rows;
-      document.body.dataset.observed = doc.now;
-      registerObjects(); render();
-    } catch (e) {
-      // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
-      DOC = null; ROWS = [];
-      delete document.body.dataset.observed;
-      $('subhead').textContent = `Now could not be read: ${e.message}. Refresh tries again.`;
-      document.querySelectorAll('.cell[data-src]').forEach(cell => { cell.dataset.state = 'unknown'; cell.title = 'Now could not be read'; put(cell.querySelector('.val'), html`<span class="ph">not read</span>`); });
-      put($('observed'), html`<span class="ph">not read</span>`);
-      put($('tally'), html``);
-      put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${e.message}</td></tr>`);
-      shell.attention({ state: 'unknown', n: 0, what: 'rows' });
-      applyFilter();
-    } finally { $('refresh').removeAttribute('aria-busy'); }
+  // ---------- Reading (build, sd:2483): shell.read reads /api/now ----------
+  // The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws, a row the read no longer lists
+  // runs no command, a selection whose row is gone moves to the first row the filter shows, and a failed read clears the page.
+  let reading = null, failed = '', reads = 0;
+  function adopt(doc) {
+    DOC = doc; ROWS = doc.rows;
+    document.body.dataset.observed = doc.now;
+    return { objects: ROWS.map(objectOf), state: null };
+  }
+  function clear(err) { DOC = null; ROWS = []; failed = err.message; delete document.body.dataset.observed; }
+  function draw() {
+    if (DOC) return render();
+    // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
+    $('subhead').textContent = `Now could not be read: ${failed}. Refresh tries again.`;
+    document.querySelectorAll('.cell[data-src]').forEach(cell => { cell.dataset.state = 'unknown'; cell.title = 'Now could not be read'; put(cell.querySelector('.val'), html`<span class="ph">not read</span>`); });
+    put($('observed'), html`<span class="ph">not read</span>`);
+    put($('tally'), html``);
+    put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${failed}</td></tr>`);
+    shell.attention({ state: 'unknown', n: 0, what: 'rows' });
+    hideRows();
+  }
+  const shown = id => [...$('rows').querySelectorAll('tr[data-id]')].some(tr => tr.dataset.id === id && !tr.hidden);
+  function load() {
+    $('refresh').setAttribute('aria-busy', 'true'); reads++;
+    return reading.load().finally(() => { if (!--reads) $('refresh').removeAttribute('aria-busy'); });
   }
 
   function clearSource() { srcFilter = null; document.querySelectorAll('.cell[data-src]').forEach(x => x.setAttribute('aria-pressed', 'false')); applyFilter(); }
@@ -214,6 +221,14 @@
       if (e.key === 'Escape' && srcFilter) clearSource();
     });
 
+    reading = shell.read({
+      source: '/api/now', what: 'the Now rows', adopt, clear, draw,
+      current: () => new URLSearchParams(location.search).get('row'),
+      first: () => [...$('rows').querySelectorAll('tr[data-id]')].find(tr => !tr.hidden)?.dataset.id,
+      // A row the filter hides is not selected: reconcile moves to the first row it shows, or clears.
+      select: id => (shown(id) ? select(id, false) : reconcile()),
+      unselect,
+    });
     load();
   });
 })();

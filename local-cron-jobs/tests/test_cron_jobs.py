@@ -19,6 +19,7 @@ accident; a PIN passing against old code is expected, not a defect.
 
 import os
 import pathlib
+import plistlib
 import pty
 import re
 import shutil
@@ -972,6 +973,27 @@ class HostJobsTest(unittest.TestCase):
         self.assertEqual(self.fx.exec_job("shared", extra_env={"CRON_JOBS_HOST": "mini"}).returncode, 0)
         # The other machine sees its own folder and not this one's.
         self.assertEqual(sorted(self.rows(host="studio")), ["elsewhere", "shared"])
+
+    def test_the_plist_names_the_config_root_so_exec_finds_the_job(self):
+        """launchd gives a job only the environment its plist names (sd:2519).
+
+        The fixture's root is not the default one under HOME, so a plist that
+        names only PATH and HOME sends `exec` to an empty jobs folder.
+        """
+        self.fx.write_job("demo", self.JOB.format("true"))
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        self.assertEqual(environment.get("SYSTEM_TOOLS_CONFIG"), str(self.fx.config))
+        # The run launchd would start: the plist's environment and nothing
+        # else, bar this fixture's quiet stubs in front of its PATH and a
+        # report command that files nothing in the shared database.
+        run = {**environment, "PATH": self.fx.path(), "SD_REPORT_BIN": "/usr/bin/true"}
+        done = subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                              env=run, capture_output=True, text=True, timeout=60)
+        self.assertNotIn("no such job", done.stdout + done.stderr)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
     def test_no_host_folder_reads_the_shared_jobs(self):
         self.fx.write_job("demo", self.JOB.format("true"))
