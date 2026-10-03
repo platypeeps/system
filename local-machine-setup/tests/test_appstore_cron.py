@@ -80,6 +80,7 @@ class StageTest(unittest.TestCase):
         write_exec(self.stubs / "mas", MAS_STUB)
         write_exec(self.stubs / "launchctl", "#!/bin/sh\nexit 0\n")
         write_exec(self.stubs / "git", "#!/bin/sh\nexit 1\n")
+        fixture_config.seal(self, self.stubs)
 
     def run_stage(self, stage, *flags, **extra):
         env = {
@@ -349,6 +350,14 @@ class CronOwnershipTest(StageTest):
 class CaptureTest(StageTest):
     """capture must not write a host job or a beta's id 0 into a shared profile."""
 
+    def setUp(self):
+        super().setUp()
+        # capture reads iTerm2's prefs folder and every app's bundle id with
+        # `defaults`, and Spotlight's list with `sudo`. Real ones read this
+        # Mac whatever HOME says (sd:2331), so: every key unset, no ticket.
+        write_exec(self.stubs / "defaults", "#!/bin/sh\nexit 1\n")
+        write_exec(self.stubs / "sudo", "#!/bin/sh\nexit 1\n")
+
     def capture(self, **extra):
         env = {
             "HOME": str(self.home),
@@ -410,6 +419,17 @@ class CaptureTest(StageTest):
         result = self.capture(CRON_JOBS_EXTRA_DIRS=str(extra))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("picked", (self.profiles / "personal.cron").read_text())
+
+    def test_capture_lists_apps_from_the_applications_override(self):
+        # REGRESSION (sd:2331). The scan read /Applications, so a test capture
+        # wrote this Mac's apps into the fixture profile.
+        apps = pathlib.Path(self.tmp.name) / "Applications"
+        (apps / "Example Tool.app" / "Contents").mkdir(parents=True)
+        result = self.capture(MACHINE_SETUP_APPLICATIONS_DIR=str(apps))
+        self.assertIn("app: 1 entries", result.stdout, result.stdout + result.stderr)
+        listed = [l for l in (self.profiles / "personal.app").read_text().splitlines()
+                  if l and not l.startswith("#")]
+        self.assertEqual(listed, ["Example Tool"])
 
     def test_capture_stops_when_host_jobs_cannot_be_listed(self):
         (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')
