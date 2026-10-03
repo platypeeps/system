@@ -525,7 +525,17 @@ def run_process(value, *, cwd, home=None, timeout=300, own_group=False):
             while selector.get_map() or process.poll() is None:
                 if time.monotonic() > deadline:
                     if own_group:
-                        os.killpg(process.pid, signal.SIGKILL)
+                        # The command can exit between poll() and this signal. macOS answers
+                        # EPERM for a group whose only member is an unreaped leader, and ESRCH
+                        # once it is reaped; both mean nothing is left to kill (sd:2338). A
+                        # live leader that changed credentials answers EPERM too, and waiting
+                        # on it would outlast the deadline, so only an exited one passes.
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except (PermissionError, ProcessLookupError) as error:
+                            if process.poll() is None:
+                                raise workflow.WorkflowError("command exceeded its time limit and refused the kill; "
+                                                             "inspect its ownership before retrying") from error
                     else:
                         process.kill()
                     process.wait()
