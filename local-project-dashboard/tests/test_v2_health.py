@@ -27,6 +27,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -139,6 +140,9 @@ class Collectors:
 
     def setUp(self):
         super().setUp()
+        # A scan left running by an earlier test, or its kept answer, is not this test's.
+        health_screen._SCANS.clear()
+        self.addCleanup(health_screen._SCANS.clear)
         for name, scan in (("disk_scan", DISK), ("branch_scan", BRANCHES)):
             patcher = patch.object(health_collectors, name, scan_of(scan))
             patcher.start()
@@ -532,6 +536,57 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual((br["error"], [row["id"] for row in br["rows"]]), ("", [f"br:{alpha}"]))
 
 
+class OneScanPerArea(Collectors, ScreenCase):
+    """A reader past the page's budget holds one thread however often the page is read (sd:2520 review).
+
+    The page made a thread pool per request and left a stuck reader's worker
+    alive, so each timed-out refresh added a thread, and the interpreter
+    joined them all at exit.
+    """
+
+    def blocked(self):
+        """A fleet reader that blocks until the test ends, and the threads it ran on."""
+        gate, threads = threading.Event(), []
+
+        def read(area):
+            threads.append(threading.current_thread())
+            gate.wait(10)
+            return fleet_of(TREES)(area)
+        self.addCleanup(gate.set)
+        return read, threads
+
+    def doc(self, fleet, now=NOW):
+        return health_screen.document(self.connection, now=now, fleet=fleet, trailers=trailers_of(3),
+                                      ports=ports_snapshot, protection=protection_of(PROTECTION))
+
+    def test_timed_out_requests_leave_at_most_one_live_worker_for_a_blocked_reader(self):
+        read, threads = self.blocked()
+        with patch.object(health_screen, "PAGE_SECONDS", 0.2):
+            docs = [self.doc(read) for _ in range(4)]
+        self.assertLessEqual(len([thread for thread in threads if thread.is_alive()]), 1, threads)
+        self.assertEqual(len(threads), 1, "a request started a second scan while the first still ran")
+        self.assertTrue(all(thread.daemon for thread in threads), "interpreter exit would wait on the scan")
+        self.assertTrue(all(doc["areas"][3]["error"] for doc in docs))
+        self.assertIn(f"that scan started at {NOW}, and no second one starts while it runs", docs[-1]["areas"][3]["error"])
+
+    def test_a_reader_still_running_shows_its_last_answer_marked_stale(self):
+        first = self.doc(fleet_of(TREES))["areas"][3]
+        self.assertEqual((first["error"], first["stale"]), ("", ""))
+        read, _ = self.blocked()
+        later = "2026-09-05T12:30:00Z"
+        with patch.object(health_screen, "PAGE_SECONDS", 0.2):
+            wt = self.doc(read, now=later)["areas"][3]
+        self.assertEqual((wt["error"], wt["rows"], wt["at"]), ("", first["rows"], NOW))
+        self.assertTrue(wt["stale"].startswith("the Worktrees reader was still running at the page's budget"), wt["stale"])
+        self.assertTrue(wt["stale"].endswith(f"these rows are the read of {NOW}"), wt["stale"])
+
+    def test_a_reader_that_finishes_answers_again_on_the_next_request(self):
+        self.doc(fleet_of(TREES))
+        wt = self.doc(fleet_of([]), now="2026-09-05T12:30:00Z")["areas"][3]
+        self.assertEqual((wt["error"], wt["stale"], wt["at"]), ("", "", "2026-09-05T12:30:00Z"))
+        self.assertNotEqual(wt["rows"], self.doc(fleet_of(TREES))["areas"][3]["rows"])
+
+
 class ThePage(Collectors, BrowserSession):
     fleet_backend = staticmethod(fleet_of(TREES))
 
@@ -657,6 +712,19 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("<b>Not read:</b> fleet collection was stopped at its budget: sessions", out["R"]["areas"])
         self.assertEqual(out["states"][-1]["kind"], "partial")
         self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": "findings to watch"})
+
+    def test_a_stale_area_keeps_its_rows_and_says_it_was_not_re_read(self):
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(0),
+                                     ports=ports_snapshot, protection=protection_of([]), disk=scan_of(CLEAN_DISK),
+                                     branches=scan_of(CLEAN_BRANCHES))
+        wt = doc["areas"][3]
+        wt["stale"] = "the Worktrees reader was still running; these rows are the read of " + NOW
+        out = self.run_page("R.areas = ELS.areas.html;", doc)
+        self.assertIn("<b>Not re-read:</b> the Worktrees reader was still running; these rows are the read of " + NOW,
+                      out["R"]["areas"])
+        self.assertIn(f'data-id="{wt["rows"][0]["id"]}"', out["R"]["areas"])
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("Worktrees: the Worktrees reader was still running", out["states"][-1]["text"])
 
     def test_a_trailer_count_over_its_budget_shows_as_the_refusal_not_a_stall(self):
         def refused(connection, *, now):
