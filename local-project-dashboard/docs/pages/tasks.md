@@ -9,7 +9,9 @@ history and notes, and adds the item's assignments and its external context.
 A command that runs posts to the route v1 already answers, and its toast comes
 after the write lands. Status, priority, due and recurrence edits and a requeue
 carry Undo; resolving a followup note and cancelling an assignment ask first.
-`sd work relink` and `sd work cancel` are shown for Copy only. The page reads
+`sd work relink` and `sd work cancel` run through the work routes after a
+confirm that takes the moved path or the reason; OK stays off until it is typed
+(sd:2200), and `progress.work_controls` turns each off where sd would refuse it. The page reads
 through the shell's reader, `read.js` (sd:2484): a landed write rereads, a row
 the read no longer lists runs no command, and a failed reread keeps the rows and
 says the write landed.

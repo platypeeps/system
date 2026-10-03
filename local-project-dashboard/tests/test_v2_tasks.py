@@ -40,6 +40,8 @@ MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 # The shell's run contract for writes, as shell.js has it: the stand-in runs these, not a copy.
 SETTLE_JS = re.search(r"^  // bulk:start\n(.*?)^  // bulk:end$", SHELL_JS, re.S | re.M).group(1)
+# The confirm dialog with its fields, as shell.js has it (sd:2200).
+CONFIRM = re.search(r"^  // confirm:start\n(.*?)^  // confirm:end$", SHELL_JS, re.S | re.M)
 
 
 def seed(case):
@@ -139,6 +141,14 @@ class TheDocuments(ScreenCase):
             self.assertEqual(row["allowed"], workflow.allowed_statuses(self.connection, row["id"]), row["id"])
         details = tasks_screen.details(self.connection, self.ids["plan"], now=NOW)
         self.assertEqual(details["allowed"], workflow.allowed_statuses(self.connection, self.ids["plan"]))
+
+    def test_the_details_carry_the_work_controls_for_a_work_item_only(self):
+        # sd:2200: relink and cancel are on where progress.work_controls says the mutation would take them.
+        from sd_db import progress
+
+        port = tasks_screen.details(self.connection, self.ids["port"], now=NOW)
+        self.assertEqual(port["work"], progress.work_controls(self.connection, self.ids["port"]))
+        self.assertIsNone(tasks_screen.details(self.connection, self.ids["plan"], now=NOW)["work"])
 
     def test_the_details_split_the_show_reading_into_its_sections(self):
         got = tasks_screen.details(self.connection, self.ids["plan"], now=NOW)
@@ -286,11 +296,16 @@ SHELL = SETTLE_JS + r"""
 var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
   rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
+// A command with fields asks for them (shell.js's confirm): FIELD_VALUES is what the operator typed, and a required field left
+// empty keeps OK off, so nothing runs.
+var FIELD_VALUES = {};
 function shellRun(c, o) {
   var off = c.when ? c.when(o) : true;
   if (off !== true) { OUT.toasts.push({ msg: 'off: ' + off }); return; }
-  if (c.risk === 'confirm') OUT.confirms.push(c.id);
-  var msg = c.run ? c.run(o) : '';
+  if (c.risk === 'confirm' || c.fields) OUT.confirms.push(c.id);
+  var v = c.fields ? Object.fromEntries(c.fields(o).map(f => [f.name, String(FIELD_VALUES[f.name] || '').trim()])) : undefined;
+  if (c.fields && c.fields(o).some(f => f.required && !v[f.name])) { OUT.toasts.push({ msg: 'not run: OK is off until ' + c.fields(o).filter(f => f.required && !v[f.name]).map(f => f.label).join(', ') + ' is typed' }); return; }
+  var msg = c.run ? c.run(o, v) : '';
   if (thenable(msg)) { settleOne(c, o, msg, { toast: shellToast }); return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } })); }
   if (msg === null) return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id, form: true } }));
   OUT.toasts.push({ msg: msg || c.label, undo: c.risk === 'undo' && c.undo ? () => c.undo(o) : null });
@@ -305,7 +320,7 @@ function shellBulk(c, objs) {
 }
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
-window.shell = { commands: C, ICON: () => mk`<svg></svg>`, toast: shellToast,
+window.shell = { commands: C, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a) };
 const cmd = id => REG.find(c => c.id === id);
@@ -391,6 +406,68 @@ OUT.toasts[0].undo(); await flush();""")
         self.assertEqual(out["undone"], [["1", {"text": "Moved #1"}]])
 
 
+class TheConfirmFields(unittest.TestCase):
+    """shell.js's confirmAction with fields (sd:2200), run against a stand-in dialog: OK is off until a required field is typed."""
+
+    def confirm(self, body):
+        self.assertIsNotNone(CONFIRM, "shell.js has no confirm:start block")
+        script = "var window = globalThis;\n" + MARKUP_JS + r"""
+const { html } = window.markup, put = (el, m) => { el.html = String(m); };
+var OUT = { focused: null, result: null, error: null };
+const yes = { disabled: false }, no = {}, line = { textContent: '' }, inputs = { reason: { value: '', tagName: 'INPUT' } }, L = {};
+const form = { elements: inputs, addEventListener: (t, f) => { (L[t] = L[t] || []).push(f); },
+  querySelector: s => s === '[value="yes"]' ? yes : s === '#confirm-cli' ? line : null,
+  requestSubmit: b => { confirmDlg.returnValue = b === yes ? 'yes' : 'no'; confirmDlg.onclose(); } };
+var confirmDlg = { html: '', returnValue: '', onclose: null, querySelector: s => s === 'form' ? form : s === '[value="no"]' ? no : null };
+const modal = (d, first) => { OUT.focused = first === inputs.reason ? 'reason' : first === no ? 'keep' : null; return null; };
+const type = v => { inputs.reason.value = v; (L.input || []).forEach(f => f({})); };
+const key = k => { let stopped = false; (L.keydown || []).forEach(f => f({ key: k, target: inputs.reason, preventDefault: () => { stopped = true; } })); return stopped; };
+const close = v => { confirmDlg.returnValue = v; confirmDlg.onclose(); };
+""" + CONFIRM.group(1) + r"""
+(async () => { try {
+""" + body + """
+} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();
+function run() { return JSON.stringify(OUT); }
+"""
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out
+
+    FIELDS = """const p = confirmAction({ title: 'Cancel item: #7 Port the page?', cli: v => `sd work cancel 7 --reason ${v.reason || "'<why>'"}`,
+  ok: 'Cancel item', fields: [{ name: 'reason', label: 'Reason', required: true }] });
+"""
+
+    def test_ok_stays_off_until_a_required_field_is_typed(self):
+        out = self.confirm(self.FIELDS + """OUT.steps = [[yes.disabled, line.textContent]];
+type('   '); OUT.steps.push([yes.disabled, line.textContent]);
+type('superseded'); OUT.steps.push([yes.disabled, line.textContent]);
+close('yes'); OUT.result = await p; OUT.form = confirmDlg.html;""")
+        self.assertEqual(out["steps"], [[True, "sd work cancel 7 --reason '<why>'"], [True, "sd work cancel 7 --reason '<why>'"],
+                                        [False, "sd work cancel 7 --reason superseded"]])
+        self.assertEqual(out["focused"], "reason")
+        self.assertEqual((out["result"]["yes"], out["result"]["values"]), (True, {"reason": "superseded"}))
+        self.assertIn('id="cf-reason" name="reason"', out["form"])
+        self.assertIn('required aria-required="true"', out["form"])
+        self.assertIn('value="no" formnovalidate', out["form"])
+
+    def test_a_close_on_ok_with_the_field_empty_runs_nothing_and_enter_is_ok(self):
+        out = self.confirm(self.FIELDS + """OUT.enterEmpty = [key('Enter'), confirmDlg.returnValue];
+close('yes'); OUT.result = await p;
+const q = confirmAction({ title: 't', fields: [{ name: 'reason', label: 'Reason', required: true }] });
+type('done elsewhere'); key('Enter'); OUT.second = await q;""")
+        self.assertEqual(out["enterEmpty"], [True, ""], "Enter with the field empty closed the dialog")
+        self.assertFalse(out["result"]["yes"], "OK ran with the required field empty")
+        self.assertEqual((out["second"]["yes"], out["second"]["values"]), (True, {"reason": "done elsewhere"}))
+
+    def test_a_confirm_without_fields_is_unchanged(self):
+        out = self.confirm("""const p = confirmAction({ title: 'Delete: x?', cli: 'sd x' }); OUT.off = yes.disabled; close('yes'); OUT.result = await p;""")
+        self.assertEqual(out["focused"], "keep")
+        self.assertFalse(out["off"])
+        self.assertEqual((out["result"]["yes"], out["result"]["values"]), (True, {}))
+
+
 def state_answer(row, **changes):
     """A write's readback, `workflow.item_state` shaped, for a row of the tasks document."""
     item = {"id": row["id"], "status": row["status"], "priority": row["priority"], "due": row["due"],
@@ -443,8 +520,8 @@ class TheScript(ScreenCase):
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.run", "item", "undo", "r", None, True, True],
             ["item.delete", "item", "confirm", None, None, False, False],
-            ["work.relink", "item", "safe", "l", False, True, False],
-            ["work.cancel", "item", "confirm", "w", False, True, False],
+            ["work.relink", "item", "safe", "l", True, True, False],
+            ["work.cancel", "item", "confirm", "w", True, True, False],
             ["item.recur", "item", "undo", None, None, True, True],
             ["item.recur.clear", "item", "undo", None, None, True, True],
             ["note.resolve", "note", "confirm", "v", None, True, False],
@@ -614,15 +691,54 @@ shellRun(cmd('note.resolve'), C.get('note:{note}')); await flush();""", answer)
         self.assertEqual(out["posts"], [[f"/api/notes/{note}/resolve", {"revision": row["revision"]}, 64]])
         self.assertEqual(out["toasts"], [[f"Resolved note {note} · sd note resolve {note}", False]])
 
-    def test_relink_and_cancel_are_copy_only_lines(self):
-        port, plan = self.ids["port"], self.ids["plan"]
-        out = self.run_page(f"""open({port}); await flush();
-R.relink = [cmd('work.relink').when(C.get('{port}')), cmd('work.relink').cli(C.get('{port}'))];
-R.cancel = [cmd('work.cancel').when(C.get('{port}')), cmd('work.cancel').cli(C.get('{port}')), cmd('work.cancel').when(C.get('{plan}'))];""")
-        self.assertEqual(out["R"]["relink"], [True, f"sd work relink {port} <moved path>"])
-        self.assertEqual(out["R"]["cancel"], [True, f"sd work cancel {port} --reason '<why>'",
-                                              "sd work cancel acts on a work item; this is a task"])
+    def owned_work(self):
+        """A work item in a repository the database owns, with no assignment: sd work relink and cancel take it."""
+        owned = self.repo("/repos/owned")
+        upsert_repo(self.connection, owned, status_source="row")
+        mine = self.item("Owned work", kind="work", repo=owned, path="docs/work/mine/prd.md")
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.details[str(mine)] = tasks_screen.details(self.connection, mine, now=NOW)
+        return mine
+
+    def test_relink_and_cancel_post_to_the_work_routes_with_the_typed_text(self):
+        # sd:2200: both execute through /api/items/<id>/(relink|cancel) with the row's revision, after the confirm takes
+        # the text only the operator has. Neither offers Undo.
+        mine = self.owned_work()
+        row = next(r for r in self.doc["rows"] if r["id"] == mine)
+        answer = f"""(path, body) => [200, {{ item: {{ id: {mine}, status: path.endsWith('/cancel') ? 'done' : 'planning', priority: null, due: null, recurrence: null }},
+  notes: [], revision: path.endsWith('/cancel') ? 'c'.repeat(64) : 'b'.repeat(64) }}]"""
+        out = self.run_page(f"""open({mine}); await flush();
+R.fields = [cmd('work.relink').fields(C.get('{mine}')), cmd('work.cancel').fields(C.get('{mine}'))].map(fs => fs.map(f => [f.name, f.required, f.placeholder]));
+R.when = [cmd('work.relink').when(C.get('{mine}')), cmd('work.cancel').when(C.get('{mine}'))];
+R.cli = [cmd('work.relink').cli(C.get('{mine}')), cmd('work.cancel').cli(C.get('{mine}'), {{ reason: "it's superseded" }})];
+FIELD_VALUES = {{ path: 'docs/work/moved/prd.md' }}; shellRun(cmd('work.relink'), C.get('{mine}')); await flush();
+FIELD_VALUES = {{ reason: "it's superseded" }}; shellRun(cmd('work.cancel'), C.get('{mine}')); await flush();""", answer)
+        self.assertEqual(out["R"]["fields"], [[["path", True, "docs/work/mine/prd.md"]], [["reason", True, "why the work stops"]]])
+        self.assertEqual(out["R"]["when"], [True, True])
+        self.assertEqual(out["R"]["cli"], [f"sd work relink {mine} <moved path>", f"sd work cancel {mine} --reason 'it'\\''s superseded'"])
+        self.assertEqual(out["confirms"], ["work.relink", "work.cancel"])
+        self.assertEqual(out["posts"], [[f"/api/items/{mine}/relink", {"path": "docs/work/moved/prd.md", "revision": row["revision"]}, 64],
+                                        [f"/api/items/{mine}/cancel", {"reason": "it's superseded", "revision": "b" * 64}, 64]])
+        self.assertEqual(out["toasts"], [[f"#{mine} relinked → docs/work/moved/prd.md · sd work relink {mine} 'docs/work/moved/prd.md'", False],
+                                         [f"#{mine} cancelled · sd work cancel {mine} --reason 'it'\\''s superseded'", False]])
+
+    def test_cancel_with_no_reason_posts_nothing(self):
+        mine = self.owned_work()
+        out = self.run_page(f"""open({mine}); await flush(); FIELD_VALUES = {{ reason: '   ' }}; shellRun(cmd('work.cancel'), C.get('{mine}')); await flush();""")
         self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"], [["not run: OK is off until Reason is typed", False]])
+
+    def test_relink_and_cancel_are_off_where_sd_work_refuses_them(self):
+        # The seeded work row's repository lets its files own status, and it has a running assignment: progress.work_controls
+        # gives the reason the mutation would. A task row is not work at all.
+        port, plan = self.ids["port"], self.ids["plan"]
+        why = self.details[str(port)]["work"]["reason"]
+        out = self.run_page(f"""open({port}); await flush(); open({plan}); await flush();
+R.port = [cmd('work.relink').when(C.get('{port}')), cmd('work.cancel').when(C.get('{port}'))];
+R.plan = [cmd('work.relink').when(C.get('{plan}')), cmd('work.cancel').when(C.get('{plan}'))];""")
+        self.assertTrue(why)
+        self.assertEqual(out["R"]["port"], [why, why])
+        self.assertEqual(out["R"]["plan"], ["sd work relink acts on a work item; this is a task", "sd work cancel acts on a work item; this is a task"])
 
     def test_recur_needs_a_due_date_and_undo_clears_it(self):
         plan, ask = self.ids["plan"], self.ids["ask"]

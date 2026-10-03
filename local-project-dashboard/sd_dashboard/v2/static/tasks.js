@@ -348,17 +348,28 @@ addEventListener('DOMContentLoaded', () => {
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
       cli: o => idOr(o, t => `sd task delete ${t.id}`),
       consequence: () => 'The task, its notes and its history go. Its assignments stay in the runner log. This cannot be undone; to keep a record, move it to Done instead.' },
-    // Artifact and cancel are sd work verbs (review item 17). Both need text only the operator has, a moved path or a reason,
-    // so the dashboard shows the line to copy; v1's item page takes the same text in a form.
-    { id: 'work.relink', on: 'item', label: 'Relink', key: 'l', risk: 'safe', executes: false, icon: 'link-2',
-      when: o => { const d = detOf(T(o)); return !d ? 'the artifact was not read for this row' : d.item.path ? true : 'the item has no artifact to relink'; },
-      cli: o => idOr(o, t => `sd work relink ${t.id} <moved path>`),
-      run: o => `Copy the line; the path is relative to ${detOf(T(o)).item.repo}` },
-    { id: 'work.cancel', on: 'item', label: 'Cancel', key: 'w', risk: 'confirm', executes: false, icon: 'ban',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id' : t.kind !== 'work' ? `sd work cancel acts on a work item; this is a ${t.kind}` : t.status === 'done' ? 'the work item is done' : true; },
-      cli: o => idOr(o, t => `sd work cancel ${t.id} --reason '<why>'`),
-      consequence: () => 'Records a deliberate cancellation with your reason. No sd verb takes it back.',
-      run: o => `Copy the line and write the reason · ${label(T(o))}` },
+    // Artifact and cancel are sd work verbs (review item 17). build (sd:2200, the design's sd:2199): both post to the routes v1's
+    // item page uses, /api/items/<id>/(relink|cancel), with the row's revision. The text only the operator has, a moved path or a
+    // reason, is a confirm field; OK stays off until it is typed. Availability is progress.work_controls, read with the Details.
+    // Neither has Undo: relinking back is another relink, and no sd verb reopens a cancelled item.
+    { id: 'work.relink', on: 'item', label: 'Relink', key: 'l', risk: 'safe', executes: true, icon: 'link-2',
+      when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id' : t.kind !== 'work' ? `sd work relink acts on a work item; this is a ${t.kind}`
+        : !d ? 'the artifact was not read for this row' : !d.work.relink ? d.work.reason : d.item.path ? true : 'the item has no artifact to relink'; },
+      fields: o => { const d = detOf(T(o)); return [{ name: 'path', label: 'Moved path', required: true, placeholder: d.item.path,
+        help: `Relative to ${d.item.repo}. The item keeps its history; only the artifact path changes.` }]; },
+      cli: (o, v = {}) => idOr(o, t => `sd work relink ${t.id} ${v.path ? window.shell.shq(v.path) : '<moved path>'}`),
+      sends: o => `POST /api/items/${T(o).id}/relink {path}`,
+      run: (o, v) => { const t = must(o);
+        return landing(write(t.key, x => `/api/items/${x.id}/relink`, { path: v.path }), () => `${label(t)} relinked → ${v.path} · sd work relink ${t.id} ${window.shell.shq(v.path)}`); } },
+    { id: 'work.cancel', on: 'item', label: 'Cancel', key: 'w', risk: 'confirm', executes: true, icon: 'ban',
+      when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id' : t.kind !== 'work' ? `sd work cancel acts on a work item; this is a ${t.kind}`
+        : t.status === 'done' ? 'the work item is done' : !d ? 'its cancel availability was not read for this row' : d.work.cancel || d.work.reason; },
+      fields: () => [{ name: 'reason', label: 'Reason', required: true, placeholder: 'why the work stops', help: 'Recorded with the cancellation. A cancel without a reason is refused.' }],
+      cli: (o, v = {}) => idOr(o, t => `sd work cancel ${t.id} --reason ${v.reason ? window.shell.shq(v.reason) : "'<why>'"}`),
+      sends: o => `POST /api/items/${T(o).id}/cancel {reason}`,
+      consequence: () => 'Closes the work item as cancelled, with your reason. No sd verb takes it back.',
+      run: (o, v) => { const t = must(o);
+        return landing(write(t.key, x => `/api/items/${x.id}/cancel`, { reason: v.reason }), () => `${label(t)} cancelled · sd work cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
     // Recurrence: sd task edit --recur needs a due date; --clear-recur stops the series and clears its anchor, which Undo sets again.
     { id: 'item.recur', on: 'item', label: 'Edit → repeat weekly', risk: 'undo', icon: 'calendar-clock',
       when: o => { const t = T(o), d = detOf(t); if (!t?.id) return 'this row has no sd id to edit'; if (!RECURS.includes(t.kind)) return `a ${t.kind} item cannot recur`;

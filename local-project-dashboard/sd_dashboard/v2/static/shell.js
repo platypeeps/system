@@ -365,7 +365,8 @@
   const { plural } = window.markup;
   let selId = null;
   // A command without cli is dashboard-only (chat, navigation); it shows no CLI line.
-  const cliOf = (c, o) => c.cli ? c.cli(o) : '';
+  // A command with fields passes what the operator typed; the line shows each field's placeholder until then.
+  const cliOf = (c, o, v) => c.cli ? c.cli(o, v || {}) : '';
   // A cli string that starts with "no CLI:" or "no sd verb:" is a reason, not a command.
   const noCli = s => !s || /^no (CLI|sd verb)\b/.test(s);
   const shownCli = (c, o) => { const s = cliOf(c, o); return noCli(s) ? '' : s; };
@@ -404,24 +405,41 @@
   put(confirmDlg, html`<h2 id="confirm-h"></h2>`); // the label target exists while the dialog is closed
   body.append(confirmDlg); trap(confirmDlg);
   // Confirm: one dialog for every irreversible, force or large bulk action. It names the target and shows the command.
-  function confirmAction({ title, body: text = '', cli = '', ok = 'Confirm', keep = 'Keep it', danger = true }) {
+  // confirm:start
+  // fields: [{ name, label, required, placeholder, help }], text the command needs from the operator (a reason, a path), as the
+  // design source's shell has them (sd:2200). The line under them follows what is typed (cli(values)). OK stays off while a
+  // required field is empty or spaces only, and the close asks again, so no path runs the command without its text. Enter in a
+  // field is OK, not the form's first button, which is Keep and would drop what was typed (the design's sd:2369).
+  const fieldOf = f => html`<label class="label" for="cf-${f.name}">${f.label}</label><input class="cap-in" id="cf-${f.name}" name="${f.name}" autocomplete="off" spellcheck="false"${f.required ? html` required aria-required="true"` : ''} placeholder="${f.placeholder || ''}"${f.help ? html` aria-describedby="cf-${f.name}-help"` : ''}>${f.help ? html`<p id="cf-${f.name}-help">${f.help}</p>` : ''}`;
+  function confirmAction({ title, body: text = '', cli = '', ok = 'Confirm', keep = 'Keep it', danger = true, fields = [] }) {
     let from = null;
+    const line = v => typeof cli === 'function' ? cli(v) : cli;
     return new Promise(done => {
       put(confirmDlg, html`<form method="dialog" class="confirm-body">
         <h2 id="confirm-h">${title}</h2>${text ? html`<p>${text}</p>` : ''}
-        ${cli ? html`<div class="cli"><code>${cli}</code></div>` : ''}
-        <div class="actions"><button class="btn quiet" value="no">${keep}</button><button class="btn${danger ? ' danger' : ''}" value="yes">${ok}</button></div></form>`);
+        ${fields.map(fieldOf)}
+        ${line({}) ? html`<div class="cli"><code id="confirm-cli">${line({})}</code></div>` : ''}
+        <div class="actions"><button class="btn quiet" value="no" formnovalidate>${keep}</button><button class="btn${danger ? ' danger' : ''}" value="yes">${ok}</button></div></form>`);
+      const f = confirmDlg.querySelector('form'), yes = f.querySelector('[value="yes"]');
+      const values = () => Object.fromEntries(fields.map(x => [x.name, f.elements[x.name].value.trim()]));
+      const filled = () => fields.every(x => !x.required || values()[x.name]);
+      const show = () => { const c = f.querySelector('#confirm-cli'); if (c) c.textContent = line(values()); yes.disabled = !filled(); };
+      if (fields.length) {
+        f.addEventListener('input', show); show();
+        f.addEventListener('keydown', e => { if (e.key !== 'Enter' || e.isComposing || e.target.tagName !== 'INPUT') return; e.preventDefault(); if (!yes.disabled) f.requestSubmit(yes); });
+      }
       confirmDlg.returnValue = '';
-      confirmDlg.onclose = () => done({ yes: confirmDlg.returnValue === 'yes', from });
-      from = modal(confirmDlg, confirmDlg.querySelector('[value="no"]'));
+      confirmDlg.onclose = () => done({ yes: confirmDlg.returnValue === 'yes' && filled(), from, values: values() });
+      from = modal(confirmDlg, fields.length ? f.elements[fields[0].name] : confirmDlg.querySelector('[value="no"]'));
     });
   }
+  // confirm:end
   // The act a confirm names: the label when it already names its object ("Remove worktree"), else the label and the type
   // ("Cancel job"). The OK button repeats it; Keep says what not doing it means, never a second "Cancel" (review item 13).
   const actOf = (c, o) => /\s/.test(c.label.trim()) ? c.label : `${c.label} ${o.type}`;
   function run(c, o) {
-    const go = () => {
-      const msg = c.run ? c.run(o) : '';
+    const go = v => {
+      const msg = c.run ? c.run(o, v) : '';
       if (thenable(msg)) { settleOne(c, o, msg, { toast }); return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } })); }
       if (msg === null) return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id, form: true } })); // opened a form
       const text = msg || `${c.label} · ${o.label}`;
@@ -430,10 +448,12 @@
       else toast(text);
       document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } }));
     };
-    if (c.risk !== 'confirm' && !c.askFirst) return go();
+    // A command with fields always asks: the dialog is where the operator types them. Its colour still follows the risk.
+    const fields = c.fields ? c.fields(o) : [];
+    if (c.risk !== 'confirm' && !c.askFirst && !fields.length) return go();
     const act = actOf(c, o);
-    confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: shownCli(c, o), ok: act, keep: `Don't ${c.label.toLowerCase()}`, danger: c.risk === 'confirm' })
-      .then(({ yes, from }) => { if (!yes) return; go(); const a = document.activeElement; if (!a || a === body) refocus(from); });
+    confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: v => { const s = cliOf(c, o, v); return noCli(s) ? '' : s; }, ok: act, keep: `Don't ${c.label.toLowerCase()}`, danger: c.risk === 'confirm', fields })
+      .then(({ yes, from, values }) => { if (!yes) return; go(values); const a = document.activeElement; if (!a || a === body) refocus(from); });
   }
 
   // Proposal cards (chat writes). Approve is the confirmation; both approve and discard get Undo.
@@ -483,7 +503,7 @@
     anchor?.setAttribute?.('aria-expanded', 'true');
     menuEl.setAttribute('aria-label', `Actions for ${o.label}`);
     const on = live(o);
-    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
+    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
       <button role="menuitem" type="button" data-menu-open="${id}"><span>Open details</span><code></code><kbd>↵</kbd></button>
       <button role="menuitem" type="button" data-menu-ask="${id}"><span>Ask in chat</span><code></code><kbd>c</kbd></button>`);
     menuEl.hidden = false;

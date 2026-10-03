@@ -15,13 +15,15 @@ query of the store:
   (`item`, `notes`, `revision`, from `workflow.item_state`), split into the
   status history and the other notes as v1's item page splits them, plus the
   item's assignments (`reads.item_assignments`, with the cancel capability
-  and queue revision `sd assignments get` and `sd runner` use) and its
+  and queue revision `sd assignments get` and `sd runner` use), a work
+  item's relink and cancel availability (`progress.work_controls`) and its
   external context (`reads.item_shadow` and `progress.tracker_freshness`,
   v1's "External context" block), or `null` when the item has none.
 
 Every write the page makes goes through a route `server.action_route`
 already answered for v1: status, edit (priority, due, recurrence), note
-resolve, runner requeue and cancel. Nothing here writes.
+resolve, work relink and cancel, runner requeue and cancel. Nothing here
+writes.
 """
 
 from __future__ import annotations
@@ -161,7 +163,7 @@ def _runner_capabilities(queue: dict) -> dict:
 
 def details(connection, item: int, *, now: str) -> dict:
     """One item's Details sections. Raises `workflow.MissingItem` for an id with no item."""
-    from sd_db import operations, runner, runner_controls
+    from sd_db import operations, progress, runner, runner_controls
 
     state = workflow.item_state(connection, item)
     row = reads.item_by_id(connection, item)
@@ -185,4 +187,7 @@ def details(connection, item: int, *, now: str) -> dict:
         # `sd run` readiness, as `/api/run` checks it (`runner_controls.readiness`): read here, for one item, rather
         # than for every row, because it reads the item's assignments and leases.
         "run": {"allowed": ready["allowed"], "reason": ready["reason"]},
+        # `sd work relink` and `sd work cancel` availability, as the mutation checks it under its lock
+        # (`progress.work_controls`), for a work item; None for any other kind (sd:2200).
+        "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
     }
