@@ -1,0 +1,91 @@
+<!doctype html>
+<!--
+  HOA (sd:2116), at /hoa. Built from the design source's products/system/designs/pages/hoa.{html,css,js}, with design.md and
+  commands.md. Data: /api/hoa (hoa_screen.document: the asset map, the Mission export and the open followups of the checkout
+  <config>/project-dashboard/hoa.conf names), read when the page opens and on Refresh. A part that did not read is unknown
+  with its reason. The map is one SVG of the files' vectors: no Leaflet and no tiles. Writes: none; email is never sent.
+  Nothing here is sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HOA · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/hoa.css">
+</head>
+<body data-page="HOA" data-scope="hoa" data-scope-note="HOA water system">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+<main>
+  <header class="head">
+    <div>
+      <h1>HOA</h1>
+      <p id="subhead">Reading the HOA water system…</p>
+    </div>
+  </header>
+  <div id="state" hidden></div>
+
+  <h2 class="sr">Readings</h2>
+  <ul class="annunciator" id="annunciator" aria-label="Water annunciator"></ul>
+
+  <section class="panel" id="map-panel" aria-labelledby="map-h">
+    <div class="panel-head">
+      <div><h2 id="map-h">Map</h2><p>Lots, tracts and plats from <code>base.geojson</code>; assets from <code>assets.geojson</code>.</p></div>
+      <div class="tools">
+        <button class="btn quiet sm" type="button" id="fit"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"/></svg>Fit to HOA</button>
+        <button class="btn quiet sm" type="button" id="zoom-in" aria-label="Zoom in"><span class="zk" aria-hidden="true">+</span></button>
+        <button class="btn quiet sm" type="button" id="zoom-out" aria-label="Zoom out"><span class="zk" aria-hidden="true">−</span></button>
+        <button class="help" type="button" aria-label="Help: map" data-help="<b>Vectors only.</b> The map draws the lots and assets in the two files. It loads no tiles and no map library; drag to pan once zoomed in."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+      </div>
+    </div>
+    <div class="mapwrap"><div id="map" role="region" aria-label="HOA water assets map"></div></div>
+    <ul class="legend" id="legend" aria-label="Asset types"></ul>
+  </section>
+
+  <section class="panel" id="trends" aria-labelledby="trends-h">
+    <div class="panel-head">
+      <div><h2 id="trends-h">Trends</h2><p>Daily Mission rows. Tap a day for its row.</p></div>
+      <div class="range" id="range" role="group" aria-label="Time range">
+        <button class="chip" type="button" data-range="1" aria-disabled="true" aria-pressed="false" title="Mission exports daily rows; 24h needs the hourly export">24h</button>
+        <button class="chip" type="button" data-range="7" aria-pressed="true">7d</button>
+        <button class="chip" type="button" data-range="30" aria-pressed="false">30d</button>
+        <button class="help" type="button" aria-label="Help: time range" data-help="<b>Daily data.</b> The Mission CSVs hold one row per day, so 24h would be a single point."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+      </div>
+    </div>
+    <div class="trends" id="trend-list"></div>
+  </section>
+
+  <section class="panel" id="obligations" aria-labelledby="ob-h">
+    <div class="panel-head">
+      <div><h2 id="ob-h">Obligations and followups</h2><p>The checkout's open followup items, ranked by urgency. Drafts go to chat; you send.</p></div>
+    </div>
+    <table class="ledger" id="ob-table" aria-labelledby="ob-h">
+      <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">What</th><th scope="col" class="hide-sm">Due</th><th scope="col" class="hide-sm">Status</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+      <tbody id="ob-body"></tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="alarms" aria-labelledby="al-h">
+    <div class="panel-head">
+      <div><h2 id="al-h">Alarm events</h2><p>From <code>alarm-events.csv</code>, the last 30 days of the export, newest first.</p></div>
+    </div>
+    <table class="ledger" id="al-table" aria-labelledby="al-h">
+      <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Event</th><th scope="col">When</th><th scope="col" class="hide-sm">Kind</th><th scope="col" class="num hide-sm">Min</th><th scope="col" class="hide-sm">Notified</th></tr></thead>
+      <tbody id="al-body"></tbody>
+    </table>
+  </section>
+</main>
+
+<div class="details" id="details"><p class="note">Reading the HOA water system…</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/hoa.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>
