@@ -43,7 +43,7 @@ RESEARCH_JS = (V2 / "static" / "research.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 COLLECTORS = Path(research_screen.__file__).resolve().parents[1] / "collectors.py"
 
-#: The design's Research commands (design source products/system/designs/v2/research.js): id, object type, label, key, risk.
+#: The design's Research commands (design source products/system/designs/pages/research.js): id, object type, label, key, risk.
 #: Start was risk undo in the design; with no run to take back it asks first (build:).
 COMMANDS = [
     ["research.render", "research project", "Render", "r", "safe"],

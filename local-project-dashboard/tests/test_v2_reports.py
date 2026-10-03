@@ -46,7 +46,7 @@ TZ = timezone(timedelta(hours=-6))
 LATER = "2026-09-10T12:00:00Z"
 DAYS = ["2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10"]
 
-#: The design's Reports commands (design source products/system/designs/v2/reports.js): id, object type, label, key, risk.
+#: The design's Reports commands (design source products/system/designs/pages/reports.js): id, object type, label, key, risk.
 COMMANDS = [
     ["report.ack", "report", "Acknowledge", "a", "confirm"],  # build: confirm by operator ruling; sd-db cannot reopen a report
     ["report.show", "report", "Open item", "o", "safe"],
