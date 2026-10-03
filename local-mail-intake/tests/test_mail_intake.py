@@ -504,10 +504,10 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
                              "local-mail-intake")
             self.assertEqual(argv[argv.index("--stage") + 1], "JEV_MAIL_INTAKE")
 
-    def test_the_stage_set_on_is_not_enough_when_jev_is_disabled(self):
+    def test_the_stage_unset_is_not_enough_when_jev_is_disabled(self):
         _, expected, _ = self.baseline()
         with mock.patch.object(mi, "run_jev", return_value=(3, "")) as runner:
-            code, text, err = self.report({mi.JEV_STAGE: "1"})
+            code, text, err = self.report({})
         self.assertEqual(text, expected)
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("not enabled here", err)
@@ -522,7 +522,7 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
             return 0, "yes" if "fence variance" in state else "no"
 
         with mock.patch.object(mi, "run_jev", side_effect=answers):
-            code, text, _ = self.report({mi.JEV_STAGE: "1"})
+            code, text, _ = self.report({})
         self.assertEqual(code, mi.EXIT_FOUND)
         you = text.index("WAITING ON YOU")
         variance = text.index("Please approve the fence variance", you)
@@ -543,7 +543,7 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
             raise OSError("boom")
 
         with mock.patch.object(mi, "run_jev", side_effect=blows_up):
-            code, text, err = self.report({mi.JEV_STAGE: "1"})
+            code, text, err = self.report({})
         self.assertEqual(text, expected)
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("boom", err, "a lane that degrades must say so")
@@ -552,7 +552,7 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
         _, expected, _ = self.baseline()
         with mock.patch.object(mi, "run_jev",
                                side_effect=lambda a, s, e=None: (0, "" if a[1] != "enabled" else "")):
-            code, text, err = self.report({mi.JEV_STAGE: "1"})
+            code, text, err = self.report({})
         self.assertEqual(text, expected)
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("no answer", err)
@@ -636,7 +636,7 @@ class TestNothingPrivateLeavesTheMachine(unittest.TestCase):
             return (0, "") if args[1] == "enabled" else (0, "yes")
 
         with mock.patch.object(mi, "run_jev", side_effect=capture):
-            mi.cmd_report(state_dir, io.StringIO(), environ={mi.JEV_STAGE: "1"},
+            mi.cmd_report(state_dir, io.StringIO(), environ={},
                           err=io.StringIO())
 
         everything = "\n".join(" ".join(args) + "\n" + state for args, state in sent)

@@ -295,6 +295,13 @@ class Controls(unittest.TestCase):
         row = ledger.reserve(self.db, bill="c", bound=0.10, call_id="two", owner_pid=os.getpid())
         self.assertEqual(self.db.execute("SELECT source, bill FROM cost WHERE id=?", (row,)).fetchone()[:2], ("reserved", "c"))
 
+    def test_use_rows_come_back_oldest_first_with_their_time_skill_and_surface(self):
+        record_skill_use(self.db, "sd-later", surface="codex", mode="direct", timestamp="2026-09-22T10:00:00Z")
+        record_skill_use(self.db, "sd-earlier", surface="claude", mode="direct", timestamp="2026-09-01T10:00:00Z")
+        rows = skills_catalog.use_rows(self.db)
+        self.assertEqual([(row["skill"], row["surface"]) for row in rows], [("sd-earlier", "claude"), ("sd-later", "codex")])
+        self.assertEqual(sorted(rows[0]), ["skill", "surface", "timestamp"])
+
     def test_catalog_reads_files_and_usage_without_mutation(self):
         record_skill_use(self.db, "sd-test", surface="codex", mode="direct")
         before = self.snapshot()
