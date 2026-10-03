@@ -37,7 +37,7 @@ and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
 **The new design is the default** (sd:2163). It is the redesign from ui-design
-`products/system/` (`design.md`, `designs/pages/`, formerly `designs/v2/`), built one page at a time.
+`products/system/` (`design.md`, `designs/pages/`), built one page at a time.
 `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted IBM Plex
 under `static/`, served at `/ui/`; `shell.js` marks each change from the
 reference with `build:`. The assets take `/ui/` because the old screens own
@@ -75,6 +75,26 @@ unlock and toggle commands are registered but off with it, so the page sends
 nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
 `$HA_URL` and never holds a value.
 
+Contributions is at `/contributions` (sd:2113): the open rows of the
+contributions projection v1 renders, in lanes by who acts next, with each
+row's repository scope (internal when sd's repo table holds it) and settled
+rows counted per repository. `GET /api/contributions/page`
+(`contribution_screen.document`) carries at most `OPEN_LIMIT` open rows and
+says when it cut some; its per-scope counts, which the badge, lamps and tallies
+read, cover every open row. It sends no local path: a checkout reads
+`local: <folder>`, and a draft is the flag `has_draft`. The dashboard reads nothing from GitHub, so the design's
+"GitHub now" state and settled-per-day chart say they are not read.
+Acknowledge and Make task ask first, since no verb reverses either.
+Acknowledge posts to the v1 route. Make task posts `/api/contributions/task`,
+which files the task `sd task contribution add` files, with the row's URL as
+its identity: the projection links the two, and a second task for the URL is
+refused. A write's toast reports the write; the reread after it is separate,
+and only the newest reread draws. A row a reread no longer lists loses its
+pick and its commands. Settled rows count per stored repository, so two
+checkouts with one folder name stay two bars. Draft nudge, Open on GitHub and
+Re-run collector are copy only. The old screen moved to `/classic/contributions`; it still shows
+evidence, dependencies and notification delivery.
+
 Briefs is at `/briefs` (sd:2112): the brief notes the vault's
 `System/AI Generated/Briefs` folder holds, as cadence lanes per source and a
 ledger, over 24 hours, 7 or 30 days. `GET /api/briefs`
@@ -105,9 +125,69 @@ not read. Nothing on the page writes: Prune registrations, Attribute, Inspect
 listener and Re-run collector are CLI lines for Copy, and Re-check reads the
 document again.
 
-The old screens stay until their section is ported. Only the old Today moved,
-to `/classic/today`; every other old screen keeps its path. A `/v2/` address
-that names a page or an asset answers 301 with its new one (`/v2/today` to
+Research is at `/research` (sd:2122): every checkout under `REPO_ROOT`, one
+group deep, that carries a `research.conf.py`. `GET /api/research`
+(`research_screen.document`) runs `collectors.collect_research` in a child
+under a five-second budget. Each row shows the checkout's stage (the numbered
+directories that hold Markdown), its render freshness and its last commit. A
+config the collector refuses shows as unknown with the refusal.
+`GET /api/research/<checkout>` (`research_screen.sources`) reads that
+checkout's ledger: the Markdown tables in `SOURCES.md`,
+`10-sources/registry.md` and `10-sources/references.md`, up to 60 rows with
+the whole count. Any other path is a 404. Nothing reads review rounds or
+claims yet, so both show as unknown with that reason. Render and Review are
+copy only: the dashboard does not run `sd-research-kit`. Start research is
+off with its reason; the field shows the `sd task add` and `sd run` lines for
+Copy. The old view stays in the palette as Resources (classic), with Toolbox,
+Briefs, Vault and Queues.
+
+Documents is at `/documents` (sd:2114): the design's facets, search and
+paged ledger over every file `/documents/<key>/<file>` serves.
+`GET /api/documents` (`documents_screen.document`) gives each file its title,
+h1 and stand line, its kind and its render state. A checkout with
+`research.conf.py` makes research documents, and every other root makes
+reports. A research document is render-stale when its source Markdown changed
+after the page. The source is the one `research.conf.py` names, else the one
+`.md` with the page's name. Open document opens the served page. Render is
+copy only. Request a document is copy only: the page files no item. Pin, hide
+and tag are off: no document store exists yet. Disable render is off: no
+render switch exists.
+
+Reports is at `/reports` (sd:2121): job-family lamps, a seven-day run cadence
+per job, the report ledger with filters and saved views, and Details with a
+line diff against the job's previous report. `GET /api/reports`
+(`reports_screen.document`) gives the newest 200 reports v1 lists, the launchd
+jobs, and each job's runs per local day, read from its `cron-jobs.sh` log. A
+day the job's calendar leaves out is not scheduled. The families come from
+`<config>/project-dashboard/report-families.conf`, one
+`family|<key>|<label>|<icon>|<job>,<job>,...` per line. Job names are the
+operator's, so the checkout ships only `report-families.conf.example`; without
+the file no family lamp is drawn and every job is listed under "Other jobs".
+A family lamp follows each job's own last scheduled run before today, however
+rare; a job whose last scheduled run the log does not hold makes it unknown.
+Acknowledge posts v1's route with the report's revision. It is off while an
+open followup holds the report. It asks first and has no Undo: sd-db has no
+verb that reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,
+v1's preview, and the bulk bar acknowledges the picked reports one by one.
+Retry posts the job route, as Management does. No status mail is read: the
+dashboard holds no message store. The old screen stays in the palette as
+Reports (classic) for the Resources views and the attributed batch.
+
+Activity is at `/activity` (sd:2111): one timeline of the last 24 hours, as an
+annunciator, a lane per kind and a ledger banded by hour. `GET /api/activity`
+(`activity_screen.document`) reads only what the library already records:
+merges are the delivery notes `sd-ship` writes, runs are runner assignments
+and launchd jobs placed at their log time, and commands are the execution
+journal v1 Operations > Commands lists, older records too for the "All read"
+range; palette and runner runs alike (sd:2183). Reviews, deploys and mail have no
+collector; the document names each with its reason and the page draws it
+unknown, not zero. Requeue carries Undo; job retry posts the job's revision;
+Show output reads the execution record.
+
+The old screens stay until their section is ported. Three moved: the old Today
+to `/classic/today`, the old Contributions to `/classic/contributions` and the
+old Documents to `/classic/documents`. Every other old screen keeps its path.
+A `/v2/` address that names a page or an asset answers 301 with its new one (`/v2/today` to
 `/today`, `/v2/static/<file>` to `/ui/<file>`); any other `/v2/` path is a 404.
 One map in `sd_dashboard/v2/__init__.py`, served as `/ui/sections.js`, says
 where each rail section goes: `SECTIONS` for ported pages, `CLASSIC` for the
@@ -121,19 +201,20 @@ Classic screens.
 | Briefs | `/briefs` (new) |
 | Tasks | `/tasks` (new) |
 | Home | `/home` (new) |
+| Research | `/research` (new) |
+| Reports | `/reports` (new) |
+| Documents | `/documents` (new) |
 | Writing | `/writing` |
-| Research | `/operations?area=resources` |
-| Contributions | `/contributions` |
-| Documents | `/documents` |
+| Contributions | `/contributions` (new) |
 | Skills | `/skills` |
 | Metrics | `/operations?area=usage` |
 | Management | `/management` (new) |
 | Health | `/fleet-health` (new) |
-| Reports | `/operations?area=reports` |
+| Activity | `/activity` (new) |
 | Commands | `/operations?area=commands` |
 | Designs | `/designs` |
-| Notes, HOA, Activity | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection | `/classic/today`, `/backlog`, `/operations?area=…`, `/protection` |
+| Notes, HOA | no old screen; the rail says not built yet |
+| Palette: Today (classic), Backlog (classic), Reports (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic), Documents (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
@@ -170,7 +251,7 @@ still a separate CLI operation that verifies its commit. An item's external
 reference is shown with its snapshot and sync freshness; an old GitHub status
 does not control local task completion.
 
-**Contributions** at `/contributions` shows upstream activity, unfiled local work, evidence, dependencies, and notification state.
+**Contributions (classic)** at `/classic/contributions` shows upstream activity, unfiled local work, evidence, dependencies, and notification state.
 Today previews the first five contributions in the same order.
 Newly unblocked work comes first, then work awaiting you, work awaiting others, and merged contributions.
 The shared library supplies this order to both the dashboard and `sd-status`.
@@ -322,9 +403,19 @@ collectors does not imply feature parity with the old dashboard.
 ## Documents
 
 **Documents** lists generated HTML reports and serves them whole. Everything
-else on this dashboard reads database rows and renders markup; this screen does
+else on this dashboard reads database rows and renders markup; a report does
 neither, because a generated report is already a finished page and the useful
 thing is to hand it over rather than strip it down.
+
+The page is `/documents`, the v2 Documents page (sd:2114). It reads
+`GET /api/documents` (`documents_screen.document`), which lists every file
+`/documents/<key>/<file>` serves with its title, h1, stand line, derived kind
+(research or report) and render state. Its facets, search and paged ledger come
+from the design source. Pin, hide and tag are off until a document store exists
+(docs/work/2026-09-28-documents-view-state); render and request are copy-only
+lines the dashboard does not run. The classic listing stays at
+`/classic/documents`, opened from the palette. Both read the same roots
+through the same readers, so the rules below hold for each.
 
 A domain repository that publishes reports here follows
 `docs/html-reports.md` in this folder: a markdown twin and HTML page built
@@ -420,8 +511,8 @@ They have to agree: a listing offering a link the server then refuses is worse
 than one that omits the file, because the reader believes the first.
 
 The route sits ahead of the database connection in `do_GET`, beside `/static/`,
-so a report stays readable when the workflow database is down. The listing does
-not: it renders through `route()` like every other page. That is the right way
+so a report stays readable when the workflow database is down. The listings do
+not: `/api/documents` and `/classic/documents` sit behind it like every other page. That is the right way
 round, because the report is the thing somebody needs in front of them during
 an outage.
 
@@ -462,8 +553,6 @@ hold real notes and mail, and any site could then read them from this port.
 
 The v2 Designs mockup loads `products/system/designs/pages/data/designs-data.js`.
 The tab answers that one path live, with `designs.ledger_script()`, instead of the committed file.
-A checkout from before the design source renamed `designs/v2/` to `designs/pages/` has no `pages/` folder.
-There the tab answers `designs/v2/data/designs-data.js` instead (`designs.live_ledger`), and reads `v2/` pages the same way.
 `designs.ledger()` ports ui-design's `tools/collect-designs.mjs` and lists:
 
 - per page: kind, title, bytes, last commit (sha, time, subject) and a dirty flag;
@@ -521,7 +610,7 @@ The manifest now declares only the four queue actions.
 | **Toolbox** | Cron jobs with launchd's own last-exit code **and the next time each one fires**, launch agents, docker containers, and `machine-setup` drift with the age of the measurement | `launchctl list`, `jobs/*.job`, `docker ps`, and the nightly drift job's log rather than a fresh `machine-setup.sh status`, which cost most of the five-second budget |
 | **Briefs** | Everything the scheduled routines wrote, newest first, grouped by kind, each readable inline | `System/AI Generated/Briefs` |
 | **Vault** | One card per `* Home` area with note and open-task counts, plus overdue/due-today and Inbox pressure | vault frontmatter |
-| **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus `build/` mtimes |
+| **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus the built page's mtime in `docs/dashboard/` (or the older `build/`) |
 | **Ports** | Each service's effective ports, and which of them clash with another candidate or are already held — read from `machine-setup.sh`'s own conflict lines, which the collector could not see until 6b-9 | `machine-setup.sh candidates service` |
 | **Queues** | The four vault decision databases: how many are waiting, and the oldest undecided notes across all of them | the database folders under `System/Databases/` |
 

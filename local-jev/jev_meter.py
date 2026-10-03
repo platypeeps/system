@@ -56,6 +56,45 @@ def switched_on(env) -> bool:
     return (env.get("JEV_METER") or "").strip().lower() not in OFF
 
 
+#: What `ready` returns when a row for that arm would be accepted.
+READY = "ready"
+NO_ARM = "this sd_db does not know the arm"
+
+
+def ready(arm: str, env=None) -> str:
+    """Whether a row for `arm` has somewhere to go, asked before it costs
+    anything. Never raises.
+
+    A comparison arm makes a call that may be billed and exists only to write
+    its row, so the ledger is checked first: the meter is on, `sd_db` is
+    installed and names the arm, and the database opens for writing at the
+    library's schema. `connect` refuses an older or newer schema, which is
+    the window between a library upgrade and its migration.
+    """
+    env = os.environ if env is None else env
+    if not switched_on(env):
+        return SWITCHED_OFF
+    try:
+        from sd_db.database import connect
+        from sd_db.judgment import ARMS
+    except Exception:
+        return NO_LIBRARY
+    if arm not in ARMS:
+        return NO_ARM
+    path = (env.get("JEV_METER_DB") or "").strip() or None
+    try:
+        connection = connect(path, busy_timeout=busy_ms(env))
+    except OperationalError:
+        return CONTENDED
+    except Exception:
+        return NO_STORE
+    try:
+        connection.close()
+    except Exception:
+        pass
+    return READY
+
+
 def busy_ms(env) -> int:
     """`BUSY_MS`, or what `JEV_METER_BUSY_MS` says; a value that does not
     parse is the default, because a typo here may not cost the caller."""
@@ -63,6 +102,25 @@ def busy_ms(env) -> int:
         return max(0, int((env.get("JEV_METER_BUSY_MS") or "").strip() or BUSY_MS))
     except ValueError:
         return BUSY_MS
+
+
+def accepted(write_row, event: dict) -> dict:
+    """The event without the fields this `sd_db` does not take.
+
+    `jev` and the library are installed separately, and the library `jev`
+    reads is often the command pack's copy. A field a newer `jev` measures
+    (`server_ms`, `probabilities`) would make an older library refuse the
+    whole row over a keyword it has never heard of. Dropping the field keeps
+    the row, which is the trade every other refusal here makes.
+    """
+    import inspect
+    try:
+        known = inspect.signature(write_row).parameters
+    except (TypeError, ValueError):          # pragma: no cover - a C callable
+        return event
+    if any(p.kind is p.VAR_KEYWORD for p in known.values()):
+        return event
+    return {key: value for key, value in event.items() if key in known}
 
 
 def record(event: dict, env=None) -> str:
@@ -96,7 +154,7 @@ def record(event: dict, env=None) -> str:
     except Exception:
         return NO_STORE
     try:
-        write_row(connection, **event)
+        write_row(connection, **accepted(write_row, event))
     except OperationalError:
         # `database is locked` once the wait ran out, which is the expected
         # answer under contention rather than a fault, and is worth its own

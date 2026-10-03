@@ -1,0 +1,85 @@
+<!doctype html>
+<!--
+  Documents (sd:2114), at /documents. Built from the design source's products/system/designs/v2/documents.html, documents.js and
+  documents.css at 7f50ad4, with design.md and commands.md.
+  Data: /api/documents (documents_screen.document: every root documents.conf and the docs/dashboard scan give, every file
+  /documents/<key>/<file> serves, with its title, h1 and stand line, its derived kind and its render state), read when the page opens.
+  Pins, hidden documents and tags have no store yet, so their commands are off with that reason. Nothing here is sample data,
+  and nothing here writes.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Documents · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/documents.css">
+</head>
+<body data-page="Documents" data-scope="documents">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+  <main id="main">
+    <header class="head">
+      <div>
+        <h1>Documents</h1>
+        <p id="subhead">Reading the document roots…</p>
+      </div>
+      <div class="shift">
+        <label class="field">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr">Search, filter or request a document</span>
+          <input id="shift" placeholder="Search, repo:&lt;key&gt; kind:research stale, or request …" autocomplete="off" aria-describedby="shift-hint">
+          <span class="ghost" id="ghost"></span>
+          <kbd>/</kbd>
+        </label>
+        <div class="preview" id="shift-preview" hidden>
+          <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
+          <div class="chips" id="shift-chips" role="group" aria-label="Parsed"></div>
+          <div class="chips" role="group" aria-label="Interpret as" id="shift-modes">
+            <button class="chip" type="button" data-as="search" aria-pressed="true">search and filter</button>
+            <button class="chip" type="button" data-as="request" aria-pressed="false">request a document</button>
+          </div>
+          <div class="req" id="req" hidden></div>
+          <p class="hint" id="shift-hint">→ switches reading · Enter commits · Esc clears · Tab moves on</p>
+        </div>
+      </div>
+    </header>
+    <div id="state" hidden></div>
+
+    <section aria-label="Facets" class="facets" id="facets"></section>
+
+    <section aria-labelledby="list-h">
+      <div class="sec-head">
+        <h2 id="list-h">Documents <button class="help" type="button" aria-label="Help: Documents" data-help="<b>Found, not listed by hand.</b> Any checkout under the repository root with docs/dashboard is a root; documents.conf only renames, skips or adds one. Render-stale means the source Markdown changed after the page was rendered.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <div class="active" id="active" aria-live="polite"></div>
+      <table class="ledger" aria-labelledby="list-h">
+        <thead id="thead"><tr>
+          <th scope="col" class="g"><span class="sr">State</span></th>
+          <th scope="col" data-sort="title"><button class="sort" type="button">Document<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
+          <th scope="col" data-sort="repo"><button class="sort" type="button">Repo<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
+          <th scope="col" class="kind">Kind</th>
+          <th scope="col" data-sort="mod" aria-sort="descending"><button class="sort" type="button">Modified<svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg></button></th>
+          <th scope="col" data-sort="size" class="num"><button class="sort" type="button">Size<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
+          <th scope="col" class="acts"><span class="sr">Actions</span></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="empty" id="empty" hidden></p>
+      <nav class="pager" id="pager" aria-label="Pages"></nav>
+    </section>
+  </main>
+
+  <div class="details" id="details"><p class="why">Select a document to see its facts and what can be done with it.</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/documents.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

@@ -98,8 +98,8 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
     from . import v2
 
     # The new design is the default (sd:2163): `/` and `/today` are its Today, a static page whose rows come from
-    # /api/now. The old Today moved to /classic/today; every other old screen keeps its path until its section is
-    # ported. `v2.CLASSIC` maps each unported rail section to its old screen.
+    # /api/now. The old Today moved to /classic/today, and the old Contributions to /classic/contributions (sd:2113);
+    # every other old screen keeps its path until its section is ported. `v2.CLASSIC` maps each unported rail section to its old screen.
     found = v2.page(path)
     if found is not None:
         return found
@@ -107,7 +107,7 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
         return screens.today(connection, now=now, parameters=parameters)
     if path == "/backlog":
         return screens.backlog(connection, now=now, parameters=parameters)
-    if path == "/contributions":
+    if path == "/classic/contributions":
         from .contribution_screen import render
 
         return render(connection, parameters=parameters)
@@ -121,10 +121,10 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
         from .skills_screen import render
 
         return render(connection, now=now, parameters=parameters)
-    if path == "/documents":
+    if path == "/classic/documents":
         from .documents import render
 
-        # No connection: the listing reads a directory, not the database.
+        # No connection: the listing reads a directory, not the database. `/documents` is the new page's (sd:2114).
         return render(parameters)
     if path == "/designs":
         from .designs import render as designs_render
@@ -206,6 +206,19 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
             raise ValueError("Provide the contribution key, current revision and exact event IDs.")
         return lambda connection: contributions.acknowledge(connection, values["key"], values["event_ids"],
             expected_revision=values["revision"], who="dashboard")
+    if path == "/api/contributions/task":
+        from sd_db import contributions
+
+        # Make task (sd:2113): the task carries the row's URL as its contribution identity, as `sd task contribution add`
+        # writes it, so the projection links the two after a reread and a second filing for the same URL is refused.
+        if (set(values) != {"key", "title"} or not isinstance(values["key"], str) or not isinstance(values["title"], str)
+                or not values["title"].strip()):
+            raise ValueError("Provide the contribution key and a title.")
+        field = next((name for prefix, name in contributions.OBSERVED.items() if values["key"].startswith(prefix)), None)
+        if field is None:
+            raise ValueError("Only a contribution filed on GitHub takes a task; local work already has one.")
+        changes = {field: values["key"].split(":", 1)[1]}
+        return lambda connection: contributions.capture(connection, title=values["title"].strip(), changes=changes, who="dashboard")
     if path == "/api/palette/prepare":
         from sd_db import runner_exec
 
@@ -541,6 +554,15 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Contribution projection does not accept query parameters."})
                     return self._json(200, {"contributions": contributions.projection(connection)})
+                if path == "/api/contributions/page":
+                    from . import contribution_screen
+
+                    # The Contributions page's one reading (sd:2113): the projection v1 renders, open rows capped.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Contributions."})
+                    if split.query:
+                        return self._json(400, {"error": "Contributions does not accept query parameters."})
+                    return self._json(200, contribution_screen.document(connection, now=self.clock()))
                 if path == "/api/palette" or re.fullmatch(r"/api/executions/[1-9][0-9]{0,18}", path):
                     from sd_db import runner_exec
 
@@ -617,6 +639,29 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Home does not accept query parameters."})
                     return self._json(200, home_screen.document(now=self.clock()))
+                if path == "/api/documents":
+                    from . import documents_screen
+
+                    # The Documents page's rows (sd:2114): the roots and files /documents/<key>/<file> serves.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Documents."})
+                    if split.query:
+                        return self._json(400, {"error": "Documents does not accept query parameters."})
+                    return self._json(200, documents_screen.document(now=self.clock()))
+                if path == "/api/research" or path.startswith("/api/research/"):
+                    from . import research_screen
+
+                    # The Research page's board and one checkout's source registry (sd:2122): collect_research, in a child.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Research."})
+                    if split.query:
+                        return self._json(400, {"error": "Research does not accept query parameters."})
+                    if path == "/api/research":
+                        return self._json(200, research_screen.document(now=self.clock()))
+                    found = research_screen.sources(path[len("/api/research/"):], now=self.clock())
+                    if found is None:
+                        return self._json(404, {"error": "No research checkout at this address."})
+                    return self._json(200, found)
                 if path == "/api/briefs":
                     from . import briefs_screen
 
@@ -626,6 +671,33 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Briefs does not accept query parameters."})
                     return self._json(200, briefs_screen.document(now=self.clock()))
+                if path in ("/api/reports", "/api/reports/clean"):
+                    from . import reports_screen
+
+                    # The Reports page's reading and its clean preview (sd:2121): v1's report, job and preview reads.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Reports."})
+                    if path == "/api/reports":
+                        if split.query:
+                            return self._json(400, {"error": "Reports does not accept query parameters."})
+                        return self._json(200, reports_screen.document(connection, now=self.clock(),
+                                                                       jobs=self.operations_backend))
+                    if set(parameters) != {"before"} or len(parameters["before"]) != 1:
+                        return self._json(400, {"error": "Give one date: /api/reports/clean?before=YYYY-MM-DD."})
+                    try:
+                        return self._json(200, reports_screen.clean(connection, parameters["before"][0], now=self.clock()))
+                    except workflow.WorkflowError as problem:
+                        return self._json(400, {"error": str(problem)})
+                if path == "/api/activity":
+                    from . import activity_screen
+
+                    # The Activity page's 24-hour timeline (sd:2111), from the records the library already keeps.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Activity."})
+                    if split.query:
+                        return self._json(400, {"error": "Activity does not accept query parameters."})
+                    return self._json(200, activity_screen.document(connection, now=self.clock(),
+                                                                     jobs_backend=self.operations_backend))
                 if path == "/api/usage":
                     from .usage_screen import document
 

@@ -201,7 +201,8 @@ class ThePage(BrowserSession):
         self.assertEqual(v2.SECTIONS.get("Briefs"), "/briefs")
         self.assertEqual(list(v2.SECTIONS)[:2], ["Today", "Briefs"])
         self.assertNotIn("Briefs", v2.CLASSIC)
-        self.assertEqual(v2.CLASSIC["Research"], "/operations?area=resources")
+        # Research moved to /research (sd:2122); the classic Resources table stays in the palette.
+        self.assertEqual(v2.SCREENS["Resources (classic)"], "/operations?area=resources")
 
     def test_the_data_route_needs_a_session_takes_no_query_and_reads_the_vault_child(self):
         with mock.patch.object(briefs_screen, "collect", lambda: TILE):

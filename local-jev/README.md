@@ -336,6 +336,57 @@ No labeller ships yet. A label must come from independent evidence of the
 right answer, never from the prediction under test; a later fix in a shared
 file is not that evidence for a review tier (sd:2107).
 
+### The comparison arms
+
+Two comparison arms can ask other models the same question as each live
+Jev call, so the ledger holds paired answers for the Jev evaluation. **Both
+are off unless switched on**, one at a time:
+
+- **Kev**, the open-weights model `local-kev` serves on `127.0.0.1:8009`.
+  Its rows record provider `local`, the checkpoint from `KEV_MODEL`, and a
+  cost of 0.
+- **Haiku**, Claude Haiku 4.5 through one transport that
+  `JEV_COMPARE_HAIKU_VIA` names: `anthropic` (keyed by
+  `JEV_COMPARE_ANTHROPIC_KEY`), `openrouter`, `claude-cli` (`claude -p
+  --model haiku`, under the operator's own `claude` login), or `baseten`, which
+  serves no Haiku and so needs `JEV_COMPARE_BASETEN_MODEL` and its own
+  prices. The row records the transport as provider and the model name.
+  Haiku's list price is the default only for the transport's own Haiku model;
+  `JEV_COMPARE_HAIKU_MODEL` naming another model needs
+  `JEV_COMPARE_HAIKU_USD_IN` and `_OUT`, or its rows carry no cost.
+
+The arms get the request after redaction, exactly as Jev gets it. They run in
+a detached child process that `jev.py` starts once per call, before the first
+attempt, and does not wait for: the caller's output, exit code and timing are
+Jev's alone, and a hung arm costs the caller nothing. The child writes one
+judgment row per arm, with arm `kev` or `haiku`, the same pair id as the Jev
+row, the answer, the probabilities, the model's own latency where it reports
+one, tokens and cost. An unreachable or unkeyed arm records a decline, and
+so does a reply that does not carry exactly the options asked about.
+Before any arm calls out, the child checks that the ledger would take its
+row: `sd_db` installed and naming the arm, and the database at the
+library's schema. Without that, the arm does not run, so no paid call goes
+unrecorded.
+
+Haiku answers one question per request, with a JSON schema for the answer's
+probabilities, so no question sees another's answer: the isolation Jev's
+batch gives. A batch of more than 8 questions (`MAX_HAIKU_QUESTIONS`) is
+declined as `invalid` before any request, so one call never fans out into a
+pile of paid ones. So is a question with more than 255 options, the most the
+ledger records. An exported empty switch (`JEV_COMPARE_HAIKU_VIA=`) is off,
+and it beats an on-value in `<config>/jev/.env`. `--fallback`, `enabled`, a meter that is off, and a call Jev
+never gets start no arm.
+
+Switch the Kev arm on with an on-word (`JEV_COMPARE_KEV=1`) and the Haiku arm
+by naming a transport (`JEV_COMPARE_HAIKU_VIA=anthropic`). Unset or an
+off-word is off: unlike a Jev stage, where unset means on, an arm sends every
+live request to a second endpoint, so it is opt-in. An off arm starts no
+child and writes no row. Install the Kev server (`local-kev/kev.sh install`,
+then `agent-install`) when you switch the Kev arm on, not before. The rest of
+the settings are in `.env.example`. Read the comparison with:
+
+    local-sd-db/sd-db.sh judgments compare [--stage S] [--since 2026-10] [--json]
+
 ## What it never does
 
 It never prints the key, never logs it, and never puts it in an error message.
@@ -357,6 +408,12 @@ refused whole, nothing is sent, and a `--fallback` is honoured. A pattern file t
 compiled is a setting that does not parse: nothing is sent, `enabled` exits 3,
 and a `--fallback` is honoured. Patterns catch shapes and listed values; they
 do not make a sensitive input safe to send.
+
+**The comparison arms widen who sees a request.** With the Haiku arm on, every
+redacted request Jev gets also goes to Anthropic, or to OpenRouter and
+Anthropic, or to Baseten, depending on the transport. The Kev arm stays on
+this machine. Switch the Haiku arm off where that second recipient is not
+acceptable; it never receives a request that redaction refused.
 
 ## Tests
 

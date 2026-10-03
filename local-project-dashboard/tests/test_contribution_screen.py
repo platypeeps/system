@@ -60,7 +60,7 @@ class ContributionScreen(ScreenCase):
                     "pull_url": f"https://github.com/example/project/pull/{number + 20}",
                     "depends_on": [dependency]}, who="operator")
         before = tuple(self.connection.iterdump())
-        body = self.render("/contributions")
+        body = self.render("/classic/contributions")
         self.assertIn("Tag not selected", body)
         self.assertIn("example/library", body)
         self.assertNotIn("Newly unblocked</", body)
@@ -77,7 +77,7 @@ class ContributionScreen(ScreenCase):
                     "pull_url": f"https://github.com/example/project/pull/{number + 30}",
                     "depends_on": [dependency]}, who="operator")
         before = tuple(self.connection.iterdump())
-        body = self.render("/contributions")
+        body = self.render("/classic/contributions")
         self.assertIn("Version not selected", body)
         self.assertIn("library&lt;safe&gt;", body)
         self.assertNotIn("library<safe>", body)
@@ -88,7 +88,7 @@ class ContributionScreen(ScreenCase):
         item = seed_registered(self.connection)
         rows = contributions.projection(self.connection)
         before = tuple(self.connection.iterdump())
-        body = self.render("/contributions")
+        body = self.render("/classic/contributions")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["lane"], "newly_unblocked")
         self.assertEqual(len(rows[0]["attention_sources"]), 2)
@@ -102,7 +102,7 @@ class ContributionScreen(ScreenCase):
                 contribution(7, "awaiting_them"), contribution(6, "merged", external_state="MERGED")]
         before = tuple(self.connection.iterdump())
         with patch.object(contribution_screen.contributions, "projection", return_value=rows) as projection:
-            body = self.render("/contributions")
+            body = self.render("/classic/contributions")
         projection.assert_called_once_with(self.connection)
         self.assertEqual(re.findall(r'data-contribution-key="([^"]+)"', body), [row["key"] for row in rows])
         self.assertIn("Unfiled local work", body)
@@ -182,8 +182,8 @@ class ContributionScreen(ScreenCase):
     def test_filter_and_pagination_use_existing_listing_preserving_order(self):
         rows = [contribution(number) for number in range(65, 0, -1)]
         with patch.object(contribution_screen.contributions, "projection", return_value=rows):
-            body = self.render("/contributions", {"page": ["2"]})
-            filtered = self.render("/contributions", {"q": ["Contribution 65"]})
+            body = self.render("/classic/contributions", {"page": ["2"]})
+            filtered = self.render("/classic/contributions", {"q": ["Contribution 65"]})
         self.assertEqual(re.findall(r'data-contribution-key="([^"]+)"', body), [row["key"] for row in rows[50:]])
         self.assertEqual(re.findall(r'data-contribution-key="([^"]+)"', filtered), [rows[0]["key"]])
 
