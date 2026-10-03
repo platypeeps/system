@@ -190,6 +190,11 @@ sys.exit(0 if state.get("healthy") and storage.get("dispatch_allowed") else 1)
 case "${1:-}" in
     item)
         shift
+        # A queued run gets the fixed environment in
+        # source:local-sd-db/sd_db/runner_exec.py::process_plan: HOME, but no
+        # SD_PLAN_CLAUDE, SD_PACK_ROOT or SD_PLAN_PYTHON. The `.env` in the
+        # config folder under HOME is the one place those reach it (sd:1181).
+        st_source_env sd-plan
         resolve_python || exit 1
         # `sd_db` is the one PYTHON has installed, and the folder's row is
         # made by the pack's `sd work register` under the same interpreter.
