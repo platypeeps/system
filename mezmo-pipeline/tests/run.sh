@@ -342,8 +342,11 @@ case "$rc:$out" in 1:*"HTTP 401"*"service key was rotated"*) pass "401 status na
   *) fail "401 status names the rotated service key" "got $rc: $out" ;; esac
 sd=$(newstub); echo "404" > "$sd/resp.1.code"
 out=$(runp "$sd" status 2>/dev/null); rc=$?
-case "$rc:$out" in 1:*"HTTP 404"*"pipeline or state id moved"*) pass "404 status names the moved id" ;;
+case "$rc:$out" in 1:*"HTTP 404"*"pipeline id moved"*) pass "404 status names the moved id" ;;
   *) fail "404 status names the moved id" "got $rc: $out" ;; esac
+# The status read sends MEZMO_PIPELINE_ID only, so its 404 cannot be the state id.
+case "$out" in *MEZMO_PIPELINE_STATE_ID*) fail "404 status names only the id the read sent" "got $out" ;;
+  *) pass "404 status names only the id the read sent" ;; esac
 
 # --- the suite really is offline --------------------------------------------
 echo

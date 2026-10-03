@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import reads, workflow
 from .database import transaction
-from .writes import add_note, create_item, record_state, resolve_note, set_item_fields, stamp, transition
+from .writes import STATUSES, add_note, create_item, record_state, resolve_note, set_item_fields, stamp, transition
 
 MAX_REPORT = 200_000
 
@@ -534,6 +534,40 @@ def acknowledge(connection, item, *, expected_revision, who, resolve_ingest_foll
         transition(connection, item, "done", who=who, reason=reason)
         return workflow.item_state(connection, item)
 
+
+
+def reopen(connection, item, *, expected_revision, who, reason=None):
+    """Undo `acknowledge`: move one `done` report back, naming the operator (sd:2395).
+
+    The report returns to the status its newest `<status> -> done` history
+    note names, which is the status it was acknowledged from; with no such
+    note, or one naming no known status, it returns to `planning`, the
+    status every report is filed in. A report that is not `done` is
+    returned as it stands: an Undo that races a reload changes nothing.
+
+    `who` has no default, as on `acknowledge`. Followups that the
+    acknowledgement resolved stay resolved: `resolve_ingest_followups`
+    records them in the status note, and this verb does not guess which
+    ones to open again. The dashboard's Acknowledge never resolves any.
+    """
+    who = workflow._text(who, "who")
+    if reason is not None:
+        reason = workflow._text(reason, "reason")
+    with transaction(connection):
+        state = workflow._checked_state(connection, item, expected_revision)
+        if state["item"]["kind"] != "report":
+            raise workflow.WorkflowError("only report items can be reopened here")
+        if state["item"]["status"] != "done":
+            return state
+        target = "planning"
+        for note in reversed(state["notes"]):
+            match = note["kind"] == "status_change" and re.match(r"(\w+) -> done by ", note["body"])
+            if match:
+                if match[1] in STATUSES and match[1] != "done":
+                    target = match[1]
+                break
+        transition(connection, item, target, who=who, reason="reopened" + (f": {reason}" if reason else ""))
+        return workflow.item_state(connection, item)
 
 def clean_candidates(connection, *, before):
     """The reports retention's rule calls clean at `before`, in id order.

@@ -4,9 +4,9 @@
   reports.css at 7f50ad4, with design.md and commands.md.
   Data: /api/reports (reports_screen.document: the newest 200 database reports, the launchd jobs, each job's run cadence from
   its cron-jobs.sh log over seven local days, and the job families <config>/project-dashboard/report-families.conf names),
-  read when the page opens and after a write. Select clean reads /api/reports/clean, v1's preview, which writes nothing.
-  Writes: report acknowledge and job retry, each through the route v1 posts. No status mail is read, and nothing here is
-  sample data.
+  read through shell.read (read.js, sd:2487) when the page opens and after a write. Select clean reads /api/reports/clean,
+  v1's preview, which writes nothing. Writes: report acknowledge and job retry, each through the route v1 posts, and
+  Acknowledge's Undo through /api/reports/<n>/reopen (sd:2395). No status mail is read, and nothing here is sample data.
 -->
 <html lang="en">
 <head>
@@ -75,7 +75,7 @@
 
     <section aria-labelledby="led-h">
       <div class="sec-head">
-        <h2 id="led-h">Reports <button class="help" type="button" aria-label="Help: Reports" data-help="<b>Newest first.</b> Database reports come from sd-db, one per failed or reporting run; a repeated failure folds into one row with a count. Status mail is not read yet: the dashboard holds no message store. Acknowledge closes a database report; it does not touch the job.">
+        <h2 id="led-h">Reports <button class="help" type="button" aria-label="Help: Reports" data-help="<b>Newest first.</b> Database reports come from sd-db, one per failed or reporting run; a repeated failure folds into one row with a count. Status mail is not read yet: the dashboard holds no message store. Acknowledge closes a database report, and its Undo reopens it. Neither touches the job.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <p class="tally" id="tally"></p>
       </div>
@@ -132,6 +132,7 @@
   <div class="details" id="details"></div>
 </div>
 <script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
 <script src="/ui/reports.js"></script>
 <script src="/ui/shell.js"></script>
 </body>

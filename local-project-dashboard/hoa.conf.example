@@ -1,0 +1,18 @@
+# The HOA page's checkout: where the water system's map and Mission export live.
+#
+# Copy this file to <config>/project-dashboard/hoa.conf and edit it
+# (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system). The path
+# names a place, so the real file stays outside the checkout. Without an
+# hoa.conf the page says so and shows every reading as unknown.
+#
+# Pipe-separated, one setting per line, absolute paths only:
+#
+#   repo|<path>        the HOA checkout; its open followup items are the obligations
+#   mission|<path>     optional: the Mission export folder, default <repo>/water/metrics/mission
+#   assets|<path>      optional: the asset layer, default <repo>/water/map/assets.geojson
+#   base|<path>        optional: lots, tracts and plats, default <repo>/water/map/base.geojson
+#
+# The page reads analog-daily.csv, pump-daily.csv and alarm-events.csv from
+# the export folder. A line the page cannot read is named on the page and skipped.
+
+repo|/change-me/path/to/hoa-checkout
