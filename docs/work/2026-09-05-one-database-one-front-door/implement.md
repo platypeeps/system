@@ -248,8 +248,8 @@ A silent no-op would have read as success.
 **Repository:** `system` for the migration commands and anything reading a
 source that lives here. **Touches:** `local-sd-db/`,
 `local-cron-jobs/jobs/` — the nightly job entry that **invokes**
-`sd shadow sync`; PR 9 removes six others from the same directory and lands
-after this — and the migration sources that live in this repository.
+`sd shadow sync`; item C (sd:232) later removes four vault jobs from it, and two
+stay (requirement 3) — and the migration sources that live in this repository.
 
 **The command itself is item A's**, not this pull request's. An earlier
 draft built `sd shadow sync` inside `local-sd-db/`, which was the one place
@@ -816,10 +816,10 @@ when the profile is edited. The `personal.cron` half above is that same
 lesson one file over, with the sign flipped.
 
 **Verification.** Criterion 8, which names two enumerations —
-the six jobs absent from `local-cron-jobs/jobs/` and from
+the four vault process jobs absent from `local-cron-jobs/jobs/` and from
 `~/Library/LaunchAgents` — **plus a third this pull request adds**: absent
 from `personal.cron` as well. The criterion does not ask for the third; the
-paragraph above shows why removing the `.job` files alone leaves six drift
+paragraph above shows why removing the `.job` files alone leaves four drift
 items, so the plan is deliberately stronger than the criterion here; criterion 22 whole (`prd.md:1658-1681`), which is nine assertions and not
 the one an earlier draft reduced it to: `personal.agent` naming
 `local.system-tools.sd-runner`; `machine-setup.sh setup personal` in dry run listing
@@ -854,10 +854,10 @@ is `heartbeat_state`'s rule: within three intervals and healthy), the
 the route's HTTPS name — with the installed-`sd_db` report beside them;
 `doctor sd` to run those alone; and `local-machine-setup/tests/` bound into
 `system-native`, holding the profile, dry-run, drift, stubbed-doctor and
-`backup-verify.conf` assertions. **Still open:** the six vault jobs, by the
-operator's call (decided 2026-09-12: the middle path, see requirement 3's
-amendment); the retention table and the nightly row prune, since
-`sd-db-backup` runs `backup --keep all` under the September 9 amendment and
+`backup-verify.conf` assertions. **Still open:** the four vault process jobs
+(item C's; `vault-cleanup` and `vault-map` stay for good), by the operator's
+call (decided 2026-09-12: the middle path, see requirement 3's amendment);
+the retention table and the nightly row prune, since `sd-db-backup` runs `backup --keep all` under the September 9 amendment and
 no prune of `cost`, `exec` or `heartbeat` rows exists (no request log); the
 `doctor` check that names an enabled entry whose variable is unset (landed
 2026-09-12, two paragraphs down); and the tracked `local.system-tools.sd-runner.plist`,

@@ -16,12 +16,6 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Data (build) ----------
   // E: entity id -> { id, name, domain, group }. HEAD: the headline entity or null. REASON: why no tile has a state.
   let E = {}, HEAD = null, GROUPS = [], REASON = '', READ = null, CONFIG = null;
-  async function getJSON(path) {
-    const r = await fetch(path, { headers: { Accept: 'application/json' } });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-    return out;
-  }
   // build: the reference's state grammar per entity kind waits for a reader. Until one exists every tile says why it is unknown.
   const read = id => REASON || !E[id] ? ['unknown', 'no HA reader'] : ['unknown', 'no reading'];
   // build: one icon per domain; the reference picked one per sample entity.
@@ -147,29 +141,34 @@ addEventListener('DOMContentLoaded', () => {
   document.getElementById('kiosk-off').addEventListener('click', () => setKiosk(false));
   document.addEventListener('home:kiosk', e => setKiosk(!!e.detail));
 
-  // ---------- Start (build: read /api/home, then draw) ----------
-  async function load() {
-    window.shell.state({ kind: 'loading', text: 'Reading the tiles. They appear when /api/home answers.', source: '/api/home' });
-    let doc;
-    try { doc = await getJSON('/api/home'); } catch (err) {
-      window.shell.state({ kind: 'error', text: `The tiles were not read: ${err.message}. Reload retries it.`, source: '/api/home' });
-      return;
-    }
+  // ---------- Start (build, sd:2486: shell.read reads /api/home, then draws) ----------
+  // The reader (read.js, sd:2418) holds the guards: only the newest read draws, a tile the read no longer lists runs no
+  // command, a failed read clears the grid and Details, and the first read selects the ?row= tile.
+  function adopt(doc) {
     READ = doc.read; CONFIG = doc.config; REASON = doc.reader?.available ? '' : (doc.reader?.reason || 'no Home Assistant reader');
     HEAD = doc.headline; GROUPS = doc.groups || []; E = {};
     if (HEAD) E[HEAD.id] = { ...HEAD, group: null };
     GROUPS.forEach(g => g.tiles.forEach(t => { E[t.id] = { ...t, group: g.name }; }));
-    Object.values(E).forEach(e => C.put({ id: e.id, type: typeOf(e.id), label: e.name }));
     const problems = CONFIG?.problems || [];
-    if (CONFIG?.state === 'missing') window.shell.state({ kind: 'empty', title: 'No tile list', text: `Copy project-dashboard/home-tiles.conf.example to ${CONFIG.source} to list the entities worth a lamp.`, source: CONFIG.source });
-    else if (CONFIG?.state === 'error') window.shell.state({ kind: 'error', text: `The tile list was not read: ${problems.join('; ')}.`, source: CONFIG.source });
-    else if (problems.length) window.shell.state({ kind: 'partial', text: `${plural(problems.length, 'line')} skipped: ${problems.join('; ')}. ${REASON ? `No tile has a state: ${REASON}.` : ''}`, source: CONFIG.source });
-    else if (REASON) window.shell.state({ kind: 'partial', title: 'No state read', text: `The tiles are the configured entities; none has a state: ${REASON}.`, source: '/api/home' });
-    else window.shell.state(null);
-    render();
-    const row = window.shell.row();
-    if (row && E[row] && !root.hasAttribute('data-kiosk')) showDetails(row);
+    const state = CONFIG?.state === 'missing' ? { kind: 'empty', title: 'No tile list', text: `Copy project-dashboard/home-tiles.conf.example to ${CONFIG.source} to list the entities worth a lamp.`, source: CONFIG.source }
+      : CONFIG?.state === 'error' ? { kind: 'error', text: `The tile list was not read: ${problems.join('; ')}.`, source: CONFIG.source }
+      : problems.length ? { kind: 'partial', text: `${plural(problems.length, 'line')} skipped: ${problems.join('; ')}. ${REASON ? `No tile has a state: ${REASON}.` : ''}`, source: CONFIG.source }
+      : REASON ? { kind: 'partial', title: 'No state read', text: `The tiles are the configured entities; none has a state: ${REASON}.`, source: '/api/home' }
+      : null;
+    return { objects: Object.values(E).map(e => ({ id: e.id, type: typeOf(e.id), label: e.name })), state };
   }
+  function clear(err) { E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; }
+  function unselect() {
+    selected = null; markSelected();
+    put(details, html`<p class="why">Select a tile to see its entity and why it has no state.</p>`);
+  }
+  const reading = window.shell.read({
+    source: '/api/home', what: 'the tiles', adopt, clear, draw: render, unselect,
+    current: () => selected, first: () => null,
+    // The wall display opens no Details, so a ?row= tile is not selected there.
+    select: (id, opened) => { if (root.hasAttribute('data-kiosk')) unselect(); else showDetails(id, opened); },
+  });
+  const load = () => reading.load();
   registerCommands();
   load();
   suggest([

@@ -353,15 +353,19 @@ class RecurringTasks(unittest.TestCase):
                          ("planning", self.PAST_2100[0][0], "completion"))
 
     def test_cancel_and_other_moves_keep_the_rule_and_create_nothing(self):
-        # There is no task-level cancel: `progress.cancel_work` is the only
-        # cancel verb, and it refuses every kind but `work`, which cannot
-        # recur. Moves to any status but `done` keep the rule where it is.
+        # `progress.cancel_work` is the only cancel verb. Its default guard
+        # refuses every kind but `work`, which cannot recur, and `task_guard`
+        # (sd:1005) refuses a recurring task, since a cancel spawns nothing.
+        # Moves to any status but `done` keep the rule where it is.
         from sd_db import progress
 
         item = self.capture(recurrence="FREQ=WEEKLY")
         before = self.items()
         with self.assertRaisesRegex(WorkflowError, "work items"):
             progress.cancel_work(self.db, item["id"], reason="not needed", who="operator")
+        with self.assertRaisesRegex(WorkflowError, "recurring"):
+            progress.cancel_work(self.db, item["id"], reason="not needed", who="operator",
+                                 guard=progress.task_guard)
         for status in ("in_progress", "blocked", "ready", "planning"):
             with self.subTest(status=status):
                 self.assertNotIn("next_occurrence",
