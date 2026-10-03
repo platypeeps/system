@@ -11,8 +11,10 @@ takes the path of. This test names no page: it enumerates the registry.
 from __future__ import annotations
 
 import json
+import os
 import pkgutil
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -22,6 +24,7 @@ from sd_dashboard import v2
 
 from test_workflow_actions import BrowserSession
 
+HERE = Path(__file__).resolve().parents[1]
 V2 = Path(v2.__file__).resolve().parent
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 #: The rail's section names, from the design source's GROUPS in shell.js: the one place the rail's order lives.
@@ -126,6 +129,18 @@ class TheRegistry(unittest.TestCase):
     def test_each_page_names_its_item(self):
         for page in registry().PAGES:
             self.assertRegex(page.item, r"^sd:[1-9][0-9]*$", page.name)
+
+    def test_dashboard_sh_pages_prints_every_section_from_the_registry(self):
+        result = subprocess.run(["sh", str(HERE / "dashboard.sh"), "pages"], capture_output=True, text=True, timeout=60,
+                                env={**os.environ, "PYTHONPATH": str(HERE)}, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        for page in registry().PAGES:
+            self.assertTrue(any(line.split("\t")[:3] == [page.section, page.routes[0], "new"] for line in lines), page.section)
+        for section, href in v2.CLASSIC.items():
+            self.assertIn(f"{section}\t{href}\tclassic", lines)
+        for label, href in v2.SCREENS.items():
+            self.assertIn(f"{label}\t{href}\tpalette", lines)
 
 
 class TheRoutes(BrowserSession):

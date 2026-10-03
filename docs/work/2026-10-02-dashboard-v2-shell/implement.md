@@ -149,3 +149,19 @@ line in the files listed in PRD requirement 10.
   route that a registered page owns.
 - `v2/__init__.py` has no `PAGES` or `SECTIONS` literal.
 - The follow-up items are filed in `sd`, one per page in the migration table.
+
+## Build notes
+
+Where the build differs from the steps above, and why:
+
+- Retirement lives in `read.js`, not in a shell method `commands.retire`.
+  The page stand-ins load the real reader, so its retirement is tested as it runs.
+  `shell.js` changes by `build:` lines only: the `read:start` block and `read` in `window.shell`.
+- The spec takes `current`, `first`, `select` and `unselect` callbacks, not `list` and `none`.
+  Selection settles by live ids, because the page tests have no layout; the page still draws.
+- The loading state shows on `load()` only; a reread keeps the rows on screen.
+- Health's failed-read text is the reader's: "The Health rows were not read: <reason>. Reload retries it."
+- `Api` carries `example`, a path its `pattern` matches, which the registry test requests.
+- An old screen a page took is `takes=(Old(path, render),)` on that page.
+- The palette's Classic screens list the shared screens first, then each page's old screens by label.
+- Each page test's registration check is the `Registers` mixin from `test_v2_registry.py`.
