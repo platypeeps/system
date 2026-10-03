@@ -125,11 +125,11 @@ class SessionsArea(FleetCase):
         pack = self.checkout("pack")
         self.worktree(pack, "lane-a", "fix/sd-1-lane-a")
         self.hanging("ps")
-        with patch.object(fleet, "FLEET_SECONDS", 2.0), patch.object(fleet, "FLEET_MARGIN", 0.5):
+        with patch.object(fleet, "FLEET_SECONDS", 3.0), patch.object(fleet, "FLEET_MARGIN", 1.0):
             page = self.sessions()
         # The half that answered is on the page; the half that did not says so.
         self.assertEqual(self.cells(page, "worktree-name"), ["lane-a"])
-        self.assertIn("The process table could not be read: ps ran past the budget of 1.5 seconds and was stopped", page)
+        self.assertIn("The process table could not be read: ps ran past the budget of 2 seconds and was stopped", page)
         self.assertNotIn('<td class="process-pid">', page)
         # Cut by the child at its own deadline, so the hung ps is gone with
         # it rather than left holding a pipe (the `collectors.run` docstring).

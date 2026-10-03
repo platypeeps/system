@@ -13,13 +13,16 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # leaving the next caller to rediscover this as a traceback. An explicitly set
 # PYTHON is honoured, but still checked: refusing in a sentence beats failing
 # three imports deep.
+# The floor is `requires-python` in local-sd-db/pyproject.toml, the same one
+# `local-sd-db/sd-db.sh` checks, and not the one import that first forced a
+# floor: accepting less runs a package its own metadata refuses (sd:1612).
 # Resolved only by the verbs that run Python, so `help`, usage and an
 # unconfigured `status` still answer on a machine whose only Python is 3.9.
 # Both Homebrew prefixes are searched, as `local-cron-jobs` puts either on
 # PATH and the runner's bare PATH carries neither.
 python_is_new_enough() {
     command -v "$1" >/dev/null 2>&1 || return 1
-    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null
+    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 13) else 1)' 2>/dev/null
 }
 
 resolve_python() {
@@ -29,7 +32,7 @@ resolve_python() {
             return 1
         fi
         python_is_new_enough "$PYTHON" || {
-            echo "sd-plan: $PYTHON is too old; sd_db needs Python 3.11 or newer" >&2
+            echo "sd-plan: $PYTHON is too old; sd_db needs Python 3.13 or newer" >&2
             return 1
         }
         return 0
@@ -47,7 +50,7 @@ resolve_python() {
             return 0
         fi
     done
-    echo "sd-plan: no Python 3.11 or newer found; sd_db needs datetime.UTC" >&2
+    echo "sd-plan: no Python 3.13 or newer found; sd_db's pyproject.toml requires it" >&2
     return 1
 }
 
@@ -98,7 +101,8 @@ Usage: sd-plan.sh <command>
               folder's status, and pushed. Refuses a row belonging to another
               checkout (R10-D6) and a run that left any of the three
               documents unwritten. A folder that is committed and has its row
-              is reported and left alone; one without its row is registered,
+              is reported and left alone, or, when its planning commit
+              alone failed to push, pushed; one without its row is registered,
               committed and pushed, with no second planning run. `--dry-run`
               says what it would do.
   nightly     Select one row per participating repository and enqueue each
@@ -251,7 +255,7 @@ case "${1:-}" in
             exit 3
         fi
         if ! resolve_python; then
-            echo "local-sd-plan: FAIL — $count repository(ies) participate and no Python 3.11 or newer was found"
+            echo "local-sd-plan: FAIL — $count repository(ies) participate and no Python 3.13 or newer was found"
             exit 1
         fi
         if ! runner_dispatching; then

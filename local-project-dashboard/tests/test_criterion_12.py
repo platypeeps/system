@@ -24,6 +24,7 @@ sent it.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import threading
@@ -270,8 +271,16 @@ class OnTheWire(ScreenCase):
     def setUp(self):
         super().setUp()
         self.id = self.item("a <b>live</b> item")
-        from unittest.mock import Mock
+        from unittest.mock import Mock, patch
 
+        # An empty checkout root of its own: the Repos and Sessions links read
+        # `REPO_ROOT` in a child, and the machine's fleet is not this
+        # fixture's (sd:2411).
+        root = Path(self.tmp.name) / "repos"
+        root.mkdir()
+        environment = patch.dict(os.environ, {"REPO_ROOT": str(root)})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.listening = server.build(self.path, port=0, operations_backend=Mock(names=lambda: []))
         thread = threading.Thread(target=self.listening.serve_forever, daemon=True)
         thread.start()
@@ -316,6 +325,13 @@ class OnTheWire(ScreenCase):
         for href in set(re.findall(r'href="(/[^"]*)"', body)):
             status, _, _ = self.fetch(href)
             self.assertEqual(status, 200, href)
+
+    def test_the_navigation_reads_the_fixture_fleet_and_not_this_machines(self):
+        # Repos is one of the links above. Read against `~/repos` it ran git
+        # across every checkout on the machine, under a 12-second budget that
+        # outlasts `fetch`'s 10, and timed out at load 18 (sd:2411).
+        _, _, body = self.fetch("/operations?area=repos")
+        self.assertIn(f"No checkouts under {Path(self.tmp.name) / 'repos'}.", body)
 
 
 if __name__ == "__main__":  # pragma: no cover

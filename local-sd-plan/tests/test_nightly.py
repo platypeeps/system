@@ -207,6 +207,14 @@ class WhatItSelects(NightlyCase):
         chosen = sd_plan.selectable(self.connection, str(self.repo.resolve()), 5)
         self.assertNotIn(identifier, [row["id"] for row in chosen])
 
+    def test_a_row_whose_date_has_the_shape_and_no_day_is_skipped(self):
+        """Parsed, not shape-matched: `2026-02-30` is no date (sd:1181)."""
+        identifier = self.task(title="impossibly dated shape")
+        self.connection.execute("UPDATE item SET created_at = '2026-02-30T00:00:00+00:00' "
+                                "WHERE id = ?", (identifier,))
+        chosen = sd_plan.selectable(self.connection, str(self.repo.resolve()), 5)
+        self.assertNotIn(identifier, [row["id"] for row in chosen])
+
     def test_a_title_that_yields_no_slug_is_skipped_rather_than_failing_the_night(self):
         identifier = self.task(title="!!! ???")
         chosen = sd_plan.selectable(self.connection, str(self.repo.resolve()), 5)
