@@ -1,7 +1,7 @@
 # Aura experiment: the math MCP server and two Aura servers (orchestration and
 # single agent), exporting traces to local-genai-traces on the host.
 # aura.sh experiment drives this file and sets every ${...} below.
-name: local-aura-experiment
+name: mezmo-aura-experiment
 
 services:
   math-mcp:
