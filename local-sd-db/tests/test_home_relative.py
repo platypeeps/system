@@ -50,7 +50,7 @@ COLUMNS = {
     "judgment": {"history": "answer questions ordering changed override",
                  "none": "id timestamp caller stage arm pair shadow provider model primitive "
                          "question_id outcome cause confidence tokens_in tokens_out duration_ms usd "
-                         "override_source override_at"},
+                         "override_source override_at server_ms probabilities"},
     "note": {"history": "body", "hub-only": "output_path",
              "none": "id item timestamp kind session resolved_at started ended exit_code"},
     "provider": {"none": "name enabled reason author_rank reviewer_rank"},
@@ -233,9 +233,10 @@ class TheMigration(AThirteenStore):
         connection = sqlite3.connect(self.database, isolation_level=None)
         paths.install(connection)
         connection.execute("PRAGMA foreign_keys = ON")
-        # 016 and 015 came after 014 and are reversed first, newest first:
-        # 014's reverse is written against the table at 14, without
+        # 017, 016 and 015 came after 014 and are reversed first, newest
+        # first: 014's reverse is written against the table at 14, without
         # `repo.managed` or `repo.ci`.
+        connection.executescript(reverse_script("017_judgment_compare_arms.sql"))
         connection.executescript(reverse_script("016_repo_ci.sql"))
         connection.executescript(reverse_script("015_repo_managed.sql"))
         connection.executescript(reverse_script())

@@ -1,0 +1,111 @@
+/* Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
+ * Documents v2: Shapeshift search/request bar → facet rail (repo, kind, freshness, pinned, hidden) → paged ledger → Details with facts + preview.
+ * Real data: 99 files from docs/dashboard roots, 2026-09-27 23:51 UTC. */
+
+.sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }
+.sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-2xs); }
+.tally { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0; font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
+
+/* Facets */
+.facets { display: grid; gap: var(--space-xs); margin: 0 0 var(--space-md); padding: var(--space-sm) var(--space-md); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }
+.facet { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); gap: var(--space-xs); align-items: start; }
+.facet > .label { padding-top: 0.45rem; display: flex; align-items: center; gap: var(--space-2xs); }
+.facet .chips { margin: 0; }
+.chip .n { color: var(--color-muted); }
+.chip[aria-pressed="true"] .n { color: var(--color-ink-2); }
+/* build: an unavailable chip is aria-disabled so it keeps focus and its reason. */
+.chip:disabled, .chip[aria-disabled="true"] { cursor: not-allowed; opacity: 1; color: var(--color-muted); background: transparent; border-style: dashed; }
+/* build: its reason is hidden until the chip has focus, then shows as a full-width line after it. */
+.offwhy { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.chip:focus-visible + .offwhy { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; flex-basis: 100%; font-size: var(--text-xs); color: var(--color-muted); }
+.chip .g-caution { font-family: var(--font-data); }
+.active { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); margin: 0 0 var(--space-xs); font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); min-height: 1.75rem; }
+.active .chip .i { width: 0.8rem; height: 0.8rem; }
+.linkish { font: inherit; color: var(--color-ink-2); background: none; border: 0; padding: 0 var(--space-2xs); text-decoration: underline; cursor: pointer; min-height: 1.75rem; }
+
+/* Ledger */
+.ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-2xs) var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
+.ledger th .sort { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-3xs); min-height: 1.75rem; }
+.ledger th .sort:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.ledger th[aria-sort] { color: var(--color-ink); }
+.ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
+.ledger tbody tr { cursor: pointer; }
+.ledger tbody tr:hover td { background: var(--color-well); }
+.ledger tbody tr[aria-selected="true"] td { background: var(--color-accent-bg); }
+.ledger tbody tr[aria-selected="true"] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
+.ledger .g { width: 1.75rem; text-align: center; font-family: var(--font-data); }
+.ledger .what button { all: unset; cursor: pointer; font-weight: 500; }
+.ledger .what button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.ledger .file { display: block; font: 400 var(--text-xs)/1.35 var(--font-data); color: var(--color-muted); overflow-wrap: anywhere; }
+.ledger .tags { display: inline-flex; flex-wrap: wrap; gap: var(--space-3xs); margin-left: var(--space-2xs); vertical-align: 1px; }
+.tagc { font: 500 var(--text-2xs)/1 var(--font-data); padding: 2px 5px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); color: var(--color-ink-2); }
+.ledger .repo, .ledger .num, .ledger .kind { font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
+.ledger .num { text-align: right; font-variant-numeric: tabular-nums; }
+.ledger .acts { white-space: nowrap; text-align: right; width: 1%; }
+.ledger .pinmark { display: inline-flex; margin-left: var(--space-2xs); color: var(--color-accent); vertical-align: -2px; }
+.ledger .pinmark .i { width: 0.85rem; height: 0.85rem; }
+.ledger tbody tr[data-picked] td { background: var(--color-accent-bg); }
+.ledger tbody tr[data-picked] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-focus); }
+.ledger tr.queued .what button { color: var(--color-ink-2); }
+.ledger tr.hid td { color: var(--color-muted); }
+.empty { margin: var(--space-md) 0; font-size: var(--text-sm); color: var(--color-muted); }
+.empty[hidden] { display: none; }
+
+/* Pager */
+.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin-top: var(--space-sm); font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
+.pager .pages, .pager .sizes { display: flex; flex-wrap: wrap; gap: var(--space-2xs); align-items: center; }
+.pager .chip { min-width: 2rem; justify-content: center; }
+
+/* Details: preview */
+.preview-doc { margin: 0 0 var(--space-md); padding: var(--space-md); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper); }
+.preview-doc .ttl { margin: 0 0 var(--space-2xs); font: 600 var(--text-base)/1.3 var(--font-ui); }
+.preview-doc .h1 { margin: 0 0 var(--space-xs); font: 500 var(--text-xs)/1.3 var(--font-label); letter-spacing: 0.04em; color: var(--color-muted); }
+.preview-doc p { margin: 0; font-size: var(--text-sm); color: var(--color-ink-2); max-width: 60ch; }
+.preview-doc .src { margin-top: var(--space-sm); font: 400 var(--text-2xs)/1.3 var(--font-data); color: var(--color-muted); }
+.ext { display: inline-flex; align-items: center; gap: var(--space-2xs); }
+.tagedit { display: flex; flex-wrap: wrap; gap: var(--space-2xs); align-items: center; }
+.tagedit .chip .i { width: 0.8rem; height: 0.8rem; }
+.tagedit input { flex: 1 1 8rem; min-width: 0; min-height: var(--row-touch); padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper); color: var(--color-ink); font: 400 var(--text-sm)/1 var(--font-data); }
+.tagedit input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 0; }
+
+/* Shapeshift request preview */
+.req { display: grid; gap: var(--space-xs); margin-top: var(--space-xs); }
+.req .chips { margin: 0; }
+.req .actions { margin-top: var(--space-2xs); }
+.proposal .label { color: var(--color-ink-2); }
+.proposal .tag { margin-left: auto; font: 500 var(--text-2xs)/1 var(--font-data); color: var(--color-muted); border: 1px dashed var(--color-rule); padding: 2px 5px; border-radius: var(--radius-sm); }
+.proposal pre { margin: 0; padding: var(--space-xs) var(--space-sm); background: var(--color-well); border-radius: var(--radius-sm); font: 400 var(--text-xs)/1.5 var(--font-data); white-space: pre-wrap; overflow-wrap: anywhere; }
+.proposal pre .add { color: var(--color-ok); }
+.details .kind { font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); }
+.details h3 { font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); }
+.rel { border-bottom: 1px dotted var(--color-rule); cursor: pointer; }
+
+@media (pointer: coarse) {
+  .ledger td { height: var(--row-touch); }
+  .ledger th .sort, .linkish { min-height: var(--row-touch); }
+  .pager .chip { min-width: var(--row-touch); }
+}
+@media (max-width: 1099px) {
+  .ledger .kind, .ledger th.kind { display: none; }
+}
+@media (max-width: 899px) {
+  .facet { grid-template-columns: minmax(0, 1fr); gap: var(--space-2xs); }
+  .facet > .label { padding-top: 0; }
+  .ledger thead { display: none; }
+  .ledger tbody tr { display: grid; grid-template-columns: 1.75rem minmax(0, 1fr) auto; grid-template-areas: "g what acts" ". meta acts"; border-bottom: var(--rule-hair) solid var(--color-rule-2); padding: var(--space-xs) 0; }
+  .ledger td { height: auto; border: 0; padding: 0 var(--space-2xs); }
+  .ledger .g { grid-area: g; } .ledger .what { grid-area: what; } .ledger .acts { grid-area: acts; align-self: center; }
+  .ledger .repo { grid-area: meta; } .ledger .mod, .ledger .num { display: none; }
+  .ledger .repo::after { content: attr(data-meta); color: var(--color-muted); }
+  .ledger tbody tr[aria-selected="true"] { background: var(--color-accent-bg); box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
+  .ledger tbody tr[aria-selected="true"] td { background: transparent; box-shadow: none; }
+  .ledger tbody tr[data-picked] { background: var(--color-accent-bg); box-shadow: inset var(--rule-lamp) 0 0 var(--color-focus); }
+  .ledger tbody tr[data-picked] td { background: transparent; box-shadow: none; }
+}
+@media (max-width: 399px) {
+  .ledger .acts .rowact .btn { display: none; } /* the row keeps ⋯; the primary command stays in Details */
+}
+@media (forced-colors: active) {
+  .ledger tbody tr[aria-selected="true"] td:first-child { outline: 2px solid Highlight; }
+}

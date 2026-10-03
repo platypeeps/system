@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,6 +53,8 @@ __all__ = [
     "item_notes",
     "item_shadow",
     "missing_trailers",
+    "trailer_scan",
+    "OverBudget",
     "on_branch",
     "open_followups",
     "ready_to_send",
@@ -516,10 +519,26 @@ def weekly_numbers(
     ]
 
 
-def missing_trailers(
-    connection: sqlite3.Connection, *, now: str | None = None, repo_paths: list[str] | None = None
-) -> int:
-    """The missing-trailer count Today shows: week commits with no `Authored-with:`.
+class OverBudget(SdDbError):
+    """A read that ran past the budget its caller set and was stopped, not waited on."""
+
+
+#: How far back the trailer count reads: five weeks, as the Health design decided on 2026-09-30.
+TRAILER_WEEKS = 5
+
+
+def trailer_scan(
+    connection: sqlite3.Connection, *, now: str | None = None, repo_paths: list[str] | None = None,
+    within: float | None = None,
+) -> dict[str, Any]:
+    """The operator's own commits of the last five weeks on each default branch, and which lack `Authored-with:`.
+
+    Scope, per repository: `origin/HEAD` (the default branch as the clone
+    knows it), `--no-merges`, `TRAILER_WEEKS` weeks to `now`, and the author
+    the repository's own `git config user.email` names, read at run time. A
+    repository with no `origin/HEAD` is listed in `no_default`, not read on
+    its checkout's HEAD instead; one with no `user.email` is listed in
+    `no_author`; a path git cannot read at all is skipped, as before.
 
     **The record separator is not a newline, because `%(trailers)` is not one
     line.** The first version of this function asked for `%H%x00%(trailers)`
@@ -533,36 +552,77 @@ def missing_trailers(
     a newline cannot reach it, and `%x1f` separates the two fields inside a
     record -- a unit separator, because it cannot occur in a hash and, unlike
     the NUL, does not collide with what `-z` is already using.
+
+    `within` is an overall time budget in seconds, for a caller that must not
+    wait on a slow fleet (the Health page). The walk stops when it is spent
+    and raises `OverBudget`: a partial count is not the count. Without it
+    each git call still has its own 20 s timeout.
     """
-    stamp = _now(now)
-    since, until = _week(stamp)
+    end = _parse(_now(now))
+    since = (end - timedelta(weeks=TRAILER_WEEKS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    until = end.strftime("%Y-%m-%dT%H:%M:%SZ")
     if repo_paths is None:
         repo_paths = [
             row["path"]
             for row in connection.execute("SELECT path FROM repo ORDER BY path").fetchall()
         ]
-    missing = 0
-    for path in repo_paths:
+    stop = None if within is None else time.monotonic() + within
+    refusal = f"the trailer count ran past its budget of {within:g} seconds" if within is not None else ""
+
+    def git(path: str, *args: str) -> subprocess.CompletedProcess | None:
+        """One git call inside the budget, or None when git could not answer."""
+        timeout = 20.0
+        if stop is not None:
+            timeout = min(timeout, stop - time.monotonic())
+            if timeout <= 0:
+                raise OverBudget(refusal)
         try:
-            done = subprocess.run(
-                ["git", "-C", str(paths.disk(path)), "log", "--no-merges", "-z",
-                 f"--since={since}", f"--until={until}T23:59:59",
-                 "--format=%H%x1f%(trailers)"],
-                capture_output=True, text=True, timeout=20,
-            )
+            return subprocess.run(["git", "-C", str(paths.disk(path)), *args],
+                                  capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if stop is not None and time.monotonic() >= stop:
+                raise OverBudget(refusal) from None
+            return None
         except (OSError, subprocess.SubprocessError):
+            return None
+
+    scan: dict[str, Any] = {"missing": 0, "commits": 0, "repos": 0, "no_default": [], "no_author": []}
+    for path in repo_paths:
+        ref = git(path, "rev-parse", "--verify", "-q", "origin/HEAD")
+        if ref is None or ref.returncode not in (0, 1):
+            continue  # not a repository git can read
+        if ref.returncode == 1:
+            scan["no_default"].append(path)
             continue
-        if done.returncode != 0:
+        email = git(path, "config", "user.email")
+        author = email.stdout.strip() if email is not None and email.returncode == 0 else ""
+        if not author:
+            scan["no_author"].append(path)
             continue
+        # git matches --author against "Name <address>" as a substring; the <...> make it the whole address.
+        done = git(path, "log", "origin/HEAD", "--no-merges", "-z", f"--since={since}", f"--until={until}",
+                   f"--author=<{author}>", "-i", "-F", "--format=%H%x1f%(trailers)")
+        if done is None or done.returncode != 0:
+            continue
+        scan["repos"] += 1
         for record in done.stdout.split("\x00"):
             if not record.strip():
                 continue
             _, separator, trailers = record.partition("\x1f")
             if not separator:
                 continue
+            scan["commits"] += 1
             if TRAILER not in trailers:
-                missing += 1
-    return missing
+                scan["missing"] += 1
+    return scan
+
+
+def missing_trailers(
+    connection: sqlite3.Connection, *, now: str | None = None, repo_paths: list[str] | None = None,
+    within: float | None = None,
+) -> int:
+    """The missing-trailer count: `trailer_scan`'s `missing`, in its scope."""
+    return trailer_scan(connection, now=now, repo_paths=repo_paths, within=within)["missing"]
 
 
 def runner_board(
@@ -1281,3 +1341,36 @@ def _usage_reads(
         meter=tuple(dict(row) for row in meter),
         spent=round(sum(bill.spent for bill in bills), 6), held=round(sum(bill.held for bill in bills), 6),
     )
+
+
+def delivery_notes(connection: sqlite3.Connection, *, since: str) -> list[sqlite3.Row]:
+    """The delivery notes `ship.note_merge` wrote on or after the day of `since`, oldest first, with the item's title.
+
+    The day is a coarse bound, since note stamps carry either `Z` or `+00:00`;
+    the caller compares each stamp exactly. Behind the dashboard's Activity (sd:2111).
+    """
+    return connection.execute(
+        "SELECT note.id, note.item, note.timestamp, note.body, item.title FROM note LEFT JOIN item ON item.id = note.item "
+        "WHERE note.kind = 'comment' AND note.body LIKE 'Code delivery %' AND substr(note.timestamp, 1, 10) >= ? "
+        "ORDER BY note.id", (since[:10],)).fetchall()
+
+
+def recent_assignments(connection: sqlite3.Connection, *, since: str, exclude_roles=("exec",)) -> list[tuple[int, str | None]]:
+    """(id, item repository) of assignments that started or ended on or after the day of `since`, but for `exclude_roles`.
+
+    A coarse bound, as `delivery_notes`; behind the dashboard's Activity (sd:2111), whose repository filter needs the item's repository.
+    """
+    marks = ", ".join("?" for _ in exclude_roles) or "''"
+    return [(row[0], row[1]) for row in connection.execute(
+        f"SELECT assignment.id, item.repo FROM assignment LEFT JOIN item ON item.id = assignment.item "
+        f"WHERE assignment.role NOT IN ({marks}) "
+        "AND (substr(assignment.started, 1, 10) >= ? OR substr(assignment.ended, 1, 10) >= ?) ORDER BY assignment.id",
+        (*exclude_roles, since[:10], since[:10]))]
+
+
+def exec_note_count(connection: sqlite3.Connection) -> int:
+    """How many `exec` notes the journal holds, from every writer; Activity says how many its capped read left out (sd:2111)."""
+    return connection.execute("SELECT count(*) FROM note WHERE kind = 'exec'").fetchone()[0]
+
+
+__all__ += ["delivery_notes", "exec_note_count", "recent_assignments"]

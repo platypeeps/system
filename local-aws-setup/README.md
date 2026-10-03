@@ -30,7 +30,7 @@ takes. `<config>` is `$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`);
 |---|---|
 | `ACCOUNT_ID` | 12-digit account id |
 | `LEVEL` | `readonly`, `operator` or `sandbox` |
-| `ADMIN_PROFILE` | your admin login for that account; `apply` refuses if it is a different account |
+| `ADMIN_PROFILE` | your admin login for that account; `apply` refuses if it is a different account. Needed by `apply`, `keys`, `rotate` and `check`; a file that only names an account may leave it out |
 | `AGENT_USER` | agent IAM user (default `agent`) |
 | `AGENT_PROFILE` | CLI profile holding the agent key (default `agent-<name>`) |
 | `AGENT_REGION` | region for that profile (default `us-east-1`) |
