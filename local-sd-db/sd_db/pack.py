@@ -252,6 +252,9 @@ def installed(*, home: Path | str, environ: dict[str, str] | None = None) -> Pac
         )
     try:
         module = _load(library)
+    except KeyboardInterrupt:
+        # The operator stopping the command, not a verdict on the pack.
+        raise
     except BaseException as failure:  # noqa: BLE001 - a module body runs here
         return Pack(
             receipt=receipt,
