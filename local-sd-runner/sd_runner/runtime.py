@@ -65,6 +65,23 @@ def database_write(connection, operation, *args, **kwargs):
         connection.execute(f"PRAGMA busy_timeout={timeout}")
 
 
+def health_reasons(body: dict) -> list[str]:
+    """Why a heartbeat body is unhealthy, one phrase per reason, for the err log's flip line (sd:1953)."""
+    report = body.get("storage") or {}
+    reasons = [str(problem) for problem in report.get("problems") or ()]
+    if report.get("database_below_floor"):
+        reasons.append("database volume below the free floor")
+    for key in ("probe_holds", "restore_holds", "runtime_holds"):
+        reasons += [str(hold.get("reason", hold)) if isinstance(hold, dict) else str(hold) for hold in body.get(key) or ()]
+    if body.get("restoration_pending"):
+        reasons.append("database restore pending")
+    if body.get("database_holds"):
+        reasons.append("ending held for " + ", ".join(map(str, body["database_holds"])))
+    if (body.get("starting") or {}).get("reason"):
+        reasons.append(body["starting"]["reason"])
+    return reasons or ["no reason recorded"]
+
+
 @dataclass(frozen=True)
 class Config:
     database: Path
@@ -297,6 +314,9 @@ class Runner:
         self.storage_verified = {}
         #: The checkout's HEAD when `serve` started, the code this process runs (sd:1952).
         self.runner_commit = None
+        #: The last heartbeat body this process wrote, and the health the err log last named (sd:1953).
+        self.last_beat = None
+        self.logged_healthy = True
 
     @property
     def search_path(self) -> str:
@@ -333,6 +353,29 @@ class Runner:
         row = database_write(connection, store.update_run, ident, **fields) if fields else store.run_state(connection, ident)
         journal.persist(self.config.database, row)
         return row
+
+    def heartbeat(self, connection, body: dict) -> dict:
+        """Write the heartbeat and keep its body for `log_health` (sd:1953)."""
+        written = database_write(connection, store.heartbeat, body)
+        self.last_beat = body
+        return written
+
+    def log_health(self) -> None:
+        """Write one err log line when the last heartbeat's health differs from the last line's (sd:1953).
+
+        A tick can write a healthy pulse and then an unhealthy hold, so the
+        caller asks once the tick is done, and the line names its final state.
+        A daemon starts as healthy, so an unhealthy first beat is a flip.
+        Reasons that change while health stays the same write nothing.
+        """
+        if self.last_beat is None:
+            return
+        healthy = bool(self.last_beat.get("healthy"))
+        if healthy == self.logged_healthy:
+            return
+        self.logged_healthy = healthy
+        message = "healthy again" if healthy else "unhealthy: " + "; ".join(health_reasons(self.last_beat))
+        print(f"runner: {' '.join(message.split())}", file=sys.stderr, flush=True)
 
     @staticmethod
     def stop_owned(run):
@@ -551,7 +594,7 @@ class Runner:
                 continue
             if isinstance(held, dict) and held.get("reason") == "no space":
                 space_holds.append({"run": row["id"], "assignment": row["assignment"], **held})
-        return database_write(connection, store.heartbeat, {"pid": os.getpid(), "owner": self.owner, "interval_seconds": self.config.interval,
+        return self.heartbeat(connection, {"pid": os.getpid(), "owner": self.owner, "interval_seconds": self.config.interval,
             "healthy": report["ok"] and not holds and not report["database_below_floor"] and not self._restore_pending(connection) and not self.pending_endings, "storage": report,
             "restoration_pending": self._restore_pending(connection),
             "database_holds": sorted(self.pending_endings), "probe_holds": holds, "space_holds": space_holds,
@@ -643,6 +686,8 @@ class Runner:
         outcome, detail = "blocked", "setup did not complete"
         #: The checkout file the clone's check overrides came from, or None (sd:1752).
         overrides = None
+        #: A session the provider step lost, recorded once the ending knows no hold applies (sd:1270).
+        interrupted = None
         deadline = time.monotonic() + request["budget_minutes"] * 60
         try:
             if self._restore_pending(connection):
@@ -717,6 +762,12 @@ class Runner:
                     outcome, detail = self.answer(connection, request, provider, deadline)
                 else:
                     clone = Path(request["run"]["work_path"])
+                    seed = cargo_seed.seed_path(self.config.work, request["run"]["repo"])
+                    if request["role"] != "reviewer":
+                        # The author session builds as the check does, so it
+                        # starts from the seed too; it built cold when only the
+                        # check was seeded (sd:1816).
+                        cargo_seed.seed(clone, seed)
                     try:
                         result = self.action(connection, child, request, "provider", deadline,
                                              argv=argv, environment=provider_env, prompt=prompt(request, provider),
@@ -726,7 +777,10 @@ class Runner:
                         # restore or a lost supervisor raises here, before the
                         # normal record below, and the ending records no usage:
                         # the session's spend was lost with it (sd:1221).
-                        self.record_session(connection, request, provider, clone)
+                        # A restore or an ownership change raises here too, and
+                        # neither store writer checks for one, so the record
+                        # waits for the ending's recovery guard (sd:1270).
+                        interrupted = (request, provider, clone)
                         raise
                     exit_code = result["exit_code"]
                     # What the session left is recorded before its exit code is
@@ -747,8 +801,9 @@ class Runner:
                         if check:
                             # A Rust clone starts from its repository's last
                             # passing build, in its own `target/`; a clone the
-                            # copy fails for builds cold (sd:1814).
-                            seed = cargo_seed.seed_path(self.config.work, request["run"]["repo"])
+                            # copy fails for builds cold (sd:1814). One the
+                            # session seeded or built keeps its `target/`; this
+                            # seeds a clone the session made a Rust one.
                             cargo_seed.seed(clone, seed)
                             # A fresh clone holds no dependencies. Installing
                             # them is setup, and its failure is the runner's
@@ -813,6 +868,10 @@ class Runner:
                 recovery_hold = recovery_hold or observed["owner"] != request["run"]["owner"] or observed["journal_version"] < request["run"]["journal_version"]
             except store.RunnerRefused:
                 recovery_hold = True
+            if interrupted and not recovery_hold:
+                # On a hold the notes and usage files stay in the clone, which
+                # the ending retains once the hold is resolved.
+                self.record_session(connection, *interrupted)
             if joined and not recovery_hold:
                 self.pending_endings[ident] = {"run": dict(request["run"]), "outcome": outcome,
                                                "detail": detail, "exit_code": exit_code}
@@ -990,11 +1049,13 @@ class Runner:
         except OBSERVATION_FAILURES as error:
             # Preserve this owner even after a partial tick. Restart recovery
             # would reinterpret unrelated live supervisors as abandoned runs.
-            database_write(connection, store.heartbeat, {
+            self.heartbeat(connection, {
                 "pid": os.getpid(), "owner": self.owner, "interval_seconds": self.config.interval,
                 "healthy": False, "runtime_holds": [{"reason": str(error)}],
                 "storage": {"dispatch_allowed": False, "observation": "unavailable"}})
             return []
+        finally:
+            self.log_health()
 
     def _tick(self, connection):
         self._drain_endings(connection)
@@ -1004,7 +1065,7 @@ class Runner:
         except store.RunnerRefused as error:
             holds = [{"reason": str(error)}]
         if holds:
-            database_write(connection, store.heartbeat, {**pulse, "healthy": False, "restore_holds": holds})
+            self.heartbeat(connection, {**pulse, "healthy": False, "restore_holds": holds})
             return []
         results = []
         for ident, thread in list(self.threads.items()):
@@ -1080,7 +1141,7 @@ class Runner:
             # that person through `runner.sh status`, which prints the whole
             # body; `runner_screen.jobs_panel` reads three scalars off the
             # heartbeat and renders none of this.
-            database_write(connection, store.heartbeat, {**pulse, "healthy": False, "runtime_holds": holds})
+            self.heartbeat(connection, {**pulse, "healthy": False, "runtime_holds": holds})
         return results
 
     def await_storage(self, report: dict) -> None:
@@ -1103,13 +1164,14 @@ class Runner:
                 if any(problem not in unverified for problem in report["problems"]) or time.monotonic() >= deadline:
                     raise store.RunnerRefused("; ".join(report["problems"]))
                 try:
-                    database_write(connection, store.heartbeat, {"pid": os.getpid(), "owner": self.owner,
+                    self.heartbeat(connection, {"pid": os.getpid(), "owner": self.owner,
                         "interval_seconds": config.interval, "healthy": False, "storage": report,
                         "starting": {"reason": "work volume not yet verified", "window_seconds": COLD_START_WINDOW,
                                      "remaining_seconds": round(deadline - time.monotonic())}})
                 except sqlite3.Error:
                     # The heartbeat only reports the wait; a busy store does not end it.
                     pass
+                self.log_health()
                 time.sleep(config.interval)
                 report = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb,
                                            verified=self.storage_verified)
@@ -1137,10 +1199,11 @@ class Runner:
                     holds = [{"reason": str(error)}]
                 if holds:
                     try:
-                        database_write(connection, store.heartbeat, {"healthy": False, "interval_seconds": config.interval, "restore_holds": holds,
-                                                                     **self.deployed()})
+                        self.heartbeat(connection, {"healthy": False, "interval_seconds": config.interval, "restore_holds": holds,
+                                                    **self.deployed()})
                     except sqlite3.Error as error:
                         raise store.RunnerRefused(f"runner recovery held: {holds}; diagnostic heartbeat unavailable: {error}") from error
+                    self.log_health()
                     raise store.RunnerRefused("runner recovery has unresolved durable-journal holds")
                 while True:
                     if time.monotonic() - self.last_archive_watch >= 60 and (self.archive_watch is None or not self.archive_watch.is_alive()):
@@ -1172,6 +1235,7 @@ class Runner:
                             except sqlite3.Error as error:
                                 if not database_busy(error):
                                     raise
+                            self.log_health()
                         self.watcher.join()
                         if self.archive_watch is not None:
                             self.archive_watch.join()

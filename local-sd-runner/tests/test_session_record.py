@@ -152,6 +152,44 @@ class Sessions(unittest.TestCase):
         self.assertEqual([(r["usd"], r["tokens_in"]) for r in self.costs()], [(0.5, 10)])
         self.assertEqual([(n["kind"], n["body"]) for n in self.notes()], [("followup", "stopped at step 2")])
 
+    def interrupt_provider(self, hold):
+        """Run a session that spent and left a note, then `hold` and raise as a restore or takeover does."""
+        self.seed_registry_rows()
+        self.provider.write_text(self.provider.read_text() + "import json\n"
+            "print(json.dumps({'type': 'result', 'total_cost_usd': 0.5, 'usage': {'input_tokens': 10, 'output_tokens': 2}}))\n"
+            "open('.git/sd-notes.jsonl', 'w').write(json.dumps({'kind': 'followup', 'body': 'stopped at step 2'}) + '\\n')\n")
+        acknowledged = runtime.Runner.action
+
+        def interrupted(runner, connection, child, request, action, deadline, **extra):
+            result = acknowledged(runner, connection, child, request, action, deadline, **extra)
+            if action == "provider":
+                hold(connection, request)
+                raise store.RunnerRefused("database restore interrupted this owned attempt")
+            return result
+
+        with patch.object(runtime.Runner, "action", interrupted):
+            request, result = self.run_fixture(provider=CLAUDE)
+        self.assertTrue(result.get("recovery_hold"), result)
+        # Nothing reaches the store through the hold; the clone keeps both files.
+        self.assertEqual(self.costs(), [])
+        self.assertEqual(self.notes(), [])
+        clone = Path(result["work_path"])
+        self.assertIn("stopped at step 2", (clone / session_record.NOTES_FILE).read_text())
+        self.assertIn("total_cost_usd", (clone / ".git/sd-provider.log").read_text())
+
+    def test_a_restore_holds_the_interrupted_sessions_record(self):
+        # sd:1270. The handler sd:1221 added wrote notes and cost while a
+        # restore was starting, which the ending's recovery guard then held.
+        def restore(connection, request):
+            (self.config.database.parent / "runner-restore-intent.json").write_text("{}")
+        self.interrupt_provider(restore)
+
+    def test_an_ownership_change_holds_the_interrupted_sessions_record(self):
+        def takeover(connection, request):
+            connection.execute("UPDATE runner_run SET owner = 'another-owner' WHERE id = ?", (request["run"]["id"],))
+            connection.commit()
+        self.interrupt_provider(takeover)
+
     def test_an_unreadable_notes_file_still_charges_the_session(self):
         # sd:1221. The notes were read before the cost path, so a file the
         # runner refused took the session's spend down with it.
