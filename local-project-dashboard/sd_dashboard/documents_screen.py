@@ -46,8 +46,7 @@ HEAD_BYTES = 256 * 1024
 #: Why pin, hide and tag are off: the one reason the page shows for each.
 STORE_REASON = "no document store yet: pins, hidden documents and tags are not kept (docs/work/2026-09-28-documents-view-state)"
 
-#: How deep under a research checkout a source Markdown is looked for, and the folders that never hold one.
-SOURCE_DEPTH = 3
+#: The folders under a research checkout that never hold a source Markdown; dot folders are skipped too.
 SKIP_FOLDERS = ("build", "node_modules", "dist", "storage")
 
 #: Classes that mark a page's stand line, in the order the generators use them.
@@ -138,7 +137,8 @@ def _sources(checkout: Path, names: list[str]) -> dict[str, Path]:
 
     research.conf.py first: an entry's `out` names the page and its `src` the source, when that is a file. Then, for a
     name the config did not give, a `.md` whose stem is the page's stem in any case (`40-docs/PLAN-local-poc.md` for
-    `plan-local-poc.html`), when exactly one does. A config the reader refuses (computed data) leaves the name match, and is not a failure of the page.
+    `plan-local-poc.html`), when exactly one does anywhere in the checkout outside `SKIP_FOLDERS`, dot folders and the
+    published root (sd:2417: a depth cap hid a unique deeper match, and a deeper twin could not make a match ambiguous). A config the reader refuses (computed data) leaves the name match, and is not a failure of the page.
     """
     base = checkout.resolve()
     found: dict[str, Path] = {}
@@ -156,7 +156,6 @@ def _sources(checkout: Path, names: list[str]) -> dict[str, Path]:
     for directory, folders, files in os.walk(checkout):
         here = Path(directory)
         folders[:] = sorted(f for f in folders if not f.startswith(".") and f not in SKIP_FOLDERS
-                            and len((here / f).relative_to(checkout).parts) <= SOURCE_DEPTH
                             and (here / f).relative_to(checkout).as_posix() != documents.PUBLISHED)
         for file in files:
             if file.endswith(".md"):

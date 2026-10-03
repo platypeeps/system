@@ -7,7 +7,8 @@ capture: no summary, no manifest written, and the stages after it not run.
 
 capture writes into the checkout it runs from, so it runs from a copy of this
 folder under a temporary root that is not a git checkout. brew, git and
-defaults are stubs, so nothing on this machine is read.
+defaults are stubs, so nothing on this machine is read; so is sudo, and
+fixture_config.seal fails a case that reaches a real one.
 """
 
 import pathlib
@@ -70,6 +71,9 @@ class CaptureMacosTest(unittest.TestCase):
         write_stub(self.stubs, "brew", "#!/bin/sh\nexit 0\n")
         write_stub(self.stubs, "git", "#!/bin/sh\nexit 1\n")
         write_stub(self.stubs, "defaults", DEFAULTS_STUB)
+        # No sudo ticket: the spotlight step reports it cannot read.
+        write_stub(self.stubs, "sudo", "#!/bin/sh\nexit 1\n")
+        fixture_config.seal(self, self.stubs)
 
     def capture(self, *flags):
         env = {

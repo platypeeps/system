@@ -88,7 +88,9 @@ def collect(area, key=None, *, within=None):
     module = _collectors()
     budget = module.Budget(RESEARCH_SECONDS, within=within)
     seconds = max(budget.seconds - MARGIN, 0.0)
-    argv = [sys.executable, "-I", str(CHILD), area, *([key] if key else []), f"{seconds:g}"]
+    # The page's start on the shared clock, as `fleet.collect` passes it (sd:2501): the child's deadline counts from here.
+    since = time.clock_gettime(time.CLOCK_MONOTONIC)
+    argv = [sys.executable, "-I", str(CHILD), area, *([key] if key else []), f"{seconds:g}", f"{since:.6f}"]
     try:
         process = budget.run(argv, label=f"research {area}")
     except module.OverBudget as error:
@@ -285,13 +287,15 @@ def parse_registry(text: str, name: str) -> tuple[dict, list[dict]]:
             section = stripped.lstrip("#").strip()
             started = started or stripped.startswith("##")
             heads = None
-        elif stripped.startswith("|") and i + 1 < len(lines) and re.fullmatch(r"\|?[\s:|-]+\|?", lines[i + 1].strip()) \
-                and "-" in lines[i + 1]:
+        elif "|" in stripped and i + 1 < len(lines) and re.fullmatch(r"\|?[\s:|-]+\|?", lines[i + 1].strip()) \
+                and "-" in lines[i + 1] and (stripped.startswith("|") or "|" in lines[i + 1]):
+            # A table may leave out its outer pipes (sd:2414); then its delimiter row carries one, so prose with a pipe
+            # above a `---` rule stays provenance.
             heads = [_cell(h) for h in _row(stripped)]
             started = True
             i += 2
             continue
-        elif stripped.startswith("|") and heads:
+        elif "|" in stripped and heads:
             cells = _row(stripped)
             if len(cells) >= 2 and cells[0]:
                 rows.append({"f": name, "sec": section, "id": _cell(cells[0])[:40], "title": _cell(cells[1]),
@@ -332,11 +336,18 @@ def registry(repo: Path) -> dict:
 
 def main(argv):
     started = time.monotonic()
-    if not argv or argv[0] not in AREAS or len(argv) != (3 if argv[0] == "sources" else 2) \
-            or not re.fullmatch(r"\d+(\.\d+)?", argv[-1]):
-        print("usage: research_screen.py board <seconds> | sources <checkout> <seconds>", file=sys.stderr)
+    number = r"\d+(\.\d+)?"
+    base = 3 if argv and argv[0] == "sources" else 2
+    if not argv or argv[0] not in AREAS or len(argv) not in (base, base + 1) \
+            or not all(re.fullmatch(number, value) for value in argv[base - 1:]):
+        print("usage: research_screen.py board <seconds> [<since>] | sources <checkout> <seconds> [<since>]", file=sys.stderr)
         return 2
-    area, seconds = argv[0], float(argv[-1])
+    area, seconds = argv[0], float(argv[base - 1])
+    if len(argv) == base + 1:
+        # The page's start on the shared clock: what this interpreter spent starting is taken from the deadline, never
+        # added to it (`fleet.main`). A reading from the future counts as now, and one older than the budget as spent.
+        spent = time.clock_gettime(time.CLOCK_MONOTONIC) - float(argv[base])
+        started -= min(max(spent, 0.0), seconds)
     try:
         collectors = _collectors()
         with collectors.set_deadline(seconds, started=started):
