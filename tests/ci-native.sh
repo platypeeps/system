@@ -103,6 +103,12 @@ python3 tests/test_citations.py
 # runs here before the venv, and the guard below demands this line.
 python3 tests/test_jev_contract.py
 
+# The system's protection gap ids against the pack's, which owns them
+# (sd:1372): sd_db's GAP_IDS and the dashboard's GAPS columns, each
+# compared with ACKNOWLEDGEABLE_GAPS read from the pinned pack copy in
+# SD_ACCEPTANCE_PACK. Stdlib only, so it runs here before the venv.
+python3 tests/test_gap_vocabulary.py
+
 # The run_suite lines at the bottom are a hand-maintained list, and
 # a folder that grows a suite without a line here is never run --
 # it stays green, which is the failure mode this repository already
