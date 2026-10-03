@@ -150,6 +150,11 @@ def catalog(connection, *, root=None, home=None, now=None):
     return {"root": str(root), "paths": paths, "skills": skills, "observed_at": moment}
 
 
+def use_rows(connection):
+    """Every `skill_use` row's time, skill and surface, oldest first: what a page counts per week and per surface."""
+    return [dict(row) for row in connection.execute("SELECT timestamp, skill, surface FROM skill_use ORDER BY timestamp")]
+
+
 def _selected(connection, name, expected_revision=None, **options):
     inventory = catalog(connection, **options)
     matches = [skill for skill in inventory["skills"] if skill["name"] == name]

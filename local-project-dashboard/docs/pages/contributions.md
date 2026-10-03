@@ -13,9 +13,13 @@ Acknowledge and Make task ask first, since no verb reverses either.
 Acknowledge posts to the v1 route. Make task posts `/api/contributions/task`,
 which files the task `sd task contribution add` files, with the row's URL as
 its identity: the projection links the two, and a second task for the URL is
-refused. A write's toast reports the write; the reread after it is separate,
-and only the newest reread draws. A row a reread no longer lists loses its
-pick and its commands. Settled rows count per stored repository, so two
+refused. A write's toast reports the write; the reread after it is separate.
+The page reads through the shell's reader, `read.js` (sd:2488): only the
+newest read draws, a reread waits for a read that started before its write
+landed, and a row a read no longer lists loses its pick and its commands. A
+failed reread keeps the rows and says the write landed; a failed load clears
+the page. A redraw keeps keyboard focus on the replaced lamp or command, or on
+the row's next action when that command went off (sd:2426). Settled rows count per stored repository, so two
 checkouts with one folder name stay two bars. Draft nudge, Open on GitHub and
 Re-run collector are copy only. The old screen moved to `/classic/contributions`; it still shows
 evidence, dependencies and notification delivery.

@@ -132,11 +132,11 @@ class WritingActions(BrowserSession):
         _, second = self.seed_piece(slug="draft", stage="drafting")
         _, third = self.seed_piece(slug="parked", stage="idea")
         writing.park_piece(self.connection, third["item"]["id"], who="operator")
-        page = self.request("/writing?stage=ready&readiness=recorded")[2]
+        page = self.request("/classic/writing?stage=ready&readiness=recorded")[2]
         self.assertIn(f'href="/item/{first["item"]["id"]}"', page)
         self.assertNotIn(f'href="/item/{second["item"]["id"]}"', page)
         self.assertNotIn(f'href="/item/{third["item"]["id"]}"', page)
-        page = self.request("/writing?parked=parked")[2]
+        page = self.request("/classic/writing?parked=parked")[2]
         self.assertIn(f'href="/item/{third["item"]["id"]}"', page)
         self.assertNotIn(f'href="/item/{first["item"]["id"]}"', page)
 

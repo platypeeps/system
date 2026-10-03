@@ -289,8 +289,8 @@ class WorkflowControls(BrowserSession):
     def test_catalog_and_new_operations_reads_do_not_write(self):
         before = self.snapshot()
         with patch("subprocess.run", side_effect=AssertionError("catalog invoked a process")):
-            self.assertEqual(self.request("/skills")[0], 200)
-            self.assertIn("Start 30-day trial", self.request("/skills")[2])
+            self.assertEqual(self.request("/classic/skills")[0], 200)
+            self.assertIn("Start 30-day trial", self.request("/classic/skills")[2])
             self.assertEqual(self.request("/operations?area=reports")[0], 200)
             self.assertEqual(self.request("/operations?area=progress")[0], 200)
         self.assertEqual(self.request("/favicon.ico")[0], 204)
