@@ -319,6 +319,17 @@ class DocumentationCase(unittest.TestCase):
         self.assertIn("console output", help_text)
         self.assertIn("console output", README.read_text())
 
+    def test_every_admin_command_in_the_readme_names_a_region(self):
+        # An `aws login` profile carries no region and the CLI refuses a call
+        # without one, so a documented admin command with no --region fails
+        # as written (sd:1364). Continuation lines join first.
+        text = README.read_text().replace("\\\n", " ")
+        commands = [line.strip() for line in text.splitlines()
+                    if re.match(r"\s*aws \S+ \S+.*--profile admin-", line)]
+        self.assertTrue(commands, "the README shows no admin command")
+        for command in commands:
+            self.assertIn("--region", command, command)
+
 
 class CommandCase(unittest.TestCase):
     """What the commands do, watched call by call."""
