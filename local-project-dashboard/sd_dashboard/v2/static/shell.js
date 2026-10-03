@@ -448,11 +448,12 @@
       else toast(text);
       document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } }));
     };
-    // A command with fields always asks: the dialog is where the operator types them. Its colour still follows the risk.
+    // A command with fields always asks: the dialog is where the operator types them. Its colour follows the risk, or the
+    // command's danger(o) where one object's outcome is graver than another's (Tasks' item.complete, sd:2250).
     const fields = c.fields ? c.fields(o) : [];
     if (c.risk !== 'confirm' && !c.askFirst && !fields.length) return go();
     const act = actOf(c, o);
-    confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: v => { const s = cliOf(c, o, v); return noCli(s) ? '' : s; }, ok: act, keep: `Don't ${c.label.toLowerCase()}`, danger: c.risk === 'confirm', fields })
+    confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: v => { const s = cliOf(c, o, v); return noCli(s) ? '' : s; }, ok: act, keep: `Don't ${c.label.toLowerCase()}`, danger: c.danger ? !!c.danger(o) : c.risk === 'confirm', fields })
       .then(({ yes, from, values }) => { if (!yes) return; go(values); const a = document.activeElement; if (!a || a === body) refocus(from); });
   }
 

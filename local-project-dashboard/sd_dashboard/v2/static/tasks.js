@@ -140,6 +140,12 @@ addEventListener('DOMContentLoaded', () => {
   // build: sd_db.workflow.TASK_STATUS_KINDS; workflow._recurring refuses a rule on any other kind.
   const RECURS = ['task', 'personal', 'followup'];
   const repeats = t => !!t?.recurrence;
+  // build (sd:2250): sd stores a rule only from sd_db.recurrence.PARTS. A rule with any other part (BYDAY), written around
+  // the library, cannot be walked: completing it ends the series. test_v2_tasks holds this set to the library's.
+  const PARTS = new Set(['FREQ', 'INTERVAL', 'BYMONTH', 'BYMONTHDAY']);
+  const walkable = t => String(t.recurrence || '').replace(/^RRULE:/i, '').split(';').every(p => PARTS.has(p.split('=')[0].trim().toUpperCase()));
+  // A completion that opens nothing: a rule sd cannot walk, or one whose next date workflow.next_occurrence_due says is none.
+  const ends = t => !walkable(t) || t.nextDue === null;
   const cliMove = (t, to) => t.id ? `sd task status ${t.id} ${to}` : '';
   function cliQuad(t, ch) {
     if (!t.id) return '';
@@ -268,7 +274,8 @@ addEventListener('DOMContentLoaded', () => {
   // Status moves: keys 1–5 in the menu, as on the board. The list row shows the next status as its button.
   // build: run returns the move's landing, so the toast (with Undo) comes when the write lands; undo moves it back to
   // the status this move left, read as the write is sent. The `when` test runs again as the write leaves.
-  const moveOn = (s, t) => { if (s === 'done' && repeats(t)) return t.nextDue === null ? 'it repeats: 5 completes it and ends the series, since its rule gives no next date'
+  const moveOn = (s, t) => { if (s === 'done' && repeats(t)) return !walkable(t) ? 'it repeats: 5 completes it and ends the series, since sd cannot walk its rule'
+      : t.nextDue === null ? 'it repeats: 5 completes it and ends the series, since its rule gives no next date'
       : 'it repeats: 5 completes it and opens the next occurrence';
     const L = legal(t, s); return L.ok || L.reason; };
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
@@ -292,11 +299,14 @@ addEventListener('DOMContentLoaded', () => {
     when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
     cli: o => idOr(o, t => cliMove(t, 'done')),
     // build: next_due is workflow.next_occurrence_due, the date the completion computes. null is its "none": the
-    // completion then ends the series and opens nothing, so the confirm says that (review, PR #46). Not yet read again
-    // after an edit (undefined), the rule is named.
-    consequence: o => { const t = T(o);
-      if (t.nextDue === null) return `Completes ${label(t)} and ends the series: its rule (${t.recurrence}) gives no next date, so no next occurrence opens. There is no Undo.`;
-      return `Completes ${label(t)} and opens the next occurrence${t.nextDue ? `, due ${fmt(t.nextDue)}` : ' its rule gives'} (${t.recurrence}). A move back would leave two open tasks, so there is no Undo.`; },
+    // completion then ends the series and opens nothing, so the confirm says that (review, PR #46). The outcome is stated
+    // in the design owner's three cases (sd:2250): a date the page has; a valid rule whose date the page has not read yet
+    // since an edit (undefined), which sd sets; a rule sd cannot walk. A completion that opens nothing is a danger confirm.
+    consequence: o => { const t = T(o), rule = t.recurrence;
+      if (!walkable(t)) return `Completes ${label(t)} and ends the series: sd cannot walk ${rule}, so no next occurrence opens. There is no Undo.`;
+      if (t.nextDue === null) return `Completes ${label(t)} and ends the series: its rule (${rule}) gives no next date, so no next occurrence opens. There is no Undo.`;
+      return `Completes ${label(t)} and opens the next occurrence${t.nextDue ? `, due ${fmt(t.nextDue)} (${rule}).` : ` (${rule}); sd sets its date.`} A move back would leave two open tasks, so there is no Undo.`; },
+    danger: o => ends(T(o)),
     run: o => { const t = T(o); let from = t.status;
       const next = v => v?.next_occurrence ? `next occurrence #${v.next_occurrence}${byKey(String(v.next_occurrence))?.due ? ` due ${fmt(byKey(String(v.next_occurrence)).due)}` : ''}`
         : `the series ended: ${v?.next_occurrence_reason || 'no next occurrence was made'}`;

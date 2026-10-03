@@ -1158,11 +1158,38 @@ R.text = (await cmd('item.run').run(C.get('{plan}'))).text;""",
         self.connection.commit()
         self.doc = tasks_screen.document(self.connection, now=NOW)
         plan = self.ids["plan"]
-        out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}'));")
-        # The library computes no BYDAY date, so the completion ends that series; the confirm names the rule and says so.
+        out = self.run_page(f"""const o = C.get('{plan}'); R.text = cmd('item.complete').consequence(o); R.danger = cmd('item.complete').danger(o);
+R.done = cmd('item.status.done').when(o);""")
+        # The library walks no BYDAY rule, so the completion ends that series; the confirm names the rule and says so, on the
+        # danger button, since the series ends for good (sd:2250, case 3).
         self.assertIsNone(self.row("plan")["next_due"])
-        self.assertIn("(FREQ=WEEKLY;BYDAY=MO,TH)", out["R"]["text"])
-        self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and ends the series"), out["R"]["text"])
+        self.assertEqual(out["R"]["text"], f"Completes #{plan} and ends the series: sd cannot walk FREQ=WEEKLY;BYDAY=MO,TH, so no next occurrence opens. There is no Undo.")
+        self.assertTrue(out["R"]["danger"])
+        self.assertEqual(out["R"]["done"], "it repeats: 5 completes it and ends the series, since sd cannot walk its rule")
+
+    def test_a_rule_whose_date_the_page_has_not_read_says_sd_sets_it(self):
+        # sd:2250, cases 1 and 2. The row's next_due is the date the confirm names, on a plain confirm button. A readback
+        # that moves the due date leaves the next date unknown until the rows are read again (the reread is held here): the
+        # confirm names the valid rule and says sd sets its date.
+        plan = self.ids["plan"]
+        self.row("plan").update(recurrence="FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=9", next_due="2026-11-09")
+        answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-10', recurrence: 'FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=9' }}, notes: [], revision: 'b'.repeat(64) }}]"
+        out = self.run_page(f"""const o = C.get('{plan}'); R.dated = [cmd('item.complete').consequence(o), cmd('item.complete').danger(o)];
+const A = ANSWER; ANSWER = (path, body) => path === '/api/tasks' ? new Promise(() => {{}}) : A(path, body);
+shellRun(cmd('item.status.in_progress'), o); await flush();
+R.undated = [cmd('item.complete').consequence(o), cmd('item.complete').danger(o)];""", answer)
+        rule = "FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=9"
+        self.assertEqual(out["R"]["dated"], [f"Completes #{plan} and opens the next occurrence, due Nov 9 ({rule}). A move back would leave two open tasks, so there is no Undo.", False])
+        self.assertEqual(out["R"]["undated"], [f"Completes #{plan} and opens the next occurrence ({rule}); sd sets its date. A move back would leave two open tasks, so there is no Undo.", False])
+
+    def test_the_rule_parts_the_page_walks_are_the_librarys(self):
+        from sd_db import recurrence
+
+        parts = re.search(r"const PARTS = new Set\(\[([^\]]*)\]\)", TASKS_JS)
+        self.assertIsNotNone(parts)
+        self.assertEqual(tuple(re.findall(r"'([A-Z]+)'", parts.group(1))), recurrence.PARTS)
+        # The shell's confirm colour asks the command where it declares danger(o).
+        self.assertIn("danger: c.danger ? !!c.danger(o) : c.risk === 'confirm'", SHELL_JS)
 
     def test_work_ops_and_done_rows_have_neither_key_5_command(self):
         port, ask, plan = self.ids["port"], self.ids["ask"], self.ids["plan"]
