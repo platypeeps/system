@@ -32,6 +32,8 @@ ENV_JEV_TIMEOUT="${JEV_TIMEOUT:-}"
 ENV_JEV_RETRIES="${JEV_RETRIES:-}"
 ENV_JEV_ENABLED="${JEV_ENABLED:-}"
 ENV_JEV_FLAG_FILE="${JEV_FLAG_FILE:-}"
+ENV_JEV_TRACES_URL="${JEV_TRACES_URL:-}"
+ENV_JEV_TRACES_TIMEOUT="${JEV_TRACES_TIMEOUT:-}"
 # The comparison arms' settings (jev_compare.py) follow the same rule.
 COMPARE_VARS="JEV_COMPARE_KEV JEV_COMPARE_KEV_URL JEV_COMPARE_KEV_MODEL KEV_API_KEY KEV_MODEL
   JEV_COMPARE_HAIKU_VIA JEV_COMPARE_HAIKU_MODEL JEV_COMPARE_HAIKU_USD_IN JEV_COMPARE_HAIKU_USD_OUT
@@ -80,8 +82,10 @@ done
 [ -n "$ENV_JEV_RETRIES" ] && JEV_RETRIES="$ENV_JEV_RETRIES"
 [ -n "$ENV_JEV_ENABLED" ] && JEV_ENABLED="$ENV_JEV_ENABLED"
 [ -n "$ENV_JEV_FLAG_FILE" ] && JEV_FLAG_FILE="$ENV_JEV_FLAG_FILE"
+[ -n "$ENV_JEV_TRACES_URL" ] && JEV_TRACES_URL="$ENV_JEV_TRACES_URL"
+[ -n "$ENV_JEV_TRACES_TIMEOUT" ] && JEV_TRACES_TIMEOUT="$ENV_JEV_TRACES_TIMEOUT"
 for var in TYPESAFE_API_KEY JEV_URL JEV_MODEL JEV_TIMEOUT JEV_RETRIES \
-           JEV_ENABLED JEV_FLAG_FILE; do
+           JEV_ENABLED JEV_FLAG_FILE JEV_TRACES_URL JEV_TRACES_TIMEOUT; do
   eval "value=\${$var:-}"
   [ -n "$value" ] && export "$var"
 done
@@ -218,6 +222,10 @@ environment:
   JEV_RETRIES        retries for 429/529/5xx, doubling backoff (default 3)
   JEV_ENABLED        1/0 for one call or one session; beats the switch file
   JEV_FLAG_FILE      switch file (default ~/.config/jev/enabled)
+  JEV_TRACES_URL     OTLP/HTTP traces endpoint; one metadata-only span per call
+                     (off when unset; local-genai-traces takes
+                     http://127.0.0.1:4338/v1/traces)
+  JEV_TRACES_TIMEOUT seconds for that post (default 0.5)
   JEV_COMPARE_KEV    1/on/true/yes/enabled: run the Kev arm (unset means off)
   JEV_COMPARE_HAIKU_VIA  anthropic, openrouter, claude-cli or baseten: run
                      the second comparison arm (unset means off)
