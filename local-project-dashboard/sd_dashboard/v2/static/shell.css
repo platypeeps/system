@@ -301,6 +301,8 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .btn kbd { margin-left: var(--space-2xs); font: 400 var(--text-2xs)/1 var(--font-data); opacity: 0.7; }
 .btn.danger { background: var(--color-warning-lamp); border-color: var(--color-warning-lamp); color: var(--color-warning-ink); }
 .btn.danger:hover { filter: brightness(1.08); }
+/* A confirm's OK is off until its required field is filled (sd:2200); off, a danger button looks like any off button. */
+.btn.danger:disabled { background: transparent; border-color: var(--color-rule); color: var(--color-muted); filter: none; cursor: not-allowed; }
 .btn.risky:not(:hover) { border-style: dashed; }
 .rowact { display: inline-flex; align-items: center; gap: var(--space-2xs); white-space: nowrap; }
 .why.off b { color: var(--color-ink-2); font-weight: 500; }

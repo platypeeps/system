@@ -27,12 +27,6 @@ addEventListener('DOMContentLoaded', () => {
   // build: a POSIX single-quoted word, so a title with $ or a quote copies as itself.
   const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
   const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  async function getJSON(path) {
-    const r = await fetch(path, { headers: { Accept: 'application/json' } });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-    return out;
-  }
   async function post(path, body) {
     const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
     const out = await r.json().catch(() => ({}));
@@ -46,7 +40,7 @@ addEventListener('DOMContentLoaded', () => {
   const num = r => r.url ? '#' + String(r.url).split('/').pop() : '';
 
   // ---------- Data (build: /api/contributions/page) ----------
-  let DOC = null, ROWS = [], BY = new Map(), selected = null;
+  let DOC = null, ROWS = [], BY = new Map(), selected = null, FAILED = '';
   const u0 = new URLSearchParams(location.search);
   let scope = SCOPES.includes(u0.get('scope')) ? u0.get('scope') : 'all';
   let lane = ORDER.includes(u0.get('lane')) ? u0.get('lane') : null;
@@ -59,27 +53,24 @@ addEventListener('DOMContentLoaded', () => {
   const openN = sc => ORDER.reduce((a, l) => a + tot(l, sc), 0);
   const words = r => [r.title, r.repo, r.url, LABEL[r.lane], ...(r.reasons || [])].join(' ').toLowerCase();
   const shown = () => { const v = q.value.trim().toLowerCase(); return scoped().filter(r => (!lane || r.lane === lane) && (!v || words(r).includes(v))); };
-  // The shell's object map only grows and keeps its picks, so each adopted reading retires what it no longer lists, as Health
-  // does: the pick is dropped and the object becomes a type no command is on, so no stale Acknowledge can act.
-  let putIds = new Set(), picks = [];
-  document.addEventListener('shell:picked', e => { picks = e.detail || []; });
-  function retire(keep) {
-    picks.filter(id => !keep.has(id)).forEach(id => C.pick(id));
-    putIds.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
-    putIds = keep;
-  }
+  // The reader (read.js) puts the objects adopt returns and retires the ones a reading no longer lists: the pick is dropped
+  // and the object becomes a type no command is on, so no stale Acknowledge can act.
   function adopt(doc) {
     DOC = doc;
     ROWS = (doc.rows || []).filter(r => ORDER.includes(r.lane)).map(r => ({ ...r, id: r.key, type: 'contribution', label: r.title, s: STATE[r.lane],
       event_ids: r.event_ids || [], reasons: r.reasons || [], freshness: r.freshness || { status: 'unknown', reason: '' } }));
     BY = new Map(ROWS.map(r => [r.key, r]));
-    retire(new Set(BY.keys()));
-    ROWS.forEach(r => C.put(r));
-    C.put({ id: 'collector', type: 'collector', label: 'contributions collector' });
     document.body.dataset.observed = doc.read || '';
     // Rail badge (shell.js): rows that want the operator, in every scope.
     const mine = tot('newly_unblocked', 'all') + tot('awaiting_you', 'all');
     window.PAGE_ATTENTION = { state: mine ? 'caution' : 'ok', n: mine, what: 'contributions want you' };
+    window.shell.attention?.();
+    return { objects: [...ROWS, { id: 'collector', type: 'collector', label: 'contributions collector' }], state: stateOf(doc) };
+  }
+  // A failed read clears the page: no rows, lamps or counts, and the rail claims nothing.
+  function clear(err) {
+    DOC = null; ROWS = []; BY = new Map(); FAILED = err.message;
+    window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'contributions not read' };
     window.shell.attention?.();
   }
 
@@ -88,7 +79,9 @@ addEventListener('DOMContentLoaded', () => {
   // Draft nudge is the gh line to copy: the reference's chat proposal posted on Approve, and the dashboard posts nothing.
   // A write's answer is its own: the reread after it is started, not awaited, so a failed reread never reports a landed write
   // as "not changed". Until the reread lands, the row itself records the write, so the command that made it goes off.
-  const landed = (o, change) => { Object.assign(o, change); C.put(o); if (DOC) { renderRows(); if (selected === o.key) show(o.key); } };
+  // A refused write reads again with load(): only reread() says a change landed.
+  // The object may be retired by now (a failed reread): it stays retired, since only a read lists a row again.
+  const landed = (o, change) => { Object.assign(o, change); if (C.get(o.id) === o) C.put(o); if (DOC) { renderRows(); if (selected === o.key) show(o.key); } };
   const ackCli = o => `sd task contribution ack ${shq(o.key)} ${o.event_ids.map(e => `--event ${shq(e)}`).join(' ')} --if-revision ${o.revision}`;
   // build: Make task files the contribution task `sd task contribution add` files: the row's URL is its identity, so the
   // projection links the task to the row after a reread, and the library refuses a second task for the same URL.
@@ -102,7 +95,7 @@ addEventListener('DOMContentLoaded', () => {
         consequence: o => `This clears ${plural(o.event_ids.length, 'attention event')} on ${o.title}. No verb restores them; it completes no task and sends nothing.`,
         cli: ackCli,
         run: o => post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
-          .then(() => { landed(o, { event_ids: [] }); reread(true); return `Acknowledged · ${o.label}`; }, e => { reread(); throw e; }) },
+          .then(() => { landed(o, { event_ids: [] }); reread(); return `Acknowledged · ${o.label}`; }, e => { load(); throw e; }) },
       { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', key: 'd', risk: 'safe', executes: false, primary: () => true,
         when: o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true,
         cli: o => `gh ${isIssue(o) ? 'issue' : 'pr'} comment ${o.url} --body-file nudge.md`,
@@ -112,7 +105,7 @@ addEventListener('DOMContentLoaded', () => {
         consequence: o => `This files a task, "${o.title}", that tracks ${o.url || o.key} as this contribution. No verb deletes it; cancel it from Tasks.`,
         cli: o => `printf '%s\\n' ${shq(taskJson(o))} > contribution.json && sd task contribution add ${shq(o.title)} --file contribution.json`,
         run: o => post('/api/contributions/task', { key: o.key, title: o.title })
-          .then(out => { landed(o, { item_id: out.item?.id }); reread(true); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { reread(); throw e; }) },
+          .then(out => { landed(o, { item_id: out.item?.id }); reread(); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { load(); throw e; }) },
       // Copy only, as ruled: the shell still calls run, so run opens nothing. The Details link opens the page.
       { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', key: 'o', risk: 'safe', executes: false,
         when: o => github(o.url) || 'not filed on GitHub', cli: o => `gh ${kindOf(o)} view --web ${o.url}`,
@@ -121,6 +114,24 @@ addEventListener('DOMContentLoaded', () => {
       { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: () => 'sd shadow sync', run: () => 'Copy it into a terminal: the dashboard has no route that runs sd shadow sync yet (sd:2207)' },
     );
+  }
+
+  // ---------- Focus (sd:2426) ----------
+  // Replacing a box's markup drops the focused control, and focus falls to the body. Focus its replacement instead: the
+  // control with the same command, object, menu or lamp. If it went off, focus the nearest action: the same row's action
+  // menu or command, else the box's first command; a control with no name goes to its row's first button.
+  const NAMES = ['cmd', 'obj', 'menuFor', 'cell'];
+  const rowOf = el => el.closest('tr[data-id]')?.dataset.id;
+  function putKeep(box, content) {
+    const a = document.activeElement;
+    if (!a || a === box || !box.contains(a)) return put(box, content);
+    const row = rowOf(a), named = NAMES.some(k => a.dataset[k]);
+    put(box, content);
+    const all = [...box.querySelectorAll('button')], mine = all.filter(b => rowOf(b) === row);
+    const near = row != null && mine.length ? mine : all;
+    const next = named ? near.find(b => NAMES.every(k => b.dataset[k] === a.dataset[k])) || near.find(b => b.dataset.menuFor) || near.find(b => b.dataset.cmd) || near[0]
+      : near[0];
+    next?.focus();
   }
 
   // ---------- Head: scope counts, lamps, source line ----------
@@ -142,7 +153,7 @@ addEventListener('DOMContentLoaded', () => {
         : html`<li><div class="cell" data-cell="${id}" data-state="${s}">${inner}</div></li>`;
     };
     // build: the reference's fourth lamp counted rows GitHub had already settled, from a gh read. The dashboard makes none.
-    put(document.getElementById('annunciator'), html`${cells.map(lamp)}<li><div class="cell" data-cell="github" data-state="unknown"><span class="lbl">Settled on GitHub${I('circle-dot')}</span><span class="val"><span class="ph">not checked</span> · <span class="ph">the dashboard does not read GitHub</span></span><span class="sr">state unknown</span></div></li>`);
+    putKeep(document.getElementById('annunciator'), html`${cells.map(lamp)}<li><div class="cell" data-cell="github" data-state="unknown"><span class="lbl">Settled on GitHub${I('circle-dot')}</span><span class="val"><span class="ph">not checked</span> · <span class="ph">the dashboard does not read GitHub</span></span><span class="sr">state unknown</span></div></li>`);
     const unknown = tot('unknown');
     put(document.getElementById('source'), html`<span class="g-${unknown ? 'unknown' : 'ok'}" aria-hidden="true">${GLYPH[unknown ? 'unknown' : 'ok']}</span>
       <button class="linkish" type="button" data-collector>Collector</button>
@@ -172,7 +183,7 @@ addEventListener('DOMContentLoaded', () => {
   function renderRows() {
     const all = scoped(), rows = shown(), v = q.value.trim();
     const head = l => html`<tr class="lane" data-lane="${l}"><td colspan="4"><span class="label">${LABEL[l]} · ${rows.filter(r => r.lane === l).length}</span></td></tr>`;
-    put(tbody, html`${rows.length ? ORDER.filter(l => rows.some(r => r.lane === l)).map(l => [head(l), rows.filter(r => r.lane === l).map(rowHtml)])
+    putKeep(tbody, html`${rows.length ? ORDER.filter(l => rows.some(r => r.lane === l)).map(l => [head(l), rows.filter(r => r.lane === l).map(rowHtml)])
       : html`<tr class="lane"><td colspan="4"><span class="label">${all.length ? `Nothing matches${v ? ` “${v}”` : ''}` : empty()}</span></td></tr>`}`);
     const f = document.getElementById('filtered');
     const cut = DOC.truncated ? `The document lists ${n(DOC.rows.length)} of ${n(DOC.open_total)} open rows; v1 /classic/contributions lists every one.` : '';
@@ -206,7 +217,7 @@ addEventListener('DOMContentLoaded', () => {
   function showCollector() {
     selected = 'collector'; mark();
     const c = DOC.collector || {}, st = FRESH[c.state] || 'unknown';
-    put(details, html`<p class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span> Collector · contributions projection</p>
+    putKeep(details, html`<p class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span> Collector · contributions projection</p>
       <h2>GitHub sync is ${c.state || 'unknown'}</h2>
       <dl><dt>Rows</dt><dd>${n(DOC.total)}</dd><dt>Freshness unknown</dt><dd>${n(DOC.fresh?.unknown)} of ${n(DOC.total)}</dd><dt>Freshness current</dt><dd>${n(DOC.fresh?.current)}</dd>
         <dt>Last success</dt><dd>${c.last_success_at ? html`<time class="rel" datetime="${c.last_success_at}"></time>` : 'never'}</dd>
@@ -224,7 +235,7 @@ addEventListener('DOMContentLoaded', () => {
     const facts = [['Repo', `${r.repo || 'local'} · ${where}`], ['Filed as', filed(r) + (r.url ? ' ' + num(r) : '')], ['Lane', LABEL[r.lane]],
       ['Collector says', r.external_state || 'not filed'], ['Local status', r.local_status || 'none'], ['Local item', r.item_id ? '#' + r.item_id : 'none'],
       ['Branch', r.local_branch || 'none'], ['Freshness', r.freshness.status + (r.freshness.reason ? ': ' + r.freshness.reason : '')]];
-    put(details, html`<p class="kind"><span class="g-${r.s}" aria-hidden="true">${GLYPH[r.s]}</span> Contribution · ${LABEL[r.lane]}</p>
+    putKeep(details, html`<p class="kind"><span class="g-${r.s}" aria-hidden="true">${GLYPH[r.s]}</span> Contribution · ${LABEL[r.lane]}</p>
       <h2>${r.title}</h2>
       ${github(r.url) ? html`<p><a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${String(r.url).replace('https://github.com/', '')}${I('arrow-up-right')}</a></p>` : ''}
       <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>Observed</dt><dd><time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time></dd></dl>
@@ -239,12 +250,16 @@ addEventListener('DOMContentLoaded', () => {
   function mark() { tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.id === selected))); }
   function select(key, open) { if (show(key) !== false && open) window.shell.openPane('tab-details'); }
   const none = () => { selected = null; put(details, html`<p class="why">No contribution matches the filter, so nothing is selected. Esc clears it.</p>`); };
+  // The reader found no row to select: the filter hides them all, the scope has none, or the read failed.
+  function nothing() {
+    if (DOC && scoped().length) return none();
+    selected = null; mark();
+    put(details, html`<p class="why">${DOC ? 'Nothing open is listed in this scope, so nothing is selected.' : 'The contributions were not read, so nothing is selected. Reload retries it.'}</p>`);
+  }
 
   // ---------- Filter ----------
-  function applyFilter() {
-    renderRows();
-    window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, keep: k => k === 'collector', select: k => select(k, false), clear: none });
-  }
+  const reconcile = () => window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, keep: k => k === 'collector', select: k => select(k, false), clear: none });
+  function applyFilter() { renderRows(); reconcile(); }
   function setScope(v) { if (!SCOPES.includes(v) || !DOC) return; scope = v; lane = null; renderHead(); renderSettled(); applyFilter(); }
   function setLane(v) { lane = lane === v ? null : v; renderHead(); applyFilter(); }
   function render() { renderHead(); renderSettled(); renderRows(); }
@@ -266,48 +281,41 @@ addEventListener('DOMContentLoaded', () => {
   window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false), keep: k => k === 'collector',
     clear: () => { if (!lane) return false; lane = null; renderHead(); applyFilter(); return true; } };
 
-  // ---------- Start (build: read /api/contributions/page, then draw) ----------
-  // Each read takes a generation; only the newest one draws. A bulk Acknowledge starts one reread per row, and the reads can
-  // answer out of order: the newest started after the last write landed, so it alone may replace the rows.
-  let generation = 0;
+  // ---------- Start (build: read /api/contributions/page through shell.read, then draw) ----------
+  // The reader (read.js, sd:2488) numbers each read so only the newest draws, retires the objects a reading drops, moves a
+  // selection whose row is gone, and queues a reread behind a read that started before its write landed.
   function stateOf(doc) {
     const c = doc.collector || {};
     if (!doc.total) return { kind: 'empty', title: 'No contributions', text: 'The projection has no rows. Register local work or run sd shadow sync to collect authored pull requests.', source: '/api/contributions/page' };
     if (c.state && c.state !== 'fresh') return { kind: 'partial', title: 'GitHub sync not fresh', text: `The GitHub sync is ${c.state}${c.reason ? ': ' + c.reason : ''}. Rows show what the last sync saw.`, source: 'progress.tracker_freshness' };
     return null;
   }
-  // `wrote` says the write before this reread landed; a refused write rereads too, and its failure must not claim one.
-  async function reread(wrote) {
-    const mine = ++generation;
-    let doc;
-    try { doc = await getJSON('/api/contributions/page'); } catch (err) {
-      if (mine !== generation) return;
-      window.shell.state({ kind: 'error', text: `${wrote ? 'The write landed, but the' : 'The'} contributions were not read again: ${err.message}. The rows show the last read; Reload retries it.`, source: '/api/contributions/page' });
-      return;
-    }
-    if (mine !== generation) return;
-    adopt(doc); window.shell.state(stateOf(doc)); render();
-    if (selected && selected !== 'collector' && !BY.has(selected)) selected = null;
-    applyFilter();
-    if (selected) show(selected);
+  // Not read: every box says so, and the state slot above says why.
+  function blank() {
+    put(document.getElementById('sub'), html`Pull requests and issues you opened or owe · not read`);
+    document.querySelectorAll('#scope b').forEach(b => { b.textContent = ''; });
+    put(document.getElementById('annunciator'), html``);
+    put(document.getElementById('source'), html``);
+    put(tbody, html`<tr class="lane"><td colspan="4"><span class="label">Not read: ${FAILED}</span></td></tr>`);
+    document.getElementById('filtered').hidden = true;
+    put(document.getElementById('tally'), html``);
+    document.getElementById('settled-tally').textContent = '';
+    document.getElementById('tp-note').textContent = '';
+    const bars = document.getElementById('bars');
+    bars.setAttribute('aria-label', 'Settled contributions not read');
+    put(bars, html``);
   }
-  async function load() {
-    const mine = ++generation;
-    window.shell.state({ kind: 'loading', text: 'Reading the contributions. Rows appear when /api/contributions/page answers.', source: '/api/contributions/page' });
-    let doc;
-    try { doc = await getJSON('/api/contributions/page'); } catch (err) {
-      if (mine !== generation) return;
-      window.shell.state({ kind: 'error', text: `The contributions were not read: ${err.message}. Reload retries it.`, source: '/api/contributions/page' });
-      return;
-    }
-    if (mine !== generation) return;
-    adopt(doc);
-    window.shell.state(stateOf(doc));
-    render();
-    const row = window.shell.row?.();
-    if (row && (row === 'collector' || BY.has(row))) select(row, false);
-    applyFilter();
-  }
+  const visible = id => id === 'collector' || shown().some(r => r.key === id);
+  const reading = window.shell.read({
+    source: '/api/contributions/page', what: 'the contributions', adopt, clear,
+    draw: () => (DOC ? render() : blank()),
+    current: () => selected,
+    first: () => shown()[0]?.key ?? null,
+    // A ?row= or a kept selection the filter hides goes to the first shown row, as a filter change does.
+    select: (id, opened) => (visible(id) ? select(id, opened) : reconcile()),
+    unselect: nothing,
+  });
+  const load = () => reading.load(), reread = () => reading.reread();
   registerCommands();
   load();
 });

@@ -172,6 +172,16 @@ class StatusGuards(WorkflowCase):
             change_status(self.db, item, "ready", who="operator")
         self.assertEqual(allowed_statuses(self.db, item), [])
 
+    def test_allowed_statuses_takes_the_state_the_caller_read(self):
+        # sd:2380: a caller that read the item's state passes it, and the history is not read again.
+        item = create_item(self.db, kind="task", title="Listed")
+        other = create_item(self.db, kind="idea", title="Another")
+        state, others = item_state(self.db, item), item_state(self.db, other)
+        with patch("sd_db.workflow.item_state", side_effect=AssertionError("the history was read again")):
+            self.assertEqual(allowed_statuses(self.db, item, state=state), list(TASK_STATUSES))
+            with self.assertRaisesRegex(WorkflowError, f"item {other}'s, not item {item}'s"):
+                allowed_statuses(self.db, item, state=others)
+
     def assert_finishes_with_history(self, kind):
         item = create_item(self.db, kind=kind, title=f"A {kind} item")
         finished = change_status(self.db, item, "done", who="operator")

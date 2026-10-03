@@ -178,6 +178,21 @@ class TheExportSettings(StatusCase):
         done = self.run_verb("start", expect=0)
         self.assertNotIn("OTLP_EXPORT_AUTH", done.stderr)
 
+    def test_a_placeholder_export_key_is_nothing_to_check(self):
+        # Review of #226: the URL guard had no twin for the key, so a copied
+        # .env.example with only the URL filled in read as configured.
+        self.env["OTLP_EXPORT_AUTH"] = "change-me"
+        done = self.run_verb("status", expect=3)
+        self.assertIn("not configured", done.stdout)
+
+    def test_start_rejects_a_placeholder_key_without_printing_it(self):
+        self.env["OTLP_EXPORT_AUTH"] = "Bearer change-me"
+        done = self.run_verb("start", expect=1)
+        self.assertIn("OTLP_EXPORT_AUTH", done.stderr)
+        self.assertIn("placeholder", done.stderr)
+        self.assertNotIn("Bearer", done.stderr)
+        self.assertFalse(self.marker().exists())
+
     def test_start_rejects_a_placeholder_url(self):
         self.env["OTLP_EXPORT_URL"] = "https://undefined/v1/abc"
         done = self.run_verb("start", expect=1)

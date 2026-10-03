@@ -638,9 +638,15 @@ pairs | while IFS='|' read -r src dst excl; do
       echo "!!! source file empty: $src" >&2
       echo "$src (empty source file)" >> "$FAILLOG"; continue
     fi
+    # The FAILLOG label says what the stderr line says: an absent folder
+    # and a file sitting where the folder should be need different fixes.
+    if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then
+      echo "!!! file destination missing: $dst" >&2
+      echo "$dst (file destination missing)" >> "$FAILLOG"; continue
+    fi
     if [ ! -d "$dst" ]; then
       echo "!!! file destination is not a directory: $dst" >&2
-      echo "$dst (file destination missing)" >> "$FAILLOG"; continue
+      echo "$dst (file destination not a directory)" >> "$FAILLOG"; continue
     fi
     src_arg="$src"
   else

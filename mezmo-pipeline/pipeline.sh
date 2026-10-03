@@ -181,7 +181,8 @@ status_cmd() {
     # which was right here and nonsense anywhere else.
     case "${MZ_CODE:-}" in
       401) why="the service key was rotated — replace MEZMO_PIPELINE_SERVICE_KEY" ;;
-      404) why="the pipeline or state id moved — check MEZMO_PIPELINE_ID and MEZMO_PIPELINE_STATE_ID" ;;
+      # read_state sends MEZMO_PIPELINE_ID only; the state id is used by the PUT.
+      404) why="the pipeline id moved — check MEZMO_PIPELINE_ID" ;;
       '')  why="network, DNS or TLS — curl could not complete the request" ;;
       *)   why="unexpected status from the API" ;;
     esac

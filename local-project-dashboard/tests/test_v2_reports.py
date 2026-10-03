@@ -9,8 +9,9 @@ day from its `cron-jobs.sh` log, and the job families the config folder's
 checkout carries only `report-families.conf.example`). A source that fails is
 `null` with its reason. `/api/reports/clean` is v1's clean preview and
 writes nothing. The page registers the design's Reports commands with the
-design's ids, labels, keys and risks; Acknowledge posts v1's route and
-declares no Undo, because sd-db has no verb that reopens a report.
+design's ids, labels, keys and risks; Acknowledge posts v1's route, and its
+Undo posts `/api/reports/<n>/reopen` with the revision the acknowledge answered
+(sd:2395). The page reads through the shared reader, `read.js` (sd:2487).
 
 `reports.js` runs under JavaScriptCore (osascript) against the stand-in page
 and shell `test_v2_tasks` uses. The browser half -- the look at 375 px,
@@ -33,6 +34,7 @@ from sd_dashboard import reports_screen, server, v2
 
 from support import ScreenCase
 from test_now_screen import JobsBackend
+from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
@@ -50,7 +52,7 @@ DAYS = ["2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07", "2026-09-08", "2
 
 #: The design's Reports commands (design source products/system/designs/pages/reports.js): id, object type, label, key, risk.
 COMMANDS = [
-    ["report.ack", "report", "Acknowledge", "a", "confirm"],  # build: confirm by operator ruling; sd-db cannot reopen a report
+    ["report.ack", "report", "Acknowledge", "a", "undo"],  # the design's risk: reporting.reopen is its Undo (sd:2395)
     ["report.show", "report", "Open item", "o", "safe"],
     ["report.log", "report", "Show log", "l", "safe"],
     ["report.task", "report", "Make task", "k", "safe"],
@@ -275,7 +277,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Reports · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "reports.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "reports.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -307,10 +309,38 @@ class ThePage(BrowserSession):
         self.assertEqual(self.snapshot(), before)
 
 
+    def test_reopen_takes_the_revision_the_acknowledgement_answered(self):
+        """sd:2395: the Undo's route. It reopens an acknowledged report under the revision the acknowledge answered."""
+        item = self.report()
+        status, _, body = self.post(f"/api/reports/{item}/acknowledge", {"revision": workflow.item_state(self.connection, item)["revision"]})
+        self.assertEqual(status, 200)
+        answered = body["revision"]
+        before = self.snapshot()
+        for payload in ({}, {"revision": answered, "who": "someone"}):
+            self.assertEqual(self.post(f"/api/reports/{item}/reopen", payload)[0], 400, payload)
+        self.assertEqual(self.post(f"/api/reports/{item}/reopen", {"revision": "old"})[0], 409)
+        self.assertEqual(self.post(f"/api/reports/{item}/reopen", {"revision": answered}, **{"X-SD-CSRF": "0" * 64})[0], 403)
+        self.assertEqual(self.request(f"/api/reports/{item}/reopen")[0], 404)
+        self.assertEqual(self.snapshot(), before)
+        status, _, body = self.post(f"/api/reports/{item}/reopen", {"revision": answered})
+        self.assertEqual((status, body["item"]["status"]), (200, "planning"))
+        self.assertIn("done -> planning by dashboard: reopened",
+                      [note["body"] for note in workflow.item_state(self.connection, item)["notes"]])
+
+    def report(self):
+        from sd_db import create_item
+
+        item = create_item(self.connection, kind="report", title="nightly: run report", status="planning", source="cron-report",
+                           external_id="nightly:one", fields={"attention": False}, body={"text": "all quiet"}, session="cron")
+        self.connection.commit()
+        return item
+
+
 # The stand-in additions reports.js needs beyond test_v2_tasks: the shell's url, context and views.
 SHELL_MORE = r"""
 OUT.urls = []; window.shell.url = q => OUT.urls.push(q); window.shell.setContext = () => {}; OUT.picks = [];
 window.shell.commands.pick = id => OUT.picks.push(id); window.shell.commands.list = () => REG;
+window.shell.row = () => new URLSearchParams(location.search).get('row');
 """
 
 
@@ -335,7 +365,7 @@ class TheScript(ScreenCase):
         clean = {"before": "2026-09-08T00:00:00+00:00", "count": 1, "max_batch": 1000, "selected": [self.ids["clean"], 99999],
                  "declined": [{"id": self.ids["failed"], "why": "it needs attention"}]}
         script = (STAND_IN + f"var CLEAN = {json.dumps(clean)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + prelude + "\n" + REPORTS_JS
+                  + SHELL + SHELL_MORE + "\n" + READ_SHELL + f"\nANSWER = {answer};\n" + prelude + "\n" + REPORTS_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION;"
@@ -350,16 +380,60 @@ class TheScript(ScreenCase):
     def test_the_design_commands_are_registered_with_their_ids_labels_keys_and_risks(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]); R.undo = REG.filter(c => c.undo).map(c => c.id);")
         self.assertEqual(out["R"]["reg"], COMMANDS)
-        # No command declares an Undo: sd-db has no verb that reopens a report.
-        self.assertEqual(out["R"]["undo"], [])
+        # Acknowledge is the one command with an Undo: reporting.reopen (sd:2395).
+        self.assertEqual(out["R"]["undo"], ["report.ack"])
 
-    def test_acknowledge_posts_the_route_with_the_revision_offers_no_undo_and_reads_again(self):
+    ANSWERED = "(path, body) => path.endsWith('/acknowledge') ? [200, { revision: 'after-ack' }] : path.endsWith('/reopen') ? [200, { revision: 'after-reopen' }] : path === '/api/reports' ? [200, DOC_JSON] : [200, {}]"
+
+    def test_acknowledge_posts_the_route_with_the_revision_offers_undo_and_reads_again(self):
         n = self.ids["clean"]
         revision = workflow.item_state(self.connection, n)["revision"]
-        out = self.run_page(f"shellRun(cmd('report.ack'), C.get('r{n}')); await flush();")
+        out = self.run_page(f"shellRun(cmd('report.ack'), C.get('r{n}')); await flush();",
+                            answer=self.ANSWERED.replace("DOC_JSON", json.dumps(self.doc)))
         self.assertEqual(out["posts"], [[f"/api/reports/{n}/acknowledge", {"revision": revision}, 64]])
-        self.assertEqual(out["toasts"][-1], [f"Acknowledged · #{n}. No Undo: sd-db has no verb that reopens a report", False])
+        self.assertEqual(out["toasts"][-1], [f"Acknowledged · #{n}", True])
         self.assertEqual(out["gets"], ["/api/reports", "/api/reports"])
+        self.assertEqual(out["confirms"], [])
+
+    def test_undo_reopens_the_report_under_the_revision_the_acknowledgement_answered(self):
+        n = self.ids["clean"]
+        out = self.run_page(f"shellRun(cmd('report.ack'), C.get('r{n}')); await flush(); lastUndo().undo(); await flush();",
+                            answer=self.ANSWERED.replace("DOC_JSON", json.dumps(self.doc)))
+        self.assertEqual(out["posts"][1], [f"/api/reports/{n}/reopen", {"revision": "after-ack"}, 64])
+        self.assertEqual(out["toasts"][-1][0], f"Acknowledge undone · {self.doc_title(n)}")
+        self.assertEqual(out["gets"], ["/api/reports"] * 3)
+
+    def test_an_undo_the_store_refuses_says_so(self):
+        n = self.ids["clean"]
+        answer = self.ANSWERED.replace("DOC_JSON", json.dumps(self.doc)).replace("[200, { revision: 'after-reopen' }]", "[409, { error: 'the report changed' }]")
+        out = self.run_page(f"shellRun(cmd('report.ack'), C.get('r{n}')); await flush(); lastUndo().undo(); await flush();", answer=answer)
+        self.assertEqual(out["toasts"][-1][0], f"Acknowledge not undone · {self.doc_title(n)}: the report changed")
+
+    def doc_title(self, n):
+        return next(r for r in self.doc["reports"] if r["id"] == n)["title"]
+
+    def test_the_page_reads_through_the_shared_reader(self):
+        # read.js holds the generation, retirement and failure rules (sd:2487); the page keeps no reading of its own.
+        self.assertIn("shell.read(", REPORTS_JS)
+        self.assertNotIn("getJSON('/api/reports')", REPORTS_JS)
+        out = self.run_page("")
+        self.assertEqual(out["states"][0]["text"], "Reading the reports, jobs and job logs. Rows appear when /api/reports answers.")
+
+    def test_a_failed_read_after_a_good_one_clears_the_rows_and_runs_no_command(self):
+        n = self.ids["clean"]
+        out = self.run_page(f"""ANSWER = () => [500, {{ error: 'boom' }}]; await load(); await flush();
+R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].html;""")
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertNotIn(f'data-id="r{n}"', out["R"]["rows"])
+        self.assertIn("were not read", out["R"]["rows"])
+        self.assertIn("boom", out["states"][-1]["text"])
+        self.assertEqual(out["attention"]["state"], "unknown")
+
+    def test_the_job_filter_lists_every_job_the_reading_names_not_only_jobs_with_reports(self):
+        # sd:2430: quiet-one is installed and logged no report; its cadence row sets the filter, so the filter must offer it.
+        out = self.run_page("R.jobs = ELS['f-job'].html;")
+        for job in ("nightly-sync", "weekly-scan", "quiet-one"):
+            self.assertIn(f"<option>{job}</option>", out["R"]["jobs"])
 
     def test_acknowledge_is_off_for_a_report_a_followup_holds_and_for_an_acknowledged_one(self):
         note = next(r for r in self.doc["reports"] if r["id"] == self.ids["failed"])["followups"]
