@@ -293,6 +293,7 @@ listed under its directory name:
 ```
 label|<key>|<label>              a found root, better named
 skip|<key>                       a found root the dashboard should not list
+skip|<key>|<file>                one file of a root, neither listed nor served
 root|<key>|<label>|<directory>   a root that is somewhere else entirely
 ```
 
