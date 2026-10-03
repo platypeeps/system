@@ -34,6 +34,7 @@ from sd_dashboard import health_screen, server, v2
 
 from support import NOW, ScreenCase
 from test_v2_today import OSASCRIPT, Refused
+from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
 
@@ -278,7 +279,7 @@ class ThePage(BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "health.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "health.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
         # /health is the service's own check, which the runtime reads; the page does not take it over.
@@ -318,7 +319,7 @@ class TheScript(ScreenCase):
         doc = doc if doc is not None else health_screen.document(
             self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(3), ports=ports_snapshot,
             protection=protection_of(PROTECTION))
-        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + HEALTH_SHELL
+        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + HEALTH_SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
                   + "URLSearchParams.prototype.toString = function () { return ''; };\n"
                   + "ANSWER = (path, body) => path === '/api/health' ? [STATUS, DOC] : [404, { error: 'no answer' }];\n"

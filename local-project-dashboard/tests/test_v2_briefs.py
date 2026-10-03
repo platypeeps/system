@@ -10,7 +10,7 @@ registers two brief commands (Make task opens the capture form; Open in
 Obsidian is the note's link), and sends nothing until Capture.
 
 `briefs.js` runs under JavaScriptCore (osascript) against the stand-in page
-and shell `test_v2_tasks` uses. The browser half -- the look at 375 px, the
+and shell `test_v2_tasks` uses, with the real reader (`read.js`, sd:2418). The browser half -- the look at 375 px, the
 cadence lanes, focus -- is a manual check recorded on the pull request.
 """
 
@@ -30,6 +30,7 @@ from unittest import mock
 from sd_dashboard import briefs_screen, server, v2
 
 from support import NOW, ScreenCase
+from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
@@ -193,7 +194,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Briefs · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "briefs.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "briefs.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -237,7 +238,7 @@ class TheScript(ScreenCase):
     def run_page(self, body, answer=None, search="", row=None):
         answer = answer or f"(p) => p === '/api/items' ? [201, {{ item: {{ id: 77, title: 'Read it' }} }}] : [200, {json.dumps(self.doc)}]"
         script = (STAND_IN + f"location.search = {json.dumps(search)}; var ROW = {json.dumps(row)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + BRIEFS_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + BRIEFS_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION;"
@@ -326,6 +327,16 @@ R.det = ELS.details.html; R.now = window.PAGE_LIST.current(); R.rows = ELS.rows.
             self.assertEqual(out["selects"][-1], None)
             self.assertNotIn('class="bar"', out["R"]["det"])
             self.assertIn("Select a brief to see its note.", out["R"]["det"])
+
+    def test_a_brief_the_refresh_drops_runs_no_command(self):
+        # sd:2418: the shell's object map only grows, so a brief the refresh no longer lists must not still offer Make task.
+        fewer = briefs_screen.document(now=NOW, reader=lambda: {**TILE, "briefs": TILE["briefs"][1:], "total": 4})
+        out = self.refresh("""click(); await flush(); HELD[0](); await flush();
+const o = C.get('2026-09-06 - Intel Brief'); R.dropped = [o.type, o.label, REG.filter(c => c.on === o.type).length];
+R.kept = C.get('2026-09-06 - Fun Events').type;""", [fewer])
+        self.assertEqual(out["R"]["dropped"], ["not listed", "2026-09-06 - Intel Brief (no longer listed)", 0],
+                         "a brief the refresh dropped kept a command object")
+        self.assertEqual(out["R"]["kept"], "brief")
 
     def test_make_task_opens_the_capture_form_and_only_capture_files_it(self):
         out = self.run_page("""shellRun(cmd('brief.task'), C.get('2026-09-04 - Intel Brief')); await flush();

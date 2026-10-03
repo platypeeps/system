@@ -39,12 +39,6 @@ addEventListener('DOMContentLoaded', () => {
   const hhmm = iso => iso ? iso.slice(11, 16) : '–';
   const srcOf = id => SOURCES.find(s => s.id === id);
   const ago = iso => { const m = Math.round((Date.parse(READ) - Date.parse(iso)) / 60000); return m < 60 ? `${Math.max(m, 0)}m ago` : m < 2880 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
-  async function getJSON(path) {
-    const r = await fetch(path, { headers: { Accept: 'application/json' } });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-    return out;
-  }
 
   // ---------- State (mirrored in the URL) ----------
   // build: no kind or follow-up filter; no reader gives either.
@@ -90,7 +84,7 @@ addEventListener('DOMContentLoaded', () => {
       <li><div class="cell" data-state="unknown" title="${WATCH}"><span class="lbl">Missed${I('siren')}</span><span class="val"><span class="ph"><b>unknown</b></span> · <span class="ph">no watchdog reader</span></span></div></li>
       <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val">${read}</span></button></li>`);
   }
-  document.getElementById('annunciator').addEventListener('click', e => { if (e.target.closest('#refresh')) load(); });
+  document.getElementById('annunciator').addEventListener('click', e => { if (e.target.closest('#refresh')) briefs.load(); });
 
   // ---------- Cadence strip (hand-rolled SVG, patterns.md § Charts) ----------
   const W = 700, H = 24;
@@ -220,8 +214,6 @@ addEventListener('DOMContentLoaded', () => {
     C.select(null); shell.suggest([`Why is ${s.id} quiet?`, 'Which jobs missed a run this week?']); shell.openPane('tab-details'); swap();
   }
   function select(id, open) { if (!show(id)) return; selected = id; if (open) shell.openPane('tab-details'); }
-  // No current row: nothing from an earlier read stays selected, and Details offers no command on it.
-  function unselect() { selected = null; C.select(null); put(details, html`<p class="why">Select a brief to see its note.</p>`); }
 
   // ---------- Commands (products/system/commands.md): declared once, rendered by the shell ----------
   // build: two of the reference's four brief commands. Acknowledge and Mark read wrote a message store that does not exist and
@@ -269,44 +261,39 @@ addEventListener('DOMContentLoaded', () => {
   // The shell walks these rows on j / k and clears the filter on Esc.
   window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false), clear: () => !!active() && (clearAll(), true) };
 
-  // ---------- Start (build: read /api/briefs, then draw) ----------
-  // An Observed click can start a read while one is out; only the newest read draws, whatever order they answer in.
-  let generation = 0;
-  async function load() {
-    const mine = ++generation;
-    shell.state({ kind: 'loading', text: 'Reading the briefs. Rows appear when /api/briefs answers.', source: '/api/briefs' });
-    let doc;
-    try { doc = await getJSON('/api/briefs'); } catch (err) {
-      if (mine !== generation) return;
-      shell.state({ kind: 'error', text: `The briefs were not read: ${err.message}. Reload retries it.`, source: '/api/briefs' });
-      // Nothing from the last read stays on screen: rows, lanes, the observed time and the selection.
-      READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; update(); unselect();
-      return;
-    }
-    if (mine !== generation) return;
-    READ = doc.read; READER = doc.reader || { state: 'error', reason: 'no reader in the answer', total: 0, shown: 0 };
-    WATCH = doc.watchdog?.available ? 'read' : (doc.watchdog?.reason || 'no watchdog reader');
-    BRIEFS = READER.state === 'error' ? [] : (doc.briefs || []);
-    const by = new Map();
-    BRIEFS.forEach(b => { const s = by.get(b.src) || { id: b.src, n: 0, newest: b.day }; s.n++; if (b.day > s.newest) s.newest = b.day; by.set(b.src, s); });
-    // build: lanes in name order; the reference's lane order was a hand-made list of its sample jobs.
-    SOURCES = [...by.values()].sort((a, b) => a.id.localeCompare(b.id));
-    [...F.src].forEach(s => { if (!by.has(s)) F.src.delete(s); });
-    BRIEFS.forEach(b => C.put({ id: b.id, type: 'brief', label: b.subj, src: b.src, open: b.open }));
-    DAYS = days(); LOADED = true;
-    const source = READER.source || '/api/briefs';
-    if (READER.state === 'error') shell.state({ kind: 'error', text: `The briefs were not read: ${READER.reason}. Reload retries it.`, source });
-    else if (!BRIEFS.length) shell.state({ kind: 'empty', title: 'No briefs', text: 'The Briefs folder holds no note.', source });
-    else if (READER.skipped || capped()) shell.state({ kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', capped() ? `Showing the newest ${READER.shown} of ${READER.total}; the rest are in the folder. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source });
-    else shell.state(null);
-    renderRange(); update();
-    const row = shell.row?.();
-    const vis = BRIEFS.filter(match);
-    const first = BRIEFS.some(b => b.id === row) ? row : (vis[0] || BRIEFS[0])?.id;
-    if (first) select(first, !!row && first === row); else unselect();
-  }
+  // ---------- Start (build: read /api/briefs through shell.read, then draw) ----------
+  // The reader (read.js, sd:2418) holds the guards: of overlapping Observed clicks only the newest read draws, a brief the
+  // read no longer lists runs no command, and a selection whose brief is gone moves to the first shown brief or clears.
+  const briefs = shell.read({
+    source: '/api/briefs', what: 'the briefs',
+    adopt: doc => {
+      READ = doc.read; READER = doc.reader || { state: 'error', reason: 'no reader in the answer', total: 0, shown: 0 };
+      WATCH = doc.watchdog?.available ? 'read' : (doc.watchdog?.reason || 'no watchdog reader');
+      BRIEFS = READER.state === 'error' ? [] : (doc.briefs || []);
+      const by = new Map();
+      BRIEFS.forEach(b => { const s = by.get(b.src) || { id: b.src, n: 0, newest: b.day }; s.n++; if (b.day > s.newest) s.newest = b.day; by.set(b.src, s); });
+      // build: lanes in name order; the reference's lane order was a hand-made list of its sample jobs.
+      SOURCES = [...by.values()].sort((a, b) => a.id.localeCompare(b.id));
+      [...F.src].forEach(s => { if (!by.has(s)) F.src.delete(s); });
+      DAYS = days(); LOADED = true;
+      const source = READER.source || '/api/briefs';
+      const state = READER.state === 'error' ? { kind: 'error', text: `The briefs were not read: ${READER.reason}. Reload retries it.`, source }
+        : !BRIEFS.length ? { kind: 'empty', title: 'No briefs', text: 'The Briefs folder holds no note.', source }
+        : READER.skipped || capped() ? { kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', capped() ? `Showing the newest ${READER.shown} of ${READER.total}; the rest are in the folder. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source }
+        : null;
+      return { objects: BRIEFS.map(b => ({ id: b.id, type: 'brief', label: b.subj, src: b.src, open: b.open })), state };
+    },
+    // Nothing from the last read stays on screen: rows, lanes and the observed time.
+    clear: err => { READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; },
+    draw: () => { renderRange(); update(); },
+    current: () => selected,
+    first: () => (BRIEFS.filter(match)[0] || BRIEFS[0])?.id,
+    select,
+    // No current brief: nothing from an earlier read stays selected, and Details offers no command on it.
+    unselect: () => { selected = null; put(details, html`<p class="why">Select a brief to see its note.</p>`); },
+  });
   readURL();
   if (F.q) input.value = F.q;
   registerCommands();
-  load();
+  briefs.load();
 });
