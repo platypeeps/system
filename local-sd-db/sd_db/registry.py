@@ -89,6 +89,9 @@ class Provider:
     max_tokens: int | None = None
     thinking: str | None = None
     reasoning_effort: str | None = None
+    #: `json_schema` when the endpoint holds its answer to a caller's schema
+    #: in strict mode (sd:1827); unset sends no response_format at all.
+    response_format: str | None = None
     price: dict[str, float] = field(default_factory=dict)
     env: tuple[str, ...] = ()
     roles: tuple[str, ...] = ()
@@ -186,6 +189,23 @@ def reasoning_controls(body: dict[str, Any], path: Path, name: str) -> dict[str,
     return controls
 
 
+RESPONSE_FORMATS = ("json_schema",)
+
+
+def response_format(body: dict[str, Any], path: Path, name: str) -> str | None:
+    """The entry's opt-in to a strict response_format, or None (sd:1827).
+
+    Per entry, because an endpoint that accepts the field may ignore it:
+    MiniMax-M3 did, and kimi-k3 held its answer to the schema.
+    """
+    value = body.get("response_format")
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in RESPONSE_FORMATS or not body.get("url"):
+        raise RegistryError(f"{path}: provider {name!r} needs a URL and response_format in {RESPONSE_FORMATS}")
+    return value
+
+
 def parse(text: str, path: Path | str = REGISTRY_NAME) -> Registry:
     """Read the file. Every refusal below happens here, before any caller."""
     path = Path(path)
@@ -266,6 +286,7 @@ def parse(text: str, path: Path | str = REGISTRY_NAME) -> Registry:
             reader=body.get("reader"),
             max_tokens=body.get("max_tokens"),
             **reasoning_controls(body, path, name),
+            response_format=response_format(body, path, name),
             price=dict(body.get("price") or {}),
             env=tuple(str(name) for name in (body.get("env") or ())),
             roles=roles,
