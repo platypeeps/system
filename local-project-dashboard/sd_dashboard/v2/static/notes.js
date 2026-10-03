@@ -31,7 +31,7 @@
       src: 'runner assignments (operations.assignment_state)', open: null }));
     return out;
   }
-  const rowHtml = o => html`<li class="row" data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}"><span class="t">${local(o.at)}</span><span class="g g-${o.g[0]}" aria-hidden="true">${o.g[1]}</span><button class="s" type="button" data-open="${o.id}"><span class="sr">${o.g[0]} · ${o.type} · </span>${o.s}${o.small ? html`<small>${o.small}</small>` : ''}</button>${window.shell.commands.rowActions(o.id)}</li>`;
+  const rowHtml = o => html`<li class="row" data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}"><span class="t" title="${o.at.replace('T', ' ').replace('Z', ' UTC')}">${local(o.at)}</span><span class="g g-${o.g[0]}" aria-hidden="true">${o.g[1]}</span><button class="s" type="button" data-open="${o.id}"><span class="sr">${o.g[0]} · ${o.type} · </span>${o.s}${o.small ? html`<small>${o.small}</small>` : ''}</button>${window.shell.commands.rowActions(o.id)}</li>`;
   const LIMIT = 12;
   function list(objs, key) {
     const open = expanded.has(key), shown = open ? objs : objs.slice(0, LIMIT);
@@ -140,6 +140,7 @@
     $('prev').addEventListener('click', () => window.notesDay(-1));
     $('next').addEventListener('click', () => window.notesDay(1));
     $('today').addEventListener('click', () => { if (TODAY) go(TODAY); });
+    $('reload').addEventListener('click', () => reader.load());
     $('daily').addEventListener('click', e => {
       const m = e.target.closest('[data-more]');
       if (m) { const k = m.dataset.more; expanded.has(k) ? expanded.delete(k) : expanded.add(k); document.querySelectorAll('details.repo[open]').forEach(d => openRepos.add(d.dataset.repo)); render(); return; }

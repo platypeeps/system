@@ -82,7 +82,9 @@
     if (!u || u.error) { put($('bills'), html`<li>${unknownBlock(u ? u.error : 'the Metrics document did not arrive')}</li>`); put($('windows'), html``); $('bills-note').textContent = ''; return; }
     // build: dollars are the month to date as sd usage reads them; a bill that spends a window shows hatched, not a zero.
     const windowed = b => ['subscription', 'plan'].includes(b.cost_basis), max = Math.max(0.01, ...u.bills.map(b => b.spent));
-    put($('bills'), html`${u.bills.map(b => bar(`bill:${b.name}`, b.name, `${b.cost_basis}${b.cap == null ? '' : ` · cap ${money(b.cap)}`}`, windowed(b) && !b.spent ? null : (b.cap ? b.spent / b.cap * 100 : b.spent / max * 100), windowed(b) && !b.spent ? '▨ window' : money(b.spent), b.cap && b.spent / b.cap >= 0.75 ? 'caution' : ''))}`);
+    // build (hallmark audit): a bill at 75% of its cap is caution and at its cap a warning, each with its glyph, not colour alone.
+    const capState = b => b.cap == null ? 'ok' : b.spent >= b.cap ? 'warning' : b.spent / b.cap >= 0.75 ? 'caution' : 'ok';
+    put($('bills'), html`${u.bills.map(b => { const st = capState(b); return bar(`bill:${b.name}`, b.name, `${b.cost_basis}${b.cap == null ? '' : ` · cap ${money(b.cap)}`}`, windowed(b) && !b.spent ? null : (b.cap ? b.spent / b.cap * 100 : b.spent / max * 100), windowed(b) && !b.spent ? '▨ window' : money(b.spent), st === 'ok' ? '' : st, st === 'ok' ? '' : st); })}`);
     $('bills-note').textContent = `Total ${money(u.spent)} spent and ${money(u.held)} held in ${u.month}. ▨ marks a bill that spends a vendor window, not a zero.`;
     put($('windows'), u.meter.length ? html`${u.meter.map(m => { const st = pctState(m.used_percent); return bar(`win:${m.provider}:${m.window_minutes}`, m.provider, `${m.window_minutes} min window`, m.used_percent, `${m.used_percent}%`, st === 'ok' ? 's1' : st, st === 'ok' ? '' : st); })}` : html`<li class="why">No meter reading yet.</li>`);
   }

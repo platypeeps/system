@@ -203,6 +203,11 @@ class TheScript(Fixture):
         self.assertEqual(re.findall(r'<li class="row" data-id="([^"]+)"', r["daily"]), [f"merge:{self.merges[0]}", f"run:{self.blocked}"])
         self.assertIsNone(out["states"][-1])
         self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": ""})
+        self.assertIn('<span class="t" title="2026-09-06 09:30:00 UTC">', r["daily"])
+
+    def test_read_again_reads_the_week_again(self):
+        out = self.run_page("ELS.reload.listeners.click[0](); await flush();")
+        self.assertEqual(out["gets"], ["/api/notes", "/api/notes"])
 
     def test_the_previous_day_shows_its_own_rows_and_details_names_the_source(self):
         out = self.run_page(f"""ELS.prev.listeners.click[0](); R.day = ELS['day-name'].textContent; R.daily = ELS.daily.html;

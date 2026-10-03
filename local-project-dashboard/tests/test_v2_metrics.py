@@ -206,7 +206,7 @@ class TheScript(Fixture):
         out = self.run_page("""R.bills = ELS.bills.html; R.trends = ELS.trends.html; R.model = ELS.model.html; R.ci = ELS['ci-state'].html;
 R.weeks = ELS['su-weeks'].html; R.top = ELS['su-top'].html; R.sc = ELS['sc-body'].html; R.hist = ELS.hist.html;""")
         r = out["R"]
-        self.assertRegex(r["bills"], r'data-ev="bill:capped".*?<rect class="fill caution" width="80.0"')
+        self.assertRegex(r["bills"], r'data-ev="bill:capped".*?<rect class="fill caution" width="80.0".*?<span class="g-caution" aria-hidden="true">▲</span>\$80.00')
         self.assertRegex(r["bills"], r'data-ev="bill:plan".*?class="track hatch".*?▨ window')
         self.assertEqual(re.findall(r'data-ev="(t:[^"]+)"', r["trends"]), ["t:claude:2026-09-01", "t:claude:2026-09-06"])
         self.assertIn("<b>▨ Not read.</b> the cost ledger records bill and provider, not model", r["model"])
