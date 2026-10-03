@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sd_db import connect, create_item, reads, reporting, upsert_repo, workflow
 from sd_db.errors import SdDbError
@@ -31,14 +32,16 @@ WHEN = "2026-09-04T09:00:00+00:00"
 TRAILERED = "Authored-with: claude/anthropic"
 
 
-def commit_with(root: Path, message: str) -> None:
-    """A commit at a fixed date, with whatever trailers `message` carries.
+def commit_with(root: Path, message: str, *, author: str | None = None, when: str = WHEN) -> None:
+    """A commit at a fixed date, with whatever trailers `message` carries; `author` is an email.
 
     Both dates are pinned: `git log --since/--until` filters on the committer
     date, and a fixture that only pinned the author date would drift back into
     depending on the clock.
     """
-    environment = dict(os.environ, GIT_AUTHOR_DATE=WHEN, GIT_COMMITTER_DATE=WHEN)
+    environment = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+    if author:
+        environment.update(GIT_AUTHOR_EMAIL=author, GIT_AUTHOR_NAME="Other")
     (root / f"{abs(hash(message)) % 10**8}.txt").write_text(message, encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
@@ -87,7 +90,7 @@ class TheItemShadow(unittest.TestCase):
 
 
 class MissingTrailers(unittest.TestCase):
-    """A trailer that is not the first trailer is still a trailer.
+    """A trailer that is not the first trailer is still a trailer; the scope is yours, five weeks, origin/HEAD.
 
     The bug: the count was parsed by splitting `%H%x00%(trailers)` on newlines
     and skipping any line without a NUL. `%(trailers)` is *one field spanning
@@ -121,7 +124,14 @@ class MissingTrailers(unittest.TestCase):
         self.connection = connect(self.database)
         self.addCleanup(self.connection.close)
 
+    def publish(self) -> None:
+        """Make the checkout's HEAD the default branch as origin/HEAD names it, which is what the count reads."""
+        subprocess.run(["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD",
+                        "refs/remotes/origin/main"], check=True)
+
     def count(self) -> int:
+        self.publish()
         return reads.missing_trailers(
             self.connection, now=NOW, repo_paths=[str(self.repo)]
         )
@@ -175,6 +185,76 @@ class MissingTrailers(unittest.TestCase):
             f"{TRAILERED}\n",
         )
         self.assertEqual(self.count(), 0)
+
+    def test_only_your_commits_count(self):
+        commit_with(self.repo, "another author's, no trailer\n", author="other@example.test")
+        self.assertEqual(self.count(), 0, "another author's commit was counted as yours")
+        commit_with(self.repo, "yours, no trailer\n")
+        self.assertEqual(self.count(), 1)
+
+    def test_an_address_that_only_contains_yours_is_not_yours(self):
+        # git matches --author against "Name <address>"; the address must match whole, delimiters and all.
+        commit_with(self.repo, "a longer address, no trailer\n", author="notfixture@example.invalid")
+        commit_with(self.repo, "a longer domain, no trailer\n", author="fixture@example.invalid.test")
+        self.assertEqual(self.count(), 0, "an address containing yours was counted as yours")
+
+    def test_your_address_matches_in_any_case(self):
+        # git stores the author as typed; a commit made under a differently cased address is still yours.
+        commit_with(self.repo, "yours, cased differently, no trailer\n", author="FIXTURE@Example.Invalid")
+        self.assertEqual(self.count(), 1, "a differently cased address was read as another author")
+
+    def test_a_commit_older_than_five_weeks_is_not_counted(self):
+        commit_with(self.repo, "six weeks back, no trailer\n", when="2026-07-26T09:00:00+00:00")
+        commit_with(self.repo, "four weeks back, no trailer\n", when="2026-08-10T09:00:00+00:00")
+        self.assertEqual(self.count(), 1)
+
+    def test_a_merge_is_not_counted(self):
+        git = lambda *args: subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True,
+                                           env=dict(os.environ, GIT_AUTHOR_DATE=WHEN, GIT_COMMITTER_DATE=WHEN))
+        git("switch", "-q", "-c", "side")
+        commit_with(self.repo, f"side work\n\n{TRAILERED}\n")
+        git("switch", "-q", "main")
+        git("merge", "-q", "--no-ff", "-m", "a merge with no trailer", "side")
+        self.assertEqual(self.count(), 0, "the merge commit was counted")
+
+    def test_the_default_branch_is_read_not_the_checkout(self):
+        self.publish()
+        commit_with(self.repo, "on the checkout only, no trailer\n")
+        scan = reads.trailer_scan(self.connection, now=NOW, repo_paths=[str(self.repo)])
+        self.assertEqual((scan["missing"], scan["repos"]), (0, 1), "a commit origin/HEAD does not hold was counted")
+
+    def test_a_repository_with_no_origin_head_is_named_not_read_on_its_head(self):
+        commit_with(self.repo, "no trailer\n")
+        scan = reads.trailer_scan(self.connection, now=NOW, repo_paths=[str(self.repo)])
+        self.assertEqual((scan["missing"], scan["no_default"], scan["repos"]), (0, [str(self.repo)], 0))
+
+    def test_a_repository_with_no_user_email_has_no_author_to_count(self):
+        self.publish()
+        subprocess.run(["git", "-C", str(self.repo), "config", "--unset", "user.email"], check=True)
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}):
+            scan = reads.trailer_scan(self.connection, now=NOW, repo_paths=[str(self.repo)])
+        self.assertEqual((scan["no_author"], scan["repos"]), ([str(self.repo)], 0))
+
+    def test_a_walk_past_its_budget_is_refused_not_a_partial_count(self):
+        """One slow repository spends a caller's budget: the read raises, it does not return 0."""
+        stub = Path(self.tmp.name) / "bin"
+        stub.mkdir()
+        (stub / "git").write_text("#!/bin/sh\nexec sleep 5\n")
+        (stub / "git").chmod(0o755)
+        path = os.environ["PATH"]
+        os.environ["PATH"] = f"{stub}{os.pathsep}{path}"
+        self.addCleanup(os.environ.__setitem__, "PATH", path)
+        with self.assertRaisesRegex(reads.OverBudget, r"^the trailer count ran past its budget of 0\.3 seconds$"):
+            reads.missing_trailers(self.connection, now=NOW, repo_paths=[str(self.repo)], within=0.3)
+        # A spent budget starts no git at all.
+        with mock.patch.object(reads.subprocess, "run") as run, self.assertRaises(reads.OverBudget):
+            reads.missing_trailers(self.connection, now=NOW, repo_paths=[str(self.repo)], within=0)
+        run.assert_not_called()
+
+    def test_a_budget_the_walk_fits_changes_nothing(self):
+        commit_with(self.repo, "no trailers here\n")
+        self.publish()
+        self.assertEqual(reads.missing_trailers(self.connection, now=NOW, repo_paths=[str(self.repo)], within=30), 1)
 
     def test_a_repository_that_cannot_be_read_is_not_a_crash(self):
         missing = Path(self.tmp.name) / "not-a-repository"
@@ -440,9 +520,10 @@ class QuietRunReportsAreNotBacklog(unittest.TestCase):
         number `1` alike, while `is_urgent` accepts only the boolean. Before
         this was tightened the row below was in the backlog and not in the
         urgent quadrant -- the shared-row contract broken by the clause written
-        to protect it. `ingest` cannot produce this row (`reporting.py:25`
-        refuses a non-bool `attention`), so it is a hand-edited or legacy one,
-        and quiet is the safe direction for those.
+        to protect it. `ingest` cannot produce this row: it refuses a non-bool
+        `attention` (`type(attention) is not bool`, in `ingest` of `local-sd-db/sd_db/reporting.py`),
+        so it is a hand-edited or legacy one, and quiet is the safe direction
+        for those.
         """
         writer = self.store()
         quiet = self.report(writer, attention=False, job="quiet-job")
@@ -552,5 +633,93 @@ class CaptureItems(unittest.TestCase):
             self.assertEqual(tuple(connection.iterdump()), before)
 
 
+class TheActivityReads(unittest.TestCase):
+    """The two reads behind the dashboard's Activity (sd:2111): delivery notes and recent assignments, by day."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = Path(self.tmp.name) / "sd.db"
+        initialise(path)
+        self.connection = connect(path)
+        self.addCleanup(self.connection.close)
+        self.item = create_item(self.connection, kind="work", title="A slice")
+
+    def test_delivery_notes_are_the_code_delivery_comments_from_the_day_on(self):
+        from sd_db.ship import note_merge
+
+        for number, sha in ((1, "a" * 40), (2, "b" * 40)):
+            note_merge(self.connection, self.item, {"pull_request": {"url": f"https://github.com/o/r/pull/{number}"},
+                                                    "merge_commit": sha})
+        add_note(self.connection, self.item, "comment", "Code delivery, said in passing")
+        add_note(self.connection, self.item, "decision", "Code delivery https://github.com/o/r/pull/3 at " + "c" * 40)
+        ids = [row["id"] for row in self.connection.execute("SELECT id FROM note WHERE body LIKE 'Code delivery http%' ORDER BY id")]
+        self.connection.execute("UPDATE note SET timestamp = '2026-09-01T10:00:00Z' WHERE id = ?", (ids[0],))
+        self.connection.commit()
+        rows = reads.delivery_notes(self.connection, since="2026-09-05T12:00:00Z")
+        self.assertEqual([row["id"] for row in rows], [ids[1]])
+        self.assertEqual(rows[0]["title"], "A slice")
+
+    def test_exec_note_count_counts_every_exec_note_and_nothing_else(self):
+        for body in ("{}", "plain text", "{}"):
+            add_note(self.connection, self.item, "exec", body)
+        add_note(self.connection, self.item, "comment", "not an execution")
+        self.assertEqual(reads.exec_note_count(self.connection), 3)
+
+    def test_recent_assignments_leave_out_exec_and_older_days(self):
+        from sd_db.writes import create_assignment
+
+        author = create_assignment(self.connection, item=self.item, role="author", status="done")
+        create_assignment(self.connection, item=self.item, role="exec", status="done")
+        old = create_assignment(self.connection, item=self.item, role="review", status="done")
+        self.connection.execute("UPDATE assignment SET started = ?, ended = ? WHERE id = ?",
+                                ("2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z", old))
+        self.connection.execute("UPDATE assignment SET started = '2026-09-06T08:00:00Z' WHERE id = ?", (author,))
+        self.connection.commit()
+        self.assertEqual(reads.recent_assignments(self.connection, since="2026-09-05T12:00:00Z"), [(author, None)])
+
+    def test_recent_assignments_carry_their_items_repository(self):
+        from sd_db.writes import create_assignment
+
+        upsert_repo(self.connection, "/repos/system", remote="git@example.invalid:x.git")
+        item = create_item(self.connection, kind="work", title="In a repo", repo="/repos/system")
+        run = create_assignment(self.connection, item=item, role="author", status="done")
+        self.connection.execute("UPDATE assignment SET started = '2026-09-06T08:00:00Z' WHERE id = ?", (run,))
+        self.connection.commit()
+        self.assertIn((run, "/repos/system"), reads.recent_assignments(self.connection, since="2026-09-05T12:00:00Z"))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class TheAssignmentLedger(unittest.TestCase):
+    """The Management page's reads (sd:2118): the ledger filters, the counts, and `ready_to_send`."""
+
+    def setUp(self):
+        from sd_db.writes import create_assignment
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = Path(self.tmp.name) / "sd.db"
+        initialise(path)
+        self.connection = connect(path)
+        self.addCleanup(self.connection.close)
+        self.item = create_item(self.connection, kind="task", title="A thing")
+        self.done = create_assignment(self.connection, role="merge", status="done", item=self.item)
+        self.queued = create_assignment(self.connection, role="author", status="queued", item=self.item)
+        self.blocked = create_assignment(self.connection, role="author", status="blocked", item=self.item)
+
+    def test_the_filters_and_the_order(self):
+        ids = lambda rows: [row["id"] for row in rows]
+        self.assertEqual(ids(reads.assignment_ledger(self.connection)), [self.blocked, self.queued, self.done])
+        self.assertEqual(ids(reads.assignment_ledger(self.connection, role="merge")), [self.done])
+        self.assertEqual(ids(reads.assignment_ledger(self.connection, exclude_role="merge", limit=1)), [self.blocked])
+        self.assertEqual(ids(reads.assignment_ledger(self.connection, live=True)), [self.queued])
+        self.assertEqual(reads.assignment_ledger(self.connection)[0]["title"], "A thing")
+
+    def test_the_counts_and_the_items_ready_to_send(self):
+        self.assertEqual(reads.assignment_counts(self.connection), {"blocked": 1, "done": 1, "queued": 1})
+        self.assertEqual(reads.ready_to_send(self.connection), [])
+        self.connection.execute("UPDATE item SET status = 'ready_to_send' WHERE id = ?", (self.item,))
+        self.assertEqual([row["id"] for row in reads.ready_to_send(self.connection)], [self.item])

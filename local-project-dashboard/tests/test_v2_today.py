@@ -26,6 +26,7 @@ from sd_dashboard import now_screen, server, v2
 
 from test_now_screen import JobsBackend, fleet_document, repo
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 TODAY_JS = (V2 / "static" / "today.js").read_text(encoding="utf-8")
@@ -189,7 +190,6 @@ class TheShellPort(BrowserSession):
             self.assertNotRegex(source, r"style=\\?\"")
         # The favicon count draws a data: URL; the build leaves it to the mockups.
         self.assertIn("if (!window.SHELL_PAGES) icon.href = c.toDataURL", SHELL_JS)
-        self.assertIn('window.SHELL_PAGES = {"Today": "/today"};', v2.GENERATED["sections.js"].decode())
 
     def test_today_maps_every_band_source_and_kind_now_can_send(self):
         state = re.search(r"const STATE = \{([^}]*)\}", TODAY_JS).group(1)
@@ -293,7 +293,7 @@ JSON.stringify({ exports: Object.keys(window.markup), frozen: Object.isFrozen(wi
   kept: (() => { try { m.text = '<img>'; } catch (e) { /* strict mode throws; sloppy mode ignores the write */ } return m.text; })(),
   frozenForgery: refused(() => html(Object.freeze(Object.assign(['<img src=x onerror=alert(1)>'], { raw: Object.freeze(['<img src=x onerror=alert(1)>']) })))),
   jsonForgery: refused(() => html(Object.freeze(JSON.parse('["<img>"]')))) })""")
-        self.assertEqual(got["exports"], ["html", "put"])
+        self.assertEqual(got["exports"], ["html", "put", "plural"])
         self.assertTrue(got["frozen"])
         self.assertEqual(got["sunk"], [["replaceChildren", "<ul><li>a</li><li>&lt;b&gt;</li></ul>"], ["append", "<b>&lt;i&gt;</b>"],
                                        ["prepend", "0"], ["before", "<hr>"]])
@@ -328,3 +328,7 @@ JSON.stringify({
         self.assertEqual({tag for tag, _ in parsed.tags}, {"b", "code"})
         self.assertEqual([attrs for _, attrs in parsed.tags if attrs], [])
         self.assertEqual("".join(parsed.text), "Rank broken first; run sd jobs. loud link alert(2)it 1 < 2 & 3 > 2 ac open")
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "today", "Today", "/today", ()

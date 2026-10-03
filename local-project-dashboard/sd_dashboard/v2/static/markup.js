@@ -64,5 +64,10 @@
     t.innerHTML = m.text;
     el[WHERE[where]](t.content);
   }
-  window.markup = Object.freeze({ html, put });
+  // A count and its noun: plural(2, 'session') is "2 sessions"; word() gives the noun alone, for a count set in <b>. A noun
+  // that is already plural ("worktrees") is its own many. A hand-written plural ternary is how "2 sessionss" happened
+  // (design review 2026-09-29, item 18). shell.js and tasks.js read it (sd:2124, from the design source at d82daa1).
+  const word = (n, one, many = /s$/.test(one) ? one : `${one}s`) => (n === 1 ? one : many);
+  const plural = Object.assign((n, one, many) => `${n} ${word(n, one, many)}`, { word });
+  window.markup = Object.freeze({ html, put, plural });
 })();

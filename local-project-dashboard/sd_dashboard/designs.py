@@ -146,10 +146,12 @@ def designs(root: Path | None = None) -> dict[str, list[str]]:
 # The inputs hash: a port of ui-design's tools/inputs.mjs. Each rule below
 # mirrors one line there; a change on either side stales every screenshot.
 
+#: The mockup folder, `designs/pages/` since the design source's sd:2193; `designs/v2/` is no longer read (sd:2454).
+_MOCKUP = "pages"
 #: Generated data files the hash treats specially, by where they sit.
-SKIP = re.compile(r"/v2/data/counts\.js$")
-STAMP = re.compile(r"/v2/data/commands\.js$")
-LEDGER = re.compile(r"/v2/data/designs-data\.js$")
+SKIP = re.compile(rf"/{_MOCKUP}/data/counts\.js$")
+STAMP = re.compile(rf"/{_MOCKUP}/data/commands\.js$")
+LEDGER = re.compile(rf"/{_MOCKUP}/data/designs-data\.js$")
 #: Ledger fields a collect or a retake rewrites, left out of the hash.
 SHOT_FIELDS = ("dirty", "shotStale", "shotTimes", "shotChanged", "shotSha", "shotOldest", "shotSize")
 #: Where shots.mjs records each screenshot's inputs hash.
@@ -299,6 +301,11 @@ def _dirty(base: Path) -> set[str]:
     return {entry[3:] for entry in entries.split("\0") if len(entry) > 3}
 
 
+def _mockup(path: str) -> bool:
+    """Whether the page sits in a product's mockup folder, under either name."""
+    return re.search(rf"/designs/{_MOCKUP}/", path) is not None
+
+
 def _kind(path: str) -> str:
     """Where the page sits says what it is."""
     if path.endswith("/template.html"):
@@ -307,7 +314,7 @@ def _kind(path: str) -> str:
         return "final"
     if "/reference/" in path:
         return "reference"
-    if "/designs/v2/" in path:
+    if _mockup(path):
         return "v2 mockup"
     if "/designs/v1-" in path:
         return "v1 mockup"
@@ -318,11 +325,12 @@ def _shots(base: Path, path: str) -> list[str]:
     """A page's screenshots, by the names shots.mjs writes, as the tab serves them.
 
     A v2 page's are exactly `v2-<page>-<width>.png`, so a one-off capture beside
-    them is not its shot; a v1 page's are every `v1-*.png`.
+    them is not its shot; a v1 page's are every `v1-*.png`. A v2 page sits in
+    `designs/pages/`; its shots sit in `designs/shots/`.
     """
-    folder = posixpath.join(re.sub(r"/v2$", "", posixpath.dirname(path)), "shots")
+    folder = posixpath.join(re.sub(rf"/{_MOCKUP}$", "", posixpath.dirname(path)), "shots")
     name = posixpath.basename(path)[:-len(".html")]
-    if "/v2/" in path:
+    if _mockup(path):
         prefix = f"v2-{name}-"
 
         def own(file: str) -> bool:
@@ -432,7 +440,7 @@ def ledger(root: Path | None = None, *, now: datetime | None = None) -> dict:
             commit = commits.get(path)
             shots = _shots(base, path)
             stale: list[str] = []
-            if "/v2/" in path and shots:
+            if _mockup(path) and shots:
                 try:
                     current = inputs_hash(base, path)
                 except (OSError, ValueError):
@@ -460,7 +468,7 @@ def ledger(root: Path | None = None, *, now: datetime | None = None) -> dict:
 
 
 #: The generated ledger the v2 Designs page loads. The tab answers it live.
-LIVE_LEDGER = "products/system/designs/v2/data/designs-data.js"
+LIVE_LEDGER = f"products/system/designs/{_MOCKUP}/data/designs-data.js"
 
 
 def ledger_script(root: Path | None = None) -> str:

@@ -19,6 +19,7 @@ accident; a PIN passing against old code is expected, not a defect.
 
 import os
 import pathlib
+import pty
 import re
 import shutil
 import signal
@@ -217,6 +218,11 @@ class Fixture:
 
 
 PROMPT_JOB = 'JOB_SCHEDULE="0 3 * * *"\nJOB_PROMPT="/sd-plan nightly"\n'
+
+# A workload that SIGKILLs the runner, the shell `cron-jobs.sh exec` is. Not
+# `$PPID`: the workload's parent is the perl that enforces JOB_TIMEOUT, and the
+# runner is that perl's parent (sd:2018).
+KILL_THE_RUNNER = "kill -9 $(ps -o ppid= -p $PPID)"
 
 
 class PromptJobEnvironmentTest(unittest.TestCase):
@@ -1601,7 +1607,7 @@ class RunInProgressTest(unittest.TestCase):
         self.plain_job()
         self.assertEqual(self.exec_job(4).returncode, 0)
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
-                                  "JOB_COMMAND='kill -9 $PPID'\n")
+                                  f"JOB_COMMAND='{KILL_THE_RUNNER}'\n")
         log = self.fx.folder / "logs" / "demo.log"
         with open(log, "ab") as out:
             killed = subprocess.run(
@@ -1988,7 +1994,7 @@ class UnfinishedRunTest(unittest.TestCase):
         """A hand run that dies where no trap can see it. stdout is the job's
         own log, the way the plist points it, so the run starts no tee and the
         SIGKILL leaves no process behind."""
-        self.job("'kill -9 $PPID'")
+        self.job(f"'{KILL_THE_RUNNER}'")
         with open(self.log, "ab") as out:
             return subprocess.run(
                 ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
@@ -2221,6 +2227,168 @@ class AbandonedRunTest(UnfinishedRunTest.__base__):
         done = self.status(last_exit=1)
         self.assertIn("hand run is in progress", done.stdout)
         self.assertEqual(done.returncode, 0, done.stdout)
+
+
+def pids_of(command):
+    """The pids of processes whose whole command line is `command`.
+
+    Anchored and with its dots escaped, so another process whose arguments
+    merely contain the text is not taken for the job's."""
+    pattern = "^" + command.replace(".", "\\.") + "$"
+    found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+    return [int(pid) for pid in found.stdout.split()]
+
+
+class JobTimeoutTest(unittest.TestCase):
+    """JOB_TIMEOUT: a hung run is stopped, with its whole process group (sd:2018).
+
+    REGRESSION. Nothing bounded a run, so a job that hung held its `flock`
+    for hours and every later slot logged "skipped: previous run still
+    active" and exited 0. A run past its limit now has its process group sent
+    TERM, then KILL after a grace period, and fails with exit 124.
+
+    Each workload sleeps for a duration no other test uses, so `pgrep -f`
+    finds its own processes and nothing else.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.log = self.fx.folder / "logs" / "demo.log"
+
+    def job(self, command, timeout=None):
+        text = f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND={command}\n'
+        if timeout is not None:
+            text += f'JOB_TIMEOUT="{timeout}"\n'
+        self.fx.write_job("demo", text)
+
+    def run_job(self, env=None, timeout=20):
+        return self.fx.exec_job("demo", {"CRON_JOBS_TIMEOUT_GRACE": "1", **(env or {})},
+                                timeout=timeout)
+
+    def reap(self, pattern):
+        """Kill what a failing case left behind, so the next one starts clean."""
+        self.addCleanup(subprocess.run, ["pkill", "-9", "-f", "^" + pattern.replace(".", "\\.") + "$"])
+
+    def assert_gone(self, pattern):
+        deadline = time.monotonic() + 5
+        while pids_of(pattern) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(pids_of(pattern), [], f"{pattern} outlived the run")
+
+    def test_a_hung_job_is_stopped_with_its_process_group(self):
+        """The background child as well as the foreground one: the group,
+        not the shell `bash -c` started."""
+        self.reap("sleep 41.4142")
+        self.job("'sleep 41.4142 & sleep 41.4142; wait'", timeout="1")
+        began = time.monotonic()
+        result = self.run_job()
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertLess(time.monotonic() - began, 15)
+        log = self.log.read_text()
+        self.assertRegex(log, r"\[demo\] \S+ timed out after 1s \(JOB_TIMEOUT\); "
+                              r"sending TERM to process group \d+")
+        self.assertIn("FAILED rc=124", log)
+        # TERM reached the background child too: KILL, which goes to the
+        # group as well, was never needed.
+        self.assertNotIn("sending KILL", log)
+        self.assert_gone("sleep 41.4142")
+
+    def test_the_lock_is_free_after_a_timeout(self):
+        self.reap("sleep 43.1415")
+        self.job("'sleep 43.1415'", timeout="1")
+        self.assertEqual(self.run_job().returncode, 124)
+        self.job('"true"', timeout="1")
+        after = self.run_job()
+        self.assertNotIn("skipped", after.stdout + after.stderr)
+        self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
+
+    def test_a_job_that_ignores_term_is_killed(self):
+        self.reap("sleep 42.7182")
+        self.job("\"trap '' TERM; sleep 42.7182; exit 0\"", timeout="1")
+        result = self.run_job()
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertRegex(self.log.read_text(),
+                         r"process group \d+ still running 1s after TERM; sending KILL")
+        self.assert_gone("sleep 42.7182")
+
+    def test_a_job_within_its_limit_keeps_its_exit_code(self):
+        """PIN: the limit changes nothing for a run that ends inside it."""
+        self.job('"exit 7"', timeout="30")
+        result = self.run_job()
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+        self.assertNotIn("timed out", self.log.read_text())
+
+    def test_units_are_read(self):
+        """`1m` is sixty seconds, not one."""
+        self.job('"sleep 1.5"', timeout="1m")
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_machine_default_applies_when_the_job_sets_none(self):
+        self.reap("sleep 44.1421")
+        self.job("'sleep 44.1421'")
+        result = self.run_job({"CRON_JOBS_JOB_TIMEOUT": "1"})
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertIn("timed out after 1s", self.log.read_text())
+
+    def test_zero_in_the_job_turns_the_machine_default_off(self):
+        self.job('"sleep 1.5"', timeout="0")
+        result = self.run_job({"CRON_JOBS_JOB_TIMEOUT": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_an_unreadable_value_fails_the_run_and_names_the_variable(self):
+        self.job('"true"', timeout="soon")
+        result = self.run_job()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("JOB_TIMEOUT", result.stdout + result.stderr)
+        self.assertIn("FAILED rc=1", self.log.read_text())
+
+    def test_a_terminal_on_stdin_is_not_read(self):
+        """A hand-run from a terminal: the job gets /dev/null, as it does
+        under launchd, rather than a terminal it would wait on."""
+        controller, terminal = pty.openpty()
+        self.addCleanup(os.close, controller)
+        self.addCleanup(os.close, terminal)
+        self.job("'read -r line || echo stdin-at-eof'", timeout="5")
+        env = {"PATH": self.fx.path(), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+               "SD_REPORT_BIN": "/usr/bin/true"}
+        result = subprocess.run(
+            ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+            env=env, stdin=terminal, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stdin-at-eof", self.log.read_text())
+
+    def test_the_built_in_default_is_two_hours(self):
+        """PIN: a job that sets nothing is still bounded."""
+        self.assertRegex(SCRIPT.read_text(), r'(?m)^DEFAULT_JOB_TIMEOUT=2h$')
+
+    def test_a_signal_to_the_runner_still_reaches_the_job(self):
+        """PIN. The job runs in a process group of its own, and launchd's
+        TERM on `bootout` goes to the runner's group. The runner passes it on,
+        or a stopped job would leave its workload running."""
+        self.reap("sleep 45.2718")
+        self.job("'sleep 45.2718'", timeout="1h")
+        run = subprocess.Popen(
+            ["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+            env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+                 "SD_REPORT_BIN": "/usr/bin/true"},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        self.addCleanup(run.wait)
+        self.addCleanup(kill_group, run.pid)
+        self.assertTrue(started(self.log), "the run starts")
+        deadline = time.monotonic() + 5
+        while not pids_of("sleep 45.2718") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        os.killpg(run.pid, signal.SIGTERM)
+        self.assert_gone("sleep 45.2718")
+        # Reaped here: a group left holding only a zombie answers killpg
+        # with EPERM on macOS, and the cleanup above would raise it.
+        run.wait(timeout=10)
+
 
 if __name__ == "__main__":
     unittest.main()

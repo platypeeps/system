@@ -188,6 +188,8 @@ def command_judgments(argv: list[str]) -> int:
         return _judgments_label(argv[1:])
     if argv and argv[0] == "unlabelled":
         return _judgments_unlabelled(argv[1:])
+    if argv and argv[0] == "compare":
+        return _judgments_compare(argv[1:])
     since, until, as_json = None, None, False
     rest = list(argv)
     while rest:
@@ -200,7 +202,7 @@ def command_judgments(argv: list[str]) -> int:
             until = rest.pop(0)
         else:
             print("sd-db judgments: takes --since STAMP, --until STAMP and --json, "
-                  "or `label` or `unlabelled`", file=sys.stderr)
+                  "or `label`, `unlabelled` or `compare`", file=sys.stderr)
             return 1
     connection = _open_for_read()
     try:
@@ -208,6 +210,36 @@ def command_judgments(argv: list[str]) -> int:
     finally:
         connection.close()
     sys.stdout.write(judgment.json_text(rows) if as_json else judgment.text(rows))
+    return 0
+
+
+def _judgments_compare(argv: list[str]) -> int:
+    """`judgments compare [--stage NAME] [--since STAMP] [--until STAMP] [--json]`.
+
+    The comparison arms of sd:2366 against the Jev row of the same pair:
+    calls, latency percentiles, tokens, cost, agreement, and accuracy and
+    Brier on labelled pairs. A read only.
+    """
+    options: dict[str, str | None] = {"stage": None, "since": None, "until": None}
+    as_json = False
+    rest = list(argv)
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--json":
+            as_json = True
+        elif flag in ("--stage", "--since", "--until") and rest:
+            options[flag[2:]] = rest.pop(0)
+        else:
+            print("sd-db judgments compare: takes --stage NAME, --since STAMP, "
+                  "--until STAMP and --json", file=sys.stderr)
+            return 1
+    connection = _open_for_read()
+    try:
+        report = judgment.compare(connection, **options)
+    finally:
+        connection.close()
+    sys.stdout.write(judgment.compare_json(report) if as_json
+                     else judgment.compare_text(report))
     return 0
 
 

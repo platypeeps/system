@@ -1,0 +1,90 @@
+<!doctype html>
+<!--
+  Activity (sd:2111), at /activity. Built from the design source's products/system/designs/v2/activity.html, .css and .js at d82daa1, with design.md and commands.md.
+  Data: /api/activity (activity_screen.document: sd-ship delivery notes, runner assignments, launchd jobs and their log time, and
+  the execution journal, over the 24 hours before the read; the journal's older records come too, for All read),
+  read when the page opens and after a write. The journal is runner_exec.execution_journal: palette and runner runs (sd:2183).
+  Reviews, deploys and mail have no collector: the document names each with its reason and the page draws it unknown.
+  Writes: the v1 action routes (runner requeue and cancel, job retry). Nothing here is sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Activity · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/activity.css">
+</head>
+<body data-page="Activity" data-scope="fleet">
+<script src="/ui/icons.js"></script>
+<div class="shell"><main id="main">
+  <header class="head">
+    <div>
+      <h1>Activity</h1>
+      <p><span id="sub">Reading the activity…</span></p>
+    </div>
+    <div class="shift">
+      <label class="field">
+        <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+        <span class="sr">Filter, capture or ask</span>
+        <input id="shift" placeholder="Filter events, capture a task, or ask" autocomplete="off" aria-describedby="shift-hint">
+        <span class="ghost" id="ghost"></span>
+        <kbd>/</kbd>
+      </label>
+      <div class="preview" id="shift-preview" hidden>
+        <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
+        <div class="chips" role="group" aria-label="Interpret as">
+          <button class="chip" type="button" data-as="filter" aria-pressed="true">filter rows</button>
+          <button class="chip" type="button" data-as="task" aria-pressed="false">new task</button>
+          <button class="chip" type="button" data-as="ask" aria-pressed="false">ask chat</button>
+        </div>
+        <p class="hint" id="shift-hint">→ changes mode · Enter runs · Esc clears</p>
+      </div>
+    </div>
+  </header>
+
+  <div id="state" hidden></div>
+  <h2 class="sr">Event kinds</h2>
+  <ul class="annunciator" id="annunciator"></ul>
+
+  <section class="chart" aria-labelledby="chart-h">
+    <div class="sec-head">
+      <h2 id="chart-h">Last 24 hours <button class="help" type="button" aria-label="Help: Last 24 hours" data-help="<b>One lane per kind.</b> Each tick is one event at its time. A plain tick went fine; <b>▲</b> amber wants a look; <b>■</b> red failed. A hatched lane has no collector yet. Tap a lane to filter; tap a tick to open that event.">
+        <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+      <div class="tally"><div class="chips" role="group" aria-label="Range" id="range"></div></div>
+    </div>
+    <div class="lanes" id="lanes"></div>
+    <p class="legend"><span><span class="sw"></span>event</span><span><span class="sw c"></span>▲ caution</span><span><span class="sw w"></span>■ failed</span><span><span class="sw h"></span>no source (unknown)</span><span>times UTC</span></p>
+    <details class="fallback"><summary>Events per hour as a table</summary><div class="tbl-wrap" id="chart-table"></div></details>
+  </section>
+
+  <section aria-labelledby="tl-h">
+    <div class="sec-head">
+      <h2 id="tl-h">Timeline <button class="help" type="button" aria-label="Help: Timeline" data-help="<b>One timeline,</b> newest first, banded by hour. Filter by kind, state or repo; the filters stay in the address, so a link shares the view. <b>j</b>/<b>k</b> move, <b>.</b> opens actions.">
+        <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+      <p class="tally" id="tally"></p>
+    </div>
+    <div id="views"></div>
+    <div class="filters" id="filters" aria-label="Filters"></div>
+    <table class="ledger" aria-labelledby="tl-h">
+      <colgroup><col class="c-t"><col class="c-g"><col class="c-k"><col><col class="c-ref"><col class="c-act"></colgroup>
+      <thead><tr><th scope="col">UTC</th><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Kind</th><th scope="col">Event</th><th scope="col">Where</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p class="empty" id="empty" hidden></p>
+    <div class="pager" id="pager"></div>
+    <p class="note" id="journal-note"></p>
+    <p class="note" id="note">Merges are the pull requests sd-ship landed. Runs are runner assignments and scheduled jobs whose log was written in the window.</p>
+    <p class="note" id="undated" hidden></p>
+  </section>
+</main>
+<div class="details" id="details"></div></div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/activity.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

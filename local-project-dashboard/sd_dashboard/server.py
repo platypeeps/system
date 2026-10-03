@@ -97,20 +97,17 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
     """
     from . import v2
 
-    # The new design is the default (sd:2163): `/` and `/today` are its Today, a static page whose rows come from
-    # /api/now. The old Today moved to /classic/today; every other old screen keeps its path until its section is
-    # ported. `v2.CLASSIC` maps each unported rail section to its old screen.
+    # The new design is the default (sd:2163): each registered page serves its routes, and an old screen whose path a
+    # page took is served where its page module says (sd:2418); every other old screen keeps its path until its section
+    # is ported. `v2.CLASSIC` maps each unported rail section to its old screen.
     found = v2.page(path)
     if found is not None:
         return found
-    if path == "/classic/today":
-        return screens.today(connection, now=now, parameters=parameters)
+    taken = v2.old(path)
+    if taken is not None:
+        return taken.render(v2.registry.Read(connection=connection, now=now, path=path, parameters=parameters))
     if path == "/backlog":
         return screens.backlog(connection, now=now, parameters=parameters)
-    if path == "/contributions":
-        from .contribution_screen import render
-
-        return render(connection, parameters=parameters)
     if path == "/protection":
         from .protection_screen import render
 
@@ -121,11 +118,6 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
         from .skills_screen import render
 
         return render(connection, now=now, parameters=parameters)
-    if path == "/documents":
-        from .documents import render
-
-        # No connection: the listing reads a directory, not the database.
-        return render(parameters)
     if path == "/designs":
         from .designs import render as designs_render
 
@@ -195,6 +187,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
     library's `who` has none: an action that records it must be handed it,
     not fall back to a name that fits every caller (sd:755).
     """
+    from . import v2
+
+    registered = v2.action(path)
+    if registered is not None:
+        return registered.write(payload, principal)
     values = dict(payload)
     if path == "/api/contributions/acknowledge":
         from sd_db import contributions
@@ -325,6 +322,16 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
                     "restart": services.restart_service}[action]
         return lambda connection: mutation(connection, label, backend=services_backend,
             expected_revision=values["revision"], who="dashboard")
+    match = re.fullmatch(r"/api/repos/(runner-merge|managed)", path)
+    if match:
+        from .management_screen import set_repo
+
+        # The two sd-db repo verbs Management runs (sd:2118); `before` is what the page showed, refused when stale.
+        words = ("manual", "auto") if match[1] == "runner-merge" else ("yes", "no")
+        if (set(values) != {"path", "value", "before"} or not isinstance(values["path"], str)
+                or values["value"] not in words or values["before"] not in words or values["value"] == values["before"]):
+            raise ValueError(f"Provide the repository path, the new {match[1]} value and the value the page showed.")
+        return lambda connection: set_repo(connection, match[1], values["path"], values["value"], values["before"])
     operation = re.fullmatch(r"/api/(jobs|assignments)/([a-z0-9][a-z0-9_-]{0,99})/(retry|cancel)", path)
     if operation:
         from sd_db import operations
@@ -523,6 +530,11 @@ class Dashboard(BaseHTTPRequestHandler):
             )
         try:
             if path.startswith("/api/"):
+                from . import v2
+
+                registered = v2.api(path)
+                if registered is not None:
+                    return self._api(context, connection, split, parameters, *registered)
                 if path == "/api/contributions":
                     from sd_db import contributions
 
@@ -682,6 +694,23 @@ class Dashboard(BaseHTTPRequestHandler):
 
     def _csrf(self, session):
         return self._mac("csrf." + session)
+
+    def _api(self, context, connection, split, parameters, page, entry):
+        """A registered page's GET (sd:2418): one session rule and one query rule for every page, then its read.
+
+        The read answers a document (200) or `(status, document)`. A route refuses a query unless it says it takes one.
+        """
+        from . import v2
+
+        if not self._session(context):
+            return self._json(403, {"error": f"Open a dashboard page before reading {page.section}."})
+        if split.query and not entry.query:
+            return self._json(400, {"error": f"{page.section} does not accept query parameters."})
+        answer = entry.read(v2.registry.Read(connection=connection, now=self.clock(), path=split.path, parameters=parameters,
+                                             fleet=self.fleet_backend, jobs=self.operations_backend,
+                                             services=self.services_backend, ports=self.ports_backend))
+        status, document = answer if isinstance(answer, tuple) else (200, answer)
+        return self._json(status, document)
 
     def _json(self, status, value):
         # sd:874. `value` is usually a `workflow.item_state` readback, which

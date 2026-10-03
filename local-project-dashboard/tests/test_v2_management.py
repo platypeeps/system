@@ -1,0 +1,472 @@
+"""The v2 Management page (sd:2118).
+
+What this slice promises: `/management` answers under the shared policy and
+loads its script before `shell.js`; `/api/management` is one document built
+from the reads v1 already makes (the sd-db repo table with each checkout's
+`.github/sd-review.json` and protection reading, the fleet's git state and
+sessions, the runner lane, services and jobs), where a source that fails is
+a reason and never an empty list; `/api/repos/<verb>` runs the two sd-db repo
+verbs and refuses a stale `before`.
+
+`management.js` runs under JavaScriptCore (osascript, as `test_v2_tasks`
+runs `tasks.js`) against the same stand-in page and shell, with the document
+above as its fetch answer. The browser half -- focus, the look at 375 px --
+is a manual check recorded on the pull request.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from sd_db import runner, upsert_repo, workflow
+from sd_dashboard import management_screen, server, v2
+
+from support import NOW, ScreenCase
+from test_now_screen import JobsBackend, fleet_document, tree
+from test_v2_tasks import SHELL, STAND_IN
+from test_v2_today import OSASCRIPT, Refused
+from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
+
+V2 = Path(v2.__file__).resolve().parent
+PAGE_JS = (V2 / "static" / "management.js").read_text(encoding="utf-8")
+MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+
+
+def git_row(name, *, behind=0, dirty=0, ahead=0, branch="main"):
+    """A fleet repos row with every key `repos_screen.primary` reads."""
+    return {"name": name, "group": ".", "path": f"/repos/{name}", "branch": branch, "default": "main", "dirty": dirty,
+            "ahead": ahead, "behind": behind, "behind_default": behind, "fetched_iso": NOW.replace("Z", "+00:00"),
+            "last": "2026-09-01", "last_iso": "2026-09-01T10:00:00+00:00", "subject": "a commit", "author": "someone",
+            "web": "", "truncated": [], "error": ""}
+
+
+def fleet(area):
+    if area == "repos":
+        return {"root": "/repos", "rootExists": True, "repos": [git_row("system", behind=2), git_row("busy", behind=1, dirty=3)],
+                "counts": {"repos": 2, "dirty": 1, "ahead": 0, "unread": 0}}
+    return fleet_document(area, trees=[tree("gone", live=False), tree("here")])
+
+
+def dark_fleet(area):
+    raise ValueError("fleet collection was stopped at its budget")
+
+
+class NoServices:
+    """A services backend double that lists nothing, so no launchctl call is made."""
+
+    def names(self):
+        return []
+
+
+def seed(case):
+    """A registered checkout with an sd-review.json, a blocked author run and a finished merge."""
+    checkout = Path(case.tmp.name).resolve() / "checkout"
+    (checkout / ".github").mkdir(parents=True)
+    (checkout / ".github" / "sd-review.json").write_text(
+        '{\n  "severity_floor": "high",\n  "copilot_review": {"automatic_deep": false}\n}\n')
+    upsert_repo(case.connection, str(checkout), remote="git@example.invalid:example/checkout.git")
+    case.repo()
+    item = case.item("Port the page", repo="/repos/system")
+    blocked = case.assignment(item, status="blocked")
+    merged = case.assignment(item, role="merge", status="done")
+    return {"checkout": str(checkout), "item": item, "blocked": blocked, "merged": merged}
+
+
+class TheDocument(ScreenCase):
+    def setUp(self):
+        super().setUp()
+        self.ids = seed(self)
+        self.jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
+
+    def document(self, read=fleet):
+        return management_screen.document(self.connection, now=NOW, fleet=read, jobs=self.jobs, services=NoServices())
+
+    def test_every_source_is_read_and_says_so(self):
+        doc = self.document()
+        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "services", "jobs")})
+        self.assertEqual(doc["read"], NOW)
+
+    def test_a_repo_carries_its_row_its_review_file_and_its_protection_reading(self):
+        rows = {row["path"]: row for row in self.document()["repos"]}
+        checkout = rows[self.ids["checkout"]]
+        self.assertEqual((checkout["runner_merge"], checkout["managed"]), ("manual", "no"))
+        self.assertEqual((checkout["review"]["severity_floor"], checkout["review"]["automatic_deep"]), ("high", False))
+        self.assertIn('"severity_floor": "high"', checkout["review"]["file"])
+        self.assertEqual(checkout["protection"]["status"], "unknown")
+        # A checkout not on disk has no review reading at all, not an absent file.
+        self.assertIsNone(rows["/repos/system"]["review"])
+
+    def test_git_state_is_primarys_reading_with_its_remedy_or_refusal(self):
+        git = {row["name"]: row for row in self.document()["git"]["repos"]}
+        self.assertEqual((git["system"]["state"], git["system"]["remedy"]), ("behind", "git -C /repos/system pull --ff-only"))
+        self.assertEqual(git["busy"]["remedy"], "No pull offered: 3 uncommitted files.")
+
+    def test_assignments_carry_the_queue_revision_and_the_history_counts(self):
+        doc = self.document()
+        (blocked,) = doc["assignments"]["latest"]
+        self.assertEqual((blocked["id"], blocked["status"]), (self.ids["blocked"], "blocked"))
+        self.assertEqual(blocked["revision"], runner.queue_state(self.connection, self.ids["blocked"])["revision"])
+        self.assertEqual([m["id"] for m in doc["lane"]["merges"]], [self.ids["merged"]])
+        self.assertEqual(doc["assignments"]["history"], {"blocked": 1, "done": 1})
+        self.assertEqual((doc["sessions"]["registered"], doc["sessions"]["abandoned"]), (2, 1))
+        jobs = {job["name"]: job for job in doc["jobs"]}
+        self.assertEqual((jobs["nightly-sync"]["state"], jobs["nightly-sync"]["capabilities"]["retry"]["allowed"]), ("failed", True))
+
+    def test_a_source_that_fails_is_a_reason_and_the_others_still_answer(self):
+        doc = self.document(read=dark_fleet)
+        self.assertIsNone(doc["git"])
+        self.assertIsNone(doc["sessions"])
+        self.assertEqual(doc["sources"]["git"], "fleet collection was stopped at its budget")
+        self.assertEqual(doc["sources"]["repos"], "")
+        self.assertTrue(doc["repos"])
+
+    def test_the_repo_verb_writes_and_refuses_a_stale_before(self):
+        got = management_screen.set_repo(self.connection, "runner-merge", self.ids["checkout"], "auto", "manual")
+        self.assertEqual((got["value"], got["before"]), ("auto", "manual"))
+        with self.assertRaises(workflow.StaleItem):
+            management_screen.set_repo(self.connection, "runner-merge", self.ids["checkout"], "auto", "manual")
+        management_screen.set_repo(self.connection, "managed", self.ids["checkout"], "yes", "no")
+        rows = {row["path"]: row for row in self.document()["repos"]}
+        self.assertEqual((rows[self.ids["checkout"]]["runner_merge"], rows[self.ids["checkout"]]["managed"]), ("auto", "yes"))
+
+    def test_the_stale_check_and_the_write_hold_one_write_transaction(self):
+        """Copilot on PR #50: two requests could read the same old value, and the late one overwrote.
+
+        While the verb reads the row, a second connection must not be able to
+        take the write lock; before the fix it could, and wrote in between.
+        """
+        import sqlite3
+
+        from sd_db import connect, repos
+
+        other = connect(self.path, busy_timeout=0)
+        self.addCleanup(other.close)
+        seen = []
+        read = repos.row_for
+
+        def racing(connection, path):
+            row = read(connection, path)
+            try:
+                other.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as locked:
+                seen.append(str(locked))
+            else:
+                other.execute("UPDATE repo SET runner_merge = 'auto' WHERE path = ?", (row["path"],))
+                other.execute("COMMIT")
+                seen.append("the other writer got in")
+            return row
+
+        with patch.object(repos, "row_for", racing):
+            management_screen.set_repo(self.connection, "runner-merge", self.ids["checkout"], "auto", "manual")
+        self.assertEqual(seen, ["database is locked"])
+
+
+class ThePage(BrowserSession):
+    fleet_backend = staticmethod(fleet)
+
+    def setUp(self):
+        patcher = patch("sd_db.services.ServiceBackend", NoServices)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.backend = JobsBackend(self.tmp.name, jobs=[("quiet", "idle", 0, None)])
+        super().setUp()
+        self.ids = seed(self)
+
+    def test_the_route_answers_under_the_shared_policy(self):
+        status, headers, body = self.request("/management")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Security-Policy"], server.CSP)
+        self.assertIn("<title>Management · system</title>", body)
+        self.assertEqual(Refused(body).found, [])
+        scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "management.js", "shell.js"])
+        for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
+            self.assertEqual(self.request(path)[0], 200, path)
+
+    def test_the_data_route_needs_a_session_and_takes_no_query(self):
+        self.assertEqual(self.request("/api/management")[0], 403)
+        cookie = {"Cookie": self.cookie}
+        self.assertEqual(self.request("/api/management?view=lane", headers=cookie)[0], 400)
+        status, _, body = self.request("/api/management", headers=cookie)
+        self.assertEqual(status, 200)
+        doc = json.loads(body)
+        self.assertEqual(doc["sources"]["services"], "")
+        self.assertIn(self.ids["checkout"], [row["path"] for row in doc["repos"]])
+
+    def test_the_repo_write_flips_once_and_refuses_the_same_before_again(self):
+        body = {"path": self.ids["checkout"], "value": "auto", "before": "manual"}
+        status, _, got = self.post("/api/repos/runner-merge", body)
+        self.assertEqual((status, got["value"], got["before"]), (200, "auto", "manual"))
+        self.assertEqual(self.post("/api/repos/runner-merge", body)[0], 409)
+        self.assertEqual(self.post("/api/repos/runner-merge", {**body, "value": "sometimes"})[0], 400)
+        self.assertEqual(self.post("/api/repos/managed", {"path": self.ids["checkout"], "value": "yes", "before": "yes"})[0], 400)
+        self.assertEqual(self.post("/api/repos/mode", {"path": self.ids["checkout"], "value": "x", "before": "y"})[0], 404)
+
+
+# The Management stand-in adds what the page reads beyond Tasks': a <main> to listen on, CSS.escape, and the shell's
+# row and context calls.
+EXTRA = r"""
+var CSS = { escape: s => s };
+var MAIN = El('main');
+var baseQuery = document.querySelector;
+document.querySelector = sel => sel === 'main' ? MAIN : baseQuery(sel);
+// A sub-view lamp's value is a child the page fills: each element answers querySelector with one child per selector.
+var baseById = document.getElementById;
+document.getElementById = id => { var e = baseById.call(document, id);
+  if (!e.kids) { e.kids = {}; e.querySelector = sel => { if (!e.kids[sel]) { e.kids[sel] = El(id + ' ' + sel);
+    e.kids[sel].after = f => { e.html = (e.html || '') + (f.html || ''); }; } return e.kids[sel]; }; } return e; };
+"""
+SHELL_EXTRA = r"""
+var ROW = null;
+window.shell.row = (...a) => a.length ? (ROW = a[0]) : ROW;
+window.shell.setContext = () => {};
+OUT.urls = [];
+window.shell.url = p => OUT.urls.push({ view: p.get('view'), p: p.get('p'), q: p.get('q') });
+"""
+
+
+class PageScript(ScreenCase):
+    """management.js against the document `management_screen` builds for the seeded database."""
+
+    def setUp(self):
+        super().setUp()
+        self.ids = seed(self)
+        jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
+        self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices())
+
+    def run_page(self, body, answer="null", doc=None, search=""):
+        script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA
+                  + f"\nconst DOC0 = {json.dumps(doc or self.doc)};\n"
+                  + "const WRITE = " + answer + ";\n"
+                  + f"location.search = {json.dumps(search)};\n"
+                  + """ANSWER = (path, body) => {
+  if (path === '/api/management') return [200, DOC0];
+  return WRITE ? WRITE(path, body) : [200, {}];
+};\n""" + PAGE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+                  + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
+                  + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
+                                capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out
+
+
+class TheScript(PageScript):
+    def test_every_command_is_registered_with_its_risk_key_and_run_path(self):
+        out = self.run_page("""R.reg = REG.map(c => [c.id, c.on, c.risk, c.key || null,
+  typeof c.executes === 'boolean' ? c.executes : null, typeof c.undo === 'function']);""")
+        self.assertEqual(out["R"]["reg"], [
+            ["repo.runner-merge", "repo", "undo", "m", True, True],
+            ["repo.managed", "repo", "undo", "g", True, True],
+            ["repo.pull", "repo", "safe", "l", False, False],
+            ["sddb.run", "sd-db change", "undo", "u", True, True],
+            ["file.prepare", "file change", "safe", "p", False, False],
+            ["sddb.withdraw", "sd-db change", "safe", None, False, False],
+            ["file.withdraw", "file change", "safe", None, False, False],
+            ["asg.requeue", "assignment", "undo", "q", None, True],
+            ["asg.cancel", "assignment", "confirm", "x", None, False],
+            ["asg.get", "assignment", "safe", "o", False, False],
+            ["item.show", "item", "safe", "o", False, False],
+            ["wt.prune", "worktrees", "confirm", "p", None, False],
+            ["svc.restart", "service", "confirm", "t", None, False],
+            ["svc.stop", "service", "confirm", "s", None, False],
+            ["svc.start", "service", "safe", "a", None, False],
+            ["jobs.retry", "job", "safe", "t", None, False],
+            ["job.print", "job", "safe", "l", False, False],
+        ])
+
+    def test_the_page_reads_the_document_and_draws_repos_with_git_state(self):
+        out = self.run_page("R.repos = ELS['view-repos'].html; R.sched = ELS['view-schedules'].html;")
+        self.assertEqual(out["gets"], ["/api/management"])
+        self.assertEqual(out["states"][0]["kind"], "loading")
+        self.assertIsNone(out["states"][-1])
+        repos = out["R"]["repos"]
+        self.assertIn("2 registered", repos)
+        self.assertIn("+0/−2", repos)
+        self.assertIn("busy", repos)  # a checkout sd-db does not list joins the list
+        self.assertIn("not registered", repos)
+        self.assertIn("nightly-sync", out["R"]["sched"])
+        self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "scheduled jobs failed"})
+
+    def test_a_source_that_failed_renders_unknown_with_its_reason(self):
+        doc = dict(self.doc, git=None, sessions=None, sources=dict(self.doc["sources"], git="stopped at its budget", sessions="stopped at its budget"))
+        out = self.run_page("R.repos = ELS['view-repos'].html; R.sess = ELS['view-sessions'].html;", doc=doc)
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("git, sessions", out["states"][-1]["text"])
+        self.assertIn("git state not read: stopped at its budget", out["R"]["repos"])
+        self.assertIn("Sessions were not read", out["R"]["sess"])
+
+    def test_a_repo_flip_posts_the_verb_with_before_toasts_after_the_write_and_undoes(self):
+        path = self.ids["checkout"]
+        out = self.run_page(f"""C.run(cmd('repo.runner-merge'), C.get('repo:{path}')); R.early = OUT.toasts.length; await flush();
+R.toast = lastToast().msg; const undo = lastToast().undo; await undo(); await flush(); await undo(); await flush();""", answer="(p, b) => [200, {}]")
+        posts = [(p, b) for p, b, _ in out["posts"]]
+        self.assertEqual(out["R"]["early"], 0, "the toast came before the write landed")
+        self.assertEqual(posts, [("/api/repos/runner-merge", {"path": path, "value": "auto", "before": "manual"}),
+                                 ("/api/repos/runner-merge", {"path": path, "value": "manual", "before": "auto"})])
+        self.assertEqual(out["R"]["toast"], f"runner_merge auto · {path}")
+        self.assertEqual(out["posts"][0][2], 64)
+
+    def test_a_refused_write_says_why_and_reads_again(self):
+        path = self.ids["checkout"]
+        out = self.run_page(f"C.run(cmd('repo.managed'), C.get('repo:{path}')); await flush();",
+                            answer="(p, b) => [409, {error: 'managed is yes now, not no'}]")
+        self.assertEqual(out["toasts"][-1], [f"{path} not changed: managed is yes now, not no", False])
+        self.assertEqual(out["gets"], ["/api/management", "/api/management"])
+
+    def test_requeue_and_cancel_post_the_runner_routes_with_the_queue_revision(self):
+        n = self.ids["blocked"]
+        revision = runner.queue_state(self.connection, n)["revision"]
+        out = self.run_page(f"""C.run(cmd('asg.requeue'), C.get('asg:{n}')); await flush();
+C.get('asg:{n}').status = 'queued'; C.run(cmd('asg.cancel'), C.get('asg:{n}')); await flush();""", answer="(p, b) => [200, {}]")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [(f"/api/runner/{n}/requeue", {"revision": revision}), (f"/api/runner/{n}/cancel", {"revision": revision})])
+        self.assertEqual(out["confirms"], ["asg.cancel"])
+        self.assertEqual(out["toasts"][0], [f"Requeued · #{n}. The runner starts it on its next tick.", True])
+
+    def test_a_failed_job_retries_through_its_route_and_an_idle_one_is_off(self):
+        revision = next(j for j in self.doc["jobs"] if j["name"] == "nightly-sync")["revision"]
+        out = self.run_page("""C.run(cmd('jobs.retry'), C.get('cron:nightly-sync')); await flush();
+C.run(cmd('jobs.retry'), C.get('cron:quiet')); await flush();""", answer="(p, b) => [200, {}]")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/jobs/nightly-sync/retry", {"revision": revision})])
+        self.assertEqual(out["toasts"][0], ["Retry started · nightly-sync", False])
+        self.assertTrue(out["toasts"][1][0].startswith("off: "), out["toasts"])
+
+
+class TheFindings(PageScript):
+    """The Copilot and CodeQL findings on PR #50, one test each."""
+
+    def test_a_monthly_or_yearly_calendar_has_a_next_run(self):
+        out = self.run_page("""const at = (...a) => new Date(...a).toISOString().replace('.000', '');
+const now = new Date(2026, 8, 30, 12, 0).getTime();
+R.got = [nextRun([{ Day: 15, Hour: 3, Minute: 0 }], now), nextRun([{ Month: 1, Day: 1, Hour: 0, Minute: 5 }], now),
+  nextRun([{ Month: 2, Day: 29, Hour: 0, Minute: 0 }], now), nextRun([{ Minute: 30 }], now), nextRun([{ Weekday: 7, Hour: 2, Minute: 0 }], now)];
+R.want = [at(2026, 9, 15, 3, 0), at(2027, 0, 1, 0, 5), at(2028, 1, 29, 0, 0), at(2026, 8, 30, 12, 30), at(2026, 9, 4, 2, 0)];""")
+        self.assertEqual(out["R"]["got"], out["R"]["want"])
+
+    def test_a_page_past_the_last_is_clamped_before_the_slice_and_the_url_follows(self):
+        out = self.run_page("R.sched = ELS['view-schedules'].html;", search="?view=schedules&p=5")
+        self.assertIn("nightly-sync", out["R"]["sched"])
+        self.assertTrue(out["urls"], "the clamp wrote no URL, so ?p=5 stays in the address bar")
+        self.assertEqual(out["urls"][-1], {"view": "schedules", "p": None, "q": None})
+        out = self.run_page("R.repos = ELS['view-repos'].html;", search="?view=repos&p=3")
+        self.assertIn("busy", out["R"]["repos"])
+        self.assertEqual(out["urls"][-1]["p"], None)
+
+    def test_the_failed_state_chip_writes_the_url(self):
+        out = self.run_page("""showView('schedules');
+const chip = { dataset: { stateF: 'failed' } };
+const target = { closest: sel => sel === '[data-state-f]' ? chip : null };
+ELS['view-schedules'].listeners.click.forEach(f => f({ target }));
+R.sched = ELS['view-schedules'].html;""")
+        self.assertEqual(out["urls"][-1], {"view": "schedules", "p": None, "q": "state:failed"})
+        self.assertNotIn(">quiet<", out["R"]["sched"])
+
+    def test_a_view_name_from_the_url_is_one_of_five_or_repos(self):
+        for name in ("constructor", "toString", "__proto__", "nope"):
+            with self.subTest(name=name):
+                out = self.run_page("R.view = view; R.repos = ELS['view-repos'].html;", search=f"?view={name}")
+                self.assertEqual(out["R"]["view"], "repos")
+                self.assertIn("busy", out["R"]["repos"])
+        out = self.run_page("view = 'constructor'; try { render(); R.drew = true; } catch (e) { R.refused = e.message; }")
+        self.assertEqual(out["R"], {"refused": "no such view: constructor"})
+
+    def test_a_bulk_flip_toasts_once_after_every_write_and_undoes_only_what_landed(self):
+        """Copilot 5eccfcac7af7 on PR #50: the shell's bulk group waits for each run's promise (sd:2124's contract)."""
+        a, b = self.ids["checkout"], "/repos/system"
+        out = self.run_page(f"""C.runBulk(cmd('repo.runner-merge'), [C.get('repo:{a}'), C.get('repo:{b}')]); R.early = OUT.toasts.length;
+await flush(); R.group = OUT.toasts.map(t => t.msg); await lastUndo().undo(); await flush(); R.after = OUT.toasts.map(t => t.msg);""",
+                            answer=f"(p, b) => b.path === {json.dumps(b)} ? [409, {{error: 'runner_merge is auto now'}}] : [200, {{}}]")
+        self.assertEqual(out["R"]["early"], 0, "the group toast came before the writes landed")
+        self.assertEqual(out["R"]["group"], ["Switch runner-merge · 1 repo · 1 of 2 not changed: runner_merge is auto now"])
+        self.assertEqual([(p, body) for p, body, _ in out["posts"]], [
+            ("/api/repos/runner-merge", {"path": a, "value": "auto", "before": "manual"}),
+            ("/api/repos/runner-merge", {"path": b, "value": "auto", "before": "manual"}),
+            ("/api/repos/runner-merge", {"path": a, "value": "manual", "before": "auto"})])
+        self.assertEqual(out["R"]["after"][-1],
+                         f"Switch runner-merge undone · 1 of 2 reversed · not reversed: {b} (its change did not land)")
+
+
+class TheSecondRound(PageScript):
+    """Copilot's review of f06cbf5 on PR #50: the review-file proposal and the schedule's words."""
+
+    LAST = '{\n  "copilot_review": {\n    "automatic_deep": false\n  },\n  "severity_floor": "high"\n}\n'
+
+    def proposal(self, text, calls):
+        doc = json.loads(json.dumps(self.doc))
+        row = next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])
+        body = json.loads(text) if text.startswith("{") and text.rstrip().endswith("}") and "!" not in text else {}
+        row["review"] = {"file": text, "severity_floor": body.get("severity_floor"),
+                         "automatic_deep": (body.get("copilot_review") or {}).get("automatic_deep"), "schema": None}
+        return self.run_page(calls + """
+R.texts = pending.map(p => p.diff.filter(d => d[0] !== 'del' && d[0] !== 'hd').map(d => d[1]).join('\\n'));
+R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return 'invalid: ' + e.message; } });""",
+                             doc=doc, search=f"?repo={self.ids['checkout']}")
+
+    def test_removing_the_last_property_leaves_valid_json(self):
+        out = self.proposal(self.LAST, "propose('severity_floor', '');")
+        self.assertEqual(out["R"]["parsed"], [{"copilot_review": {"automatic_deep": False}}])
+
+    def test_adding_or_changing_the_floor_and_flipping_automatic_deep_leave_valid_json(self):
+        bare = '{\n  "copilot_review": {\n    "automatic_deep": false\n  }\n}\n'
+        out = self.proposal(bare, "propose('severity_floor', 'medium');")
+        self.assertEqual(out["R"]["parsed"], [{"copilot_review": {"automatic_deep": False}, "severity_floor": "medium"}])
+        out = self.proposal(self.LAST, "propose('severity_floor', 'low');")
+        self.assertEqual(out["R"]["parsed"], [{"copilot_review": {"automatic_deep": False}, "severity_floor": "low"}])
+        out = self.proposal(self.LAST, "propose('automatic_deep', 'true');")
+        self.assertEqual(out["R"]["parsed"], [{"copilot_review": {"automatic_deep": True}, "severity_floor": "high"}])
+
+    def test_the_diff_shows_only_the_lines_that_change(self):
+        out = self.proposal(self.LAST, "propose('severity_floor', ''); R.diff = pending[0].diff;")
+        self.assertEqual([d for d in out["R"]["diff"] if d[0] in ("add", "del")],
+                         [["del", "  },"], ["del", '  "severity_floor": "high"'], ["add", "  }"]])
+
+    def test_a_review_file_that_is_not_json_is_not_proposed(self):
+        out = self.proposal('{\n  "severity_floor": "high",\n}\n!', "propose('severity_floor', 'low');")
+        self.assertEqual(out["R"]["parsed"], [])
+        self.assertEqual(out["toasts"][-1][0], "Not proposed: .github/sd-review.json is not valid JSON; fix it in the checkout first")
+
+    def test_a_date_pinned_calendar_names_its_date(self):
+        out = self.run_page("""R.got = [human([{ Day: 15, Hour: 3, Minute: 0 }]), human([{ Month: 1, Day: 1, Hour: 0, Minute: 5 }]),
+  human([{ Day: 1, Minute: 30 }]), human([{ Hour: 3, Minute: 0 }]), human([{ Minute: 30 }]), human([{ Weekday: 1, Hour: 9, Minute: 0 }]),
+  human([{ Minute: 0 }, { Minute: 30 }])];""")
+        self.assertEqual(out["R"]["got"], ["day 15 03:00", "Jan 1 00:05", "day 1 *:30", "daily 03:00", "hourly at :30", "Mon 09:00",
+                                           "every 30 min"])
+
+
+class TheRequeueUndo(PageScript):
+    """The lane's local review of f06cbf5: requeue's Undo cancels only the queued attempt the requeue made."""
+
+    def requeue_then(self, between):
+        n = self.ids["blocked"]
+        return n, self.run_page(f"""const asg = () => DOC0.assignments.latest.find(a => a.id === {n});
+C.run(cmd('asg.requeue'), C.get('asg:{n}')); await flush();
+const undo = lastUndo().undo; {between} await load(); await flush();
+await undo(); await flush(); R.toast = lastToast().msg;""",
+                                answer="(p, b) => p.endsWith('/requeue') ? [200, {id: 1, status: 'queued', revision: 'queued-rev'}] : [200, {}]")
+
+    def test_undo_refuses_once_the_runner_claimed_the_assignment(self):
+        n, out = self.requeue_then("Object.assign(asg(), {status: 'running', revision: 'running-rev'});")
+        self.assertEqual([p for p, _, _ in out["posts"]], [f"/api/runner/{n}/requeue"], "Undo cancelled running work")
+        self.assertEqual(out["R"]["toast"],
+                         f"Requeue not undone · #{n} Port the page: assignment #{n} is running now; Undo cancels only the queued attempt the requeue made, so use Cancel")
+
+    def test_undo_cancels_the_queued_attempt_with_the_revision_the_requeue_answered(self):
+        n, out = self.requeue_then("Object.assign(asg(), {status: 'queued', revision: 'queued-rev'});")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]][1:], [(f"/api/runner/{n}/cancel", {"revision": "queued-rev"})])
+        self.assertEqual(out["R"]["toast"], f"Requeue undone · #{n} Port the page")
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "management", "Management", "/management", ("/api/management",)

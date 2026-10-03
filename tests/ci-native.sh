@@ -250,12 +250,15 @@ case "$SUITE_LEG" in
     run_suite aws-setup sh local-aws-setup/aws-setup.sh test -v
     run_suite ai-apps sh local-ai-apps/ai-apps.sh test -v
     run_suite jev sh local-jev/jev.sh test -v
+    run_suite kev sh local-kev/kev.sh test -v
     run_suite leak-guard sh local-leak-guard/leak-guard.sh test -v
     run_suite claude sh local-claude/claude.sh test -v
     run_suite drive-intake sh local-drive-intake/drive-intake.sh test -v
     run_suite mail-intake sh local-mail-intake/mail-intake.sh test -v
     run_suite maintenance sh local-maintenance/maintenance.sh test -v
     run_suite opentelemetry-collector sh local-opentelemetry-collector/opentelemetry-collector.sh test -v
+    run_suite genai-traces sh local-genai-traces/genai-traces.sh test -v
+    run_suite aura sh local-aura/aura.sh test -v
     # local-mirror-sync has no test verb of its own: mirror-sync.sh
     # takes sync|plan|list and adding a fourth would change what a
     # pair list means. The suite is named directly, like notify

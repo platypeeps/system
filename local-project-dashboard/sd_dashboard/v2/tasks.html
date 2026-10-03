@@ -1,0 +1,63 @@
+<!doctype html>
+<!--
+  Tasks (sd:2124), at /tasks. Built from the design source's products/system/designs/v2/tasks.html at d82daa1, with design.md and commands.md.
+  Data: /api/tasks (tasks_screen.document: the rows reads.backlog_items gives v1 /backlog, with each row's revision and allowed
+  statuses), read when the page opens and after a write; /api/tasks/<id> (tasks_screen.details: the sd task show <id> JSON split into
+  status history and notes, the item's assignments, and its external context), read when a task is selected.
+  Writes: the v1 action routes (status, edit, note resolve, runner requeue and cancel, run, capture). Nothing here is sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tasks · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/tasks.css">
+</head>
+<body data-page="Tasks" data-scope="tasks">
+<script src="/ui/icons.js"></script>
+<div class="shell"><main id="main">
+  <div class="head">
+    <div>
+      <h1>Tasks</h1>
+      <p id="subhead">Reading the tasks…</p>
+    </div>
+    <div class="shift" id="shift">
+      <label class="sr" for="shift-in">Add or find a task</label>
+      <div class="field">
+        <svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>
+        <input id="shift-in" autocomplete="off" spellcheck="false" placeholder="Add or find a task" aria-describedby="shift-ghost" aria-controls="shift-preview" aria-expanded="false">
+        <span class="ghost" id="shift-ghost">p1 due fri #system</span>
+        <button class="help" type="button" aria-label="Help: add or find" data-help="<b>One box adds or finds.</b> <code>p1</code>–<code>p4</code> set priority, <code>due fri</code> or <code>due 2026-10-02</code> a date, <code>#system</code> a repo shown on this page, <code>#1038</code> opens that task. The rest is the title. Enter files it in Planning with sd task add; Esc clears."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+      </div>
+      <div class="preview" id="shift-preview" hidden></div>
+    </div>
+    <div class="views">
+      <div class="seg" role="group" aria-label="View">
+        <button type="button" data-view="list" aria-pressed="false"><svg class="i" aria-hidden="true"><use href="#i-list-todo"/></svg><span class="txt">List</span> <kbd>v l</kbd></button>
+        <button type="button" data-view="board" aria-pressed="true"><svg class="i" aria-hidden="true"><use href="#i-kanban"/></svg><span class="txt">Board</span> <kbd>v b</kbd></button>
+        <button type="button" data-view="matrix" aria-pressed="false"><svg class="i" aria-hidden="true"><use href="#i-grid-2x2"/></svg><span class="txt">Matrix</span> <kbd>v m</kbd></button>
+      </div>
+      <button class="help" type="button" aria-label="Help: views" data-help="<b>List</b> sorts and filters every open task. <b>Board</b> has one column per status; a move saves at once with Undo, except Done on a repeating task, which asks first: it opens the next occurrence. <b>Matrix</b> places tasks by importance (priority 1–2) and urgency (the rule in <code>reads.is_urgent</code>: due within 7 days or overdue, a message ready to send for over 3 days, or a report that needs attention); a drop there edits priority or due."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+    </div>
+  </div>
+
+  <div id="state" hidden></div>
+  <div id="views"></div>
+  <div class="filters" id="filters" aria-label="Filters"></div>
+
+  <section id="view-board" aria-label="Board"></section>
+  <section id="view-matrix" aria-label="Eisenhower matrix" hidden></section>
+  <section id="view-list" aria-label="List" hidden></section>
+
+</main>
+<div class="details" id="details"></div></div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/tasks.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

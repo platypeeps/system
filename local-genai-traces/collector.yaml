@@ -1,0 +1,40 @@
+receivers:
+  otlp:
+    protocols:
+      # Every interface inside the container; the compose file publishes the
+      # ports on 127.0.0.1 only. The collector's own default of localhost is
+      # the container's loopback, which the published ports cannot reach.
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+
+exporters:
+  otlp/phoenix:
+    endpoint: phoenix:4317
+    tls:
+      insecure: true
+  # The untouched OTLP JSON, one batch per line, for analysis outside Phoenix.
+  # Rotation bounds the disk: 8 files of 100 MB at most.
+  file/raw:
+    path: /out/traces.jsonl
+    format: json
+    rotation:
+      max_megabytes: 100
+      max_backups: 7
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/phoenix, file/raw]

@@ -1,0 +1,53 @@
+<!doctype html>
+<!--
+  Health (sd:2115), at /fleet-health: /health is the service's own check (runtime.py reads it). Built from the design source's
+  products/system/designs/v2/health.{html,css,js} at d82daa1, with design.md and commands.md.
+  Data: /api/health (health_screen.document: the fleet child's worktree registrations, reads.trailer_scan, Operations >
+  Ports' collect_ports and protection.rows), read when the page opens and on Refresh. Five of the design's areas have no reader
+  yet; the document names them and the page shows them as not read. Writes: none. Every fix is a CLI line for Copy.
+  Nothing here is sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Health · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/health.css">
+</head>
+<body data-page="Health" data-scope="fleet">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+  <main>
+    <header class="head">
+      <div>
+        <h1>Health</h1>
+        <p id="subhead">Reading the fleet…</p>
+      </div>
+      <label class="filter">
+        <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+        <span class="sr">Filter rows</span>
+        <input id="q" placeholder="Filter: repo, path, branch" autocomplete="off">
+        <kbd>/</kbd>
+      </label>
+    </header>
+
+    <div id="state" hidden></div>
+    <h2 class="sr">Areas</h2>
+    <ul class="annunciator" id="annunciator"></ul>
+    <div class="filters" id="filters" role="group" aria-label="Filters"></div>
+    <p class="filtered" id="filtered" role="status" hidden></p>
+    <div id="areas"></div>
+  </main>
+  <div class="details" id="details"><p class="why">Reading the fleet…</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/health.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

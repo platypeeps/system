@@ -1,0 +1,138 @@
+<!doctype html>
+<!--
+  Reports (sd:2121), at /reports. Built from the design source's products/system/designs/v2/reports.html, reports.js and
+  reports.css at 7f50ad4, with design.md and commands.md.
+  Data: /api/reports (reports_screen.document: the newest 200 database reports, the launchd jobs, each job's run cadence from
+  its cron-jobs.sh log over seven local days, and the job families <config>/project-dashboard/report-families.conf names),
+  read when the page opens and after a write. Select clean reads /api/reports/clean, v1's preview, which writes nothing.
+  Writes: report acknowledge and job retry, each through the route v1 posts. No status mail is read, and nothing here is
+  sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reports · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/reports.css">
+</head>
+<body data-page="Reports" data-scope="fleet">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+  <main>
+    <header class="head">
+      <div>
+        <h1>Reports</h1>
+        <p><span id="sub">Reading reports, jobs and job logs…</span></p>
+      </div>
+      <div class="shift">
+        <label class="field">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr">Filter, capture or ask</span>
+          <input id="shift" placeholder="Filter reports, capture a task, or ask" autocomplete="off" aria-describedby="shift-hint">
+          <span class="ghost" id="ghost"></span>
+          <kbd>/</kbd>
+        </label>
+        <div class="preview" id="shift-preview" hidden>
+          <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
+          <div class="chips" role="group" aria-label="Interpret as">
+            <button class="chip" type="button" data-as="filter" aria-pressed="true">filter rows</button>
+            <button class="chip" type="button" data-as="task" aria-pressed="false">new task</button>
+            <button class="chip" type="button" data-as="ask" aria-pressed="false">ask chat</button>
+          </div>
+          <p class="hint" id="shift-hint">→ accepts · Enter runs · Tab moves on</p>
+        </div>
+      </div>
+    </header>
+
+    <h2 class="sr">Job families</h2>
+    <ul class="annunciator" id="annunciator"></ul>
+
+    <section aria-labelledby="cad-h">
+      <div class="sec-head">
+        <h2 id="cad-h">Run cadence <button class="help" type="button" aria-label="Help: Run cadence" data-help="<b>One mark per local day.</b> Read from each job's log. A quiet day, when a job ran but mailed nothing, is a gap, not a fault. The watchdog decides whether silence is a fault. A day the job's calendar leaves out is not scheduled. Tap a job to filter the reports below.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="cad-tally"></p>
+      </div>
+      <table class="cad" id="cad">
+        <caption id="cad-caption">Local time. Tap a job to see its reports.</caption>
+        <thead id="cad-head"></thead>
+        <tbody id="cad-body"></tbody>
+      </table>
+      <ul class="legend" aria-label="Legend">
+        <li><span class="g-ok">●</span> ran clean</li>
+        <li><span class="g-caution">▲</span> some runs failed, or none ran</li>
+        <li><span class="g-warning">■</span> every run failed</li>
+        <li><span class="g-unknown">▨</span> no log yet</li>
+        <li>· not scheduled, or not yet today</li>
+      </ul>
+      <button class="btn quiet sm more-jobs" type="button" id="cad-more" aria-expanded="false">Show all jobs</button>
+    </section>
+
+    <section aria-labelledby="led-h">
+      <div class="sec-head">
+        <h2 id="led-h">Reports <button class="help" type="button" aria-label="Help: Reports" data-help="<b>Newest first.</b> Database reports come from sd-db, one per failed or reporting run; a repeated failure folds into one row with a count. Status mail is not read yet: the dashboard holds no message store. Acknowledge closes a database report; it does not touch the job.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <div id="views"></div>
+      <div class="filters" id="filters">
+        <label class="sel">Job<select id="f-job"><option value="">All jobs</option></select></label>
+        <label class="sel">Kind<select id="f-kind"><option value="">All kinds</option><option value="db">Database report</option><option value="mail">Status mail (not read)</option></select></label>
+        <label class="sel">Status<select id="f-status"><option value="">Any status</option><option value="open">Open</option><option value="done">Acknowledged</option></select></label>
+        <label class="sel">Day<select id="f-day"><option value="">Any day</option></select></label>
+        <label class="toggle"><input type="checkbox" id="f-act"> Needs action</label>
+      </div>
+      <table class="ledger" aria-labelledby="led-h">
+        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Report</th><th scope="col">Detail</th><th scope="col">Recorded</th><th scope="col">Status</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="pager"><span id="range"></span><div><button class="btn quiet sm" type="button" id="prev">Newer</button><button class="btn quiet sm" type="button" id="next">Older</button></div></div>
+    </section>
+
+    <section aria-labelledby="ack-h">
+      <div class="sec-head">
+        <h2 id="ack-h">Acknowledge clean reports <button class="help" type="button" aria-label="Help: Acknowledge clean reports" data-help="<b>Select, check, then acknowledge.</b> Select clean runs the classic screen's dry run for the date, picks the reports it selects, and filters the list to them. A report that needs attention, an open followup, queued work or a run newer than its job's last tick waits for a person and is declined. The bulk bar then acknowledges the picked rows; over 25 it asks first.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+      </div>
+      <div class="ack">
+        <form id="ack-preview">
+          <label>Created before (00:00 UTC on)<input type="date" id="ack-date" required></label>
+          <button class="btn" type="submit">Select clean</button>
+          <button class="btn quiet" type="button" id="ack-clear" hidden>Clear</button>
+        </form>
+        <div class="out" id="ack-out" hidden>
+          <p class="note" id="ack-sum"></p>
+          <div class="cols">
+            <div><h3 id="ack-sel-h">Selected</h3><ul id="ack-sel"></ul></div>
+            <div><h3 id="ack-dec-h">Declined</h3><ul id="ack-dec"></ul></div>
+          </div>
+          <p class="note">The selection is the classic screen's dry run. The bar acknowledges each picked report with its own revision, so a report that changed since is refused by name. The classic screen's attributed batch (<code>--all-clean --who</code>) carries the dry run's plan; use it for more than the newest 200.</p>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="leg-h">
+      <div class="sec-head"><h2 id="leg-h">Also on the <a href="/operations?area=reports">classic Reports screen</a></h2></div>
+      <dl class="legacy">
+        <div><dt>Briefs</dt><dd>Moves to the Briefs page.</dd></div>
+        <div><dt>Research</dt><dd>Moves to the Research page.</dd></div>
+        <div><dt>Vault</dt><dd>Moves to the Notes page.</dd></div>
+        <div><dt>Toolbox</dt><dd>Home not decided. Read-only tile today.</dd></div>
+        <div><dt>Queues</dt><dd>Home not decided. Read-only tile today.</dd></div>
+      </dl>
+      <p class="note">Each is a read-only tile fed by a child process with a 5 s budget; over budget, the tile says so and shows nothing.</p>
+    </section>
+  </main>
+
+  <div class="details" id="details"></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/reports.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>
