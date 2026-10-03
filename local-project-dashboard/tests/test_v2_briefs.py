@@ -34,6 +34,7 @@ from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 HERE = Path(__file__).resolve().parents[1]
 V2 = Path(v2.__file__).resolve().parent
@@ -200,7 +201,6 @@ class ThePage(BrowserSession):
 
     def test_the_rail_opens_the_new_page_and_the_classic_table_stays(self):
         self.assertEqual(v2.SECTIONS.get("Briefs"), "/briefs")
-        self.assertEqual(list(v2.SECTIONS)[:2], ["Today", "Briefs"])
         self.assertNotIn("Briefs", v2.CLASSIC)
         # Research moved to /research (sd:2122); the classic Resources table stays in the palette.
         self.assertEqual(v2.SCREENS["Resources (classic)"], "/operations?area=resources")
@@ -422,6 +422,10 @@ R.det = ELS.details.html;""", answer=f"() => [200, {json.dumps(cut)}]")
         self.assertNotIn("history.replaceState", BRIEFS_JS)
         self.assertNotRegex(BRIEFS_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", BRIEFS_JS)
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "briefs", "Briefs", "/briefs", ("/api/briefs",)
 
 
 if __name__ == "__main__":

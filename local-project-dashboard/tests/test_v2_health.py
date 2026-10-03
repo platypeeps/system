@@ -37,6 +37,7 @@ from test_v2_today import OSASCRIPT, Refused
 from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 HEALTH_JS = (V2 / "static" / "health.js").read_text(encoding="utf-8")
@@ -555,6 +556,10 @@ shellRun(cmd('worktree registrations.prune'), o); await flush();""")
         self.assertEqual(re.findall(r"window\.markup\b", re.sub(r"const \{ [\w, ]+ \} = window\.markup;", "", HEALTH_JS)), [])
         # The shell owns j / k and Esc through PAGE_LIST; a page-level handler is drift.
         self.assertNotRegex(HEALTH_JS, r"e\.key === '[jk]'")
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health",)
 
 
 if __name__ == "__main__":

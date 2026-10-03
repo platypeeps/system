@@ -23,6 +23,7 @@ import json
 import re
 import subprocess
 import tempfile
+import unittest
 from datetime import timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -35,6 +36,7 @@ from test_now_screen import JobsBackend
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 REPORTS_JS = (V2 / "static" / "reports.js").read_text(encoding="utf-8")
@@ -547,6 +549,10 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         self.assertNotRegex(REPORTS_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", REPORTS_JS)
         self.assertNotIn("REPORTS_DATA", REPORTS_JS)
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "reports", "Reports", "/reports", ("/api/reports", "/api/reports/clean")
 
 
 if __name__ == "__main__":

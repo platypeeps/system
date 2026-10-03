@@ -34,6 +34,7 @@ from support import NOW, ScreenCase
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 DOCUMENTS_JS = (V2 / "static" / "documents.js").read_text(encoding="utf-8")
@@ -402,6 +403,10 @@ window.shell.reconcile = o => { if (o.current != null) return o.current;"""
         self.assertNotRegex(DOCUMENTS_JS, r"e\.key !?== '[jk]'")
         self.assertNotIn("127.0.0.1", DOCUMENTS_JS)
         self.assertIn("window.PAGE_LIST", DOCUMENTS_JS)
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents",)
 
 
 if __name__ == "__main__":
