@@ -49,8 +49,9 @@ It refuses before touching anything on a dirty tree, on a `done` or
 `ready_to_send` row, and on a row whose `created_at` will not yield a calendar
 date. A folder that is committed and has its row is reported and left alone,
 exit 0 — a second trigger is a no-op, not a second folder. The one exception
-is a push that failed after the commit: standing on that branch with commits
-`origin` lacks, the retry pushes it and plans nothing again.
+is a push that failed after the commit: standing on that branch, on a clean
+tree, with the planning commit as the one commit `origin` lacks, the retry
+pushes it and plans nothing again. Any other unpushed work stays unpushed.
 
 The registration step is the pack's `sd work register`, run as
 `$SD_PACK_ROOT/bin/sd` under the interpreter `sd-plan.sh` pinned rather than

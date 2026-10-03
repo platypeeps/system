@@ -174,15 +174,21 @@ def plan(arguments) -> int:
     # Pushed is part of it too. The push comes last, after the row and the
     # commit, so a push that failed leaves both behind; a retry standing on
     # the branch finishes that push rather than calling the folder done
-    # (sd:1181). Standing anywhere else, the folder is on that branch already
-    # -- merged, say -- and there is nothing of this run's to publish.
+    # (sd:1181). Only that push: the one commit origin lacks must be this
+    # run's planning commit, and the tree must be clean. Anything else on the
+    # branch -- implementation work, say -- is not this verb's to publish, and
+    # the retry stays the no-op it always was.
     written = (folder / "prd.md").is_file()
     pending = git(root, "status", "--porcelain=v1", "--untracked-files=all",
                   "--", f"docs/work/{slug}")
     if written and not pending and has_row(row["repo"], relative):
-        if not unpushed(root, branch):
+        commit = unpushed_plan(root, branch, slug, row["id"])
+        if commit is None:
             print(f"sd-plan: {slug} is already planned; nothing to do")
             return 0
+        if git(root, "status", "--porcelain=v1", "--untracked-files=all"):
+            raise Refused(f"{slug} is planned and its commit {commit[:12]} is not pushed, "
+                          "and the checkout has uncommitted changes; pushing it needs a clean tree")
         if arguments.dry_run:
             print(f"sd-plan: would push item {row['id']} as {slug} to {branch}")
             return 0
@@ -245,16 +251,29 @@ def push(root: Path, branch: str) -> None:
     git(root, "push", "-q", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}")
 
 
-def unpushed(root: Path, branch: str) -> bool:
-    """Whether `branch` is checked out here and holds commits `origin` lacks.
+def unpushed_plan(root: Path, branch: str, slug: str, identifier: int) -> str | None:
+    """The planning commit a failed push left behind, or `None`.
 
-    Read from the remote-tracking ref `push` updates: a branch never pushed
-    has none, and a push that failed leaves it behind `HEAD`.
+    `branch` must be checked out, and `HEAD` must be the one commit no
+    `origin` ref reaches. That commit must be the one `plan` writes: its
+    subject `docs(work): <slug>`, its `Work: sd:<id>` line, and no path
+    outside the item's folder. A second unpushed commit, or one that is
+    anything else, is somebody's work and `None`.
     """
     if git(root, "rev-parse", "--abbrev-ref", "HEAD", check=False) != branch:
-        return False
-    ahead = git(root, "rev-list", "--count", f"refs/remotes/origin/{branch}..HEAD", check=False)
-    return ahead != "0"
+        return None
+    commits = git(root, "rev-list", "HEAD", "--not", "--remotes=origin", check=False).split()
+    if len(commits) != 1:
+        return None
+    commit = commits[0]
+    message = git(root, "log", "-1", "--format=%B", commit, check=False).splitlines()
+    if not message or message[0] != f"docs(work): {slug}" or f"Work: sd:{identifier}" not in message:
+        return None
+    changed = git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit,
+                  check=False).splitlines()
+    if not changed or any(not name.startswith(f"docs/work/{slug}/") for name in changed):
+        return None
+    return commit
 
 
 # --- the optional Jev judgment ----------------------------------------------

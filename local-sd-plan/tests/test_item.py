@@ -418,6 +418,50 @@ class WhatItWrites(ItemCase):
         self.assertEqual(self.git("rev-parse", "HEAD"), committed)
         self.assertEqual(len(self.rows()), 1)
 
+    def remote_head(self, branch):
+        out = subprocess.run(["git", "ls-remote", "--heads", str(self.origin), branch],
+                             capture_output=True, text=True, check=True).stdout
+        return out.split()[0] if out else None
+
+    def implementation_commit(self):
+        (self.repo / "README.md").write_text("implementation work\n", encoding="utf-8")
+        self.git("commit", "-qam", "implementation work")
+
+    def test_a_rerun_after_implementation_work_publishes_nothing(self):
+        """Only the planning commit is this verb's to push (sd:1181 review)."""
+        identifier = self.task()
+        self.plan(str(identifier))
+        branch = self.git("rev-parse", "--abbrev-ref", "HEAD")
+        published = self.remote_head(branch)
+        self.implementation_commit()
+        done = self.plan(str(identifier))
+        self.assertIn("already planned; nothing to do", done.stdout)
+        self.assertEqual(self.remote_head(branch), published)
+
+    def test_a_failed_push_under_implementation_work_publishes_nothing(self):
+        hook = self.origin / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        identifier = self.task()
+        self.plan(str(identifier), expect=1)
+        hook.unlink()
+        self.implementation_commit()
+        done = self.plan(str(identifier))
+        self.assertIn("already planned; nothing to do", done.stdout)
+        self.assertEqual(self.pushed(), ["main"])
+
+    def test_a_failed_push_is_not_retried_on_a_dirty_tree(self):
+        hook = self.origin / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        identifier = self.task()
+        self.plan(str(identifier), expect=1)
+        hook.unlink()
+        (self.repo / "README.md").write_text("edited\n", encoding="utf-8")
+        done = self.plan(str(identifier), expect=1)
+        self.assertIn("needs a clean tree", done.stderr)
+        self.assertEqual(self.pushed(), ["main"])
+
     def test_dry_run_says_what_it_would_do_and_writes_nothing(self):
         identifier = self.task()
         done = self.plan(str(identifier), "--dry-run")

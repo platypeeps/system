@@ -101,8 +101,8 @@ Usage: sd-plan.sh <command>
               folder's status, and pushed. Refuses a row belonging to another
               checkout (R10-D6) and a run that left any of the three
               documents unwritten. A folder that is committed and has its row
-              is reported and left alone, or pushed when it stands on its
-              branch unpushed; one without its row is registered,
+              is reported and left alone, or, when its planning commit
+              alone failed to push, pushed; one without its row is registered,
               committed and pushed, with no second planning run. `--dry-run`
               says what it would do.
   nightly     Select one row per participating repository and enqueue each
