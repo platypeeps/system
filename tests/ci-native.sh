@@ -14,8 +14,8 @@ usage() {
 Usage: ci-native.sh preflight
        ci-native.sh leg shared|dashboard|runner|tools
 
-  preflight  the fixture digest, sd-docs-lint, the citation and Jev contract
-             gates, the unwired-suite guard, and the venv at
+  preflight  the fixture digest, sd-docs-lint, the citation, Jev contract
+             and product-name gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with local-sd-db installed
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
@@ -102,6 +102,13 @@ python3 tests/test_citations.py
 # what `--unsure-below` itself prints. Stdlib and git only, so it
 # runs here before the venv, and the guard below demands this line.
 python3 tests/test_jev_contract.py
+
+# Only the vendor helper folders, mezmo-*, name the product they help
+# with (sd:2535): a tracked line outside them that does fails here
+# naming its path and line, unless the file's ALLOWED entry gives a
+# reason. Stdlib and git only, so it runs here before the venv, and
+# the guard below demands this line.
+python3 tests/test_product_name.py
 
 # The run_suite lines at the bottom are a hand-maintained list, and
 # a folder that grows a suite without a line here is never run --
@@ -280,6 +287,9 @@ case "$SUITE_LEG" in
     # calls on every refresh; the suite is named directly rather than
     # adding a verb to it. It stubs bun and sysctl, so Linux runs it.
     run_suite statusline "$PYTHON" local-statusline/tests/test_statusline.py -v
+    # cswap.sh has no test verb; the suite is named directly, like
+    # statusline above. It stubs launchctl, so Linux runs it.
+    run_suite cswap "$PYTHON" local-cswap/tests/test_cswap.py -v
     run_suite obsidian-tasks sh local-obsidian-tasks/obsidian-tasks.sh test
     run_suite obsidian-review sh local-obsidian-review/obsidian-review.sh test
     run_suite task-actions sh local-task-actions/task-actions.sh test -v

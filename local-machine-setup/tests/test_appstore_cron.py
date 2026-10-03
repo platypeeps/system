@@ -80,6 +80,7 @@ class StageTest(unittest.TestCase):
         write_exec(self.stubs / "mas", MAS_STUB)
         write_exec(self.stubs / "launchctl", "#!/bin/sh\nexit 0\n")
         write_exec(self.stubs / "git", "#!/bin/sh\nexit 1\n")
+        fixture_config.seal(self, self.stubs)
 
     def run_stage(self, stage, *flags, **extra):
         env = {
@@ -307,6 +308,46 @@ class CronOwnershipTest(StageTest):
         self.assertIn("FOREIGN renamed-job", result.stdout)
         self.assertNotIn("uninstall", self.cron_log.read_text())
 
+    def test_a_profile_naming_a_foreign_agent_does_not_abort_the_stage(self):
+        # sd:2538: a capture wrote another installer's agent into the profile.
+        # The real cron-jobs.sh fails verify and install for a name with no job
+        # file, and that install ended the nightly run before every later stage.
+        write_exec(pathlib.Path(self.tmp.name) / "repo/local-cron-jobs/cron-jobs.sh", r"""#!/bin/sh
+printf '%s\n' "$*" >> "$CRON_LOG"
+case "$1 $2" in
+  "verify foreign-job"|"install foreign-job")
+    echo "ERROR: no such job 'foreign-job' (expected <config>/cron-jobs/jobs/foreign-job.job)" >&2
+    exit 1 ;;
+esac
+exit 0
+""")
+        (self.profiles / "personal.cron").write_text("foreign-job\nshared-job\n")
+        self.install_foreign_plist("foreign-job")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FOREIGN foreign-job — in this profile, but another installer's agent holds "
+                      "its label; left in place", result.stdout)
+        # The jobs after it are still checked, and nothing touches its agent.
+        self.assertIn("ok      shared-job", result.stdout)
+        self.assertNotIn("STALE", result.stdout)
+        log = self.cron_log.read_text()
+        self.assertNotIn("foreign-job", log)
+        self.assertTrue(self.plist_path("foreign-job").exists())
+
+    def test_a_profile_job_with_an_unreadable_plist_is_still_reinstalled(self):
+        # Only a plist proven another installer's is skipped; one nobody can
+        # parse, under a name the profile wants, keeps the old repair.
+        self.plist_path("shared-job").write_text("not a plist\n")
+        write_exec(pathlib.Path(self.tmp.name) / "repo/local-cron-jobs/cron-jobs.sh", r"""#!/bin/sh
+printf '%s\n' "$*" >> "$CRON_LOG"
+[ "$1" = verify ] && exit 1
+exit 0
+""")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("STALE   shared-job", result.stdout)
+        self.assertIn("install shared-job", self.cron_log.read_text())
+
     def test_an_unreadable_plist_is_left_in_place(self):
         # Fail closed: a plist nobody can parse is not proven ours.
         self.plist_path("garbled-job").write_text("not a plist\n")
@@ -348,6 +389,14 @@ class CronOwnershipTest(StageTest):
 
 class CaptureTest(StageTest):
     """capture must not write a host job or a beta's id 0 into a shared profile."""
+
+    def setUp(self):
+        super().setUp()
+        # capture reads iTerm2's prefs folder and every app's bundle id with
+        # `defaults`, and Spotlight's list with `sudo`. Real ones read this
+        # Mac whatever HOME says (sd:2331), so: every key unset, no ticket.
+        write_exec(self.stubs / "defaults", "#!/bin/sh\nexit 1\n")
+        write_exec(self.stubs / "sudo", "#!/bin/sh\nexit 1\n")
 
     def capture(self, **extra):
         env = {
@@ -410,6 +459,17 @@ class CaptureTest(StageTest):
         result = self.capture(CRON_JOBS_EXTRA_DIRS=str(extra))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("picked", (self.profiles / "personal.cron").read_text())
+
+    def test_capture_lists_apps_from_the_applications_override(self):
+        # REGRESSION (sd:2331). The scan read /Applications, so a test capture
+        # wrote this Mac's apps into the fixture profile.
+        apps = pathlib.Path(self.tmp.name) / "Applications"
+        (apps / "Example Tool.app" / "Contents").mkdir(parents=True)
+        result = self.capture(MACHINE_SETUP_APPLICATIONS_DIR=str(apps))
+        self.assertIn("app: 1 entries", result.stdout, result.stdout + result.stderr)
+        listed = [l for l in (self.profiles / "personal.app").read_text().splitlines()
+                  if l and not l.startswith("#")]
+        self.assertEqual(listed, ["Example Tool"])
 
     def test_capture_stops_when_host_jobs_cannot_be_listed(self):
         (self.jobs / HOST / "host-job.job").write_text('JOB_SCHEDULE="0 23 * * *"\n')

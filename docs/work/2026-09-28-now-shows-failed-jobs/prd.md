@@ -56,3 +56,4 @@ behaviour change") ranks failed jobs first on Now, as warnings.
 ## Log
 
 - 2026-09-28 created
+- 2026-10-03 sd:2014 lifts the first out-of-scope line: interrupted, unloaded and unknown jobs are rows at rank 2

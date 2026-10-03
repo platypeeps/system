@@ -7,8 +7,9 @@ capped at `OPEN_LIMIT` with the cut said, each row's scope from sd's repo table,
 page registers the design's Contributions commands; Acknowledge and Make task ask first and post, Make task a linked task, and
 Draft nudge, Open on GitHub and Re-run collector are copy only and post nothing. Nothing claims a GitHub reading.
 
-`contributions.js` runs under JavaScriptCore (osascript) against the stand-in page and shell `test_v2_tasks` uses. The
-browser half -- the look at 1440 and 375 px, focus, the confirm dialog -- is a manual check recorded on the pull request.
+`contributions.js` runs under JavaScriptCore (osascript) against the stand-in page and shell `test_v2_tasks` uses, with the
+real reader (`read.js`, sd:2488). Focus after a redraw (sd:2426) runs against a small box stand-in that parses the drawn
+buttons. The browser half -- the look at 1440 and 375 px, the confirm dialog -- is a manual check recorded on the pull request.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from sd_dashboard import contribution_screen, server, v2
 from support import NOW, ScreenCase
 from test_contribution_screen import contribution, seed_registered
 from test_v2_today import OSASCRIPT, Refused
+from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
@@ -174,7 +176,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Contributions · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "contributions.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "contributions.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -236,7 +238,7 @@ const later = (v, k) => { let p = Promise.resolve(v); for (let i = 0; i < k; i++
 """
 
 
-class TheScript(ScreenCase):
+class Script(ScreenCase):
     """contributions.js against the document `contribution_screen` builds."""
 
     def setUp(self):
@@ -245,11 +247,11 @@ class TheScript(ScreenCase):
         with mock.patch.object(contribution_screen.contributions, "projection", return_value=rows()):
             self.doc = contribution_screen.document(self.connection, now=NOW)
 
-    def run_page(self, body, answer=None, search=""):
+    def run_page(self, body, answer=None, search="", extra=""):
         answer = answer or ("(path, body) => path === '/api/contributions/page' ? [200, DOC] : path === '/api/contributions/task'"
                             " ? [200, { item: { id: 42, title: body.title } }] : [200, { ok: true }]")
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(self.doc)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + PAGE_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + extra + READ_SHELL + f"\nANSWER = {answer};\n" + PAGE_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION; OUT.html = Object.fromEntries(Object.entries(ELS).map(([k, e]) => [k, e.html]));"
@@ -260,6 +262,10 @@ class TheScript(ScreenCase):
         out = json.loads(result.stdout)
         self.assertIsNone(out["error"])
         return out
+
+
+class TheScript(Script):
+    """The commands, the drawing and the filters."""
 
     def test_the_design_commands_are_registered_with_their_ids_labels_keys_and_risks(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]); R.bulk = REG.filter(c => c.bulk).map(c => c.id);")
@@ -298,11 +304,13 @@ shellRun(cmd('contribution.task'), C.get('github:""" + EXTERNAL + """')); await 
           : path === '/api/contributions/task' ? [200, { item: { id: 42 } }] : [200, { ok: true }]; })()"""
         out = self.run_page("""const ext = C.get('github:""" + EXTERNAL + """'), one = C.get('github:https://github.com/example/project/pull/1');
 shellRun(cmd('contribution.task'), ext); await flush(); shellRun(cmd('contribution.ack'), one); await flush();
-R.off = [cmd('contribution.task').when(ext), cmd('contribution.ack').when(one)];""", answer=answer)
+R.off = [cmd('contribution.task').when(ext), cmd('contribution.ack').when(one)]; R.types = [C.get(ext.id).type, C.get(one.id).type];""", answer=answer)
         self.assertEqual([t[0] for t in out["toasts"]], ["Task #42 filed · Contribution 3", "Acknowledged · Fix it's $HOME"])
         self.assertEqual(out["R"]["off"], ["already tracked as item #42", "no attention event on this row"])
-        self.assertEqual(out["states"][-1]["kind"], "error")
-        self.assertIn("The write landed, but the contributions were not read again: gone", out["states"][-1]["text"])
+        # sd:2488: the rows stay drawn, but their objects are retired until a read lists them again.
+        self.assertEqual(out["R"]["types"], ["not listed", "not listed"])
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("The change landed; the contributions were not read again: gone", out["states"][-1]["text"])
 
     def test_a_refused_write_whose_reread_fails_does_not_say_it_landed(self):
         # Review 4 of PR #72 (005e99951263): both rejection handlers reread, and a failed reread said the write landed.
@@ -312,7 +320,7 @@ R.off = [cmd('contribution.task').when(ext), cmd('contribution.ack').when(one)];
         self.assertEqual(out["toasts"][-1], ["Fix it's $HOME not changed: Events changed", False])
         self.assertEqual(out["states"][-1]["kind"], "error")
         self.assertNotIn("landed", out["states"][-1]["text"])
-        self.assertIn("The contributions were not read again: gone", out["states"][-1]["text"])
+        self.assertIn("The contributions were not read: gone", out["states"][-1]["text"])
 
     def test_after_a_bulk_acknowledge_only_the_newest_reread_draws(self):
         # Review 2 of PR #72 (903bc49868b2): one reread per row, and an older answer that lands last replaced the newer one.
@@ -449,6 +457,101 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         self.assertNotRegex(PAGE_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", PAGE_JS)
         self.assertNotIn("CONTRIBUTIONS_DATA", PAGE_JS)
+
+
+#: Boxes that parse the buttons drawn into them, so a test can focus one and see where focus is after a redraw. A button is
+#: attached while its box still holds the markup it came from; `document.activeElement` is the button last focused.
+BOXES = r"""
+OUT.focused = [];
+const BUTTONS = box => { if (box.parsedFrom === box.html) return box.buttons; box.parsedFrom = box.html;
+  const h = box.html || '', found = [], re = /<tr data-id="([^"]*)"|<button\b([^>]*)>/g; let m, row = null;
+  while ((m = re.exec(h))) { if (m[1] !== undefined) { row = m[1]; continue; }
+    const ds = {}; for (const [, k, v] of m[2].matchAll(/data-([\w-]+)="([^"]*)"/g)) ds[k.replace(/-(\w)/g, (_, c) => c.toUpperCase())] = v;
+    const b = { box, html: h, row, dataset: ds, closest: sel => sel === 'button.cell' ? b : sel === 'tr[data-id]' && b.row != null ? { dataset: { id: b.row } } : null,
+      focus() { document.activeElement = b; OUT.focused.push(ds); } };
+    found.push(b); }
+  return box.buttons = found; };
+['rows', 'details', 'annunciator'].forEach(id => { const box = document.getElementById(id);
+  box.querySelectorAll = sel => sel === 'button' ? BUTTONS(box) : []; box.contains = a => !!a && a.box === box && a.html === box.html; });
+const live = id => { const o = C.get(id); return REG.filter(c => c.on === o.type && (!c.when || c.when(o) === true)); };
+C.rowActions = id => { const p = live(id).find(c => c.primary?.(C.get(id)));
+  return mk`<span class="rowact">${p ? mk`<button data-cmd="${p.id}" data-obj="${id}">${p.label}</button>` : ''}<button data-menu-for="${id}">more</button></span>`; };
+C.bar = id => mk`<div class="actions">${live(id).map(c => mk`<button data-cmd="${c.id}" data-obj="${id}">${c.label}</button>`)}</div>`;
+const button = (box, f) => BUTTONS(ELS[box]).find(f);
+const where = () => { const a = document.activeElement; return a ? [a.box.id, a.dataset, a.box.contains(a)] : null; };
+"""
+#: Every read of the document waits until the test answers it; a read started after a write sees the write.
+HELD = r"""
+const held = [], copy = d => JSON.parse(JSON.stringify(d));
+let wrote = false; const after = copy(DOC); after.rows.forEach(r => { r.event_ids = []; });
+const HELD_ANSWER = (path, body) => { if (path !== '/api/contributions/page') { wrote = true; return [200, { ok: true }]; }
+  const doc = wrote ? after : copy(DOC); return new Promise(ok => held.push(() => ok([200, doc]))); };
+const answerAll = async () => { while (held.length) { held.shift()(); await flush(); } };
+"""
+ONE = "github:https://github.com/example/project/pull/1"
+
+
+class TheSharedReader(Script):
+    """sd:2488: Contributions reads through the shell's reader, read.js, not a copy of its guards."""
+
+    def test_the_page_reads_through_the_shared_reader(self):
+        self.assertIn("window.shell.read(", PAGE_JS)
+        self.assertNotIn("++generation", PAGE_JS)
+        self.assertNotRegex(PAGE_JS, r"function retire\(")
+        self.assertNotIn("getJSON", PAGE_JS)
+
+    def test_a_refused_write_whose_read_fails_clears_the_rows_and_their_commands(self):
+        answer = """(() => { let n = 0; return path => path === '/api/contributions/page' ? (n++ ? [500, { error: 'gone' }] : [200, DOC])
+          : [409, { error: 'Events changed', reload: true }]; })()"""
+        out = self.run_page(f"""shellRun(cmd('contribution.ack'), C.get('{ONE}')); await flush();
+R.rows = ELS.rows.html; R.type = C.get('{ONE}').type; R.bars = ELS.bars.html;""", answer=answer)
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [])
+        self.assertIn("Not read: gone", out["R"]["rows"])
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertEqual(out["R"]["bars"], "")
+        self.assertEqual(out["attention"], {"state": "unknown", "n": 0, "what": "contributions not read"})
+
+    def test_a_reread_waits_for_a_read_that_started_before_its_write_landed(self):
+        # The write barrier (PR 73, r4167523338): the second write lands while the first write's reread is in flight.
+        out = self.run_page(f"""held.shift()(); await flush();
+shellBulk(cmd('contribution.ack'), [C.get('{ONE}'), C.get('github:{EXTERNAL}')]); await flush();
+R.mid = OUT.gets.length; await answerAll(); R.end = OUT.gets.length;""", extra=HELD, answer="HELD_ANSWER")
+        self.assertEqual(out["R"]["mid"], 2, "a reread joined or overtook a read started before its write landed")
+        self.assertEqual(out["R"]["end"], 3)
+
+    def test_a_selected_row_the_reread_drops_moves_to_the_first_shown_row(self):
+        # A guard: before the reader the page's reconcile call did the same in the real shell.
+        newer = dict(self.doc, rows=[r for r in self.doc["rows"] if r["key"] != "github:" + EXTERNAL])
+        answer = """(() => { let n = 0; return path => path !== '/api/contributions/page' ? [200, { ok: true }]
+          : n++ ? [200, """ + json.dumps(newer) + """] : [200, DOC]; })()"""
+        out = self.run_page(f"""open('github:{EXTERNAL}'); shellRun(cmd('contribution.ack'), C.get('{ONE}')); await flush(); R.d = ELS.details.html;""",
+                            answer=answer)
+        self.assertIn("Fix it&#39;s $HOME", out["R"]["d"])
+
+
+class TheFocus(Script):
+    """sd:2426: a redraw that replaces the focused control puts focus on its replacement, or on the nearest action."""
+
+    def test_a_lamp_keeps_focus_after_it_toggles_the_lane_filter(self):
+        out = self.run_page("""const lamp = button('annunciator', b => b.dataset.cell === 'awaiting_them'); lamp.focus();
+ELS.annunciator.listeners.click[0]({ target: lamp }); R.on = where(); R.html = ELS.annunciator.html;""", extra=BOXES)
+        self.assertEqual(out["R"]["on"], ["annunciator", {"cell": "awaiting_them", "state": "ok"}, True])
+        self.assertIn('aria-pressed="true" data-cell="awaiting_them"', out["R"]["html"])
+
+    def test_a_landed_acknowledge_puts_focus_on_the_rows_action_menu(self):
+        out = self.run_page(f"""DOC.rows.forEach(r => {{ r.event_ids = []; }});
+button('rows', b => b.dataset.cmd === 'contribution.ack' && b.dataset.obj === '{ONE}').focus();
+shellRun(cmd('contribution.ack'), C.get('{ONE}')); await flush(); R.on = where();""", extra=BOXES)
+        self.assertEqual(out["R"]["on"], ["rows", {"menuFor": ONE}, True])
+
+    def test_a_landed_acknowledge_from_details_puts_focus_on_the_next_command(self):
+        out = self.run_page(f"""DOC.rows.forEach(r => {{ r.event_ids = []; }}); open('{ONE}');
+button('details', b => b.dataset.cmd === 'contribution.ack').focus();
+shellRun(cmd('contribution.ack'), C.get('{ONE}')); await flush(); R.on = where();""", extra=BOXES)
+        box, names, attached = out["R"]["on"]
+        self.assertEqual((box, attached), ("details", True))
+        self.assertNotEqual(names.get("cmd"), "contribution.ack")
+        self.assertEqual(names.get("obj"), ONE)
 
 
 class TheRegistration(Registers, unittest.TestCase):

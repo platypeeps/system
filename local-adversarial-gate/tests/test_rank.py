@@ -134,7 +134,7 @@ class RankAgainstAStubJev(unittest.TestCase):
             path.rmdir() if path.is_dir() else path.unlink()
         self.tmp.rmdir()
 
-    def rank(self, body=STUB_OK, stage="1"):
+    def rank(self, body=STUB_OK, stage=None):
         jev = self.tmp / "jev.sh"
         jev.write_text(stub(body))
         jev.chmod(0o755)

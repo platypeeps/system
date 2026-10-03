@@ -10,7 +10,7 @@ const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: s
 const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };
 const SDDB = '~/repos/system/local-sd-db/sd-db.sh';
 
-// ---------- Data (build): /api/management, read on load and after each write ----------
+// ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
 let DOC = null, READ = '';
 let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, SERVICES = [], CRON = [];
 const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
@@ -18,12 +18,6 @@ async function post(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
   const out = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; throw e; }
-  return out;
-}
-async function getJSON(path) {
-  const r = await fetch(path, { headers: { Accept: 'application/json' } });
-  const out = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
   return out;
 }
 const tilde = p => { const h = GIT?.root ? GIT.root.replace(/\/repos\/?$/, '') : ''; return h && p.startsWith(h + '/') ? '~' + p.slice(h.length) : p; };
@@ -88,9 +82,12 @@ function human(schedule) {
   const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   // build (review, PR #50): an entry pinned to a Month, Day or Weekday names it; daily and hourly mean no such field is set.
   const pinned = e => e.Month != null || e.Day != null || e.Weekday != null;
+  // build (sd:2385): 'every N min' only when the marks are evenly spaced around the hour; '5,30' names its marks.
   if (schedule.every(e => e.Hour == null && e.Minute != null && !pinned(e))) {
-    const mins = schedule.map(e => e.Minute);
-    return mins.length > 1 ? `every ${60 / mins.length} min` : `hourly at :${two(mins[0])}`;
+    const mins = [...new Set(schedule.map(e => e.Minute))].sort((a, b) => a - b);
+    const gaps = mins.map((m, i) => (i + 1 < mins.length ? mins[i + 1] : mins[0] + 60) - m);
+    if (mins.length > 1 && gaps.every(g => g === gaps[0])) return `every ${gaps[0]} min`;
+    return `hourly at ${mins.map(m => `:${two(m)}`).join(', ')}`;
   }
   const date = e => e.Month != null ? `${M[e.Month - 1]}${e.Day != null ? ` ${e.Day}` : ''}` : e.Day != null ? `day ${e.Day}` : '';
   const one = e => [date(e), e.Weekday != null ? W[e.Weekday] : '', `${e.Hour != null ? two(e.Hour) : '*'}:${e.Minute != null ? two(e.Minute) : '*'}`].filter(Boolean).join(' ');
@@ -155,7 +152,7 @@ document.getElementById('subviews').addEventListener('keydown', e => {
 // build: the five lamps count from the reading; a source that failed is unknown and says so.
 function lamps() {
   const set = (v, state, val) => { const t = document.getElementById(`sv-${v}`); t.dataset.state = state; put(t.querySelector('.val'), val); };
-  if (DOC.repos) set('repos', 'ok', html`<b>${REPOS.length}</b> rows · ${REPOS.filter(r => r.merge === 'auto').length} auto`);
+  if (DOC?.repos) set('repos', 'ok', html`<b>${REPOS.length}</b> rows · ${REPOS.filter(r => r.merge === 'auto').length} auto`);
   else set('repos', 'unknown', html`▨ not read`);
   const live = LANE ? LANE.live.length : 0;
   if (LANE) set('lane', LANE.heartbeat.ok ? 'ok' : 'caution', html`<b>${LANE.live.filter(a => a.status === 'queued').length}</b> queued · ${LANE.live.some(a => a.status === 'running') ? 'running' : live ? 'waiting' : 'idle'}${LANE.heartbeat.ok ? '' : ' · ▲ runner'}`);
@@ -163,7 +160,7 @@ function lamps() {
   if (SESS) set('sessions', SESS.abandoned ? 'caution' : 'ok', html`<b>${SESS.processes.length}</b> sd-* · ${SESS.abandoned ? `▲ ${SESS.abandoned} abandoned` : 'no abandoned'}`);
   else set('sessions', 'unknown', html`▨ not read`);
   set('deploys', 'unknown', html`▨ no deploy source`);
-  if (DOC.jobs) { const failed = CRON.filter(c => c.rank === 'warning').length; set('schedules', failed ? 'warning' : 'ok', html`<b>${failed}</b> failed ${failed ? '■ ' : ''}of ${CRON.length}`); }
+  if (DOC?.jobs) { const failed = CRON.filter(c => c.rank === 'warning').length; set('schedules', failed ? 'warning' : 'ok', html`<b>${failed}</b> failed ${failed ? '■ ' : ''}of ${CRON.length}`); }
   else set('schedules', 'unknown', html`▨ not read`);
 }
 
@@ -416,7 +413,8 @@ document.getElementById('view-repos').addEventListener('click', e => {
 // ---------- Writes (build) ----------
 // landing(): the run returns the write's promise, the shell's run contract (shell.js, bulk:start; sd:2124). The shell toasts
 // the text once the write landed, offers Undo only then, and folds a bulk group into one toast. `inverse` gets what the
-// write answered and reverses this write, once. A 409 reads the document again, since the row it named has moved.
+// write answered and reverses this write, once. A landed write rereads (shell.read's barrier); a 409 loads again, since the
+// row it named has moved and nothing landed.
 function landing(promise, msg, inverse) {
   const stale = err => { if (err.stale) load(); throw err; };
   return promise.then(v => {
@@ -429,7 +427,7 @@ function landing(promise, msg, inverse) {
 const undoOf = (o, r) => r && r.undo ? r.undo() : false;
 async function setRepo(field, r, value, before) {
   await post(`/api/repos/${field}`, { path: r.path, value, before });
-  await load();
+  await reread();
 }
 const wordOf = (f, r) => f === 'runner-merge' ? r.merge : r.managed;
 const other = (f, v) => f === 'runner-merge' ? (v === 'auto' ? 'manual' : 'auto') : (v === 'yes' ? 'no' : 'yes');
@@ -444,7 +442,7 @@ const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.lat
 async function runner(o, verb) {
   const a = asgOf(o.n); if (!a) throw new Error(`assignment #${o.n} was not read`);
   const answer = await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision });
-  await load();
+  await reread();
   return answer;
 }
 // build (local review of PR #50): requeue's Undo cancels the queued attempt the requeue made, with the revision the requeue
@@ -456,19 +454,25 @@ async function unrequeue(o, answer) {
   if (!now || now.status !== 'queued' || now.revision !== answer.revision)
     throw new Error(`assignment #${o.n} is ${now ? now.status : 'not read'} now; Undo cancels only the queued attempt the requeue made, so use Cancel`);
   await post(`/api/runner/${o.n}/cancel`, { revision: answer.revision });
-  await load();
+  await reread();
 }
 
 // ---------- Commands (products/system/commands.md) ----------
-function putObjects() {
-  const C = shell.commands;
-  ALL.forEach(r => C.put({ id: `repo:${r.path}`, type: 'repo', label: r.name, path: r.path, row: r }));
-  const asg = a => C.put({ id: `${a.role === 'merge' ? 'merge' : 'asg'}:${a.id}`, type: 'assignment', label: `#${a.id} ${a.title || a.role}`, n: a.id, status: a.status, repo: a.repo || 'no repo', item: a.item });
-  [...(LANE?.merges || []), ...(LANE?.live || []), ...(ASG?.latest || [])].forEach(asg);
-  (LANE?.ready || []).forEach(t => C.put({ id: `ready:${t.id}`, type: 'item', label: `#${t.id} ${t.title}`, item: t.id }));
-  if (SESS) C.put({ id: 'wt:abandoned', type: 'worktrees', label: `${SESS.abandoned} abandoned worktrees`, n: SESS.abandoned });
-  SERVICES.forEach(s => C.put({ id: `svc:${s.label}`, type: 'service', label: s.name, name: s.label, running: s.state === 'running', revision: s.revision, caps: s.capabilities || {} }));
-  CRON.forEach(c => C.put({ id: `cron:${c.name}`, type: 'job', label: c.name, job: c.name, name: c.name, service: c.service, failed: c.rank === 'warning', exit: c.last_exit, revision: c.revision, caps: c.capabilities || {} }));
+// build (sd:2485): one object per drawn row, for shell.read to put and to retire once a read stops listing it. A queue row
+// is drawn as asg:<n> whatever its role, so its object is too. Process and live-worktree rows take no command; their objects
+// let a selection or a ?row= link survive a read. A pending proposal is the page's own and stays until it is withdrawn.
+function objects() {
+  const out = ALL.map(r => ({ id: `repo:${r.path}`, type: 'repo', label: r.name, path: r.path, row: r }));
+  const asg = kind => a => out.push({ id: `${kind(a)}:${a.id}`, type: 'assignment', label: `#${a.id} ${a.title || a.role}`, n: a.id, status: a.status, repo: a.repo || 'no repo', item: a.item });
+  const byRole = a => a.role === 'merge' ? 'merge' : 'asg';
+  (LANE?.merges || []).forEach(asg(byRole)); (LANE?.live || []).forEach(asg(() => 'asg')); (ASG?.latest || []).forEach(asg(byRole));
+  (LANE?.ready || []).forEach(t => out.push({ id: `ready:${t.id}`, type: 'item', label: `#${t.id} ${t.title}`, item: t.id }));
+  if (SESS) out.push({ id: 'wt:abandoned', type: 'worktrees', label: `${SESS.abandoned} abandoned worktrees`, n: SESS.abandoned },
+    { id: 'wt:live', type: 'live worktrees', label: `${SESS.registered - SESS.abandoned} live worktrees` },
+    ...SESS.processes.map((p, i) => ({ id: `proc:${i}`, type: 'process', label: p.command })));
+  SERVICES.forEach(s => out.push({ id: `svc:${s.label}`, type: 'service', label: s.name, name: s.label, running: s.state === 'running', revision: s.revision, caps: s.capabilities || {} }));
+  CRON.forEach(c => out.push({ id: `cron:${c.name}`, type: 'job', label: c.name, job: c.name, name: c.name, service: c.service, failed: c.rank === 'warning', exit: c.last_exit, revision: c.revision, caps: c.capabilities || {} }));
+  return [...out, ...pending];
 }
 const capWhy = (o, action, fallback) => { const c = o.caps?.[action]; return !c ? fallback : c.allowed || c.reason || fallback; };
 function registerCommands() {
@@ -528,8 +532,8 @@ function registerCommands() {
       run: () => 'Copy it into a terminal: the dashboard shows the launchd record in Operations › Jobs' },
   );
 }
-async function service(o, action) { await post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await load(); }
-async function job(o, action) { await post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await load(); }
+async function service(o, action) { await post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
+async function job(o, action) { await post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await reread(); }
 document.addEventListener('shell:open', e => {
   const id = e.detail;
   if (id.startsWith('repo:') && repoParam) shell.openPane('tab-details');
@@ -636,7 +640,8 @@ const SS = { sort: 'rank', dir: 1, page: 1, size: 25 };
 const RANK = { warning: 0, caution: 1, unknown: 2, ok: 3 };
 function pageAttention() {
   const failed = CRON.filter(c => c.rank === 'warning').length;
-  window.PAGE_ATTENTION = { state: failed ? 'warning' : 'ok', n: failed, what: 'scheduled jobs failed' };
+  window.PAGE_ATTENTION = !DOC ? { state: 'unknown', n: 0, what: 'scheduled jobs not read' }
+    : { state: failed ? 'warning' : 'ok', n: failed, what: 'scheduled jobs failed' };
   window.shell?.attention?.(window.PAGE_ATTENTION);
 }
 function renderSchedules() {
@@ -672,7 +677,7 @@ document.querySelector('main').addEventListener('click', e => { if (e.target.clo
 
 // ---------- Details pane ----------
 function defaultDetails() {
-  if (view === 'repos' && repoParam && pending.length) return showProposals();
+  if (view === 'repos' && repoParam && pending.length && REPOS.some(x => x.path === repoParam)) return showProposals();
   if (view === 'repos') {
     const r = repoParam && REPOS.find(x => x.path === repoParam);
     put(details, html`<p class="kind">${I('settings')} ${r ? 'Repo settings' : 'Repos'}</p><h2>${r ? r.name : 'How an edit lands'}</h2>
@@ -781,39 +786,50 @@ window.PAGE_COMMANDS = [
   { label: 'Open system repo settings', icon: 'settings', run: () => location.href = '?view=repos&repo=' + encodeURIComponent('~/repos/system') },
 ];
 
-// ---------- Start (build: read /api/management, then draw; again after each write) ----------
-let started = false;
-async function load() {
-  if (!started) shell.state({ kind: 'loading', text: 'Reading repos, the lane, sessions, services and jobs. Rows appear when /api/management answers.', source: '/api/management' });
-  let doc;
-  try { doc = await getJSON('/api/management'); }
-  catch (err) {
-    shell.state({ kind: 'error', text: `Management was not read, so nothing below is current: ${err.message}. Reload retries it.`, source: '/api/management' });
-    return;
-  }
+// ---------- Start (build, sd:2485: shell.read reads /api/management, then draws; it rereads after each write) ----------
+// The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws, a row the read no longer lists
+// runs no command, a selection whose row is gone moves to the view's first row, a failed load clears the page, and a failed
+// reread after a write keeps the rows and says the write landed.
+let reading = null, FAILED = '';
+const load = () => reading.load();
+const reread = () => reading.reread();
+function adopt(doc) {
   absorb(doc);
   const failed = Object.entries(doc.sources || {}).filter(([, v]) => v).map(([k]) => k);
-  shell.state(failed.length ? { kind: 'partial', text: `Not read: ${failed.join(', ')}. Each shows why in its view.`, source: '/api/management' } : null);
-  putObjects();
+  return { objects: objects(), state: failed.length ? { kind: 'partial', text: `Not read: ${failed.join(', ')}. Each shows why in its view.`, source: '/api/management' } : null };
+}
+function clear(err) {
+  DOC = null; READ = ''; GIT = LANE = ASG = SESS = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
+  FAILED = err.message;
+}
+function draw() {
   lamps();
   pageAttention();
-  if (!started) {
-    started = true;
-    readURL();
-    tabs.forEach(t => { const on = t.dataset.view === view; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; document.getElementById(t.getAttribute('aria-controls')).hidden = !on; });
-    renderLane(); renderSessions(); renderDeploys(); renderSchedules(); renderRepos();
-    const row = params.get('row');
-    if (row && document.querySelector(`#view-${view} tr[data-id="${CSS.escape(row)}"]`)) selectRow(row, false); else defaultDetails();
-    document.getElementById('subhead').textContent = repoParam ? `Settings for ${repoParam}. Chat is scoped to this repo.`
-      : `Every repo setting, the merge lane, sessions, services and schedules. Read ${hhmm(READ)} UTC.`;
-  } else {
-    renderLane(); renderSessions(); renderDeploys(); renderSchedules(); renderRepos();
-    const row = shell.row();
-    if (row && document.querySelector(`#view-${view} tr[data-id="${CSS.escape(row)}"]`)) selectRow(row, false);
-  }
+  if (!DOC) { VIEWS.forEach(v => put(document.getElementById(`view-${v}`), unknown('Management was not read', FAILED, '/api/management'))); return; }
+  renderLane(); renderSessions(); renderDeploys(); renderSchedules(); renderRepos();
+  document.getElementById('subhead').textContent = repoParam ? `Settings for ${repoParam}. Chat is scoped to this repo.`
+    : `Every repo setting, the merge lane, sessions, services and schedules. Read ${hhmm(READ)} UTC.`;
+}
+// The repos view selects no row by default: Details explains how an edit lands, or shows the repo's settings.
+const inView = id => !!id && !!document.querySelector(`#view-${view} tr[data-id="${CSS.escape(id)}"]`);
+const firstRow = () => view === 'repos' ? null : document.querySelector(`#view-${view} tr[data-id]`)?.dataset.id ?? null;
+function nothingSelected() {
+  if (view === 'repos') return defaultDetails();
+  markRow(null);
+  put(details, html`<p class="why">Nothing is selected. Select a row to see it here.</p>`);
+  swap();
 }
 document.addEventListener('DOMContentLoaded', () => {
   if (repoParam) view = 'repos';
   registerCommands();
+  readURL();
+  tabs.forEach(t => { const on = t.dataset.view === view; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; document.getElementById(t.getAttribute('aria-controls')).hidden = !on; });
+  reading = shell.read({
+    source: '/api/management', what: 'repos, the lane, sessions, services and jobs', adopt, clear, draw,
+    current: () => shell.row(), first: firstRow,
+    // A ?row= of another view is not selected there: the view's first row is.
+    select: id => { const at = inView(id) ? id : firstRow(); if (at) selectRow(at, false); else nothingSelected(); },
+    unselect: nothingSelected,
+  });
   load();
 });

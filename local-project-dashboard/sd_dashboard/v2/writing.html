@@ -1,0 +1,60 @@
+<!doctype html>
+<!--
+  Writing (sd:2125), at /writing. Built from the design source's products/system/designs/pages/writing.html, writing.js and
+  writing.css at 2729265, with design.md and commands.md.
+  Data: /api/writing (writing_screen.document: every piece writing.list_pieces lists, parked ones too, with the stage,
+  gate problems, next and correction stages and publication claims writing.piece_state gives, each file's size from
+  writing.piece_files, and the opening of the draft), read when the page opens. Stage and Correct post
+  POST /api/items/<id>/stage; Park and Revive post /api/items/<id>/park and /revive, the routes the item page posts.
+  Publish and Capture are copy only. Not read yet: the vault's blog ideas (the design read `sd store list sdw.blog-idea`),
+  and the evidence summaries in research.md, fact-check.md and adversarial.md; the editor is read only, since no route
+  writes a draft. Nothing here is sample data. The old list moved to /classic/writing.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Writing · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/writing.css">
+</head>
+<body data-page="Writing" data-scope="writing">
+<script src="/ui/icons.js"></script>
+<div class="shell"><main id="main">
+  <div class="head">
+    <div>
+      <h1>Writing</h1>
+      <p id="subhead">Reading the writing pieces…</p>
+    </div>
+    <div class="shift" id="shift">
+      <label class="sr" for="shift-in">Capture an idea or find a piece</label>
+      <div class="field">
+        <svg class="i" aria-hidden="true"><use href="#i-lightbulb"/></svg>
+        <input id="shift-in" autocomplete="off" spellcheck="false" placeholder="Capture an idea or find a piece" aria-controls="shift-preview" aria-expanded="false">
+        <span class="ghost" id="shift-ghost">#id · idea: …</span>
+        <button class="help" type="button" aria-label="Help: capture" data-help="<b>One box captures or finds.</b> Plain text gives the line that captures a vault blog idea at <code>status: inbox</code>, the same note <code>sdw-ideate</code> writes; the dashboard does not write to the vault. A <code>#id</code> or a slug opens that piece."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+      </div>
+      <div class="preview" id="shift-preview" hidden></div>
+    </div>
+    <div class="views">
+      <div class="seg" role="group" aria-label="View">
+        <button type="button" data-view="board" aria-pressed="true"><svg class="i" aria-hidden="true"><use href="#i-kanban"/></svg>Board <kbd>v b</kbd></button>
+        <button type="button" data-view="editor" aria-pressed="false"><svg class="i" aria-hidden="true"><use href="#i-pen-line"/></svg>Editor <kbd>v e</kbd></button>
+      </div>
+      <button class="chip" type="button" id="show-parked" aria-pressed="false">Parked <span id="parked-n"></span></button>
+    </div>
+  </div>
+  <div class="strip" id="strip" aria-label="Pipeline summary"></div>
+  <section id="view-board" aria-label="Pipeline board"></section>
+  <section id="view-editor" aria-label="Focused editor" hidden></section>
+</main>
+<div class="details" id="details"><p class="note">Select a piece to see its gates and moves.</p></div></div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/writing.js"></script>
+<script src="/ui/shell.js"></script>
+</body></html>
