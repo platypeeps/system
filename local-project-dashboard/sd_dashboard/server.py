@@ -302,14 +302,16 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         # still write nothing. `cutoff` runs inside the returned function
         # and not here: it raises `WorkflowError`, which the `try` around
         # this call does not catch, and which `do_POST` maps to 400 only
-        # once the action runs.
+        # once the action runs. `session` is the server's own `SD_SESSION`,
+        # as the CLI passes its own, so the record names the process (sd:1168).
         if (set(values) != {"before", "plan", "who"}
                 or not all(isinstance(values[key], str) for key in values)
                 or not re.fullmatch(r"[a-f0-9]{64}", values["plan"])):
             raise ValueError("Preview the clean reports again, and name who is acknowledging them.")
         return lambda connection: reporting.acknowledge_clean(connection,
             before=reporting.cutoff(values["before"]), expected_plan=values["plan"],
-            who=values["who"], principal=principal, program="dashboard")
+            who=values["who"], principal=principal, program="dashboard",
+            session=os.environ.get("SD_SESSION"))
     service_action = re.fullmatch(r"/api/services/([A-Za-z0-9][A-Za-z0-9._-]{0,199})/(start|stop|restart)", path)
     if service_action:
         from sd_db import services

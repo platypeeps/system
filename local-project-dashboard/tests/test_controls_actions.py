@@ -1013,6 +1013,15 @@ class BulkAcknowledge(BrowserSession):
         self.assertEqual(actor["program"], "dashboard")
         self.assertEqual(self.fields_of(batch)["record"], "reports-acknowledge")
 
+    def test_the_record_names_the_servers_session_as_the_cli_names_its_own(self):
+        """sd:1168: the route passed no `session`, so a batch filed while
+        `SD_SESSION` was set recorded `null`. The server runs in this process,
+        so its environment is the one patched here."""
+        with patch.dict("os.environ", {"SD_SESSION": "dashboard-session"}):
+            status, _, result = self.post(ACKNOWLEDGE_CLEAN, self.payload())
+        self.assertEqual(status, 200, result)
+        self.assertEqual(self.fields_of(result["item"]["id"])["report"]["actor"]["session"], "dashboard-session")
+
     def test_a_replay_of_an_applied_plan_is_stale_and_writes_nothing(self):
         payload = self.payload()
         self.assertEqual(self.post(ACKNOWLEDGE_CLEAN, payload)[0], 200)
