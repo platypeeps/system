@@ -625,7 +625,12 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
             except Exception as exc:                 # a defect here is a decline
                 if not isinstance(exc, Declined):
                     exc = Declined("invalid", "invalid", repr(exc))
-                reply = reply or exc.reply
+                # A decline that read usage off its response keeps it; one
+                # that read none is a plain decline, as before.
+                if reply is None and exc.reply and any(
+                        value is not None for key, value in exc.reply.items()
+                        if key != "reply"):
+                    reply = exc.reply
                 results[qid] = dict(reply, declined=exc) if reply else exc
 
         threads = [threading.Thread(target=one, args=item, daemon=True)
