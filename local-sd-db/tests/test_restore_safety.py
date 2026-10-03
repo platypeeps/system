@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import connect, create_item
+from sd_db import connect, create_item, paths
 from sd_db.backup import restore, run
 from sd_db.errors import BackupError
 from sd_db.migrate import initialise
@@ -154,15 +154,17 @@ class RestoreSafety(unittest.TestCase):
         self.assertEqual(self.config.read_text(encoding="utf-8"), "snapshot providers\n")
         self.assertEqual([row[0] for row in self.writer.execute("SELECT title FROM item")], ["Saved before backup"])
 
-    def legacy_snapshot(self):
-        directory = self.home.parent / "legacy-schema-3"
+    def legacy_snapshot(self, schema=3):
+        directory = self.home.parent / f"legacy-schema-{schema}"
         directory.mkdir()
         raw = sqlite3.connect(directory / "sd.db")
         try:
+            # 014 calls the functions `migrate` registers.
+            paths.install(raw)
             for version, source in migrations():
-                if version <= 3:
+                if version <= schema:
                     raw.executescript(source.read_text())
-            raw.execute("PRAGMA user_version=3")
+            raw.execute(f"PRAGMA user_version={schema}")
             raw.execute("INSERT INTO item(kind,title,status,created_at,updated_at) VALUES ('task','Legacy task','planning','2026-09-01T00:00:00+00:00','2026-09-01T00:00:00+00:00')")
             raw.commit()
         finally:
@@ -177,6 +179,22 @@ class RestoreSafety(unittest.TestCase):
         self.assertEqual(self.writer.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
         self.assertEqual(self.writer.execute("SELECT title FROM item").fetchone()[0], "Legacy task")
         self.assertEqual(self.writer.execute("SELECT count(*) FROM item").fetchone()[0], 1)
+        self.assertEqual(self.writer.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual(self.writer.execute("SELECT count(*) FROM state WHERE kind='restore' AND resolved_at IS NULL").fetchone()[0], 1)
+
+    def test_a_snapshot_one_version_behind_upgrades_and_restores(self):
+        """The common restore: a backup taken before the last migration.
+        Built by applying every migration but the last, so it has the real
+        shape of `SCHEMA_VERSION - 1`, not a relabelled current file; the
+        refusals above are all negative, and nothing else proved this path
+        restores (sd:1220)."""
+        previous = SCHEMA_VERSION - 1
+        snapshot = self.legacy_snapshot(previous)
+        original = (snapshot / "sd.db").read_bytes()
+        restore(snapshot, home=self.home)
+        self.assertEqual((snapshot / "sd.db").read_bytes(), original)
+        self.assertEqual(self.writer.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+        self.assertEqual([row[0] for row in self.writer.execute("SELECT title FROM item")], ["Legacy task"])
         self.assertEqual(self.writer.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(self.writer.execute("SELECT count(*) FROM state WHERE kind='restore' AND resolved_at IS NULL").fetchone()[0], 1)
 

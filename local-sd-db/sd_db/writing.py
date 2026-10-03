@@ -333,7 +333,7 @@ def _rewrite(text: str, changes: dict, *, remove: tuple[str, ...] = ()) -> str:
     for name in remove:
         head = re.sub(rf"(?m)^{re.escape(name)}:.*(?:\n|$)", "", head)
     for name, value in changes.items():
-        encoded = "null" if value is None else json.dumps(value, ensure_ascii=False) if isinstance(value, list) or name == "tip" else str(value)
+        encoded = "null" if value is None else json.dumps(value, ensure_ascii=False) if isinstance(value, list) or name in ("tip", "title") else str(value)
         replacement = f"{name}: {encoded}"
         if isinstance(value, dict):
             replacement = f"{name}:" + "".join(f"\n  {key}: {json.dumps(held, ensure_ascii=False)}" for key, held in value.items())
@@ -657,9 +657,15 @@ def park_piece(connection: sqlite3.Connection, item: int, *, parked: bool = True
 def update_piece_metadata(connection: sqlite3.Connection, item: int, changes: dict, *,
                           expected_revision: str | None = None, who: str) -> dict:
     who = _text(who, "who")
-    allowed = {"published_urls", "review_urls", "tip"}
+    allowed = {"published_urls", "review_urls", "tip", "title"}
     if not isinstance(changes, dict) or set(changes) - allowed:
-        raise WorkflowError("only published_urls, review_urls and tip are editable writing metadata")
+        raise WorkflowError("only published_urls, review_urls, tip and title are editable writing metadata")
+    if "title" in changes:
+        # One frontmatter line, so no control character; stripped as import strips it.
+        title = changes["title"]
+        if not isinstance(title, str) or any(ord(char) < 32 or ord(char) == 127 for char in title):
+            raise WorkflowError("title must be one line of text without control characters")
+        changes = {**changes, "title": _text(title, "title")}
     for name, value in changes.items():
         if name.endswith("_urls"):
             targets = ({"gdrive"} | _manual_destinations()) if name == "published_urls" else {"gdocs", "gdocs_digest"}
@@ -671,7 +677,7 @@ def update_piece_metadata(connection: sqlite3.Connection, item: int, changes: di
                         raise WorkflowError("review digest must be a draft digest")
                 elif url is not None and (not isinstance(url, str) or any(ord(char) < 32 for char in url) or urlsplit(url).scheme != "https" or not urlsplit(url).netloc):
                     raise WorkflowError("publication and review URLs must be actual https URLs or null")
-        elif value is not None:
+        elif name == "tip" and value is not None:
             _text(value, "tip")
     original = source = None
     try:
@@ -706,9 +712,12 @@ def update_piece_metadata(connection: sqlite3.Connection, item: int, changes: di
                                 provenance[target] = {"kind": "manual-unverified", "who": who, "url": url}
                 else:
                     metadata[key] = value
-            if json.dumps(fields, sort_keys=True) == previous_fields:
+            retitled = "title" in changes and changes["title"] != row["title"]
+            if json.dumps(fields, sort_keys=True) == previous_fields and not retitled:
                 return piece_state(connection, item)
             values = {"fields": fields}
+            if retitled:
+                values["title"] = changes["title"]
             if owner == "file":
                 snapshot = _snapshot(row)
                 source, original = snapshot["path"], snapshot["files"]["index"]
@@ -717,6 +726,9 @@ def update_piece_metadata(connection: sqlite3.Connection, item: int, changes: di
                 values["body"] = {"source": text}
             set_item_fields(connection, item, **values)
             add_note(connection, item, "comment", f"Updated writing metadata: {', '.join(sorted(changes))}", session=who)
+            if retitled:
+                add_note(connection, item, "comment",
+                         f"Title changed from {row['title']!r} to {changes['title']!r} by {who}", session=who)
             return piece_state(connection, item)
     except BaseException:
         if original is not None:

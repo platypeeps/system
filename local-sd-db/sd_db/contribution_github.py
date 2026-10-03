@@ -260,7 +260,10 @@ def _ci(client, prefix, head):
     # repeats, and a suite no workflow run names (another CI app) keeps every
     # run it has. The lookup is enrichment: if it fails for any reason but
     # the spent budget, it names no suite, and every run counts.
-    # Check-suite ids grow with creation.
+    # Check-suite ids grow with creation. A suite whose every job was skipped
+    # (a job conditioned on the payload, skipped on the edit that reran it)
+    # tested nothing, so it never replaces one that ran; when every suite of
+    # the workflow was skipped, the newest still decides (sd:1824).
     names = [(run.get("name"), (run.get("app") or {}).get("id")) for run in runs]
     workflow = {}
     if len(set(names)) < len(names):
@@ -278,10 +281,15 @@ def _ci(client, prefix, head):
                 workflow[row.get("check_suite_id")] = (
                     row.get("workflow_id"), event, row.get("head_branch"), pulls)
     suites = [(run.get("check_suite") or {}).get("id") for run in runs]
+    skipped = {}
+    for run, suite in zip(runs, suites):
+        done = run.get("status") == "completed" and run.get("conclusion") == "skipped"
+        skipped[suite] = skipped.get(suite, True) and done
     latest = {}
     for suite in suites:
         flow = workflow.get(suite)
-        if flow is not None and (flow not in latest or suite > latest[flow]):
+        if flow is not None and (flow not in latest
+                                 or (not skipped[suite], suite) > (not skipped[latest[flow]], latest[flow])):
             latest[flow] = suite
     newest = {run["id"]: run for run, suite in zip(runs, suites)
               if workflow.get(suite) is None or latest[workflow[suite]] == suite}
