@@ -9,7 +9,11 @@ reader, or whose reader failed, is unknown on the page and names what it does
 not read, never a clean lamp. Ports is Operations > Ports' reader with its
 counts and warnings; Protection is `protection.rows` as a matrix, one column
 per repository, with a table carrying the same cells, and an unread
-repository shows no cell.
+repository shows no cell. Disk and Branches (sd:2202, sd:2204) read this
+machine through `health_collectors`, each inside its budget: the collector
+tests below run real git against fixture repositories, with `df` and `du`
+stubbed where the answer depends on the machine; every other test fills both
+seams with the fixtures below, so no test reads the operator's disks.
 
 `health.js` runs under JavaScriptCore (osascript) against the stand-in page
 and shell `test_v2_tasks` defines, with the document above as its fetch
@@ -30,7 +34,7 @@ from unittest.mock import patch
 
 from sd_db import reads
 
-from sd_dashboard import health_screen, server, v2
+from sd_dashboard import health_collectors, health_screen, server, v2
 
 from support import NOW, ScreenCase
 from test_v2_today import OSASCRIPT, Refused
@@ -97,22 +101,83 @@ def protection_of(rows):
     return lambda connection: rows
 
 
-class TheDocument(ScreenCase):
+GIB = 1024 ** 2
+DISK = {
+    "volumes": [
+        {"filesystem": "/dev/disk3s5", "size_kb": 1000 * GIB, "used_kb": 850 * GIB, "avail_kb": 150 * GIB, "capacity": 85,
+         "mount": "/System/Volumes/Data"},
+        {"filesystem": "/dev/disk5s1", "size_kb": 2000 * GIB, "used_kb": 800 * GIB, "avail_kb": 1200 * GIB, "capacity": 40,
+         "mount": "/Volumes/store"},
+    ],
+    "build": {"checked": 4, "unread": [],
+              "merged": [{"path": "/work/wt-old", "head": "0" * 40, "branch": "feat/done", "repo": "/checkouts/alpha",
+                          "dirs": ["target", "node_modules"]}]},
+    "storage": [{"root": "/Volumes/store/repo-storage", "error": "",
+                 "folders": [{"path": "/Volumes/store/repo-storage/alpha", "kb": 5 * GIB},
+                             {"path": "/Volumes/store/repo-storage/beta", "kb": 2 * GIB},
+                             {"path": "/Volumes/store/repo-storage/gamma", "kb": GIB},
+                             {"path": "/Volumes/store/repo-storage/delta", "kb": 10 * 1024}]}],
+    "refused": [], "config": "/config/project-dashboard/disk.conf",
+}
+BRANCHES = {
+    "repos": 2, "no_default": ["/checkouts/beta"], "unread": [],
+    "merged": [{"repo": "/checkouts/alpha", "path": "/checkouts/alpha",
+                "deletable": [["feat/one", "2026-08-01"], ["feat/two", "2026-09-01"], ["fix/three", "2026-07-15"]],
+                "checked_out": [["feat/live", "/work/wt-live"]]}],
+}
+CLEAN_DISK = {**DISK, "volumes": [DISK["volumes"][1]], "build": {"checked": 4, "merged": [], "unread": []}}
+CLEAN_BRANCHES = {"repos": 2, "merged": [], "no_default": [], "unread": []}
+REAL_DISK_SCAN, REAL_BRANCH_SCAN = health_collectors.disk_scan, health_collectors.branch_scan
+
+
+def scan_of(scan):
+    return lambda connection: scan
+
+
+class Collectors:
+    """Disk and Branches read the fixtures above unless a test names its own reader: no test reads this machine."""
+
+    def setUp(self):
+        super().setUp()
+        for name, scan in (("disk_scan", DISK), ("branch_scan", BRANCHES)):
+            patcher = patch.object(health_collectors, name, scan_of(scan))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+def git(*args, cwd=None):
+    env = {**os.environ, "GIT_AUTHOR_DATE": "2026-09-05T10:00:00Z", "GIT_COMMITTER_DATE": "2026-09-05T10:00:00Z",
+           "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
+           "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test", "GIT_CONFIG_GLOBAL": os.devnull}
+    return subprocess.run(["git", *args], cwd=cwd, check=True, env=env, capture_output=True, text=True).stdout.strip()
+
+
+def cloned(path: Path) -> Path:
+    """A repository on main with origin/HEAD at its tip, the way a clone knows its default branch."""
+    git("init", "-q", "-b", "main", str(path))
+    git("-C", str(path), "commit", "-q", "--allow-empty", "-m", "first")
+    git("-C", str(path), "update-ref", "refs/remotes/origin/main", "HEAD")
+    git("-C", str(path), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    return path
+
+
+class TheDocument(Collectors, ScreenCase):
     """`health_screen.document` from the fleet child and the trailer count."""
 
     def doc(self, trees=TREES, count=3, **kwargs):
         return health_screen.document(self.connection, now=NOW, fleet=kwargs.get("fleet") or fleet_of(trees),
                                       trailers=kwargs.get("trailers") or trailers_of(count),
                                       ports=kwargs.get("ports") or ports_snapshot,
-                                      protection=kwargs.get("protection") or protection_of(PROTECTION))
+                                      protection=kwargs.get("protection") or protection_of(PROTECTION),
+                                      disk=kwargs.get("disk"), branches=kwargs.get("branches"))
 
     def test_every_design_area_is_there_in_order_and_says_whether_a_reader_covers_it(self):
         areas = self.doc()["areas"]
         self.assertEqual([(a["id"], a["read"]) for a in areas],
-                         [("disk", False), ("cred", False), ("attr", True), ("wt", True),
-                          ("br", False), ("dep", False), ("sec", False), ("ports", True), ("prot", True)])
+                         [("disk", True), ("cred", False), ("attr", True), ("wt", True),
+                          ("br", True), ("dep", False), ("sec", False), ("ports", True), ("prot", True)])
         for area in areas:
-            if area["id"] not in ("ports", "prot"):
+            if area["id"] not in ("br", "ports", "prot"):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
@@ -264,7 +329,168 @@ class TheDocument(ScreenCase):
         self.assertEqual(doc["areas"][2]["rows"][0]["facts"]["Missing"], "1")
 
 
-class ThePage(BrowserSession):
+    def test_merged_branches_are_one_row_per_repo_and_a_checked_out_one_is_its_own(self):
+        br = self.doc()["areas"][4]
+        rows = {row["id"]: row for row in br["rows"]}
+        self.assertEqual(list(rows), ["br:/checkouts/alpha", "brs:/checkouts/alpha", "br:no_default"])
+        merged = rows["br:/checkouts/alpha"]
+        self.assertEqual((merged["state"], merged["type"], merged["what"]),
+                         ("caution", "merged branches", "alpha: 3 merged branches not deleted"))
+        self.assertEqual(merged["facts"], {"Repo": "/checkouts/alpha", "Merged": "3", "Oldest": "2026-07-15", "Newest": "2026-09-01"})
+        self.assertEqual(merged["cli"], "git -C /checkouts/alpha branch -d feat/one feat/two fix/three")
+        self.assertEqual(merged["list"], ["feat/one · 2026-08-01", "feat/two · 2026-09-01", "fix/three · 2026-07-15"])
+        held = rows["brs:/checkouts/alpha"]
+        self.assertEqual((held["state"], held["type"], held["cli"]), ("queued", "merged branches", "git -C /checkouts/alpha worktree list"))
+        self.assertIn("git branch -d refuses it", held["disabled"])
+        self.assertEqual((rows["br:no_default"]["state"], rows["br:no_default"]["list"]), ("unknown", ["/checkouts/beta"]))
+        self.assertIn("remote set-head origin --auto", rows["br:no_default"]["cli"])
+
+    def test_no_merged_branch_is_an_ok_check_and_no_repo_is_unknown_not_clean(self):
+        clean = {"repos": 3, "merged": [], "no_default": [], "unread": []}
+        (row,) = self.doc(branches=scan_of(clean))["areas"][4]["rows"]
+        self.assertEqual((row["id"], row["state"], row["detail"]),
+                         ("br:ok", "ok", "checked the local branches of 3 repos against origin/HEAD"))
+        (row,) = self.doc(branches=scan_of({**clean, "repos": 0}))["areas"][4]["rows"]
+        self.assertEqual((row["id"], row["state"]), ("br:none", "unknown"))
+
+    def test_disk_is_a_row_per_full_volume_the_biggest_storage_folders_and_merged_build_output(self):
+        disk = self.doc()["areas"][0]
+        rows = {row["id"]: row for row in disk["rows"]}
+        self.assertEqual(list(rows), ["vol:/System/Volumes/Data", "rs:/Volumes/store/repo-storage/alpha",
+                                      "rs:/Volumes/store/repo-storage/beta", "rs:/Volumes/store/repo-storage/gamma",
+                                      "build:merged"])
+        volume = rows["vol:/System/Volumes/Data"]
+        self.assertEqual((volume["state"], volume["what"], volume["detail"]),
+                         ("caution", "Mac data is 85% full", "/System/Volumes/Data · 150.0 GiB free of 1000.0 GiB"))
+        folder = rows["rs:/Volumes/store/repo-storage/alpha"]
+        self.assertEqual((folder["state"], folder["type"], folder["what"]), ("queued", "storage folder", "repo-storage/alpha holds 5.0 GiB"))
+        self.assertEqual(folder["cli"], "du -sh /Volumes/store/repo-storage/alpha/* | sort -h | tail -5")
+        build = rows["build:merged"]
+        self.assertEqual((build["state"], build["type"], build["what"]), ("caution", "build output", "1 merged worktree keeps build output"))
+        self.assertEqual(build["cli"], "rm -rf /work/wt-old/target\nrm -rf /work/wt-old/node_modules")
+        self.assertEqual([volume["name"] for volume in disk["extra"]["volumes"]], ["Mac data", "store"])
+        full = {**DISK, "volumes": [{**DISK["volumes"][1], "capacity": 90}], "build": {"checked": 2, "merged": [], "unread": []}}
+        rows = {row["id"]: row for row in self.doc(disk=scan_of(full))["areas"][0]["rows"]}
+        self.assertEqual(rows["vol:/Volumes/store"]["state"], "warning")
+        self.assertEqual((rows["build:merged"]["state"], rows["build:merged"]["type"]), ("ok", "check"))
+
+    def test_disk_with_no_storage_folder_configured_names_the_file_rather_than_a_clean_area(self):
+        rows = {row["id"]: row for row in self.doc(disk=scan_of({**DISK, "storage": [], "refused": ["line 2: junk"]}))["areas"][0]["rows"]}
+        self.assertEqual(rows["rs:none"]["state"], "unknown")
+        self.assertIn("storage|<path> line in /config/project-dashboard/disk.conf (1 line not understood)", rows["rs:none"]["detail"])
+        unread = {**DISK, "storage": [{"root": "/Volumes/gone", "folders": [], "error": "du did not finish inside the Disk budget"}]}
+        rows = {row["id"]: row for row in self.doc(disk=scan_of(unread))["areas"][0]["rows"]}
+        self.assertEqual((rows["rs:/Volumes/gone"]["state"], rows["rs:/Volumes/gone"]["detail"]),
+                         ("unknown", "du did not finish inside the Disk budget"))
+
+    def test_the_branch_reader_lists_merged_branches_and_names_repos_it_could_not_read(self):
+        root = Path(self.tmp.name)
+        alpha = cloned(root / "alpha")
+        git("-C", str(alpha), "branch", "merged-one")
+        git("-C", str(alpha), "branch", "held")
+        git("-C", str(alpha), "worktree", "add", "-q", str(root / "wt-held"), "held")
+        git("-C", str(alpha), "checkout", "-q", "-b", "ahead")
+        git("-C", str(alpha), "commit", "-q", "--allow-empty", "-m", "not merged")
+        git("-C", str(alpha), "checkout", "-q", "main")
+        beta = root / "beta"
+        git("init", "-q", "-b", "main", str(beta))
+        git("-C", str(beta), "commit", "-q", "--allow-empty", "-m", "first")
+        for path in (alpha, beta, root / "gone"):
+            self.repo(str(path))
+        scan = REAL_BRANCH_SCAN(self.connection)
+        self.assertEqual(scan["repos"], 1)
+        (found,) = scan["merged"]
+        # main is the default branch and ahead is not merged: neither is listed.
+        self.assertEqual(found["deletable"], [("merged-one", "2026-09-05")])
+        self.assertEqual([branch for branch, _ in found["checked_out"]], ["held"])
+        self.assertEqual(Path(found["checked_out"][0][1]).resolve(), (root / "wt-held").resolve())
+        self.assertEqual((scan["no_default"], scan["unread"]), ([str(beta)], [str(root / "gone")]))
+
+    def test_a_slow_branch_walk_is_stopped_at_its_budget_and_is_the_branches_error(self):
+        stub = Path(self.tmp.name) / "bin"
+        stub.mkdir()
+        (stub / "git").write_text("#!/bin/sh\nexec sleep 5\n")
+        (stub / "git").chmod(0o755)
+        for name in ("one", "two"):
+            self.repo(f"/checkouts/{name}")
+        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
+            started = time.monotonic()
+            doc = self.doc(branches=lambda connection: REAL_BRANCH_SCAN(connection, within=0.5))
+            elapsed = time.monotonic() - started
+        br = doc["areas"][4]
+        self.assertLess(elapsed, 3, "the page waited on the branch walk instead of stopping it")
+        self.assertEqual((br["rows"], br["error"]), ([], "the merged-branch walk ran past its budget of 0.5 seconds "
+                                                         "and was stopped rather than waited on"))
+
+    def stub(self, name, body):
+        stub = Path(self.tmp.name) / "bin"
+        stub.mkdir(exist_ok=True)
+        (stub / name).write_text("#!/bin/sh\n" + body)
+        (stub / name).chmod(0o755)
+        return stub
+
+    DF = ("Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+          "/dev/disk3s1s1 1000 400 600 40% /\n"
+          "/dev/disk3s5 1000 850 150 85% /System/Volumes/Data\n"
+          "devfs 10 10 0 100% /dev\n"
+          "pseudofs 0 0 0 - /Volumes/pseudo\n"
+          "/dev/disk5s1 2000 800 1200 40% /Volumes/my store\n")
+
+    def test_the_disk_reader_keeps_the_data_volume_and_volumes_and_finds_merged_build_output(self):
+        root = Path(self.tmp.name)
+        alpha = cloned(root / "alpha")
+        git("-C", str(alpha), "branch", "done")
+        git("-C", str(alpha), "branch", "plain")
+        git("-C", str(alpha), "branch", "ahead")
+        for branch in ("done", "plain", "ahead"):
+            git("-C", str(alpha), "worktree", "add", "-q", str(root / f"wt-{branch}"), branch)
+        git("-C", str(root / "wt-ahead"), "commit", "-q", "--allow-empty", "-m", "not merged")
+        (root / "wt-done" / "target").mkdir()
+        (root / "wt-ahead" / "node_modules").mkdir()
+        self.repo(str(alpha))
+        store = root / "store"
+        for name, size in (("big", 64), ("small", 8)):
+            (store / name).mkdir(parents=True)
+            (store / name / "data").write_bytes(b"x" * size * 1024)
+        config = root / "disk.conf"
+        config.write_text(f"# storage folders\nstorage|{store}\nstorage|{root / 'missing'}\nvolume|/nowhere\n")
+        stub = self.stub("df", f"cat <<'EOF'\n{self.DF}EOF\n")
+        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
+            scan = REAL_DISK_SCAN(self.connection, config=config)
+        self.assertEqual([volume["mount"] for volume in scan["volumes"]], ["/System/Volumes/Data", "/Volumes/my store"])
+        self.assertEqual(scan["volumes"][0]["capacity"], 85)
+        self.assertEqual(scan["build"]["checked"], 3)
+        (merged,) = scan["build"]["merged"]
+        self.assertEqual((Path(merged["path"]).resolve(), merged["branch"], merged["dirs"]), ((root / "wt-done").resolve(), "done", ["target"]))
+        found, missing = scan["storage"]
+        self.assertEqual([Path(folder["path"]).name for folder in found["folders"]], ["big", "small"])
+        self.assertEqual(missing["error"], "the folder does not exist or is not mounted")
+        self.assertEqual(scan["refused"], ["line 4: volume|/nowhere"])
+
+    def test_the_committed_example_is_one_storage_folder_the_reader_understands(self):
+        example = Path(health_collectors.__file__).resolve().parents[1] / "disk.conf.example"
+        roots, refused, read = health_collectors.storage_roots(example)
+        self.assertEqual((roots, refused, read), ([Path("/Volumes/change-me/repo-storage")], [], example))
+
+    def test_a_du_that_does_not_finish_is_a_row_not_a_refusal_of_the_area(self):
+        store = Path(self.tmp.name) / "store"
+        store.mkdir()
+        config = Path(self.tmp.name) / "disk.conf"
+        config.write_text(f"storage|{store}\n")
+        stub = self.stub("df", f"cat <<'EOF'\n{self.DF}EOF\n")
+        self.stub("du", "exec sleep 5\n")
+        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
+            started = time.monotonic()
+            doc = self.doc(disk=lambda connection: REAL_DISK_SCAN(connection, within=1, config=config))
+            elapsed = time.monotonic() - started
+        disk = doc["areas"][0]
+        self.assertLess(elapsed, 3, "the page waited on du instead of stopping it")
+        self.assertEqual(disk["error"], "")
+        rows = {row["id"]: row for row in disk["rows"]}
+        self.assertEqual(rows[f"rs:{store}"]["detail"], "du did not finish inside the Disk budget")
+
+
+class ThePage(Collectors, BrowserSession):
     fleet_backend = staticmethod(fleet_of(TREES))
 
     def setUp(self):
@@ -313,7 +539,7 @@ window.shell.state = s => OUT.states.push(s);
 """
 
 
-class TheScript(ScreenCase):
+class TheScript(Collectors, ScreenCase):
     """health.js against the document `health_screen` builds from the fixtures above."""
 
     def run_page(self, body, doc=None, status=200):
@@ -339,14 +565,22 @@ class TheScript(ScreenCase):
         out = self.run_page("""R.reg = REG.map(c => [c.id, c.on, c.risk, c.key || null, typeof c.executes === 'boolean' ? c.executes : null, !!c.bulk]);""")
         self.assertEqual(out["R"]["reg"], [
             ["check.recheck", "check", "safe", "e", False, False],
+            ["storage folder.du", "storage folder", "safe", "b", False, False],
+            ["build output.rm", "build output", "confirm", "r", False, False],
+            ["volume.df", "volume", "safe", "b", False, False],
             ["attribution gap.attribute", "attribution gap", "safe", "a", False, False],
             ["worktree registrations.prune", "worktree registrations", "confirm", "p", False, True],
+            ["merged branches.delete", "merged branches", "safe", "d", False, True],
             ["port.inspect", "port", "safe", "i", False, False],
             ["protection.settings", "branch protection", "safe", "o", False, False],
             ["collector.sync", "collector", "safe", "r", False, False],
+            ["storage folder.snooze", "storage folder", "undo", "z", None, True],
+            ["build output.snooze", "build output", "undo", "z", None, True],
+            ["volume.snooze", "volume", "undo", "z", None, True],
             ["worktree registrations.snooze", "worktree registrations", "undo", "z", None, True],
             ["unread registrations.snooze", "unread registrations", "undo", "z", None, True],
             ["attribution gap.snooze", "attribution gap", "undo", "z", None, True],
+            ["merged branches.snooze", "merged branches", "undo", "z", None, True],
             ["port.snooze", "port", "undo", "z", None, True],
             ["branch protection.snooze", "branch protection", "undo", "z", None, True],
         ])
@@ -355,16 +589,19 @@ class TheScript(ScreenCase):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html; R.sub = ELS.subhead.html;")
         self.assertEqual(out["gets"], ["/api/health"])
         lamps = out["R"]["lamps"]
-        for area in ("disk", "cred", "br", "dep", "sec"):
+        for area in ("cred", "dep", "sec"):
             self.assertRegex(lamps, rf'data-area="{area}" data-state="unknown"[^>]*>.*?no reader', area)
         self.assertRegex(lamps, r'data-area="wt" data-state="caution"[^>]*>.*?<b>2</b> dir gone')
         self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?<b>3</b> missing')
         self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?your commits · 5 weeks · default branch')
+        self.assertRegex(lamps, r'data-area="disk" data-state="caution"[^>]*>.*?<b>85%</b> fullest</span> <span class="ph">Mac data')
+        self.assertRegex(lamps, r'data-area="br" data-state="caution"[^>]*>.*?<b>3</b> merged')
         areas = out["R"]["areas"]
-        self.assertIn("<b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: volume use (df -k)", areas)
+        self.assertIn("<b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: GitHub PAT presence and expiry", areas)
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
+        self.assertIn("<b>Not read here:</b> build output sizes", areas)
         self.assertIn('data-id="gone:group/alpha"', areas)
-        self.assertIn("9 areas · 1 warning, 3 caution rows want you · 5 areas with no reader yet", out["R"]["sub"])
+        self.assertIn("9 areas · 1 warning, 6 caution rows want you · 3 areas with no reader yet", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
 
@@ -372,7 +609,7 @@ class TheScript(ScreenCase):
         def broken(area):
             raise ValueError("fleet collection was stopped at its budget: sessions")
         doc = health_screen.document(self.connection, now=NOW, fleet=broken, trailers=trailers_of(0), ports=ports_snapshot,
-                                     protection=protection_of([]))
+                                     protection=protection_of([]), disk=scan_of(CLEAN_DISK), branches=scan_of(CLEAN_BRANCHES))
         out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html;", doc)
         self.assertRegex(out["R"]["lamps"], r'data-area="wt" data-state="unknown"[^>]*>.*?not read')
         self.assertIn("<b>Not read:</b> fleet collection was stopped at its budget: sessions", out["R"]["areas"])
@@ -451,16 +688,17 @@ R.observed = document.body.dataset.observed;""")
 
     def test_a_lamp_shows_its_area_only_and_a_state_chip_narrows_the_rows(self):
         click = "ELS.{el}.listeners.click[0]({{ target: {{ closest: s => s === '{sel}' ? {{ id: '', dataset: {data} }} : null }} }});"
-        out = self.run_page(click.format(el="annunciator", sel="button.cell", data="{ area: 'disk' }")
-                            + "R.disk = ELS.areas.html; R.note = ELS.filtered.html;"
-                            + click.format(el="annunciator", sel="button.cell", data="{ area: 'disk' }")
+        out = self.run_page(click.format(el="annunciator", sel="button.cell", data="{ area: 'cred' }")
+                            + "R.cred = ELS.areas.html; R.note = ELS.filtered.html;"
+                            + click.format(el="annunciator", sel="button.cell", data="{ area: 'cred' }")
                             + click.format(el="filters", sel="[data-f]", data="{ f: 'state', v: 'unknown' }")
                             + "R.unknown = ELS.areas.html;")
-        disk, unknown = out["R"]["disk"], out["R"]["unknown"]
-        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', disk), ["disk"])
-        self.assertIn("No row matches Disk only.", out["R"]["note"])
-        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown), ["wt", "ports", "prot"])
-        self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown), ["unread:beta", "port:svc-b:9020", "prot:/checkouts/gamma"])
+        cred, unknown = out["R"]["cred"], out["R"]["unknown"]
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
+        self.assertIn("No row matches Credentials only.", out["R"]["note"])
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown), ["wt", "br", "ports", "prot"])
+        self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown),
+                         ["unread:beta", "br:no_default", "port:svc-b:9020", "prot:/checkouts/gamma"])
 
     def test_a_second_lamp_adds_its_area_and_pressing_one_again_takes_it_out(self):
         click = "ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === 'button.cell' ? {{ id: '', dataset: {{ area: '{a}' }} }} : null }} }});"
@@ -537,6 +775,35 @@ shellRun(cmd('worktree registrations.prune'), o); await flush();""")
         self.assertEqual(out["toasts"][-1][0], "Not run here: copy the line from Details and run it in a terminal · "
                                                "group/alpha: 2 worktrees registered, directory gone")
 
+    def test_disk_draws_a_bar_per_volume_and_its_lines_are_copy_only(self):
+        out = self.run_page("""R.areas = ELS.areas.html; var o = C.get('build:merged');
+R.rm = cmd('build output.rm').cli(o); R.why = cmd('build output.rm').consequence(o);
+R.du = cmd('storage folder.du').cli(C.get('rs:/Volumes/store/repo-storage/alpha'));
+shellRun(cmd('build output.rm'), o); await flush();""")
+        areas = out["R"]["areas"]
+        self.assertIn('<div class="bars" role="group" aria-label="Volume use: Mac data 85%, store 40%">', areas)
+        self.assertIn('<span class="name" title="/Volumes/store">store</span>', areas)
+        self.assertIn('<rect class="fill" x="0.5" y="0.5" width="85.0%" height="11" rx="2"/>', areas)
+        self.assertIn('<span class="v">85% · 150.0 GiB free</span>', areas)
+        self.assertEqual(out["R"]["rm"], "rm -rf /work/wt-old/target\nrm -rf /work/wt-old/node_modules")
+        self.assertIn("Deletes the build output of 1 merged worktrees: /work/wt-old.", out["R"]["why"])
+        self.assertEqual(out["R"]["du"], "du -sh /Volumes/store/repo-storage/alpha/* | sort -h | tail -5")
+        self.assertEqual(out["confirms"], ["build output.rm"])
+        self.assertEqual(out["posts"], [])
+
+    def test_delete_merged_is_copy_only_and_a_checked_out_branch_says_why_git_refuses(self):
+        out = self.run_page("""var o = C.get('br:/checkouts/alpha'), held = C.get('brs:/checkouts/alpha');
+R.cli = cmd('merged branches.delete').cli(o); R.why = cmd('merged branches.delete').consequence(o);
+R.on = cmd('merged branches.delete').when(o); R.held = cmd('merged branches.delete').when(held);
+shellRun(cmd('merged branches.delete'), o); await flush();""")
+        self.assertEqual(out["R"]["cli"], "git -C /checkouts/alpha branch -d feat/one feat/two fix/three")
+        self.assertEqual(out["R"]["why"], "Deletes 3 local branches already in origin's default branch. git branch -d refuses any unmerged one.")
+        self.assertIs(out["R"]["on"], True)
+        self.assertEqual(out["R"]["held"], "checked out in a worktree: git branch -d refuses it until the worktree is removed")
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"][-1][0], "Not run here: copy the line from Details and run it in a terminal · "
+                                               "alpha: 3 merged branches not deleted")
+
     def test_details_show_the_facts_and_the_registrations_behind_a_row(self):
         out = self.run_page("document.dispatchEvent(new CustomEvent('shell:open', { detail: 'gone:group/alpha' })); R.d = ELS.details.html;")
         details = out["R"]["d"]
@@ -547,7 +814,7 @@ shellRun(cmd('worktree registrations.prune'), o); await flush();""")
 
     def test_the_first_read_opens_the_first_row_in_details(self):
         out = self.run_page("R.d = document.getElementById('details').html || '';")
-        self.assertIn("<h2>3 of 10 of your commits in 5 weeks lack Authored-with</h2>", out["R"]["d"],
+        self.assertIn("<h2>Mac data is 85% full</h2>", out["R"]["d"],
                       "Details still say the fleet is being read after the rows arrived")
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
