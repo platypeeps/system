@@ -240,7 +240,30 @@ def constants(units):
     return out
 
 
-def argv_sequences(rel):
+def shell_calls(rows):
+    """A shell file's code lines with each `\\` continuation joined, as (first line number, text).
+
+    A shell call is one logical line, not one physical one: `health-check.sh`
+    spells its `jev ask` across two with a trailing backslash. A rule that
+    reads physical lines sees half a call there, and a flag moved to the
+    second half passes it.
+    """
+    calls, parts, start = [], [], None
+    for number, line in rows:
+        start = number if start is None else start
+        text = line.rstrip()
+        if text.endswith("\\"):
+            parts.append(text[:-1])
+            continue
+        parts.append(line)
+        calls.append((start, " ".join(parts)))
+        parts, start = [], None
+    if parts:
+        calls.append((start, " ".join(parts)))
+    return calls
+
+
+def argv_sequences(rel, source=None):
     """Every literal argument sequence in a Python file, in source order.
 
     A list, tuple or call's positional arguments, as the string constants it
@@ -252,9 +275,10 @@ def argv_sequences(rel):
 
     Returns (line number, [str | None]) pairs. A file that does not parse is
     skipped rather than failing the suite: this rule is not a syntax gate.
+    `source` stands in for the file, so the readers can be tested on their own.
     """
     try:
-        tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+        tree = ast.parse((ROOT / rel).read_text(encoding="utf-8") if source is None else source)
     except (SyntaxError, ValueError, OSError):
         return []
 
@@ -484,6 +508,54 @@ def gates(folder):
     return found
 
 
+def fallback_before_verb(rel, rows, source=None):
+    """Every call in one file that passes `--fallback` before its verb, as `rel:line (reader)`."""
+    verbs = "|".join(VERBS)
+    before = re.compile(
+        rf"""--fallback\b(?:(?!\b(?:{verbs})\b).)*?["'\s,]({verbs})["'\s,]""")
+    bad = []
+    # Shell spells a call on one logical line, so a line scan is the right
+    # reader for `.sh` once continuations are joined. Python does not, and
+    # this used to be the only reader: `drive_intake.py` writes its argv one
+    # element per line, so moving `--fallback` above the verb there passed,
+    # because no single line held both.
+    if rel.endswith(".sh"):
+        bad += [f"{rel}:{number} (line)" for number, line in shell_calls(rows) if before.search(line)]
+    if rel.endswith(".py"):
+        for number, argv in argv_sequences(rel, source):
+            if "--fallback" not in argv:
+                continue
+            verb = next((i for i, a in enumerate(argv) if a in VERBS), None)
+            if verb is None:
+                # Naming no verb, this is not argv: `argv.index(
+                # "--fallback")` in a test reads the same otherwise.
+                continue
+            if argv.index("--fallback") < verb:
+                bad.append(f"{rel}:{number} (argv)")
+    return bad
+
+
+def _reads_stdin(argv, flag):
+    """Whether a literal argv hands `-` to `flag`, as two elements or as `flag=-`."""
+    return any(a == f"{flag}=-" or (a == flag and i + 1 < len(argv) and argv[i + 1] == "-")
+               for i, a in enumerate(argv))
+
+
+def stdin_twice(rel, rows, source=None):
+    """Every call in one file that hands `-` to both `--questions` and `--state`, as `rel:line (reader)`."""
+    both = re.compile(
+        r"""--questions["']?(?:\s*[=,]\s*|\s+)["']?-["'\s,]"""
+        r"""(?:(?!--state).)*--state["']?(?:\s*[=,]\s*|\s+)["']?-["'\s,)]""")
+    lines = shell_calls(rows) if rel.endswith(".sh") else rows
+    bad = [f"{rel}:{number} (line)" for number, line in lines if both.search(line)]
+    # A Python argv puts `"--questions", "-",` and `"--state", "-"` on two
+    # lines as readily as on one, and no single line then holds both.
+    if rel.endswith(".py"):
+        bad += [f"{rel}:{number} (argv)" for number, argv in argv_sequences(rel, source)
+                if _reads_stdin(argv, "--questions") and _reads_stdin(argv, "--state")]
+    return bad
+
+
 class TheInventory(unittest.TestCase):
     """Who calls Jev is read from the filesystem, never from a list."""
 
@@ -605,32 +677,10 @@ class AFallbackNeverReadsAsAJudgment(unittest.TestCase):
         argv that puts the flag first parses nowhere, and the caller sees a
         failure it will read as the service being down.
         """
-        verbs = "|".join(VERBS)
-        # Shell spells a call on one line, so a line scan is the right reader
-        # for `.sh`. Python does not, and this used to be the only reader:
-        # `drive_intake.py` writes its argv one element per line, so moving
-        # `--fallback` above the verb there passed, because no single line
-        # held both. The rule read as enforcing an order it could not see.
-        before = re.compile(
-            rf"""--fallback\b(?:(?!\b(?:{verbs})\b).)*?["'\s,]({verbs})["'\s,]""")
         bad = []
         for folder in sorted(KNOWN_CALLERS):
-            for rel, number, line in folder_code(folder):
-                if rel.endswith(".sh") and before.search(line):
-                    bad.append(f"{rel}:{number} (line)")
-            for rel, _ in folder_files(folder):
-                if not rel.endswith(".py"):
-                    continue
-                for number, argv in argv_sequences(rel):
-                    if "--fallback" not in argv:
-                        continue
-                    verb = next((i for i, a in enumerate(argv) if a in VERBS), None)
-                    if verb is None:
-                        # Naming no verb, this is not argv: `argv.index(
-                        # "--fallback")` in a test reads the same otherwise.
-                        continue
-                    if argv.index("--fallback") < verb:
-                        bad.append(f"{rel}:{number} (argv)")
+            for rel, rows in folder_files(folder):
+                bad += fallback_before_verb(rel, rows)
         self.assertEqual(
             bad, [],
             "--fallback is passed before the verb; it is a subparser "
@@ -642,20 +692,55 @@ class OnlyOneOptionReadsStdin(unittest.TestCase):
     """`--state` defaults to `-`, so piping into `--questions -` is refused."""
 
     def test_no_call_hands_a_dash_to_both_questions_and_state(self):
-        both = re.compile(
-            r"""--questions["']?(?:\s*[=,]\s*|\s+)["']?-["'\s,]"""
-            r"""(?:(?!--state).)*--state["']?(?:\s*[=,]\s*|\s+)["']?-["'\s,)]""")
         bad = []
         for folder in sorted(KNOWN_CALLERS):
-            for rel, number, line in folder_code(folder):
-                if both.search(line):
-                    bad.append(f"{rel}:{number}")
+            for rel, rows in folder_files(folder):
+                bad += stdin_twice(rel, rows)
         self.assertEqual(
             bad, [],
             "both --questions and --state read stdin in one call; the tool "
             f"refuses it, and before it did it sent an empty state: {bad}",
         )
 
+
+class TheReadersSeeACallAcrossLines(unittest.TestCase):
+    """The two order rules above, on calls spelled the way the tree spells them.
+
+    The tree passes both rules today, so a reader that went blind would pass
+    too. These hand each reader a call that breaks its rule across lines.
+    """
+
+    @staticmethod
+    def rows(text):
+        return list(enumerate(text.split("\n"), start=1))
+
+    @staticmethod
+    def site(rel, reader):
+        """What a rule reports for a call that starts on the first line."""
+        return f"{rel}:{1} ({reader})"
+
+    def test_a_python_argv_over_two_lines_that_hands_stdin_to_both(self):
+        source = 'argv = ["jev", "ask", "--questions", "-",\n        "--state", "-"]\n'
+        self.assertEqual(stdin_twice("x.py", self.rows(source), source), [self.site("x.py", "argv")])
+        source = 'argv = ["jev", "ask", "--questions=-",\n        "--state=-"]\n'
+        self.assertEqual(stdin_twice("x.py", self.rows(source), source), [self.site("x.py", "argv")])
+
+    def test_a_shell_call_continued_over_two_lines_that_hands_stdin_to_both(self):
+        rows = self.rows('jev ask --questions - \\\n  --state - --caller x')
+        self.assertEqual(stdin_twice("x.sh", rows), [self.site("x.sh", "line")])
+
+    def test_a_shell_call_continued_over_two_lines_with_the_fallback_first(self):
+        rows = self.rows('"$JEV" --fallback desk \\\n  choice "Which?" --criteria "a=b"')
+        self.assertEqual(fallback_before_verb("x.sh", rows), [self.site("x.sh", "line")])
+
+    def test_a_call_that_keeps_the_rules_passes_them(self):
+        rows = self.rows('jev ask --questions "$q" \\\n  --state - --caller x')
+        self.assertEqual(stdin_twice("x.sh", rows), [])
+        rows = self.rows('"$JEV" choice "Which?" \\\n  --fallback desk')
+        self.assertEqual(fallback_before_verb("x.sh", rows), [])
+        source = 'argv = ["jev", "noul", "q", "--state", "-",\n        "--fallback", "off"]\n'
+        self.assertEqual(stdin_twice("x.py", self.rows(source), source), [])
+        self.assertEqual(fallback_before_verb("x.py", self.rows(source), source), [])
 
 
 class EveryCallerNamesItselfInTheLedger(unittest.TestCase):
