@@ -95,6 +95,26 @@ class TheDailyReadings(MeterCase):
                          [("2026-09-15", "sd-review", 1), ("2026-09-15", "sd-ship", 2)])
 
 
+class TheStatusChangeNotes(MeterCase):
+    """`reads.status_change_notes`, behind the dashboard's Notes days (sd:2120)."""
+
+    def test_the_window_keeps_status_changes_only_and_its_end_is_open(self):
+        from sd_db.reads import status_change_notes
+        from sd_db.writes import add_note, create_item, transition
+
+        first = create_item(self.db, title="first", kind="task")
+        second = create_item(self.db, title="second", kind="task")
+        transition(self.db, first, "done", who="test")
+        add_note(self.db, first, kind="comment", body="not a status change")
+        stamps = {first: "2026-09-15T10:00:00Z", second: "2026-09-16T00:00:00Z"}
+        for item, at in stamps.items():
+            self.db.execute("UPDATE note SET timestamp = ? WHERE item = ?", (at, item))
+        self.db.commit()
+        rows = status_change_notes(self.db, since="2026-09-15T00:00:00Z", until="2026-09-16T00:00:00Z")
+        self.assertEqual([(row["item"], row["body"].split(" by ")[0], row["title"]) for row in rows],
+                         [(first, "opened as planning", "first"), (first, "planning -> done", "first")])
+
+
 class OneRowPerProviderPerWindow(MeterCase):
     def test_two_windows_for_one_provider_are_two_rows_at_one_moment(self):
         """Clause 15: one row per provider **per window**, so the two gauges

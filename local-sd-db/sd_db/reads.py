@@ -1398,3 +1398,19 @@ def skill_use_days(connection: sqlite3.Connection, *, since: str) -> list[sqlite
 
 
 __all__ += ["meter_days", "skill_use_days"]
+
+
+def status_change_notes(connection: sqlite3.Connection, *, since: str, until: str) -> list[sqlite3.Row]:
+    """Every `status_change` note stamped in [since, until), oldest first, with its item's title, kind and repository.
+
+    The body is the writer's: `opened as <status>` for a new item, `<from> -> <to> by <who>[: reason]` for a move.
+    Behind the dashboard's Notes days (sd:2120).
+    """
+    return connection.execute(
+        "SELECT note.id, note.item, note.timestamp, note.body, item.title, item.kind, item.repo"
+        " FROM note JOIN item ON item.id = note.item"
+        " WHERE note.kind = 'status_change' AND note.timestamp >= ? AND note.timestamp < ?"
+        " ORDER BY note.timestamp, note.id", (since, until)).fetchall()
+
+
+__all__ += ["status_change_notes"]
