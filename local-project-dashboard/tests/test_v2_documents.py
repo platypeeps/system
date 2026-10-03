@@ -39,7 +39,7 @@ V2 = Path(v2.__file__).resolve().parent
 DOCUMENTS_JS = (V2 / "static" / "documents.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
-#: The design's Documents commands (design source products/system/designs/v2/documents.js): id, object type, label, key, risk.
+#: The design's Documents commands (design source products/system/designs/pages/documents.js): id, object type, label, key, risk.
 COMMANDS = [
     ["document.render", "document", "Render", "r", "safe"],
     ["document.open", "document", "Open document", "o", "safe"],

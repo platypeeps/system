@@ -39,7 +39,7 @@ EXAMPLE = Path(home_screen.__file__).resolve().parents[1] / "home-tiles.conf.exa
 #: A token value no page output may ever hold.
 TOKEN = "tok-7f3a9c-never-shown"
 
-#: The design's Home commands (design source products/system/designs/v2/home.html): id, object type, label, key, risk.
+#: The design's Home commands (design source products/system/designs/pages/home.html): id, object type, label, key, risk.
 COMMANDS = [
     ["alarm.arm_home", "alarm", "Arm home", "h", "confirm"],
     ["alarm.arm_away", "alarm", "Arm away", "w", "confirm"],
