@@ -20,6 +20,7 @@ paths:
   - `8084`: llama-cpp, overridable via `PORT`;
   - `8766`: task-actions, overridable via `TASK_ACTIONS_PORT`.
 - graphiti's MCP HTTP sits on `8085` to avoid 8083/8084.
+- `local-kev` serves on loopback `8009`, Kev's documented port, overridable via `KEV_PORT`.
 - `8767` is the workflow dashboard's loopback port, served by `local-project-dashboard/dashboard.sh serve --port`.
   - Its explicit configuration must use the same backend port.
   - Private Tailscale access uses HTTPS on 8443.

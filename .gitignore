@@ -12,6 +12,9 @@
 # Generated sudo no-op shim for the vendored milvus launcher
 local-milvus/.sudo-shim/
 
+# Kev's own checkout, cloned by local-kev/kev.sh install (2 GB, upstream repo)
+local-kev/kev/
+
 # Local data / state directories (folders stay tracked via .gitkeep)
 **/storage/*
 !**/storage/.gitkeep
@@ -73,6 +76,7 @@ local-maintenance/maintenance.*.conf
 local-mirror-sync/mirrors*.conf
 local-project-dashboard/documents.conf
 local-project-dashboard/home-tiles.conf
+local-project-dashboard/report-families.conf
 local-repo-sync/repos.*.conf
 local-scan-for-secrets/scan-for-secrets.conf
 local-sd-plan/repos.*.conf

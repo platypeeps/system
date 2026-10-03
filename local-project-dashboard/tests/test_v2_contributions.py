@@ -34,7 +34,7 @@ V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "contributions.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
-#: The design's Contributions commands (design source products/system/designs/v2/contributions.js): id, object type, label,
+#: The design's Contributions commands (design source products/system/designs/pages/contributions.js): id, object type, label,
 #: key, risk. Acknowledge and Make task are `confirm` here, not the design's `undo`: no verb reverses either.
 COMMANDS = [
     ["contribution.ack", "contribution", "Acknowledge", "a", "confirm"],

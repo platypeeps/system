@@ -121,10 +121,10 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
         from .skills_screen import render
 
         return render(connection, now=now, parameters=parameters)
-    if path == "/documents":
+    if path == "/classic/documents":
         from .documents import render
 
-        # No connection: the listing reads a directory, not the database.
+        # No connection: the listing reads a directory, not the database. `/documents` is the new page's (sd:2114).
         return render(parameters)
     if path == "/designs":
         from .designs import render as designs_render
@@ -639,6 +639,15 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Home does not accept query parameters."})
                     return self._json(200, home_screen.document(now=self.clock()))
+                if path == "/api/documents":
+                    from . import documents_screen
+
+                    # The Documents page's rows (sd:2114): the roots and files /documents/<key>/<file> serves.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Documents."})
+                    if split.query:
+                        return self._json(400, {"error": "Documents does not accept query parameters."})
+                    return self._json(200, documents_screen.document(now=self.clock()))
                 if path == "/api/research" or path.startswith("/api/research/"):
                     from . import research_screen
 
@@ -662,6 +671,23 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Briefs does not accept query parameters."})
                     return self._json(200, briefs_screen.document(now=self.clock()))
+                if path in ("/api/reports", "/api/reports/clean"):
+                    from . import reports_screen
+
+                    # The Reports page's reading and its clean preview (sd:2121): v1's report, job and preview reads.
+                    if not self._session(context):
+                        return self._json(403, {"error": "Open a dashboard page before reading Reports."})
+                    if path == "/api/reports":
+                        if split.query:
+                            return self._json(400, {"error": "Reports does not accept query parameters."})
+                        return self._json(200, reports_screen.document(connection, now=self.clock(),
+                                                                       jobs=self.operations_backend))
+                    if set(parameters) != {"before"} or len(parameters["before"]) != 1:
+                        return self._json(400, {"error": "Give one date: /api/reports/clean?before=YYYY-MM-DD."})
+                    try:
+                        return self._json(200, reports_screen.clean(connection, parameters["before"][0], now=self.clock()))
+                    except workflow.WorkflowError as problem:
+                        return self._json(400, {"error": str(problem)})
                 if path == "/api/activity":
                     from . import activity_screen
 

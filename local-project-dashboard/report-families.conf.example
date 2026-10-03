@@ -1,0 +1,22 @@
+# The Reports page's job families: which scheduled jobs share a lamp.
+#
+# Copy this file to <config>/project-dashboard/report-families.conf and edit it
+# (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system); the lines below
+# are examples. Job names are your own, so the real list stays outside the
+# checkout. Without a report-families.conf the page draws no family lamp, lists
+# every job under "Other jobs", and says why.
+#
+# Pipe-separated, one family per line, in the order the page draws them:
+#
+#   family|<key>|<label>|<icon>|<job>,<job>,...
+#
+# <key> and <icon> are lower-case words joined by hyphens; <icon> names an icon
+# in the dashboard's set (for example hard-drive-download, git-compare,
+# heart-pulse, bot, book-open). A job belongs to one family at most; a job no
+# family names is listed under "Other jobs". A line the page cannot read is
+# named on the page and skipped.
+
+family|backups|Backups|hard-drive-download|db-backup-nightly,offsite-verify
+family|repos|Repos & setup|git-compare|repo-sync-nightly,brew-doctor-nightly
+family|host|Host health|heart-pulse|health-check-nightly,watchdog-daily
+family|agents|Agent routines|bot|morning-brief,weekly-digest

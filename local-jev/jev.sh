@@ -34,7 +34,47 @@ ENV_JEV_ENABLED="${JEV_ENABLED:-}"
 ENV_JEV_FLAG_FILE="${JEV_FLAG_FILE:-}"
 ENV_JEV_TRACES_URL="${JEV_TRACES_URL:-}"
 ENV_JEV_TRACES_TIMEOUT="${JEV_TRACES_TIMEOUT:-}"
+# The comparison arms' settings (jev_compare.py) follow the same rule.
+COMPARE_VARS="JEV_COMPARE_KEV JEV_COMPARE_KEV_URL JEV_COMPARE_KEV_MODEL KEV_API_KEY KEV_MODEL
+  JEV_COMPARE_HAIKU_VIA JEV_COMPARE_HAIKU_MODEL JEV_COMPARE_HAIKU_USD_IN JEV_COMPARE_HAIKU_USD_OUT
+  JEV_COMPARE_ANTHROPIC_KEY JEV_COMPARE_ANTHROPIC_URL JEV_COMPARE_OPENROUTER_KEY
+  JEV_COMPARE_OPENROUTER_URL OPENROUTER_API_KEY JEV_COMPARE_BASETEN_KEY JEV_COMPARE_BASETEN_URL
+  JEV_COMPARE_BASETEN_MODEL BASETEN_API_KEY JEV_COMPARE_CLAUDE JEV_COMPARE_TIMEOUT JEV_COMPARE_LOG"
+# Set-ness is kept apart from the value: an exported empty switch, such as
+# `JEV_COMPARE_HAIKU_VIA= jev ...`, is an off arm and must beat an on-value
+# in the .env, so it is restored even when empty.
+for var in $COMPARE_VARS; do
+  eval "SET_$var=\${$var+set}; ENV_$var=\"\${$var:-}\""
+done
 st_source_env jev
+for var in $COMPARE_VARS; do
+  eval "was=\"\${SET_$var:-}\"; value=\"\${ENV_$var:-}\""
+  [ "$was" != set ] || eval "$var=\"\$value\"; export $var"
+done
+
+# The Kev arm asks the server local-kev runs, so it also reads that service's
+# <config>/kev/.env: a checkpoint, port or key changed for `kev.sh serve` is
+# the one the arm asks and records. Those values are defaults below everything
+# above -- an exported value or <config>/jev/.env wins, and JEV_COMPARE_KEV_URL
+# or JEV_COMPARE_KEV_MODEL beats them both. KEV_PORT only builds the URL.
+KEV_ENV_FILE="$(st_config_dir kev)/.env"
+kev_value() {
+  [ -f "$KEV_ENV_FILE" ] || return 0
+  ( unset "$1"; . "$KEV_ENV_FILE" >/dev/null 2>&1; eval "printf '%s' \"\${$1:-}\"" ) || true
+}
+# Set-ness decides the fallback, not the value: an exported empty KEV_API_KEY
+# switches auth off, and the service key must not reach an overridden URL.
+[ -n "${KEV_MODEL+set}" ] || KEV_MODEL="$(kev_value KEV_MODEL)"
+[ -n "${KEV_API_KEY+set}" ] || KEV_API_KEY="$(kev_value KEV_API_KEY)"
+case "${KEV_API_KEY:-}" in change-me|changeme) KEV_API_KEY="" ;; esac
+if [ -z "${JEV_COMPARE_KEV_URL:-}" ]; then
+  kev_port="${KEV_PORT:-$(kev_value KEV_PORT)}"
+  [ -z "$kev_port" ] || JEV_COMPARE_KEV_URL="http://127.0.0.1:$kev_port/v1/systemone"
+fi
+for var in KEV_MODEL KEV_API_KEY JEV_COMPARE_KEV_URL; do
+  eval "value=\${$var:-}"
+  [ -z "$value" ] || export "$var"
+done
 [ -n "$ENV_TYPESAFE_API_KEY" ] && TYPESAFE_API_KEY="$ENV_TYPESAFE_API_KEY"
 [ -n "$ENV_JEV_URL" ]     && JEV_URL="$ENV_JEV_URL"
 [ -n "$ENV_JEV_MODEL" ]   && JEV_MODEL="$ENV_JEV_MODEL"
@@ -186,6 +226,11 @@ environment:
                      (off when unset; local-genai-traces takes
                      http://127.0.0.1:4338/v1/traces)
   JEV_TRACES_TIMEOUT seconds for that post (default 0.5)
+  JEV_COMPARE_KEV    1/on/true/yes/enabled: run the Kev arm (unset means off)
+  JEV_COMPARE_HAIKU_VIA  anthropic, openrouter, claude-cli or baseten: run
+                     the second comparison arm (unset means off)
+  JEV_COMPARE_*      keys, endpoints, prices and timeout of the arms;
+                     see .env.example and the README
 Defaults for these may also sit in <config>/jev/.env (<config> is
 $SYSTEM_TOOLS_CONFIG, default ~/.config/system; copy local-jev/.env.example);
 an exported value wins over the file.
