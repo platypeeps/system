@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import uuid
 from datetime import UTC, datetime
@@ -695,10 +696,16 @@ def record_session_cost(connection, ident: str, *, provider: str, bill: str | No
     attempt's too, so a second write for the same session changes nothing.
     """
     for name, value in (("tokens_in", tokens_in), ("tokens_out", tokens_out)):
-        if value is not None and (type(value) is not int or value < 0):
-            raise RunnerRefused(f"session {name} must be a non-negative integer")
-    if usd is not None and (type(usd) not in (int, float) or usd < 0):
-        raise RunnerRefused("session usd must be a non-negative number")
+        if value is not None and (type(value) is not int or not 0 <= value <= 2**63 - 1):
+            raise RunnerRefused(f"session {name} must be a non-negative integer SQLite can store")
+    # `ledger._money`'s rule: SQLite stores `nan` as NULL, and `math.isfinite`
+    # raises `OverflowError` on an `int` too large for a float.
+    try:
+        sound = usd is None or (type(usd) in (int, float) and math.isfinite(usd) and usd >= 0)
+    except OverflowError:
+        sound = False
+    if not sound:
+        raise RunnerRefused("session usd must be a finite, non-negative number")
     with transaction(connection):
         existing = session_cost(connection, ident)
         if existing:
