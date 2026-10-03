@@ -307,6 +307,11 @@ Unknown measurements forbid dispatch. Confirmed low database space still attempt
 One failed process observation cannot abort the remaining stops or trigger unrelated restart cleanup.
 Database corruption remains fatal; SQLite contention retains its bounded retry behavior.
 
+The agent's err log (`~/Library/Logs/<prefix>.sd-runner.err`) starts every line `serve` or `once` writes with the local time, `2026-10-03T04:05:06+0200`.
+It also gets one line each time the heartbeat changes health: `runner: unhealthy: <reasons>` and `runner: healthy again` (sd:1953).
+The line names the state at the end of a tick; reasons that change while health stays the same write nothing.
+Output a child writes to the file descriptor directly, and an error before `main` starts, carry no time.
+
 ### Deploy a change to the running daemon
 
 Python reads the runner's modules once, at start, so a merged change reaches the daemon only through a restart.
