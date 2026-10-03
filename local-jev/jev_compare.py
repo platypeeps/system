@@ -109,12 +109,18 @@ TRANSPORTS = {
 
 
 class Declined(Exception):
-    """An arm that ended without an answer, with the ledger's outcome and cause."""
+    """An arm that ended without an answer, with the ledger's outcome and cause.
 
-    def __init__(self, outcome: str, cause: str, detail: str = ""):
+    `reply` is the usage a response reported before the arm declined it, in
+    the shape a transport returns; a decline that reached no response has none.
+    """
+
+    def __init__(self, outcome: str, cause: str, detail: str = "",
+                 reply: dict | None = None):
         super().__init__(detail or cause)
         self.outcome = outcome
         self.cause = cause
+        self.reply = reply
 
 
 # --- shaping ------------------------------------------------------------------
@@ -384,15 +390,18 @@ def ask_openai_compatible(conf: dict, user: str, schema: dict) -> dict:
         body["usage"] = {"include": True}
     reply = http_json(conf["url"], body, {"Authorization": f"Bearer {conf['key']}"},
                       conf["timeout"])
+    usage = reply.get("usage") or {}
+    measured = {"tokens_in": count(usage.get("prompt_tokens")),
+                "tokens_out": count(usage.get("completion_tokens")),
+                "usd": money(usage.get("cost"))}
     try:
         text = reply["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        raise Declined("invalid", "invalid", "the response carries no message")
-    usage = reply.get("usage") or {}
-    cost = usage.get("cost")
-    return {"reply": text, "tokens_in": count(usage.get("prompt_tokens")),
-            "tokens_out": count(usage.get("completion_tokens")),
-            "usd": money(cost)}
+        # A response with no message normally bills nothing; any usage it
+        # does report stays on the decline row, so cost totals stay complete.
+        raise Declined("invalid", "invalid", "the response carries no message",
+                       reply=dict(measured, reply=None))
+    return dict(measured, reply=text)
 
 
 def ask_claude_cli(conf: dict, user: str, schema: dict) -> dict:
@@ -416,24 +425,37 @@ def ask_claude_cli(conf: dict, user: str, schema: dict) -> dict:
             raise Declined("timeout", "timeout", "claude -p timed out")
         except OSError:
             raise Declined("unavailable", "no-path", "claude is not on PATH")
-    if done.returncode != 0:
-        raise Declined("unavailable", "unavailable", f"claude -p exited {done.returncode}")
     try:
-        result = json.loads(done.stdout)
+        result, printed = json.loads(done.stdout), True
     except json.JSONDecodeError:
+        result, printed = None, False
+    # An error exit or an error result can still report what it spent.
+    measured = cli_usage(result) if isinstance(result, dict) else None
+    if done.returncode != 0:
+        raise Declined("unavailable", "unavailable", f"claude -p exited {done.returncode}",
+                       reply=measured)
+    if not printed:
         raise Declined("invalid", "invalid", "claude -p printed no JSON")
-    if not isinstance(result, dict) or result.get("is_error"):
-        raise Declined("unavailable", "unavailable", "claude -p reported an error")
-    usage = result.get("usage") or {}
+    if measured is None or result.get("is_error"):
+        raise Declined("unavailable", "unavailable", "claude -p reported an error",
+                       reply=measured)
+    reply = result.get("structured_output")
+    return dict(measured,
+                reply=reply if isinstance(reply, dict) else result.get("result", ""))
+
+
+def cli_usage(result: dict) -> dict:
+    """The tokens, cost and server time a `claude -p` result reports, with no
+    reply: the shape a decline keeps."""
+    usage = result.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
     counted = [count(usage.get(name)) for name in
                ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
-    cost = result.get("total_cost_usd")
-    reply = result.get("structured_output")
-    return {"reply": reply if isinstance(reply, dict) else result.get("result", ""),
+    return {"reply": None,
             "tokens_in": sum(c for c in counted if c is not None) if any(
                 c is not None for c in counted) else None,
             "tokens_out": count(usage.get("output_tokens")),
-            "usd": money(cost),
+            "usd": money(result.get("total_cost_usd")),
             "server_ms": count(result.get("duration_api_ms"))}
 
 
@@ -603,6 +625,7 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
             except Exception as exc:                 # a defect here is a decline
                 if not isinstance(exc, Declined):
                     exc = Declined("invalid", "invalid", repr(exc))
+                reply = reply or exc.reply
                 results[qid] = dict(reply, declined=exc) if reply else exc
 
         threads = [threading.Thread(target=one, args=item, daemon=True)
