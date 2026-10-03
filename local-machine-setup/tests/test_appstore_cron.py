@@ -308,6 +308,46 @@ class CronOwnershipTest(StageTest):
         self.assertIn("FOREIGN renamed-job", result.stdout)
         self.assertNotIn("uninstall", self.cron_log.read_text())
 
+    def test_a_profile_naming_a_foreign_agent_does_not_abort_the_stage(self):
+        # sd:2538: a capture wrote another installer's agent into the profile.
+        # The real cron-jobs.sh fails verify and install for a name with no job
+        # file, and that install ended the nightly run before every later stage.
+        write_exec(pathlib.Path(self.tmp.name) / "repo/local-cron-jobs/cron-jobs.sh", r"""#!/bin/sh
+printf '%s\n' "$*" >> "$CRON_LOG"
+case "$1 $2" in
+  "verify foreign-job"|"install foreign-job")
+    echo "ERROR: no such job 'foreign-job' (expected <config>/cron-jobs/jobs/foreign-job.job)" >&2
+    exit 1 ;;
+esac
+exit 0
+""")
+        (self.profiles / "personal.cron").write_text("foreign-job\nshared-job\n")
+        self.install_foreign_plist("foreign-job")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FOREIGN foreign-job — in this profile, but another installer's agent holds "
+                      "its label; left in place", result.stdout)
+        # The jobs after it are still checked, and nothing touches its agent.
+        self.assertIn("ok      shared-job", result.stdout)
+        self.assertNotIn("STALE", result.stdout)
+        log = self.cron_log.read_text()
+        self.assertNotIn("foreign-job", log)
+        self.assertTrue(self.plist_path("foreign-job").exists())
+
+    def test_a_profile_job_with_an_unreadable_plist_is_still_reinstalled(self):
+        # Only a plist proven another installer's is skipped; one nobody can
+        # parse, under a name the profile wants, keeps the old repair.
+        self.plist_path("shared-job").write_text("not a plist\n")
+        write_exec(pathlib.Path(self.tmp.name) / "repo/local-cron-jobs/cron-jobs.sh", r"""#!/bin/sh
+printf '%s\n' "$*" >> "$CRON_LOG"
+[ "$1" = verify ] && exit 1
+exit 0
+""")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("STALE   shared-job", result.stdout)
+        self.assertIn("install shared-job", self.cron_log.read_text())
+
     def test_an_unreadable_plist_is_left_in_place(self):
         # Fail closed: a plist nobody can parse is not proven ours.
         self.plist_path("garbled-job").write_text("not a plist\n")
