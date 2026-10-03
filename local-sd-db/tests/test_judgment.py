@@ -106,6 +106,7 @@ class TheRow(JudgmentCase):
 
     def test_usd_is_null_until_there_is_a_price_list(self):
         self.assertIsNone(self.row(self.write())["usd"])
+        self.assertIsNone(self.row(self.write(tokens_in=400, tokens_out=9))["usd"])
 
     def test_a_second_provider_records_beside_the_first(self):
         """Provider-neutral means the field is required and its value is not.
@@ -116,6 +117,75 @@ class TheRow(JudgmentCase):
             sorted(row["provider"] for row in self.rows()),
             ["some-other-vendor", "typesafe"],
         )
+
+
+PRICES = """\
+bills:
+  usage: { cost: usage }
+providers:
+  typesafe: { url: "https://api.example.test/v1/systemone", vendor: typesafe,
+              bill: usage, roles: [], price: { in: 0.5, out: 2 } }
+  pinned:   { url: "https://pinned.example.test/v1", model: pinned-1, vendor: pinned,
+              bill: usage, roles: [], price: { in: 1, out: 1 } }
+  half:     { url: "https://half.example.test/v1", vendor: half, bill: usage,
+              roles: [], price: { in: 1 } }
+roles:
+  author: []
+"""
+
+
+class ThePrice(JudgmentCase):
+    """A row's cost from the price `providers.yaml` registers for its
+    provider (sd:2358). The price is the operator's to enter; with none
+    registered the row keeps its tokens and no cost."""
+
+    def setUp(self):
+        super().setUp()
+        (self.path.parent / "providers.yaml").write_text(PRICES, encoding="utf-8")
+
+    def test_a_registered_price_fills_usd_from_the_tokens(self):
+        row = self.row(self.write(tokens_in=400_000, tokens_out=10_000))
+        self.assertIsNotNone(row["usd"])
+        # 400k x $0.50/M + 10k x $2/M.
+        self.assertAlmostEqual(row["usd"], 0.2 + 0.02)
+
+    def test_a_cost_the_caller_reports_wins(self):
+        row = self.row(self.write(tokens_in=400_000, tokens_out=10_000, usd=0.5))
+        self.assertEqual(row["usd"], 0.5)
+
+    def test_an_unregistered_provider_stays_unpriced(self):
+        row = self.row(self.write(provider="nobody", tokens_in=400, tokens_out=9))
+        self.assertIsNone(row["usd"])
+
+    def test_a_row_with_no_tokens_has_no_cost(self):
+        self.assertIsNone(self.row(self.write())["usd"])
+
+    def test_a_pinned_model_prices_that_model_only(self):
+        self.assertAlmostEqual(self.row(self.write(
+            provider="pinned", model="pinned-1", tokens_in=1_000_000))["usd"], 1.0)
+        self.assertIsNone(self.row(self.write(
+            provider="pinned", model="pinned-2", tokens_in=1_000_000))["usd"])
+
+    def test_a_side_with_tokens_and_no_price_leaves_the_row_unpriced(self):
+        self.assertIsNone(self.row(self.write(
+            provider="half", tokens_in=100, tokens_out=5))["usd"])
+        self.assertAlmostEqual(self.row(self.write(
+            provider="half", tokens_in=1_000_000, tokens_out=0))["usd"], 1.0)
+
+    def test_an_unreadable_registry_costs_no_row(self):
+        (self.path.parent / "providers.yaml").write_text("bills: [", encoding="utf-8")
+        row = self.row(self.write(tokens_in=400, tokens_out=9))
+        self.assertEqual((row["tokens_in"], row["usd"]), (400, None))
+
+    def test_the_report_names_the_unpriced_rows_and_their_provider(self):
+        self.write(tokens_in=400_000, tokens_out=10_000)
+        self.write(provider="nobody", tokens_in=400, tokens_out=9)
+        self.write(provider="nobody", tokens_in=100, tokens_out=1)
+        jev = by_stage(self.connection)[0]["arms"]["jev"]
+        self.assertEqual((jev["unpriced"], jev["unpriced_providers"]), (2, ["nobody"]))
+        self.assertAlmostEqual(jev["usd"], 0.22)
+        self.assertIn("cost $0.2200 (2 unpriced: no providers.yaml price for nobody)",
+                      text(by_stage(self.connection)))
 
 
 class TheTwoArms(JudgmentCase):

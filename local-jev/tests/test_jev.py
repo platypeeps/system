@@ -245,6 +245,19 @@ class TestBackoff(unittest.TestCase):
     def test_backoff_doubles_without_a_header(self):
         self.assertEqual(jev.retry_after({}, 2), jev.BACKOFF * 4)
 
+    def test_a_non_finite_retry_after_falls_back_to_doubling(self):
+        for raw in ("inf", "Infinity", "nan", "-inf"):
+            with self.subTest(raw=raw):
+                self.assertEqual(jev.retry_after({"Retry-After": raw}, 1),
+                                 jev.BACKOFF * 2)
+
+    def test_a_negative_retry_after_falls_back_to_doubling(self):
+        self.assertEqual(jev.retry_after({"Retry-After": "-5"}, 0), jev.BACKOFF)
+
+    def test_a_long_retry_after_is_capped(self):
+        self.assertEqual(jev.retry_after({"Retry-After": "86400"}, 0),
+                         jev.RETRY_AFTER_MAX)
+
 
 class TestVerbs(StubServer):
     def test_noul_prints_only_the_probability(self):
