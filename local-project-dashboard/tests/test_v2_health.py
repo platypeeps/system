@@ -131,7 +131,7 @@ REAL_DISK_SCAN, REAL_BRANCH_SCAN = health_collectors.disk_scan, health_collector
 
 
 def scan_of(scan):
-    return lambda connection: scan
+    return lambda connection, **_: scan
 
 
 class Collectors:
@@ -415,7 +415,8 @@ class TheDocument(Collectors, ScreenCase):
             self.repo(f"/checkouts/{name}")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
             started = time.monotonic()
-            doc = self.doc(branches=lambda connection: REAL_BRANCH_SCAN(connection, within=0.5))
+            doc = self.doc(branches=lambda connection: REAL_BRANCH_SCAN(
+                connection, within=0.5, repo_paths=["/checkouts/one", "/checkouts/two"]))
             elapsed = time.monotonic() - started
         br = doc["areas"][4]
         self.assertLess(elapsed, 3, "the page waited on the branch walk instead of stopping it")
@@ -481,13 +482,54 @@ class TheDocument(Collectors, ScreenCase):
         self.stub("du", "exec sleep 5\n")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
             started = time.monotonic()
-            doc = self.doc(disk=lambda connection: REAL_DISK_SCAN(connection, within=1, config=config))
+            doc = self.doc(disk=lambda connection: REAL_DISK_SCAN(connection, within=1, config=config, repo_paths=[]))
             elapsed = time.monotonic() - started
         disk = doc["areas"][0]
         self.assertLess(elapsed, 3, "the page waited on du instead of stopping it")
         self.assertEqual(disk["error"], "")
         rows = {row["id"]: row for row in disk["rows"]}
         self.assertEqual(rows[f"rs:{store}"]["detail"], "du did not finish inside the Disk budget")
+
+
+    def test_the_walkers_run_at_once_so_the_page_waits_for_the_slowest_not_the_sum(self):
+        # Five walkers of 0.8 s each: in series the page took 4 s, at once it takes one walker's time.
+        def slow(answer):
+            def read(*args, **kwargs):
+                time.sleep(0.8)
+                return answer(*args, **kwargs)
+            return read
+        started = time.monotonic()
+        doc = self.doc(fleet=slow(fleet_of(TREES)), trailers=slow(trailers_of(3)), ports=slow(ports_snapshot),
+                       disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0, f"the readers ran one after another: {elapsed:.1f} s")
+        self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
+                         [(key, "", True) for key in ("disk", "attr", "wt", "br", "ports", "prot")])
+
+    def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
+        def stuck(area):
+            time.sleep(3)
+            return fleet_of(TREES)(area)
+        with patch.object(health_screen, "PAGE_SECONDS", 0.5):
+            started = time.monotonic()
+            doc = self.doc(fleet=stuck)
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.5, "the page waited on a reader past its budget")
+        wt = doc["areas"][3]
+        self.assertEqual((wt["rows"], wt["error"]), ([], "the Worktrees reader was still running at the page's budget of "
+                                                         "0.5 seconds and was left rather than waited on"))
+        self.assertEqual(doc["areas"][2]["rows"][0]["id"], "attr:weeks")
+
+    def test_the_default_walkers_get_the_registry_as_paths_not_the_connection(self):
+        # A sqlite connection refuses a second thread: a default walker handed it would be its area's error.
+        alpha = cloned(Path(self.tmp.name) / "alpha")
+        git("-C", str(alpha), "branch", "merged-one")
+        self.repo(str(alpha))
+        with patch.object(health_collectors, "branch_scan", REAL_BRANCH_SCAN):
+            doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0),
+                                         ports=ports_snapshot, protection=protection_of([]), disk=scan_of(DISK))
+        br = doc["areas"][4]
+        self.assertEqual((br["error"], [row["id"] for row in br["rows"]]), ("", [f"br:{alpha}"]))
 
 
 class ThePage(Collectors, BrowserSession):

@@ -18,6 +18,13 @@ Disk and Branches (sd:2202, sd:2204) are read by `health_collectors`, each
 inside an 8-second budget; past it the area says it stopped rather than
 waited on.
 
+The readers that wait on subprocesses (Disk, Attribution, Worktrees,
+Branches, Ports) run at once, so the slowest decides how long the page
+waits, not the sum of their budgets. The registry they walk is read first,
+on the request's thread, and handed to them as paths. `PAGE_SECONDS` (13)
+bounds the whole document: a reader still running at it is its area's
+error, and the page does not wait for it.
+
 - Branches lists, per registered repository, the local branches
   `origin/HEAD` already contains, the default branch left out. A merged
   branch a worktree has checked out is its own queued row, since

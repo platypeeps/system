@@ -38,9 +38,12 @@ from __future__ import annotations
 
 import shlex
 import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 
-from sd_db import reads
+from sd_db import reads, repos
 from sd_db.errors import SdDbError
 
 from sd_db import protection as protection_module
@@ -407,6 +410,28 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
     return rows, {"volumes": volumes}
 
 
+#: The whole document's budget. The readers run at once, each inside its own budget, the fleet's 12 seconds the
+#: longest, so this is that figure and a margin; a reader still running at it is its area's error.
+PAGE_SECONDS = 13.0
+#: The areas whose reader walks subprocesses, run in the pool; Protection reads only the database, on this thread.
+POOLED = ("disk", "attr", "wt", "br", "ports")
+
+
+def _settle(area: dict, name: str, read) -> None:
+    """One reader's answer into its area: rows and extra, or the reason it has none."""
+    try:
+        found = read()
+        area["rows"], area["extra"] = found if isinstance(found, tuple) else (found, {})
+        if "at" in area["extra"]:
+            area["at"] = area["extra"].pop("at")
+    except reads.OverBudget as refused:
+        area["error"] = f"{refused} and was stopped rather than waited on"
+    except ports_screen.OverBudget as refused:
+        area["error"] = f"the port inventory exceeded its collection budget and was stopped rather than waited on: {refused}"
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError, SdDbError, sqlite3.Error) as failure:
+        area["error"] = str(failure) or f"the {name} reader failed without a reason"
+
+
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=None, ports=None, protection=None,
              disk=None, branches=None) -> dict:
     """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
@@ -418,14 +443,33 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
     is guarded on its own, so one failure is its area's `error` and the
     others still answer. A reader returns its rows, or its rows and what the
     page draws above them (`extra`).
+
+    **The walkers run at once.** Each waits on subprocesses inside its own
+    budget, so in series the budgets add up (the trailer count's 10 seconds,
+    Disk's and Branches' 8, the fleet's 12) and at once the slowest decides.
+    A sqlite connection belongs to the thread that opened it, so the
+    registry the default walkers need is read here first and handed to them
+    as paths; Protection, which reads only the database, stays on this
+    thread. `PAGE_SECONDS` bounds the whole document: a reader still running
+    at it is its area's error, left to stop at its own budget, not waited on.
     """
+    try:
+        known: list[str] | Exception = [row["path"] for row in repos.registered(connection)]
+    except (SdDbError, sqlite3.Error) as failure:
+        known = failure
+
+    def registered() -> list[str]:
+        if isinstance(known, Exception):
+            raise known
+        return known
+
     read_fleet = fleet or fleet_module.collect
     count_trailers = trailers or (lambda connection, *, now: reads.trailer_scan(
-        connection, now=now, within=TRAILER_SECONDS))
+        connection, now=now, within=TRAILER_SECONDS, repo_paths=registered()))
     collect_ports = ports or ports_screen._collect
     read_protection = protection or protection_module.rows
-    scan_disk = disk or health_collectors.disk_scan
-    scan_branches = branches or health_collectors.branch_scan
+    scan_disk = disk or (lambda connection: health_collectors.disk_scan(connection, repo_paths=registered()))
+    scan_branches = branches or (lambda connection: health_collectors.branch_scan(connection, repo_paths=registered()))
     readers = {
         "disk": lambda: _disk_rows(scan_disk(connection)),
         "attr": lambda: _attribution_rows(count_trailers(connection, now=now)),
@@ -434,21 +478,28 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
         "ports": lambda: _port_rows(collect_ports()),
         "prot": lambda: _protection_rows(read_protection(connection)),
     }
-    areas = []
-    for key, name, source, missing in AREAS:
-        area = {"id": key, "name": name, "source": source, "read": key in readers, "error": "", "rows": [],
-                "missing": list(missing), "at": now if key in readers else None, "extra": {}}
-        if key in readers:
-            try:
-                found = readers[key]()
-                area["rows"], area["extra"] = found if isinstance(found, tuple) else (found, {})
-                if "at" in area["extra"]:
-                    area["at"] = area["extra"].pop("at")
-            except reads.OverBudget as refused:
-                area["error"] = f"{refused} and was stopped rather than waited on"
-            except ports_screen.OverBudget as refused:
-                area["error"] = f"the port inventory exceeded its collection budget and was stopped rather than waited on: {refused}"
-            except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError, SdDbError, sqlite3.Error) as failure:
-                area["error"] = str(failure) or f"the {name} reader failed without a reason"
-        areas.append(area)
+    pool = ThreadPoolExecutor(max_workers=len(POOLED), thread_name_prefix="health")
+    try:
+        running = {key: pool.submit(readers[key]) for key in POOLED}
+        stop = time.monotonic() + PAGE_SECONDS
+        areas = []
+        for key, name, source, missing in AREAS:
+            area = {"id": key, "name": name, "source": source, "read": key in readers, "error": "", "rows": [],
+                    "missing": list(missing), "at": now if key in readers else None, "extra": {}}
+            if key in running:
+                try:
+                    running[key].result(timeout=max(0.0, stop - time.monotonic()))
+                except FutureTimeout:
+                    area["error"] = (f"the {name} reader was still running at the page's budget of {PAGE_SECONDS:g} "
+                                     "seconds and was left rather than waited on")
+                except BaseException:  # noqa: BLE001 - the reader's own error is settled below
+                    pass
+                if not area["error"]:
+                    _settle(area, name, running[key].result)
+            elif key in readers:
+                _settle(area, name, readers[key])
+            areas.append(area)
+    finally:
+        # A reader past the page's budget keeps its thread until its own budget stops it; nobody waits for it.
+        pool.shutdown(wait=False, cancel_futures=True)
     return {"read": now, "areas": areas}
