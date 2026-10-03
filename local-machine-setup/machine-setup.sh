@@ -859,10 +859,20 @@ stage_cron() {
   # a PATH that #109 had already fixed in the generator, and nothing short of
   # reading a plist by hand could have told you. `verify` renders what the
   # generator produces now and compares; a mismatch reinstalls.
+  # A profile can name another installer's agent: a capture before sd:2321
+  # wrote one in, and verify then read it STALE and install, finding no job
+  # file, ended the run before every later stage (sd:2538). The sweep's own
+  # ownership test decides; only a plist proven another installer's (exit 1) is
+  # skipped, so an unreadable one under a wanted name keeps the reinstall.
   echo "$jobs" | while read -r j; do
-    if [ ! -f "$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist" ]; then
+    jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
+    owner=0
+    [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?
+    if [ ! -f "$jp" ]; then
       echo "  MISSING $j — no plist installed"
       run "$ROOT/local-cron-jobs/cron-jobs.sh" install "$j"
+    elif [ "$owner" = 1 ]; then
+      echo "  FOREIGN $j — in this profile, but another installer's agent holds its label; left in place"
     elif ! "$ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1; then
       echo "  STALE   $j — installed plist no longer matches the generator"
       run "$ROOT/local-cron-jobs/cron-jobs.sh" install "$j"
