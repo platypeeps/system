@@ -30,6 +30,7 @@ import datetime
 import json
 import re
 import sys
+import time
 
 from . import reports_screen
 
@@ -54,7 +55,9 @@ def collect() -> dict:
     module = reports_screen._collectors()
     budget = module.Budget(SECONDS)
     try:
-        process = budget.run([sys.executable, "-I", str(reports_screen.TILE), "briefs-rows"], label="briefs-rows")
+        # The page's start on the shared clock: the tile's deadline counts from it (sd:2501).
+        since = time.clock_gettime(time.CLOCK_MONOTONIC)
+        process = budget.run([sys.executable, "-I", str(reports_screen.TILE), "briefs-rows", f"{since:.6f}"], label="briefs-rows")
     except module.OverBudget as error:
         raise ValueError(f"the brief reader was stopped at its budget: {error}") from None
     if process.returncode:

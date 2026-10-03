@@ -20,13 +20,16 @@ the Shapeshift field -- is a manual check recorded on the pull request.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import itertools
 import json
 import os
 import re
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -34,6 +37,7 @@ from unittest import mock
 from sd_dashboard import research_screen, server, v2
 
 from support import NOW, ScreenCase
+from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
@@ -117,6 +121,15 @@ class TheReader(unittest.TestCase):
         self.assertEqual(a["h"], ["#", "Source", "Read", "Weight"])
         self.assertEqual((b["url"], b["c4"]), ("https://example.test/note", "Secondary | vendor"))
         self.assertEqual((s3["title"], s3["c4"], s3["h"]), ("Old claim", "", ["ID", "Title", "Used for", ""]))
+
+    def test_a_table_without_outer_pipes_is_read(self):
+        # sd:2414: 'ID | Source' over '--- | ---' read as empty. A pipe in a prose line over a rule is still provenance.
+        text = "Kept by hand | weekly.\n---\n\n## Plain\n\nID | Source | Used for\n--- | --- | ---\nS1 | A plain row | why\nS2 | [Linked](https://example.test/l) | how\n"
+        head, rows = research_screen.parse_registry(text, "SOURCES.md")
+        self.assertEqual(head["prov"], "Kept by hand | weekly.")
+        self.assertEqual([(r["sec"], r["id"], r["title"], r["c3"]) for r in rows],
+                         [("Plain", "S1", "A plain row", "why"), ("Plain", "S2", "Linked", "how")])
+        self.assertEqual((rows[1]["url"], rows[0]["h"]), ("https://example.test/l", ["ID", "Source", "Used for", ""]))
 
     def test_the_ledger_files_are_read_in_order_and_cut_at_the_row_bound_with_their_total(self):
         repo = checkout(self.root, "group/one", registry=REGISTRY)
@@ -228,6 +241,57 @@ class TheReader(unittest.TestCase):
             states = {item["name"]: [d["state"] for d in item["docs"]] for item in collectors.collect_research()}
         self.assertEqual(states, {"one": ["fresh"], "old": ["fresh"]})
 
+    def test_a_built_document_names_no_address_nothing_serves(self):
+        # sd:2399: /research/<repo>/<out>.html had no route, and no view reads it; the served copy is on Documents.
+        repo = checkout(self.root, "group/one")
+        (repo / "docs" / "dashboard").mkdir(parents=True)
+        (repo / "docs" / "dashboard" / "index.html").write_text("<p>built</p>", encoding="utf-8")
+        collectors = collectors_module()
+        with mock.patch.object(collectors, "REPO_ROOT", self.root), mock.patch.object(collectors, "git_facts", return_value=None):
+            [item] = collectors.collect_research()
+        self.assertEqual([d["state"] for d in item["docs"]], ["fresh"])
+        self.assertNotIn("href", item["docs"][0])
+
+    def test_the_child_counts_its_deadline_from_the_page_start(self):
+        # sd:2501: the child counted from its own main(), so a slow interpreter start spent the margin and the page's kill won.
+        argv = []
+
+        class Budget:
+            seconds = research_screen.RESEARCH_SECONDS
+
+            def __init__(self, *_, **__):
+                pass
+
+            def run(self, command, label):
+                argv.append(command)
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+        stub = mock.Mock(Budget=Budget, OverBudget=RuntimeError)
+        before = time.clock_gettime(time.CLOCK_MONOTONIC)
+        with mock.patch.object(research_screen, "_collectors", return_value=stub):
+            research_screen.collect("board")
+            research_screen.collect("sources", "research/alpha")
+        after = time.clock_gettime(time.CLOCK_MONOTONIC)
+        self.assertEqual([a[3:-1] for a in argv], [["board", "4"], ["sources", "research/alpha", "4"]])
+        self.assertTrue(all(before <= float(a[-1]) <= after for a in argv), argv)
+        deadlines = []
+
+        class Collectors:
+            REPO_ROOT = str(self.root)
+
+            @staticmethod
+            @contextlib.contextmanager
+            def set_deadline(seconds, *, started):
+                deadlines.append(started)
+                yield
+
+        since = time.clock_gettime(time.CLOCK_MONOTONIC) - 2.0
+        with mock.patch.object(research_screen, "_collectors", return_value=Collectors), \
+                mock.patch.object(research_screen, "board", return_value={}), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(research_screen.main(["board", "4", f"{since:.6f}"]), 0)
+        # Two seconds spent starting come off the deadline, never on top of it.
+        self.assertLessEqual(deadlines[0], time.monotonic() - 2.0)
+
 
 class TheDocument(ScreenCase):
     """`research_screen.document` and `sources`, through the real child, against a temporary checkout tree."""
@@ -322,7 +386,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Research · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "research.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "research.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -379,7 +443,7 @@ class TheScript(ScreenCase):
         answer = answer or (f"(path) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
                             f" : path === '/api/research/research/beta' ? [200, {json.dumps(self.ledger)}] : [404, {{ error: 'No research checkout at this address.' }}]")
         script = (STAND_IN + f"location.search = {json.dumps(search)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + f"\nROW = {row};\nANSWER = {answer};\n" + RESEARCH_JS
+                  + SHELL + SHELL_MORE + "\n" + READ_SHELL + f"\nROW = {row};\nANSWER = {answer};\n" + RESEARCH_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = OUT.attention; OUT.page = window.PAGE_ATTENTION;"
@@ -577,6 +641,51 @@ R.det = ELS.details.html;""")
         out = self.run_page("", answer=f"() => [200, {json.dumps(empty)}]")
         self.assertEqual((out["states"][-1]["kind"], out["states"][-1]["title"]), ("empty", "No research checkouts"))
         self.assertEqual(out["gets"], ["/api/research"])
+
+    def test_the_page_reads_its_board_through_the_shared_reader(self):
+        # read.js holds the generation, retirement and failure rules (sd:2491); the ledger keeps its own per-project cache.
+        self.assertIn("shell.read(", RESEARCH_JS)
+        self.assertNotIn("getJSON('/api/research')", RESEARCH_JS)
+        out = self.run_page("")
+        self.assertEqual(out["states"][0]["text"], "Reading the research checkouts. Rows appear when /api/research answers.")
+
+    def test_a_project_the_next_read_drops_runs_no_command_and_loses_the_selection(self):
+        out = self.run_page("""const first = ANSWER('/api/research')[1], A = ANSWER;
+ANSWER = path => path === '/api/research' ? [200, { ...first, projects: first.projects.filter(p => p.key !== 'research/beta') }] : A(path);
+await load(); await flush();
+R.type = C.get('research/beta').type; R.rows = ELS.rows.html; R.selected = selected; R.det = ELS.details.html;""")
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["group/gamma", "research/alpha"])
+        self.assertEqual(out["R"]["selected"], "group/gamma")
+        self.assertIn("Gamma", out["R"]["det"])
+        self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": "render-stale projects"})
+
+    def test_an_older_read_that_answers_last_changes_nothing(self):
+        out = self.run_page("""const first = ANSWER('/api/research')[1], A = ANSWER, held = [];
+ANSWER = path => path === '/api/research' ? new Promise(ok => held.push(ok)) : A(path);
+const older = load(), newer = load();
+held[1]([200, { ...first, projects: first.projects.filter(p => p.key === 'research/alpha') }]); await newer;
+held[0]([200, first]); await older; await flush();
+R.rows = ELS.rows.html; R.type = C.get('research/beta').type;""")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["research/alpha"])
+        self.assertEqual(out["R"]["type"], "not listed")
+
+    def test_a_failed_read_after_a_good_one_clears_the_board_the_ledger_and_the_rail(self):
+        out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
+R.rows = ELS.rows.html; R.type = C.get('research/beta').type; R.reader = ELS.reader.html; R.det = ELS.details.html;""")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [])
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertIn("No project is selected", out["R"]["reader"])
+        self.assertIn("were not read", out["R"]["det"])
+        self.assertEqual(out["attention"][-1]["state"], "unknown")
+        self.assertEqual(out["states"][-1]["kind"], "error")
+        self.assertIn("boom", out["states"][-1]["text"])
+
+    def test_a_ledger_error_that_ends_its_sentence_gets_no_second_period(self):
+        # sd:2429: 'No research checkout at this address..'
+        out = self.run_page("R.reader = ELS.reader.html;", row="'group/gamma'")
+        self.assertIn("No research checkout at this address. Reselect", out["R"]["reader"])
+        self.assertNotIn("..", out["R"]["reader"])
 
     def test_the_script_adds_no_sink_no_inline_style_no_sample_data_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", RESEARCH_JS)
