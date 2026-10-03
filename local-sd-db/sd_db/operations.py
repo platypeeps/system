@@ -473,13 +473,31 @@ def cancel_job(connection: sqlite3.Connection, job: str, *, expected_revision: s
 
 def assignment_state(connection: sqlite3.Connection, assignment: int) -> dict:
     _identifier(assignment, "assignment")
-    row = connection.execute("SELECT assignment.*, item.title AS title FROM assignment LEFT JOIN item ON item.id=assignment.item WHERE assignment.id=?",
+    # The item's status and an unreleased runner attempt decide whether a
+    # blocked row may be cancelled, so both are in the row the revision hashes.
+    row = connection.execute("SELECT assignment.*, item.title AS title, item.status AS item_status, "
+                             "EXISTS (SELECT 1 FROM runner_run WHERE runner_run.assignment=assignment.id "
+                             "AND runner_run.released_at IS NULL) AS leased "
+                             "FROM assignment LEFT JOIN item ON item.id=assignment.item WHERE assignment.id=?",
                              (assignment,)).fetchone()
     if row is None:
         raise WorkflowError(f"no assignment {assignment}")
-    reason = "" if row["status"] == "queued" else (
-        "running assignment has no supported cancellation backend" if row["status"] == "running"
-        else "only a queued assignment can be cancelled")
+    # A blocked assignment whose item shipped is clutter nothing will run
+    # again (sd:2082); cancelled is terminal, so clearing it is safe once no
+    # runner attempt holds its lease. One whose item is open may still be
+    # requeued, and stays the runner's to settle.
+    if row["status"] == "queued":
+        reason = ""
+    elif row["status"] == "running":
+        reason = "running assignment has no supported cancellation backend"
+    elif row["status"] != "blocked":
+        reason = "only a queued assignment, or a blocked one whose item is done, can be cancelled"
+    elif row["item_status"] != "done":
+        reason = "a blocked assignment can be cancelled only once its item is done"
+    elif row["leased"]:
+        reason = "a runner attempt still holds this assignment's lease"
+    else:
+        reason = ""
     result = {key: row[key] for key in ("id", "item", "title", "role", "provider", "status", "started", "ended")}
     result["revision"] = _digest(dict(row))
     result["capabilities"] = {"cancel": {"allowed": not reason, "reason": reason}}
@@ -495,10 +513,10 @@ def cancel_assignment(connection: sqlite3.Connection, assignment: int, *, expect
             raise WorkflowError(current["capabilities"]["cancel"]["reason"])
         ended = now()
         update_assignment(connection, assignment, status="cancelled", ended=ended)
-        audit = {"assignment": assignment, "old_status": "queued", "status": "cancelled", "who": who, "at": ended}
+        audit = {"assignment": assignment, "old_status": current["status"], "status": "cancelled", "who": who, "at": ended}
         row = record_state(connection, "checkpoint", key=f"operations:assignment:{assignment}", body=audit)
         resolve_state(connection, row)
         if current["item"] is not None:
             add_note(connection, current["item"], "decision",
-                     f"Queued assignment {assignment} cancelled by {who}; item status unchanged", session=who)
+                     f"{current['status'].capitalize()} assignment {assignment} cancelled by {who}; item status unchanged", session=who)
         return assignment_state(connection, assignment)
