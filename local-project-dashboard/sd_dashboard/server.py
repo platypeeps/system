@@ -112,8 +112,6 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
         from .protection_screen import render
 
         return render(connection, parameters=parameters)
-    if path == "/writing":
-        return screens.writing_page(connection, now=now, parameters=parameters)
     if path == "/operations":
         from .operations_screen import operations_page
 
