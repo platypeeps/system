@@ -1,6 +1,7 @@
 // Health v2 (sd:2115): the page script. It loads before shell.js, which reads what it declares.
 // Rows: /api/health, the document health_screen.document builds from the fleet child (worktree registrations),
-// reads.trailer_scan (attribution), Operations > Ports' reader (ports) and protection.rows (branch protection).
+// reads.trailer_scan (attribution), Operations > Ports' reader (ports), protection.rows (branch protection) and
+// health_collectors (disk and merged branches, sd:2202 and sd:2204).
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
 // The design's other areas have no reader yet: each shows as unknown with what it does not read, never as a clean lamp.
 // Nothing here writes. Every fix is a CLI line for Copy; Re-check reads the document again.
@@ -12,7 +13,7 @@
   const STATES = ['warning', 'caution', 'unknown', 'queued', 'ok'];
   // The design's icon and help per area; the help is page markup the shell renders with <b> and <code> only.
   const LOOK = {
-    disk: ['hard-drive', '<b>Where the space went.</b> Volume use from df, then the biggest items the fleet itself creates: repo-storage folders and build output left in worktrees. A merged worktree must not keep build output (rule of 2026-09-25).'],
+    disk: ['hard-drive', '<b>Where the space went.</b> Volume use from df, then the biggest items the fleet itself creates: the storage folders <code>disk.conf</code> names and build output left in worktrees. A merged worktree must not keep build output (rule of 2026-09-25). A volume lights caution at 80% and warning at 90%. Build output is found, not sized.'],
     cred: ['key-round', '<b>Presence and expiry only.</b> Token values are never read into this page. GitHub reports a classic PAT expiry in a response header; Home Assistant tokens carry none the dashboard can read.'],
     attr: ['signature', '<b>Who wrote each commit.</b> Every commit carries <code>Authored-with:</code> in its last paragraph; sd-review reads a missing one as “authored unknown” and blocks readiness. The count is your commits (each repo’s user.email) of the last 5 weeks on each default branch (origin/HEAD), merges left out. It walks every repo inside a 10 s budget; past it the area says it stopped rather than waited on, and shows no count.'],
     wt: ['folder-x', '<b>Registered is not present.</b> A worktree whose directory is gone still holds its branch. Prune clears the registration only; it never touches a directory that exists.'],
@@ -38,12 +39,18 @@
     const w = a.rows.reduce((s, r) => RANK[r.state] < RANK[s] ? r.state : s, 'ok');
     return w === 'queued' ? 'ok' : w;
   };
+  // The design's size wording, from a count of KiB.
+  const size = kb => kb >= 1024 ** 3 ? `${(kb / 1024 ** 3).toFixed(2)} TiB` : kb >= 1024 ** 2 ? `${(kb / 1024 ** 2).toFixed(1)} GiB` : `${Math.round(kb / 1024)} MiB`;
+  const fullest = a => { const v = (a.extra.volumes || []).reduce((w, x) => !w || x.capacity > w.capacity ? x : w, null);
+    return v ? html`<span class="ph"><b>${v.capacity}%</b> fullest</span> <span class="ph">${v.name}</span>` : html`<span class="ph">no volume</span>`; };
   const sumFact = (a, key) => a.rows.reduce((s, r) => s + (+(r.facts?.[key]) || 0), 0);
   const lampValue = a => !a.read ? html`<span class="ph">no reader</span>`
     : a.error ? html`<span class="ph">not read</span>`
     : a.id === 'wt' ? html`<span class="ph"><b>${sumFact(a, 'Registered')}</b> dir gone</span>`
     // The scope decided 2026-09-30 (design 63c9d0c): the operator's own commits, 5 weeks, each repo's default branch.
     : a.id === 'attr' ? html`<span class="ph"><b>${sumFact(a, 'Missing')}</b> missing</span> <span class="ph">your commits · 5 weeks · default branch</span>`
+    : a.id === 'disk' ? fullest(a)
+    : a.id === 'br' ? html`<span class="ph"><b>${sumFact(a, 'Merged')}</b> merged</span> <span class="ph">not deleted</span>`
     : a.id === 'ports' ? html`<span class="ph"><b>${a.extra.counts.unknown}</b> unknown</span> · <span class="ph">${a.extra.counts.listening} listening</span>`
     : html`<span class="ph"><b>${a.rows.length}</b> rows</span>`;
 
@@ -88,6 +95,7 @@
   const warn = w => html`<p class="warn" role="status"><span class="g-unknown" aria-hidden="true">${GLYPH.unknown}</span> ${w}</p>`;
   function pre(a) {
     const x = a.extra || {};
+    if (a.id === 'disk') return x.volumes?.length ? html`<div class="bars" role="group" aria-label="Volume use: ${x.volumes.map(v => `${v.name} ${v.capacity}%`).join(', ')}">${x.volumes.map(v => html`<span class="name" title="${v.mount}">${v.name}</span><svg aria-hidden="true"><rect class="track" x="0.5" y="0.5" width="99%" height="11" rx="2"/><rect class="fill" x="0.5" y="0.5" width="${(v.used_kb / v.size_kb * 100 || 0).toFixed(1)}%" height="11" rx="2"/></svg><span class="v">${v.capacity}% · ${size(v.avail_kb)} free</span>`)}</div>` : '';
     if (a.id === 'ports') return html`<p class="counts">${x.counts.configured} configured ports · ${x.counts.listening} listening · ${x.counts.unknown} unknown</p>${x.warnings.map(warn)}`;
     if (a.id !== 'prot' || !x.columns) return '';
     const cols = x.columns.map(byId).filter(Boolean), n = x.counts;
@@ -199,7 +207,8 @@
 
   // ---------- Commands (the design source's commands.md) ----------
   // Ids, labels, keys and risks are the design's. The build runs none of the lines: the dashboard has no route that prunes a
-  // worktree or attributes a commit, so each is copy only and its run says where the line runs.
+  // worktree, attributes a commit, deletes a branch or removes build output, so each is copy only and its run says where the
+  // line runs. A row with `disabled` (a merged branch a worktree holds) names why the line would be refused.
   const copyOnly = o => `Not run here: copy the line from Details and run it in a terminal · ${o.label}`;
   window.PAGE_COMMANDS = [
     { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
@@ -217,11 +226,21 @@
     C.register(
       { id: 'check.recheck', on: 'check', label: 'Re-check', key: 'e', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: () => { load(); return 'Reading Health again'; } },
+      { id: 'storage folder.du', on: 'storage folder', label: 'Show biggest', key: 'b', risk: 'safe', executes: false, primary: () => true,
+        cli: o => o.cli, run: copyOnly },
+      { id: 'build output.rm', on: 'build output', label: 'Remove build output', key: 'r', risk: 'confirm', executes: false, primary: () => true,
+        cli: o => o.cli, consequence: o => `Deletes the build output of ${o.facts.Found} merged worktrees: ${o.detail}. This cannot be undone from here.`, run: copyOnly },
+      // Volume rows are the build's: the design draws volumes as bars only. Its line shows the volume's use in a terminal.
+      { id: 'volume.df', on: 'volume', label: 'Show use', key: 'b', risk: 'safe', executes: false, primary: () => true,
+        cli: o => o.cli, run: copyOnly },
       { id: 'attribution gap.attribute', on: 'attribution gap', label: 'Attribute', key: 'a', risk: 'safe', executes: false, primary: () => true,
         cli: () => 'sd attribute <sha|from..to> <entry>  # on a branch, then ship by PR', run: copyOnly },
       { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', key: 'p', risk: 'confirm', bulk: true,
         executes: false, primary: () => true, cli: o => `git -C ${shell.shq(o.repo_path)} worktree prune -v`,
         consequence: o => `Removes ${o.facts.Registered} worktree registrations whose directories are gone. No directory is touched.`, run: copyOnly },
+      { id: 'merged branches.delete', on: 'merged branches', label: 'Delete merged', key: 'd', risk: 'safe', bulk: true, executes: false,
+        primary: () => true, when: o => !o.disabled || o.disabled, cli: o => o.cli,
+        consequence: o => `Deletes ${o.facts.Merged || o.facts.Count} local branches already in origin's default branch. git branch -d refuses any unmerged one.`, run: copyOnly },
     );
     // Ports and Protection are read-only: each line is copy only. The dashboard has no route that runs sd shadow sync, so the
     // design's Re-run collector is copy only too.
@@ -235,7 +254,7 @@
         cli: () => 'sd shadow sync', run: copyOnly },
     );
     // Snooze sits on every type that wants you, as the design declares it; sd has no snooze verb, so it stays off.
-    ['worktree registrations', 'unread registrations', 'attribution gap', 'port', 'branch protection'].forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', key: 'z', risk: 'undo', bulk: true,
+    ['storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'attribution gap', 'merged branches', 'port', 'branch protection'].forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', key: 'z', risk: 'undo', bulk: true,
       when: () => 'no CLI verb: sd has no snooze', cli: o => `sd now snooze ${o.id} --until 08:00`, run: o => `Snoozed until 08:00 · ${o.label}`, undo: () => {} }));
 
     const u = new URLSearchParams(location.search);
