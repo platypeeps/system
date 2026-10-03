@@ -25,6 +25,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -113,7 +114,9 @@ def collect(area):
         # Both ceilings apply while reading: past either one the tile's process
         # group is killed then, not after it exits (sd:758). A cut of the
         # tile's stderr is named for the tab, not the interpreter (sd:834).
-        process = budget.run([sys.executable, "-I", str(TILE), area], label=area)
+        # The view's start on the shared clock: the tile's deadline counts from it, not from the tile's main (sd:2501).
+        since = time.clock_gettime(time.CLOCK_MONOTONIC)
+        process = budget.run([sys.executable, "-I", str(TILE), area, f"{since:.6f}"], label=area)
     except module.OverBudget as error:
         raise ValueError(f"resource inspection was stopped at its budget: {error}") from None
     if process.returncode:

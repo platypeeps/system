@@ -36,6 +36,12 @@ printf '%s\\n' "$@" >> "$NOTIFY_LOG"
 exit 0
 """
 
+# The format line every capture writes. A manifest that carries it holds
+# encoded labels; one without it holds literal labels (sd:1826).
+FORMAT = "# format: app|kind|name[|key]  (names only — safe to commit)\n"
+# The format line before labels were encoded (sd:1273).
+OLD_FORMAT = "# format: app|kind|name  (names only — safe to commit)\n"
+
 GIT_STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "$GIT_LOG"
 exit 0
@@ -366,7 +372,7 @@ class RowKeyTest(Fixture):
         (self.home / ".claude" / "skills" / "foo%bar").mkdir(parents=True)
         (self.home / ".codex" / "skills").mkdir(parents=True)
         (self.folder / "profiles" / "personal.inv").write_text(
-            "claude-code|skill|foo%25bar\ncodex|skill|foo%25bar\n")
+            FORMAT + "claude-code|skill|foo%25bar\ncodex|skill|foo%25bar\n")
         result = self.run_tool("setup", "--apply")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -420,9 +426,9 @@ class RowKeyTest(Fixture):
         """
         profiles = self.folder / "profiles"
         (profiles / "personal.inv").write_text(
-            "claude-code|skill|foo%25bar\n"
+            FORMAT + "claude-code|skill|foo%25bar\n"
             "opencode|plugin|x|https://user:secret@host/x.tgz\n")
-        (profiles / "work.inv").write_text("codex|skill|a%7Cb\n")
+        (profiles / "work.inv").write_text(FORMAT + "codex|skill|a%7Cb\n")
         compare = self.run_tool("compare", "personal", "work")
 
         self.assertEqual(compare.returncode, 0, compare.stdout + compare.stderr)
@@ -436,6 +442,53 @@ class RowKeyTest(Fixture):
         setup = self.run_tool("setup")
         self.assertIn("  claude-code|skill|baz%qux\n", setup.stdout,
                       setup.stdout + setup.stderr)
+
+    def test_setup_reads_an_old_manifest_label_literally(self):
+        """REGRESSION (sd:1826): setup decoded labels that were never encoded.
+
+        A manifest from before the encoding holds a skill `100%25` as
+        written. setup read it as `100%` and so did not copy the folder.
+        """
+        (self.home / ".claude" / "skills" / "100%25").mkdir(parents=True)
+        (self.home / ".codex" / "skills").mkdir(parents=True)
+        for header in (OLD_FORMAT, ""):
+            with self.subTest(header=header):
+                shutil.rmtree(self.home / ".codex" / "skills" / "100%25",
+                              ignore_errors=True)
+                (self.folder / "profiles" / "personal.inv").write_text(
+                    header + "claude-code|skill|100%25\ncodex|skill|100%25\n")
+                result = self.run_tool("setup", "--apply")
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("copied skill '100%25' from claude-code to codex",
+                              result.stdout)
+                self.assertTrue((self.home / ".codex" / "skills" / "100%25").is_dir())
+
+    def test_compare_prints_an_old_manifest_label_as_written(self):
+        """REGRESSION (sd:1826): compare <p1> <p2> decoded an old literal label."""
+        profiles = self.folder / "profiles"
+        (profiles / "personal.inv").write_text(OLD_FORMAT + "codex|skill|100%25\n")
+        (profiles / "work.inv").write_text(FORMAT + "codex|skill|100%2525\n")
+        compare = self.run_tool("compare", "personal", "work")
+
+        self.assertEqual(compare.returncode, 0, compare.stdout + compare.stderr)
+        self.assertIn("no differences between personal and work", compare.stdout)
+
+    def test_capture_migrates_an_old_manifest_without_a_change_report(self):
+        """REGRESSION (sd:1826): the capture report decoded the old label.
+
+        It reported skill `100%` as gone and `100%25` as new, for a skill
+        that never changed. The file is still rewritten, encoded.
+        """
+        (self.home / ".claude" / "skills" / "100%25").mkdir(parents=True)
+        inv = self.folder / "profiles" / "personal.inv"
+        inv.write_text(OLD_FORMAT + "claude-code|skill|100%25\n")
+        result = self.run_tool("capture")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  none", result.stdout)
+        self.assertIn(FORMAT, inv.read_text())
+        self.assertIn("claude-code|skill|100%2525\n", inv.read_text())
 
     def test_the_key_is_the_same_under_any_home(self):
         """PIN: home becomes ~ before hashing, so two machines agree."""

@@ -30,6 +30,8 @@ token. The key tells two rows apart; the name is the label the matrix and
 so removing either one shows in the capture diff.
 A `|` or `%` in a name is written as `%7C` or `%25`, so every row keeps its field count.
 Every output decodes it back: the capture report, both `compare` forms, and `setup`.
+A manifest whose `# format:` line lacks `name[|key]` predates the encoding, so its names are read as written.
+The next capture rewrites such a file, encoded, if a name in it holds a `%`.
 The name reads a spec's path only, never its userinfo, query or fragment.
 A fourth field that is not a digest comes from an earlier capture that kept the spec.
 The reports print it as `(old key withheld)`; the next capture replaces it.

@@ -18,8 +18,9 @@ line in that dict, plus its name and ceiling in `reports_screen.py` (`VIEWS`,
 `VIEW_SECONDS`). `briefs-rows` is a tab and not a view: the Briefs page
 (`sd_dashboard/briefs_screen.py`) runs it for its rows as data (sd:2112).
 
-**One invocation per tab.** A Resources view runs `sd_tile.py <name>` once per
-view, under five seconds and 64KB, as the pack's loader ran
+**One invocation per tab.** A Resources view runs `sd_tile.py <name> <since>` once per
+view (`<since>` is the view's start on `CLOCK_MONOTONIC`; `main` takes the time
+this interpreter spent starting from the deadline, sd:2501), under five seconds and 64KB, as the pack's loader ran
 `dashboard.sh tile <name>` for each name the manifest declared. That is not a style
 choice: run behind one command these collectors took 6.66s together and
 would be killed on every load, permanently. When this was written, each of them
@@ -108,6 +109,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 import time
@@ -1025,12 +1027,17 @@ def main(argv: list[str]) -> int:
             print(f"no such queue: {argv[1]}", file=sys.stderr)
             return 2
         return 0
-    if len(argv) != 1:
+    if len(argv) not in (1, 2) or (len(argv) == 2 and not re.fullmatch(r"\d+(\.\d+)?", argv[1])):
         print(f"usage: dashboard.sh tile <{'|'.join(sorted(TABS))}> | "
               f"dashboard.sh tile --url <queue> | dashboard.sh grants", file=sys.stderr)
         return 2
     started = time.monotonic()
     name = argv[0]
+    if len(argv) == 2:
+        # A view's start on the shared clock (`fleet.main`, sd:2501): what this interpreter spent starting is taken
+        # from the deadline, never added to it. A reading from the future counts as now.
+        spent = time.clock_gettime(time.CLOCK_MONOTONIC) - float(argv[1])
+        started -= min(max(spent, 0.0), TILE_SECONDS - TILE_MARGIN)
     build = TABS.get(name)
     if build is None:
         print(f"no such tab: {name}", file=sys.stderr)

@@ -143,8 +143,11 @@ case "${1:-}" in
     ;;
   uv-prune-plist)
     # Print the login agent's plist, filled for this checkout and this user.
+    # launchd passes the agent only the environment the plist names, so the
+    # config root this run read goes in it, or uv-prune would read another.
     sed -e "s|@LABEL@|$UV_PRUNE_LABEL|g" -e "s|@DIR@|$DIR|g" \
         -e "s|@HOME@|$HOME|g" -e "s|@PAUSE@|$UV_PRUNE_PAUSE|g" \
+        -e "s|@CONFIG@|$SYSTEM_TOOLS_CONFIG|g" \
         "$DIR/uv-cache-prune.plist.template"
     exit 0
     ;;

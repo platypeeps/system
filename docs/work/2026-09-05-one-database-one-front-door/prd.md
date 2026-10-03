@@ -1090,8 +1090,8 @@ This repository already keeps a machine honest: `local-machine-setup`
 provisions from a profile and reports drift, `local-cron-jobs` installs
 launchd jobs and a watchdog catches the silent ones, `local-health-check`
 reads every agent's state nightly, `local-maintenance` rotates logs and
-watches disk, certificates and backup freshness, `local-backup-verify`
-samples the clone. The pieces this item adds, the database, the runner, the
+watches disk, certificates and backup freshness, `offsite-verify` restores the
+NAS snapshot (amended 2026-10-03, sd:1157, see the end). The pieces this item adds, the database, the runner, the
 dashboard's HTTPS route, the worktrees, are new to all of them, and a
 backbone that does not know a piece does not protect it. Six things, asked
 for on 2026-09-05, three of them here and three with the runner, item D.
@@ -3631,3 +3631,17 @@ Initial scheduled activation uses `backup --keep all` and deletes no backups.
 Explicit numeric retention applies only to complete backups with matching path-bound manifests, content inventories, and SQLite checkpoints.
 Legacy, moved, malformed, changed, linked, and unrelated directories remain untouched.
 The 30-backup policy remains available through an explicit `--keep 30` request.
+
+## October 3, 2026 verifier amendment (sd:1157)
+
+Operator decision, 2026-10-03: `offsite-verify` is the sampler requirement 9 means.
+It is `local-mirror-sync/offsite-verify.py`; `local-backup-verify`, which this document names elsewhere, does not exist in this repository.
+Where this document says `local-backup-verify` or `backup-verify.conf`, read this section.
+It differs from what requirement 1 and requirement 9 described, in three ways:
+
+- It reads no `backup-verify.conf` and samples no files unchanged for seven days.
+- It copies the newest `sd-db-backup` snapshot off the NAS share and runs the full `sd_db.backup.restore()` against a throwaway home.
+- It compares the restored counts with `backup-manifest.json`, re-hashes each companion file, and fails unless the share is a network mount.
+
+The snapshot reaches the share through the `mirrors-nas.conf` pass that `sd-db-backup` runs after a successful snapshot.
+`local-mirror-sync/README.md`, section "Proving the database snapshot on the NAS", is the current description.
