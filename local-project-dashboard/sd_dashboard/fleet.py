@@ -16,12 +16,12 @@ says when it stopped there (PR #427 review).
 
 **One module, two roles.** Imported as `sd_dashboard.fleet`, it is the page
 side: `collect(area)` runs this same file as a child, `python3 -I fleet.py
-<area> <seconds>`, under the collectors' `Budget`, and hands the child's JSON
-to the screen. Run as that child, it loads `collectors.py` by path, reads the
-fleet and prints the document. The two roles share nothing at runtime but the
-constants below, which is the point of keeping them in one file: the child's
-deadline is the page's budget less the margin, and a reader sees both numbers
-next to each other.
+<area> <seconds> <since>`, under the collectors' `Budget`, and hands the
+child's JSON to the screen. Run as that child, it loads `collectors.py` by
+path, reads the fleet and prints the document. The two roles share nothing at
+runtime but the constants below and the page's start, which is the point of
+keeping them in one file: the child's deadline is the page's budget less the
+margin, and a reader sees both numbers next to each other.
 
 **Why a child and not an in-process read.** The Ports area reads its
 collector in-process with the collector's own budget; a Resources view runs
@@ -33,12 +33,19 @@ without the server process waiting on it. `collectors.run` starts each
 command in a session of its own so its timeout can kill the whole tree, and
 `collectors.set_deadline` caps every one of those timeouts at one deadline
 for the whole collection. Both are the child's: it sets the deadline at
-`FLEET_SECONDS - FLEET_MARGIN` after it starts, exactly as `sd_tile.main`
-does, so a hung command is killed by the child and its reason reaches the
-page before the page's own `Budget` kills the child at `FLEET_SECONDS`. The
-margin is the tile's one second, for the reason `sd_tile.TILE_MARGIN` gives:
-a child that loses the race to the outer kill leaves the page with "python
-ran past its budget" and nothing about which checkout.
+`FLEET_SECONDS - FLEET_MARGIN` after the page started its `Budget`, so a
+hung command is killed by the child and its reason reaches the page before
+the page's own `Budget` kills the child at `FLEET_SECONDS`. The margin is the
+tile's one second, for the reason `sd_tile.TILE_MARGIN` gives: a child that
+loses the race to the outer kill leaves the page with "python ran past its
+budget" and nothing about which checkout.
+
+The page passes its start as `<since>`, a `CLOCK_MONOTONIC` reading, the
+one clock both processes share. `sd_tile.main` and `research_screen.main`
+take the same reading since sd:2501, and this child counted from its own
+start until sd:2244: an interpreter that took a second to start under load
+spent that second of the margin before its deadline began, and the page's
+kill then arrived first.
 
 A checkout that does not answer is a row, not a refusal. The rest of the
 fleet was read by the other workers while that one waited, and dropping
@@ -132,9 +139,10 @@ def collect(area, *, within=None):
         raise ValueError("unknown fleet area")
     module = _collectors()
     budget = module.Budget(FLEET_SECONDS, within=within)
+    since = time.clock_gettime(time.CLOCK_MONOTONIC)
     seconds = max(budget.seconds - FLEET_MARGIN, 0.0)
     try:
-        process = budget.run([sys.executable, "-I", str(FLEET), area, f"{seconds:g}"], label=area)
+        process = budget.run([sys.executable, "-I", str(FLEET), area, f"{seconds:g}", f"{since:.6f}"], label=area)
     except module.OverBudget as error:
         raise ValueError(f"fleet collection was stopped at its budget: {error}") from None
     if process.returncode:
@@ -591,10 +599,19 @@ BUILD = {"repos": collect_repos, "sessions": collect_sessions}
 
 def main(argv):
     started = time.monotonic()
-    if len(argv) != 2 or argv[0] not in BUILD or not re.fullmatch(r"\d+(\.\d+)?", argv[1]):
-        print(f"usage: fleet.py <{'|'.join(AREAS)}> <seconds>", file=sys.stderr)
+    number = r"\d+(\.\d+)?"
+    if (len(argv) not in (2, 3) or argv[0] not in BUILD
+            or not all(re.fullmatch(number, value) for value in argv[1:])):
+        print(f"usage: fleet.py <{'|'.join(AREAS)}> <seconds> [<since>]", file=sys.stderr)
         return 2
     area, seconds = argv[0], float(argv[1])
+    if len(argv) == 3:
+        # The page's start on the shared clock: what this interpreter spent
+        # starting is taken from the deadline, never added to it. A reading
+        # from the future counts as now, and one older than the budget as a
+        # deadline already passed.
+        spent = time.clock_gettime(time.CLOCK_MONOTONIC) - float(argv[2])
+        started -= min(max(spent, 0.0), seconds)
     try:
         collectors = _collectors()
         with collectors.set_deadline(seconds, started=started):

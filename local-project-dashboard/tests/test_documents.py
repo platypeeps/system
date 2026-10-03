@@ -179,6 +179,35 @@ class Enumerated(unittest.TestCase):
         self.assertEqual([r.key for r in documents.roots(conf, self.repos)],
                          ["alpha-research"])
 
+    def test_a_three_part_skip_line_withholds_one_file_from_the_list_and_the_server(self):
+        # sd:1904: one stale page leaves the tab without deleting it from the checkout.
+        repo = self.publish("research/alpha-research")
+        for name in ("old.html", "new.html"):
+            (repo / "docs" / "dashboard" / name).write_text("<h1>hi</h1>", encoding="utf-8")
+        conf = self.dir / "documents.conf"
+        conf.write_text("skip|alpha-research|old.html\n", encoding="utf-8")
+        found = documents.roots(conf, self.repos)
+        self.assertEqual([r.key for r in found], ["alpha-research"])
+        self.assertEqual([d["name"] for d in documents.documents(found[0])], ["new.html"])
+        self.assertIsNone(documents.resolve("alpha-research", "old.html", conf, self.repos))
+        self.assertIsNotNone(documents.resolve("alpha-research", "new.html", conf, self.repos))
+
+    def test_a_three_part_skip_line_keeps_a_space_in_the_file_name(self):
+        conf = self.dir / "documents.conf"
+        conf.write_text("skip|alpha-research| my old report.html \n", encoding="utf-8")
+        self.assertEqual(documents._configured(conf).files, {"alpha-research": {"my old report.html"}})
+
+    def test_a_three_part_skip_line_neither_drops_nor_restores_a_root(self):
+        # The two-part line still drops the whole root, and a file line for it changes nothing; a file line settles no contest.
+        self.publish("research/group-research")
+        self.publish("research/alpha-research")
+        self.publish("org-a/reports")
+        self.publish("org-b/reports")
+        conf = self.dir / "documents.conf"
+        conf.write_text("skip|group-research\nskip|group-research|a.html\nskip|reports|a.html\n", encoding="utf-8")
+        self.assertEqual([r.key for r in documents.roots(conf, self.repos)], ["alpha-research"])
+        self.assertEqual(list(documents.unresolved(conf, self.repos)), ["reports"])
+
     def test_an_absent_repo_root_is_no_roots_not_a_crash(self):
         self.assertEqual(documents.roots(self.absent, self.dir / "nowhere"), [])
 

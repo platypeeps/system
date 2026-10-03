@@ -82,7 +82,9 @@ so classic alone is never reported stronger than it is.
 (`BASELINE_OWNERS`): `protection_source`, raised unless rulesets alone
 protect the branch, and `required_check`, raised unless `ci` is among the
 required contexts -- present, not sole, so `route` or `body-lint` may stand
-beside it. Like the merge flags they are not gaps an acknowledgement can
+beside it. A repository whose `repo.ci` is `local` runs no Actions, so for
+it the check is `sd/local-gate`, and that is also the one context it
+produces, as the pack's `sd-status` reads it (sd:1992). Like the merge flags they are not gaps an acknowledgement can
 silence. A repository another owner holds carries neither, and the screen
 shows the two cells as not applicable. A job that a required job gates
 through `needs` in the same workflow file is covered by it, so an
@@ -133,6 +135,10 @@ BASELINE_OWNERS = frozenset(
     os.environ.get("SD_BASELINE_OWNERS", "platypeeps").lower().split())
 #: The one check name every owned repository requires (sd:1741, R3).
 BASELINE_CHECK = "ci"
+#: The check a `repo.ci = local` repository requires instead (sd:1992):
+#: with Actions off nothing posts `ci`, and `sd-ship merge` posts this one
+#: after `sd-check` passes. The pack's `sd_lib.LOCAL_GATE_CONTEXT`.
+LOCAL_GATE_CHECK = "sd/local-gate"
 STATUSES = ("protected", "unprotected", "unknown")
 
 NOT_OBSERVED = "not yet observed"
@@ -633,8 +639,9 @@ def _job_names(
     return not approximate
 
 
-def produced_contexts(root: Path | str) -> tuple[set[str] | None, list[str]]:
-    """The check names `.github/workflows/**` produces on a pull request.
+def produced_contexts(root: Path | str, *, ci: str | None = None) -> tuple[set[str] | None, list[str]]:
+    """The check names `.github/workflows/**` produces on a pull request, or
+    the local gate's when `ci` is `local`.
 
     Read-only: it reads files under the registered checkout and runs nothing,
     because that checkout may be another session's. Returns `(None, [note])`
@@ -642,9 +649,17 @@ def produced_contexts(root: Path | str) -> tuple[set[str] | None, list[str]]:
     set is a real answer (a repository with no workflows produces no checks,
     and every context it requires is then one nothing produces) and an absent
     checkout is not one. `classify` skips the two comparison gaps on None.
+
+    A `repo.ci = local` repository runs no Actions; `sd-ship merge` posts
+    `LOCAL_GATE_CHECK`, the one context it produces, checkout or not. The
+    workflow notes stay, as the pack's `sd-status` keeps them.
     """
     # A stored key is a disk path only after `expand` (sd:1439).
     root = sdpaths.expand(root) if str(root).startswith("~") else Path(root)
+    if ci == "local":
+        notes = produced_contexts(root)[1] if root.is_dir() else []
+        return Produced({LOCAL_GATE_CHECK}), [
+            *notes, f"repo.ci is local: {LOCAL_GATE_CHECK} replaces the workflow contexts"]
     if not root.is_dir():
         return None, [
             f"checkout {root} is absent on this machine, so the checks it "
@@ -920,16 +935,21 @@ def _owner(repo: dict[str, Any], fallback: str | None) -> str | None:
     return str(login) if login else fallback
 
 
+def baseline_check(ci: str | None) -> str:
+    """The check the baseline requires of a repository whose `repo.ci` is `ci`."""
+    return LOCAL_GATE_CHECK if ci == "local" else BASELINE_CHECK
+
+
 def baseline_flags(protection: dict[str, Any] | None, owner: str | None,
-                   classic_present: bool | None) -> list[dict[str, Any]]:
+                   classic_present: bool | None, ci: str | None = None) -> list[dict[str, Any]]:
     """The two fleet-baseline flags (sd:1741, S1), or none for a repository
     outside `BASELINE_OWNERS`: its baseline is not this fleet's to set.
 
     `protection_source` is raised unless rulesets alone protect the branch:
     classic, combined, none at all, or a classic object that `_combine`
     left out because it gates nothing but that still stands. `required_check`
-    is raised unless `BASELINE_CHECK` is among the required contexts; other
-    names may stand beside it (decision D5).
+    is raised unless `baseline_check(ci)` is among the required contexts;
+    other names may stand beside it (decision D5).
     """
     if (owner or "").lower() not in BASELINE_OWNERS:
         return []
@@ -941,6 +961,7 @@ def baseline_flags(protection: dict[str, Any] | None, owner: str | None,
             source = f"{RULESET_SOURCE}, beside a classic object"
     checks = (protection or {}).get("required_status_checks")
     contexts = [str(name) for name in checks.get("contexts") or []] if isinstance(checks, dict) else []
+    check = baseline_check(ci)
     return [
         {
             "id": "protection_source",
@@ -954,10 +975,10 @@ def baseline_flags(protection: dict[str, Any] | None, owner: str | None,
         {
             "id": "required_check",
             "value": ", ".join(contexts) or "none",
-            "flagged": BASELINE_CHECK not in contexts,
+            "flagged": check not in contexts,
             "gap": (
-                f"`{BASELINE_CHECK}` is not a required check; the fleet baseline requires "
-                f"one aggregate check named `{BASELINE_CHECK}`, and other names may stand beside it"
+                f"`{check}` is not a required check; the fleet baseline requires "
+                f"one aggregate check named `{check}`, and other names may stand beside it"
             ),
         },
     ]
@@ -972,6 +993,7 @@ def classify(
     *,
     owner: str | None = None,
     classic_present: bool | None = None,
+    ci: str | None = None,
 ) -> dict[str, Any]:
     """Pure. `protection` is the protection object, or None for a 404.
 
@@ -987,9 +1009,10 @@ def classify(
     `merge_settings` also carries `baseline_flags`, judged for the owner the
     repository object names, else `owner` (the remote's). `classic_present`
     says a classic object stood even where the layered result reads
-    `ruleset`.
+    `ruleset`. `ci` is the repository's `repo.ci`, which names the baseline
+    check (`baseline_check`).
     """
-    settings = merge_settings(repo) + baseline_flags(protection, _owner(repo, owner), classic_present)
+    settings = merge_settings(repo) + baseline_flags(protection, _owner(repo, owner), classic_present, ci)
     if protection is None:
         gaps = [
             {
@@ -1595,7 +1618,8 @@ def _malformed(error: Exception) -> str:
     return f"malformed API response ({type(error).__name__})"
 
 
-def observe(client, path: str, owner: str, name: str, *, observed_at: str) -> dict[str, Any]:
+def observe(client, path: str, owner: str, name: str, *, observed_at: str,
+            ci: str | None = None) -> dict[str, Any]:
     """One repository's basic observation: the repository, its classic
     protection and the branch's rules, and a row whatever they answer.
 
@@ -1667,14 +1691,14 @@ def observe(client, path: str, owner: str, name: str, *, observed_at: str) -> di
     except MALFORMED as error:
         return _unknown(path, observed_at, _malformed(error),
                         default_branch=default_branch, requests=client.budget.requests - before)
-    produced, notes = produced_contexts(path)
+    produced, notes = produced_contexts(path, ci=ci)
     try:
         # Inside the guard, not after it: a body whose top level has the
         # right type can still carry a nested value classify cannot read,
         # and that is the malformed body the module docstring files as
         # unknown (sd:1359). Outside, it raised through `sync`.
         result = classify(protection, repo, default_branch, produced, notes,
-                          owner=owner, classic_present=classic is not None)
+                          owner=owner, classic_present=classic is not None, ci=ci)
     except MALFORMED as error:
         return _unknown(path, observed_at, _malformed(error),
                         default_branch=default_branch, requests=client.budget.requests - before)
@@ -1695,7 +1719,8 @@ def observe(client, path: str, owner: str, name: str, *, observed_at: str) -> di
     }
     if isinstance(protection, dict) and protection.get("source") in (RULESET_SOURCE, COMBINED_SOURCE):
         row["_enrich"] = {"owner": owner, "name": name, "rules": rules, "repo": repo, "classic": classic,
-                          "default_branch": default_branch, "produced": produced, "notes": notes}
+                          "default_branch": default_branch, "produced": produced, "notes": notes,
+                          "ci": ci}
     return row
 
 
@@ -1714,7 +1739,8 @@ def enrich(client, row: dict[str, Any]) -> None:
                for ruleset_id in _cited(pending["rules"])}
     protection = _layered(pending["classic"], pending["rules"], entries)
     result = classify(protection, pending["repo"], pending["default_branch"], pending["produced"], pending["notes"],
-                      owner=pending["owner"], classic_present=pending["classic"] is not None)
+                      owner=pending["owner"], classic_present=pending["classic"] is not None,
+                      ci=pending["ci"])
     row["status"] = result["status"]
     row["body"]["gaps"] = result["gaps"]
     row["body"]["detail"] = result["detail"]
@@ -1749,7 +1775,7 @@ def sync(connection: sqlite3.Connection, *, client, observed_at: str) -> dict[st
         if slug is None:
             continue
         summary["attempted"] += 1
-        row = observe(client, str(registered["path"]), *slug, observed_at=observed_at)
+        row = observe(client, str(registered["path"]), *slug, observed_at=observed_at, ci=registered["ci"])
         rows.append((slug, row, registered))
     # Every repository has its basic observation before any bypass list is
     # read: the basic observation is three a repository, a gating ruleset
@@ -1797,11 +1823,11 @@ def _not_reached(row) -> bool:
 
 def _sweep_order(connection: sqlite3.Connection) -> list[sqlite3.Row]:
     """Registered repositories in the order `sync` observes them, each with
-    its stored row's `kept_at`, `kept_status` and `reason` (all None when
-    there is none): managed first, then not reached before reached, then
+    its `ci` and its stored row's `kept_at`, `kept_status` and `reason` (all
+    None when there is none): managed first, then not reached before reached, then
     oldest observation first, then path."""
     return list(connection.execute(
-        "SELECT repo.path, repo.remote, p.observed_at AS kept_at, p.status AS kept_status, p.reason "
+        "SELECT repo.path, repo.remote, repo.ci, p.observed_at AS kept_at, p.status AS kept_status, p.reason "
         "FROM repo LEFT JOIN repo_protection p ON p.repo = repo.path "
         "ORDER BY repo.managed DESC, "
         "(p.repo IS NULL OR COALESCE(p.reason, '') LIKE ? || '%') DESC, "
