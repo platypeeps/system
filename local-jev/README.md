@@ -216,7 +216,8 @@ provides defaults only: a value already in the environment wins, so
 
 `JEV_URL`, `JEV_MODEL`, `JEV_TIMEOUT` and `JEV_RETRIES` override the endpoint,
 the model, the per-attempt timeout and the retry count. Retries cover 429, 529
-and 5xx with a doubling backoff, and honour `Retry-After` when it is a number.
+and 5xx with a doubling backoff, and honour `Retry-After` when it is a finite,
+non-negative number, capped at 60 seconds.
 A 401 and a 422 are not retried: the key or the request is the problem, and
 retrying spends the budget twice to learn the same thing.
 
