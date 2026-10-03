@@ -166,6 +166,17 @@ class ProducedContexts(unittest.TestCase):
         self.assertIsNone(produced)
         self.assertIn("absent on this machine", notes[0])
 
+    def test_a_local_mode_repository_produces_the_local_gate_even_without_its_checkout(self):
+        """sd:1992. The local gate's context comes from `repo.ci`, not from
+        files, so an absent checkout still has an answer to compare."""
+        self.workflow("ci.yml", PR_WORKFLOW)
+        produced, notes = protection.produced_contexts(self.root, ci="local")
+        self.assertEqual(produced, {"sd/local-gate"})
+        self.assertIn("repo.ci is local", notes[-1])
+        produced, notes = protection.produced_contexts(self.root / "gone", ci="local")
+        self.assertEqual((produced, len(notes)), ({"sd/local-gate"}, 1))
+        self.assertIn("repo.ci is local", notes[0])
+
     def test_an_inline_comment_is_not_part_of_the_value(self):
         """sd:1204 3d279a13628a. `name: lint # fast path` named the context
         `lint # fast path`; a `#` inside quotes is still text."""
@@ -236,9 +247,9 @@ class SyncCase(unittest.TestCase):
             (root / ".github" / "workflows" / "ci.yml").write_text(workflow, encoding="utf-8")
         return str(root)
 
-    def register(self, name, remote, workflow=None):
+    def register(self, name, remote, workflow=None, *, ci=None):
         path = self.checkout(name, workflow)
-        upsert_repo(self.db, path, remote=remote)
+        upsert_repo(self.db, path, remote=remote, ci=ci)
         return path
 
     def client(self, rows, *, requests=100, seconds=30):
@@ -984,13 +995,20 @@ CI_WORKFLOW = ("on: [pull_request]\njobs:\n  lint:\n    runs-on: x\n"
                "  ci:\n    name: ci\n    needs: [lint, unittest]\n    if: ${{ !cancelled() }}\n    runs-on: x\n"
                + PROPAGATE)
 NO_CLASSIC = Response(404, {}, '{"message": "Branch not protected"}')
+#: The same ruleset for a `repo.ci = local` repository (sd:1992): the local
+#: gate's status, which no app id pins.
+LOCAL_RULES = CI_RULES[:3] + [
+    {"type": "required_status_checks", "ruleset_id": 42,
+     "parameters": {"strict_required_status_checks_policy": True,
+                    "required_status_checks": [{"context": "sd/local-gate"}]}},
+]
 
 
 class Baseline(SyncCase):
     """The two fleet-baseline flags and the `needs` closure (sd:1741, S1 and S2)."""
 
-    def observe(self, name, classic, rules, *, owner="platypeeps", workflow=CI_WORKFLOW):
-        path = self.register(name, f"https://github.com/{owner}/{name}.git", workflow)
+    def observe(self, name, classic, rules, *, owner="platypeeps", workflow=CI_WORKFLOW, ci=None):
+        path = self.register(name, f"https://github.com/{owner}/{name}.git", workflow, ci=ci)
         rows = {f"repos/{owner}/{name}": repo_payload(owner={"login": owner}),
                 f"repos/{owner}/{name}/branches/{MAIN}/protection": classic,
                 protection.rules_path(owner, name, MAIN): rules,
@@ -1072,6 +1090,33 @@ class Baseline(SyncCase):
         workflow = CI_WORKFLOW + "  docs:\n    runs-on: x\n"
         _, body, _ = self.observe("outside", NO_CLASSIC, CI_RULES, workflow=workflow)
         self.assertEqual(body["detail"]["produced_not_required"], ["docs"])
+
+    def test_a_local_mode_repository_requiring_the_local_gate_is_not_flagged(self):
+        """sd:1992. With `repo.ci = local` nothing posts `ci`; `sd-ship merge`
+        posts `sd/local-gate`, so that is the check the baseline asks for,
+        and the one context the repository produces. Its workflow files do
+        not run, so their jobs are neither produced nor unrequired."""
+        _, body, flags = self.observe("gated", NO_CLASSIC, LOCAL_RULES, ci="local")
+        self.assertEqual((flags["required_check"]["flagged"], flags["required_check"]["value"]),
+                         (False, "sd/local-gate"))
+        self.assertEqual(body["detail"]["produced_contexts"], ["sd/local-gate"])
+        self.assertEqual(body["detail"]["required_not_produced"], [])
+        self.assertEqual(body["detail"]["produced_not_required"], [])
+        self.assertEqual(ids(body), ["reviews"])
+        self.assertIn("repo.ci is local", body["detail"]["workflow_notes"][-1])
+
+    def test_a_local_mode_repository_requiring_ci_is_flagged_and_named_the_local_gate(self):
+        """Nothing posts `ci` while Actions is off, so requiring it blocks
+        every merge; the flag names the check that would clear it."""
+        _, body, flags = self.observe("stale", NO_CLASSIC, CI_RULES, ci="local")
+        self.assertTrue(flags["required_check"]["flagged"])
+        self.assertIn("`sd/local-gate` is not a required check", flags["required_check"]["gap"])
+        self.assertEqual(body["detail"]["required_not_produced"], ["ci"])
+
+    def test_a_github_mode_repository_requiring_the_local_gate_is_still_flagged(self):
+        _, _, flags = self.observe("actions", NO_CLASSIC, LOCAL_RULES, ci="github")
+        self.assertTrue(flags["required_check"]["flagged"])
+        self.assertIn("`ci` is not a required check", flags["required_check"]["gap"])
 
 
 class NeedsClosure(unittest.TestCase):

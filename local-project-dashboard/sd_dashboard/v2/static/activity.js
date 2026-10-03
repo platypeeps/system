@@ -51,42 +51,32 @@ addEventListener('DOMContentLoaded', () => {
     if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
     return out;
   }
-  // Each read takes a generation; only the newest one draws. Re-reads overlap on the threaded server and can answer out
-  // of order, and an older answer, or an older failure, must not replace a newer reading (as Health does).
-  let generation = 0;
-  // The shell's object map only grows and keeps its picks, so each accepted reading retires what it no longer lists: the
-  // pick is dropped and the object becomes a type no command is on, so a bulk run cannot send a stale revision.
-  let putIds = new Set(), picks = [];
-  function retire(keep) {
-    picks.filter(id => !keep.has(id)).forEach(id => C.pick(id));
-    putIds.forEach(id => { if (!keep.has(id)) { C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); delete OUTPUT[id]; } });
-    putIds = keep;
-  }
-  async function load() {
-    const mine = ++generation;
-    if (!DOC) window.shell.state({ kind: 'loading', text: 'Reading the last 24 hours.', source: '/api/activity' });
-    let doc;
-    try { doc = await getJSON('/api/activity'); } catch (err) {
-      if (mine !== generation) return;
-      // Nothing from the last read stays on screen or in reach of a command: rows, objects, picks and the observed time.
-      DOC = null; EVENTS = []; REPOS = [];
-      retire(new Set());
-      delete document.body.dataset.observed;
-      window.shell.state({ kind: 'error', text: `Activity did not answer, so nothing below is current: ${err.message}`, source: '/api/activity' });
-      update();
-      return;
-    }
-    if (mine !== generation) return;
-    DOC = doc; EVENTS = doc.events; OBSERVED = Date.parse(doc.read); RANGE = { from: Date.parse(doc.from), to: Date.parse(doc.to) };
-    document.body.dataset.observed = doc.read;
-    REPOS = Object.entries(EVENTS.reduce((a, e) => (e.repo && (a[e.repo] = (a[e.repo] || 0) + 1), a), {})).sort((a, b) => b[1] - a[1]);
-    registerObjects();
-    const failed = Object.entries(doc.sources).filter(([, why]) => why);
-    window.shell.state(failed.length ? { kind: 'partial', text: failed.map(([s, why]) => `${s}: ${why}`).join(' · '), source: '/api/activity' }
-      : !EVENTS.some(inWindow) ? { kind: 'empty', text: 'No merge, run or command in the last 24 hours.' } : null);
-    update();
-    if (selected && EVENTS.some(e => e.id === selected)) show(selected); // the open Details read again after each load
-  }
+  // build: the reader (read.js, sd:2418; adopted by sd:2489) holds the guards. Of overlapping reads only the newest draws;
+  // an event the read no longer lists loses its pick and runs no command; a failed load leaves no row, object or observed
+  // time from the last one; and a failed reread after a write keeps the rows and says the write landed.
+  const activity = window.shell.read({
+    source: '/api/activity', what: 'the events',
+    adopt: doc => {
+      DOC = doc; EVENTS = doc.events; OBSERVED = Date.parse(doc.read); RANGE = { from: Date.parse(doc.from), to: Date.parse(doc.to) };
+      document.body.dataset.observed = doc.read;
+      REPOS = Object.entries(EVENTS.reduce((a, e) => (e.repo && (a[e.repo] = (a[e.repo] || 0) + 1), a), {})).sort((a, b) => b[1] - a[1]);
+      const ids = new Set(EVENTS.map(e => e.id));
+      Object.keys(OUTPUT).forEach(id => { if (!ids.has(id)) delete OUTPUT[id]; });
+      const failed = Object.entries(doc.sources).filter(([, why]) => why);
+      return { objects: EVENTS.map(objectOf),
+        state: failed.length ? { kind: 'partial', text: failed.map(([s, why]) => `${s}: ${why}`).join(' · '), source: '/api/activity' }
+          : !EVENTS.some(inWindow) ? { kind: 'empty', text: 'No merge, run or command in the last 24 hours.' } : null };
+    },
+    clear: () => { DOC = null; EVENTS = []; REPOS = []; Object.keys(OUTPUT).forEach(id => delete OUTPUT[id]); delete document.body.dataset.observed; },
+    draw: () => update(),
+    // update() has already reconciled the selection against the rows the filters show, so the reader settles on that
+    // one: a ?row= the filters hide gives way to the first shown row, as a hidden row does on every redraw.
+    current: () => selected,
+    first: () => selected,
+    select: (id, opened) => { const shown = selected; if (shown) select(shown, opened && shown === id); else unselect(); },
+    unselect: () => unselect(),
+  });
+  const load = () => activity.load(), reread = () => activity.reread();
 
   // ---------- State (mirrored in the URL) ----------
   const F = { kind: new Set(), repo: new Set(), state: '', q: '', hour: false, all: false }; // all: every event read, the journal's older records too
@@ -116,7 +106,7 @@ addEventListener('DOMContentLoaded', () => {
   const since = () => F.hour ? OBSERVED - 36e5 : 0;
   const active = () => F.kind.size + F.repo.size + (F.state ? 1 : 0) + (F.q ? 1 : 0) + (F.hour || F.all ? 1 : 0);
   const match = e => (!F.kind.size || F.kind.has(e.k)) && (!F.repo.size || F.repo.has(e.repo)) && (!F.state || e.s === F.state) && (F.all || Date.parse(e.at) >= (since() || RANGE.from)) &&
-    (!F.q || `${e.what} ${e.repo || ''} ${e.ref} ${e.detail || ''}`.toLowerCase().includes(F.q));
+    (!F.q || `${e.what} ${e.repo || ''} ${e.ref} ${e.detail || ''}`.toLowerCase().includes(F.q.toLowerCase())); // ?q= keeps its case
 
   // ---------- Annunciator ----------
   // Rail badge (shell.js): the loudest state on this page and how many events carry it.
@@ -171,7 +161,8 @@ addEventListener('DOMContentLoaded', () => {
   $('range').addEventListener('click', e => {
     const c = e.target.closest('.chip'); if (!c) return;
     const r = c.dataset.r;
-    if (r === '7d' || r === '30d') return toast(`${r} is not read: /api/activity holds the last 24 hours. The range stays at 24h.`);
+    // build: the range stays where it was, which is 1h or All read as often as 24h.
+    if (r === '7d' || r === '30d') return toast(`${r} is not read: /api/activity holds the last 24 hours. The range stays at ${F.hour ? '1h' : F.all ? 'All read' : '24h'}.`);
     F.hour = r === '1h'; F.all = r === 'all'; page = 1; update();
   });
   function renderLanes() {
@@ -282,9 +273,14 @@ addEventListener('DOMContentLoaded', () => {
   function update() {
     renderRange(); renderAnnunciator(); renderLanes(); renderFilters(); renderRows(); writeURL(); window.shell.views(VIEWS);
     // Selection follows the filter (design.md, Page contract): a hidden row gives way to the first visible one.
-    const kept = window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => select(id, false),
-      clear: () => { selected = null; put(details, html`<p class="why">${DOC ? 'No event matches the filters, so nothing is selected.' : 'Activity was not read, so nothing is selected.'}</p>`); } });
+    const kept = window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => select(id, false), clear: unselect });
     if (kept !== undefined) selected = kept;
+  }
+  // Rows still shown with nothing selected means a reread after a write failed: the reader retired their objects.
+  function unselect() {
+    selected = null;
+    put(details, html`<p class="why">${!DOC ? 'Activity was not read, so nothing is selected.' : EVENTS.some(match) ? 'The events were not read again after the change, so nothing is selected. Reload reads them.'
+      : 'No event matches the filters, so nothing is selected.'}</p>`);
   }
 
   // ---------- Details ----------
@@ -331,14 +327,12 @@ addEventListener('DOMContentLoaded', () => {
   // build: an event's object carries what its commands need from the document: the pull request, the assignment and its queue
   // revision, the job and its revision and retry capability, the execution record.
   const TYPE = { merge: 'pull request', command: 'command' };
-  function registerObjects() {
-    retire(new Set(EVENTS.map(e => e.id)));
-    EVENTS.forEach(e => C.put({ ...e, id: e.id, type: e.k === 'run' ? (e.job ? 'job' : 'assignment') : TYPE[e.k], label: e.what, event: e.id }));
-  }
+  function objectOf(e) { return { ...e, id: e.id, type: e.k === 'run' ? (e.job ? 'job' : 'assignment') : TYPE[e.k], label: e.what, event: e.id }; }
   const ev = o => EVENTS.find(e => e.id === o.event) || o;
   // A command's run returns landing(...): the shell's run contract (shell.js, bulk:start) waits for the write, toasts its
-  // text, and offers Undo only for what landed, for a bulk group too. A refused write reads the document again, so a retry
-  // sends the revision the re-read brought; its Undo is spent once and reverses this write only.
+  // text, and offers Undo only for what landed, for a bulk group too. A landed write rereads (the reader's write barrier); a
+  // refused one loads the document again, so a retry sends the revision the read brought. Undo is spent once and reverses
+  // this write only.
   function landing(promise, text, inverse) {
     return promise.then(v => {
       let spent = false;
@@ -352,7 +346,7 @@ addEventListener('DOMContentLoaded', () => {
   // build: "Open item" goes to the item on Tasks, by the shell's section map (no page names another page's address).
   const openItem = item => { const to = window.shell.pages?.Tasks; if (!to) return 'Tasks is not built yet'; location.href = `${to}?row=${item}`; return `sd:${item} opens in Tasks`; };
   const open = u => { window.open(u, '_blank', 'noopener'); return 'Opens in a new tab'; };
-  const requeue = o => post(`/api/runner/${o.n}/requeue`, { revision: ev(o).revision }).then(out => load().then(() => out));
+  const requeue = o => post(`/api/runner/${o.n}/requeue`, { revision: ev(o).revision }).then(out => reread().then(() => out));
   C.register(
     { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
     { id: 'pr.item', on: 'pull request', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
@@ -367,10 +361,12 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'asg.item', on: 'assignment', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the assignment names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
     // Retry is `sd jobs retry`, which sends the kickstart (commands.md, one declaration, as Management declares it).
     // build: retry posts to /api/jobs/<job>/retry with the job's revision, as Operations > Jobs does; launchd starts the run.
-    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => ev(o).failed,
-      when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
+    // Exit 127 is "command not found": a retry fails the same way until the path is fixed, so Retry is off, as in Management.
+    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => !!ev(o).failed && ev(o).exit !== 127,
+      when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).exit === 127 ? 'exit 127: command not found; fix the path first'
+        : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: o => landing(post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => load()), () => `Retry started · ${o.job}`) },
+      run: o => landing(post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => reread()), () => `Retry started · ${o.job}`) },
     // build: Management is not built, so the log is a line to copy.
     { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => `Copy the line to read the log of ${o.job}` },
     // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
@@ -381,15 +377,25 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'command.item', on: 'command', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
   );
   // Undo cancels the queued run with the revision the requeue answered, then reads the document again.
-  const undoRequeue = (o, out) => post(`/api/runner/${o.n}/cancel`, { revision: out.revision }).then(() => load());
+  const undoRequeue = (o, out) => post(`/api/runner/${o.n}/cancel`, { revision: out.revision }).then(() => reread());
+  // read_execution answers at most 64 KiB a read (sd:2416): a full page means more follows at next_offset, up to the
+  // 2 MiB it keeps of an output.
+  const OUTPUT_PAGE = 65536, OUTPUT_MAX = 2 * 1024 * 1024;
   async function readOutput(o) {
     try {
-      const out = await getJSON(`/api/executions/${o.note}?offset=0`);
-      OUTPUT[o.id] = { state: out.state, output: out.output, expired: !!out.output_expired };
+      let offset = 0, text = '', out;
+      for (;;) {
+        out = await getJSON(`/api/executions/${o.note}?offset=${offset}`);
+        text += out.output || '';
+        const full = out.next_offset - offset === OUTPUT_PAGE;
+        offset = out.next_offset;
+        if (!full || offset >= OUTPUT_MAX) break;
+      }
+      OUTPUT[o.id] = { state: out.state, output: text, expired: !!out.output_expired };
     } catch (err) { OUTPUT[o.id] = { error: `The output was not read: ${err.message}` }; throw err; } finally { select(o.id, true); }
   }
   document.addEventListener('shell:open', e => { if (EVENTS.some(v => v.id === e.detail)) select(e.detail, true); });
-  document.addEventListener('shell:picked', e => (picks = e.detail, tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id)))));
+  document.addEventListener('shell:picked', e => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
 
   // ---------- Shapeshift bar ----------
   const input = $('shift'), prev = $('shift-preview'), as = $('shift-as'), ghost = $('ghost');

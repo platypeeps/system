@@ -61,6 +61,14 @@ dark collector, and carries the retry the Operations Jobs area sends:
 `launchctl kickstart <service>`. `failed` is launchd's record of the last
 run, so only a run launchd starts can clear it; a hand-run through
 `cron-jobs.sh run` writes a newer log and leaves the row in place.
+
+**A job that is not failed can still want you** (sd:2014). Operations lists
+`interrupted`, `unknown` and `unloaded` jobs under attention beside `failed`,
+and Now showed only `failed`. Each is a row at `ATTENTION`, the look band:
+an interrupted run may not have finished and carries the same retry; an
+unloaded job never runs until it is loaded again; an unknown one is a job
+launchd could not describe. None is a failure on its own record, so none
+outranks a failed job.
 """
 
 from __future__ import annotations
@@ -86,6 +94,11 @@ DARK = 0
 # A scheduled job whose last run failed: not in the pack, which read no jobs.
 # It sits in the loudest band with the dark rows, and after them.
 FAILED = 1
+# A job Operations lists under attention that did not fail: interrupted,
+# unloaded or unknown (sd:2014). The look band, with the stale pull requests.
+ATTENTION = 2
+#: The job states Now raises a row for; Operations' "Jobs needing attention" holds the same four.
+JOB_STATES = ("failed", "interrupted", "unknown", "unloaded")
 AHEAD = 3
 DIRTY = 4
 # A pull request nobody has looked at for a fortnight, and one that is simply
@@ -229,35 +242,47 @@ def _log_time(log: Path | None) -> str:
 
 
 def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
-    """One row for each job `operations.inventory` reads as `failed`.
+    """One row for each job `operations.inventory` reads as needing attention.
 
     The id keys on the outcome, the signal when launchd names one and the
     exit code otherwise, as the other ids key on the fact that changed. The
     log time is when the last run wrote its log; a job with no log file, an
     unreadable one, or a backend with no `cron_root` says so rather than
     guess, and still gets its row. The retry line is in the detail, where
-    the page shows it, and in `retry`, for a script that acts on it.
+    the page shows it, and in `retry`, for a script that acts on it. Only a
+    failed or interrupted job has one: Operations refuses retry for the rest.
+    `state` is the job's own, for a page that words the rows by it.
     """
     out = []
     for job in jobs:
-        if job.get("state") != "failed":
+        state = job.get("state")
+        if state not in JOB_STATES:
             continue
         name, code, killed = job["name"], job.get("last_exit"), job.get("last_signal")
-        # launchd can report `last exit code = 0` beside a terminating signal;
-        # the signal is the cause, so it names the row.
-        outcome = _signal_name(killed) if killed is not None else f"exit {code}" if code is not None else "no exit code"
-        logged = _log_time(None if cron_root is None else cron_root / "logs" / f"{name}.log")
         service = job.get("service")
-        retry = f"launchctl kickstart {service}" if service else "retry from Operations Jobs"
-        out.append({
-            "rank": FAILED,
-            "kind": "job",
-            "id": f"job:{name}:{f'signal{killed}' if killed is not None else code}",
-            "what": f"{name} failed with {outcome}",
-            "detail": f"{logged} · retry: {retry}",
-            "retry": retry,
-            "source": "jobs",
-        })
+        row = {"rank": FAILED if state == "failed" else ATTENTION, "kind": "job", "state": state, "source": "jobs"}
+        if state in ("failed", "interrupted"):
+            logged = _log_time(None if cron_root is None else cron_root / "logs" / f"{name}.log")
+            retry = f"launchctl kickstart {service}" if service else "retry from Operations Jobs"
+            row.update(detail=f"{logged} · retry: {retry}", retry=retry)
+        if state == "failed":
+            # launchd can report `last exit code = 0` beside a terminating signal;
+            # the signal is the cause, so it names the row.
+            outcome = _signal_name(killed) if killed is not None else f"exit {code}" if code is not None else "no exit code"
+            row.update(id=f"job:{name}:{f'signal{killed}' if killed is not None else code}", what=f"{name} failed with {outcome}")
+        elif state == "interrupted":
+            stop = _signal_name(killed) if killed is not None else "a stop with no signal recorded"
+            row.update(id=f"job:{name}:interrupted{killed if killed is not None else ''}",
+                       what=f"{name} was interrupted by {stop}")
+        elif state == "unloaded":
+            row.update(id=f"job:{name}:unloaded", what=f"{name} is installed but not loaded",
+                       detail=f"launchd will not run it until it is loaded · load: local-cron-jobs/cron-jobs.sh install {name}")
+        else:
+            # The inventory carries no observation reason; Operations Jobs shows it, and launchctl prints the record.
+            check = f"launchctl print {service}" if service else "launchctl print <service>"
+            row.update(id=f"job:{name}:unknown", what=f"{name}: launchd state unknown",
+                       detail=f"launchctl gave no state Operations recognises · check: {check}")
+        out.append(row)
     return out
 
 
@@ -360,7 +385,7 @@ def now_panel() -> object:
     ))
     return tag("section",
         tag("h2", "Now"),
-        tag("p", join(("Failed scheduled jobs, unpushed commits, uncommitted files, abandoned worktrees "
+        tag("p", join(("Failed, interrupted, unloaded and unknown scheduled jobs, unpushed commits, uncommitted files, abandoned worktrees "
                        "and pull requests waiting on you, ",
                        "loudest first, read at this moment from ", areas, ". Nothing here is stored.")), class_="hint"),
         tag("table",

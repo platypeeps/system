@@ -926,7 +926,6 @@ def collect_research():
                     "state": state, "words": words,
                     "updated": datetime.date.fromtimestamp(src.stat().st_mtime).isoformat()
                     if src.exists() else "",
-                    "href": f"/research/{repo.name}/{cfg['out']}.html" if built.exists() else "",
                 })
                 links.extend(cfg.get("links", []))
             readme = repo / "README.md"

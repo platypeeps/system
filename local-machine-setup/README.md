@@ -133,7 +133,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `envs` | install the `.env` of each folder listed in `ENVS` into `$SYSTEM_TOOLS_CONFIG/<tool>/.env` from `envs/<profile>/<folder>.env`, falling back to `envs/common/`, always 0600. Templates hold non-secret defaults only | — |
 | `prompts` | shared agent system prompt into each tool's global instructions | `local-agent-prompt` |
 | `repos` | clone/pull the repo fleet | `local-repo-sync` |
-| `cron` | install launch agents: the profile's `.cron` jobs plus every job in this host's own folder (`cron-jobs/jobs/<host>/`). A `CRON_JOBS_EXTRA_DIRS` job runs only when the profile names it. Any other job that `local-cron-jobs` installed is `EXTRA` and is uninstalled. An agent under `<prefix>.cron.` that `local-cron-jobs` did not install is `FOREIGN` and stays in place; one whose plist cannot be read is `UNKNOWN` and stays too. The stage knows its own plists by their label and their `cron-jobs.sh exec <job>` command, which every installed job carries. When the host folder cannot be read, the stage prints `MISSING host job list` and uninstalls nothing | `local-cron-jobs` |
+| `cron` | install launch agents: the profile's `.cron` jobs plus every job in this host's own folder (`cron-jobs/jobs/<host>/`). A `CRON_JOBS_EXTRA_DIRS` job runs only when the profile names it. Any other job that `local-cron-jobs` installed is `EXTRA` and is uninstalled. An agent under `<prefix>.cron.` that `local-cron-jobs` did not install is `FOREIGN` and stays in place, even when the profile names it; one whose plist cannot be read is `UNKNOWN` and stays too. The stage knows its own plists by their label and their `cron-jobs.sh exec <job>` command, which every installed job carries. When the host folder cannot be read, the stage prints `MISSING host job list` and uninstalls nothing | `local-cron-jobs` |
 | `sd` | the workflow database (`sd-db.sh init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard` or `<prefix>.sd-runner`. Runs before `agents`, because both agents open the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/runner.json` or `dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db` | `local-sd-db`, `tailscale` |
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
@@ -432,6 +432,8 @@ at once and files each token into `<profile>.cask` (dropping the name from
 `<profile>.app`); pkg-based casks may prompt for sudo. The remaining
 no-cask apps (own builds, betas, vendor installers) stay manual; `capture`
 records them in `<profile>.app` so a new machine at least gets a checklist.
+`MACHINE_SETUP_APPLICATIONS_DIR` points the scan at another folder. It exists
+for the tests only.
 
 ## Secrets
 
