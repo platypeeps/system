@@ -88,6 +88,7 @@ addEventListener('DOMContentLoaded', () => {
 
   // Page attention: the worst lit state among open rows, and how many rows carry it. build: set after each read.
   function attention() {
+    if (!READ) { window.shell.attention?.({ state: 'unknown', n: 0, what: 'tasks not read' }); return; }
     const lit = tasks.filter(t => t.real).map(t => [t, state(t)]).filter(([, st]) => st);
     const worst = lit.some(([, st]) => st === 'warning') ? 'warning' : lit.length ? 'caution' : 'ok';
     const hits = lit.filter(([, st]) => st === worst).map(([t]) => t);
@@ -154,15 +155,16 @@ addEventListener('DOMContentLoaded', () => {
   // write queued before it (review, PR #46). `check` asks again, as the write leaves, whether the command is still on: a
   // write queued behind another chose its command before that one landed (review round 3). `rev` is an Undo's: the revision
   // its own write answered. A row whose revision moved since, by a re-read or by any other write, refuses the Undo, so it
-  // never overwrites a change it did not make (review round 3).
+  // never overwrites a change it did not make (review round 3). A landed write rereads the rows (shell.read's barrier);
+  // `wait` holds the write's promise until that read ends, for a toast that names what the read brings.
   const CHANGED = 'it changed after this write, and Undo would overwrite that change';
   const pending = new Map();
-  function write(key, path, body, { sent, check, rev } = {}) {
+  function write(key, path, body, { sent, check, rev, wait } = {}) {
     const p = (pending.get(key) || Promise.resolve()).then(() => { const t = byKey(key); if (!t) throw new Error('the task is no longer listed');
       if (rev !== undefined && t.revision !== rev) throw new Error(CHANGED);
       const on = check ? check(t) : true; if (on !== true) throw new Error(on);
       sent?.(t); return post(path(t), { ...body, revision: t.revision }); })
-      .then(out => { wrote++; absorb(key, out); render(); return out; });
+      .then(out => { absorb(key, out); render(); const again = reread(); return wait ? again.then(() => out) : out; });
     pending.set(key, p.catch(() => {}));
     return p;
   }
@@ -170,17 +172,15 @@ addEventListener('DOMContentLoaded', () => {
   const edit = (key, ch, opts) => write(key, t => `/api/items/${t.id}`, Object.fromEntries(Object.entries(ch).map(([k, v]) => [k === 'p' ? 'priority' : k, v])), opts);
   const moveTo = (key, to, opts) => write(key, t => `/api/items/${t.id}/status`, { status: to }, opts);
   function failed(name, err) { toast(`${name ? name + ' ' : ''}not changed: ${err.message}`); }
-  // A refused stale write re-reads the rows once, however many writes in a group were refused. A re-read joins the one in
-  // flight only while no write of this page has landed since that one was asked for; after one did, it reads again once
-  // that read ends, so a completion's next occurrence is never missed by a read sent before it (review, PR #46). The open
-  // Details are read again with the rows: a conflict means the item changed elsewhere, and they show it (review, PR #46).
-  let rereading = null, wrote = 0;
-  function reread() {
-    if (rereading && rereading.wrote === wrote) return rereading.p;
-    const before = rereading ? rereading.p.catch(() => {}) : Promise.resolve();
-    const p = before.then(() => load()).then(() => { const id = byKey(selected)?.id; if (id) redrawDet(id); })
-      .finally(() => { if (rereading?.p === p) rereading = null; });
-    rereading = { wrote, p };
+  // A refused stale write loads the rows again (load(), not reread(): only a reread says a change landed), once however
+  // many writes in a group were refused: a refusal joins the load it started. A landed write's reread never joins a read
+  // sent before it landed (read.js), so a completion's next occurrence is never missed (review, PR #46). The open Details
+  // are read again with the rows: a conflict means the item changed elsewhere, and they show it (review, PR #46).
+  let refusing = null;
+  function refused() {
+    if (refusing) return refusing;
+    const p = refusing = load().then(ok => { const id = ok && byKey(selected)?.id; if (id) redrawDet(id); })
+      .finally(() => { if (refusing === p) refusing = null; });
     return p;
   }
   // ---------- Undo (build, review of PR #46 and #50) ----------
@@ -192,9 +192,9 @@ addEventListener('DOMContentLoaded', () => {
     return promise.then(v => {
       let spent = false;
       const undo = inverse && (() => { if (spent) return Promise.resolve(false); spent = true;
-        return inverse(v).then(() => true, err => { if (err.stale) reread(); throw err; }); });
+        return inverse(v).then(() => true, err => { if (err.stale) refused(); throw err; }); });
       return { text: text(v), undo };
-    }, err => { if (err.stale) reread(); throw err; });
+    }, err => { if (err.stale) refused(); throw err; });
   }
   // The command's undo: the shell passes what the run answered.
   const undoOf = (o, r) => r && r.undo ? r.undo() : false;
@@ -244,11 +244,15 @@ addEventListener('DOMContentLoaded', () => {
     putAll(); if (byKey(selected)?.id === id) renderDetails();
   }
   const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
+  // The rows' objects are the reader's (adopt below): it puts them after each read and retires a row the read stopped
+  // listing. The Details' notes and assignments follow their row: once it is not listed, they run nothing either.
+  const objectOf = t => ({ id: t.key, type: t.kind === 'ops' ? 'ops row' : 'item', label: `${label(t)} ${t.title}`, item: t.id });
+  const live = key => { const o = C.get(key); return !!o && o.type !== 'not listed'; };
   function putAll() {
-    tasks.forEach(t => C.put({ id: t.key, type: t.kind === 'ops' ? 'ops row' : 'item', label: `${label(t)} ${t.title}`, item: t.id }));
     Object.values(DET.items).forEach(d => {
-      d.notes.forEach(n => C.put({ id: `note:${n.id}`, type: 'note', label: `${n.kind} ${n.id} on #${d.item.id}`, note: n.id, kind: n.kind, resolved: n.resolved, item: d.item.id }));
-      d.assignments.forEach(a => C.put({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo, can: a.runner }));
+      const as = live(String(d.item.id)) ? o => o : o => ({ id: o.id, type: 'not listed', label: `${o.label} (no longer listed)` });
+      d.notes.forEach(n => C.put(as({ id: `note:${n.id}`, type: 'note', label: `${n.kind} ${n.id} on #${d.item.id}`, note: n.id, kind: n.kind, resolved: n.resolved, item: d.item.id })));
+      d.assignments.forEach(a => C.put(as({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo, can: a.runner })));
     });
   }
   const redrawDet = id => { staleDet(id); readDet(id, true); };
@@ -296,7 +300,7 @@ addEventListener('DOMContentLoaded', () => {
     run: o => { const t = T(o); let from = t.status;
       const next = v => v?.next_occurrence ? `next occurrence #${v.next_occurrence}${byKey(String(v.next_occurrence))?.due ? ` due ${fmt(byKey(String(v.next_occurrence)).due)}` : ''}`
         : `the series ended: ${v?.next_occurrence_reason || 'no next occurrence was made'}`;
-      return landing(moveTo(t.key, 'done', { sent: r => { from = r.status; }, check: completeOn }).then(v => reread().then(() => v)),
+      return landing(moveTo(t.key, 'done', { sent: r => { from = r.status; }, check: completeOn, wait: true }),
         v => `${label(t)} ${slabel(from)} → Done · ${next(v)} · ${cliMove(t, 'done')}`); } };
   // An edit's Undo sets back the fields it changed (`keep`, the row's names), as they were when the edit was sent, at the
   // revision the edit answered. `check` asks as the edit leaves whether it still changes anything: a second one queued
@@ -337,7 +341,7 @@ addEventListener('DOMContentLoaded', () => {
       cli: o => idOr(o, t => `sd run --sequential ${t.id}`),
       run: o => { const t = T(o);
         // The Details hold the item's assignments and its run readiness: read them again after the run and after its Undo.
-        const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision } }).then(out => { redrawDet(t.id); return load().then(() => out.assignments?.[0]); });
+        const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision } }).then(out => { redrawDet(t.id); return reread().then(() => out.assignments?.[0]); });
         return landing(p, () => `${label(t)} queued for the runner · sd run --sequential ${t.id}`, a => unqueue(a, t.id)); },
       undo: undoOf },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
@@ -392,13 +396,13 @@ addEventListener('DOMContentLoaded', () => {
   async function runner(o, verb) {
     const a = asgOf(o); if (!a) throw new Error(`assignment #${o.n} was not read`);
     try { await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision }); } catch (err) { if (err.stale) redrawDet(o.item); throw err; }
-    redrawDet(o.item); await load();
+    redrawDet(o.item); await reread();
   }
   // Requeue's Undo puts the assignment back: sd runner cancel while the run is still queued (commands.md). Run's Undo
   // cancels the assignment that run queued.
   function unqueue(a, item) {
     if (!a) return Promise.reject(new Error('the runner named no queued assignment'));
-    return post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => { redrawDet(item); return load(); },
+    return post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => { redrawDet(item); return reread(); },
       err => { if (err.stale) redrawDet(item); throw err; });
   }
 
@@ -477,8 +481,11 @@ addEventListener('DOMContentLoaded', () => {
 
   function renderDetails() {
     const t = byKey(selected), el = document.getElementById('details');
-    if (!t) { put(el, html`<p class="note">Select a task to see its fields and moves.</p>`); return; }
-    const [dt] = dueText(t), act = C.bar(t.key);
+    if (!t) { put(el, html`<p class="note">${!READ ? 'The tasks were not read, so nothing is selected.'
+      : tasks.some(x => !live(x.key)) ? 'The tasks were not read again after the change, so nothing is selected. Reload reads them.'
+      : !tasks.length ? 'No open task, so nothing is selected.' : !visible().length ? 'No task matches these filters. Clear them to see the list.'
+      : 'Select a task to see its fields and moves.'}</p>`); return; }
+    const [dt] = dueText(t), act = C.bar(t.key), gone = !live(t.key);
     put(el, html`<div class="kind"><span class="label">${t.kind === 'ops' ? 'Ops row' : t.kind}</span><span class="tag real">observed</span></div>
       <h2>${t.title}</h2>
       <dl>
@@ -491,7 +498,8 @@ addEventListener('DOMContentLoaded', () => {
         <dt>Quadrant</dt><dd>${t.kind === 'ops' || t.status === 'done' ? 'not placed' : QUADS.find(q => q[0] === quadOf(t))[1]}</dd>
         ${t.assignment ? html`<dt>Assignment</dt><dd>${t.assignment}</dd>` : ''}
       </dl>
-      <h3>Act</h3>${String(act) ? act : html`<p class="why">No sd item behind this row; nothing to run. It clears when the next sync succeeds.</p>`}
+      <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>`
+        : String(act) ? act : html`<p class="why">No sd item behind this row; nothing to run. It clears when the next sync succeeds.</p>`}
       ${more(t)}
       ${t.id ? html`<p class="why">Delete asks first and cannot be undone; to keep a record, move the task to Done. <code>sd task</code> has no delete verb yet (sd:1899).</p>` : ''}
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
@@ -855,7 +863,7 @@ addEventListener('DOMContentLoaded', () => {
     const body = { title: P.title, ...(P.p ? { priority: P.p } : {}), ...(P.due ? { due: P.due } : {}), ...(P.repo ? { repo: repoFor(P.repo) } : {}) };
     inp.value = ''; showPreview();
     // The new task is selected only where it shows: a filter that hides it keeps the selection on a visible one (review, PR #46).
-    post('/api/items', body).then(out => load().then(() => { const key = String(out.item.id), t = byKey(key);
+    post('/api/items', body).then(out => reread().then(() => { const key = String(out.item.id), t = byKey(key);
       if (!t || !passes(t)) { toast(`Added #${out.item.id} to Planning · the filters hide it; Clear all shows it`); return; }
       select(key, false); landed(key); toast(`Added #${out.item.id} to Planning`); }),
       err => { inp.value = [P.title, P.p && `p${P.p}`, P.due && `due ${P.due}`, P.repo && `#${P.repo}`].filter(Boolean).join(' '); toast(`Not added: ${err.message}`); });
@@ -872,32 +880,40 @@ addEventListener('DOMContentLoaded', () => {
       return `Note added to ${label(t)}`;
     }
     const out = await post('/api/items', { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
-    await load();
+    await reread();
     return `Captured #${out.item?.id}: ${out.item?.title || title}`;
   };
 
-  // ---------- Start (build: read /api/tasks, then draw) ----------
-  let started = false;
-  async function load() {
-    if (!started) shell.state({ kind: 'loading', text: 'Reading the tasks. Rows appear when /api/tasks answers.', source: '/api/tasks' });
-    try {
-      const doc = await getJSON('/api/tasks');
-      tasks = doc.rows.map(shape); READ = doc.read;
-      shell.state(tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' });
-    } catch (err) {
-      shell.state({ kind: 'error', text: `The tasks were not read, so nothing below is current: ${err.message}. Reload retries it.`, source: '/api/tasks' });
-      if (!started) return;
-    }
-    if (!started) {
-      started = true;
-      const q = new URLSearchParams(location.search);
-      if (q.get('row') && byKey(q.get('row'))) selected = q.get('row');
+  // ---------- Start (build, sd:2484: shell.read reads /api/tasks, then draws; it rereads after each landed write) ----------
+  // The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws; a task the read no longer
+  // lists loses its pick and runs no command; a failed load leaves no row; and a failed reread after a write keeps the rows
+  // and says the write landed. The Details keep their own per-item generation (DET.gen).
+  let drawn = false;
+  function draw() {
+    if (!drawn) {
+      // The address is read before the first draw: that draw's reconcile selects the first shown card and rewrites ?row=.
+      drawn = true;
+      const q = new URLSearchParams(location.search), row = shell.row();
+      if (row && byKey(row)) selected = row;
       readFilterURL();
       setView(['list', 'board', 'matrix'].includes(q.get('view')) ? q.get('view') : 'board');
-      C.select(selected); readDet(byKey(selected)?.id);
     } else { subhead(); render(); }
     attention();
   }
+  const reading = shell.read({
+    source: '/api/tasks', what: 'the tasks',
+    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read;
+      return { objects: tasks.map(objectOf), state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
+    clear: () => { tasks = []; READ = null; },
+    draw,
+    // draw() has already reconciled the selection against the cards the filters show, so the reader settles on that one.
+    current: () => selected,
+    first: () => selected,
+    select: key => select(key, false),
+    unselect: () => { selected = null; renderDetails(); },
+  });
+  function load() { return reading.load(); }
+  function reread() { return reading.reread(); }
   load();
   suggest(['What is overdue across repos?', 'Which ready tasks can the runner take tonight?', 'Draft the reply that closes the selected task']);
 });

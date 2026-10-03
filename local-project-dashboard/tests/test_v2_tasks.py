@@ -29,6 +29,7 @@ from sd_db import connect, reads, set_item_fields, upsert_repo, workflow
 from sd_dashboard import server, tasks_screen, v2
 
 from support import NOW, ScreenCase, upsert_shadow
+from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
@@ -201,7 +202,7 @@ class ThePage(BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "tasks.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "tasks.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -297,6 +298,20 @@ const open = key => document.dispatchEvent(new CustomEvent('shell:open', { detai
 const lastToast = () => OUT.toasts[OUT.toasts.length - 1];
 const lastUndo = () => OUT.toasts.filter(t => t.undo).pop();
 """
+# What Tasks adds to the shared stand-in: shell.row() as shell.js answers it, and the real reader (sd:2484).
+TASKS_SHELL = """window.shell.row = () => new URLSearchParams(location.search).get('row');
+""" + READ_SHELL
+# A landed write's readback moves the stored row with it, as the server's next read lists it: the page rereads after each
+# landed write, and a reread that brought back the row as it was before would undo the write on the page.
+STORED = r"""
+const STORED_FIELDS = ['status', 'priority', 'due', 'recurrence', 'recurrence_anchor'];
+function stored(a) {
+  const body = a && a[0] < 300 && a[1], row = body && body.item && body.revision && DOC.rows.find(r => r.id === body.item.id);
+  if (row) { STORED_FIELDS.forEach(k => { if (k in body.item) row[k] = body.item[k]; }); row.revision = body.revision; }
+  return a;
+}
+const storing = a => a && typeof a.then === 'function' ? a.then(stored) : stored(a);
+"""
 
 
 class TheShellRunContract(unittest.TestCase):
@@ -381,13 +396,13 @@ class TheScript(ScreenCase):
 
     def run_page(self, body, answer="null", *, prelude="", env=None):
         """Load tasks.js, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R."""
-        script = (prelude + STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
+        script = (prelude + STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + TASKS_SHELL
                   + f"\nconst DOC = {json.dumps(self.doc)}, DETAILS = {json.dumps(self.details)};\n"
-                  + "const WRITE = " + answer + ";\nvar DETAIL = null;\n"
+                  + "const WRITE = " + answer + ";\nvar DETAIL = null;\n" + STORED
                   + """ANSWER = (path, body) => {
-  if (path === '/api/tasks') return [200, DOC];
+  if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
   var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, DETAILS[m[1]]];
-  return WRITE ? WRITE(path, body) : [404, { error: 'no answer' }];
+  return WRITE ? storing(WRITE(path, body)) : [404, { error: 'no answer' }];
 };\n""" + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -499,6 +514,58 @@ open({ask}); await flush(); shellRun(cmd('item.status.ready'), C.get('{ask}')); 
                             "() => [409, { error: 'The item changed. Reload it.' }]", prelude=f"var AFTER = {json.dumps(after)};\n")
         self.assertEqual(out["gets"], ["/api/tasks", f"/api/tasks/{ask}", "/api/tasks", f"/api/tasks/{ask}"])
         self.assertIn("Written elsewhere", out["R"]["html"])
+
+    # sd:2484: the rows are read through shell.read (read.js), as Activity and Documents read theirs.
+    def test_a_landed_write_reads_the_rows_again_and_a_row_no_longer_listed_runs_nothing(self):
+        ask, port = self.ids["ask"], self.ids["port"]
+        answer = f"""(path, body) => {{ DOC.rows = DOC.rows.filter(r => r.id !== {port});
+  return [200, {{ item: {{ id: {ask}, status: body.status, priority: 3, due: null, recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]; }}"""
+        out = self.run_page(f"""shellRun(cmd('item.status.ready'), C.get('{ask}')); await flush();
+R.types = [C.get('{ask}').type, C.get('{port}').type]; R.board = ELS['view-board'].html;""", answer)
+        self.assertEqual(out["gets"], ["/api/tasks", "/api/tasks"], "the landed write did not read the rows again")
+        self.assertEqual(out["R"]["types"], ["item", "not listed"])
+        self.assertNotIn("Port the page", out["R"]["board"])
+
+    def test_a_failed_reread_after_a_write_keeps_the_rows_and_says_the_write_landed(self):
+        ask = self.ids["ask"]
+        answer = f"(path, body) => [200, {{ item: {{ id: {ask}, status: body.status, priority: 3, due: null, recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
+        out = self.run_page(f"""const A = ANSWER; ANSWER = (path, body) => path === '/api/tasks' ? [500, {{ error: 'database is locked' }}] : A(path, body);
+shellRun(cmd('item.status.ready'), C.get('{ask}')); await flush();
+R.board = ELS['view-board'].html; R.details = ELS.details.html; R.type = C.get('{ask}').type;""", answer)
+        self.assertIn("Answer the question", out["R"]["board"], "the failed reread dropped the rows")
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertTrue(out["states"][-1]["text"].startswith("The change landed; the tasks were not read again: database is locked."), out["states"][-1])
+        self.assertIn("The tasks were not read again after the change, so nothing is selected.", out["R"]["details"])
+
+    def test_a_read_sent_before_a_newer_one_never_draws_over_it(self):
+        # A refused write loads the rows; a task is added while that read is out. Each read's answer is the rows as they
+        # were when it was sent, and the newest is answered first: the older answer must not draw the added task away.
+        ask = self.ids["ask"]
+        new = {**self.row("ask"), "id": 99, "title": "Call the bank", "kind": "task", "status": "planning"}
+        answer = f"""(path, body) => path === '/api/items' ? (DOC.rows.push({json.dumps(new)}), [201, {{ item: {{ id: 99, title: 'Call the bank' }} }}])
+  : [409, {{ error: 'The item changed. Reload it.' }}]"""
+        out = self.run_page(f"""const A = ANSWER, HELD = []; DETAIL = id => DETAILS[id] ? [200, DETAILS[id]] : [404, {{ error: 'no such item' }}];
+ANSWER = (path, body) => {{ if (path !== '/api/tasks') return A(path, body); const snap = A(path, body); return new Promise(r => HELD.push(() => r(snap))); }};
+shellRun(cmd('item.status.ready'), C.get('{ask}')); await flush();
+var box = document.getElementById('shift-in'); box.value = 'Call the bank';
+box.listeners.keydown.forEach(f => f({{ key: 'Enter', preventDefault() {{}}, stopPropagation() {{}} }})); await flush();
+for (let i = 0; i < 4; i++) {{ HELD.splice(0).reverse().forEach(f => f()); await flush(); }}
+R.board = ELS['view-board'].html; R.listed = C.get('99') ? C.get('99').type : null;""", answer)
+        self.assertIn("Call the bank", out["R"]["board"], "an older read drew over the newer one")
+        self.assertEqual(out["R"]["listed"], "item")
+
+    def test_a_failed_load_draws_no_row_and_lights_unknown(self):
+        out = self.run_page("R.board = ELS['view-board'].html; R.details = ELS.details.html;", prelude="var FAIL_TASKS = 'database is locked';\n")
+        self.assertEqual(out["states"][-1], {"kind": "error", "text": "The tasks were not read: database is locked. Reload retries it.", "source": "/api/tasks"})
+        self.assertEqual(out["attention"][-1], {"state": "unknown", "n": 0, "what": "tasks not read"})
+        self.assertNotIn('data-key="', out["R"]["board"])
+        self.assertIn("The tasks were not read, so nothing is selected.", out["R"]["details"])
+
+    def test_the_read_guards_are_the_readers_not_a_copy(self):
+        self.assertIn("shell.read({", TASKS_JS)
+        for own in (r"\brereading\b", r"\bwrote\b", r"getJSON\('/api/tasks'\)", r"\bstarted = "):
+            self.assertIsNone(re.search(own, TASKS_JS), own)
 
     def test_a_repeating_task_offers_no_remove_due_date(self):
         # workflow._recurring refuses a repeating item with no due date, so neither the Edit dialog nor the move out of
@@ -658,7 +725,9 @@ R.matrix = ELS['view-matrix'].html;""")
         row.update(due="2026-12-01", urgent=False)
         self.assertTrue(reads.is_urgent({"due": "2026-09-14", "status": "ready", "kind": "task"}, now=read))
         answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-14', recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
-        out = self.run_page(f"""shellRun(cmd('item.status.in_progress'), C.get('{plan}')); await flush();
+        # The landed write's reread is held: what the page shows meanwhile is its own placement, not the server's.
+        out = self.run_page(f"""const A = ANSWER; ANSWER = (path, body) => path === '/api/tasks' ? new Promise(() => {{}}) : A(path, body);
+shellRun(cmd('item.status.in_progress'), C.get('{plan}')); await flush();
 document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); await flush(); R.matrix = ELS['view-matrix'].html;""",
                             answer, prelude=self.SEP6, env={"TZ": "America/Denver"})
         quads = dict(re.findall(r'data-q="(\w+)"(.*?)(?=data-q="|$)', out["R"]["matrix"], re.S))
@@ -735,7 +804,8 @@ R.early = OUT.toasts.length; await flush(); lastUndo().undo(); await flush();"""
         answer = self.landed_plan(f"path === '/api/items/{ask}/status'")
         out = self.run_page(f"""shellBulk(cmd('item.status.blocked'), [C.get('{plan}'), C.get('{ask}')]); await flush();
 R.gets = OUT.gets.length; lastUndo().undo(); await flush();""", answer)
-        self.assertEqual(out["R"]["gets"], 2, "the refused write did not read the rows again")
+        # The first read, the landed write's reread, and the refused write's load (sd:2484).
+        self.assertEqual(out["R"]["gets"], 3, "the refused write did not read the rows again")
         self.assertIn(["Status → Blocked · 1 item · 1 of 2 not changed: The item changed. Reload it.", True], out["toasts"])
         self.assertEqual(out["toasts"][-1], [f"Status → Blocked undone · 1 of 2 reversed · not reversed: #{ask} Answer the question (its change did not land)", False])
         self.assertEqual([p[0] for p in out["posts"]].count(f"/api/items/{ask}/status"), 1, "Undo wrote the refused item")
