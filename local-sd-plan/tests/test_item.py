@@ -50,6 +50,14 @@ done
 """
 
 
+def sd_db_floor() -> tuple[int, int]:
+    """The `requires-python` floor in `local-sd-db/pyproject.toml`."""
+    text = (FOLDER.parent / "local-sd-db" / "pyproject.toml").read_text(encoding="utf-8")
+    found = re.search(r'^requires-python\s*=\s*">=(\d+)\.(\d+)"', text, re.MULTILINE)
+    assert found, "local-sd-db/pyproject.toml declares no requires-python floor"
+    return int(found.group(1)), int(found.group(2))
+
+
 class ItemCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -229,6 +237,15 @@ class WhatItRefuses(ItemCase):
         self.assertEqual(self.rows(), [])
         self.assertEqual(self.pushed(), ["main"])
 
+    def test_a_created_date_with_the_shape_and_no_day(self):
+        """`2026-02-30` passed the shape check and named no day (sd:1181)."""
+        identifier = self.task()
+        self.connection.execute("UPDATE item SET created_at = ? WHERE id = ?",
+                                ("2026-02-30T12:00:00+00:00", identifier))
+        self.connection.commit()
+        done = self.plan(str(identifier), "--dry-run", expect=1)
+        self.assertIn("no usable created date", done.stderr)
+
     def test_the_prompt_asks_for_every_document_the_refusal_above_demands(self):
         """The refusal above and the prompt must agree on what a run is.
 
@@ -241,7 +258,7 @@ class WhatItRefuses(ItemCase):
         without the agent having to work out that nobody will answer.
         """
         seen = []
-        with mock.patch.dict(os.environ, {"SD_PLAN_CLAUDE": "/opt/agent"}, clear=False):
+        with mock.patch.dict(os.environ, {"SD_PLAN_CLAUDE": sys.executable}, clear=False):
             os.environ.pop("SD_PLAN_AGENT", None)
             with mock.patch.object(sd_plan.subprocess, "run",
                                    lambda *a, **k: seen.append(a[0]) or
@@ -252,6 +269,44 @@ class WhatItRefuses(ItemCase):
         for name in sd_plan.DOCUMENTS:
             self.assertIn(name, prompt, f"the prompt does not ask for {name}")
         self.assertIn("unattended", prompt)
+
+    def prompts(self):
+        """The prompt for all three documents, and for a narrowed list."""
+        seen = []
+        with mock.patch.dict(os.environ, {"SD_PLAN_CLAUDE": sys.executable}, clear=False):
+            os.environ.pop("SD_PLAN_AGENT", None)
+            with mock.patch.object(sd_plan.subprocess, "run",
+                                   lambda *a, **k: seen.append(a[0]) or
+                                   subprocess.CompletedProcess(a[0], 0)):
+                sd_plan.agent(self.repo, "a-slug", {"id": 7})
+                sd_plan.agent(self.repo, "a-slug", {"id": 7}, ("prd.md",))
+        return [argv[2] for argv in seen]
+
+    def test_the_prompt_asks_for_anchor_form_citations_only(self):
+        """The first unattended run cited code by `path:line` (sd:990).
+
+        Four such citations and one `source:` locator naming a symbol declared
+        twice: pages that passed `sd-docs-lint` and failed the pack's gate.
+        """
+        for prompt in self.prompts():
+            self.assertIn("never as path:line", prompt)
+            self.assertIn("`source:<path>::<symbol>`", prompt)
+            self.assertIn("declared more than once in its file by the file alone", prompt)
+
+    def test_the_prompt_runs_the_citation_gate_before_the_run_ends(self):
+        """The gate, as a whole, from the clone, before `plan` pushes."""
+        for prompt in self.prompts():
+            self.assertIn("run this checkout's citation gate as a whole", prompt)
+            self.assertIn("python3 -m unittest tests.test_doc_citations", prompt)
+            self.assertIn("python3 tests/test_citations.py", prompt)
+            self.assertIn("Fix every failure it names on the pages you wrote", prompt)
+
+    def test_the_prompt_says_reproduce_a_failure_or_do_not_claim_it(self):
+        """The run blamed failures on a checkout where the gate passed."""
+        for prompt in self.prompts():
+            self.assertIn("only after reproducing it there, with the command and its "
+                          "output in your log", prompt)
+            self.assertIn("otherwise do not claim it", prompt)
 
     def test_a_run_whose_agent_fails(self):
         failing = self.home / "failing.sh"
@@ -338,6 +393,29 @@ class WhatItWrites(ItemCase):
         done = self.plan(str(identifier))
         self.assertIn("already planned", done.stdout)
         self.assertEqual(self.git("rev-parse", "HEAD"), before)
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_a_retry_after_a_failed_push_pushes_and_plans_nothing_again(self):
+        """Registered and committed, then refused at the push (sd:1181).
+
+        The retry used to find the folder committed with its row and answer
+        "already planned" with the branch still missing from the remote.
+        """
+        hook = self.origin / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        identifier = self.task()
+        self.plan(str(identifier), expect=1)
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(self.pushed(), ["main"])
+        committed = self.git("rev-parse", "HEAD")
+
+        hook.unlink()
+        done = self.plan(str(identifier), agent=self.agent("none-written.md"))
+        self.assertIn("planned and not pushed", done.stdout)
+        branch = self.git("rev-parse", "--abbrev-ref", "HEAD")
+        self.assertIn(branch, self.pushed())
+        self.assertEqual(self.git("rev-parse", "HEAD"), committed)
         self.assertEqual(len(self.rows()), 1)
 
     def test_dry_run_says_what_it_would_do_and_writes_nothing(self):
@@ -583,7 +661,7 @@ class WhichInterpreterItRuns(ItemCase):
         done = self.entrypoint("item", "1", "--dry-run", expect=1,
                                env={"PYTHON": str(self.old_python())})
         self.assertIn("too old", done.stderr)
-        self.assertIn("3.11", done.stderr)
+        self.assertIn("Python %d.%d or newer" % sd_db_floor(), done.stderr)
         self.assertNotIn("Traceback", done.stderr)
 
     def test_an_interpreter_without_sd_db_refuses_in_a_sentence(self):
@@ -640,11 +718,18 @@ class WhichInterpreterItRuns(ItemCase):
         self.assertIn("would plan item", done.stdout)
         self.assertTrue(marker.exists(), "the interpreter did not come from the fallback loop")
 
-    def test_the_minimum_version_is_stated_once_and_is_three_eleven(self):
+    def test_the_minimum_version_is_stated_once_and_is_sd_dbs_own(self):
+        """The probe holds the floor `sd_db` declares, not an older guess.
+
+        Probing 3.11 let a 3.11 or 3.12 interpreter through to a package whose
+        metadata refuses it (sd:1612); `sd-db.sh` probes the declared floor.
+        """
         text = ENTRYPOINT.read_text(encoding="utf-8")
-        self.assertEqual(text.count("(3, 11)"), 1)
-        self.assertIn("datetime.UTC", text,
-                      "the comment must say which import forced the floor")
+        self.assertEqual(text.count("(%d, %d)" % sd_db_floor()), 1)
+        self.assertIn("requires-python", text,
+                      "the comment must say where the floor comes from")
+        stated = set(re.findall(r"Python (\d+\.\d+) or newer", text))
+        self.assertEqual(stated, {"%d.%d" % sd_db_floor()}, "every message states that floor")
 
 
 class WhichAgentItRuns(ItemCase):
@@ -661,9 +746,39 @@ class WhichAgentItRuns(ItemCase):
         """The runner's PATH: no `~/.local/bin`, no Homebrew."""
         return {"PATH": "/usr/bin:/bin"}
 
+    def executable(self, name="agent"):
+        path = self.home / name
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+        return str(path)
+
     def test_an_explicit_binary_wins_over_everything(self):
-        with mock.patch.dict(os.environ, {"SD_PLAN_CLAUDE": "/opt/agent"}):
-            self.assertEqual(sd_plan.claude_binary(), "/opt/agent")
+        explicit = self.executable()
+        with mock.patch.dict(os.environ, {"SD_PLAN_CLAUDE": explicit}):
+            self.assertEqual(sd_plan.claude_binary(), explicit)
+
+    def test_an_explicit_binary_that_cannot_run_refuses_in_a_sentence(self):
+        """Returned unchecked, it failed later as a traceback (sd:1181)."""
+        for explicit in (str(self.home / "absent"), str(self.home)):
+            with mock.patch.dict(os.environ, {"SD_PLAN_CLAUDE": explicit}):
+                with self.assertRaises(sd_plan.Refused) as refusal:
+                    sd_plan.claude_binary()
+            self.assertIn(f"SD_PLAN_CLAUDE={explicit}", str(refusal.exception))
+
+    def test_an_install_path_that_cannot_run_is_not_an_agent(self):
+        """A directory or a file without its `x` bit passed `exists()` (sd:1181)."""
+        installed = self.home / ".local" / "bin" / "claude"
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        for make in (lambda: installed.mkdir(),
+                     lambda: installed.write_text("#!/bin/sh\n", encoding="utf-8")):
+            make()
+            with mock.patch.dict(os.environ, self.bare_path(), clear=False):
+                os.environ.pop("SD_PLAN_CLAUDE", None)
+                with mock.patch.object(sd_plan.Path, "home", lambda: self.home):
+                    with self.assertRaises(sd_plan.Refused):
+                        sd_plan.claude_binary()
+            if installed.is_dir():
+                installed.rmdir()
 
     def test_a_bare_path_falls_back_to_the_install_location(self):
         """Not on PATH, but installed where the installer puts it."""
@@ -765,6 +880,26 @@ class WhichUserItPlansAs(ItemCase):
                         subprocess.CompletedProcess(a[0], 0)):
                     sd_plan.agent(self.repo, "a-slug", {"id": 1})
         self.assertIn("USER", seen.get("env", {}))
+
+
+class HowAnOverrideIsSplit(ItemCase):
+    """`SD_PLAN_JEV` and `SD_PLAN_AGENT` are shell words, not whitespace runs.
+
+    `str.split` cut a quoted path with a space in it into two words (sd:1181).
+    """
+
+    def test_a_quoted_jev_path_with_a_space_stays_one_word(self):
+        with mock.patch.dict(os.environ, {"SD_PLAN_JEV": "'/a b/jev.sh' --flag"}):
+            self.assertEqual(sd_plan.jev_argv("enabled"), ["/a b/jev.sh", "--flag", "enabled"])
+
+    def test_a_quoted_agent_path_with_a_space_stays_one_word(self):
+        seen = []
+        with mock.patch.dict(os.environ, {"SD_PLAN_AGENT": "'/a b/agent.sh'"}):
+            with mock.patch.object(sd_plan.subprocess, "run",
+                                   lambda *a, **k: seen.append(a[0]) or
+                                   subprocess.CompletedProcess(a[0], 0)):
+                sd_plan.agent(self.repo, "a-slug", {"id": 7})
+        self.assertEqual(seen[0], ["/a b/agent.sh", "a-slug", "7"])
 
 
 if __name__ == "__main__":

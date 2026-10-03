@@ -29,7 +29,7 @@ The plan behind all of this is
 Run it from inside the checkout the row belongs to. It reads the row, refuses
 one whose `repo` is not this checkout (R10-D6, checked rather than trusted),
 derives `docs/work/<created>-<slug>/` from the row's date and title, runs
-`claude -p "/sd-plan <slug> --from sd:<id> ..."` headless (the prompt ends in a sentence that says the run is unattended and names the documents to leave: `prd.md`, `design.md` and `implement.md`, or the narrower set the Jev judgment below chose), and then verifies that
+`claude -p "/sd-plan <slug> --from sd:<id> ..."` headless (the prompt says the run is unattended, sets three citation rules -- cite code by anchor and never as `path:line`, run the checkout's citation gate as a whole before finishing, and claim no failure on the registered checkout without reproducing it there -- and ends in a sentence that names the documents to leave: `prd.md`, `design.md` and `implement.md`, or the narrower set the Jev judgment below chose), and then verifies that
 all three documents exist before it commits anything -- all three unless the optional judgment in "Jev can say which passes an item needs" narrowed the list. A run that wrote two of
 them fails, loudly, with the folder left in place to look at.
 
@@ -46,24 +46,26 @@ hand in a working tree and under the runner in a clone: it wants a checkout
 and nothing else.
 
 It refuses before touching anything on a dirty tree, on a `done` or
-`ready_to_send` row, and on a row whose `created_at` will not yield a date. A
-folder that is committed and has its row is reported and left alone, exit 0 —
-a second trigger is a no-op, not a second folder.
+`ready_to_send` row, and on a row whose `created_at` will not yield a calendar
+date. A folder that is committed and has its row is reported and left alone,
+exit 0 — a second trigger is a no-op, not a second folder. The one exception
+is a push that failed after the commit: standing on that branch with commits
+`origin` lacks, the retry pushes it and plans nothing again.
 
 The registration step is the pack's `sd work register`, run as
 `$SD_PACK_ROOT/bin/sd` under the interpreter `sd-plan.sh` pinned rather than
 under `bin/sd`'s shebang. `SD_PACK_ROOT` defaults to
 `~/repos/platypeeps/sd-ai-command-pack`, the path `local-bin-links` and the
 cron jobs already assume. A pack that is not there is refused before the
-planning run starts, naming the path and the variable. Standing on
-`plan/<slug>`, the verb records that as the row's branch (pack sd:621).
+planning run starts, naming the path and the variable. Standing on the
+row's branch, or `plan/<slug>` for a row without one, the verb records that as the row's branch (pack sd:621).
 
 Registration comes before the commit. A refusal from `sd` fails the run with
 `sd`'s exit code and its stderr in the message, and leaves the documents on
 disk, uncommitted. That is what keeps a folder without a row off the remote:
 `item` pushes nothing, and the runner, finding uncommitted work in the clone,
 archives the clone rather than pushing its branch
-(`local-sd-runner/sd_runner/runtime.py:650-655`). A branch with nothing new
+(`gitops.dirty(clone)`, in `_finish` of `local-sd-runner/sd_runner/runtime.py`). A branch with nothing new
 committed has nothing to publish. Running `item` again finishes the job: a
 folder without its row is not "already planned", so the retry registers it,
 commits and pushes, without a second planning run. Uncommitted changes are

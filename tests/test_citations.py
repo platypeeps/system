@@ -127,6 +127,8 @@ SNIPPET = re.compile(
 #: sd:963, the sites #402's own insertions into `system-native.yml` had
 #: shifted, repointed to form 1. One left with the claude-mem provider
 #: chain: `mem_pro_watchdog`'s `cron-jobs.sh` citation, repointed to form 1.
+#: Two left at sd:1181: `local-sd-plan`'s line range into `runtime.py`,
+#: which had drifted off the dirty-clone check it named, repointed to form 1.
 KNOWN_LINE_INTO_CODE = frozenset({
     # The delivered sd:460's page, a record: these leave when it is archived.
     # The open items' pages and the code, in path order.
@@ -184,8 +186,6 @@ KNOWN_LINE_INTO_CODE = frozenset({
     ("local-sd-plan/README.md", 39, "local-sd-db/sd_db/runner.py", 53, 53),
     ("local-sd-plan/README.md", 41, "local-sd-db/sd_db/runner.py", 333, 333),
     ("local-sd-plan/README.md", 43, "local-sd-runner/sd_runner/gitops.py", 160, 160),
-    ("local-sd-plan/README.md", 66, "local-sd-runner/sd_runner/runtime.py", 650, 655),
-    ("local-sd-plan/sd_plan.py", 194, "local-sd-runner/sd_runner/runtime.py", 650, 655),
 })
 
 #: Citations this gate knows point at the wrong line and does not own the
