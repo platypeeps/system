@@ -33,9 +33,8 @@ and their `Authorization` header values (`FLUENTBIT_EXPORT_AUTH_1`,
 into the output plugin's host, port, URI and TLS fields and renders the
 gitignored `config.yaml` from the tracked `config.yaml.template`.
 
-Any backend with an HTTP ingest endpoint for JSON lines works. One example is
-a Mezmo pipeline HTTP source: its ingest URL is the destination and its
-ingestion key is the `Authorization` value.
+Any backend with an HTTP ingest endpoint for JSON lines works: its ingest URL
+is the destination and its ingestion key is the `Authorization` value.
 
 ## Gotchas
 

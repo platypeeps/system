@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
@@ -224,6 +225,24 @@ def _snapshot(row) -> dict:
             files[name] = candidate.read_bytes()
     return {"path": path, "text": text, "digest": digest, "files": files,
             "hashes": {key: _hash(value) for key, value in files.items()}}
+
+
+def piece_files(row) -> dict[str, dict | None]:
+    """Each piece file's size and change time, keyed by file name; None for one absent or outside the repository.
+
+    A page shows these beside the gate lamps, so it can tell a missing report from a stale one; it reads no file.
+    """
+    index = _path(row["repo"], row["piece"], row["path"])
+    found: dict[str, dict | None] = {}
+    for name in ("index.md", *REPORTS.values()):
+        candidate = index.with_name(name)
+        try:
+            inside = candidate.resolve(strict=True).is_relative_to(_disk(row["repo"]))
+            stat = candidate.stat()
+        except OSError:
+            inside = False
+        found[name] = {"bytes": stat.st_size, "mtime": datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")} if inside else None
+    return found
 
 
 def piece_for_key(connection: sqlite3.Connection, repo: str, piece: str) -> sqlite3.Row | None:

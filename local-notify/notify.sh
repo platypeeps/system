@@ -333,15 +333,22 @@ jev_ask() {
 # declined -- no jev.sh, Jev off or unkeyed, or JEV_NOTIFY switched it off --
 # and the caller must not then announce a routing that never happened.
 jev_route() {
-  [ -x "$JEV_SH" ] || return 1
+  # Every decline says why on stderr, as the README promises (sd:1364).
+  if [ ! -x "$JEV_SH" ]; then
+    echo "notify.sh: jev not asked: $JEV_SH is missing; using the defaults" >&2
+    return 1
+  fi
   # One call asks both halves: can Jev answer on this machine, and has
   # JEV_NOTIFY been used to switch this stage off? Unset means on -- a
   # per-caller switch that defaults to off makes every integration added
   # after it silently never run.
   # `--record` so the decline is counted: most notifications end here, and
   # the defaults routing them is the only fact the control arm has.
-  if ! "$JEV_SH" enabled JEV_NOTIFY --record --caller local-notify \
-       >/dev/null 2>&1; then
+  # `--why` prints the reason on stdout, prefixed `jev: `; it calls nothing.
+  if ! jev_why=$("$JEV_SH" enabled JEV_NOTIFY --record --why \
+       --caller local-notify 2>/dev/null); then
+    jev_why="${jev_why#jev: }"
+    echo "notify.sh: jev not asked: ${jev_why:-jev enabled declined}; using the defaults" >&2
     # No second row here. The gate above wrote one in the process this call
     # already started, and `judgment.py` counts gate events on their own line;
     # a `jev record` subprocess per decline would double the cost of the path
