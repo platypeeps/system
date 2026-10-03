@@ -364,6 +364,12 @@ are off unless switched on**, one at a time:
   `JEV_COMPARE_HAIKU_MODEL` naming another model needs
   `JEV_COMPARE_HAIKU_USD_IN` and `_OUT`, or its rows carry no cost.
 
+**Do not compare `claude-cli` latency or tokens with the other transports.**
+Its latency includes the start-up of a `claude` process, and its input tokens
+include Claude Code's own system prompt. `judgments compare` reports each
+provider on its own line; use `anthropic`, `openrouter` or `baseten` when
+those numbers matter.
+
 The arms get the request after redaction, exactly as Jev gets it. They run in
 a detached child process that `jev.py` starts once per call, before the first
 attempt, and does not wait for: the caller's output, exit code and timing are
