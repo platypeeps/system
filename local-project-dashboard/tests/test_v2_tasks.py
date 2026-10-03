@@ -31,6 +31,7 @@ from sd_dashboard import server, tasks_screen, v2
 from support import NOW, ScreenCase, upsert_shadow
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 TASKS_JS = (V2 / "static" / "tasks.js").read_text(encoding="utf-8")
@@ -1004,6 +1005,10 @@ R.work = five('{port}'); R.done = five('{ask}'); R.ops = five('{plan}');""")
         self.assertEqual(re.findall(r"window\.markup\b", re.sub(r"const \{ [\w, ]+ \} = window\.markup;", "", TASKS_JS)), [])
         # A page-level j/k or Escape handler is drift (the shell owns them through PAGE_LIST).
         self.assertNotRegex(TASKS_JS, r"e\.key === '[jk]'")
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "tasks", "Tasks", "/tasks", ("/api/tasks", "/api/tasks/1")
 
 
 if __name__ == "__main__":

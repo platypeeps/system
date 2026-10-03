@@ -35,6 +35,7 @@ from test_now_screen import JobsBackend
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 ACTIVITY_JS = (V2 / "static" / "activity.js").read_text(encoding="utf-8")
@@ -505,6 +506,10 @@ R.after = ELS.details.html; R.current = window.PAGE_LIST.current();""")
         # A page-level j/k or Escape handler is drift (the shell owns them through PAGE_LIST).
         self.assertNotRegex(ACTIVITY_JS, r"e\.key === '[jk]'")
         self.assertNotRegex(ACTIVITY_JS, r"e\.key === 'Escape' && active")
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "activity", "Activity", "/activity", ("/api/activity",)
 
 
 if __name__ == "__main__":

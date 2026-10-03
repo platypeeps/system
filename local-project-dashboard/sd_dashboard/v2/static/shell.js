@@ -920,7 +920,13 @@
   // verify.mjs waits on it instead of a fixed sleep (sd:2137).
   const ready = new Promise(done => { const go = () => requestAnimationFrame(() => requestAnimationFrame(() => { document.dispatchEvent(new Event('shell:ready')); done(); }));
     document.readyState === 'complete' ? go() : addEventListener('load', go, { once: true }); });
-  window.shell = { ready, ICON, plural, state, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
+  // read:start
+  // build: (sd:2418) shell.read(spec) is the page reader read.js defines (window.SHELL_READ): generation, retirement, selection
+  // clearing, the failure states and the write barrier, in one place. A page without read.js before shell.js has no shell.read.
+  const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
+  // read:end
+  // build: (sd:2418) `read` joins the shell's API.
+  window.shell = { ready, ICON, plural, state, read, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
   if (location.hash === '#chat') openChat(); // screenshot hook
   if (location.hash === '#sheet') openPane('tab-details');
   if (location.hash === '#menu') setMenu(true);

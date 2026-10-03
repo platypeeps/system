@@ -163,54 +163,39 @@
     return [w, c];
   }
 
-  // Each read takes a generation; only the newest one draws. Re-reads overlap on the threaded server and can answer out
-  // of order, and an older answer, or an older failure, must not replace a newer reading.
-  let generation = 0;
-  // The shell's object map only grows and keeps its picks, so each accepted reading retires what it no longer lists: the
-  // pick is dropped and the object becomes a type no command is on, and the bulk bar cannot offer a prune from stale data.
-  let putIds = new Set(), picks = [];
-  function retire(keep) {
-    const C = shell.commands;
-    picks.filter(id => !keep.has(id)).forEach(id => C.pick(id));
-    putIds.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
-    putIds = keep;
-  }
-  async function load() {
-    const mine = ++generation;
-    shell.state({ kind: 'loading', text: 'Reading the fleet. Rows appear when /api/health answers.', source: '/api/health' });
-    try {
-      const r = await fetch('/api/health', { headers: { Accept: 'application/json' } });
-      const doc = await r.json();
-      if (mine !== generation) return;
-      if (!r.ok) throw new Error(doc.error || `HTTP ${r.status}`);
+  // The reader (read.js, sd:2418) holds the guards: of overlapping re-reads only the newest draws, a row the read no longer
+  // lists runs no command and loses its pick, and a failed read leaves no row, lamp or command from the last one. It is
+  // built on DOMContentLoaded, once shell.js has made shell.read.
+  let health = null;
+  const load = () => health.load();
+  const spec = {
+    source: '/api/health', what: 'the Health rows',
+    adopt: doc => {
       DOC = doc; AREAS = doc.areas;
       AREAS.forEach(a => a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]));
       ROWS = AREAS.flatMap(a => a.rows.map(r => ({ ...r, area: a.id })));
       document.body.dataset.observed = doc.read;
-      retire(new Set(ROWS.map(r => r.id)));
-      ROWS.forEach(r => shell.commands.put({ ...r, label: r.what }));
-      shell.commands.put({ id: 'collector:protection', type: 'collector', label: 'protection collector' });
       const failed = AREAS.filter(a => a.error);
-      shell.state(failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error}`).join(' · ')}. The other areas are current.`, source: '/api/health' } : null);
       const [w, c] = attention(), unread = AREAS.filter(a => !a.read).length;
       const want = [w ? `${w} warning` : '', c ? `${c} caution` : ''].filter(Boolean).join(', ') || 'no';
       put($('subhead'), html`${AREAS.length} areas · ${want} ${w + c === 1 ? 'row wants' : 'rows want'} you · ${plural(unread, 'area')} with no reader yet · read <time class="rel" datetime="${doc.read}"></time>`);
-    } catch (e) {
-      if (mine !== generation) return;
-      // Nothing from the last read stays on screen: rows, lamps, the observed time, the selection and the badge.
+      return { objects: ROWS.map(r => ({ ...r, label: r.what })),
+        state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error}`).join(' · ')}. The other areas are current.`, source: '/api/health' } : null };
+    },
+    // Nothing from the last read stays on screen: rows, lamps, the observed time and the badge.
+    clear: () => {
       DOC = null; AREAS = []; ROWS = [];
-      retire(new Set());
       delete document.body.dataset.observed;
-      shell.state({ kind: 'error', text: `Health was not read, so nothing below is current: ${e.message}. Refresh tries again.`, source: '/api/health' });
       put($('subhead'), html`Health could not be read.`);
       shell.attention({ state: 'unknown', n: 0, what: 'rows' });
-    }
-    lamps();
-    if (!selected || !byId(selected)) selected = shell.row() && byId(shell.row()) ? shell.row() : ROWS[0]?.id || null;
-    apply();
-    // reconcile keeps a selection that is still visible without drawing it; the new reading's Details are drawn here.
-    if (selected && byId(selected)) show(selected);
-  }
+    },
+    draw: () => lamps(),
+    current: () => selected,
+    first: () => ROWS[0]?.id,
+    // apply() reconciles against the rows the filters show; the new reading's Details are drawn here.
+    select: id => { selected = id; apply(); if (byId(selected)) show(selected); },
+    unselect: () => { selected = null; apply(); },
+  };
 
   // ---------- Commands (the design source's commands.md) ----------
   // Ids, labels, keys and risks are the design's. The build runs none of the lines: the dashboard has no route that prunes a
@@ -226,6 +211,9 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     const C = shell.commands;
+    health = shell.read(spec);
+    // The protection collector is one object for the page, not a row of a reading: no read retires it.
+    C.put({ id: 'collector:protection', type: 'collector', label: 'protection collector' });
     C.register(
       { id: 'check.recheck', on: 'check', label: 'Re-check', key: 'e', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: () => { load(); return 'Reading Health again'; } },
@@ -281,7 +269,7 @@
       if (e.key === '/') { e.preventDefault(); $('q').focus(); }
     });
     document.addEventListener('shell:open', e => { if (byId(e.detail)) select(e.detail, true); });
-    document.addEventListener('shell:picked', e => { picks = e.detail; document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))); });
+    document.addEventListener('shell:picked', e => { document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))); });
 
     load();
   });

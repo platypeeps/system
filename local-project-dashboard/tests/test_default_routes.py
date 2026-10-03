@@ -5,7 +5,9 @@ page or file a bookmark can name answers 301 with its new address, and
 nothing else under `/v2/` redirects; the old Today lives at `/classic/today`
 and every other old screen keeps its path; and each rail section that is not
 ported opens its old screen, from one map (`v2.SECTIONS`, `v2.CLASSIC`,
-`v2.SCREENS`) that the shell reads as `/ui/sections.js`.
+`v2.SCREENS`) that the shell reads as `/ui/sections.js`. Which sections are
+ported, and which old screens a page took the path of, is the page registry's
+(sd:2418); `test_v2_registry` holds those.
 """
 
 from __future__ import annotations
@@ -26,12 +28,11 @@ from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
 
-#: Every old screen, and where it lives now. Three moved: `/` and `/today` are the new Today's, `/contributions` the new
-#: Contributions' (sd:2113) and `/documents` the new Documents' (sd:2114).
-OLD_SCREENS = ("/classic/today", "/backlog", "/classic/contributions", "/protection", "/writing", "/skills",
-               "/classic/documents", "/designs", "/operations",
+#: Every old screen, and where it lives now. An old screen whose path a page took is where that page's module says.
+OLD_SCREENS = ("/backlog", "/protection", "/writing", "/skills", "/designs", "/operations",
                *(f"/operations?area={key}" for key in ("jobs", "services", "ports", "progress", "usage", "reports",
-                                                        "resources", "trackers", "repos", "sessions", "commands")))
+                                                        "resources", "trackers", "repos", "sessions", "commands")),
+               *(entry.path for page in v2.registry.PAGES for entry in page.takes))
 
 
 def ports_fixture():
@@ -127,11 +128,9 @@ class TheDefault(BrowserSession):
         declared = dict(re.findall(r"^window\.(SHELL_\w+) = (.*);$", body, re.M))
         self.assertEqual({key: json.loads(value) for key, value in declared.items()},
                          {"SHELL_PAGES": v2.SECTIONS, "SHELL_CLASSIC": v2.CLASSIC, "SHELL_SCREENS": v2.SCREENS})
-        self.assertEqual(v2.SECTIONS, {"Today": "/today", "Briefs": "/briefs", "Tasks": "/tasks", "Contributions": "/contributions", "Management": "/management", "Home": "/home", "Health": "/fleet-health", "Research": "/research", "Activity": "/activity", "Reports": "/reports", "Documents": "/documents"})
         reachable = set(v2.CLASSIC.values()) | set(v2.SCREENS.values())
         for required in ("/operations?area=jobs", "/operations?area=trackers", "/operations?area=ports",
-                         "/operations?area=repos", "/protection", "/designs", "/classic/today", "/backlog",
-                         "/classic/contributions", "/operations?area=resources", "/classic/documents"):
+                         "/operations?area=repos", "/protection", "/designs"):
             self.assertIn(required, reachable)
         # A ported section is never also classic, and no page script names a section's address.
         self.assertEqual(set(v2.SECTIONS) & set(v2.CLASSIC), set())

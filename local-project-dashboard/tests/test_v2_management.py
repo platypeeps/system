@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ from test_now_screen import JobsBackend, fleet_document, tree
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "management.js").read_text(encoding="utf-8")
@@ -464,3 +466,7 @@ await undo(); await flush(); R.toast = lastToast().msg;""",
         n, out = self.requeue_then("Object.assign(asg(), {status: 'queued', revision: 'queued-rev'});")
         self.assertEqual([(p, b) for p, b, _ in out["posts"]][1:], [(f"/api/runner/{n}/cancel", {"revision": "queued-rev"})])
         self.assertEqual(out["R"]["toast"], f"Requeue undone · #{n} Port the page")
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "management", "Management", "/management", ("/api/management",)
