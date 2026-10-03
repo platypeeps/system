@@ -15,6 +15,13 @@ from pathlib import Path
 
 from sd_db.runner import RunnerRefused
 
+# How long one process-table read and one `lsof` may take. A read past its
+# bound is a refused probe: the ending holds and the next tick asks again.
+# Module names, not literals, so a test fixture on a loaded machine can raise
+# them; `ps` has taken longer than ten seconds under a gate at load 125.
+PS_SECONDS = 10
+LSOF_SECONDS = 20
+
 
 def start_identity(pid: int) -> str | None:
     if sys.platform == "darwin":
@@ -43,7 +50,7 @@ def start_identity(pid: int) -> str | None:
 
 
 def table() -> list[dict]:
-    done = subprocess.run(["ps", "-axo", "pid=,pgid=,uid=,stat=,command="], capture_output=True, text=True, timeout=10, check=False)
+    done = subprocess.run(["ps", "-axo", "pid=,pgid=,uid=,stat=,command="], capture_output=True, text=True, timeout=PS_SECONDS, check=False)
     if done.returncode:
         raise RunnerRefused("cannot enumerate process ownership")
     rows = []
@@ -96,7 +103,7 @@ def _elsewhere(block: list[str], path: Path) -> bool:
 def holders(path: Path) -> set[int]:
     if not path.exists():
         return set()
-    done = subprocess.run(["lsof", "-n", "-P", "-F", "p", "+D", str(path)], capture_output=True, text=True, timeout=20, check=False)
+    done = subprocess.run(["lsof", "-n", "-P", "-F", "p", "+D", str(path)], capture_output=True, text=True, timeout=LSOF_SECONDS, check=False)
     blocks: list[list[str]] = []
     for line in done.stderr.splitlines():
         # No line is dropped. A blank or whitespace-only line used to be
@@ -156,7 +163,7 @@ def marked(pid: int, ident: str, run: dict | None = None) -> bool:
             if run is not None and _started_before(pid, run):
                 return False
             raise RunnerRefused(f"cannot inspect owned user process {pid}") from None
-    done = subprocess.run(["ps", "eww", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=10, check=False)
+    done = subprocess.run(["ps", "eww", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=PS_SECONDS, check=False)
     # Never expose this output: it can contain unrelated credentials.
     return f"SD_ASSIGNMENT={ident}" in done.stdout.split()
 
@@ -166,7 +173,7 @@ def survivors(run: dict) -> list[dict]:
     held = holders(Path(run["work_path"]))
     tagged_pids = set()
     if sys.platform == "darwin":
-        environment = subprocess.run(["ps", "eww", "-axo", "pid=,command="], capture_output=True, text=True, timeout=10, check=False)
+        environment = subprocess.run(["ps", "eww", "-axo", "pid=,command="], capture_output=True, text=True, timeout=PS_SECONDS, check=False)
         if environment.returncode:
             raise RunnerRefused("cannot enumerate escaped process markers")
         for line in environment.stdout.splitlines():

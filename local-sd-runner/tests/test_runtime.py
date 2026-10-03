@@ -1,8 +1,10 @@
 """Real Git remotes and owned processes exercise the isolation boundaries."""
+import ast
 import functools
 import json
 import os
 import plistlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,6 +22,11 @@ from sd_runner import controls, gitops, processes, skill_context, storage
 from sd_runner.runtime import Config, Runner
 
 ROOT=Path(__file__).resolve().parents[1]
+# The fixture's bound on one `ps` or `lsof` read. A gate at load 125 read the
+# process table for longer than `processes.PS_SECONDS`; the ending then held
+# for the next tick, which a fixture never runs (sd:2333). A bound caps only a
+# hung read: a prompt one returns when the command exits, so this costs nothing.
+PROBE_SECONDS=120
 
 
 def git(root,*args):
@@ -31,6 +38,8 @@ class Fixture(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name).resolve()
+        for name in ('PS_SECONDS','LSOF_SECONDS'):
+            bound=patch.object(processes,name,PROBE_SECONDS);bound.start();self.addCleanup(bound.stop)
         self.checkout=self.root/'checkout'; self.remote=self.root/'remote.git'
         subprocess.run(['git','init','-q','--bare','-b','main',str(self.remote)],check=True)
         subprocess.run(['git','init','-q','-b','main',str(self.checkout)],check=True)
@@ -621,6 +630,30 @@ class Processes(unittest.TestCase):
             self.assertEqual(sent,[signal.SIGTERM,signal.SIGKILL]);self.assertIsNone(child.poll())
         finally:
             child.kill();child.wait()
+
+    def test_every_process_read_takes_a_bound_a_fixture_can_raise(self):
+        """A literal timeout here is one the fixture's `PROBE_SECONDS` cannot reach (sd:2333)."""
+        tree=ast.parse(Path(processes.__file__).read_text())
+        bounds=[ast.unparse(keyword.value) for node in ast.walk(tree)
+                if isinstance(node,ast.Call) and ast.unparse(node.func)=='subprocess.run'
+                for keyword in node.keywords if keyword.arg=='timeout']
+        self.assertTrue(bounds)
+        self.assertLessEqual(set(bounds),{'PS_SECONDS','LSOF_SECONDS'},bounds)
+
+    def test_a_process_table_slower_than_the_production_bound_does_not_hold_a_fixture_ending(self):
+        """Scaled from the gate (sd:2333): a half-second bound, and a `ps` that takes a second."""
+        production=processes.PS_SECONDS
+        slow=Path(tempfile.mkdtemp());self.addCleanup(shutil.rmtree,slow)
+        (slow/'ps').write_text('#!/bin/sh\nsleep 1\nexec /bin/ps "$@"\n');(slow/'ps').chmod(0o755)
+        with patch.object(processes,'PS_SECONDS',.5),patch.dict(os.environ,{'PATH':f"{slow}:{os.environ['PATH']}"}):
+            fixture=Fixture(methodName='runTest');fixture.setUp()
+            try:
+                result=fixture.run_fixture(fixture.claim())
+            finally:
+                # Inside the patch: the fixture's own patch restores the value it found.
+                fixture.doCleanups()
+        self.assertEqual(result['end_step'],'released',result)
+        self.assertEqual(processes.PS_SECONDS,production)
 
     def test_service_help_and_noarg_contract(self):
         self.assertEqual(subprocess.run([str(ROOT/'runner.sh'),'--help'],capture_output=True, check=False).returncode,0)
