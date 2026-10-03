@@ -262,8 +262,14 @@ It is deliberately not a `cost` row. `cost` is money against a `bill` and its
 `provider` is a foreign key into the registry; a judgment model is on neither,
 so writing there would need a bill invented to satisfy the key and every sum
 the Usage screen takes would have to learn to skip a source it never asked
-about. `judgment.usd` stays NULL until there is a price list; the token counts
-are the record until then.
+about. A row's `usd` is the cost its caller reports. Without one, `record`
+prices the tokens at the `price` (`in` and `out`, dollars per million) that
+`providers.yaml` beside the database gives the row's provider. An entry that
+names a `model` prices that model only. With no usable price, `usd` stays NULL
+and the token counts are the record; the report names those rows per arm as
+`unpriced`, with their providers. A judgment model needs its own entry to be
+priced: `local-jev` rows name provider `typesafe`, and its price is the
+operator's to enter. An entry with `roles: []` is never chosen for a role.
 
     sd-db.sh judgments                 # every stage, both arms
     sd-db.sh judgments --since 2026-09 # a month; bounds are compared as text
@@ -1042,7 +1048,9 @@ detail's `bypass` and `admin_bypass` lists carry the same scope — plus the
 `BASELINE_OWNERS`, the two baseline flags of sd:1741: `protection_source`,
 raised unless rulesets alone protect the branch, and `required_check`,
 raised unless `ci` is among the required contexts (other names may stand
-beside it); `produced_contexts` reads the registered
+beside it); for a repository whose `repo.ci` is `local` that check is
+`sd/local-gate`, and it is the one context such a repository produces
+(sd:1992); otherwise `produced_contexts` reads the registered
 checkout's `.github/workflows/*.yml` (files only, never git) for the checks
 it produces, and a job that a required job gates through `needs` in the
 same file is not `produced_not_required`. Gating needs more than `needs`,

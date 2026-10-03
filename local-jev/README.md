@@ -216,7 +216,8 @@ provides defaults only: a value already in the environment wins, so
 
 `JEV_URL`, `JEV_MODEL`, `JEV_TIMEOUT` and `JEV_RETRIES` override the endpoint,
 the model, the per-attempt timeout and the retry count. Retries cover 429, 529
-and 5xx with a doubling backoff, and honour `Retry-After` when it is a number.
+and 5xx with a doubling backoff, and honour `Retry-After` when it is a finite,
+non-negative number, capped at 60 seconds.
 A 401 and a 422 are not retried: the key or the request is the problem, and
 retrying spends the budget twice to learn the same thing.
 
@@ -230,8 +231,12 @@ waited, the judgment, its confidence, how the call ended, and whether it
 changed anything. A machine with no database, an unmigrated one or a
 read-only one records nothing and behaves exactly as it did before; there is
 no path through the recorder that raises. `JEV_METER=0` switches it off and
-`JEV_METER_DB` points it somewhere else. A locked ledger is waited on for
-250 ms and then the row is dropped; `JEV_METER_BUSY_MS` sets another bound.
+`JEV_METER_DB` points it somewhere else. The row's cost comes from the
+`price` that `providers.yaml` beside the database gives a `typesafe` entry;
+with no such entry the row carries tokens and no cost
+(`local-sd-db/README.md`, section `judgments`). Leave the entry's `model` out
+to price every Jev model; the row records the model the response names.
+A locked ledger is waited on for 250 ms and then the row is dropped; `JEV_METER_BUSY_MS` sets another bound.
 The row needs `sd_db`, so `jev.sh` runs the interpreter `sd-db.sh` would:
 `PYTHON`, `SD_DB_PYTHON`, then the command pack's venv, then `python3`.
 
@@ -362,6 +367,12 @@ are off unless switched on**, one at a time:
   Haiku's list price is the default only for the transport's own Haiku model;
   `JEV_COMPARE_HAIKU_MODEL` naming another model needs
   `JEV_COMPARE_HAIKU_USD_IN` and `_OUT`, or its rows carry no cost.
+
+**Do not compare `claude-cli` latency or tokens with the other transports.**
+Its latency includes the start-up of a `claude` process, and its input tokens
+include Claude Code's own system prompt. `judgments compare` reports each
+provider on its own line; use `anthropic`, `openrouter` or `baseten` when
+those numbers matter.
 
 The arms get the request after redaction, exactly as Jev gets it. They run in
 a detached child process that `jev.py` starts once per call, before the first

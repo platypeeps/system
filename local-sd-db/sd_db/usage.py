@@ -42,17 +42,17 @@ def caps(connection: sqlite3.Connection) -> dict[str, float | None] | None:
     than through `registry.read`, whose first-open seeding is a write this
     module's verb does not make. None when the file is absent, cannot be
     opened or cannot be parsed -- the set `_provider_controls` catches --
-    or parses with a cap that is not a number (`parse` does not type one,
-    and a bill with no row shows the file's), so the tile and the card fall
-    back to the row's cap and the panel is where the registry's trouble is
-    reported.
+    or parses with a cap that is not a number or too large for a float
+    (`parse` does not type one, and a bill with no row shows the file's), so
+    the tile and the card fall back to the row's cap and the panel is where
+    the registry's trouble is reported.
     """
     try:
         path = registry.beside(connection)
         current = registry.merge(registry.parse(path.read_text(encoding="utf-8"), path), connection)
         return {name: None if bill.cap_usd_month is None else float(bill.cap_usd_month)
                 for name, bill in current.bills.items()}
-    except (SdDbError, OSError, ValueError, TypeError):
+    except (SdDbError, OSError, ValueError, TypeError, OverflowError):
         return None
 
 

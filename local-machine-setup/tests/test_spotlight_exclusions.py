@@ -128,6 +128,7 @@ class SpotlightExclusionsTest(unittest.TestCase):
         write_stub(self.stubs, "git", "#!/bin/sh\nexit 1\n")
         write_stub(self.stubs, "defaults", DEFAULTS_STUB)
         self.plist_env = plist_tools.install(self.stubs)
+        fixture_config.seal(self, self.stubs)
         self.plistbuddy = self.plist_env.get("MACHINE_SETUP_PLISTBUDDY", plist_tools.PLISTBUDDY)
 
     def write_plist(self, exclusions, path=None):

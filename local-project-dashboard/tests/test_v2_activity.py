@@ -10,8 +10,8 @@ has no collector for, with the reason, rather than showing it as zero. The
 page follows the design source at d82daa1.
 
 `activity.js` runs under JavaScriptCore (osascript), against the stand-in
-page and shell `test_v2_tasks` uses, with the document above as its fetch
-answer. The browser half -- focus, the look at 375 px, the lane chart -- is a
+page and shell `test_v2_tasks` uses, with the real reader (`read.js`,
+sd:2418; adopted by sd:2489) and the document above as its fetch answer. The browser half -- focus, the look at 375 px, the lane chart -- is a
 manual check recorded on the pull request.
 """
 
@@ -32,6 +32,7 @@ from sd_dashboard import activity_screen, server, v2
 
 from support import NOW, ScreenCase
 from test_now_screen import JobsBackend
+from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
@@ -142,6 +143,7 @@ class TheDocument(ScreenCase):
         self.assertEqual((failed["k"], failed["at"], failed["s"], failed["failed"], failed["what"]),
                          ("run", INSIDE, "warning", True, "nightly-sync failed with exit 7"))
         self.assertTrue(failed["retry"]["allowed"])
+        self.assertEqual(failed["exit"], 7, "the exit code Retry's 127 guard reads (sd:2415)")
         self.assertEqual(self.by_id["job:backup"]["s"], "ok")
         self.assertFalse(self.by_id["job:backup"]["retry"]["allowed"])
         self.assertNotIn("job:weekly", self.by_id)
@@ -205,7 +207,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Activity · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "activity.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "activity.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -238,7 +240,7 @@ class TheScript(ScreenCase):
         """Load activity.js, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R.
 
         `pre` runs before activity.js does, as a page address does."""
-        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + pre + "\n"
+        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + pre + "\n" + READ_SHELL
                   + f"\nconst DOC = {json.dumps(doc or self.doc)};\n"
                   + "const WRITE = " + answer + ";\n"
                   + """ANSWER = (path, body) => {
@@ -496,6 +498,71 @@ R.after = ELS.details.html; R.current = window.PAGE_LIST.current();""")
     def test_the_log_is_a_line_to_copy(self):
         out = self.run_page("R.cli = cmd('jobs.log').cli(C.get('job:nightly-sync'));")
         self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs nightly-sync")
+
+    def test_the_page_reads_through_the_shared_reader(self):
+        """sd:2489. The guards are read.js's, not a copy: no counter or retire of the page's own."""
+        self.assertIn("shell.read(", ACTIVITY_JS)
+        self.assertNotIn("++generation", ACTIVITY_JS)
+        self.assertNotRegex(ACTIVITY_JS, r"function retire\(")
+
+    def test_a_write_whose_reread_fails_keeps_the_rows_and_says_it_landed(self):
+        """sd:2489. The write landed; a failed read after it is partial, not "nothing below is current"."""
+        n = self.ids["blocked"]
+        answer = "(path) => [200, { status: 'queued', revision: 'b'.repeat(64) }]"
+        out = self.run_page(f"""ANSWER = (path, body) => path === '/api/activity' ? [500, {{ error: 'database locked' }}] : WRITE(path, body);
+shellRun(cmd('asg.requeue'), C.get('run:{n}')); await flush();
+R.rows = ELS.rows.html; R.type = C.get('run:{n}').type; R.details = ELS.details.html;""", answer)
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("not read again after the change", out["R"]["details"])
+        self.assertIn("The change landed", out["states"][-1]["text"])
+        self.assertIn(f'data-id="run:{n}"', out["R"]["rows"], "the rows stay on screen")
+        self.assertEqual(out["R"]["type"], "not listed", "no command runs on a row the reread did not confirm")
+        self.assertEqual(out["toasts"], [[f"Requeued · #{n}. The runner starts it on its next tick.", True]])
+
+    def test_a_bulk_retry_ends_in_at_most_two_reads(self):
+        """sd:2489. The write barrier: N landed writes share one reread queued behind the read in flight."""
+        doc = json.loads(json.dumps(self.doc))
+        failed = next(e for e in doc["events"] if e["id"] == "job:nightly-sync")
+        doc["events"] += [dict(failed, id=f"job:extra-{i}", job=f"extra-{i}", ref=f"extra-{i}") for i in range(3)]
+        ids = ["job:nightly-sync"] + [f"job:extra-{i}" for i in range(3)]
+        out = self.run_page(f"shellBulk(cmd('jobs.retry'), {json.dumps(ids)}.map(id => C.get(id))); await flush();",
+                            "() => [200, {}]", doc=doc)
+        self.assertEqual(len(out["posts"]), 4)
+        self.assertLessEqual(out["gets"].count("/api/activity"), 3, out["gets"])
+
+    def test_retry_is_off_for_a_command_not_found(self):
+        """sd:2415. Exit 127 fails the same way on every retry until the path is fixed, as Management says."""
+        doc = json.loads(json.dumps(self.doc))
+        next(e for e in doc["events"] if e["id"] == "job:nightly-sync")["exit"] = 127
+        out = self.run_page("R.off = cmd('jobs.retry').when(C.get('job:nightly-sync'));"
+                            "R.primary = cmd('jobs.retry').primary(C.get('job:nightly-sync'));", doc=doc)
+        self.assertEqual(out["R"]["off"], "exit 127: command not found; fix the path first")
+        self.assertFalse(out["R"]["primary"])
+
+    def test_show_output_follows_next_offset_past_one_page(self):
+        """sd:2416. read_execution answers 64 KiB a read; a full page means more follows at next_offset."""
+        note = self.ids["bad_run"]
+        answer = ("(path) => path.endsWith('?offset=0') ? [200, { state: 'finished', output: 'first page|', next_offset: 65536 }]"
+                  " : path.endsWith('?offset=65536') ? [200, { state: 'finished', output: 'second page', next_offset: 65547 }]"
+                  " : [500, { error: 'read past the end' }]")
+        out = self.run_page(f"shellRun(cmd('command.output'), C.get('cmd:{note}')); await flush(); R.details = ELS.details.html;",
+                            answer)
+        self.assertEqual(out["gets"], ["/api/activity", f"/api/executions/{note}?offset=0", f"/api/executions/{note}?offset=65536"])
+        self.assertIn("first page|second page", out["R"]["details"])
+
+    def test_a_range_that_is_not_read_toasts_the_range_that_stays(self):
+        """sd:2424. At 1h or All read, 7d keeps that range; the toast said 24h."""
+        range_ = "ELS.range.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { r: '%s' } } : null } });"
+        out = self.run_page(range_ % "7d" + range_ % "1h" + range_ % "7d" + range_ % "all" + range_ % "30d")
+        self.assertEqual([t[0] for t in out["toasts"]], [
+            "7d is not read: /api/activity holds the last 24 hours. The range stays at 24h.",
+            "7d is not read: /api/activity holds the last 24 hours. The range stays at 1h.",
+            "30d is not read: /api/activity holds the last 24 hours. The range stays at All read."])
+
+    def test_a_search_from_the_address_matches_without_case(self):
+        """sd:2424 (round-6 finding). A typed query is lowercased; one restored from ?q= was matched as written."""
+        out = self.run_page("R.rows = ELS.rows.html;", pre="location.search = '?q=Port%20The';")
+        self.assertIn("Port the page", out["R"]["rows"])
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", ACTIVITY_JS)

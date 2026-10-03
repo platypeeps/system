@@ -360,9 +360,14 @@ cmd_capture() {
     # Every header line is dropped, not only the dated one: the format line
     # changed once (sd:1273), and a comment is not an inventory change.
     # The last grep is also the pipeline's status, and so what says "none".
-    if diff "$target" "$tmp" | grep '^[<>]' | sed 's/^</  gone: /; s/^>/  new:  /' | show_rows | grep -v '^  [a-z]*: *#'; then :; else
+    # The old rows are read as manifest_rows reads them, so a file with
+    # literal labels reports no change for its labels' new encoding.
+    old_rows=$(mktemp)
+    manifest_rows "$target" > "$old_rows"
+    if diff "$old_rows" "$tmp" | grep '^[<>]' | sed 's/^</  gone: /; s/^>/  new:  /' | show_rows | grep -v '^  [a-z]*: *#'; then :; else
       echo "  none"
     fi
+    rm -f "$old_rows"
     # The header carries a capture date, so writing unconditionally made the
     # file differ every single day even when nothing on the machine had
     # changed — and the nightly cron then left the repo permanently dirty.
@@ -386,6 +391,19 @@ cmd_capture() {
 # A manifest label as it was: add() writes | as %7C and % as %25, so %7C
 # is undone first and a literal "%7C" (stored %257C) survives.
 decode() { sed 's/%7C/|/g; s/%25/%/g'; }
+
+# A manifest's rows, labels in the encoded form inventory() writes. Labels
+# were first encoded with the key (sd:1273), whose capture writes the format
+# line "app|kind|name[|key]". A manifest without that line holds literal
+# labels, so its % is encoded here, or decode would read a literal "100%25"
+# as "100%" (sd:1826). A literal label holds no |: it would split the row.
+manifest_rows() { # file
+  if grep '^# format:' "$1" | grep -qF 'name[|key]'; then
+    grep -v '^#' "$1" || :
+  else
+    grep -v '^#' "$1" | awk -F'|' -v OFS='|' 'NF >= 3 { gsub(/%/, "%25", $3) } { print }'
+  fi
+}
 
 # Manifest rows as a report prints them: the label decoded, and a fourth
 # field that is not a digest withheld. A profile captured before the key was
@@ -435,8 +453,8 @@ cmd_compare() {
       [ -f "$f" ] || { echo "missing $f — run capture on that machine first" >&2; exit 1; }
     done
     t1=$(mktemp); t2=$(mktemp)
-    grep -v '^#' "$f1" | sort > "$t1"
-    grep -v '^#' "$f2" | sort > "$t2"
+    manifest_rows "$f1" | sort > "$t1"
+    manifest_rows "$f2" | sort > "$t2"
     only1=$(comm -23 "$t1" "$t2")
     only2=$(comm -13 "$t1" "$t2")
     rm -f "$t1" "$t2"
@@ -467,7 +485,7 @@ cmd_setup() {
   [ -f "$manifest" ] || { echo "missing $manifest — run capture first" >&2; exit 1; }
   tl=$(mktemp); tm=$(mktemp)
   inventory > "$tl"
-  grep -v '^#' "$manifest" | sort > "$tm"
+  manifest_rows "$manifest" | sort > "$tm"
   missing=$(comm -13 "$tl" "$tm")
   extra=$(comm -23 "$tl" "$tm")
   rm -f "$tl" "$tm"

@@ -31,6 +31,7 @@ paths:
 ## launchd plists hold absolute paths
 
 - Tools that install a LaunchAgent fill a committed `*.plist.template` at install time.
+- Every template passes `SYSTEM_TOOLS_CONFIG` as `@CONFIG@`: launchd gives the agent only the environment the plist names.
 - The label prefix is `SYSTEM_TOOLS_LABEL_PREFIX` (default `local.system-tools`); keep it identical for every tool on a machine.
 - Renaming a script or folder a plist references requires reinstalling the plist.
 - The pack's registry holds this repo's root, and `sd-plugin.json` points at the dashboard entrypoint.

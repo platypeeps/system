@@ -223,6 +223,18 @@ class UvPrune(unittest.TestCase):
                          "org.example.google-workspace-mcp")
         self.assertEqual(plist["StandardErrorPath"], "/tmp/org.example.uv-cache-prune.err")
 
+    def test_the_agent_reads_the_config_root_it_was_rendered_under(self):
+        # REGRESSION (sd:1959). launchd passes only the environment the plist
+        # names, so a non-default SYSTEM_TOOLS_CONFIG was lost and uv-prune
+        # read the default root's .env.
+        config = str(self.root / "elsewhere")
+        plist = self.render_plist(SYSTEM_TOOLS_CONFIG=config)
+        self.assertEqual(plist["EnvironmentVariables"]["SYSTEM_TOOLS_CONFIG"], config)
+        # Unset, the agent gets the default root lib/config.sh resolves.
+        plist = self.render_plist()
+        self.assertEqual(plist["EnvironmentVariables"]["SYSTEM_TOOLS_CONFIG"],
+                         str(self.root / ".config" / "system"))
+
     def test_an_agent_that_is_not_loaded_is_neither_paused_nor_started(self):
         result = self.run_prune()
         self.assertEqual(result.returncode, 0, result.stderr)
