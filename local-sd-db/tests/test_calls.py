@@ -404,6 +404,67 @@ class WhatTheReviewFound(CallCase):
                       registry=parsed, transport=wire, owner_pid=ME)
         self.assertEqual((result.outcome, result.bound, result.usd), ("run", 0.002, 1 * 2.0 / 1e6))
 
+    # --- sd:2553, the system half of sd:1827: a strict response_format -----
+
+    SCHEMA = {"type": "object", "additionalProperties": False, "required": ["findings"],
+              "properties": {"findings": {"type": "array", "maxItems": 50, "items": {
+                  "type": "object", "additionalProperties": False, "required": ["title", "line"],
+                  "properties": {"title": {"type": "string", "minLength": 1},
+                                 "line": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}}}
+
+    def strict(self):
+        """The registry with `kimi` opted in to a strict response_format."""
+        self.parsed = parse(REGISTRY.replace("model: kimi-k3,", "model: kimi-k3, response_format: json_schema,"),
+                            "providers.yaml")
+
+    def test_an_opted_in_entry_sends_the_schema_strict(self):
+        self.strict()
+        wire = Wire((200, answer(1, 1)))
+        self.call(wire=wire, name="kimi", response_schema=self.SCHEMA, schema_name="review_findings")
+        body = json.loads(wire.calls[0][0].data)
+        sent = body["response_format"]
+        self.assertEqual((sent["type"], sent["json_schema"]["name"], sent["json_schema"]["strict"]),
+                         ("json_schema", "review_findings", True))
+        # Strict mode rejects minLength and maxItems (the operator's ruling on
+        # sd:1827); the copy drops them and keeps every other keyword. The
+        # caller's schema is not changed: its parser keeps those checks.
+        findings = sent["json_schema"]["schema"]["properties"]["findings"]
+        self.assertNotIn("maxItems", findings)
+        self.assertNotIn("minLength", findings["items"]["properties"]["title"])
+        self.assertEqual(findings["items"]["properties"]["line"],
+                         {"anyOf": [{"type": "integer"}, {"type": "null"}]})
+        self.assertEqual(self.SCHEMA["properties"]["findings"]["maxItems"], 50)
+        # A property that happens to be named like a dropped keyword is a name, and stays.
+        named = {"type": "object", "properties": {"maxItems": {"type": "integer"}}}
+        wire = Wire((200, answer(1, 1)))
+        self.call(wire=wire, name="kimi", call_id="c-named", response_schema=named)
+        self.assertEqual(json.loads(wire.calls[0][0].data)["response_format"]["json_schema"],
+                         {"name": "response", "strict": True, "schema": named})
+        self.assertEqual(self.SCHEMA["properties"]["findings"]["items"]["properties"]["title"]["minLength"], 1)
+
+    def test_an_entry_that_does_not_opt_in_sends_todays_body(self):
+        # MiniMax accepts response_format and ignores it, so it is never sent
+        # unasked: the same body as before, no key added, schema or not.
+        self.strict()
+        for name, kw in (("mini", {"response_schema": self.SCHEMA}), ("mini", {}), ("kimi", {})):
+            with self.subTest(name=name, schema=bool(kw)):
+                wire = Wire((200, answer(1, 1)))
+                self.call(wire=wire, name=name, call_id=f"c-{name}-{bool(kw)}", **kw)
+                body = json.loads(wire.calls[0][0].data)
+                self.assertNotIn("response_format", body)
+                self.assertEqual(set(body), {"model", "max_tokens", "messages"})
+
+    def test_a_schema_name_strict_mode_refuses_is_refused_before_the_wire(self):
+        self.strict()
+        for name, schema in (("has spaces", self.SCHEMA), ("x" * 65, self.SCHEMA), ("ok", ["not", "a", "dict"])):
+            with self.subTest(name=name):
+                wire = Wire()
+                with self.assertRaises(CallRefused):
+                    self.call(wire=wire, name="kimi", call_id=f"r-{len(name)}", response_schema=schema,
+                              schema_name=name)
+                self.assertEqual(wire.calls, [])
+        self.assertEqual(self.rows(), [])
+
     def test_an_entry_without_max_tokens_sends_no_max_tokens_key(self):
         """A JSON `null` is not "no limit" to every endpoint; the key is
         left out."""

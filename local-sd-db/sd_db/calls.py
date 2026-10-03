@@ -62,6 +62,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import sqlite3
 import urllib.error
 import urllib.parse
@@ -287,6 +288,29 @@ def usage_of(body: bytes) -> tuple[int, int] | None:
     return counts[0], counts[1]
 
 
+#: What strict mode accepts as `json_schema.name`.
+SCHEMA_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+#: Keywords strict mode rejects. The operator's ruling on sd:1827 drops these
+#: from the copy sent; the caller's own parser keeps checking them.
+STRICT_DROPS = frozenset({"minLength", "maxItems"})
+
+
+#: Keywords whose value maps names to schemas: a property named `maxItems`
+#: is a name there, not a keyword, and stays.
+NAMED_SCHEMAS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
+
+
+def strict_schema(schema: Any) -> Any:
+    """A copy of `schema` without the keywords strict mode rejects."""
+    if isinstance(schema, Mapping):
+        return {key: ({name: strict_schema(sub) for name, sub in value.items()}
+                      if key in NAMED_SCHEMAS and isinstance(value, Mapping) else strict_schema(value))
+                for key, value in schema.items() if key not in STRICT_DROPS}
+    if isinstance(schema, list):
+        return [strict_schema(value) for value in schema]
+    return schema
+
+
 def call(
     connection: sqlite3.Connection,
     *,
@@ -303,6 +327,8 @@ def call(
     registry: Registry | None = None,
     transport: Transport | None = None,
     owner_pid: int | None = None,
+    response_schema: Mapping[str, Any] | None = None,
+    schema_name: str = "response",
 ) -> CallResult:
     """Make one call for `entry`, charged through the ledger. See the module.
 
@@ -313,6 +339,11 @@ def call(
     is minted when not given, and is one attempt: a second call is a new id.
     Raises `CallRefused` for an entry it will not call and `LedgerRefused`
     for a reservation the ledger will not hold, both before the wire.
+
+    `response_schema` is the JSON schema the answer must follow, named
+    `schema_name`. It goes on the wire only for an entry whose
+    `response_format` opts in (sd:1827); for any other entry the body is the
+    same as without it.
     """
     if entry.kind != "url":
         raise CallRefused(
@@ -390,6 +421,15 @@ def call(
         body_fields["thinking"] = {"type": entry.thinking}
     if entry.reasoning_effort is not None:
         body_fields["reasoning_effort"] = entry.reasoning_effort
+    if entry.response_format == "json_schema" and response_schema is not None:
+        if not isinstance(response_schema, Mapping) or not SCHEMA_NAME.fullmatch(str(schema_name)):
+            raise CallRefused(
+                f"{entry.name} needs a response_schema mapping and a schema_name of 1 to 64 "
+                f"letters, digits, '_' or '-'; nothing was reserved and nothing went on the wire",
+                entry=entry.name,
+            )
+        body_fields["response_format"] = {"type": "json_schema", "json_schema": {
+            "name": schema_name, "strict": True, "schema": strict_schema(response_schema)}}
     # The request is built **before** the reservation, and that order is the
     # fix rather than the taste. `registry.parse` validates neither the
     # endpoint nor the body values, so `json.dumps` and `Request` can still
