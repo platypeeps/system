@@ -88,6 +88,7 @@ addEventListener('DOMContentLoaded', () => {
 
   // Page attention: the worst lit state among open rows, and how many rows carry it. build: set after each read.
   function attention() {
+    if (!READ) { window.shell.attention?.({ state: 'unknown', n: 0, what: 'tasks not read' }); return; }
     const lit = tasks.filter(t => t.real).map(t => [t, state(t)]).filter(([, st]) => st);
     const worst = lit.some(([, st]) => st === 'warning') ? 'warning' : lit.length ? 'caution' : 'ok';
     const hits = lit.filter(([, st]) => st === worst).map(([t]) => t);
@@ -139,6 +140,12 @@ addEventListener('DOMContentLoaded', () => {
   // build: sd_db.workflow.TASK_STATUS_KINDS; workflow._recurring refuses a rule on any other kind.
   const RECURS = ['task', 'personal', 'followup'];
   const repeats = t => !!t?.recurrence;
+  // build (sd:2250): sd stores a rule only from sd_db.recurrence.PARTS. A rule with any other part (BYDAY), written around
+  // the library, cannot be walked: completing it ends the series. test_v2_tasks holds this set to the library's.
+  const PARTS = new Set(['FREQ', 'INTERVAL', 'BYMONTH', 'BYMONTHDAY']);
+  const walkable = t => String(t.recurrence || '').replace(/^RRULE:/i, '').split(';').every(p => PARTS.has(p.split('=')[0].trim().toUpperCase()));
+  // A completion that opens nothing: a rule sd cannot walk, or one whose next date workflow.next_occurrence_due says is none.
+  const ends = t => !walkable(t) || t.nextDue === null;
   const cliMove = (t, to) => t.id ? `sd task status ${t.id} ${to}` : '';
   function cliQuad(t, ch) {
     if (!t.id) return '';
@@ -154,15 +161,16 @@ addEventListener('DOMContentLoaded', () => {
   // write queued before it (review, PR #46). `check` asks again, as the write leaves, whether the command is still on: a
   // write queued behind another chose its command before that one landed (review round 3). `rev` is an Undo's: the revision
   // its own write answered. A row whose revision moved since, by a re-read or by any other write, refuses the Undo, so it
-  // never overwrites a change it did not make (review round 3).
+  // never overwrites a change it did not make (review round 3). A landed write rereads the rows (shell.read's barrier);
+  // `wait` holds the write's promise until that read ends, for a toast that names what the read brings.
   const CHANGED = 'it changed after this write, and Undo would overwrite that change';
   const pending = new Map();
-  function write(key, path, body, { sent, check, rev } = {}) {
+  function write(key, path, body, { sent, check, rev, wait } = {}) {
     const p = (pending.get(key) || Promise.resolve()).then(() => { const t = byKey(key); if (!t) throw new Error('the task is no longer listed');
       if (rev !== undefined && t.revision !== rev) throw new Error(CHANGED);
       const on = check ? check(t) : true; if (on !== true) throw new Error(on);
       sent?.(t); return post(path(t), { ...body, revision: t.revision }); })
-      .then(out => { wrote++; absorb(key, out); render(); return out; });
+      .then(out => { absorb(key, out); render(); const again = reread(); return wait ? again.then(() => out) : out; });
     pending.set(key, p.catch(() => {}));
     return p;
   }
@@ -170,17 +178,15 @@ addEventListener('DOMContentLoaded', () => {
   const edit = (key, ch, opts) => write(key, t => `/api/items/${t.id}`, Object.fromEntries(Object.entries(ch).map(([k, v]) => [k === 'p' ? 'priority' : k, v])), opts);
   const moveTo = (key, to, opts) => write(key, t => `/api/items/${t.id}/status`, { status: to }, opts);
   function failed(name, err) { toast(`${name ? name + ' ' : ''}not changed: ${err.message}`); }
-  // A refused stale write re-reads the rows once, however many writes in a group were refused. A re-read joins the one in
-  // flight only while no write of this page has landed since that one was asked for; after one did, it reads again once
-  // that read ends, so a completion's next occurrence is never missed by a read sent before it (review, PR #46). The open
-  // Details are read again with the rows: a conflict means the item changed elsewhere, and they show it (review, PR #46).
-  let rereading = null, wrote = 0;
-  function reread() {
-    if (rereading && rereading.wrote === wrote) return rereading.p;
-    const before = rereading ? rereading.p.catch(() => {}) : Promise.resolve();
-    const p = before.then(() => load()).then(() => { const id = byKey(selected)?.id; if (id) redrawDet(id); })
-      .finally(() => { if (rereading?.p === p) rereading = null; });
-    rereading = { wrote, p };
+  // A refused stale write loads the rows again (load(), not reread(): only a reread says a change landed), once however
+  // many writes in a group were refused: a refusal joins the load it started. A landed write's reread never joins a read
+  // sent before it landed (read.js), so a completion's next occurrence is never missed (review, PR #46). The open Details
+  // are read again with the rows: a conflict means the item changed elsewhere, and they show it (review, PR #46).
+  let refusing = null;
+  function refused() {
+    if (refusing) return refusing;
+    const p = refusing = load().then(ok => { const id = ok && byKey(selected)?.id; if (id) redrawDet(id); })
+      .finally(() => { if (refusing === p) refusing = null; });
     return p;
   }
   // ---------- Undo (build, review of PR #46 and #50) ----------
@@ -192,9 +198,9 @@ addEventListener('DOMContentLoaded', () => {
     return promise.then(v => {
       let spent = false;
       const undo = inverse && (() => { if (spent) return Promise.resolve(false); spent = true;
-        return inverse(v).then(() => true, err => { if (err.stale) reread(); throw err; }); });
+        return inverse(v).then(() => true, err => { if (err.stale) refused(); throw err; }); });
       return { text: text(v), undo };
-    }, err => { if (err.stale) reread(); throw err; });
+    }, err => { if (err.stale) refused(); throw err; });
   }
   // The command's undo: the shell passes what the run answered.
   const undoOf = (o, r) => r && r.undo ? r.undo() : false;
@@ -244,11 +250,15 @@ addEventListener('DOMContentLoaded', () => {
     putAll(); if (byKey(selected)?.id === id) renderDetails();
   }
   const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
+  // The rows' objects are the reader's (adopt below): it puts them after each read and retires a row the read stopped
+  // listing. The Details' notes and assignments follow their row: once it is not listed, they run nothing either.
+  const objectOf = t => ({ id: t.key, type: t.kind === 'ops' ? 'ops row' : 'item', label: `${label(t)} ${t.title}`, item: t.id });
+  const live = key => { const o = C.get(key); return !!o && o.type !== 'not listed'; };
   function putAll() {
-    tasks.forEach(t => C.put({ id: t.key, type: t.kind === 'ops' ? 'ops row' : 'item', label: `${label(t)} ${t.title}`, item: t.id }));
     Object.values(DET.items).forEach(d => {
-      d.notes.forEach(n => C.put({ id: `note:${n.id}`, type: 'note', label: `${n.kind} ${n.id} on #${d.item.id}`, note: n.id, kind: n.kind, resolved: n.resolved, item: d.item.id }));
-      d.assignments.forEach(a => C.put({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo, can: a.runner }));
+      const as = live(String(d.item.id)) ? o => o : o => ({ id: o.id, type: 'not listed', label: `${o.label} (no longer listed)` });
+      d.notes.forEach(n => C.put(as({ id: `note:${n.id}`, type: 'note', label: `${n.kind} ${n.id} on #${d.item.id}`, note: n.id, kind: n.kind, resolved: n.resolved, item: d.item.id })));
+      d.assignments.forEach(a => C.put(as({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo, can: a.runner })));
     });
   }
   const redrawDet = id => { staleDet(id); readDet(id, true); };
@@ -264,7 +274,8 @@ addEventListener('DOMContentLoaded', () => {
   // Status moves: keys 1–5 in the menu, as on the board. The list row shows the next status as its button.
   // build: run returns the move's landing, so the toast (with Undo) comes when the write lands; undo moves it back to
   // the status this move left, read as the write is sent. The `when` test runs again as the write leaves.
-  const moveOn = (s, t) => { if (s === 'done' && repeats(t)) return t.nextDue === null ? 'it repeats: 5 completes it and ends the series, since its rule gives no next date'
+  const moveOn = (s, t) => { if (s === 'done' && repeats(t)) return !walkable(t) ? 'it repeats: 5 completes it and ends the series, since sd cannot walk its rule'
+      : t.nextDue === null ? 'it repeats: 5 completes it and ends the series, since its rule gives no next date'
       : 'it repeats: 5 completes it and opens the next occurrence';
     const L = legal(t, s); return L.ok || L.reason; };
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
@@ -288,15 +299,18 @@ addEventListener('DOMContentLoaded', () => {
     when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
     cli: o => idOr(o, t => cliMove(t, 'done')),
     // build: next_due is workflow.next_occurrence_due, the date the completion computes. null is its "none": the
-    // completion then ends the series and opens nothing, so the confirm says that (review, PR #46). Not yet read again
-    // after an edit (undefined), the rule is named.
-    consequence: o => { const t = T(o);
-      if (t.nextDue === null) return `Completes ${label(t)} and ends the series: its rule (${t.recurrence}) gives no next date, so no next occurrence opens. There is no Undo.`;
-      return `Completes ${label(t)} and opens the next occurrence${t.nextDue ? `, due ${fmt(t.nextDue)}` : ' its rule gives'} (${t.recurrence}). A move back would leave two open tasks, so there is no Undo.`; },
+    // completion then ends the series and opens nothing, so the confirm says that (review, PR #46). The outcome is stated
+    // in the design owner's three cases (sd:2250): a date the page has; a valid rule whose date the page has not read yet
+    // since an edit (undefined), which sd sets; a rule sd cannot walk. A completion that opens nothing is a danger confirm.
+    consequence: o => { const t = T(o), rule = t.recurrence;
+      if (!walkable(t)) return `Completes ${label(t)} and ends the series: sd cannot walk ${rule}, so no next occurrence opens. There is no Undo.`;
+      if (t.nextDue === null) return `Completes ${label(t)} and ends the series: its rule (${rule}) gives no next date, so no next occurrence opens. There is no Undo.`;
+      return `Completes ${label(t)} and opens the next occurrence${t.nextDue ? `, due ${fmt(t.nextDue)} (${rule}).` : ` (${rule}); sd sets its date.`} A move back would leave two open tasks, so there is no Undo.`; },
+    danger: o => ends(T(o)),
     run: o => { const t = T(o); let from = t.status;
       const next = v => v?.next_occurrence ? `next occurrence #${v.next_occurrence}${byKey(String(v.next_occurrence))?.due ? ` due ${fmt(byKey(String(v.next_occurrence)).due)}` : ''}`
         : `the series ended: ${v?.next_occurrence_reason || 'no next occurrence was made'}`;
-      return landing(moveTo(t.key, 'done', { sent: r => { from = r.status; }, check: completeOn }).then(v => reread().then(() => v)),
+      return landing(moveTo(t.key, 'done', { sent: r => { from = r.status; }, check: completeOn, wait: true }),
         v => `${label(t)} ${slabel(from)} → Done · ${next(v)} · ${cliMove(t, 'done')}`); } };
   // An edit's Undo sets back the fields it changed (`keep`, the row's names), as they were when the edit was sent, at the
   // revision the edit answered. `check` asks as the edit leaves whether it still changes anything: a second one queued
@@ -337,24 +351,35 @@ addEventListener('DOMContentLoaded', () => {
       cli: o => idOr(o, t => `sd run --sequential ${t.id}`),
       run: o => { const t = T(o);
         // The Details hold the item's assignments and its run readiness: read them again after the run and after its Undo.
-        const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision } }).then(out => { redrawDet(t.id); return load().then(() => out.assignments?.[0]); });
+        const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision } }).then(out => { redrawDet(t.id); return reread().then(() => out.assignments?.[0]); });
         return landing(p, () => `${label(t)} queued for the runner · sd run --sequential ${t.id}`, a => unqueue(a, t.id)); },
       undo: undoOf },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
       cli: o => idOr(o, t => `sd task delete ${t.id}`),
       consequence: () => 'The task, its notes and its history go. Its assignments stay in the runner log. This cannot be undone; to keep a record, move it to Done instead.' },
-    // Artifact and cancel are sd work verbs (review item 17). Both need text only the operator has, a moved path or a reason,
-    // so the dashboard shows the line to copy; v1's item page takes the same text in a form.
-    { id: 'work.relink', on: 'item', label: 'Relink', key: 'l', risk: 'safe', executes: false, icon: 'link-2',
-      when: o => { const d = detOf(T(o)); return !d ? 'the artifact was not read for this row' : d.item.path ? true : 'the item has no artifact to relink'; },
-      cli: o => idOr(o, t => `sd work relink ${t.id} <moved path>`),
-      run: o => `Copy the line; the path is relative to ${detOf(T(o)).item.repo}` },
-    { id: 'work.cancel', on: 'item', label: 'Cancel', key: 'w', risk: 'confirm', executes: false, icon: 'ban',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id' : t.kind !== 'work' ? `sd work cancel acts on a work item; this is a ${t.kind}` : t.status === 'done' ? 'the work item is done' : true; },
-      cli: o => idOr(o, t => `sd work cancel ${t.id} --reason '<why>'`),
-      consequence: () => 'Records a deliberate cancellation with your reason. No sd verb takes it back.',
-      run: o => `Copy the line and write the reason · ${label(T(o))}` },
+    // Artifact and cancel are sd work verbs (review item 17). build (sd:2200, the design's sd:2199): both post to the routes v1's
+    // item page uses, /api/items/<id>/(relink|cancel), with the row's revision. The text only the operator has, a moved path or a
+    // reason, is a confirm field; OK stays off until it is typed. Availability is progress.work_controls, read with the Details.
+    // Neither has Undo: relinking back is another relink, and no sd verb reopens a cancelled item.
+    { id: 'work.relink', on: 'item', label: 'Relink', key: 'l', risk: 'safe', executes: true, icon: 'link-2',
+      when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id' : t.kind !== 'work' ? `sd work relink acts on a work item; this is a ${t.kind}`
+        : !d ? 'the artifact was not read for this row' : !d.work.relink ? d.work.reason : d.item.path ? true : 'the item has no artifact to relink'; },
+      fields: o => { const d = detOf(T(o)); return [{ name: 'path', label: 'Moved path', required: true, placeholder: d.item.path,
+        help: `Relative to ${d.item.repo}. The item keeps its history; only the artifact path changes.` }]; },
+      cli: (o, v = {}) => idOr(o, t => `sd work relink ${t.id} ${v.path ? window.shell.shq(v.path) : '<moved path>'}`),
+      sends: o => `POST /api/items/${T(o).id}/relink {path}`,
+      run: (o, v) => { const t = must(o);
+        return landing(write(t.key, x => `/api/items/${x.id}/relink`, { path: v.path }), () => `${label(t)} relinked → ${v.path} · sd work relink ${t.id} ${window.shell.shq(v.path)}`); } },
+    { id: 'work.cancel', on: 'item', label: 'Cancel', key: 'w', risk: 'confirm', executes: true, icon: 'ban',
+      when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id' : t.kind !== 'work' ? `sd work cancel acts on a work item; this is a ${t.kind}`
+        : t.status === 'done' ? 'the work item is done' : !d ? 'its cancel availability was not read for this row' : d.work.cancel || d.work.reason; },
+      fields: () => [{ name: 'reason', label: 'Reason', required: true, placeholder: 'why the work stops', help: 'Recorded with the cancellation. A cancel without a reason is refused.' }],
+      cli: (o, v = {}) => idOr(o, t => `sd work cancel ${t.id} --reason ${v.reason ? window.shell.shq(v.reason) : "'<why>'"}`),
+      sends: o => `POST /api/items/${T(o).id}/cancel {reason}`,
+      consequence: () => 'Closes the work item as cancelled, with your reason. No sd verb takes it back.',
+      run: (o, v) => { const t = must(o);
+        return landing(write(t.key, x => `/api/items/${x.id}/cancel`, { reason: v.reason }), () => `${label(t)} cancelled · sd work cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
     // Recurrence: sd task edit --recur needs a due date; --clear-recur stops the series and clears its anchor, which Undo sets again.
     { id: 'item.recur', on: 'item', label: 'Edit → repeat weekly', risk: 'undo', icon: 'calendar-clock',
       when: o => { const t = T(o), d = detOf(t); if (!t?.id) return 'this row has no sd id to edit'; if (!RECURS.includes(t.kind)) return `a ${t.kind} item cannot recur`;
@@ -392,13 +417,13 @@ addEventListener('DOMContentLoaded', () => {
   async function runner(o, verb) {
     const a = asgOf(o); if (!a) throw new Error(`assignment #${o.n} was not read`);
     try { await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision }); } catch (err) { if (err.stale) redrawDet(o.item); throw err; }
-    redrawDet(o.item); await load();
+    redrawDet(o.item); await reread();
   }
   // Requeue's Undo puts the assignment back: sd runner cancel while the run is still queued (commands.md). Run's Undo
   // cancels the assignment that run queued.
   function unqueue(a, item) {
     if (!a) return Promise.reject(new Error('the runner named no queued assignment'));
-    return post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => { redrawDet(item); return load(); },
+    return post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => { redrawDet(item); return reread(); },
       err => { if (err.stale) redrawDet(item); throw err; });
   }
 
@@ -477,8 +502,11 @@ addEventListener('DOMContentLoaded', () => {
 
   function renderDetails() {
     const t = byKey(selected), el = document.getElementById('details');
-    if (!t) { put(el, html`<p class="note">Select a task to see its fields and moves.</p>`); return; }
-    const [dt] = dueText(t), act = C.bar(t.key);
+    if (!t) { put(el, html`<p class="note">${!READ ? 'The tasks were not read, so nothing is selected.'
+      : tasks.some(x => !live(x.key)) ? 'The tasks were not read again after the change, so nothing is selected. Reload reads them.'
+      : !tasks.length ? 'No open task, so nothing is selected.' : !visible().length ? 'No task matches these filters. Clear them to see the list.'
+      : 'Select a task to see its fields and moves.'}</p>`); return; }
+    const [dt] = dueText(t), act = C.bar(t.key), gone = !live(t.key);
     put(el, html`<div class="kind"><span class="label">${t.kind === 'ops' ? 'Ops row' : t.kind}</span><span class="tag real">observed</span></div>
       <h2>${t.title}</h2>
       <dl>
@@ -491,7 +519,8 @@ addEventListener('DOMContentLoaded', () => {
         <dt>Quadrant</dt><dd>${t.kind === 'ops' || t.status === 'done' ? 'not placed' : QUADS.find(q => q[0] === quadOf(t))[1]}</dd>
         ${t.assignment ? html`<dt>Assignment</dt><dd>${t.assignment}</dd>` : ''}
       </dl>
-      <h3>Act</h3>${String(act) ? act : html`<p class="why">No sd item behind this row; nothing to run. It clears when the next sync succeeds.</p>`}
+      <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>`
+        : String(act) ? act : html`<p class="why">No sd item behind this row; nothing to run. It clears when the next sync succeeds.</p>`}
       ${more(t)}
       ${t.id ? html`<p class="why">Delete asks first and cannot be undone; to keep a record, move the task to Done. <code>sd task</code> has no delete verb yet (sd:1899).</p>` : ''}
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
@@ -855,7 +884,7 @@ addEventListener('DOMContentLoaded', () => {
     const body = { title: P.title, ...(P.p ? { priority: P.p } : {}), ...(P.due ? { due: P.due } : {}), ...(P.repo ? { repo: repoFor(P.repo) } : {}) };
     inp.value = ''; showPreview();
     // The new task is selected only where it shows: a filter that hides it keeps the selection on a visible one (review, PR #46).
-    post('/api/items', body).then(out => load().then(() => { const key = String(out.item.id), t = byKey(key);
+    post('/api/items', body).then(out => reread().then(() => { const key = String(out.item.id), t = byKey(key);
       if (!t || !passes(t)) { toast(`Added #${out.item.id} to Planning · the filters hide it; Clear all shows it`); return; }
       select(key, false); landed(key); toast(`Added #${out.item.id} to Planning`); }),
       err => { inp.value = [P.title, P.p && `p${P.p}`, P.due && `due ${P.due}`, P.repo && `#${P.repo}`].filter(Boolean).join(' '); toast(`Not added: ${err.message}`); });
@@ -872,32 +901,40 @@ addEventListener('DOMContentLoaded', () => {
       return `Note added to ${label(t)}`;
     }
     const out = await post('/api/items', { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
-    await load();
+    await reread();
     return `Captured #${out.item?.id}: ${out.item?.title || title}`;
   };
 
-  // ---------- Start (build: read /api/tasks, then draw) ----------
-  let started = false;
-  async function load() {
-    if (!started) shell.state({ kind: 'loading', text: 'Reading the tasks. Rows appear when /api/tasks answers.', source: '/api/tasks' });
-    try {
-      const doc = await getJSON('/api/tasks');
-      tasks = doc.rows.map(shape); READ = doc.read;
-      shell.state(tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' });
-    } catch (err) {
-      shell.state({ kind: 'error', text: `The tasks were not read, so nothing below is current: ${err.message}. Reload retries it.`, source: '/api/tasks' });
-      if (!started) return;
-    }
-    if (!started) {
-      started = true;
-      const q = new URLSearchParams(location.search);
-      if (q.get('row') && byKey(q.get('row'))) selected = q.get('row');
+  // ---------- Start (build, sd:2484: shell.read reads /api/tasks, then draws; it rereads after each landed write) ----------
+  // The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws; a task the read no longer
+  // lists loses its pick and runs no command; a failed load leaves no row; and a failed reread after a write keeps the rows
+  // and says the write landed. The Details keep their own per-item generation (DET.gen).
+  let drawn = false;
+  function draw() {
+    if (!drawn) {
+      // The address is read before the first draw: that draw's reconcile selects the first shown card and rewrites ?row=.
+      drawn = true;
+      const q = new URLSearchParams(location.search), row = shell.row();
+      if (row && byKey(row)) selected = row;
       readFilterURL();
       setView(['list', 'board', 'matrix'].includes(q.get('view')) ? q.get('view') : 'board');
-      C.select(selected); readDet(byKey(selected)?.id);
     } else { subhead(); render(); }
     attention();
   }
+  const reading = shell.read({
+    source: '/api/tasks', what: 'the tasks',
+    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read;
+      return { objects: tasks.map(objectOf), state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
+    clear: () => { tasks = []; READ = null; },
+    draw,
+    // draw() has already reconciled the selection against the cards the filters show, so the reader settles on that one.
+    current: () => selected,
+    first: () => selected,
+    select: key => select(key, false),
+    unselect: () => { selected = null; renderDetails(); },
+  });
+  function load() { return reading.load(); }
+  function reread() { return reading.reread(); }
   load();
   suggest(['What is overdue across repos?', 'Which ready tasks can the runner take tonight?', 'Draft the reply that closes the selected task']);
 });
