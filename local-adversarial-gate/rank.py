@@ -305,7 +305,11 @@ def replace_text(path, text) -> bool:
     other, and keeps the original's mode.
     """
     folder = os.path.dirname(os.path.abspath(path))
-    handle, temp = tempfile.mkstemp(prefix=".rank.", dir=folder)
+    try:
+        handle, temp = tempfile.mkstemp(prefix=".rank.", dir=folder)
+    except OSError as exc:
+        warn(f"cannot write beside {path}: {exc}; the order is the reviewer's own")
+        return False
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as fh:
             fh.write(text)
