@@ -114,11 +114,6 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
         return render(connection, parameters=parameters)
     if path == "/writing":
         return screens.writing_page(connection, now=now, parameters=parameters)
-    if path == "/designs":
-        from .designs import render as designs_render
-
-        # No connection either: the listing reads the ui-design checkout.
-        return designs_render(parameters)
     if path == "/operations":
         from .operations_screen import operations_page
 

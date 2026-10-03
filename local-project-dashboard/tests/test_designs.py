@@ -135,7 +135,7 @@ class Listing(unittest.TestCase):
         from sd_dashboard.server import route
 
         with mock.patch.object(designs, "ROOT", self.root):
-            body = route(None, "/designs", {}, now="2026-09-27T00:00:00Z")
+            body = route(None, "/classic/designs", {}, now="2026-09-27T00:00:00Z")
         self.assertIn("v1-today.html", body)
 
 

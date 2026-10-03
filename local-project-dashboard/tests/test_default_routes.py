@@ -29,7 +29,7 @@ from test_workflow_actions import BrowserSession
 V2 = Path(v2.__file__).resolve().parent
 
 #: Every old screen, and where it lives now. An old screen whose path a page took is where that page's module says.
-OLD_SCREENS = ("/backlog", "/protection", "/writing", "/designs", "/operations",
+OLD_SCREENS = ("/backlog", "/protection", "/writing", "/operations",
                *(f"/operations?area={key}" for key in ("jobs", "services", "ports", "progress", "usage", "reports",
                                                         "resources", "trackers", "repos", "sessions", "commands")),
                *(entry.path for page in v2.registry.PAGES for entry in page.takes))
@@ -130,7 +130,7 @@ class TheDefault(BrowserSession):
                          {"SHELL_PAGES": v2.SECTIONS, "SHELL_CLASSIC": v2.CLASSIC, "SHELL_SCREENS": v2.SCREENS})
         reachable = set(v2.CLASSIC.values()) | set(v2.SCREENS.values())
         for required in ("/operations?area=jobs", "/operations?area=trackers", "/operations?area=ports",
-                         "/operations?area=repos", "/protection", "/designs"):
+                         "/operations?area=repos", "/protection", "/classic/designs"):
             self.assertIn(required, reachable)
         # A ported section is never also classic, and no page script names a section's address.
         self.assertEqual(set(v2.SECTIONS) & set(v2.CLASSIC), set())
