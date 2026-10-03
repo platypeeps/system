@@ -1,7 +1,7 @@
 """The system's protection gap ids are the pack's, read from the pinned pack (sd:1372).
 
-The pack owns the gap vocabulary: `sd-status` emits the ids, and its
-`ACKNOWLEDGEABLE_GAPS` in `bin/sd_lib.py` accepts them. Two places here restate
+The pack owns the gap vocabulary: `sd-status` emits the ids, and the
+pack's `sd_lib` module accepts them as `ACKNOWLEDGEABLE_GAPS`. Two places here restate
 them: `GAP_IDS` in `local-sd-db/sd_db/protection.py`, which the nightly
 collector writes, and `GAPS` in the dashboard's `protection_screen.py`, which
 draws one column per id. Nothing held the three together, so an id added on one
@@ -12,7 +12,7 @@ The pack side is enumerated, not restated: the test reads the pack copy that
 one `SD_ACCEPTANCE_PACK` names. A missing or off-pin copy fails loudly; a skip
 would fail the check anyway, and it would hide the one comparison this exists
 for. `unprotected` is the system's status column, not a gap cell, as the pack's
-half of this binding (`GapVocabularyTests` in its `tests/test_sd_status.py`)
+half of this binding (its `GapVocabularyTests`, landed in pack PR #1305)
 also reads it.
 
 Stdlib only, read with `ast` so nothing is imported: this runs in the
