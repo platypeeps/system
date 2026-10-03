@@ -238,7 +238,7 @@ class TheNewestRowForABillAndWindow(MeterCase):
 
     def test_latest_refuses_a_window_that_is_not_a_positive_integer(self):
         """The refusal `sample` gives, the same predicate and the same error."""
-        for bad in (0, -300, 300.0, "300", None, True):
+        for bad in (0, -300, 300.0, "300", None, True, 2**63):
             with self.subTest(window_minutes=bad):
                 with self.assertRaises(MeterRefused) as caught:
                     latest(self.db, bill="open", window_minutes=bad)
@@ -273,13 +273,17 @@ class WhatTheMeterRefuses(MeterCase):
 
     def test_a_non_positive_or_non_integer_window_is_refused_before_the_write(self):
         before = self.dump()
-        for bad in (0, -300, 300.0, "300", None, True):
+        for bad in (0, -300, 300.0, "300", None, True, 2**63):
             with self.subTest(window_minutes=bad):
                 with self.assertRaises(MeterRefused) as caught:
                     sample(self.db, provider="claude", window_minutes=bad,
                            used_percent=50, now=AT)
                 self.assertIn("window_minutes", str(caught.exception))
         self.assertEqual(self.dump(), before)
+        # SQLite's largest INTEGER is the edge: one past it raised the
+        # driver's `OverflowError` at the INSERT, not a refusal (sd:1219).
+        sample(self.db, provider="claude", window_minutes=2**63 - 1, used_percent=50, now=AT)
+        self.assertEqual([row["window_minutes"] for row in self.meter_rows()], [2**63 - 1])
 
     def test_the_refusal_is_the_librarys_own_error(self):
         self.assertTrue(issubclass(MeterRefused, sd_db.SdDbError))

@@ -82,6 +82,9 @@ SPOTLIGHT_PLIST="${MACHINE_SETUP_SPOTLIGHT_PLIST:-/System/Volumes/Data/.Spotligh
 # The PlistBuddy override exists for the tests too: CI runs on Linux, which
 # has no PlistBuddy, and the tests put a stand-in there.
 PLISTBUDDY="${MACHINE_SETUP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
+# The applications folder the apps scan and the iterm2 stage look in. The
+# override exists for the tests, so a capture there never lists this Mac's apps.
+APPLICATIONS_DIR="${MACHINE_SETUP_APPLICATIONS_DIR:-/Applications}"
 
 # Every mutation is opt-in. Without --apply the script only prints its plan,
 # so `setup` on an unfamiliar machine is safe to run first and read.
@@ -1506,7 +1509,7 @@ stage_iterm2() {
     echo "  no iTerm2 prefs folder in this profile"
     return 0
   fi
-  if [ ! -d /Applications/iTerm.app ]; then
+  if [ ! -d "$APPLICATIONS_DIR/iTerm.app" ]; then
     echo "  SKIP    iTerm.app not installed (cask iterm2)"
     return 0
   fi
@@ -2704,7 +2707,7 @@ print("\n".join(sorted(apps)))' > "$tmp/cask-apps" || : > "$tmp/cask-apps"
     : > "$tmp/cask-apps"; : > "$tmp/cask-tokens"
   fi
 
-  for app in /Applications/*.app; do
+  for app in "$APPLICATIONS_DIR"/*.app; do
     [ -e "$app" ] || continue
     name=$(basename "$app" .app)
     [ -e "$app/Contents/_MASReceipt/receipt" ] && continue

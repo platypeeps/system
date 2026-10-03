@@ -299,6 +299,9 @@ class TheMergedCaps(UsageCase):
         self.assertEqual(self.db.execute("UPDATE bill SET cap_usd_month = 5.0 WHERE name = 'open'").rowcount, 1)
         for text in (REGISTRY_WITH_EXTRA_BILL.replace("extra:  { cost: subscription }", "extra:  { cost: subscription, cap_usd_month: bad }"),
                      REGISTRY_WITH_EXTRA_BILL.replace("extra:  { cost: subscription }", "extra:  { cost: subscription, cap_usd_month: [10] }"),
+                     # An integer cap too large for a float: `float` raises `OverflowError`,
+                     # which is neither `ValueError` nor `TypeError` (sd:1219).
+                     REGISTRY_WITH_EXTRA_BILL.replace("extra:  { cost: subscription }", "extra:  { cost: subscription, cap_usd_month: 1" + "0" * 400 + " }"),
                      "bills: [not, a, mapping]\nproviders: {}\nroles: {author: [], reviewer: []}\n"):
             with self.subTest(text=text[-60:]):
                 self.assertNotEqual(text, REGISTRY_WITH_EXTRA_BILL)

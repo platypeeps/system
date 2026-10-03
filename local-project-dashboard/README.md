@@ -17,7 +17,7 @@ instead of overwriting a newer change. Capture keeps its draft and offers
 Refresh related item; other item forms offer a reload link.
 
 **Today** opens with **Now**: the fleet's loudest facts, ranked, loudest first —
-scheduled jobs whose last run failed, checkouts with unpushed commits, checkouts with uncommitted files, abandoned
+scheduled jobs that failed or want attention, checkouts with unpushed commits, checkouts with uncommitted files, abandoned
 worktrees, and open pull requests waiting on you. The ranking is the pack
 dashboard's `dashboard/now.py`, carried across with its rank numbers, in
 `sd_dashboard/now_screen.py`; the band a row wears (`broken`, `look`,
@@ -29,7 +29,10 @@ because the shadow table carries no `updated_at`), and Jobs through
 `sd_db.operations.inventory`. A failed job ranks 1, after a dark collector and
 before every other row; it names the exit code or signal, the time its log was
 last written, and its retry line, `launchctl kickstart <service>`, the one Operations Jobs sends
-(a hand-run of `cron-jobs.sh run` does not clear launchd's record). The rows arrive by `/api/now` after
+(a hand-run of `cron-jobs.sh run` does not clear launchd's record).
+An interrupted, unloaded or unknown job ranks 2, in the look band (sd:2014). An interrupted one carries the same retry line.
+An unloaded one names the `cron-jobs.sh install` that loads it; an unknown one names the `launchctl print` that shows its record.
+The rows arrive by `/api/now` after
 the page is up, so a Today load never waits on the fleet; Refresh reads again.
 A collector that goes dark — the child refused, past its budget, exiting
 non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming the collector
@@ -152,8 +155,10 @@ the selected tab travels in the URL, for example `/operations?area=services`.
 Every job or service control rechecks the observed state and revision. The last
 request's acceptance is shown separately from the current state; acceptance is
 not proof that a job finished or that an application is healthy.
-Queued assignments can be cancelled without completing their item; running
-assignments explain when no supported cancellation backend exists. A restore
+Queued assignments can be cancelled without completing their item. A blocked
+assignment can be cancelled once its item is done and no runner attempt holds
+its lease. Running assignments explain when no supported cancellation backend
+exists. A restore
 blocks starting jobs and starting or restarting services, while supported stop
 controls remain available. Stopping a service unloads it for the current login;
 its plist stays installed and may load again at the next login. Equivalent
@@ -293,6 +298,7 @@ listed under its directory name:
 ```
 label|<key>|<label>              a found root, better named
 skip|<key>                       a found root the dashboard should not list
+skip|<key>|<file>                one file of a root, neither listed nor served
 root|<key>|<label>|<directory>   a root that is somewhere else entirely
 ```
 

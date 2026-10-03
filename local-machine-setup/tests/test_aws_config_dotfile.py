@@ -188,6 +188,9 @@ class AwsConfigCaptureTest(unittest.TestCase):
         write_stub(self.stubs, "git", "exit 1\n")
         # Every key unset, as real `defaults` reports it: exit 1 (sd:1432).
         write_stub(self.stubs, "defaults", "exit 1\n")
+        # No sudo ticket: the spotlight step reports it cannot read.
+        write_stub(self.stubs, "sudo", "exit 1\n")
+        fixture_config.seal(self, self.stubs)
 
     def capture(self):
         env = {

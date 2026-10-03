@@ -1,5 +1,5 @@
 /* Health (sd:2115): the page's own rules, from the design source's designs/v2/health.html at e301f82.
-   Left out: the volume bars, the week chart and the chat proposal card, which draw data no reader provides yet. */
+   Left out: the week chart and the chat proposal card, which draw data no reader provides yet. */
 .annunciator { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl); padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); list-style: none; }
 .annunciator li { display: contents; }
 .cell { font: inherit; border: 0; text-align: left; cursor: pointer; width: 100%; display: grid; grid-template-rows: auto 1fr; gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel); color: var(--color-muted); }
@@ -161,4 +161,19 @@ dialog.confirm .actions { margin-top: var(--space-md); }
 }
 @media (forced-colors: active) {
   .pmx .c-gap, .pmx .st-unprotected { fill: CanvasText; } .pmx .c-ok, .pmx .st-protected { fill: GrayText; }
+}
+
+/* Disk (sd:2202): the volume bars, from the design source's health.css. */
+.bars { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) auto; gap: var(--space-2xs) var(--space-sm); align-items: center; margin: 0 0 var(--space-md); font: 400 var(--text-xs)/1.3 var(--font-data); }
+.bars .name { color: var(--color-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bars .v { color: var(--color-ink-2); text-align: right; white-space: nowrap; }
+.bars svg { width: 100%; height: 0.75rem; display: block; }
+.bars .track { fill: var(--color-well); stroke: var(--color-rule); stroke-width: 1; }
+.bars .fill { fill: var(--color-series-2); }
+@media (max-width: 599px) {
+  .bars { grid-template-columns: minmax(0, 1fr) auto; }
+  .bars svg { grid-column: 1 / -1; order: 3; }
+}
+@media (forced-colors: active) {
+  .bars .fill { fill: CanvasText; }
 }
