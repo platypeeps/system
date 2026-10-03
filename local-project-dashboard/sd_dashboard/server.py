@@ -282,6 +282,14 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if set(values) != {"revision"}:
             raise ValueError("Provide the current report revision.")
         return lambda connection: reporting.acknowledge(connection, int(match[1]), expected_revision=values["revision"], who="dashboard")
+    # The Reports page's Undo (sd:2395): it posts the revision its acknowledge answered, so a report changed since is stale.
+    match = re.fullmatch(r"/api/reports/([1-9][0-9]*)/reopen", path)
+    if match:
+        from sd_db import reporting
+
+        if set(values) != {"revision"}:
+            raise ValueError("Provide the revision the acknowledgement answered.")
+        return lambda connection: reporting.reopen(connection, int(match[1]), expected_revision=values["revision"], who="dashboard")
     if path == "/api/reports/acknowledge-clean":
         from sd_db import reporting
 
