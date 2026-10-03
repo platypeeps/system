@@ -1,5 +1,5 @@
 """Reports (sd:2121): v1's report, job and clean-preview reads. Acknowledge and Retry post routes v1 posts too, so they
-stay in server.py's action_route. The old screen stays in the palette: the page has no Toolbox, Briefs, Vault, Research
+stay in server.py's action_route, beside the reopen route Acknowledge's Undo posts (sd:2395). The old screen stays in the palette: the page has no Toolbox, Briefs, Vault, Research
 or Queues view, and no attributed batch acknowledge (`--all-clean --who`)."""
 
 from __future__ import annotations

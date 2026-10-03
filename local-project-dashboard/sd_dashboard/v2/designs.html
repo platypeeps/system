@@ -1,0 +1,70 @@
+<!doctype html>
+<!--
+  Designs (sd:2126), at /designs. Built from the design source's products/system/designs/pages/designs.html, designs.js and
+  designs.css at 2729265, with design.md and commands.md.
+  Data: /api/designs (designs.ledger: every .html the tab serves under products/<product>/, its kind, title, size and last
+  commit, its screenshots and which of them are stale, the working tree's changes, and each product's brief, including a
+  product with a brief and no page), read when the page opens. Each page and screenshot opens at /designs/<path>, served
+  sandboxed as drawn. History, Retake screenshots and Read brief are copy only. Nothing here is sample data, and nothing
+  here writes. The old listing moved to /classic/designs.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Designs · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/designs.css">
+</head>
+<body data-page="Designs" data-scope="designs" data-scope-note="the ui-design checkout: product briefs, drawn pages and their screenshots">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+  <main id="main">
+    <header class="head">
+      <div>
+        <h1>Designs</h1>
+        <p><span id="sub">Reading the ui-design checkout…</span> · <span id="src">ui-design</span> · served as drawn, each page sandboxed</p>
+      </div>
+      <div class="shift">
+        <label class="field">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr">Filter</span>
+          <input id="shift" placeholder="Filter pages" autocomplete="off">
+          <kbd>/</kbd>
+        </label>
+      </div>
+    </header>
+
+    <h2 class="sr">Attention</h2>
+    <ul class="annunciator" id="annunciator"></ul>
+
+    <div id="views"></div>
+
+    <section aria-labelledby="list-h">
+      <div class="sec-head">
+        <h2 id="list-h">Pages <button class="help" type="button" aria-label="Help: Pages" data-help="<b>One row per drawn page,</b> grouped by product; a product with a brief and no page has one row. <b>▲</b> means the page is uncommitted, has no screenshot, or has a stale one: the page or a file it loads changed after the capture. The time is that commit. Enter opens Details, where the page is one link away.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <table class="ledger" aria-labelledby="list-h">
+        <colgroup><col class="c-g"><col><col class="c-at"><col class="c-act"></colgroup>
+        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Page</th><th scope="col" class="r">Changed</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="empty" id="empty" hidden></p>
+      <p class="note" id="note">Not here: <code>foundation/</code>, which every page links but the tab does not serve as a page, and briefs, which are Markdown. Edit a design in the checkout; this page reads it and its git history.</p>
+    </section>
+  </main>
+
+  <div class="details" id="details"><p class="why">Select a page to see its screenshot and its history.</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/designs.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

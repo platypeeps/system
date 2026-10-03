@@ -1,0 +1,61 @@
+<!doctype html>
+<!--
+  Notes (sd:2120), at /notes. Built from the design source's products/system/designs/pages/notes.{html,css,js}.
+  Data: /api/notes (notes_screen.document: the last seven days in this machine's zone, each with its sd-ship merges, items
+  done and opened, and runner runs), read when the page opens. Mail and the daily note text have no reader and show as
+  unknown with the reason. Quick notes have no store kind, so a kept note stays on the page for the visit. Writes: none.
+  Nothing here is sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Notes · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/notes.css">
+</head>
+<body data-page="Notes" data-scope="notes">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+<main id="main">
+  <div class="head">
+    <div>
+      <h1>Notes</h1>
+      <p id="subhead">Reading the last week…</p>
+    </div>
+    <div class="datebar" role="group" aria-label="Day">
+      <button class="btn quiet sm" type="button" id="prev" aria-label="Previous day" aria-keyshortcuts="ArrowLeft"><svg class="i" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
+      <h2 class="day" id="day-name" aria-live="polite"></h2>
+      <button class="btn quiet sm" type="button" id="next" aria-label="Next day" aria-keyshortcuts="ArrowRight"><svg class="i" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
+      <button class="btn quiet sm" type="button" id="today">Today</button>
+      <button class="btn quiet sm" type="button" id="reload">Read again</button>
+    </div>
+  </div>
+  <div id="state" hidden></div>
+  <div class="layout">
+    <div id="daily"></div>
+    <aside class="quick" aria-labelledby="qn-h">
+      <h2 id="qn-h">Quick notes</h2>
+      <label class="sr" for="qn-in">Quick note</label>
+      <textarea id="qn-in" placeholder="A thought, a link, a name. ⌘↵ keeps it."></textarea>
+      <div class="row-btns">
+        <button class="btn sm" type="button" id="qn-keep">Keep note</button>
+        <button class="help" type="button" aria-label="Help: quick notes" data-help="<b>No loose-note kind yet.</b> sd store holds plugin kinds only, and none is a loose note. A new kind is a pack change; until it lands, a kept note lives on this page until you leave it. sd task note attaches a note to an item instead."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+      </div>
+      <ul id="qn-list" aria-live="polite"></ul>
+    </aside>
+  </div>
+</main>
+
+<div class="details" id="details"><p class="note">Reading the last week…</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/notes.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

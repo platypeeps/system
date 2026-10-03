@@ -76,7 +76,7 @@ are present, the file wins.
 
 ## Tests
 
-`./pipeline.sh test` runs an offline suite — 58 assertions, no network. `curl`
+`./pipeline.sh test` runs an offline suite with no network. `curl`
 is shadowed on `PATH` by a recording stub (`tests/curl-stub`), so the tests
 assert on the exact method, URL and body the tool would have sent. Both bugs
 above have a regression test that fails if the fix is backed out.
