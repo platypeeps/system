@@ -9,7 +9,7 @@ output to a log file in this directory.
 | Path | Purpose |
 | --- | --- |
 | `cswap.sh` | Single entrypoint: `run` (what launchd executes) plus `start`/`stop`/`status` |
-| `cswap-auto.plist.template` | LaunchAgent template; `start` fills `@LABEL@`, `@DIR@`, `@HOME@` and writes it to `~/Library/LaunchAgents` |
+| `cswap-auto.plist.template` | LaunchAgent template; `start` fills `@LABEL@`, `@DIR@`, `@HOME@`, `@CONFIG@` (the config root) and writes it to `~/Library/LaunchAgents` |
 | `cswap-auto.conf` | Flags for `cswap auto` and the path to the binary |
 | `logs/cswap-auto.log` | stdout |
 | `logs/cswap-auto.err.log` | stderr |
