@@ -298,6 +298,7 @@ case "$SUITE_LEG" in
     run_suite ai-songs-backup sh local-ai-songs-backup/ai-songs-backup.sh test -v
     run_suite github-rulesets sh github-rulesets/github-rulesets.sh test -v
     run_suite config-check sh local-config-check/config-check.sh test -v
+    run_suite volume-probe sh local-volume-probe/volume-probe.sh test -v
     # mezmo-pipeline's suite is shell with its own tally, not
     # unittest, so run_suite's summary check cannot read it. It
     # stubs curl and makes no network call; the gate is a nonzero
