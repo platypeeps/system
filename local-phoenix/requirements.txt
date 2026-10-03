@@ -112,7 +112,7 @@ pydantic-monty-runtime==0.0.19
 pydantic-settings==2.15.0
 pydantic_core==2.41.5
 Pygments==2.21.0
-PyJWT==2.13.0
+PyJWT==2.15.0
 pyperclip==1.11.0
 pystache==0.6.8
 python-dateutil==2.9.0.post0
