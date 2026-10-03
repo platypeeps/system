@@ -370,6 +370,8 @@ def record(
     if usd is not None and (type(usd) not in (int, float) or not math.isfinite(usd)
                             or usd < 0):
         raise JudgmentRefused(f"usd must be a finite number of zero or more; got {usd!r}")
+    if usd is None:
+        usd = registered_usd(connection, provider, model, tokens_in, tokens_out)
     moment = _now() if now is None else stamp(now)
     with transaction(connection):
         cursor = connection.execute(
@@ -385,6 +387,46 @@ def record(
              probabilities),
         )
     return int(cursor.lastrowid)
+
+
+def registered_usd(
+    connection: sqlite3.Connection,
+    provider: str,
+    model: str | None,
+    tokens_in: int | None,
+    tokens_out: int | None,
+) -> float | None:
+    """What a row's tokens cost at the price `providers.yaml` gives its
+    provider, per million tokens; None when there is no such price.
+
+    The registry is the file beside the connection's database, read alone:
+    no seeding write, so a row needs no `provider` row. An entry that names a
+    model prices that model only; a row for another model gets no cost, as a
+    comparison arm's Haiku price is only Haiku's. A side with tokens and no
+    usable price leaves the whole row unpriced rather than half-priced. A
+    missing, unreadable or refused registry is no price, never a refused row:
+    the tokens are the record either way.
+    """
+    if tokens_in is None and tokens_out is None:
+        return None
+    from .calls import _price
+    from .registry import beside, read as read_registry
+    try:
+        entry = read_registry(beside(connection)).providers.get(provider)
+    except Exception:          # a price list may not cost the ledger its row
+        return None
+    if entry is None or (entry.model is not None and entry.model != model):
+        return None
+    total = Decimal(0)
+    for tokens, side in ((tokens_in, "in"), (tokens_out, "out")):
+        if not tokens:
+            continue
+        price = _price(entry, side)
+        if price is None:
+            return None
+        total += tokens * Decimal(repr(price))
+    usd = float(total / 1_000_000)
+    return usd if math.isfinite(usd) else None
 
 
 def label(
@@ -526,6 +568,21 @@ GROUP BY stage, arm
 ORDER BY stage, arm
 """
 
+#: Rows that used tokens and carry no cost, per stage, arm and provider: no
+#: price was registered for that provider (or model) when they were recorded.
+UNPRICED = """
+SELECT stage, arm, provider, COUNT(*) AS n
+FROM judgment
+WHERE usd IS NULL
+  AND COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0) > 0
+  AND primitive <> :gate
+  AND arm IN ('jev', 'baseline')
+  AND (:since IS NULL OR timestamp >= :since)
+  AND (:until IS NULL OR timestamp < :until)
+GROUP BY stage, arm, provider
+ORDER BY stage, arm, provider
+"""
+
 #: Why the model was not used, per stage: the decline reasons of both arms
 #: counted separately, so a stage's fallbacks name their cause.
 DECLINES = """
@@ -656,9 +713,13 @@ def by_stage(
 
     stages: dict[str, dict] = {}
     for row in connection.execute(BY_STAGE_ARM, bounds):
-        arm = dict(row)
+        arm = dict(row, unpriced=0, unpriced_providers=[])
         entry = entry_for(arm.pop("stage"))
         entry["arms"][arm.pop("arm")] = arm
+    for row in connection.execute(UNPRICED, bounds):
+        arm = stages[row["stage"]]["arms"][row["arm"]]
+        arm["unpriced"] += row["n"]
+        arm["unpriced_providers"].append(row["provider"])
     for row in connection.execute(DECLINES, bounds):
         if row["stage"] in stages:
             stages[row["stage"]]["declines"][row["cause"]] = row["n"]
@@ -725,6 +786,8 @@ def _arm_line(label: str, arm: dict | None) -> str:
         f"latency {_ms(arm['avg_ms'])} avg / {_ms(arm['max_ms'])} max, "
         f"tokens {arm['tokens_in']} in / {arm['tokens_out']} out, "
         f"cost {_money(arm['usd'])}"
+        + (f" ({arm['unpriced']} unpriced: no providers.yaml price for "
+           f"{', '.join(arm['unpriced_providers'])})" if arm.get("unpriced") else "")
     )
 
 

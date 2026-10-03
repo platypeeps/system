@@ -58,6 +58,21 @@ PROBE_TILE = (f"import os, sys, time\nsys.path.insert(0, {str(HERE)!r})\n"
               "open(os.environ['DEADLINE_MAIN'], 'w').write(repr(time.monotonic()))\n"
               "sys.exit(sd_tile.main(sys.argv[1:]))\n")
 
+# The interpreter `dashboard.sh tile` execs, as `DASHBOARD_PYTHON`: it runs the
+# copied checkout's own `sd_tile.main`, and records when it reaches it, as
+# `PROBE_TILE` does, so the loader's test can tell a late start too.
+RECORDING_PYTHON = (f"#!{sys.executable}\nimport os, sys, time\n"
+                    "sys.argv = sys.argv[1:]\n"
+                    "sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))\n"
+                    "import sd_tile\n"
+                    "open(os.environ['DEADLINE_MAIN'], 'w').write(repr(time.monotonic()))\n"
+                    "sys.exit(sd_tile.main(sys.argv[1:]))\n")
+
+# How long a check waits for the nested pids to be written, then to vanish. It
+# returns as soon as they do; a survivor sleeps for a minute, so a bound below
+# that still tells one apart. Five seconds did not hold at load 100 (sd:2333).
+SURVIVE_SECONDS = 30
+
 
 def running(pid):
     try:
@@ -102,14 +117,14 @@ class Nested(unittest.TestCase):
         # Bounded, and generous for a loaded machine: a probe the tile started
         # late may write its pids after the caller returned. One that is still
         # running then is exactly what the check below is for.
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + SURVIVE_SECONDS
         pids = self.recorded()
         while len(pids) < 2 and time.monotonic() < deadline:
             time.sleep(0.05)
             pids = self.recorded()
         self.assertEqual(len(pids), 2, "the nested command and its grandchild did not both start" + why)
         # SIGKILL is prompt, and a survivor sleeps for a minute.
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + SURVIVE_SECONDS
         while pids and time.monotonic() < deadline:
             pids = [pid for pid in pids if running(pid)]
             time.sleep(0.05)
@@ -129,26 +144,47 @@ class Nested(unittest.TestCase):
             shutil.copy2(HERE / name, dashboard / name)
         # dashboard.sh and collectors.py read the checkout's shared config helpers.
         shutil.copytree(HERE.parent / "lib", dashboard.parent / "lib")
-        environment = {**self.environment(), "HOME": str(self.root), "DASHBOARD_PYTHON": sys.executable}
-        process = subprocess.Popen(["./local-project-dashboard/dashboard.sh", "tile", "toolbox"],
-            cwd=dashboard.parent, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            start_new_session=True)
-        started = time.monotonic()
-        stop = started + sd_tile.TILE_SECONDS
-        try:
-            out, err = process.communicate(timeout=stop - time.monotonic())
-            killed = False
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            out, err = process.communicate()
-            killed = True
-        elapsed = time.monotonic() - started
-        self.assert_none_survive(err)
-        self.assertFalse(killed, "the loader's kill arrived before the tile's refusal")
-        self.assertEqual((process.returncode, out), (1, b""))
-        self.assertIn(b"launchctl ran past this tile's budget of 4 seconds", err)
-        # Not before its deadline either: the cap stopped the command, nothing else did.
-        self.assertGreaterEqual(elapsed, sd_tile.TILE_SECONDS - sd_tile.TILE_MARGIN)
+        python = self.root / "python"
+        python.write_text(RECORDING_PYTHON)
+        python.chmod(0o755)
+        reached = self.root / "main"
+        environment = {**self.environment(), "HOME": str(self.root), "DASHBOARD_PYTHON": str(python),
+                       "DEADLINE_MAIN": str(reached)}
+        for attempt in (1, 2, 3):
+            self.reap()
+            self.pids.unlink(missing_ok=True)
+            reached.unlink(missing_ok=True)
+            process = subprocess.Popen(["./local-project-dashboard/dashboard.sh", "tile", "toolbox"],
+                cwd=dashboard.parent, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True)
+            started = time.monotonic()
+            stop = started + sd_tile.TILE_SECONDS
+            try:
+                out, err = process.communicate(timeout=stop - time.monotonic())
+                killed = False
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                out, err = process.communicate()
+                killed = True
+            elapsed = time.monotonic() - started
+            late = float(reached.read_text()) - started if reached.exists() else None
+            when = "never" if late is None else f"{late:.2f}s after the loader started"
+            told = f"{err!r} (attempt {attempt}; the tile reached main {when})"
+            try:
+                # First: a killed tile leaves its nested commands by design,
+                # since each runs in a session of its own, so nothing below
+                # could pass. A tile that started late is tried again (sd:2333).
+                self.assertFalse(killed, "the loader's kill arrived before the tile's refusal; " + told)
+                self.assert_none_survive(told)
+                self.assertEqual((process.returncode, out), (1, b""))
+                self.assertIn(b"launchctl ran past this tile's budget of 4 seconds", err)
+                # Not before its deadline either: the cap stopped the command, nothing else did.
+                self.assertGreaterEqual(elapsed, sd_tile.TILE_SECONDS - sd_tile.TILE_MARGIN)
+                break
+            except self.failureException as failure:
+                if not tried_again(attempt, late):
+                    raise
+                say_retry(sys.stderr, self.id(), "toolbox", attempt, failure, when, err)
 
     def test_a_resource_view_gets_the_tiles_reason_within_its_budget(self):
         # This dashboard's path: the real `sd_tile.py`, read by
@@ -199,7 +235,7 @@ class Nested(unittest.TestCase):
 
 
 def tried_again(attempt, late):
-    """Whether a failed attempt of the hung-probe check is run once more.
+    """Whether a failed attempt of a real tile's check is run once more.
 
     The deadline counts from `main`, not from process start (sd:760 review
     N4): a tile that reaches `main` about `TILE_MARGIN` late loses to the

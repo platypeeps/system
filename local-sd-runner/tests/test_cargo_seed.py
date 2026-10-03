@@ -11,6 +11,7 @@ tests/macos/test_macos_cargo_seed.py.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -117,10 +118,10 @@ class RunnerSeedsFixture:
                          "sys.exit(int(Path('fail').exists()))\n")
         self.check = [sys.executable, str(check)]
 
-    def run_with(self, name, item=None, fail=False):
+    def run_with(self, name, item=None, fail=False, prelude=""):
         files = ["Cargo.toml", ".gitignore", name] + (["fail"] if fail else [])
         self.fixture.provider.write_text(
-            "import subprocess\nfrom pathlib import Path\n"
+            "import subprocess\nfrom pathlib import Path\n" + prelude +
             "Path('Cargo.toml').write_text('[package]\\nname = \"fixture\"\\n')\n"
             "Path('.gitignore').write_text('ignored.txt\\n/target/\\n')\n"
             + "".join(f"Path({f!r}).write_text('work\\n')\n" for f in files[2:])
@@ -145,6 +146,25 @@ class RunnerSeeds(RunnerSeedsFixture, unittest.TestCase):
         result, _ = self.run_with("one.rs", fail=True)
         self.assertEqual(result["outcome"], "blocked", result)
         self.assertFalse((self.config.work / cargo_seed.SEEDS).exists())
+
+    def test_the_author_session_starts_from_the_seed(self):
+        # sd:1816. Only the check was seeded, so the session that wrote the
+        # change compiled every dependency cold first. The first run pushes a
+        # Cargo.toml, so the second clone is a Rust one before its session.
+        saw = self.root / "session-saw.json"
+        prelude = ("import json\n"
+                   f"Path({str(saw)!r}).write_text(json.dumps(sorted(str(p.relative_to('target')) for p in Path('target').rglob('*') "
+                   "if p.is_file()) if Path('target').is_dir() else None))\n")
+        # `cp -c` is macOS's; a copy that keeps file times stands in for it here.
+        copy = lambda source, destination: bool(shutil.copytree(source, destination, symlinks=True))
+        with patch("sd_runner.cargo_seed._copy", side_effect=copy):
+            first, _ = self.run_with("one.rs", prelude=prelude)
+            self.assertIsNone(json.loads(saw.read_text()), "the first clone had no Cargo.toml before its session")
+            second, seen = self.run_with("two.rs", item=self.another(), prelude=prelude)
+        self.assertEqual(second["outcome"], "done", second)
+        self.assertEqual(json.loads(saw.read_text()), [f"debug/deps/lib{first['id']}.rlib"])
+        # The check found the session's `target/`, the seeded one.
+        self.assertEqual(seen["before"], [f"debug/deps/lib{first['id']}.rlib"])
 
 
 if __name__ == "__main__":
