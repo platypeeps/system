@@ -14,9 +14,11 @@ import itertools
 import os
 import pwd
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 try:
@@ -66,6 +68,21 @@ def slugify(title: str) -> str:
     if not SLUG_RE.match(flattened):
         raise Refused(f"{title!r} yields no folder name the lint can parse")
     return flattened
+
+
+def created_day(value) -> str | None:
+    """The `YYYY-MM-DD` a row was created on, or `None` when it names no day.
+
+    Parsed, not shape-matched: `2026-02-30` has the shape and is no date, and
+    a folder named after it would sort and read as one (sd:1181).
+    """
+    text = str(value or "")[:10]
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        return None
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return None
 
 
 def git(root: Path, *args: str, check: bool = True) -> str:
@@ -135,8 +152,8 @@ def plan(arguments) -> int:
     if row["status"] in {"done", "ready_to_send"}:
         raise Refused(f"item {row['id']} is {row['status']}; there is nothing left to plan")
 
-    created = str(row["created_at"] or "")[:10]
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", created):
+    created = created_day(row["created_at"])
+    if created is None:
         raise Refused(f"item {row['id']} has no usable created date ({row['created_at']!r})")
     slug = f"{created}-{slugify(str(row['title']))}"
     folder = root / "docs" / "work" / slug
@@ -153,11 +170,30 @@ def plan(arguments) -> int:
     # registration leaves, and answering "nothing to do" to it would leave it
     # without a status for good -- so it is finished instead, without a
     # second planning run.
+    #
+    # Pushed is part of it too. The push comes last, after the row and the
+    # commit, so a push that failed leaves both behind; a retry standing on
+    # the branch finishes that push rather than calling the folder done
+    # (sd:1181). Only that push: the one commit origin lacks must be this
+    # run's planning commit, and the tree must be clean. Anything else on the
+    # branch -- implementation work, say -- is not this verb's to publish, and
+    # the retry stays the no-op it always was.
     written = (folder / "prd.md").is_file()
     pending = git(root, "status", "--porcelain=v1", "--untracked-files=all",
                   "--", f"docs/work/{slug}")
     if written and not pending and has_row(row["repo"], relative):
-        print(f"sd-plan: {slug} is already planned; nothing to do")
+        commit = unpushed_plan(root, branch, slug, row["id"])
+        if commit is None:
+            print(f"sd-plan: {slug} is already planned; nothing to do")
+            return 0
+        if git(root, "status", "--porcelain=v1", "--untracked-files=all"):
+            raise Refused(f"{slug} is planned and its commit {commit[:12]} is not pushed, "
+                          "and the checkout has uncommitted changes; pushing it needs a clean tree")
+        if arguments.dry_run:
+            print(f"sd-plan: would push item {row['id']} as {slug} to {branch}")
+            return 0
+        push(root, branch)
+        print(f"sd-plan: {slug} was planned and not pushed; pushed to {branch}")
         return 0
 
     if arguments.dry_run:
@@ -191,7 +227,7 @@ def plan(arguments) -> int:
     # Registered before it is committed, so a refusal leaves no commit to
     # publish. `sd_plan` then pushes nothing, and the runner keeps a clone
     # with uncommitted work rather than pushing it
-    # (`local-sd-runner/sd_runner/runtime.py:650-655`).
+    # (`gitops.dirty(clone)`, in `_finish` of `local-sd-runner/sd_runner/runtime.py`).
     register(root, relative, pack)
 
     # The pathspec, not the index: the agent ran after the dirty-tree check,
@@ -206,19 +242,46 @@ def plan(arguments) -> int:
             message += f"\n\n{judgment_note(probabilities)}"
         git(root, "commit", "-q", "-m", message, "--", f"docs/work/{slug}")
 
-    git(root, "push", "-q", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}")
+    push(root, branch)
     print(f"sd-plan: planned item {row['id']} as {slug}, pushed to {branch}")
     return 0
 
 
+def push(root: Path, branch: str) -> None:
+    git(root, "push", "-q", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}")
+
+
+def unpushed_plan(root: Path, branch: str, slug: str, identifier: int) -> str | None:
+    """The planning commit a failed push left behind, or `None`.
+
+    `branch` must be checked out, and `HEAD` must be the one commit no
+    `origin` ref reaches. That commit must be the one `plan` writes: its
+    subject `docs(work): <slug>`, its `Work: sd:<id>` line, and no path
+    outside the item's folder. A second unpushed commit, or one that is
+    anything else, is somebody's work and `None`.
+    """
+    if git(root, "rev-parse", "--abbrev-ref", "HEAD", check=False) != branch:
+        return None
+    commits = git(root, "rev-list", "HEAD", "--not", "--remotes=origin", check=False).split()
+    if len(commits) != 1:
+        return None
+    commit = commits[0]
+    message = git(root, "log", "-1", "--format=%B", commit, check=False).splitlines()
+    if not message or message[0] != f"docs(work): {slug}" or f"Work: sd:{identifier}" not in message:
+        return None
+    changed = git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit,
+                  check=False).splitlines()
+    if not changed or any(not name.startswith(f"docs/work/{slug}/") for name in changed):
+        return None
+    return commit
+
+
 # --- the optional Jev judgment ----------------------------------------------
 #
-# All of it below `plan` rather than beside `DOCUMENTS`, where it reads more
-# naturally, for a reason worth one sentence: `plan` carries a citation this
-# repository's `tests/test_citations.py` keys by its line number, and a
-# constant added above it moves that key and fails the gate. Nothing here is
-# needed before `plan` runs, so nothing here has to sit above it -- including
-# the one import this section adds, which is module level all the same.
+# All of it below `plan`, including the one import this section adds. It was
+# put here while a citation in `plan` was keyed by its line number in
+# `tests/test_citations.py`; that citation is a snippet now (sd:1181), and
+# nothing here is needed before `plan` runs, so it stays where it is.
 
 import json
 
@@ -301,9 +364,7 @@ def run_planning(root: Path, folder: Path, slug: str, row: dict, written: bool):
     Two agent runs when the judgment is taken and one otherwise, because the
     question is about the prd's own text: it cannot be asked before a prd
     exists, so the prd is written alone first and whatever the judgment keeps
-    is asked for second. `plan` calls this on one line rather than holding
-    these branches inline, which keeps the citation below that call on the
-    line `tests/test_citations.py` carries for it.
+    is asked for second.
     """
     consulted = jev_consulted()
     if not written:
@@ -335,7 +396,7 @@ def jev_argv(*arguments: str) -> list[str]:
     """
     override = os.environ.get("SD_PLAN_JEV")
     if override:
-        return [*override.split(), *arguments]
+        return [*shlex.split(override), *arguments]
     return [str(Path(__file__).resolve().parent.parent / "local-jev" / "jev.sh"),
             *arguments]
 
@@ -503,15 +564,25 @@ def claude_binary() -> str:
     all, so the fallback has to be the install path rather than the name --
     and since sd:456 the shell resolves in this order too, with `CLAUDE_BIN`
     as its explicit override, so the two do not drift apart again.
+
+    The override and the install path are held to what `shutil.which` holds
+    a PATH entry to: an executable file, not a directory and not a file
+    without its `x` bit. Either would otherwise fail inside `subprocess.run`
+    with the traceback this function exists to prevent (sd:1181).
     """
     explicit = os.environ.get("SD_PLAN_CLAUDE")
     if explicit:
-        return explicit
+        resolved = shutil.which(explicit)
+        if resolved is None:
+            raise Refused(
+                f"SD_PLAN_CLAUDE={explicit} is not an executable file; "
+                "set it to the binary that should do the planning")
+        return resolved
     found = shutil.which("claude")
     if found:
         return found
     installed = Path.home() / ".local" / "bin" / "claude"
-    if installed.exists():
+    if installed.is_file() and os.access(installed, os.X_OK):
         return str(installed)
     raise Refused(
         "no `claude` on PATH and none at ~/.local/bin/claude; "
@@ -523,7 +594,8 @@ def planning_environment() -> dict:
 
     `sd_db.runner_exec.process_plan` hands a queued command a deliberately
     minimal environment -- `HOME`, `PATH`, `LANG`, the two git knobs -- and
-    `USER` is not in it. The agent stores its OAuth credential as a keychain
+    in the pack's installed copy `USER` is not in it (the last paragraph says
+    which copy sets it). The agent stores its OAuth credential as a keychain
     generic password, reads that credential under the name in `USER`, and
     without one reports `Not logged in - Please run /login` and exits 0, so
     the planning run looked like a clean refusal rather than a broken
@@ -550,6 +622,25 @@ def planning_environment() -> dict:
     environment = dict(os.environ)
     environment["USER"] = pwd.getpwuid(os.getuid()).pw_name
     return environment
+
+
+#: What the pages must survive once pushed (sd:990). The first unattended run
+#: pushed pages that passed `sd-docs-lint` and failed the pack's citation gate:
+#: four `path:line` citations into code and one `source:` locator naming a
+#: symbol declared twice. Its log also blamed the gate's other failures on the
+#: registered checkout, where the gate passed. One sentence per rule.
+CITATION_RULES = (
+    "Cite code by anchor only, never as path:line: `source:<path>::<symbol>`, "
+    "or a backticked snippet followed by `in <path>`. Cite a symbol that is "
+    "declared more than once in its file by the file alone.",
+    "Before you finish, run this checkout's citation gate as a whole, from this "
+    "checkout: `python3 -m unittest tests.test_doc_citations` in the command "
+    "pack, or `python3 tests/test_citations.py` where that file exists. Fix "
+    "every failure it names on the pages you wrote.",
+    "Claim that a failure also happens on the registered checkout only after "
+    "reproducing it there, with the command and its output in your log; "
+    "otherwise do not claim it.",
+)
 
 
 def agent(root: Path, slug: str, row: dict, documents=DOCUMENTS) -> None:
@@ -583,7 +674,8 @@ def agent(root: Path, slug: str, row: dict, documents=DOCUMENTS) -> None:
     passed only because the agent read this file and inferred the refusal
     (sd:438; exec note 709 on sd:442). It also says the run is unattended,
     which is the condition under which the skill records routine choices
-    on the row and continues instead of asking.
+    on the row and continues instead of asking, and it carries
+    `CITATION_RULES`, because nobody reads the pages before they are pushed.
     """
     override = os.environ.get("SD_PLAN_AGENT")
     if tuple(documents) == DOCUMENTS:
@@ -595,9 +687,10 @@ def agent(root: Path, slug: str, row: dict, documents=DOCUMENTS) -> None:
     prompt = (
         f"/sd-plan {slug} --from sd:{row['id']}\n\n"
         f"This run is unattended: nobody will answer a question, so record "
-        f"routine choices on the row and continue. {leave}"
+        f"routine choices on the row and continue. {' '.join(CITATION_RULES)} "
+        f"{leave}"
     )
-    argv = ([*override.split(), slug, str(row["id"])] if override else
+    argv = ([*shlex.split(override), slug, str(row["id"])] if override else
             [claude_binary(), "-p", prompt, "--dangerously-skip-permissions"])
     environment = planning_environment()
     environment["SD_PLAN_DOCUMENTS"] = " ".join(documents)
@@ -634,8 +727,9 @@ def register(root: Path, relative: str, entrypoint: Path) -> None:
 
     Under this interpreter, the one `sd-plan.sh` pinned, and not under the
     `#!/usr/bin/env python3` that `bin/sd` carries: on the runner's bare PATH
-    that is Xcode's 3.9. Standing on `plan/<slug>`, the verb records that as
-    the row's branch (pack sd:621).
+    that is Xcode's 3.9. Standing on the branch `plan` checked out -- the
+    row's own when it has one, `plan/<slug>` when not -- the verb records that
+    as the row's branch (pack sd:621).
 
     Called before the documents are committed: the verb reads the file on
     disk, and an uncommitted folder is the ordinary case for it, which is why
@@ -710,8 +804,8 @@ def candidates(connection, repo: str):
     found = connection.execute("SELECT remote FROM repo WHERE path = ?", (key,)).fetchone()
     remote = found["remote"] if found else None
     for row in reads.backlog_items(connection, kind="task", repo=key, status="planning"):
-        created = str(row["created_at"] or "")[:10]
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", created):
+        created = created_day(row["created_at"])
+        if created is None:
             continue
         try:
             slug = f"{created}-{slugify(str(row['title']))}"
@@ -887,8 +981,9 @@ def nightly(arguments) -> int:
             # Asked once for the repository, because the answer is the same
             # for every one of its rows: `runner_exec.standing_refusal`
             # enumerates every refusal `prepare` makes alike for every
-            # row, reading the store and the palette file but never the row
-            # itself (sd:820) -- a restore still to finish (sd:786), a palette that
+            # row, reading the store, the palette file for all but the first,
+            # and never the row itself (sd:820) -- a restore still to finish
+            # (sd:786), which reads only the store, a palette that
             # cannot be read or that changed since this night read it,
             # `plan-item` registered on some other screen (sd:805) or
             # rejected from the catalog, typed values that are not the
@@ -922,8 +1017,9 @@ def nightly(arguments) -> int:
             #
             # The other direction stays open, and a skip cannot close it: a
             # refusal that *starts* after the answer still leaves every row
-            # tried after it set up and then refused, a decision note and a
-            # revision each, for nothing. That half needs a second question
+            # tried after it whose branch is unset or on `plan/` set up and
+            # then refused, a decision note and a revision each, for nothing;
+            # `enqueue` sets up no other row. That half needs a second question
             # rather than a skip, and the late asking above is what keeps it
             # as narrow as one question can.
             #
