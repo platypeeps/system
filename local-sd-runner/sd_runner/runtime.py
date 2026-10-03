@@ -686,6 +686,8 @@ class Runner:
         outcome, detail = "blocked", "setup did not complete"
         #: The checkout file the clone's check overrides came from, or None (sd:1752).
         overrides = None
+        #: A session the provider step lost, recorded once the ending knows no hold applies (sd:1270).
+        interrupted = None
         deadline = time.monotonic() + request["budget_minutes"] * 60
         try:
             if self._restore_pending(connection):
@@ -769,7 +771,10 @@ class Runner:
                         # restore or a lost supervisor raises here, before the
                         # normal record below, and the ending records no usage:
                         # the session's spend was lost with it (sd:1221).
-                        self.record_session(connection, request, provider, clone)
+                        # A restore or an ownership change raises here too, and
+                        # neither store writer checks for one, so the record
+                        # waits for the ending's recovery guard (sd:1270).
+                        interrupted = (request, provider, clone)
                         raise
                     exit_code = result["exit_code"]
                     # What the session left is recorded before its exit code is
@@ -856,6 +861,10 @@ class Runner:
                 recovery_hold = recovery_hold or observed["owner"] != request["run"]["owner"] or observed["journal_version"] < request["run"]["journal_version"]
             except store.RunnerRefused:
                 recovery_hold = True
+            if interrupted and not recovery_hold:
+                # On a hold the notes and usage files stay in the clone, which
+                # the ending retains once the hold is resolved.
+                self.record_session(connection, *interrupted)
             if joined and not recovery_hold:
                 self.pending_endings[ident] = {"run": dict(request["run"]), "outcome": outcome,
                                                "detail": detail, "exit_code": exit_code}
