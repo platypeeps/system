@@ -50,9 +50,9 @@ escapes each value put in it, and puts it in the page with `put`, which takes
 only what `html` made; that file holds the one HTML sink criterion 12's grep
 allows in v2. Each page registers itself with one module in
 `sd_dashboard/v2/pages/` (sd:2418): its section, routes, API routes and the
-old screens it keeps. Briefs and Health read their documents through the
-shell's one reader, `static/read.js`; each other page adopts it in its own
-follow-up. What each page reads and what it runs is in
+old screens it keeps. A page reads its document through the shell's one
+reader, `static/read.js`, once its follow-up adopts it; the page's script says
+so. What each page reads and what it runs is in
 [`docs/pages/`](docs/pages/), one file per page.
 
 The old screens stay until their section is ported. A page that takes an old
