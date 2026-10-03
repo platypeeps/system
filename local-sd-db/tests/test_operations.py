@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import connect, create_assignment
+from sd_db import connect, create_assignment, upsert_repo
 from sd_db.errors import SdDbError
 from sd_db.migrate import initialise
-from sd_db.writes import record_state, update_assignment
+from sd_db.writes import record_state, transition, update_assignment
 from sd_db.workflow import StaleItem, WorkflowError, capture_task
 from sd_db.operations import PREFIX
 from sd_db.operations import (
@@ -469,6 +469,40 @@ class Operations(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 cancel_assignment(self.db, aid, expected_revision=before["revision"], who="operator")
         self.assertEqual(assignment_state(self.db, aid), before)
+
+    def test_a_blocked_assignment_is_cancellable_once_its_item_is_done(self):
+        """sd:2082: a blocked assignment stayed on the board after its item
+        shipped, with no way to clear it. Cancelled is terminal and never
+        dispatches, so clearing it is safe once the item is done and no
+        runner attempt still holds its lease."""
+        item = capture_task(self.db, title="Task", who="operator")["item"]["id"]
+        aid = create_assignment(self.db, role="author", status="queued", item=item)
+        update_assignment(self.db, aid, status="blocked")
+        blocked = assignment_state(self.db, aid)
+        self.assertFalse(blocked["capabilities"]["cancel"]["allowed"])
+        self.assertIn("item is done", blocked["capabilities"]["cancel"]["reason"])
+        with self.assertRaisesRegex(WorkflowError, "item is done"):
+            cancel_assignment(self.db, aid, expected_revision=blocked["revision"], who="operator")
+        transition(self.db, item, "done", who="operator")
+        # A runner attempt that has not released its lease still owns the row.
+        upsert_repo(self.db, "/fixture/repo")
+        self.db.execute(
+            "INSERT INTO runner_run (id, assignment, run, repo, branch, owner, work_path, retained_path, created_at, updated_at)"
+            " VALUES ('r1', ?, 1, '/fixture/repo', 'b', 'o', '/w', '/r', 'now', 'now')", (aid,))
+        held = assignment_state(self.db, aid)
+        self.assertNotEqual(held["revision"], blocked["revision"])
+        self.assertFalse(held["capabilities"]["cancel"]["allowed"])
+        self.assertIn("lease", held["capabilities"]["cancel"]["reason"])
+        self.db.execute("UPDATE runner_run SET released_at = 'now' WHERE id = 'r1'")
+        done = assignment_state(self.db, aid)
+        self.assertTrue(done["capabilities"]["cancel"]["allowed"], done["capabilities"]["cancel"]["reason"])
+        result = cancel_assignment(self.db, aid, expected_revision=done["revision"], who="operator")
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(self.db.execute("SELECT status FROM item WHERE id=?", (item,)).fetchone()[0], "done")
+        audit = json.loads(self.db.execute("SELECT body FROM state WHERE key=?", (f"operations:assignment:{aid}",)).fetchone()[0])
+        self.assertEqual(audit["old_status"], "blocked")
+        notes = [row[0] for row in self.db.execute("SELECT body FROM note WHERE item=? AND kind='decision'", (item,))]
+        self.assertEqual(notes, [f"Blocked assignment {aid} cancelled by operator; item status unchanged"])
 
     def test_cancelled_assignment_cannot_be_claimed_or_requeued_by_stale_worker(self):
         aid = create_assignment(self.db, role="author", status="queued")

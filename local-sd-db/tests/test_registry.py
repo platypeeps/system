@@ -122,6 +122,17 @@ class TheRefusals(unittest.TestCase):
                 message = self.refuse(text)
                 self.assertIn(f"{section!r} is not a mapping", message)
 
+    def test_a_tab_anywhere_is_refused(self):
+        """The parser promises to refuse tabs. The old check expanded the
+        tabs away before looking for one, so it never fired and a tab in an
+        indent or a value parsed as a space (sd:1219)."""
+        for old, new in (("  claude:  {", "\tclaude:  {"),
+                         ('start: "claude -p",', 'start:\t"claude -p",')):
+            with self.subTest(new=new):
+                text = SHIPPED.replace(old, new, 1)
+                self.assertNotEqual(text, SHIPPED)
+                self.assertIn("tab in indentation or content", self.refuse(text))
+
     def test_invalid_reasoning_controls_refuse(self):
         for field in ("thinking: true", "thinking: enabled", "reasoning_effort: []",
                       "reasoning_effort: medium", "thinking: disabled, reasoning_effort: none"):

@@ -150,6 +150,39 @@ class PullCollection(unittest.TestCase):
         api.rows[key] = {"total_count": 2, "check_runs": [run(95, "success", app=8), run(91, "failure")]}
         self.assertEqual(api.observation()["ci"], "failure")
 
+    def test_a_skipped_newer_suite_does_not_replace_a_completed_older_one(self):
+        # A job conditioned on the payload (`if: github.event.action == 'opened'`)
+        # runs on open and is skipped on the edit that reruns the workflow.
+        # The skipped suite proves nothing about the head; letting it replace
+        # the older suite read a failure as green (sd:1824).
+        api = Api()
+        key = ROOT + f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"
+        def run(id, conclusion, suite, name="tests", status="completed"):
+            return {"id": id, "name": name, "app": {"id": 7}, "head_sha": HEAD, "status": status,
+                    "conclusion": conclusion, "check_suite": {"id": suite}}
+        pulls = [{"number": 5, "base": {"ref": "main"}}]
+        api.rows[ROOT + f"/actions/runs?head_sha={HEAD}&per_page=100"] = {"total_count": 2, "workflow_runs": [
+            {"id": 1, "check_suite_id": 1, "workflow_id": 10, "event": "pull_request", "pull_requests": pulls},
+            {"id": 2, "check_suite_id": 2, "workflow_id": 10, "event": "pull_request", "pull_requests": pulls}]}
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, "skipped", 2)]}
+        self.assertEqual(api.observation()["ci"], "failure")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:91"])
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "success", 1), run(95, "skipped", 2)]}
+        self.assertEqual(api.observation()["ci"], "success")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:91"])
+        # A suite that ran anything is a real rerun and still decides, whole.
+        api.rows[key] = {"total_count": 3, "check_runs": [
+            run(91, "failure", 1), run(95, "skipped", 2), run(96, "success", 2, name="lint")]}
+        self.assertEqual(api.observation()["ci"], "success")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:95", "check-run:96"])
+        # A newer suite still in progress is not skipped: it replaces.
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "failure", 1), run(95, None, 2, status="in_progress")]}
+        self.assertEqual(api.observation()["ci"], "pending")
+        # When every suite was skipped, the newest decides as before.
+        api.rows[key] = {"total_count": 2, "check_runs": [run(91, "skipped", 1), run(95, "skipped", 2)]}
+        self.assertEqual(api.observation()["ci"], "success")
+        self.assertEqual(api.observation()["ci_ids"], ["check-run:95"])
+
     def test_same_named_checks_of_different_workflows_both_count(self):
         # Two workflows can each publish a job named `tests` through the same app.
         api = Api()

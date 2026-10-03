@@ -84,7 +84,7 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
     start = 0
     depth = 0
     for number, raw in enumerate(text.splitlines(), start=1):
-        if "\t" in raw.expandtabs(1).replace(raw, raw) and "\t" in raw:
+        if "\t" in raw:
             raise YamlLiteError("tab in indentation or content", number, raw)
         line = _strip_comment(raw).rstrip()
         if not line.strip():
