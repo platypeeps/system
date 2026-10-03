@@ -689,5 +689,34 @@ class FenceBacktracking(unittest.TestCase):
         self.assertIsNone(holds.parse_record("o/r", 1, "open", {"id": 1, "user": {"login": "x"}, "body": body}))
         self.assertLess(time.monotonic() - started, 0.5)
 
+
+
+class HelpNeedsNoPython(unittest.TestCase):
+    # Review of #274: interpreter discovery ran before dispatch, so on a
+    # machine without a 3.11 `--help` printed the Python error and exited 1.
+    def run_entrypoint(self, *args):
+        environment = dict(os.environ, PYTHON="/nonexistent/python3")
+        return subprocess.run(["/bin/sh", str(ENTRYPOINT), *args], capture_output=True,
+                              text=True, env=environment)
+
+    def test_help_answers_and_exits_0_with_no_usable_python(self):
+        for word in ("help", "-h", "--help"):
+            with self.subTest(word=word):
+                done = self.run_entrypoint(word)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("Usage: dependabot.sh <command>", done.stderr)
+
+    def test_no_argument_prints_usage_not_the_python_error(self):
+        done = self.run_entrypoint()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("Usage: dependabot.sh <command>", done.stderr)
+        self.assertNotIn("Python", done.stderr)
+
+    def test_holds_still_names_the_python_it_cannot_use(self):
+        done = self.run_entrypoint("holds")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("/nonexistent/python3 is too old", done.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
