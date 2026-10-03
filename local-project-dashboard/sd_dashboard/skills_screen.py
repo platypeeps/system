@@ -27,7 +27,7 @@ def render(connection, *, parameters, now):
     listing = Listing("skills", [Column("name", "Skill", lambda row: row["name"]),
         Column("description", "Description", lambda row: row["description"]),
         Column("status", "Availability", lambda row: row["status"])], inventory["skills"],
-        path="/skills", query=query, page_number=number, selected=selected)
+        path="/classic/skills", query=query, page_number=number, selected=selected)
     shown, paged = listing.page()
     cards = []
     for skill in shown:
@@ -115,7 +115,7 @@ def document(connection, *, now: str) -> dict:
     per, last, totals, surfaces, other = {}, {}, [0] * WEEKS, {}, {}
     junk = count = 0
     first = latest = None
-    for row in connection.execute("SELECT timestamp, skill, surface FROM skill_use ORDER BY timestamp"):
+    for row in skills_catalog.use_rows(connection):
         count += 1
         first, latest = first or row["timestamp"], row["timestamp"]
         surfaces[row["surface"] or "unknown"] = surfaces.get(row["surface"] or "unknown", 0) + 1
