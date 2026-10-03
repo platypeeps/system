@@ -280,6 +280,9 @@ case "$SUITE_LEG" in
     # calls on every refresh; the suite is named directly rather than
     # adding a verb to it. It stubs bun and sysctl, so Linux runs it.
     run_suite statusline "$PYTHON" local-statusline/tests/test_statusline.py -v
+    # cswap.sh has no test verb; the suite is named directly, like
+    # statusline above. It stubs launchctl, so Linux runs it.
+    run_suite cswap "$PYTHON" local-cswap/tests/test_cswap.py -v
     run_suite obsidian-tasks sh local-obsidian-tasks/obsidian-tasks.sh test
     run_suite obsidian-review sh local-obsidian-review/obsidian-review.sh test
     run_suite task-actions sh local-task-actions/task-actions.sh test -v

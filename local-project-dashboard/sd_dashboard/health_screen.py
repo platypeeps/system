@@ -19,10 +19,13 @@ port adds no collector:
 - Protection: `protection.rows`, what the nightly `sd shadow sync` left in
   `repo_protection`, with `protection_screen`'s rule: a repository whose
   protection was not read is unknown and shows no cell.
+- Disk and Branches: `health_collectors.disk_scan` and `branch_scan`
+  (sd:2202, sd:2204), each inside its own budget; that module says what
+  each reads and leaves out.
 
-The design source shows nine areas. Five -- Disk, Credentials,
-Branches, Dependencies, Security -- and the parts of Worktrees and
-Attribution no reader covers are in the document as `missing`, by name, so
+The design source shows nine areas. Three -- Credentials, Dependencies,
+Security -- and the parts of the others no reader covers are in the
+document as `missing`, by name, so
 the page says what it does not read instead of showing a clean lamp. A
 reader that fails is its area's `error`, never an empty area: a fleet
 nobody could read must not look like a fleet with nothing wrong.
@@ -33,6 +36,7 @@ prunes a worktree or attributes a commit.
 
 from __future__ import annotations
 
+import shlex
 import sqlite3
 from pathlib import Path
 
@@ -42,7 +46,7 @@ from sd_db.errors import SdDbError
 from sd_db import protection as protection_module
 
 from . import fleet as fleet_module
-from . import ports_screen
+from . import health_collectors, ports_screen
 from .operations_screen import TRAILER_SECONDS
 from .protection_screen import APPLICABLE, FLAGS, GAPS, ORDER
 
@@ -50,15 +54,15 @@ __all__ = ["AREAS", "document"]
 
 #: The design's areas, in its order: id, name, the reader's source line, and what no reader covers yet.
 AREAS = (
-    ("disk", "Disk", None,
-     ("volume use (df -k)", "repo-storage folder sizes", "build output left in worktrees")),
+    ("disk", "Disk", "df -kPl · du -k -d 1 per disk.conf storage folder · git worktree list per registered repo",
+     ("build output sizes (its presence is read, not its size)", "build output in worktrees not yet merged")),
     ("cred", "Credentials", None,
      ("GitHub PAT presence and expiry", "gh CLI sign-in", "HA_TOKEN test", "MCP server status (claude mcp list)")),
     ("attr", "Attribution", "git log origin/HEAD --no-merges --since='5 weeks ago' --author='<user.email>' -i -F per registered repo · %(trailers)",
      ("counts per repo", "the per-week history")),
     ("wt", "Worktrees", "the fleet's .git/worktrees registrations",
      ("merged worktrees still on disk (merge-base --is-ancestor)",)),
-    ("br", "Branches", None, ("local branches merged into origin's default branch",)),
+    ("br", "Branches", "git for-each-ref --merged=origin/HEAD refs/heads per registered repo", ()),
     ("dep", "Dependencies", None, ("open Dependabot alerts per repo",)),
     ("sec", "Security", None, ("open secret-scanning alerts", "repos with scanning off")),
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
@@ -253,12 +257,164 @@ def _protection_rows(found: list[dict]) -> tuple[list[dict], dict]:
                   "at": max(observed) if observed else None}
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=None, ports=None, protection=None) -> dict:
+def _size(kb: int) -> str:
+    """The design's size wording: MiB, GiB or TiB from a count of KiB."""
+    if kb >= 1024 ** 3:
+        return f"{kb / 1024 ** 3:.2f} TiB"
+    return f"{kb / 1024 ** 2:.1f} GiB" if kb >= 1024 ** 2 else f"{round(kb / 1024)} MiB"
+
+
+def _unread_repos(found: list[str], area: str, reason: str, fix: str, key: str) -> dict:
+    count = len(found)
+    return {"id": f"{area}:{key}", "state": "unknown", "type": "check",
+            "what": f"{count} {_plural(count, 'repo has', 'repos have')} {reason.split(',')[0]}: not read",
+            "detail": reason, "kind": f"{'Branches' if area == 'br' else 'Disk'} · not read",
+            "facts": {"Repos": str(count)}, "list": list(found), "cli": fix}
+
+
+def _branch_rows(scan: dict) -> list[dict]:
+    """Per repository, its merged branches `git branch -d` can delete, and those a worktree has checked out."""
+    rows = []
+    for repo in scan["merged"]:
+        name, path = Path(repo["repo"]).name, repo["path"]
+        if repo["deletable"]:
+            found = repo["deletable"]
+            names = [branch for branch, _ in found]
+            dates = sorted(date for _, date in found if date)
+            rows.append({
+                "id": f"br:{repo['repo']}", "state": "caution", "type": "merged branches", "repo_path": path,
+                "what": f"{name}: {len(found)} {_plural(len(found), 'merged branch', 'merged branches')} not deleted",
+                "detail": " · ".join(names[:4]) + (f" · +{len(names) - 4}" if len(names) > 4 else ""),
+                "kind": "Branches · merged",
+                "facts": {"Repo": path, "Merged": str(len(found)), "Oldest": dates[0] if dates else "—",
+                          "Newest": dates[-1] if dates else "—"},
+                "list": [f"{branch} · {date or '?'}" for branch, date in found],
+                "cli": f"git -C {shlex.quote(path)} branch -d {' '.join(shlex.quote(branch) for branch in names)}",
+            })
+        if repo["checked_out"]:
+            found = repo["checked_out"]
+            rows.append({
+                "id": f"brs:{repo['repo']}", "state": "queued", "type": "merged branches", "repo_path": path,
+                "what": f"{name}: {len(found)} merged {_plural(len(found), 'branch is', 'branches are')} checked out in a worktree",
+                "detail": " · ".join(branch for branch, _ in found[:4]) + (f" · +{len(found) - 4}" if len(found) > 4 else ""),
+                "kind": "Branches · checked out", "facts": {"Repo": path, "Count": str(len(found))},
+                "list": [f"{branch} · {tree}" for branch, tree in found],
+                "disabled": "checked out in a worktree: git branch -d refuses it until the worktree is removed",
+                "cli": f"git -C {shlex.quote(path)} worktree list",
+            })
+    if not rows and scan["repos"]:
+        repos = scan["repos"]
+        rows.append({"id": "br:ok", "state": "ok", "type": "check", "what": "No merged branch left undeleted",
+                     "detail": f"checked the local branches of {repos} {_plural(repos, 'repo', 'repos')} against origin/HEAD",
+                     "kind": "Branches", "facts": {"Repos": str(repos)},
+                     "cli": "git -C <repo> branch --merged origin/HEAD  # per registered repo"})
+    if scan["no_default"]:
+        rows.append(_unread_repos(scan["no_default"], "br", "no origin/HEAD, so nothing says which branch is the default",
+                                  "git -C <repo> remote set-head origin --auto", "no_default"))
+    if scan["unread"]:
+        rows.append(_unread_repos(scan["unread"], "br", "a git error, so its branches were not listed",
+                                  "git -C <repo> for-each-ref --merged=refs/remotes/origin/HEAD refs/heads/", "unread"))
+    if not rows:
+        # An empty registry is not a fleet with nothing to delete.
+        rows.append({"id": "br:none", "state": "unknown", "type": "check",
+                     "what": "No repository registered: Branches has nothing to read",
+                     "detail": "register one with sd-db.sh repo add PATH", "kind": "Branches",
+                     "facts": {"Registered": "0"}, "cli": "sd-db.sh repo add PATH"})
+    return rows
+
+
+#: The design's volume thresholds, in percent used.
+VOLUME_WARNING, VOLUME_CAUTION = 90, 80
+
+
+def _volume_name(mount: str) -> str:
+    return "Mac data" if mount in ("/System/Volumes/Data", "/") else mount.removeprefix("/Volumes/")
+
+
+def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
+    """A row per volume past 80%, the three biggest folders per storage folder, and merged worktrees with build output."""
+    rows = []
+    volumes = [{**volume, "name": _volume_name(volume["mount"])} for volume in scan["volumes"]]
+    for volume in volumes:
+        capacity = volume["capacity"]
+        if capacity >= VOLUME_CAUTION:
+            rows.append({
+                "id": f"vol:{volume['mount']}", "state": "warning" if capacity >= VOLUME_WARNING else "caution",
+                "type": "volume", "what": f"{volume['name']} is {capacity}% full",
+                "detail": f"{volume['mount']} · {_size(volume['avail_kb'])} free of {_size(volume['size_kb'])}",
+                "kind": "Disk · volume",
+                "facts": {"Mount": volume["mount"], "Used": f"{capacity}%", "Free": _size(volume["avail_kb"]),
+                          "Size": _size(volume["size_kb"]), "File system": volume["filesystem"]},
+                "cli": f"df -h {shlex.quote(volume['mount'])}",
+                "note": f"Health lights caution at {VOLUME_CAUTION}% and warning at {VOLUME_WARNING}%.",
+            })
+    for entry in scan["storage"]:
+        root = entry["root"]
+        if entry["error"]:
+            rows.append({"id": f"rs:{root}", "state": "unknown", "type": "check", "what": f"{root}: sizes not read",
+                         "detail": entry["error"], "kind": "Disk · storage folder", "facts": {"Path": root},
+                         "cli": f"du -sh {shlex.quote(root)}/* | sort -h | tail -5"})
+            continue
+        for folder in entry["folders"][:3]:
+            path = folder["path"]
+            rows.append({
+                "id": f"rs:{path}", "state": "queued", "type": "storage folder",
+                "what": f"{Path(root).name}/{Path(path).name} holds {_size(folder['kb'])}",
+                "detail": f"{path} · largest of {len(entry['folders'])} {_plural(len(entry['folders']), 'folder', 'folders')} in {root}",
+                "kind": "Disk · storage folder", "facts": {"Path": path, "Size": _size(folder["kb"]), "Storage folder": root},
+                "cli": f"du -sh {shlex.quote(path)}/* | sort -h | tail -5",
+                "note": "Not a fault: a storage folder is where large uncommitted data belongs. Review it when its volume passes 80%.",
+            })
+    if not scan["storage"]:
+        rows.append({"id": "rs:none", "state": "unknown", "type": "check", "what": "No storage folder configured: sizes not read",
+                     "detail": f"name each with a storage|<path> line in {scan['config']}"
+                               + (f" ({len(scan['refused'])} {_plural(len(scan['refused']), 'line', 'lines')} not understood)" if scan["refused"] else ""),
+                     "kind": "Disk · storage folder", "facts": {"Config": scan["config"]}, "list": list(scan["refused"]),
+                     "cli": "cp local-project-dashboard/disk.conf.example " + shlex.quote(scan["config"])})
+    elif scan["refused"]:
+        rows.append({"id": "rs:refused", "state": "unknown", "type": "check",
+                     "what": f"{len(scan['refused'])} disk.conf {_plural(len(scan['refused']), 'line', 'lines')} not understood",
+                     "detail": f"{scan['config']} · each line is storage|<path>", "kind": "Disk · storage folder",
+                     "facts": {"Config": scan["config"]}, "list": list(scan["refused"])})
+    build = scan["build"]
+    if build["merged"]:
+        merged = build["merged"]
+        rows.append({
+            "id": "build:merged", "state": "caution", "type": "build output",
+            "what": f"{len(merged)} merged {_plural(len(merged), 'worktree keeps', 'worktrees keep')} build output",
+            "detail": " · ".join(tree["path"] for tree in merged), "kind": "Disk · worktree build output",
+            "facts": {"Rule": "delete build output once the PR merges (2026-09-25)", "Checked": f"{build['checked']} worktrees",
+                      "Found": str(len(merged))},
+            "list": [f"{tree['path']} · {', '.join(name + '/' for name in tree['dirs'])} · {tree['branch'] or 'detached'}" for tree in merged],
+            "cli": "\n".join(f"rm -rf {shlex.quote(tree['path'] + '/' + name)}" for tree in merged for name in tree["dirs"]),
+        })
+    else:
+        rows.append({
+            "id": "build:merged", "state": "ok", "type": "check", "what": "No merged worktree keeps build output",
+            "detail": f"checked {', '.join(name + '/' for name in health_collectors.BUILD_DIRS)} in {build['checked']} registered "
+                      f"{_plural(build['checked'], 'worktree', 'worktrees')}",
+            "kind": "Disk · worktree build output",
+            "facts": {"Rule": "delete build output once the PR merges (2026-09-25)", "Checked": f"{build['checked']} worktrees",
+                      "Found": "0 merged with build output"},
+            "cli": "git worktree list --porcelain  # per repo, then ls -d <path>/{target,node_modules,.venv}",
+        })
+    if build["unread"]:
+        rows.append({"id": "build:unread", "state": "unknown", "type": "check",
+                     "what": f"{len(build['unread'])} {_plural(len(build['unread']), 'worktree', 'worktrees')} with build output: merge not read",
+                     "detail": "git merge-base --is-ancestor failed, so nobody can say whether the branch merged",
+                     "kind": "Disk · worktree build output", "facts": {"Worktrees": str(len(build["unread"]))},
+                     "list": list(build["unread"])})
+    return rows, {"volumes": volumes}
+
+
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=None, ports=None, protection=None,
+             disk=None, branches=None) -> dict:
     """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, `trailers`
     `reads.trailer_scan`'s, `ports` `collect_ports`' (no argument) and
-    `protection` `protection.rows`'; each is a seam a test fills. Each reader
+    `protection` `protection.rows`', and `disk` and `branches`
+    `health_collectors.disk_scan`'s and `branch_scan`'s; each is a seam a test fills. Each reader
     is guarded on its own, so one failure is its area's `error` and the
     others still answer. A reader returns its rows, or its rows and what the
     page draws above them (`extra`).
@@ -268,9 +424,13 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
         connection, now=now, within=TRAILER_SECONDS))
     collect_ports = ports or ports_screen._collect
     read_protection = protection or protection_module.rows
+    scan_disk = disk or health_collectors.disk_scan
+    scan_branches = branches or health_collectors.branch_scan
     readers = {
+        "disk": lambda: _disk_rows(scan_disk(connection)),
         "attr": lambda: _attribution_rows(count_trailers(connection, now=now)),
         "wt": lambda: _worktree_rows(read_fleet("sessions")),
+        "br": lambda: _branch_rows(scan_branches(connection)),
         "ports": lambda: _port_rows(collect_ports()),
         "prot": lambda: _protection_rows(read_protection(connection)),
     }
