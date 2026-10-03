@@ -37,6 +37,7 @@ from support import NOW, ScreenCase
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 RESEARCH_JS = (V2 / "static" / "research.js").read_text(encoding="utf-8")
@@ -586,6 +587,10 @@ R.det = ELS.details.html;""")
         self.assertIn("window.PAGE_LIST", RESEARCH_JS)
         # The design's sample checkouts and ledgers name the operator's repositories; none ships, and no path is written in.
         self.assertNotRegex(RESEARCH_JS, r"RESEARCH_SOURCES|PROJECTS = \[\s*\{|~/repos/")
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "research", "Research", "/research", ("/api/research", "/api/research/example")
 
 
 if __name__ == "__main__":

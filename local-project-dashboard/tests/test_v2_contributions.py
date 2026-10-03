@@ -29,6 +29,7 @@ from test_contribution_screen import contribution, seed_registered
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "contributions.js").read_text(encoding="utf-8")
@@ -448,6 +449,10 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         self.assertNotRegex(PAGE_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", PAGE_JS)
         self.assertNotIn("CONTRIBUTIONS_DATA", PAGE_JS)
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "contributions", "Contributions", "/contributions", ("/api/contributions/page", "/api/contributions/task")
 
 
 if __name__ == "__main__":

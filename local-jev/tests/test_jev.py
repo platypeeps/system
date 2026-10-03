@@ -481,8 +481,9 @@ class TestEnvFile(StubServer):
 
     def run_link(self, link, args, env):
         environ = dict(os.environ)
-        environ.pop("TYPESAFE_API_KEY", None)
-        environ.pop("JEV_MODEL", None)
+        # `jev.sh test` sources the operator's own .env, so drop what it set.
+        for name in ("TYPESAFE_API_KEY", "JEV_MODEL", "JEV_TRACES_URL", "JEV_TRACES_TIMEOUT"):
+            environ.pop(name, None)
         environ["JEV_URL"] = self.url
         environ["JEV_FLAG_FILE"] = self.switch
         environ["JEV_METER"] = "0"

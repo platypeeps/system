@@ -45,176 +45,25 @@ reference with `build:`. The assets take `/ui/` because the old screens own
 v2 script builds markup with the `html` tag in `static/markup.js`, which
 escapes each value put in it, and puts it in the page with `put`, which takes
 only what `html` made; that file holds the one HTML sink criterion 12's grep
-allows in v2. The first page is Today, at `/` and `/today`: the same
-`/api/now` rows as the classic Now, as an annunciator and a ranked ledger. It
-runs no command yet; its capture files a task through `POST /api/items`.
-Status mail, backups, HOA water and Wants you wait for collectors.
+allows in v2. Each page registers itself with one module in
+`sd_dashboard/v2/pages/` (sd:2418): its section, routes, API routes and the
+old screens it keeps. Briefs and Health read their documents through the
+shell's one reader, `static/read.js`; each other page adopts it in its own
+follow-up. What each page reads and what it runs is in
+[`docs/pages/`](docs/pages/), one file per page.
 
-Tasks is the second page, at `/tasks` (sd:2124): the rows v1 `/backlog` reads,
-as a board, an Eisenhower matrix and a list, filtered by kind, repo, priority
-and due. `GET /api/tasks` (`tasks_screen.document`) gives each row its revision
-and the statuses the library allows it. `GET /api/tasks/<id>`
-(`tasks_screen.details`) splits the `sd task show --json` reading into status
-history and notes, and adds the item's assignments and its external context.
-A command that runs posts to the route v1 already answers, and its toast comes
-after the write lands. Status, priority, due and recurrence edits and a requeue
-carry Undo; resolving a followup note and cancelling an assignment ask first.
-`sd work relink` and `sd work cancel` are shown for Copy only.
-
-Home is at `/home` (sd:2117): the design's critical Home Assistant tiles and
-its wall display (`?kiosk=1`). `GET /api/home` (`home_screen.document`) lists
-the tiles `<config>/project-dashboard/home-tiles.conf` names, one
-`headline|<entity_id>|<name>` or `tile|<group>|<entity_id>|<name>` per line.
-An optional last field, `alarm`, `lock`, `toggle` or `sensor`, sets the tile's
-commands when its domain would not. Entity ids describe a house, so the
-checkout ships only `home-tiles.conf.example`. A line the page cannot read is
-named and skipped; without the file the page says "No tile list" and draws no
-grid. The dashboard reads no Home Assistant state yet, so every tile shows as
-unknown with that reason and none shows ok. The design's arm, disarm, lock,
-unlock and toggle commands are registered but off with it, so the page sends
-nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
-`$HA_URL` and never holds a value.
-
-Contributions is at `/contributions` (sd:2113): the open rows of the
-contributions projection v1 renders, in lanes by who acts next, with each
-row's repository scope (internal when sd's repo table holds it) and settled
-rows counted per repository. `GET /api/contributions/page`
-(`contribution_screen.document`) carries at most `OPEN_LIMIT` open rows and
-says when it cut some; its per-scope counts, which the badge, lamps and tallies
-read, cover every open row. It sends no local path: a checkout reads
-`local: <folder>`, and a draft is the flag `has_draft`. The dashboard reads nothing from GitHub, so the design's
-"GitHub now" state and settled-per-day chart say they are not read.
-Acknowledge and Make task ask first, since no verb reverses either.
-Acknowledge posts to the v1 route. Make task posts `/api/contributions/task`,
-which files the task `sd task contribution add` files, with the row's URL as
-its identity: the projection links the two, and a second task for the URL is
-refused. A write's toast reports the write; the reread after it is separate,
-and only the newest reread draws. A row a reread no longer lists loses its
-pick and its commands. Settled rows count per stored repository, so two
-checkouts with one folder name stay two bars. Draft nudge, Open on GitHub and
-Re-run collector are copy only. The old screen moved to `/classic/contributions`; it still shows
-evidence, dependencies and notification delivery.
-
-Briefs is at `/briefs` (sd:2112): the brief notes the vault's
-`System/AI Generated/Briefs` folder holds, as cadence lanes per source and a
-ledger, over 24 hours, 7 or 30 days. `GET /api/briefs`
-(`briefs_screen.document`) reads them through the child Research > Resources >
-Briefs runs, `sd_tile.py briefs-rows`, under the same five seconds; the child
-stops at 200 rows or 48 KB and the page says how many it shows of how many.
-A row's source is the kind in its file name, and its time is the note's
-modification time, given only when it falls on the note's own day. The design
-reads brief mail; no mail or watchdog reader exists, so the page shows no
-unread state, follow-up flag or failure, and the Missed lamp is unknown with
-that reason. Make task opens the capture form, which files through
-`POST /api/items`; Open in Obsidian opens the note's link.
-
-Health is at `/fleet-health` (sd:2115); `/health` stays the service's own
-check. `GET /api/health` (`health_screen.document`) lists the design's nine
-areas in its order. Four have a reader: Worktrees (registrations whose directory
-is gone, from the fleet child Sessions reads), Attribution (your own commits,
-by each repository's `user.email`, of the last five weeks on its default branch
-`origin/HEAD`, merges left out, that lack `Authored-with:`; a repository with no
-`origin/HEAD` or no `user.email` is named in its own row, not read on its
-checkout's HEAD; the walk runs inside a 10-second budget, and past it the area
-says it stopped rather than waited on), Ports (Operations > Ports' reader, with
-its counts and warnings) and Protection (`protection.rows`, drawn as a matrix
-with one column per repository and a table carrying the same cells; an unread
-repository shows no cell). Disk, Credentials, Branches, Dependencies and
-Security have no collector yet; each shows as unknown and names what it does
-not read. Nothing on the page writes: Prune registrations, Attribute, Inspect
-listener and Re-run collector are CLI lines for Copy, and Re-check reads the
-document again.
-
-Research is at `/research` (sd:2122): every checkout under `REPO_ROOT`, one
-group deep, that carries a `research.conf.py`. `GET /api/research`
-(`research_screen.document`) runs `collectors.collect_research` in a child
-under a five-second budget. Each row shows the checkout's stage (the numbered
-directories that hold Markdown), its render freshness and its last commit. A
-config the collector refuses shows as unknown with the refusal.
-`GET /api/research/<checkout>` (`research_screen.sources`) reads that
-checkout's ledger: the Markdown tables in `SOURCES.md`,
-`10-sources/registry.md` and `10-sources/references.md`, up to 60 rows with
-the whole count. Any other path is a 404. Nothing reads review rounds or
-claims yet, so both show as unknown with that reason. Render and Review are
-copy only: the dashboard does not run `sd-research-kit`. Start research is
-off with its reason; the field shows the `sd task add` and `sd run` lines for
-Copy. The old view stays in the palette as Resources (classic), with Toolbox,
-Briefs, Vault and Queues.
-
-Documents is at `/documents` (sd:2114): the design's facets, search and
-paged ledger over every file `/documents/<key>/<file>` serves.
-`GET /api/documents` (`documents_screen.document`) gives each file its title,
-h1 and stand line, its kind and its render state. A checkout with
-`research.conf.py` makes research documents, and every other root makes
-reports. A research document is render-stale when its source Markdown changed
-after the page. The source is the one `research.conf.py` names, else the one
-`.md` with the page's name. Open document opens the served page. Render is
-copy only. Request a document is copy only: the page files no item. Pin, hide
-and tag are off: no document store exists yet. Disable render is off: no
-render switch exists.
-
-Reports is at `/reports` (sd:2121): job-family lamps, a seven-day run cadence
-per job, the report ledger with filters and saved views, and Details with a
-line diff against the job's previous report. `GET /api/reports`
-(`reports_screen.document`) gives the newest 200 reports v1 lists, the launchd
-jobs, and each job's runs per local day, read from its `cron-jobs.sh` log. A
-day the job's calendar leaves out is not scheduled. The families come from
-`<config>/project-dashboard/report-families.conf`, one
-`family|<key>|<label>|<icon>|<job>,<job>,...` per line. Job names are the
-operator's, so the checkout ships only `report-families.conf.example`; without
-the file no family lamp is drawn and every job is listed under "Other jobs".
-A family lamp follows each job's own last scheduled run before today, however
-rare; a job whose last scheduled run the log does not hold makes it unknown.
-Acknowledge posts v1's route with the report's revision. It is off while an
-open followup holds the report. It asks first and has no Undo: sd-db has no
-verb that reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,
-v1's preview, and the bulk bar acknowledges the picked reports one by one.
-Retry posts the job route, as Management does. No status mail is read: the
-dashboard holds no message store. The old screen stays in the palette as
-Reports (classic) for the Resources views and the attributed batch.
-
-Activity is at `/activity` (sd:2111): one timeline of the last 24 hours, as an
-annunciator, a lane per kind and a ledger banded by hour. `GET /api/activity`
-(`activity_screen.document`) reads only what the library already records:
-merges are the delivery notes `sd-ship` writes, runs are runner assignments
-and launchd jobs placed at their log time, and commands are the execution
-journal v1 Operations > Commands lists, older records too for the "All read"
-range; palette and runner runs alike (sd:2183). Reviews, deploys and mail have no
-collector; the document names each with its reason and the page draws it
-unknown, not zero. Requeue carries Undo; job retry posts the job's revision;
-Show output reads the execution record.
-
-The old screens stay until their section is ported. Three moved: the old Today
-to `/classic/today`, the old Contributions to `/classic/contributions` and the
-old Documents to `/classic/documents`. Every other old screen keeps its path.
+The old screens stay until their section is ported. A page that takes an old
+screen's path moves that screen under `/classic/`, as the old Today moved to
+`/classic/today`, and its page module says where. Every other old screen keeps its path.
 A `/v2/` address that names a page or an asset answers 301 with its new one (`/v2/today` to
 `/today`, `/v2/static/<file>` to `/ui/<file>`); any other `/v2/` path is a 404.
-One map in `sd_dashboard/v2/__init__.py`, served as `/ui/sections.js`, says
+One map, built from the page registry and served as `/ui/sections.js`, says
 where each rail section goes: `SECTIONS` for ported pages, `CLASSIC` for the
 old screen an unported section opens (tagged "classic" on the rail), and
 `SCREENS` for old screens without a section, which the palette lists under
-Classic screens.
-
-| Section or screen | Opens |
-| --- | --- |
-| Today | `/today` (new) |
-| Briefs | `/briefs` (new) |
-| Tasks | `/tasks` (new) |
-| Home | `/home` (new) |
-| Research | `/research` (new) |
-| Reports | `/reports` (new) |
-| Documents | `/documents` (new) |
-| Writing | `/writing` |
-| Contributions | `/contributions` (new) |
-| Skills | `/skills` |
-| Metrics | `/operations?area=usage` |
-| Management | `/management` (new) |
-| Health | `/fleet-health` (new) |
-| Activity | `/activity` (new) |
-| Commands | `/operations?area=commands` |
-| Designs | `/designs` |
-| Notes, HOA | no old screen; the rail says not built yet |
-| Palette: Today (classic), Backlog (classic), Reports (classic), Contributions (classic), Jobs, Services, Ports, Trackers, Repos, Sessions, Progress, Protection, Resources (classic), Documents (classic) | `/classic/today`, `/backlog`, `/classic/contributions`, `/operations?area=…`, `/protection` |
+Classic screens. `./dashboard.sh pages` prints that map, one line per section
+or screen; a section in none of the three, such as Notes or HOA, has no old
+screen, and the rail says it is not built yet.
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup

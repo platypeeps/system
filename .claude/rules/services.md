@@ -13,6 +13,7 @@ paths:
   - falkordb on **6380**, graphiti's bundled falkordb on **6381** (redis keeps 6379);
   - graphiti's UI on **3004** (falkordb keeps 3003);
   - jaeger's OTLP on **4327/4328** (the collector keeps 4317/4318);
+  - local-genai-traces on **4337/4338**, Phoenix UI **6016**, health **13137** (local-phoenix keeps 6006);
   - the clickhouse MCP on **8002** (redisinsight keeps 8001).
 - Remaining overlaps are with software outside this repo:
   - `8080-8083`: jaeger HotROD;

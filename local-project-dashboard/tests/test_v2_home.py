@@ -30,6 +30,7 @@ from support import NOW, ScreenCase
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
+from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 HOME_JS = (V2 / "static" / "home.js").read_text(encoding="utf-8")
@@ -270,6 +271,10 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
         # A page-level j/k handler is drift (the shell owns them through PAGE_LIST).
         self.assertNotRegex(HOME_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", HOME_JS)
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "home", "Home", "/home", ("/api/home",)
 
 
 if __name__ == "__main__":

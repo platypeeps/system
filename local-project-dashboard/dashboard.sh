@@ -7,7 +7,7 @@
 # for Toolbox, Briefs, Vault, Research and Queues, and Ports calls one of
 # them, `collectors.collect_ports`, in-process -- not the whole tile set.
 # `tile` runs one view from a shell; `queue-open` opens a queue.
-# Usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | install | health | test
+# Usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | install | health | pages | test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -155,6 +155,17 @@ cmd_docs() {
   exec "${PYTHON:-python3}" "$DIR/design_docs.py" "$@"
 }
 
+cmd_pages() {
+  # The rail and palette map, built from the page registry in sd_dashboard/v2/pages/ (sd:2418): the one list of which
+  # section opens a new page, which opens its old screen, and which old screens the palette offers. The README points
+  # here instead of keeping a table that each port had to edit.
+  if [ "$#" -gt 0 ]; then
+    echo "usage: $(basename "$0") pages (no arguments)" >&2
+    exit 2
+  fi
+  PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m sd_dashboard.v2
+}
+
 cmd_test() {
   PYTHONPATH="$DIR:$SD_DB:$DIR/tests${PYTHONPATH:+:$PYTHONPATH}" \
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
@@ -167,10 +178,11 @@ case "${1:-}" in
   preflight|install|health) cmd_runtime "$@" ;;
   grants) shift; cmd_grants "$@" ;;
   docs) shift; cmd_docs "$@" ;;
+  pages) shift; cmd_pages "$@" ;;
   test|check) shift; cmd_test "$@" ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | install | health | grants | docs | test
+usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | install | health | grants | docs | pages | test
 
   tile <tab>       one tab as JSON on stdout — toolbox, briefs,
                    briefs-rows, vault, research, ports or queues. The
@@ -213,6 +225,11 @@ usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | instal
                    documents.py pins, and exits 1 unless the pages carry
                    exactly the pinned scripts, each on every page. Exits 3
                    when this checkout has no docs/design/
+  pages            the rail and palette map from the page registry, one
+                   tab-separated line per target: section, address and
+                   `new` with its sd item for a registered page; `classic`
+                   for a section that opens its old screen; `palette` for
+                   an old screen the palette offers. Takes no arguments
   test             the dashboard's own tests. `check` is the same thing
 
 The workflow server replaces the earlier pack dashboard on :8767. Progress
@@ -245,7 +262,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") tile <tab> | queue-open <queue> | serve | preflight | install | health | grants | docs | test" >&2
+    echo "usage: $(basename "$0") tile <tab> | queue-open <queue> | serve | preflight | install | health | grants | docs | pages | test" >&2
     exit 1
     ;;
 esac
