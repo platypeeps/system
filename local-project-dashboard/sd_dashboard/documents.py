@@ -117,6 +117,8 @@ class Root:
     key: str
     label: str
     path: Path
+    #: File names a `skip|<key>|<file>` line withholds: neither listed nor served.
+    skip: frozenset[str] = frozenset()
 
 
 def _label(key: str) -> str:
@@ -225,6 +227,7 @@ class Config:
     roots: list[Root]
     skipped: set[str]
     labels: dict[str, str]
+    files: dict[str, set[str]]
 
 
 def _configured(config_path: Path | None = None) -> Config:
@@ -233,11 +236,12 @@ def _configured(config_path: Path | None = None) -> Config:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return Config([], set(), {})
+        return Config([], set(), {}, {})
     found: list[Root] = []
     seen: set[str] = set()
     skipped: set[str] = set()
     labels: dict[str, str] = {}
+    files: dict[str, set[str]] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -245,6 +249,9 @@ def _configured(config_path: Path | None = None) -> Config:
         parts = [p.strip() for p in line.split("|")]
         if len(parts) == 2 and parts[0] == "skip" and parts[1]:
             skipped.add(parts[1])
+            continue
+        if len(parts) == 3 and parts[0] == "skip" and parts[1] and parts[2]:
+            files.setdefault(parts[1], set()).add(parts[2])
             continue
         if len(parts) == 3 and parts[0] == "label" and parts[1] and parts[2]:
             labels.setdefault(parts[1], parts[2])
@@ -256,7 +263,7 @@ def _configured(config_path: Path | None = None) -> Config:
             continue
         seen.add(key)
         found.append(Root(key, label or key, Path(directory).expanduser()))
-    return Config(found, skipped, labels)
+    return Config(found, skipped, labels, files)
 
 
 def roots(config_path: Path | None = None, repo_root: Path | None = None) -> list[Root]:
@@ -265,7 +272,7 @@ def roots(config_path: Path | None = None, repo_root: Path | None = None) -> lis
     A `root|` line wins over a found root of the same key, and is for a root
     that genuinely lives somewhere else, outside any checkout's
     `docs/dashboard`. A `skip|<key>` line drops a found root without hiding
-    the directory. A
+    the directory, and a `skip|<key>|<file>` line drops one file of a root. A
     `label|<key>` line renames one and says nothing about where it is, which
     is the whole of what most of them ever wanted to say.
     """
@@ -276,9 +283,8 @@ def roots(config_path: Path | None = None, repo_root: Path | None = None) -> lis
         if root.key in keys or root.key in config.skipped:
             continue
         keys.add(root.key)
-        label = config.labels.get(root.key)
-        found.append(Root(root.key, label, root.path) if label else root)
-    return found
+        found.append(Root(root.key, config.labels.get(root.key) or root.label, root.path))
+    return [Root(root.key, root.label, root.path, frozenset(config.files.get(root.key, ()))) for root in found]
 
 
 def unresolved(config_path: Path | None = None,
@@ -336,7 +342,7 @@ def resolve(key: str, name: str, config_path: Path | None = None,
     response would only tell a prober which of the two they achieved.
     """
     root = _root(key, config_path, repo_root)
-    return None if root is None else within(root.path, name)
+    return None if root is None or name in root.skip else within(root.path, name)
 
 
 def documents(root: Root) -> list[dict]:
@@ -350,7 +356,7 @@ def documents(root: Root) -> list[dict]:
         # Checked against the root in hand, never against whatever the live
         # config happens to say: the listing has to describe the directory it
         # was given, or a test passes while the page is wrong.
-        if within(root.path, entry.name) is None:
+        if entry.name in root.skip or within(root.path, entry.name) is None:
             continue
         stat = entry.stat()
         found.append({
