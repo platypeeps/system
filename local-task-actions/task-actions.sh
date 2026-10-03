@@ -400,7 +400,10 @@ PY
 cmd_start() {
   ensure_secret
   mkdir -p "$AGENT_DIR"
+  # launchd passes the agent only the environment the plist names, so the
+  # config root this start read goes in it, or `run` would read another.
   sed -e "s|@LABEL@|$LABEL|g" -e "s|@DIR@|$DIR|g" -e "s|@HOME@|$HOME|g" \
+    -e "s|@CONFIG@|$SYSTEM_TOOLS_CONFIG|g" \
     "$SRC_PLIST" > "$DST_PLIST"
   if is_loaded; then
     launchctl bootout "$SERVICE" 2>/dev/null || true

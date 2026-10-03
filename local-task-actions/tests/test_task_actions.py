@@ -46,6 +46,7 @@ class LabelPrefixTest(unittest.TestCase):
         folder = self.tmp / "local-task-actions"
         folder.mkdir()
         shutil.copy(SCRIPT, folder / "task-actions.sh")
+        shutil.copy(FOLDER / "task-actions.plist.template", folder)
         (self.tmp / "lib").mkdir()
         shutil.copy(LIB_CONFIG, self.tmp / "lib" / "config.sh")
         self.script = folder / "task-actions.sh"
@@ -130,6 +131,21 @@ class LabelPrefixTest(unittest.TestCase):
         base = self.run_script("base-url", env=env)
         self.assertEqual(base.returncode, 0, base.stderr)
         self.assertEqual(base.stdout.strip(), "http://127.0.0.1:28766")
+
+    def test_start_passes_the_config_root_to_the_agent(self):
+        # REGRESSION (sd:1959). launchd passes only the environment the plist
+        # names, and the plist named PATH and HOME, so an agent started under
+        # a non-default SYSTEM_TOOLS_CONFIG ran `run` against the default root
+        # and ignored its .env.
+        import plistlib
+        result = self.run_script("start")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("launchctl bootstrap gui/", self.calls.read_text())
+        agent = (self.home / "Library" / "LaunchAgents"
+                 / "local.system-tools.task-actions.plist")
+        plist = plistlib.loads(agent.read_bytes())
+        self.assertEqual(plist["EnvironmentVariables"]["SYSTEM_TOOLS_CONFIG"],
+                         str(self.config))
 
 
 if __name__ == "__main__":

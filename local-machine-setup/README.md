@@ -432,6 +432,8 @@ at once and files each token into `<profile>.cask` (dropping the name from
 `<profile>.app`); pkg-based casks may prompt for sudo. The remaining
 no-cask apps (own builds, betas, vendor installers) stay manual; `capture`
 records them in `<profile>.app` so a new machine at least gets a checklist.
+`MACHINE_SETUP_APPLICATIONS_DIR` points the scan at another folder. It exists
+for the tests only.
 
 ## Secrets
 

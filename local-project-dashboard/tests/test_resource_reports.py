@@ -1,5 +1,7 @@
 """Legacy inspection cannot execute repository configuration; cron runs once."""
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -96,6 +98,40 @@ class Resources(unittest.TestCase):
             with self.subTest(rows=rows), tile, patch.dict(os.environ, {"TILE_PAYLOAD": json.dumps({"html": "<p>Content</p>", "rows": rows})}):
                 with self.assertRaisesRegex(ValueError, "incomplete observations"):
                     reports_screen.collect("research")
+
+    def test_a_view_passes_its_start_and_the_tile_counts_its_deadline_from_it(self):
+        # sd:2501: the tile counted from its own main(), so a slow interpreter start spent the margin and the view's kill won.
+        from sd_dashboard import briefs_screen
+        tile, directory = self.tile("import json, sys\nopen(sys.argv[0] + '.argv', 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                                    "sys.stdout.write(json.dumps({'html': '', 'rows': [], 'briefs': []}))\n")
+        with tile:
+            before = time.clock_gettime(time.CLOCK_MONOTONIC)
+            reports_screen.collect("toolbox")
+            briefs_screen.collect()
+            after = time.clock_gettime(time.CLOCK_MONOTONIC)
+        calls = [json.loads(line) for line in (directory / "tile.py.argv").read_text().splitlines()]
+        self.assertEqual([call[0] for call in calls], ["toolbox", "briefs-rows"])
+        for call in calls:
+            self.assertEqual(len(call), 2, call)
+            self.assertTrue(before <= float(call[1]) <= after, call)
+        spec = importlib.util.spec_from_file_location("since_sd_tile", HERE / "sd_tile.py")
+        sd_tile = importlib.util.module_from_spec(spec); spec.loader.exec_module(sd_tile)
+        deadlines = []
+
+        class Collectors:
+            @staticmethod
+            @contextlib.contextmanager
+            def set_deadline(seconds, *, started):
+                deadlines.append(started)
+                yield
+
+        since = time.clock_gettime(time.CLOCK_MONOTONIC) - 2.0
+        with patch.object(sd_tile, "load_collectors", lambda: Collectors), \
+                patch.dict(sd_tile.TABS, {"toolbox": lambda collectors: {"html": ""}}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(sd_tile.main(["toolbox", f"{since:.6f}"]), 0)
+        # Two seconds spent starting come off the deadline, never on top of it.
+        self.assertLessEqual(deadlines[0], time.monotonic() - 2.0)
 
     def test_failed_tile_is_refused_with_its_reason(self):
         tile, _ = self.tile("import sys\nsys.stdout.write('{}')\nsys.exit('research: collector broke')\n")
