@@ -1,0 +1,101 @@
+<!doctype html>
+<!--
+  Metrics (sd:2119), at /metrics. Built from the design source's products/system/designs/pages/metrics.{html,css,js}.
+  Data: /api/metrics (metrics_screen.document: sd usage's month, the 7-day window meter per day, the week's numbers,
+  missing trailers, the provider scorecard, skill use, age in status and observed activity), read when the page opens and
+  on Refresh. A part that did not read is unknown with its reason. By model, CI health and flaky tests have no reader and
+  show as unknown. Writes: none; the cap form stays on the classic Usage screen. Nothing here is sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Metrics · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/metrics.css">
+</head>
+<body data-page="Metrics" data-scope="fleet">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+<main>
+  <header class="head">
+    <div>
+      <h1>Metrics</h1>
+      <p id="subhead">Reading the Metrics readings…</p>
+    </div>
+    <div class="range" id="range" role="group" aria-label="Time range">
+      <button class="chip" type="button" aria-disabled="true" aria-pressed="false" title="Most sources here are daily or weekly; 24h would be one reading">24h</button>
+      <button class="chip" type="button" aria-pressed="true">7d</button>
+      <button class="chip" type="button" aria-disabled="true" aria-pressed="false" title="30d switches on once the cost ledger holds 30 days of rows">30d</button>
+      <button class="help" type="button" aria-label="Help: time range" data-help="<b>One range for the page.</b> The trend and the week read 7 days. Skill use reads four Monday-start weeks. Spend and Usage stay calendar-month, as <code>sd usage</code> reads them."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+    </div>
+  </header>
+  <div id="state" hidden></div>
+
+  <h2 class="sr">Readings</h2>
+  <ul class="annunciator" id="annunciator" aria-label="Metrics annunciator"></ul>
+
+  <section class="panel" id="spend" aria-labelledby="spend-h">
+    <div class="panel-head"><div><h2 id="spend-h">Spend and budget <button class="help" type="button" aria-label="Help: spend and budget" data-help="<b>Two kinds of budget.</b> Metered bills spend dollars, and some have a cap. Subscription and plan bills spend a vendor window, read as percent used. Both are budgets; they do not add up."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+      <p>Dollars from the cost ledger (run and bound rows), month to date; windows from the vendors' own meters.</p></div></div>
+    <div class="cols">
+      <div><p class="sub">Dollars this month, by bill</p><ul class="hbars" id="bills"></ul>
+        <p class="foot-note" id="bills-note"></p></div>
+      <div><p class="sub">Budget used, now</p><ul class="hbars" id="windows"></ul>
+        <p class="foot-note">Caution at 75% of a window; a full window blocks that provider until it resets.</p></div>
+    </div>
+    <p class="sub gap">7-day window, last reading each day</p>
+    <div class="multi" id="trends"></div>
+    <p class="sub gap">By model</p>
+    <div id="model"></div>
+  </section>
+
+  <section class="panel" id="week" aria-labelledby="week-h">
+    <div class="panel-head"><div><h2 id="week-h">The week</h2><p>The Usage tab's weekly numbers, and commits missing an <code>Authored-with:</code> trailer.</p></div></div>
+    <table class="tbl" id="week-table" aria-labelledby="week-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Number</th><th scope="col" class="num">Value</th><th scope="col" class="hide-sm">Inputs</th></tr></thead><tbody id="week-body"></tbody></table>
+    <div id="observed"></div>
+  </section>
+
+  <section class="panel" id="scorecard" aria-labelledby="sc-h">
+    <div class="panel-head"><div><h2 id="sc-h">Provider scorecard</h2><p>This month. Rank is the automatic order; skipped means the provider was asked and fell through.</p></div></div>
+    <div class="scroll-x"><table class="tbl" id="sc-table" aria-labelledby="sc-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Provider</th><th scope="col" class="num hide-sm">Author</th><th scope="col" class="num hide-sm">Reviewer</th><th scope="col" class="num">Passes</th><th scope="col" class="num hide-sm">Blocking</th><th scope="col" class="num">$/pass</th><th scope="col" class="num">Skipped</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody id="sc-body"></tbody></table></div>
+  </section>
+
+  <section class="panel" id="ci" aria-labelledby="ci-h">
+    <div class="panel-head"><div><h2 id="ci-h">CI health</h2><p>Local gate runs and test results.</p></div></div>
+    <div id="ci-state"></div>
+  </section>
+
+  <section class="panel" id="skill-use" aria-labelledby="su-h">
+    <div class="panel-head"><div><h2 id="su-h">Skill use</h2><p id="su-sub"></p></div></div>
+    <div class="cols">
+      <div><p class="sub">All skills, per week</p><ul class="hbars" id="su-weeks"></ul></div>
+      <div><p class="sub">Most used this week</p><ul class="hbars" id="su-top"></ul></div>
+    </div>
+  </section>
+
+  <section class="panel" id="usage" aria-labelledby="us-h">
+    <div class="panel-head"><div><h2 id="us-h">Usage</h2><p>The month as <code>sd-db.sh usage</code> reads it: by bill, provider and role.</p></div></div>
+    <div class="scroll-x"><table class="tbl" id="roles" aria-labelledby="us-h"><thead><tr><th scope="col">Bill · provider</th><th scope="col" class="hide-sm">Role</th><th scope="col" class="num">Calls</th><th scope="col" class="num">Spent</th><th scope="col" class="num hide-sm">Tokens in</th><th scope="col" class="num hide-sm">Tokens out</th></tr></thead><tbody id="roles-body"></tbody></table></div>
+    <p class="foot-note" id="usage-note"></p>
+  </section>
+
+  <section class="panel" id="age" aria-labelledby="age-h">
+    <div class="panel-head"><div><h2 id="age-h">Age in status</h2><p>Open items across repositories by days in their current status; done items excluded.</p></div></div>
+    <figure class="hist" id="hist"></figure>
+    <ul class="legend"><li><i></i>other statuses</li><li><i class="s1"></i>ready to send</li></ul>
+  </section>
+</main>
+
+<div class="details" id="details"><p class="note">Reading the Metrics readings…</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/metrics.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

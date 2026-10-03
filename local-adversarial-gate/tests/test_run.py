@@ -17,6 +17,7 @@ skips.
 
 import os
 import pathlib
+import signal
 import subprocess
 import tempfile
 import time
@@ -93,13 +94,24 @@ class RunAgainstAFakeCodex(unittest.TestCase):
             "CODEX_GRANDCHILD": str(self.grandchild),
         }
         started = time.monotonic()
+        # Its own session, so the guard below can kill the whole tree:
+        # `subprocess.run(timeout=...)` kills only the `sh` child, and the
+        # fakes here leave a `sleep` grandchild behind on purpose.
+        proc = subprocess.Popen(
+            ["sh", str(SCRIPT), "run", "--lens", "research-brief", *args],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
+        )
         try:
-            result = subprocess.run(
-                ["sh", str(SCRIPT), "run", "--lens", "research-brief", *args],
-                env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT,
-            )
+            out, err = proc.communicate(timeout=RUN_TIMEOUT)
         except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
             self.fail(f"adversarial-gate run was still running after {RUN_TIMEOUT}s")
+        result = subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
         return result, time.monotonic() - started
 
     def test_the_rendered_prompt_reaches_codex_in_a_read_only_sandbox(self):
