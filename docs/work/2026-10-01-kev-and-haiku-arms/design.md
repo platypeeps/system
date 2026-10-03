@@ -105,7 +105,7 @@ not when this lands.
 
 ## The Kev arm
 
-The same System One request, sent to `KEV_URL` (default
+The same System One request, sent to `JEV_COMPARE_KEV_URL` (default
 `http://127.0.0.1:8009/v1/systemone`), with `model` set to `kev-latest`.
 Kev's server accepts `kev-latest` and `jev-latest`; a pinned `JEV_MODEL` such
 as `jev-1.13.0` would be refused there. `KEV_API_KEY`, when set, goes in a
