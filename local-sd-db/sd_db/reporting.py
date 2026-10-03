@@ -568,8 +568,10 @@ def cutoff(value):
     returned as it is, so the stamped value can travel through a hidden field
     or a pasted command and come back unchanged. Everything else is refused:
     another time or offset, `Z`, a date that does not exist. `clean_reports`
-    takes only the stamp, so a caller that skipped this fails at `stamp`
-    rather than getting a different cutoff by accident.
+    takes only the stamp this returns, and refuses even another spelling of
+    the same instant, so a caller that skipped this fails there rather than
+    getting a different cutoff, or a different plan token, by accident
+    (sd:1168).
     """
     match = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2})(T00:00:00\+00:00)?", value) if isinstance(value, str) else None
     if match:
@@ -666,8 +668,8 @@ def clean_reports(connection, *, before, now=None):
     rows come from one snapshot and the call works on a `write=False`
     connection, where `BEGIN IMMEDIATE` does not.
 
-    `before` is a stamp from `cutoff` and may not be later than `now`, an
-    aware `datetime` that defaults to the real clock. `selected` is
+    `before` is the stamp `cutoff` returns, exactly, and may not be later
+    than `now`, an aware `datetime` that defaults to the real clock. `selected` is
     `clean_candidates` less the refusals retention does not make: a record
     marker, work in flight, a run newer than its job's recorded health.
     `declined` is every other `planning` report created before `before`, with
@@ -680,7 +682,8 @@ def clean_reports(connection, *, before, now=None):
     is, because no apply of that selection can succeed, and the revisions are
     then not read.
     """
-    before = stamp(before)
+    if cutoff(before) != before:
+        raise workflow.WorkflowError(f"pass the cutoff as `cutoff` stamps it, {cutoff(before)}, not {before!r}")
     current = stamp((now or datetime.now(UTC)).isoformat())
     if before > current:
         raise workflow.WorkflowError(f"the cutoff {before} is later than now ({current}); give a date that has begun")
