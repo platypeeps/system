@@ -11,7 +11,7 @@ const GLYPH = { caution: '▲', unknown: '▨', ok: '●', queued: '◌', warnin
 let DIRS = ['00-overview', '10-sources', '20-map', '30-brief', '40-docs'];
 let CAP = 2;
 // build: the reference's project list, data/research-sources.js and claims were sample data. These fill from the two documents.
-let PROJECTS = [], ROUNDS = '', CLAIMS = '', READ = null;
+let PROJECTS = [], ROUNDS = '', CLAIMS = '', READ = null, CUT = 0, LOADED = false;
 const SOURCES = new Map(); // a Map, so a checkout named like an object property (constructor) is not already cached
 const RANK = { caution: 0, unknown: 1, queued: 2, ok: 3 };
 // Page attention, from the rows the board renders. An unread config is unknown, not a caution, so it does not count.
@@ -19,7 +19,8 @@ const RANK = { caution: 0, unknown: 1, queued: 2, ok: 3 };
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'research not read yet' };
 function attention() {
   const n = PROJECTS.filter(p => p.s === 'caution').length;
-  window.shell?.attention?.(n ? { state: 'caution', n, what: 'render-stale projects' } : { state: 'ok', n: 0, what: 'render-stale projects' });
+  window.shell?.attention?.(!LOADED ? { state: 'unknown', n: 0, what: 'research not read' }
+    : n ? { state: 'caution', n, what: 'render-stale projects' } : { state: 'ok', n: 0, what: 'render-stale projects' });
 }
 // The tally filters the board by state; the URL carries it (?state=), and the tally's Clear or a second tap removes it.
 const STATE_WORDS = { caution: 'render-stale', unknown: 'config or render unread', ok: 'current' };
@@ -89,6 +90,7 @@ document.getElementById('tally').addEventListener('click', e => {
 });
 
 // ---------- Data (build) ----------
+// The board reads through shell.read (the Start block); the ledger is read here, per project.
 async function getJSON(path) {
   const r = await fetch(path, { headers: { Accept: 'application/json' } });
   const out = await r.json().catch(() => ({}));
@@ -114,7 +116,8 @@ async function readerFor(key) {
   const s = await loadSources(key);
   if (selected !== key) return; // a newer selection owns the reader
   if (s.error) {
-    put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error}. Reselect the project to retry.</p>`);
+    // An error that already ends its sentence takes no second period (sd:2429).
+    put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`);
     SOURCES.delete(key); document.getElementById('reader-tally').textContent = 'not read'; return;
   }
   if (!s.files.length) {
@@ -315,37 +318,54 @@ window.PAGE_COMMANDS = [
   { label: 'Show render-stale projects', icon: 'clock', run: () => { input.value = ''; filterText = ''; setState('caution'); shell.openPane('tab-details'); } },
 ];
 
-// ---------- Start (build: read /api/research, then draw) ----------
-async function load() {
-  const u = new URLSearchParams(location.search), q = shell.row ? shell.row() : u.get('row');
-  shell.state({ kind: 'loading', text: 'Reading the research checkouts. Rows appear when /api/research answers.', source: '/api/research' });
-  let doc;
-  try { doc = await getJSON('/api/research'); } catch (err) {
-    shell.state({ kind: 'error', text: `The checkouts were not read: ${err.message}. Reload retries it.`, source: '/api/research' });
-    return;
-  }
-  READ = doc.read; CAP = doc.cap || CAP; DIRS = doc.dirs || DIRS;
+// ---------- Start (build: read /api/research through shell.read, then draw) ----------
+// The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws, a project the read no longer
+// lists runs no command, and a failed read clears the board, the ledger and the rail. The ledger keeps its own cache.
+let board = null, linked = false;
+function adopt(doc) {
+  READ = doc.read; CAP = doc.cap || CAP; DIRS = doc.dirs || DIRS; CUT = doc.cut || 0; LOADED = true;
   ROUNDS = doc.rounds?.reason || 'not read'; CLAIMS = doc.claims?.reason || 'not read';
   if (READ) document.body.dataset.observed = READ; // shell time cells count from the reading, not from now
-  PROJECTS = (doc.projects || []).map(p => ({ ...p, s: p.render.s === 'caution' ? 'caution' : p.render.s === 'ok' && !p.conf ? 'ok' : 'unknown' }));
-  PROJECTS.forEach(p => shell.commands.put(Object.assign(p, { id: p.key, type: 'research project' })));
+  PROJECTS = (doc.projects || []).map(p => ({ ...p, id: p.key, type: 'research project', s: p.render.s === 'caution' ? 'caution' : p.render.s === 'ok' && !p.conf ? 'ok' : 'unknown' }));
+  if (!linked) {
+    // The address's filters are read before the first draw, so the board and the first selection follow them.
+    linked = true;
+    const u = new URLSearchParams(location.search);
+    stateFilter = Object.hasOwn(STATE_WORDS, u.get('state') ?? '') ? u.get('state') : null; // own keys only: ?state=constructor is no state
+    if (u.get('q')) { input.value = u.get('q'); filterText = u.get('q').toLowerCase(); }
+  }
   const unknown = PROJECTS.filter(p => p.s === 'unknown').length;
   // build: past its print bound the board lists fewer projects (research_screen.board); say how many are missing.
-  const cut = doc.cut ? ` ${plural(doc.cut, 'project')} not listed: the board passed its print bound.` : '';
-  put(document.getElementById('sum'), html`${plural(PROJECTS.length, 'project')}${doc.cut ? ` · ${plural(doc.cut, 'project')} not listed` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'}`);
-  if (doc.error) shell.state({ kind: 'error', text: `The checkouts were not read: ${doc.error}. Reload retries it.`, source: 'collectors.collect_research' });
-  else if (!PROJECTS.length) shell.state({ kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' });
-  else if (unknown) shell.state({ kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds and claims are not read: ${ROUNDS}; ${CLAIMS}.${cut}`, source: '/api/research' });
-  else shell.state({ kind: 'partial', title: 'No rounds or claims read', text: `${ROUNDS}; ${CLAIMS}.${cut}`, source: '/api/research' });
-  stateFilter = Object.hasOwn(STATE_WORDS, u.get('state') ?? '') ? u.get('state') : null; // own keys only: ?state=constructor is no state
-  if (u.get('q')) { input.value = u.get('q'); filterText = u.get('q').toLowerCase(); }
-  renderBoard();
-  attention();
-  const keys = visible().map(p => p.key);
-  const first = keys.includes(q) ? q : keys[0];
-  if (first) select(first, false); else if (PROJECTS.length) reconcile(); else clearSelection();
+  const cut = CUT ? ` ${plural(CUT, 'project')} not listed: the board passed its print bound.` : '';
+  const state = doc.error ? { kind: 'error', text: `The checkouts were not read: ${doc.error}. Reload retries it.`, source: 'collectors.collect_research' }
+    : !PROJECTS.length ? { kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' }
+    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds and claims are not read: ${ROUNDS}; ${CLAIMS}.${cut}`, source: '/api/research' }
+    : { kind: 'partial', title: 'No rounds or claims read', text: `${ROUNDS}; ${CLAIMS}.${cut}`, source: '/api/research' };
+  return { objects: [...PROJECTS, DRAFT], state };
 }
+function draw() {
+  renderBoard();
+  put(document.getElementById('sum'), html`${plural(PROJECTS.length, 'project')}${CUT ? ` · ${plural(CUT, 'project')} not listed` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'}`);
+  attention();
+}
+function unselect() {
+  clearSelection();
+  put(details, html`<p class="why">${!LOADED ? 'The checkouts were not read, so no project is selected.'
+    : !PROJECTS.length ? 'No research checkout to select.' : 'No project matches the filter. Clear the search or the state filter to see the board.'}</p>`);
+  writeURL();
+}
+// Only the newest of overlapping loads draws; nothing on this page writes, so it never rereads.
+const load = () => board.load();
 document.addEventListener('DOMContentLoaded', () => {
   registerCommands();
+  board = shell.read({
+    source: '/api/research', what: 'the research checkouts', adopt, draw,
+    clear: () => { PROJECTS = []; READ = null; CUT = 0; LOADED = false; delete document.body.dataset.observed; },
+    current: () => selected,
+    first: () => visible()[0]?.key,
+    // A row the filters hide is not selected: the first shown row is, or none.
+    select: id => (visible().some(p => p.key === id) ? select(id, false) : reconcile()),
+    unselect,
+  });
   load();
 });
