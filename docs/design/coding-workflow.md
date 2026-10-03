@@ -71,7 +71,8 @@ only through `deliver_associated_work`, which takes a reason, checks the same
 ancestry and the `Item:` trailer, and marks the receipt as after the fact. Once
 the item is done, re-delivering with a matching outcome is a no-op, and
 re-delivering with a different one is refused rather than silently
-reclassified.
+reclassified. A task or followup cancels through the same `cancel_work`,
+called with `task_guard` (sd:1005); its receipt drops if the task reopens.
 
 ## The gates, in the order they run
 

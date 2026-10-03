@@ -1,0 +1,88 @@
+<!doctype html>
+<!--
+  Skills (sd:2123), at /skills. Built from the design source's products/system/designs/pages/skills.html, skills.js and
+  skills.css at 2729265, with design.md and commands.md.
+  Data: /api/skills (skills_screen.document: the catalog skills_catalog.catalog reads from the command pack, each skill's
+  use in the last three Monday-start weeks from skill_use, and the use records no catalog skill explains), read when the
+  page opens. Try, Review, Promote and Demote ask first and post the routes the old screen posts:
+  POST /api/skills/<name>/try, /review, /promote and /demote. Run, Schedule, Adopt and Scan are copy only. Nothing here is
+  sample data. The old screen moved to /classic/skills.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Skills · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/skills.css">
+</head>
+<body data-page="Skills" data-scope="pack">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+  <main id="main">
+    <header class="head">
+      <div>
+        <h1>Skills</h1>
+        <p id="sub">Reading the sd pack catalog…</p>
+      </div>
+      <div class="shift">
+        <label class="field">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr">Filter skills, run one, or adopt from GitHub</span>
+          <input id="shift" placeholder="Filter, “run sd-research”, or owner/repo" autocomplete="off" aria-describedby="shift-hint">
+          <span class="ghost" id="ghost"></span>
+          <kbd>/</kbd>
+        </label>
+        <div class="preview" id="shift-preview" hidden>
+          <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
+          <div class="chips" role="group" aria-label="Interpret as">
+            <button class="chip" type="button" data-as="filter" aria-pressed="true">filter</button>
+            <button class="chip" type="button" data-as="run" aria-pressed="false">run skill</button>
+            <button class="chip" type="button" data-as="adopt" aria-pressed="false">adopt source</button>
+          </div>
+          <p class="hint" id="shift-hint">→ switches reading · Enter commits · Tab moves on</p>
+        </div>
+      </div>
+    </header>
+
+    <h2 class="sr">Catalog state</h2>
+    <ul class="annunciator" id="annunciator"></ul>
+
+    <section aria-labelledby="cat-h">
+      <div class="sec-head">
+        <h2 id="cat-h">Catalog <button class="help" type="button" aria-label="Help: Catalog" data-help="<b>One row per skill in the pack.</b> Path skills install on every surface; trials last 30 days; contrib skills are available to try. Use per week comes from <code>skill_use</code>, every surface it records. Sort any column; tap a row for usage, run, schedule and review.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <div class="tools">
+          <p class="tally" id="tally"></p>
+          <button class="btn quiet sm" type="button" id="adopt-btn"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Adopt from GitHub</button>
+        </div>
+      </div>
+      <div class="chips" role="group" aria-label="Availability filter" id="facets"></div>
+      <table class="ledger" aria-labelledby="cat-h">
+        <thead><tr>
+          <th scope="col" class="g"><span class="sr">State</span></th>
+          <th scope="col" data-key="n"><button class="sort" type="button">Skill<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
+          <th scope="col" data-key="st"><button class="sort" type="button">Availability<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
+          <th scope="col" data-key="u" class="use"><button class="sort" type="button">Use / week<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
+          <th scope="col" class="act"><span class="sr">Actions</span></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="filtered" id="filtered" hidden></p>
+      <div class="pager" id="pager"></div>
+      <p class="foot-note" id="foot"></p>
+    </section>
+  </main>
+
+  <div class="details" id="details"><p class="why">Select a skill to see its use, its paths and what you can do with it.</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/skills.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>
