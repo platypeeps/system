@@ -83,10 +83,13 @@ class Client:
         self.budget = budget
         self.runner = runner
         self.transport = transport
+        # Requests held back for the collectors that follow on the same budget;
+        # `contribution_sync.refresh` raises it to its reserve while it runs.
+        self.floor = 0
 
     def request(self, path, *, fields=None, missing=False):
         left = self.budget.deadline - time.monotonic()
-        if self.budget.remaining <= 0 or left <= 0:
+        if self.budget.remaining <= self.floor or left <= 0:
             raise Exhausted("contribution collection budget exhausted")
         self.budget.remaining -= 1
         self.budget.requests += 1
@@ -455,10 +458,12 @@ def _issue_dependency(client, configured):
     try:
         block = payload["data"]["repository"]["issue"]["timelineItems"]
         nodes, more = block["nodes"], block["pageInfo"]["hasNextPage"]
-        if not isinstance(nodes, list) or type(more) is not bool:
+        # A node that is not an event, or an event with no source object, is a
+        # malformed page and not a reference that was not merged (sd:1219).
+        if not isinstance(nodes, list) or type(more) is not bool or not all(
+                isinstance(node, dict) and isinstance(node.get("source"), dict) for node in nodes):
             raise TypeError
-        merged = [node["source"]["url"] for node in nodes
-                  if isinstance(node, dict) and isinstance(node.get("source"), dict) and node["source"].get("merged") is True]
+        merged = [node["source"]["url"] for node in nodes if node["source"].get("merged") is True]
     except (KeyError, TypeError) as error:
         raise Unavailable("incomplete GitHub timeline") from error
     if merged:

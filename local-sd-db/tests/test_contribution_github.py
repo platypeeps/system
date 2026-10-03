@@ -590,6 +590,17 @@ class IssueDependencies(unittest.TestCase):
                          ("pending", {"url": ISSUE_URL, "closed": True, "state_reason": "not_planned"}))
         self.assertNotIn("reason", result)
 
+    def test_a_malformed_reference_node_is_unknown_not_pending(self):
+        # sd:1219 (ec1942399b93): a node that is not an event, or an event whose
+        # source is not an object, was filtered out, so the page read as "no
+        # merged reference" and the dependency as pending.
+        for nodes in (["not an event"], [{"__typename": "CrossReferencedEvent", "source": "not an object"}]):
+            with self.subTest(nodes=nodes):
+                self.api.rows["graphql"] = {"data": {"repository": {"issue": {"timelineItems": {
+                    "nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}}
+                result = dependency(self.api.client(), self.dep)
+                self.assertEqual((result["state"], result["reason"]), ("unknown", "incomplete GitHub timeline"))
+
     def test_unavailable_malformed_truncated_and_misnamed_are_unknown_with_a_reason(self):
         self.api.rows[ROOT + "/issues/9"] = Response(503, {}, "")
         result = dependency(self.api.client(), self.dep)
