@@ -181,7 +181,11 @@ class TheSwitch(JevCase):
                                 f"{value!r} was read as a switch-off")
 
     def test_the_default_prompt_is_the_one_it_always_was(self):
-        """The sentence the agent reads, byte for byte, on the default path."""
+        """The sentence the agent reads, byte for byte, on the default path.
+
+        The citation rules sit between the two sentences since sd:990; the
+        prompt tests in `test_item.py` pin their wording.
+        """
         row = {"id": 42}
         with mock.patch.object(sd_plan.subprocess, "run") as run, \
                 mock.patch.object(sd_plan, "claude_binary", return_value="/bin/claude"):
@@ -191,7 +195,9 @@ class TheSwitch(JevCase):
         self.assertEqual(prompt, (
             "/sd-plan 2026-09-20-a-slug --from sd:42\n\n"
             "This run is unattended: nobody will answer a question, so record "
-            "routine choices on the row and continue. Leave all three documents "
+            "routine choices on the row and continue. "
+            + " ".join(sd_plan.CITATION_RULES)
+            + " Leave all three documents "
             "in docs/work/2026-09-20-a-slug/: prd.md, design.md, implement.md."
         ))
 
