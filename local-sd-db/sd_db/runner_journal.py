@@ -89,7 +89,10 @@ def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRef
     read-only or a full lock directory is not a verdict about the file's
     owner.
     """
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as cause:
+        raise error(f"{noun} lock cannot be opened: {path}: {cause.strerror}") from cause
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     except OSError as cause:
@@ -154,7 +157,14 @@ def persist(database: Path, record: dict) -> Path:
     if not re.fullmatch(r"[a-f0-9]{32}", ident):
         raise RunnerRefused("invalid durable run identity")
     root = directory(database)
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The directory `validate_path` accepts and nothing else: a link here was
+    # followed and written through, and a file raised a bare `OSError`.
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as cause:
+        raise RunnerRefused(f"runner journal directory cannot be made: {root}: {cause.strerror}") from cause
+    if root.is_symlink() or not root.is_dir():
+        raise RunnerRefused(f"runner journal directory is not a directory: {root}")
     target = root / f"{ident}.json"
     with lock(root / f"{ident}.lock"):
         if target.exists():

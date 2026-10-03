@@ -302,8 +302,13 @@ class SessionRecord(unittest.TestCase):
 
     def test_start_session_cost_refuses_bad_numbers_and_unknown_provider(self):
         for kwargs in (dict(tokens_in=-1, tokens_out=0, usd=0), dict(tokens_in='10', tokens_out=0, usd=0), dict(tokens_in=0, tokens_out=0, usd=-0.1),
-                       dict(tokens_in=0, tokens_out=0, usd='free')):
-            with self.assertRaises(runner.RunnerRefused):
+                       dict(tokens_in=0, tokens_out=0, usd='free'),
+                       # Not finite: SQLite stores `nan` as NULL and `inf` as a cost no
+                       # sum can carry, and `float` of a huge `int` raised `OverflowError`
+                       # (sd:1219); a token count past SQLite's INTEGER did the same.
+                       dict(tokens_in=0, tokens_out=0, usd=float('nan')), dict(tokens_in=0, tokens_out=0, usd=float('inf')),
+                       dict(tokens_in=0, tokens_out=0, usd=10**400), dict(tokens_in=2**63, tokens_out=0, usd=0)):
+            with self.subTest(**{key: repr(value) for key, value in kwargs.items()}), self.assertRaises(runner.RunnerRefused):
                 runner.record_session_cost(self.db, self.run, provider='claude', bill='anthropic', **kwargs)
         with self.assertRaisesRegex(runner.RunnerRefused, "provider 'nobody' is not registered"):
             runner.record_session_cost(self.db, self.run, provider='nobody', bill='anthropic', tokens_in=None, tokens_out=None, usd=None)

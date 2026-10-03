@@ -250,6 +250,34 @@ class HardenedLock(unittest.TestCase):
         with runner_journal.lock(deeper):
             self.assertEqual(stat.S_IMODE(deeper.parent.stat().st_mode), 0o700)
 
+    def test_a_lock_directory_that_cannot_be_made_names_the_system_error(self):
+        """A file where the lock directory goes made `mkdir` raise a bare
+        `OSError` past the refusal every caller catches (sd:1219)."""
+        (self.root / "made").write_text("a file, not a directory\n")
+        with self.assertRaises(RunnerRefused) as refused:
+            with runner_journal.lock(self.root / "made" / "runner.lock"):
+                self.fail("locked under a file")
+        self.assertIn("runner lock cannot be opened", str(refused.exception))
+        self.assertIsInstance(refused.exception.__cause__, OSError)
+
+    def test_a_journal_directory_that_is_a_file_or_a_link_is_refused(self):
+        """`persist` made the journal directory with a bare `mkdir`: a file
+        there escaped as `FileExistsError`, and a link was followed and
+        written through, though `records` refuses that same link (sd:1219)."""
+        database = self.root / "sd.db"
+        record = {"id": "a" * 32}
+        journal = runner_journal.directory(database)
+        journal.write_text("a file, not a directory\n")
+        with self.assertRaisesRegex(RunnerRefused, "runner journal directory"):
+            runner_journal.persist(database, record)
+        journal.unlink()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        journal.symlink_to(elsewhere)
+        with self.assertRaisesRegex(RunnerRefused, "runner journal directory"):
+            runner_journal.persist(database, record)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
     def test_every_lock_in_both_packages_goes_through_the_one_opener(self):
         """Code, not prose: only the opener may reach fcntl, under any spelling.
 
