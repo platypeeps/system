@@ -82,7 +82,8 @@ $SYSTEM_TOOLS_CONFIG (default ~/.config/system); AWS_SETUP_ACCOUNTS_DIR
 names another folder. Start from local-aws-setup/accounts/example.env.example:
   ACCOUNT_ID     12-digit account id                         (required)
   LEVEL          readonly | operator | sandbox               (required)
-  ADMIN_PROFILE  profile with IAM admin rights in the account (required)
+  ADMIN_PROFILE  profile with IAM admin rights in the account (required by
+                 apply, keys, rotate and check)
   AGENT_USER     IAM user the agent runs as                  (default: agent)
   AGENT_PROFILE  CLI profile holding its key                 (default: agent-<name>)
   AGENT_REGION   region written to AGENT_PROFILE             (default: us-east-1)
@@ -121,12 +122,11 @@ validate_account() {
     readonly|operator|sandbox) ;;
     *) die "$ACCOUNT: LEVEL must be readonly, operator or sandbox: '$LEVEL'" ;;
   esac
-  [ -n "$ADMIN_PROFILE" ] || die "$ACCOUNT: ADMIN_PROFILE is required"
   # One profile cannot be both. `keys` and `rotate` write the agent key into
   # AGENT_PROFILE, so naming the admin profile there overwrites the very
   # credentials this script creates the key with, and every later run acts as
   # the agent -- with no admin profile left to undo it.
-  [ "$AGENT_PROFILE" != "$ADMIN_PROFILE" ] ||
+  [ -z "$ADMIN_PROFILE" ] || [ "$AGENT_PROFILE" != "$ADMIN_PROFILE" ] ||
     die "$ACCOUNT: AGENT_PROFILE and ADMIN_PROFILE are both '$ADMIN_PROFILE'; the agent key would overwrite the admin profile"
   case "$AGENT_USER$AGENT_PROFILE" in
     *[!A-Za-z0-9_.@+=,-]*) die "$ACCOUNT: invalid AGENT_USER or AGENT_PROFILE" ;;
@@ -142,6 +142,12 @@ validate_account() {
       die "$ACCOUNT: bucket name must be 3-63 characters: '$b'"
     fi
   done
+}
+
+# `accounts`, `render` and `simulate` never use the admin profile, so an
+# account file kept only to name an account may leave it out (sd:2472).
+require_admin_profile() {
+  [ -n "$ADMIN_PROFILE" ] || die "$ACCOUNT: ADMIN_PROFILE is required"
 }
 
 cmd_accounts() {
@@ -546,6 +552,7 @@ prune_policy_versions() {
 
 cmd_apply() {
   load_account "$1"
+  require_admin_profile
   require_aws
   arn="arn:aws:iam::$ACCOUNT_ID:policy/$POLICY_NAME"
   # A dry run prints the calls it would make and needs no session. Every
@@ -744,6 +751,7 @@ profile_is_agent() {
 
 cmd_keys() {
   load_account "$1"
+  require_admin_profile
   require_aws
   refuse_dry_run keys
   # An empty value is no key: a cleared profile has the field with nothing in
@@ -801,6 +809,7 @@ restore_old_profile() {
 
 cmd_rotate() {
   load_account "$1"
+  require_admin_profile
   require_aws
   refuse_dry_run rotate
   old_id=$(aws configure get aws_access_key_id --profile "$AGENT_PROFILE" 2>/dev/null) ||
@@ -949,6 +958,7 @@ cmd_simulate() {
 
 cmd_check() {
   load_account "$1"
+  require_admin_profile
   require_aws
   who=$(aws --profile "$AGENT_PROFILE" --region "$AGENT_REGION" \
     sts get-caller-identity --query Arn --output text) ||

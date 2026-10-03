@@ -344,6 +344,26 @@ class CommandCase(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("would overwrite the admin profile", done.stderr)
 
+    def test_a_mapping_only_account_lists_and_renders(self):
+        # A file kept only to name an account (sd:2472) has no admin profile;
+        # listing and rendering never use one.
+        box = self.sandbox(ADMIN_PROFILE="")
+        done = box.run("accounts")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(ACCOUNT_ID, done.stdout)
+        done = box.run("render", "x")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(box.calls(), [])
+
+    def test_the_admin_commands_still_require_the_admin_profile(self):
+        for command in ("apply", "keys", "rotate", "check"):
+            with self.subTest(command=command):
+                box = self.sandbox(ADMIN_PROFILE="")
+                done = box.run(command, "x")
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("x: ADMIN_PROFILE is required", done.stderr)
+                self.assertEqual(box.calls(), [])
+
     def test_a_dry_run_prints_the_region_it_would_pass(self):
         box = self.ready()
         box.rule("iam", "get-policy", exit=255)

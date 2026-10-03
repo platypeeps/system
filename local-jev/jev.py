@@ -53,6 +53,13 @@ except ImportError:                          # pragma: no cover - a copy alone
     # happen, and that starts at the import.
     jev_meter = None
 
+try:
+    import jev_trace
+except ImportError:                          # pragma: no cover - a copy alone
+    # The same rule as the recorder: a missing exporter is no export, never
+    # a judgment that did not happen.
+    jev_trace = None
+
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_UNCONFIGURED = 3
@@ -341,6 +348,11 @@ def write_event(event: dict, env) -> str:
     decline, a caller's own report of its old path -- is refused, degraded and
     recorded in exactly the same way.
     """
+    if jev_trace is not None:
+        try:
+            jev_trace.export(event, env)
+        except Exception:                    # pragma: no cover - belt and brace
+            pass
     if jev_meter is None:
         return ""
     try:
