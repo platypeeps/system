@@ -240,7 +240,7 @@ addEventListener('DOMContentLoaded', () => {
       cli: o => `sd writing publication-claim --piece ${P_(o).piece} --context-file context.json --payload-file payload.json\nsd writing publication-dispatch --piece ${P_(o).piece} --claim <claim> --context-file context.json --confirmed`,
       primary: o => !!P_(o) && publishState(P_(o)).ok,
       when: o => { const P = publishState(P_(o)); return P.ok || P.why.join(' '); },
-      consequence: () => 'Publishes to the destinations in sd-plugin.json; Mezmo is canonical. The publication claim records the URL. The dashboard sends nothing: copy the two lines.',
+      consequence: () => 'Publishes to the destinations in sd-plugin.json; the canonical destination comes first. The publication claim records the URL. The dashboard sends nothing: copy the two lines.',
       run: o => `Copy the two lines to publish #${P_(o).id}; the dashboard does not run them` },
   ];
   C.register(...CMDS);
