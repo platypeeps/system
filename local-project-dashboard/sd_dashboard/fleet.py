@@ -41,10 +41,11 @@ loses the race to the outer kill leaves the page with "python ran past its
 budget" and nothing about which checkout.
 
 The page passes its start as `<since>`, a `CLOCK_MONOTONIC` reading, the
-one clock both processes share. `sd_tile.main` counts from its own start
-instead, and so did this child until sd:2244: an interpreter that took a
-second to start under load spent that second of the margin before its
-deadline began, and the page's kill then arrived first.
+one clock both processes share. `sd_tile.main` and `research_screen.main`
+take the same reading since sd:2501, and this child counted from its own
+start until sd:2244: an interpreter that took a second to start under load
+spent that second of the margin before its deadline began, and the page's
+kill then arrived first.
 
 A checkout that does not answer is a row, not a refusal. The rest of the
 fleet was read by the other workers while that one waited, and dropping
