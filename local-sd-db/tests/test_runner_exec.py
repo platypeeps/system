@@ -413,14 +413,31 @@ class Palette(PaletteFixture):
 
                 def exited_first(pid, sig, error=error):
                     killpg(pid, sig)
+                    if isinstance(error, PermissionError):
+                        # Exited, not reaped: the leader is a zombie when EPERM answers.
+                        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+                    else:
+                        processes[0].wait()
                     raise error
 
                 with self.owned_process() as processes, self.expires_once_ready(value), \
                         patch.object(runner_exec.os, "killpg", side_effect=exited_first):
-                    with self.assertRaisesRegex(workflow.WorkflowError, "exceeded its time limit"):
+                    with self.assertRaisesRegex(workflow.WorkflowError, "exceeded its time limit; inspect"):
                         runner_exec.run_process(value, cwd=self.repo, home=self.root, timeout=1, own_group=True)
                     self.assertEqual(processes[0].returncode, -signal.SIGKILL)
                 self.assertIn(b"Command time limit exceeded", Path(value["output_path"]).read_bytes())
+
+    def test_time_limit_does_not_wait_on_a_live_group_that_refuses_the_kill(self):
+        """A live leader that changed credentials answers EPERM too; waiting on it outlasts the deadline."""
+        self.program.write_text(f"#!{sys.executable}\nimport os,time\nos.write(1,b'ready\\n')\ntime.sleep(60)\n")
+        value = self.prepare()["execution"]
+        started = time.monotonic()
+        with self.owned_process() as processes, self.expires_once_ready(value), \
+                patch.object(runner_exec.os, "killpg", side_effect=PermissionError(1, "Operation not permitted")):
+            with self.assertRaisesRegex(workflow.WorkflowError, "refused the kill"):
+                runner_exec.run_process(value, cwd=self.repo, home=self.root, timeout=1, own_group=True)
+            self.assertIsNone(processes[0].poll())
+        self.assertLess(time.monotonic() - started, GUARD_SECONDS)
 
     def test_lost_process_response_reconciles_durable_exit_without_replay(self):
         value = self.prepare()["execution"]
