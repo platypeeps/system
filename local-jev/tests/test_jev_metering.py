@@ -85,6 +85,21 @@ class TheCounts(MeteringCase):
         row = self.only()
         self.assertEqual((row["tokens_in"], row["tokens_out"]), (412, 9))
 
+    def test_a_registered_price_makes_the_row_cost_money(self):
+        """The ledger prices the row from `providers.yaml` beside the database
+        (sd:2358); TypeSafe's real price is the operator's to enter."""
+        (self.store.parent / "providers.yaml").write_text(
+            "bills:\n  usage: { cost: usage }\n"
+            "providers:\n  typesafe: { url: \"https://api.example.test/v1/systemone\",\n"
+            "    vendor: typesafe, bill: usage, roles: [], price: { in: 2, out: 10 } }\n"
+            "roles:\n  author: []\n", encoding="utf-8")
+        Stub.input_tokens = 500_000
+        Stub.output_tokens = 1_000
+        self.run_main(["noul", "is it?"])
+        row = self.only()
+        self.assertIsNotNone(row["usd"])
+        self.assertAlmostEqual(row["usd"], 1.0 + 0.01)
+
     def test_the_confidence_comes_out_of_the_response(self):
         Stub.confidence = 0.62
         self.run_main(["score", "how urgent?", "--levels", "low,high"])

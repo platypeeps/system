@@ -31,6 +31,7 @@ from unittest import mock
 from sd_dashboard import documents, documents_screen, server, v2
 
 from support import NOW, ScreenCase
+from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
@@ -137,6 +138,15 @@ class TheDocument(ScreenCase):
         rows = {r["file"]: r for r in documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)["documents"]}
         self.assertEqual(rows["overview.html"]["src"], "")
 
+    def test_a_unique_source_deeper_than_three_folders_is_found(self):
+        # The contract is one .md with the page's name anywhere in the checkout (sd:2417); skipped folders still hold none.
+        write(self.base / "lab" / "docs" / "dashboard" / "deep.html", page(title="Deep"), T0 + DAY)
+        write(self.base / "lab" / "a" / "b" / "c" / "d" / "Deep.md", "# deep\n", T0)
+        write(self.base / "lab" / "a" / "b" / "c" / "d" / "storage" / "deep.md", "# skipped\n", T0)
+        write(self.base / "lab" / "a" / "b" / "c" / "d" / ".cache" / "deep.md", "# skipped\n", T0)
+        rows = {r["file"]: r for r in documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)["documents"]}
+        self.assertEqual((rows["deep.html"]["src"], rows["deep.html"]["stale"]), ("a/b/c/d/Deep.md", False))
+
     def test_a_configured_source_that_is_not_a_file_is_not_a_source(self):
         # A missing src leaves the name match; a src that is a folder leaves the render state unknown, never fresh.
         write(self.base / "lab" / "research.conf.py",
@@ -171,7 +181,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Documents · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "documents.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "documents.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -220,7 +230,7 @@ class TheScript(ScreenCase):
         answer = answer or f"() => [200, {json.dumps(self.doc)}]"
         script = (STAND_IN + f"location.search = {json.dumps(search)}; location.origin = 'http://dash.example.test';\nvar ROW = {row};\n"
                   + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + shell_more + f"\nANSWER = {answer};\n" + DOCUMENTS_JS
+                  + SHELL + SHELL_MORE + shell_more + "\n" + READ_SHELL + f"\nANSWER = {answer};\n" + DOCUMENTS_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.page_attention = window.PAGE_ATTENTION;"
@@ -258,8 +268,9 @@ const r = cmd('document.render');
 R.render = [r.executes, r.cli(plan), r.when(plan), r.when(brief), r.primary(plan), r.primary(C.get('lab/overview.html'))];
 shellRun(r, plan); R.toast = lastToast().msg;""")
         self.assertIn("SD_SKIP_RENDER skips every render", out["R"]["skip"][0])
-        self.assertIn("sd:1904", out["R"]["skip"][0])
-        self.assertIn("without stopping its render", out["R"]["skip"][1])
+        self.assertIn("skip|<key>|<file>", out["R"]["skip"][0])
+        for reason in out["R"]["skip"]:
+            self.assertIn("without stopping its render", reason)
         self.assertEqual(out["R"]["render"], [False, "cd '~/repos/lab' && sd-research-kit render", True,
                                               "not a research repo: no source renders this page", True, False])
         self.assertIn("does not run it", out["R"]["toast"])
@@ -394,6 +405,57 @@ window.shell.reconcile = o => { if (o.current != null) return o.current;"""
         out = self.run_page("R.row = ROW; R.det = ELS.details.html;", row="'lab/overview.html'", shell_more=rewrites)
         self.assertEqual(out["R"]["row"], "lab/overview.html")
         self.assertIn("00-overview/Overview.md", out["R"]["det"])
+
+    def test_the_page_reads_through_the_shared_reader(self):
+        # read.js holds the generation, retirement and failure rules (sd:2490); the page keeps no fetch of its own.
+        self.assertIn("shell.read(", DOCUMENTS_JS)
+        self.assertNotIn("fetch(", DOCUMENTS_JS)
+        out = self.run_page("")
+        self.assertEqual(out["states"][0]["text"], "Reading the documents. Rows appear when /api/documents answers.")
+
+    def test_a_document_the_next_read_drops_runs_no_command_and_loses_the_selection(self):
+        out = self.run_page("""const first = ANSWER()[1];
+ANSWER = () => [200, { ...first, documents: first.documents.filter(d => d.file !== 'plan.html') }];
+await load();
+R.type = C.get('lab/plan.html').type; R.rows = ELS.rows.html; R.det = ELS.details.html; R.att = window.PAGE_ATTENTION;""",
+                            row="'lab/plan.html'")
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertNotIn("lab/plan.html", out["R"]["rows"])
+        self.assertNotIn("What we build next.", out["R"]["det"])
+        self.assertIn("Civic brief", out["R"]["det"])
+        self.assertEqual(out["R"]["att"], {"state": "ok", "n": 0, "what": "render-stale documents"})
+
+    def test_an_older_read_that_answers_last_changes_nothing(self):
+        out = self.run_page("""const first = ANSWER()[1], held = [];
+ANSWER = () => new Promise(ok => held.push(ok));
+const older = load(), newer = load();
+held[1]([200, { ...first, documents: first.documents.slice(0, 1) }]); await newer;
+held[0]([200, first]); await older;
+R.rows = ELS.rows.html; R.type = C.get('lab/plan.html').type;""")
+        self.assertEqual(re.findall(r'data-id="([^"]+)"', out["R"]["rows"]), ["civic/brief.html"])
+        self.assertEqual(out["R"]["type"], "not listed")
+
+    def test_a_failed_read_after_a_good_one_clears_the_rows_and_the_rail(self):
+        out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load();
+R.rows = ELS.rows.html; R.type = C.get('lab/plan.html').type; R.att = window.PAGE_ATTENTION; R.det = ELS.details.html;""",
+                            row="'lab/plan.html'")
+        self.assertEqual(re.findall(r'data-id="([^"]+)"', out["R"]["rows"]), [])
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertEqual(out["R"]["att"]["state"], "unknown")
+        self.assertIn("were not read", out["R"]["det"])
+        self.assertEqual(out["states"][-1]["kind"], "error")
+        self.assertIn("boom", out["states"][-1]["text"])
+
+    def test_a_page_number_that_is_not_a_whole_number_reads_as_page_one(self):
+        # ?page=1.5 sliced mid-page, pressed no pager button and stayed in the address (sd:2427).
+        brief = self.doc["documents"][0]
+        self.doc["documents"] += [{**brief, "file": f"n{i:02}.html", "href": f"/documents/civic/n{i:02}.html",
+                                   "modified": "2026-01-01T00:00:00Z"} for i in range(60)]
+        for search, page_no in (("?page=1.5", "1"), ("?page=0x2", "1"), ("?page=2", "2")):
+            out = self.run_page("R.pager = ELS.pager.html;", search=search)
+            current = re.findall(r'data-page="(\d+)"[^>]*aria-current="page"', out["R"]["pager"])
+            self.assertEqual(current, [page_no], search)
+            self.assertEqual(out["urls"][-1].get("page"), None if page_no == "1" else int(page_no), search)
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", DOCUMENTS_JS)

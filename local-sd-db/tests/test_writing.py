@@ -64,6 +64,32 @@ class SharedTransitions(WritingCase):
         }, who="operator")
         self.assertEqual(first, second)
 
+    def title_notes(self):
+        return [row[0] for row in self.db.execute(
+            "SELECT body FROM note WHERE item = ? AND body LIKE 'Title changed%' ORDER BY id", (self.item,))]
+
+    def test_a_title_change_reaches_the_row_the_file_and_the_history(self):
+        """sd:2368: the title was not editable metadata. A file-owned piece
+        carries it in the frontmatter, so the file and the row move together
+        and verification still matches them; the note keeps the old title."""
+        state = update_piece_metadata(self.db, self.item, {"title": "A # better: piece"}, who="operator")
+        self.assertEqual(state["item"]["title"], "A # better: piece")
+        self.assertEqual(state["writing"]["metadata"]["title"], "A # better: piece")
+        self.assertIn('title: "A # better: piece"\n', self.index.read_text())
+        self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
+        self.assertEqual(self.title_notes(), ["Title changed from 'A piece' to 'A # better: piece' by operator"])
+        # The same title again is no change and writes no note.
+        self.assertEqual(update_piece_metadata(self.db, self.item, {"title": "A # better: piece"}, who="operator"), state)
+        self.assertEqual(len(self.title_notes()), 1)
+
+    def test_a_blank_or_multiline_title_is_refused_and_writes_nothing(self):
+        before, source = piece_state(self.db, self.item), self.index.read_bytes()
+        for bad in ("", "   ", None, 7, "two\nlines", "tab\tinside"):
+            with self.subTest(title=bad), self.assertRaises(WorkflowError):
+                update_piece_metadata(self.db, self.item, {"title": bad}, who="operator")
+        self.assertEqual(piece_state(self.db, self.item), before)
+        self.assertEqual(self.index.read_bytes(), source)
+
     def test_gate_recording_requires_the_actual_reviewed_digest_and_deduplicates(self):
         before = piece_state(self.db, self.item)
         with self.assertRaisesRegex(WorkflowError, "reviewed draft"):
@@ -258,9 +284,12 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
         before = {path.relative_to(self.repo): path.read_bytes() for path in self.repo.rglob("*") if path.is_file()}
         update_piece_metadata(self.db, self.item, {"tip": "Approved tip", "review_urls": {"gdocs": "https://docs.google.com/document/d/review"},
                                                  "published_urls": {"blog": "https://blog.example.com/live"}}, who="operator")
+        renamed = update_piece_metadata(self.db, self.item, {"title": "Row-owned title"}, who="operator")
+        self.assertEqual(renamed["item"]["title"], "Row-owned title")
         change_stage(self.db, self.item, "published", confirmed=True, who="operator")
         after = {path.relative_to(self.repo): path.read_bytes() for path in self.repo.rglob("*") if path.is_file()}
         self.assertEqual(after, before)
+        self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
 
     def test_preview_writes_nothing_and_cutover_status_writes_only_database(self):
         before = self.index.read_bytes()

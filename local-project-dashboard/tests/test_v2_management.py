@@ -33,6 +33,7 @@ from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
+from test_v2_read import READ_SHELL
 
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "management.js").read_text(encoding="utf-8")
@@ -188,7 +189,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Management · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "management.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "management.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -243,8 +244,8 @@ class PageScript(ScreenCase):
         jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
         self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices())
 
-    def run_page(self, body, answer="null", doc=None, search=""):
-        script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA
+    def run_page(self, body, answer="null", doc=None, search="", extra=""):
+        script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA + READ_SHELL + extra
                   + f"\nconst DOC0 = {json.dumps(doc or self.doc)};\n"
                   + "const WRITE = " + answer + ";\n"
                   + f"location.search = {json.dumps(search)};\n"
@@ -466,6 +467,112 @@ await undo(); await flush(); R.toast = lastToast().msg;""",
         n, out = self.requeue_then("Object.assign(asg(), {status: 'queued', revision: 'queued-rev'});")
         self.assertEqual([(p, b) for p, b, _ in out["posts"]][1:], [(f"/api/runner/{n}/cancel", {"revision": "queued-rev"})])
         self.assertEqual(out["R"]["toast"], f"Requeue undone · #{n} Port the page")
+
+
+# A view's rows as the browser finds them: `#view-<v> tr[data-id]` and `#view-<v> tr[data-id="<id>"]` read the view's drawn
+# markup, so the page's first-row and row-still-drawn checks run as they do in a browser.
+ROWS_QUERY = r"""
+var pageQuery = document.querySelector;
+document.querySelector = sel => { const m = sel.match(/^#view-(\w+) tr\[data-id(?:="([^"]*)")?\]$/); if (!m) return pageQuery(sel);
+  const ids = [...(((ELS['view-' + m[1]] || {}).html) || '').matchAll(/<tr data-id="([^"]*)"/g)].map(x => x[1]);
+  const id = m[2] === undefined ? ids[0] : ids.find(x => x === m[2]); return id === undefined ? null : { dataset: { id } }; };
+"""
+# Every read of the document waits until the test answers it, newest first; a read started after a write sees the write.
+HELD = r"""
+const held = [], copy = d => JSON.parse(JSON.stringify(d));
+let wrote = false, after = copy(DOC0);
+ANSWER = (path, body) => { if (path !== '/api/management') { wrote = true; return [200, {}]; }
+  const doc = wrote ? after : copy(DOC0); return new Promise(ok => held.push(() => ok([200, doc]))); };
+const answerNewestFirst = async () => { while (held.length) { held.pop()(); await flush(); } };
+"""
+
+
+class TheSharedReader(PageScript):
+    """sd:2485: the page reads through shell.read (read.js, sd:2418), so it gets the reader's guards."""
+
+    WHAT = "repos, the lane, sessions, services and jobs"
+
+    def test_only_the_newest_read_draws(self):
+        out = self.run_page(HELD + """after.jobs = after.jobs.filter(j => j.name !== 'quiet'); wrote = true;
+load(); await flush(); wrote = false; load(); await flush();
+held[0](); await flush(); held[1](); await flush();
+R.sched = ELS['view-schedules'].html; R.type = C.get('cron:quiet').type;""")
+        self.assertIn(">quiet<", out["R"]["sched"], "the newest read lists quiet")
+        self.assertEqual(out["R"]["type"], "job")
+        out = self.run_page(HELD + """after.jobs = after.jobs.filter(j => j.name !== 'quiet');
+load(); await flush(); wrote = true; load(); await flush();
+held[1](); await flush(); held[0](); await flush();
+R.sched = ELS['view-schedules'].html; R.type = C.get('cron:quiet').type;""")
+        self.assertNotIn(">quiet<", out["R"]["sched"], "an older read answered last and drew over the newest")
+        self.assertEqual(out["R"]["type"], "not listed")
+
+    def test_a_row_the_read_no_longer_lists_runs_no_command(self):
+        out = self.run_page("""DOC0.jobs = DOC0.jobs.filter(j => j.name !== 'quiet'); await load(); await flush();
+R.obj = [C.get('cron:quiet').type, C.get('cron:quiet').label]; R.kept = C.get('cron:nightly-sync').type;""")
+        self.assertEqual(out["R"]["obj"], ["not listed", "quiet (no longer listed)"])
+        self.assertEqual(out["R"]["kept"], "job")
+
+    def test_a_selection_whose_row_is_gone_moves_to_the_first_row(self):
+        out = self.run_page("""selectRow('cron:quiet', false); R.before = ELS.details.html.includes('<h2>quiet</h2>');
+DOC0.jobs = DOC0.jobs.filter(j => j.name !== 'quiet'); await load(); await flush();
+R.details = ELS.details.html; R.row = ROW;""", search="?view=schedules", extra=ROWS_QUERY)
+        self.assertTrue(out["R"]["before"])
+        self.assertIn("<h2>nightly-sync</h2>", out["R"]["details"], "Details still shows a job the read no longer lists")
+        self.assertEqual(out["R"]["row"], "cron:nightly-sync")
+
+    def test_the_first_read_selects_the_linked_row_in_its_view_only(self):
+        """A guard: the link's row is the reader's first-read ask; a row of another view is not selected."""
+        out = self.run_page("R.details = ELS.details.html;", search="?view=schedules&row=cron:quiet",
+                            extra=ROWS_QUERY + "\nROW = 'cron:quiet';\n")
+        self.assertIn("<h2>quiet</h2>", out["R"]["details"])
+        out = self.run_page("R.details = ELS.details.html;", search="?view=schedules&row=wt:abandoned",
+                            extra=ROWS_QUERY + "\nROW = 'wt:abandoned';\n")
+        self.assertIn("<h2>nightly-sync</h2>", out["R"]["details"])
+
+    def test_a_reread_waits_for_the_read_its_write_overtook(self):
+        """The write barrier: a read in flight when the write lands answers with the old row, so it must not be the last."""
+        path = self.ids["checkout"]
+        out = self.run_page(HELD + f"""after.repos.find(r => r.path === {json.dumps(path)}).runner_merge = 'auto';
+load(); await flush();
+C.run(cmd('repo.runner-merge'), C.get('repo:{path}')); await flush();
+await answerNewestFirst();
+R.merge = C.get('repo:{path}').row.merge; R.toasts = OUT.toasts.map(t => t.msg);""")
+        self.assertEqual(out["R"]["merge"], "auto", "the page settled on a read that started before its write landed")
+        self.assertEqual(out["R"]["toasts"], [f"runner_merge auto · {path}"])
+
+    def test_a_failed_reread_after_a_write_keeps_the_rows_and_says_the_write_landed(self):
+        path = self.ids["checkout"]
+        out = self.run_page(f"""ANSWER = p => p === '/api/management' ? [500, {{error: 'database is busy'}}] : [200, {{}}];
+C.run(cmd('repo.runner-merge'), C.get('repo:{path}')); await flush();
+R.sched = ELS['view-schedules'].html; R.type = C.get('cron:quiet').type;""")
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertEqual(out["states"][-1]["text"],
+                         f"The change landed; {self.WHAT} were not read again: database is busy. Reload reads them.")
+        self.assertIn("nightly-sync", out["R"]["sched"])
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertEqual(out["toasts"][-1], [f"runner_merge auto · {path}", True])
+
+    def test_a_failed_load_clears_the_rows_and_their_commands(self):
+        out = self.run_page("""ANSWER = () => [500, {error: 'database is busy'}]; await load(); await flush();
+R.sched = ELS['view-schedules'].html; R.repos = ELS['view-repos'].html; R.type = C.get('cron:quiet').type;
+R.lamps = ['repos', 'lane', 'sessions', 'schedules'].map(v => ELS['sv-' + v].dataset.state);""")
+        self.assertEqual(out["states"][-1], {"kind": "error", "source": "/api/management",
+                                             "text": "Repos, the lane, sessions, services and jobs were not read: database is busy. Reload retries it."})
+        self.assertNotIn("nightly-sync", out["R"]["sched"])
+        self.assertIn("database is busy", out["R"]["sched"])
+        self.assertNotIn("busy</button>", out["R"]["repos"])
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertEqual(out["R"]["lamps"], ["unknown"] * 4)
+        self.assertEqual(out["attention"][-1]["state"], "unknown")
+
+
+class TheMinuteMarks(PageScript):
+    """sd:2385 (Copilot 65f0869637eb on PR 50): 'every N min' only when the marks are evenly spaced around the hour."""
+
+    def test_an_uneven_minute_list_names_its_marks(self):
+        out = self.run_page("""R.got = [human([{ Minute: 5 }, { Minute: 30 }]), human([{ Minute: 0 }, { Minute: 15 }, { Minute: 45 }]),
+  human([{ Minute: 30 }, { Minute: 0 }]), human([{ Minute: 0 }, { Minute: 20 }, { Minute: 40 }]), human([{ Minute: 10 }, { Minute: 10 }])];""")
+        self.assertEqual(out["R"]["got"], ["hourly at :05, :30", "hourly at :00, :15, :45", "every 30 min", "every 20 min", "hourly at :10"])
 
 
 class TheRegistration(Registers, unittest.TestCase):

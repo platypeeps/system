@@ -53,9 +53,14 @@ class MeterRefused(SdDbError):
         self.provider = provider
 
 
+#: SQLite's largest INTEGER. The driver raises `OverflowError` binding a
+#: larger `int`, which no caller catches as a refusal.
+SQLITE_MAX_INTEGER = 2**63 - 1
+
+
 def _is_window(window_minutes: object) -> bool:
-    """A vendor's window: a positive `int`, and not a `bool`."""
-    return type(window_minutes) is int and window_minutes > 0
+    """A vendor's window: a positive `int` SQLite can store, and not a `bool`."""
+    return type(window_minutes) is int and 0 < window_minutes <= SQLITE_MAX_INTEGER
 
 
 def sample(

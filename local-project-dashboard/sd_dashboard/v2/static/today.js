@@ -64,7 +64,9 @@
       const st = rows.map(r => STATE[r.band]);
       cell.dataset.state = st.includes('warning') ? 'warning' : st.includes('caution') ? 'caution' : 'ok';
       const n = k => rows.filter(r => r.kind === k).length;
-      put(val, s === 'jobs' ? html`<b>${rows.length}</b> failed`
+      // sd:2014: interrupted, unloaded and unknown jobs are rows too; the lamp counts the failed ones and names the rest.
+      const failed = rows.filter(r => r.state === 'failed').length, other = rows.length - failed;
+      put(val, s === 'jobs' ? html`<b>${failed}</b> failed${other ? html` · <span class="ph">${other} other</span>` : ''}`
         : s === 'prs' ? html`<span class="ph"><b>${rows.length}</b> awaiting</span> you`
         : s === 'sessions' ? html`<span class="ph"><b>${rows.reduce((a, r) => a + (+(r.id.split(':')[1]) || 0), 0)}</b> abandoned</span>`
         : html`<span class="ph"><b>${n('ahead')}</b> ahead</span> · <span class="ph">${n('dirty')} dirty</span>`);
@@ -78,7 +80,7 @@
     ROWS.forEach(r => {
       const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
       const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
-      C.put({ id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job', retry: r.retry, job: job && job[1],
+      C.put({ id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
               repo: pr && pr[1], number: pr && +pr[2] });
     });
   }
@@ -156,7 +158,8 @@
     C.register(
       // jobs.retry: one declaration with ui-design commands.md. The v2 page runs no command yet, so it says where Retry runs.
       { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed,
-        when: () => 'v2 runs no commands yet; Retry runs from Operations › Jobs, and the retry line is above',
+        when: o => !o.retry ? 'launchd refuses a retry for a job that is not failed or interrupted; the row says what to run'
+          : 'v2 runs no commands yet; Retry runs from Operations › Jobs, and the retry line is above',
         cli: o => o.retry },
       { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: o => !!o.repo,
         when: o => !!(o.repo && o.number) || 'the row names no pull request',

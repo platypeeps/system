@@ -368,8 +368,7 @@ class FailedJobs(ScreenCase):
 
     def test_a_failed_job_is_a_warning_row_ranked_above_every_other_source(self):
         jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None),
-                                                ("quiet", "idle", 0, None), ("busy", "running", None, None),
-                                                ("stopped", "interrupted", None, 9)])
+                                                ("quiet", "idle", 0, None), ("busy", "running", None, None)])
         stamp = datetime(2026, 9, 27, 2, 15).timestamp()
         jobs.log("nightly-sync", stamp)
         # The default seam: Now reads the same launchd backend Operations does.
@@ -388,6 +387,37 @@ class FailedJobs(ScreenCase):
         self.assertEqual(row["detail"], f"log 2026-09-27 02:15 · retry: {row['retry']}")
         self.assertEqual(now_screen.FAILED, 1)
         self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
+
+    def test_interrupted_unloaded_and_unknown_jobs_are_look_rows_below_a_failed_one(self):
+        # sd:2014. Operations lists these three under attention beside failed;
+        # Now showed failed only, so a job launchd will never run said nothing.
+        jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("stopped", "interrupted", None, 9),
+                                                ("parked", "unloaded", None, None), ("odd", "unknown", None, None),
+                                                ("quiet", "idle", 0, None), ("busy", "running", None, None)])
+        jobs.log("stopped", datetime(2026, 9, 27, 3, 0).timestamp())
+        rows = now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)["rows"]
+        self.assertEqual([(row["rank"], row["id"], row["band"], row.get("state")) for row in rows], [
+            (1, "job:nightly-sync:7", "broken", "failed"),
+            (2, "job:odd:unknown", "look", "unknown"),
+            (2, "job:parked:unloaded", "look", "unloaded"),
+            (2, "job:stopped:interrupted9", "look", "interrupted"),
+            (3, "ahead:pushy:1", "look", None),
+        ])
+        by_id = {row["id"]: row for row in rows}
+        stopped = by_id["job:stopped:interrupted9"]
+        self.assertEqual(stopped["what"], "stopped was interrupted by SIGKILL (9)")
+        self.assertEqual(stopped["detail"], "log 2026-09-27 03:00 · retry: launchctl kickstart fixture/stopped")
+        self.assertEqual(stopped["retry"], "launchctl kickstart fixture/stopped")
+        parked = by_id["job:parked:unloaded"]
+        self.assertEqual(parked["what"], "parked is installed but not loaded")
+        self.assertIn("local-cron-jobs/cron-jobs.sh install parked", parked["detail"])
+        # Operations refuses a retry for an unloaded or unknown job, so neither row offers one.
+        self.assertNotIn("retry", parked)
+        odd = by_id["job:odd:unknown"]
+        self.assertEqual(odd["what"], "odd: launchd state unknown")
+        self.assertIn("launchctl print fixture/odd", odd["detail"])
+        self.assertNotIn("retry", odd)
+        self.assertEqual(now_screen.ATTENTION, 2)
 
     def test_a_job_killed_for_cause_names_the_signal_and_a_missing_log_says_so(self):
         jobs = JobsBackend(self.tmp.name, jobs=[("crashy", "failed", None, 11)])

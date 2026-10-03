@@ -15,6 +15,7 @@
 #
 #   label|<key>|<label>              a found root, better named
 #   skip|<key>                       a found root the dashboard should not list
+#   skip|<key>|<file>                one file of a root, neither listed nor served
 #   root|<key>|<label>|<directory>   a root that is somewhere else entirely
 #
 # Reach for `label|` first. The derived label is the directory name and reads
@@ -40,6 +41,9 @@ label|mcp-research|MCP
 
 # A found root that should not be listed.
 skip|scratch-notes
+
+# One stale page of a root that stays listed. The file is its name in the root.
+skip|mcp-research|old-survey.html
 
 # A vault is not a checkout under ~/repos, so nothing finds it; a root| line
 # is the only way its docs/dashboard is served. `~` and spaces both survive.
