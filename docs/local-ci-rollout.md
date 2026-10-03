@@ -94,3 +94,11 @@ These needs showed up during the rollout:
 - **A writing repository's gate fetches the command pack** with the operator's git credentials.
 - **Load-sensitive tests can fail when several gates run at once.**
   A timeout under load is not a regression; rerun the gate once the machine is quieter.
+
+## Gate reuse by tree
+
+On 2026-10-03 this repository declared `.github/sd-gate-reuse.json` (sd:2594).
+The command pack's gate then keys a passing receipt by tree and merge base instead of head (sd:1912, pack #1327).
+A new head with the same tree, such as an `sd attribute` commit, reuses the pass for 6 hours.
+An audit at `eaaac2f` found that `make check` reads no commit message, trailer or range of this checkout.
+Every history read runs in a fixture repository; the reads at the root are `git ls-files` and `git grep`.
