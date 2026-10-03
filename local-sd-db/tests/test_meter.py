@@ -66,6 +66,55 @@ class MeterCase(unittest.TestCase):
         return "\n".join(self.db.iterdump())
 
 
+class TheDailyReadings(MeterCase):
+    """`reads.meter_days` and `reads.skill_use_days`, behind the dashboard's Metrics (sd:2119)."""
+
+    def test_each_day_keeps_its_newest_reading_per_provider_for_one_window(self):
+        from sd_db.reads import meter_days
+
+        for at, provider, window, pct in (("2026-09-15T08:00:00+00:00", "claude", 10080, 40),
+                                          ("2026-09-15T22:00:00+00:00", "claude", 10080, 55),
+                                          ("2026-09-15T23:00:00+00:00", "claude", 300, 99),
+                                          ("2026-09-16T09:00:00+00:00", "claude", 10080, 61),
+                                          ("2026-09-16T09:00:00+00:00", "mini", 10080, 12),
+                                          ("2026-09-13T09:00:00+00:00", "claude", 10080, 90)):
+            sample(self.db, provider=provider, window_minutes=window, used_percent=pct, now=at)
+        rows = meter_days(self.db, window_minutes=10080, since="2026-09-14T12:00:00Z")
+        self.assertEqual([(row["provider"], row["day"], row["used_percent"]) for row in rows],
+                         [("claude", "2026-09-15", 55), ("claude", "2026-09-16", 61), ("mini", "2026-09-16", 12)])
+
+    def test_skill_uses_count_per_day_and_skill_from_the_day_on(self):
+        from sd_db.reads import skill_use_days
+        from sd_db.writes import record_skill_use
+
+        for at, skill in (("2026-09-14T08:00:00+00:00", "sd-ship"), ("2026-09-15T08:00:00+00:00", "sd-ship"),
+                          ("2026-09-15T09:00:00+00:00", "sd-ship"), ("2026-09-15T09:30:00+00:00", "sd-review")):
+            record_skill_use(self.db, skill, surface="claude", timestamp=at)
+        rows = skill_use_days(self.db, since="2026-09-15T00:00:00Z")
+        self.assertEqual([(row["day"], row["skill"], row["uses"]) for row in rows],
+                         [("2026-09-15", "sd-review", 1), ("2026-09-15", "sd-ship", 2)])
+
+
+class TheStatusChangeNotes(MeterCase):
+    """`reads.status_change_notes`, behind the dashboard's Notes days (sd:2120)."""
+
+    def test_the_window_keeps_status_changes_only_and_its_end_is_open(self):
+        from sd_db.reads import status_change_notes
+        from sd_db.writes import add_note, create_item, transition
+
+        first = create_item(self.db, title="first", kind="task")
+        second = create_item(self.db, title="second", kind="task")
+        transition(self.db, first, "done", who="test")
+        add_note(self.db, first, kind="comment", body="not a status change")
+        stamps = {first: "2026-09-15T10:00:00Z", second: "2026-09-16T00:00:00Z"}
+        for item, at in stamps.items():
+            self.db.execute("UPDATE note SET timestamp = ? WHERE item = ?", (at, item))
+        self.db.commit()
+        rows = status_change_notes(self.db, since="2026-09-15T00:00:00Z", until="2026-09-16T00:00:00Z")
+        self.assertEqual([(row["item"], row["body"].split(" by ")[0], row["title"]) for row in rows],
+                         [(first, "opened as planning", "first"), (first, "planning -> done", "first")])
+
+
 class OneRowPerProviderPerWindow(MeterCase):
     def test_two_windows_for_one_provider_are_two_rows_at_one_moment(self):
         """Clause 15: one row per provider **per window**, so the two gauges

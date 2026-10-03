@@ -42,6 +42,13 @@ require_env() {
       exit 1
       ;;
   esac
+  # The value itself is a credential, so name the variable only.
+  case "$OTLP_EXPORT_AUTH" in
+    *change-me*)
+      echo "OTLP_EXPORT_AUTH still holds the .env.example placeholder; set the real header value." >&2
+      exit 1
+      ;;
+  esac
 }
 
 case "$1" in
@@ -72,6 +79,8 @@ case "$1" in
       [ -n "$val" ] || missing="$missing $v"
     done
     case "${OTLP_EXPORT_URL:-}" in *undefined*|*change-me*) missing="$missing OTLP_EXPORT_URL" ;; esac
+    # The .env.example key is a placeholder too: a copied example is not configured.
+    case "${OTLP_EXPORT_AUTH:-}" in *change-me*) missing="$missing OTLP_EXPORT_AUTH" ;; esac
     if [ -n "$missing" ]; then
       echo "local-opentelemetry-collector: SKIP — not configured on this machine"
       exit 3

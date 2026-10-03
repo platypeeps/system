@@ -61,6 +61,12 @@ cron jobs already assume. A pack that is not there is refused before the
 planning run starts, naming the path and the variable. Standing on the
 row's branch, or `plan/<slug>` for a row without one, the verb records that as the row's branch (pack sd:621).
 
+A run from the queue gets the runner's fixed environment: `HOME`, a bare
+`PATH`, and no `SD_PACK_ROOT`, `SD_PLAN_CLAUDE` or `SD_PLAN_PYTHON`. So
+`item` sources `<config>/sd-plan/.env` before anything else, and that file is
+where those three go for a queued run. Copy `.env.example` to start one; every
+value in it is optional.
+
 Registration comes before the commit. A refusal from `sd` fails the run with
 `sd`'s exit code and its stderr in the message, and leaves the documents on
 disk, uncommitted. That is what keeps a folder without a row off the remote:

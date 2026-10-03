@@ -619,6 +619,31 @@ class WhatTheNextNightPlans(NightlyCase):
                          done.stderr)
         self.assertIn(f"item {other} in {self.repo.resolve()} is held by a blocked run", done.stderr)
 
+    def another_roles_run(self, status):
+        """A run on the row under test that is not a planning run: a review, say."""
+        cursor = self.connection.execute(
+            "INSERT INTO assignment (item, role, status) VALUES (?, 'review', ?)",
+            (self.first, status))
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def test_a_row_held_by_another_roles_blocked_run_is_not_told_to_plan_again(self):
+        """Planning again does not settle a blocked review; the line names the run (sd:1181)."""
+        self.set_status(self.first_night(), "done")
+        self.another_roles_run("blocked")
+        done = self.second_night()
+        self.assertNotIn("plan it again", done.stderr)
+        self.assertIn(f"item {self.first} in {self.repo.resolve()} is held by a blocked review run",
+                      done.stderr)
+
+    def test_a_blocked_plan_run_is_named_when_another_roles_run_is_newer(self):
+        """The newest planning run decides, not the newest run of any role (sd:1181)."""
+        self.set_status(self.first_night(), "blocked")
+        self.another_roles_run("done")
+        done = self.second_night()
+        self.assertIn(f"item {self.first} in {self.repo.resolve()} is held by a blocked run; "
+                      "plan it again from the item's button", done.stderr)
+
     def test_an_empty_branch_is_asked_of_the_remote_as_its_plan_branch(self):
         """'' is no branch, as NULL is: the remote is asked about `plan/<slug>` (sd:806).
 
