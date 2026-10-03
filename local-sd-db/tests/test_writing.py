@@ -16,7 +16,7 @@ from sd_db.workflow import StaleItem, WorkflowError
 from sd_db.writing import (
     change_stage, cutover_pieces, cutover_preview, import_piece, list_pieces,
     piece_for_key, piece_state, preflight, record_gate, update_piece_metadata,
-    verify_pieces, readiness, recover_cutover, park_piece, checkout,
+    verify_pieces, readiness, recover_cutover, park_piece, checkout, piece_files,
 )
 
 
@@ -50,6 +50,26 @@ class WritingCase(unittest.TestCase):
     def cutover(self):
         preview = cutover_preview(self.db, str(self.repo))
         return cutover_pieces(self.db, str(self.repo), expected_fingerprint=preview["fingerprint"], who="operator")
+
+
+class PieceFiles(WritingCase):
+    def row(self):
+        return self.db.execute("SELECT * FROM item WHERE id = ?", (self.item,)).fetchone()
+
+    def test_each_file_gives_its_size_and_an_absent_one_none(self):
+        (self.folder / "fact-check.md").unlink()
+        found = piece_files(self.row())
+        self.assertEqual(sorted(found), ["adversarial.md", "fact-check.md", "index.md", "research.md"])
+        self.assertIsNone(found["fact-check.md"])
+        self.assertEqual(found["adversarial.md"]["bytes"], len("Full adversarial report.\n"))
+        self.assertRegex(found["index.md"]["mtime"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+
+    def test_a_report_linked_out_of_the_repository_is_not_listed(self):
+        outside = self.root / "outside.md"
+        outside.write_text("elsewhere\n")
+        (self.folder / "research.md").unlink()
+        (self.folder / "research.md").symlink_to(outside)
+        self.assertIsNone(piece_files(self.row())["research.md"])
 
 
 class SharedTransitions(WritingCase):
