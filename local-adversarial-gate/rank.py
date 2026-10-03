@@ -26,6 +26,7 @@ that variable switches it off, so that is an action and not an omission.
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -222,6 +223,10 @@ def ask_jev(jev, texts):
     for qid in texts:
         try:
             scores[qid] = float(answers[qid]["noul"])
+            # `float` reads NaN and Infinity, and JSON carries both; neither is
+            # a probability, and NaN sorts nowhere in particular.
+            if not (math.isfinite(scores[qid]) and 0.0 <= scores[qid] <= 1.0):
+                raise ValueError(scores[qid])
         except (KeyError, TypeError, ValueError):
             # Partial coverage is refused whole. Sorting the answered findings
             # and leaving the rest wherever they fall is an order no one chose.
@@ -290,6 +295,36 @@ def insert_note(lines):
     return lines[:at] + ([""] if at else []) + NOTE + gap + tail
 
 
+def replace_text(path, text) -> bool:
+    """Write `text` over `path` whole or not at all.
+
+    The gate result is the only copy of the review. Opening it with "w"
+    truncated it before the write, so an interruption or a full disk left an
+    empty or partial file where the documented fallback promises the
+    reviewer's own. A sibling temp file renamed over it keeps one or the
+    other, and keeps the original's mode.
+    """
+    folder = os.path.dirname(os.path.abspath(path))
+    handle, temp = tempfile.mkstemp(prefix=".rank.", dir=folder)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(temp, os.stat(path).st_mode & 0o7777)
+        os.replace(temp, path)
+    except BaseException as exc:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        if not isinstance(exc, OSError):
+            raise
+        warn(f"cannot write {path}: {exc}; the order is the reviewer's own")
+        return False
+    return True
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(add_help=True, description=__doc__)
     parser.add_argument("--in", dest="path", required=True,
@@ -306,8 +341,8 @@ def main(argv=None) -> int:
     ordered = rank_text(text, args.jev)
     if ordered is None:
         return 0
-    with open(args.path, "w", encoding="utf-8") as fh:
-        fh.write(ordered)
+    if not replace_text(args.path, ordered):
+        return 1
     sys.stderr.write(f"adversarial-gate: rank: {args.path} ordered by Jev; "
                      "no finding was removed\n")
     return 0
