@@ -7,21 +7,22 @@ item: sd:2418
 
 ## What each page does today
 
-The survey read every v2 page script on main and on the five open port branches.
+The survey read every v2 page script on main at e0abce9 (re-surveyed 2026-10-03,
+after the last five ports landed). No port pull request is open.
 
-| Page | Generation | Retirement | Selection clears | Failed read |
-| --- | --- | --- | --- | --- |
-| Today (main) | none | none | yes, via `shell.reconcile` | clears rows |
-| Tasks (main) | none for the page read; rereads coalesce | none | yes, via `reconcile` | keeps old rows live |
-| Management (main) | none | none | no | keeps old rows and objects live |
-| Home (main) | none | none | no; one load only | error state only |
-| Fleet Health (main) | yes | yes: `retire(keep)` | yes | clears everything |
-| Briefs (main) | yes | none | yes: `unselect()` | clears everything |
-| Activity (open) | yes | yes, as Health | yes | clears everything |
-| Reports (open) | none; a refresh races a reread | none | yes | keeps old rows |
-| Contributions (open) | yes | yes, in `adopt()` | yes | reread failure keeps rows |
-| Documents (open) | single load | none | once | error state only |
-| Research (open) | single load | none | yes | error state only |
+| Page | Generation | Retirement | Selection clears | Failed read | After a write |
+| --- | --- | --- | --- | --- | --- |
+| Today | none | none | yes, via `shell.reconcile` | clears rows | no writes |
+| Tasks | none for the page read | none | yes, via `reconcile` | keeps old rows live | coalesced reread with a write barrier (`wrote`) |
+| Management | none | none | no | keeps old rows and objects live | reads again; no barrier |
+| Home | none | none | no; one load only | error state only | no reread |
+| Fleet Health | yes | yes: `retire(keep)` | yes | clears everything | no writes |
+| Briefs | yes | none | yes: `unselect()` | clears everything | no writes |
+| Activity | yes | yes, as Health | yes | clears everything | `load()` per write; a failed one clears everything and says nothing landed |
+| Reports | yes | yes, as Health | yes | keeps old rows and objects live | shared `reload()`; no write barrier (PR 73 finding r4167523338, open) |
+| Contributions | yes | yes, in `adopt()` | yes | load: error only; reread: keeps rows and objects live | `reread(wrote)` per write; says "landed" only for a landed write |
+| Documents | none; one load | none | yes | error state only | no writes |
+| Research | none; one load | none | yes | error state only | no writes; per-project sources cached |
 
 Health and Activity are the reference. Their pattern has four parts:
 
@@ -37,7 +38,10 @@ Copilot's findings on PRs 64 to 73 have four shapes, and the reader removes each
 | Older answer draws last | #64 health, #69 activity, #71 briefs, #72 contributions | generation |
 | Command or pick on a gone row | #64 health, #69 activity, #72 contributions | retirement |
 | Rows or Details kept after an error, an empty answer or a hidden row | #69 (two), #71 briefs, #68 research | failure path and selection rule |
-| Write landed, reread failed, page said "not changed" | #72 (one fixed, one open) | the reread failure state |
+| Write landed, reread failed, page said "not changed" | #72 (two, both fixed) | the reread failure state |
+| A bulk write's shared reread started before the last write landed | #73 (open) | the write barrier in `reread()` |
+
+PR 73 adds one race (its refresh) and one stale-object finding (no retirement) to the rows above; both are fixed on main.
 
 ## A. The reader
 
@@ -73,7 +77,7 @@ const briefs = shell.read({
   none: 'Select a brief to see its note.',    // Details when nothing is selected
 });
 briefs.load();      // first read and each refresh
-briefs.reread();    // after a write; joins a read in flight
+briefs.reread();    // after a landed write; never answers with a read from before it
 ```
 
 `adopt` returns `{ objects, state }`. `state` is `null`, or a state for
@@ -100,8 +104,18 @@ reader refusal inside a 200 answer, as Briefs does.
 
 ### What `reread()` does
 
-`reread()` runs after a write. It joins a read already in flight; otherwise it
-starts one, numbered like `load()`.
+`reread()` runs after a write landed. It must never answer with a document read
+before that write landed, so it holds a write barrier, as Tasks' `reread` does:
+
+- A read queued and not yet started is joined.
+- A read in flight is joined only when no `reread()` was called after it started.
+- Otherwise one read is queued behind the one in flight, and later calls join it.
+
+The queued read is numbered like `load()` when it starts. A bulk run of N
+concurrent writes thus ends in at most two reads, and each write's `reread()`
+settles after a read that started once that write landed. This closes PR 73's
+open finding on Reports. A refused write calls `load()`, never `reread()`:
+only `reread()` may say the change landed.
 
 On success it behaves as `load()`. On failure it keeps the rows on screen and
 calls `commands.retire(new Set())`, so no command runs on them. It sets a partial
@@ -149,15 +163,40 @@ PAGE = Page(
 ```
 
 `Api` takes `path`, or `pattern` for a path with an id; `read` or `write`;
-and `query=False`. `read` gets one `Read` object with `connection`, `now` and
-the server's backends (`fleet`, `jobs`, `services`, `ports`). It returns a
-document, which is a 200, or `(status, document)`.
+and `query=False`. `read` gets one `Read` object with `connection`, `now`,
+`path`, `parameters` and the server's backends (`fleet`, `jobs`, `services`,
+`ports`). It returns a document, which is a 200, or `(status, document)`.
+
+The landed pages need each of these shapes:
+
+| Page | API routes it owns | Shape |
+| --- | --- | --- |
+| Briefs, Home, Documents | `/api/briefs`, `/api/home`, `/api/documents` | `path`, no connection |
+| Health, Management, Activity | `/api/health`, `/api/management`, `/api/activity` | `path` and backends (`fleet`, `ports`, `jobs`, `services`) |
+| Tasks | `/api/tasks`, `/api/tasks/<n>` | `path` and `pattern`; `(404, …)` for an id past the 64-bit bound |
+| Research | `/api/research`, `/api/research/<checkout>` | `path` and a `pattern` whose tail holds `/`; `(404, …)` for no checkout |
+| Reports | `/api/reports`, `/api/reports/clean` | `clean` takes `query=True`, checks `before` itself, and maps `WorkflowError` to 400 |
+| Contributions | `/api/contributions/page`; write `/api/contributions/task` | the one page-only write on main |
+| Today | none | `/api/now` stays in the chain: the classic Today's Now panel reads it too |
+
+Routes that v1 also reads or posts stay where they are: `/api/now`,
+`/api/contributions`, `/api/contributions/acknowledge`, `/api/reports/<n>/acknowledge`,
+`/api/jobs/…`, `/api/usage` and the rest of `action_route`.
+
+A `write` takes `action_route`'s contract: it gets the payload and the
+principal, and returns a callable on a write connection or raises `ValueError`.
+`action_route` asks the registry first. `do_POST` keeps its one preflight
+(origin, CSRF, body bound, no query) for every POST, so a registered write
+needs no check of its own.
 
 `Page` has two optional fields for an old screen:
 
 - `classic={"Reports (classic)": "/operations?area=reports"}` adds a palette entry.
 - `takes="/contributions"` serves the old screen at `/classic/contributions`,
-  because the new page takes its path.
+  because the new page takes its path. Today (`/`), Contributions and Documents take one on main.
+  The v1 navigation in `pages.py` stays as it is. It links Today and Documents
+  to the new pages and Contributions to `/classic/contributions`; this item does
+  not settle that difference.
 
 ### What reads the registry
 
@@ -213,6 +252,8 @@ section; only an edit of `GROUPS`, from the design source, can.
   the `required` tuple's v2 entries and the v2 part of `OLD_SCREENS`, because
   the registry test covers them.
 - `test_v2_today.py` loses the `window.SHELL_PAGES = {…}` literal.
+- `test_v2_briefs.py` loses `list(v2.SECTIONS)[:2] == ["Today", "Briefs"]`:
+  `SECTIONS` has no order, and the rail order is `GROUPS`.
 - Each page's own test asserts its registration:
   `v2.SECTIONS["Briefs"] == "/briefs"`, its API path and its `classic`.
 
@@ -221,8 +262,12 @@ section; only an edit of `GROUPS`, from the design source, can.
 The "Section or screen" table and the palette row go. In their place, one
 sentence names `dashboard.sh pages`. That verb prints the map from the
 registry: section, address, new or classic. The per-page paragraphs move into
-`local-project-dashboard/docs/pages/<name>.md`. A port then adds its own file
-there, and the README links the folder.
+`local-project-dashboard/docs/pages/<name>.md`, one file each for Today, Tasks,
+Home, Contributions, Briefs, Health, Research, Documents, Reports and Activity.
+Management has no README paragraph today, so it gets no file; writing one is
+not this item. A port then adds its own file there, and the README links the
+folder. The shell paragraphs (the default design, `/ui/`, `/v2/` redirects,
+the classic screens) stay in the README.
 
 ## Why not
 
@@ -234,15 +279,16 @@ there, and the README links the folder.
   page file that imports its screen on first use keeps load cheap and free of cycles.
 - **Order `SECTIONS` by `GROUPS`.** It shows nowhere, so ordering it adds code
   and a second place that knows the order.
-- **Rewrite the open ports onto the reader now.** Each open branch is in review
-  and has fixed its own findings. Rewriting them restarts their reviews. They
-  adopt the reader after they land, one follow-up each.
+- **Adopt the reader on every page here.** Each page has review tests for its
+  own guards. Moving nine pages at once makes one review of nine behaviour
+  changes. The operator chose one follow-up per page (D5 in `prd.md`).
 
 ## Risks
 
-- **The registry PR conflicts with every open port.** It deletes the lines they
-  edit. Mitigation: it lands after the five open ports, and no new port starts
-  until it lands. It then moves all landed pages in one mechanical step.
+- **The registry PR conflicts with any port in flight.** It deletes the lines
+  every port edits. Mitigation: the five ports it waited for have landed, and
+  no new port starts until it lands (D1). It moves all eleven pages in one
+  mechanical step.
 - **A retired object changes a page's command counts.** `commands.list` counts
   objects per type. `not listed` objects appear under their own type and count
   for no command. `commands.targets`, which the design source's checks read, skips them.
