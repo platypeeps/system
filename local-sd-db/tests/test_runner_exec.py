@@ -14,6 +14,7 @@ import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sd_db import runner, runner_controls, runner_exec, workflow
@@ -27,6 +28,10 @@ from sd_db.writes import (
     record_state,
     upsert_repo,
 )
+
+
+# How long a fixture command may run before the suite stops it itself.
+GUARD_SECONDS = 60
 
 
 class PaletteFixture(unittest.TestCase):
@@ -320,7 +325,8 @@ class Palette(PaletteFixture):
             process = popen(*args, **kwargs)
             processes.append(process)
             # Keep a regressed deadline from hanging the suite indefinitely.
-            guard = threading.Timer(5, lambda: process.kill() if process.poll() is None else None)
+            # Generous: a loaded gate can take seconds to start the interpreter.
+            guard = threading.Timer(GUARD_SECONDS, lambda: process.kill() if process.poll() is None else None)
             guard.start()
             guards.append(guard)
             return process
@@ -338,6 +344,22 @@ class Palette(PaletteFixture):
                 process.wait(timeout=2)
                 process.stdout.close()
 
+    @contextmanager
+    def expires_once_ready(self, value):
+        """The time limit passes when the command has written `ready`, not on the wall clock.
+
+        A gate at load 125 started the interpreter after a one-second limit had
+        already passed, so `ready` never reached the log (sd:2333). The limit is
+        arithmetic on `time.monotonic`, so the test owns that clock.
+        """
+        output = Path(value["output_path"])
+
+        def clock():
+            return float("inf") if b"ready\n" in output.read_bytes() else 0.0
+
+        with patch.object(runner_exec, "time", SimpleNamespace(monotonic=clock)):
+            yield
+
     def test_closed_output_still_waits_for_normal_exit_and_receipt(self):
         self.program.write_text(
             f"#!{sys.executable}\nimport os,sys,time\nos.write(1,b'ready\\n')\n"
@@ -345,7 +367,7 @@ class Palette(PaletteFixture):
         )
         value = self.prepare()["execution"]
         with self.owned_process() as processes:
-            result = runner_exec.run_process(value, cwd=self.repo, home=self.root, timeout=3)
+            result = runner_exec.run_process(value, cwd=self.repo, home=self.root, timeout=GUARD_SECONDS)
             self.assertEqual(result["exit_code"], 7)
             self.assertEqual(processes[0].returncode, 7)
             self.assertTrue(processes[0].stdout.closed)
@@ -359,21 +381,46 @@ class Palette(PaletteFixture):
                     self.program.write_text(
                         f"#!{sys.executable}\nimport os,time\nos.write(1,b'ready\\n')\n"
                         + ("os.close(1)\nos.close(2)\n" if close_output else "")
-                        + "time.sleep(2)\n"
+                        + "time.sleep(60)\n"
                     )
                     value = self.prepare()["execution"]
                     started = time.monotonic()
-                    with self.owned_process() as processes:
+                    with self.owned_process() as processes, self.expires_once_ready(value):
                         with self.assertRaisesRegex(workflow.WorkflowError, "exceeded its time limit"):
                             runner_exec.run_process(value, cwd=self.repo, home=self.root,
                                                     timeout=1, own_group=own_group)
-                        self.assertLess(time.monotonic() - started, 1.8)
+                        # The limit stopped it, not the guard and not the sleep.
+                        self.assertLess(time.monotonic() - started, GUARD_SECONDS)
                         self.assertEqual(processes[0].returncode, -signal.SIGKILL)
                         self.assertTrue(processes[0].stdout.closed)
                     output = Path(value["output_path"])
                     self.assertIn(b"ready\n", output.read_bytes())
                     self.assertIn(b"Command time limit exceeded", output.read_bytes())
                     self.assertFalse(output.with_suffix(".receipt.json").exists())
+
+    def test_time_limit_survives_a_group_that_exited_before_its_kill(self):
+        """sd:2338: the command can exit between `poll()` and `killpg`.
+
+        macOS answers EPERM for a group whose only member is an unreaped
+        leader, and ESRCH once it is reaped. Either means nothing is left to
+        kill, so the caller still gets the time limit, not an OSError.
+        """
+        killpg = os.killpg
+        for error in (PermissionError(1, "Operation not permitted"), ProcessLookupError(3, "No such process")):
+            with self.subTest(error=type(error).__name__):
+                self.program.write_text(f"#!{sys.executable}\nimport os,time\nos.write(1,b'ready\\n')\ntime.sleep(60)\n")
+                value = self.prepare()["execution"]
+
+                def exited_first(pid, sig, error=error):
+                    killpg(pid, sig)
+                    raise error
+
+                with self.owned_process() as processes, self.expires_once_ready(value), \
+                        patch.object(runner_exec.os, "killpg", side_effect=exited_first):
+                    with self.assertRaisesRegex(workflow.WorkflowError, "exceeded its time limit"):
+                        runner_exec.run_process(value, cwd=self.repo, home=self.root, timeout=1, own_group=True)
+                    self.assertEqual(processes[0].returncode, -signal.SIGKILL)
+                self.assertIn(b"Command time limit exceeded", Path(value["output_path"]).read_bytes())
 
     def test_lost_process_response_reconciles_durable_exit_without_replay(self):
         value = self.prepare()["execution"]
