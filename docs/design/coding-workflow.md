@@ -71,7 +71,8 @@ only through `deliver_associated_work`, which takes a reason, checks the same
 ancestry and the `Item:` trailer, and marks the receipt as after the fact. Once
 the item is done, re-delivering with a matching outcome is a no-op, and
 re-delivering with a different one is refused rather than silently
-reclassified.
+reclassified. A task or followup cancels through the same `cancel_work`,
+called with `task_guard` (sd:1005); its receipt drops if the task reopens.
 
 ## The gates, in the order they run
 
@@ -96,10 +97,12 @@ macOS-only suites on a Mac. The preflight runs once, before any leg:
 1. `sd-docs-lint`, from the repository root with no `--work-dir`
 2. `tests/test_citations.py`
 3. `tests/test_jev_contract.py`
-4. a guard that enumerates `*/tests/test_*.py` from the filesystem and fails
+4. `tests/test_product_name.py`, which fails naming each tracked line outside
+   a `mezmo-*` folder that names the product
+5. a guard that enumerates `*/tests/test_*.py` from the filesystem and fails
    naming any folder no `run_suite` line names
 
-That fourth one closes a specific failure: a suite that exists but was never
+The guard closes a specific failure: a suite that exists but was never
 wired into a leg stays silently green. The guard reads the filesystem rather than
 a list, so it cannot drift behind the tree.
 

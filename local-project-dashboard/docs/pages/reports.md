@@ -13,8 +13,12 @@ the file no family lamp is drawn and every job is listed under "Other jobs".
 A family lamp follows each job's own last scheduled run before today, however
 rare; a job whose last scheduled run the log does not hold makes it unknown.
 Acknowledge posts v1's route with the report's revision. It is off while an
-open followup holds the report. It asks first and has no Undo: sd-db has no
-verb that reopens a report. Select clean reads `GET /api/reports/clean?before=<date>`,
+open followup holds the report. Its Undo posts `/api/reports/<n>/reopen` with
+the revision the acknowledge answered; `reporting.reopen` moves the report back
+to the status it was acknowledged from (sd:2395). The page reads
+`/api/reports` through the shared reader, `read.js` (sd:2487). The Job filter
+lists every job the reading names, with or without a report (sd:2430).
+Select clean reads `GET /api/reports/clean?before=<date>`,
 v1's preview, and the bulk bar acknowledges the picked reports one by one.
 Retry posts the job route, as Management does. No status mail is read: the
 dashboard holds no message store. The old screen stays in the palette as

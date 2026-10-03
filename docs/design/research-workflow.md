@@ -182,8 +182,11 @@ repository, shared with the writing pack.
 
 ```sh
 adversarial-gate render --lens research-brief   # the focus text
-adversarial-gate run                            # the whole scripted pass
+adversarial-gate run --lens research-brief \
+    --repo <checkout> --out <result.md>          # the whole scripted pass
 ```
+
+`run` refuses to start without `--lens`, `--repo` and `--out`.
 
 ## The dependency runs both ways
 

@@ -31,6 +31,7 @@ from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
+from test_v2_read import READ_SHELL
 
 V2 = Path(v2.__file__).resolve().parent
 HOME_JS = (V2 / "static" / "home.js").read_text(encoding="utf-8")
@@ -116,7 +117,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Home · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "home.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "read.js", "home.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -153,7 +154,12 @@ document.documentElement = { setAttribute(k, v) { ROOT_ATTRS[k] = v; }, removeAt
 function setInterval() { return 0; }
 """
 SHELL_MORE = r"""
-window.shell.row = () => null; window.shell.closePane = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
+window.shell.row = () => new URLSearchParams(location.search).get('row'); window.shell.closePane = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
+OUT.panes = []; window.shell.openPane = t => OUT.panes.push(t);
+"""
+# The reader as the page gets it, with each spec the page hands it recorded.
+READ_SPY = r"""
+{ const real = window.shell.read; OUT.reads = []; window.shell.read = spec => { OUT.reads.push([spec.source, spec.what]); return real(spec); }; }
 """
 
 
@@ -167,7 +173,7 @@ class TheScript(ScreenCase):
     def run_page(self, body, answer=None, search=""):
         answer = answer or f"() => [200, {json.dumps(self.doc)}]"
         script = (STAND_IN + ROOT + f"location.search = {json.dumps(search)};\n" + KIOSK_JS + "\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + f"\nANSWER = {answer};\n" + HOME_JS
+                  + SHELL + SHELL_MORE + READ_SHELL + READ_SPY + f"\nANSWER = {answer};\n" + HOME_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.root = ROOT_ATTRS; OUT.attention = window.PAGE_ATTENTION;"
@@ -271,6 +277,36 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
         # A page-level j/k handler is drift (the shell owns them through PAGE_LIST).
         self.assertNotRegex(HOME_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", HOME_JS)
+
+
+
+class TheReader(TheScript):
+    """sd:2486: Home reads /api/home through shell.read (read.js, sd:2418). Home reads once and has no refresh, so the
+    reader's generation and retirement have nothing to race yet; what it changes is who reads, the failed read and ?row=."""
+
+    def test_the_page_reads_through_the_shared_reader(self):
+        out = self.run_page("")
+        self.assertEqual(out["reads"], [["/api/home", "the tiles"]])
+        self.assertEqual(out["gets"], ["/api/home"])
+        self.assertNotIn("async function getJSON", HOME_JS)
+
+    def test_a_failed_read_says_so_and_shows_no_tile(self):
+        out = self.run_page("R.groups = ELS.groups.html; R.det = ELS.details.html; R.sub = ELS.subhead.html;", answer="() => [500, { error: 'boom' }]")
+        self.assertNotIn("· HA read", out["R"]["sub"] or "", "a failed read claimed Home Assistant was read")
+        self.assertEqual(out["states"][-1], {"kind": "error", "text": "The tiles were not read: boom. Reload retries it.", "source": "/api/home"})
+        self.assertEqual(out["R"]["groups"], "")
+        self.assertIn("Select a tile", out["R"]["det"])
+
+    def test_the_linked_tile_is_selected_and_opened_and_an_unlisted_one_is_not(self):
+        """A guard: ?row= selected its tile before the reader; it still does, and only for a listed tile outside the wall display."""
+        out = self.run_page("R.det = ELS.details.html;", search="?row=lock.front_door")
+        self.assertIn("<code>lock.front_door</code>", out["R"]["det"])
+        self.assertEqual(out["panes"], ["tab-details"])
+        out = self.run_page("R.det = ELS.details.html;", search="?row=lock.back_door")
+        self.assertIn("Select a tile", out["R"]["det"])
+        self.assertEqual(out["panes"], [])
+        out = self.run_page("R.det = ELS.details.html;", search="?kiosk=1&row=lock.front_door")
+        self.assertNotIn("lock.front_door", out["R"]["det"])
 
 
 class TheRegistration(Registers, unittest.TestCase):

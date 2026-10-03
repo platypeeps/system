@@ -39,6 +39,31 @@ def _work_guard(connection: sqlite3.Connection, row: dict) -> str:
     return ""
 
 
+#: The task kinds `task_guard` admits (sd:1005). `personal` is left out: a
+#: personal item is the operator's own list and has nothing to supersede.
+CANCELLABLE_TASK_KINDS = ("task", "followup")
+
+
+def task_guard(connection: sqlite3.Connection, row: dict) -> str:
+    """The guard a task or followup cancel passes to `cancel_work` (sd:1005).
+
+    A recurring task is refused: `change_status` spawns its next occurrence
+    on `done` and a cancel does not, so a cancel would end the series
+    silently. Clear the recurrence first, or complete it.
+    """
+    if row["kind"] not in CANCELLABLE_TASK_KINDS:
+        return "this operation is for task and followup items; work uses work controls"
+    if row["recurrence"] is not None:
+        return "a recurring task cannot be cancelled; clear its recurrence first, or complete it"
+    active = connection.execute(
+        "SELECT id FROM assignment WHERE item = ? AND status IN ('queued', 'running', 'ending') LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+    if active:
+        return f"item {row['id']} has queued, running or ending assignment {active['id']}"
+    return ""
+
+
 def work_controls(connection: sqlite3.Connection, item: int) -> dict:
     """Render the same availability that the mutation checks under its lock."""
     row = item_state(connection, item)["item"]
@@ -47,9 +72,9 @@ def work_controls(connection: sqlite3.Connection, item: int) -> dict:
             "deliver": not reason and row["status"] != "done", "reason": reason}
 
 
-def _work(connection: sqlite3.Connection, item: int, expected_revision: str | None) -> dict:
+def _work(connection: sqlite3.Connection, item: int, expected_revision: str | None, guard=_work_guard) -> dict:
     state = _checked_state(connection, item, expected_revision)
-    reason = _work_guard(connection, state["item"])
+    reason = guard(connection, state["item"])
     if reason:
         raise WorkflowError(reason)
     return state
@@ -134,12 +159,15 @@ def completion_record(row) -> dict | None:
     """
     try:
         value = _fields(row["fields"]).get("completion")
-        if not isinstance(value, dict) or row["kind"] != "work" or row["status"] != "done":
+        # A task or followup carries a cancel receipt only, and may have no
+        # repository (sd:1005); delivery stays work's alone.
+        task = row["kind"] in CANCELLABLE_TASK_KINDS and isinstance(value, dict) and value.get("outcome") == "cancelled"
+        if not isinstance(value, dict) or (row["kind"] != "work" and not task) or row["status"] != "done":
             return None
         if (type(value.get("item")) is not int or value["item"] != row["id"]
                 or not paths.same_key(value.get("repo"), row["repo"])):
             return None
-        if not row["repo"] or _moment(value.get("at")) is None or not isinstance(value.get("who"), str) or not value["who"].strip():
+        if (not row["repo"] and not task) or _moment(value.get("at")) is None or not isinstance(value.get("who"), str) or not value["who"].strip():
             return None
         if value.get("outcome") == "cancelled":
             return value if isinstance(value.get("reason"), str) and value["reason"].strip() and row["shipped_at"] is None else None
@@ -187,20 +215,25 @@ def relink_artifact(
 
 def cancel_work(
     connection: sqlite3.Connection, item: int, *, reason: str, who: str,
-    expected_revision: str | None = None,
+    expected_revision: str | None = None, guard=_work_guard,
 ) -> dict:
-    """Explicitly cancel local work without pretending it shipped."""
+    """Explicitly cancel an item without pretending it shipped.
+
+    The caller names the guard (sd:1005): the work guard, the default, for
+    `sd work cancel` and the dashboard's work panel; `task_guard` for a task
+    or followup. The receipt and the `done` transition are the same for both.
+    """
     who = _text(who, "who")
     reason = _text(reason, "reason")
     with transaction(connection):
-        state = _work(connection, item, expected_revision)
+        state = _work(connection, item, expected_revision, guard)
         row = state["item"]
         fields = _fields(row["fields"])
         previous = completion_record(row) or {}
         if row["status"] == "done":
             if isinstance(previous, dict) and previous.get("outcome") == "cancelled":
                 return state
-            raise WorkflowError("completed work cannot be reclassified as cancelled")
+            raise WorkflowError(f"completed {row['kind']} cannot be reclassified as cancelled")
         fields["completion"] = {
             "outcome": "cancelled", "item": item, "repo": row["repo"],
             "at": current_time(), "who": who, "reason": reason,

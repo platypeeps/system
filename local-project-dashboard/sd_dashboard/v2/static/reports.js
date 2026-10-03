@@ -2,6 +2,8 @@
 // reference is marked "build:". The rows are /api/reports (reports_screen.document), never sample data: the newest 200
 // database reports, the scheduled jobs, each job's run cadence from its log, and the job families the config folder names.
 // A command that executes posts to a route server.action_route answers, and its toast comes after the write lands.
+// The page reads /api/reports through the shell's reader (read.js, sd:2487), which holds the generation, retirement and
+// failure rules; Acknowledge's Undo posts the reopen route with the revision the acknowledge answered (sd:2395).
 const { html, put, plural } = window.markup;
 const G = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so byId(), backticks and \ stay literal
@@ -9,7 +11,7 @@ const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg
 const CRON = '~/repos/system/local-cron-jobs/cron-jobs.sh';
 const byId = id => document.getElementById(id);
 
-// ---------- Data (build): /api/reports, read on load and after each write ----------
+// ---------- Data (build): /api/reports, read through shell.read on load and after each write ----------
 let DOC = null, READ = '', DAYS = [], ROWS = [], JOBS = {}, CAD = {}, FAMILIES = [], FAM_OF = {}, byJob = {};
 const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
 async function post(path, body) {
@@ -18,6 +20,7 @@ async function post(path, body) {
   if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; throw e; }
   return out;
 }
+// Select clean's preview only; the page's document comes through the reader.
 async function getJSON(path) {
   const r = await fetch(path, { headers: { Accept: 'application/json' } });
   const out = await r.json().catch(() => ({}));
@@ -110,7 +113,7 @@ function lamps() {
   const other = ROWS.filter(r => r.source.source !== 'cron-report').length;
   out.push(html`<li><div class="cell" data-state="unknown"><span class="lbl">Runner &amp; review${I('git-pull-request')}</span><span class="val"><span class="ph">${other ? html`<b>${other}</b> other reports` : 'no reports'}</span> <span class="ph">stored</span></span></div></li>`);
   out.push(html`<li><div class="cell" data-state="unknown"><span class="lbl">HTML reports${I('file-text')}</span><span class="val">${DOC.html == null ? html`<span class="ph">not read</span>` : html`<span class="ph"><b>${DOC.html}</b> folders</span>`} · <span class="ph">not indexed</span></span></div></li>`);
-  out.push(html`<li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val"><span class="ph"><b>${READ.slice(11, 16)}</b> UTC</span> · <span class="ph">refresh</span></span></button></li>`);
+  out.push(html`<li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val"><span class="ph">${READ ? html`<b>${READ.slice(11, 16)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span></span></button></li>`);
   put(byId('annunciator'), html`${out}`);
 }
 // The shell's state slot (design.md § State slot). build: it names every source that was not read, and status mail.
@@ -121,7 +124,7 @@ function pageState() {
   if (failed.length) parts.push(`Not read: ${failed.join(', ')}.`);
   if (fam.state === 'missing') parts.push(`No family list: copy project-dashboard/report-families.conf.example to ${fam.source}.`);
   else if (fam.problems?.length) parts.push(`${fam.source}: ${fam.problems.join('; ')}.`);
-  window.shell.state({ kind: 'partial', text: parts.join(' '), source: `/api/reports · ${READ.slice(0, 16).replace('T', ' ')} UTC` });
+  return { kind: 'partial', text: parts.join(' '), source: `/api/reports · ${READ.slice(0, 16).replace('T', ' ')} UTC` };
 }
 
 // Cadence table. build: a job no family names is listed under "Other jobs", so no installed job is hidden.
@@ -161,7 +164,9 @@ byId('cad-body').addEventListener('click', e => { const tr = e.target.closest('t
 const F = { job: '', kind: '', status: '', day: '', act: false, fam: '', q: '', clean: '' };
 let picks = new Set(), days = [];
 function fillFilters() {
-  const jobs = [...new Set(ROWS.map(r => r.job))].sort();
+  // Every job the reading names, not only jobs with a report row: a cadence row sets this filter, and readURL takes ?job=
+  // only when an option has it (sd:2430). A job with no report shows "Nothing matches".
+  const jobs = [...new Set([...ROWS.map(r => r.job), ...Object.keys(JOBS), ...Object.keys(CAD)])].sort();
   put(byId('f-job'), html`<option value="">All jobs</option>${jobs.map(j => html`<option>${j}</option>`)}`);
   days = [...new Set(ROWS.map(r => r.at.slice(0, 10)))].sort().reverse();
   put(byId('f-day'), html`<option value="">Any day</option>${days.map(d => html`<option value="${d}">${new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</option>`)}`);
@@ -198,8 +203,10 @@ function stCell(r) {
 }
 // Rail badge (shell.js): the loudest state on this page and how many rows carry it.
 const pageAttention = (xs, what) => { const w = xs.filter(s => s === 'warning').length, c = xs.filter(s => s === 'caution').length; window.PAGE_ATTENTION = { state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: what[w ? 'warning' : 'caution'] }; window.shell?.attention?.(); };
-function renderRows() {
-  pageAttention(ROWS.map(r => r.s), { warning: 'reports want you', caution: 'status mails flagged' });
+// read: the reader draws, and its settle picks the selection, so no reconcile runs here.
+function renderRows(read) {
+  if (!DOC.reports) { window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'reports not read' }; window.shell?.attention?.(); }
+  else pageAttention(ROWS.map(r => r.s), { warning: 'reports want you', caution: 'status mails flagged' });
   shown = ROWS.filter(matches);
   const pages = Math.max(1, Math.ceil(shown.length / PAGE)); page = Math.min(page, pages - 1);
   if (started) writeURL();
@@ -215,7 +222,7 @@ function renderRows() {
   // A filter or a page change that drops the selected report from the slice moves the selection to a row on screen (sd:2306).
   // With no row on screen, Details clears too, so its buttons never act on a report the list does not show.
   // A filter that clears it leaves cleared set, so the next render with rows selects the first one again.
-  if (started && (sel != null || cleared)) window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: sel, select: id => { cleared = false; select(id, false); },
+  if (!read && started && (sel != null || cleared)) window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: sel, select: id => { cleared = false; select(id, false); },
     clear: clearDetails });
   const dbOpen = ROWS.filter(r => r.kind === 'db' && r.open);
   // build: no flagged-mail count; status mail is not read.
@@ -240,7 +247,10 @@ const norm = t => String(t || '').replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+-]\d{2}
 const details = byId('details');
 let sel = null;
 let cleared = false; // set while a filter shows no report
-function clearDetails() { sel = null; cleared = true; put(details, html`<p class="why">No report selected · none is visible under this filter.</p>`); }
+function clearDetails() {
+  sel = null; cleared = true;
+  put(details, html`<p class="why">${DOC?.reports ? 'No report selected · none is visible under this filter.' : 'The reports were not read, so nothing is selected.'}</p>`);
+}
 function show(id) {
   const r = ROWS.find(x => x.id === id); if (!r) return;
   sel = id;
@@ -372,34 +382,31 @@ window.PAGE_COMMANDS = [
 // Each row is an object; each command is declared once and the shell renders row, menu, Details and palette.
 const logOf = o => /\.log$/.test(o.source.src || '');
 const capWhy = (o, action, fallback) => { const c = o.caps?.[action]; return !c ? fallback : c.allowed || c.reason || fallback; };
-// The shell's object map only grows and keeps its picks, so each accepted reading retires what it no longer lists, as
-// Health does: the pick is dropped and the object becomes a type no command is on, so the bulk bar cannot acknowledge a
-// report or retry a job from a stale reading.
-let putIds = new Set();
-function retire(keep) {
-  const C = window.shell.commands;
-  [...picks].filter(id => !keep.has(id)).forEach(id => C.pick(id));
-  putIds.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
-  putIds = keep;
+// The reader (read.js) retires what a reading no longer lists: the pick is dropped and the object becomes a type no command
+// is on, so the bulk bar cannot acknowledge a report or retry a job from a stale reading.
+function objects() {
+  return [...ROWS.map(r => Object.assign(r, { type: r.kind === 'db' ? 'report' : 'status mail', label: r.what })),
+    // Each scheduled job is its own object; Retry acts on the job, not on the report (commands.md, one declaration per command).
+    // build: the job is operations.inventory's, as Management puts it, with the revision and capability Retry posts and reads.
+    ...Object.values(JOBS).map(j => ({ id: 'job:' + j.name, type: 'job', label: j.name, job: j.name, service: j.service,
+      failed: !!j.capabilities?.retry?.allowed, exit: j.last_exit, revision: j.revision, caps: j.capabilities || {} }))];
 }
-function putObjects() {
-  const C = window.shell.commands;
-  retire(new Set([...ROWS.map(r => r.id), ...Object.keys(JOBS).map(name => 'job:' + name)]));
-  ROWS.forEach(r => C.put(Object.assign(r, { type: r.kind === 'db' ? 'report' : 'status mail', label: r.what })));
-  // Each scheduled job is its own object; Retry acts on the job, not on the report (commands.md, one declaration per command).
-  // build: the job is operations.inventory's, as Management puts it, with the revision and capability Retry posts and reads.
-  Object.values(JOBS).forEach(j => C.put({ id: 'job:' + j.name, type: 'job', label: j.name, job: j.name, service: j.service,
-    failed: !!j.capabilities?.retry?.allowed, exit: j.last_exit, revision: j.revision, caps: j.capabilities || {} }));
-}
-// One read after a group of writes: each write waits for the reading that follows it.
-let reading = null;
-const reload = () => reading ||= load().finally(() => { reading = null; });
-async function acknowledge(o) {
-  try { await post(`/api/reports/${o.n}/acknowledge`, { revision: o.source.revision }); }
-  catch (err) { if (err.stale) reload(); throw err; }
+// A write that landed rereads (the reader shares one read among a group of writes); a refused one loads, so the page never
+// says a change landed that did not.
+let reader = null;
+const load = () => reader.load(), reload = () => reader.reread();
+async function write(path, body) {
+  let out;
+  try { out = await post(path, body); } catch (err) { if (err.stale) load(); throw err; }
   await reload();
-  return `Acknowledged · #${o.n}. No Undo: sd-db has no verb that reopens a report`;
+  return out;
 }
+// The acknowledge answers the report's new revision; the Undo reopens under it, so a report changed since is refused (sd:2395).
+async function acknowledge(o) {
+  const out = await write(`/api/reports/${o.n}/acknowledge`, { revision: o.source.revision });
+  return { text: `Acknowledged · #${o.n}`, revision: out.revision };
+}
+const reopen = (o, answered) => write(`/api/reports/${o.n}/reopen`, { revision: answered.revision }).then(() => true);
 function registerCommands() {
   const C = window.shell.commands;
   const task = on => ({ id: `${on}.task`, on, label: 'Make task', key: 'k', risk: 'safe', journal: () => 'new', cli: o => `sd task add ${shq(o.label)}`, run: o => { window.shell.capture(o, '', `${on}.task`); return null; } }); // the filed task is the write
@@ -408,13 +415,12 @@ function registerCommands() {
   C.register(
     // build: Acknowledge posts /api/reports/<n>/acknowledge with the report's revision, the route v1's form posts. It is off,
     // with the library's reason, for a report an open followup holds or whose fields cannot be read.
-    // build: risk 'confirm', not the design's 'undo' (operator ruling, sd:2121). sd-db has no verb that reopens a report,
-    // so the shell asks first and offers no Undo; it goes back to 'undo' once a reopen verb exists.
-    { id: 'report.ack', on: 'report', label: 'Acknowledge', key: 'a', risk: 'confirm', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
-      consequence: o => `Acknowledges report #${o.n}. sd-db cannot reopen it.`,
+    // The design's risk, 'undo': reporting.reopen moves the report back to the status it was acknowledged from (sd:2395). It
+    // was 'confirm' while sd-db had no verb that reopens a report (operator ruling, sd:2121).
+    { id: 'report.ack', on: 'report', label: 'Acknowledge', key: 'a', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
       when: o => !o.open ? 'already acknowledged' : !o.source.fields_read ? `its fields cannot be read: sd reports acknowledge ${o.n} finishes it`
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
-      cli: o => `sd reports acknowledge ${o.n}`, run: acknowledge },
+      cli: o => `sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
     // build: the report opens on v1's item page; Tasks lists no reports.
     { id: 'report.show', on: 'report', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
       run: o => { location.href = `/item/${o.n}`; return `#${o.n} opens on its item page`; } },
@@ -428,57 +434,47 @@ function registerCommands() {
     { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed,
       when: o => o.exit === 127 ? 'exit 127: command not found; fix the path first' : capWhy(o, 'retry', o.failed || 'no failed run to retry'),
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: async o => { await post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }); await reload(); return `Retry started · ${o.job}`; } },
+      run: async o => { await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }); return `Retry started · ${o.job}`; } },
   );
 }
 document.addEventListener('shell:open', e => { if (ROWS.some(r => r.id === e.detail)) select(e.detail, true); });
 document.addEventListener('shell:picked', e => { picks = new Set(e.detail); tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', picks.has(tr.dataset.id))); });
 
-// ---------- Start (build: read /api/reports, then draw; again after each write) ----------
+// ---------- Start (build: read /api/reports through shell.read, then draw; again after each write) ----------
 let started = false;
-// build: a refresh can overlap another reading; only the newest one applies, as health.js does.
-let generation = 0;
-async function load() {
-  const mine = ++generation;
-  if (!started) window.shell.state({ kind: 'loading', text: 'Reading reports, jobs and job logs. Rows appear when /api/reports answers.', source: '/api/reports' });
-  let doc;
-  try { doc = await getJSON('/api/reports'); }
-  catch (err) {
-    if (mine !== generation) return;
-    window.shell.state({ kind: 'error', text: `Reports were not read, so nothing below is current: ${err.message}. Reload retries it.`, source: '/api/reports' });
-    return;
-  }
-  if (mine !== generation) return;
-  absorb(doc);
-  pageState();
-  putObjects();
+// The reports this page drew: the reader's settle selects among them, never a report a filter hides.
+const onPage = () => shown.slice(page * PAGE, page * PAGE + PAGE).map(r => r.id);
+const firstOnPage = () => { const ids = onPage(); return ids.find(id => ROWS.find(r => r.id === id)?.act) || ids[0]; };
+function draw() {
   CAD_JOBS = cadJobs();
   lamps();
   fillFilters();
   const needs = ROWS.filter(r => r.act).length;
-  byId('sub').textContent = `${needs} want action · ${ROWS.filter(r => r.kind === 'db' && r.open).length} open in the store · newest first`;
+  byId('sub').textContent = DOC.reports ? `${needs} want action · ${ROWS.filter(r => r.kind === 'db' && r.open).length} open in the store · newest first` : 'Reports not read';
   // build: the clean date defaults to the reading's day and cannot pass it; clean_reports refuses a later cutoff.
-  if (!started) { byId('ack-date').value = READ.slice(0, 10); }
-  byId('ack-date').max = READ.slice(0, 10);
+  if (READ) { if (!started) byId('ack-date').value = READ.slice(0, 10); byId('ack-date').max = READ.slice(0, 10); }
   if (!started) readURL();
   renderCad();
-  if (!started) {
-    started = true;
-    renderRows();
-    // A load whose filters show no row opens with Details cleared, never on a report the list does not show (PR #31 review 2).
-    if (!tbody.querySelector('tr[data-id]')) { window.shell.reconcile({ rows: [], current: null, select: () => {}, clear: clearDetails }); return; }
-    // build: the requested row and the fallback come from the rows this page drew, never from all ROWS: a filter can hide
-    // a report, and Details would then run its actions on a row the list does not show.
-    const q = new URLSearchParams(location.search).get('row');
-    const drawn = [...tbody.querySelectorAll('tr[data-id]')].map(tr => tr.dataset.id);
-    const first = drawn.find(id => ROWS.find(r => r.id === id)?.act) || drawn[0];
-    select(drawn.includes(q) ? q : first, false);
-  } else {
-    renderRows();
-    if (sel && ROWS.some(r => r.id === sel)) show(sel);
-  }
+  started = true;
+  renderRows(true);
 }
 document.addEventListener('DOMContentLoaded', () => {
   registerCommands();
+  reader = window.shell.read({
+    source: '/api/reports', what: 'the reports, jobs and job logs',
+    adopt: doc => { absorb(doc); return { objects: objects(), state: pageState() }; },
+    // Nothing from the last reading stays on screen: rows, jobs, cadence, lamps and the observed time.
+    clear: err => {
+      absorb({ reports: null, cadence: null, jobs: [], families: { state: 'read', list: [] }, mail: DOC?.mail,
+        sources: { reports: err.message, cadence: err.message } });
+      READ = ''; delete document.body.dataset.observed;
+    },
+    draw,
+    current: () => sel,
+    first: firstOnPage,
+    // A requested row a filter hides selects the first report on the page instead (PR #31 review 2).
+    select: id => { const at = onPage().includes(id) ? id : firstOnPage(); if (at) { cleared = false; select(at, false); } else clearDetails(); },
+    unselect: clearDetails,
+  });
   load();
 });
