@@ -164,11 +164,12 @@ def _volumes(walk: Walk) -> list[dict]:
     rows = []
     for line in done.stdout.splitlines()[1:]:
         fields = line.split()
-        if len(fields) < 6 or not fields[1].isdigit():
+        # A pseudo file system can print "-" for its sizes or its capacity: it is not a volume.
+        if len(fields) < 6 or not all(field.isdigit() for field in (*fields[1:4], fields[4].rstrip("%"))):
             continue
         mount = " ".join(fields[5:])
         rows.append({"filesystem": fields[0], "size_kb": int(fields[1]), "used_kb": int(fields[2]),
-                     "avail_kb": int(fields[3]), "capacity": int(fields[4].rstrip("%") or 0), "mount": mount})
+                     "avail_kb": int(fields[3]), "capacity": int(fields[4].rstrip("%")), "mount": mount})
     data = any(row["mount"] == "/System/Volumes/Data" for row in rows)
     kept = [row for row in rows if row["mount"] == ("/System/Volumes/Data" if data else "/")
             or row["mount"].startswith("/Volumes/")]

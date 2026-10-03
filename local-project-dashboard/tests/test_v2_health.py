@@ -433,6 +433,7 @@ class TheDocument(Collectors, ScreenCase):
           "/dev/disk3s1s1 1000 400 600 40% /\n"
           "/dev/disk3s5 1000 850 150 85% /System/Volumes/Data\n"
           "devfs 10 10 0 100% /dev\n"
+          "pseudofs 0 0 0 - /Volumes/pseudo\n"
           "/dev/disk5s1 2000 800 1200 40% /Volumes/my store\n")
 
     def test_the_disk_reader_keeps_the_data_volume_and_volumes_and_finds_merged_build_output(self):
