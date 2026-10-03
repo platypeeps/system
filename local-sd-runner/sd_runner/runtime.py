@@ -762,6 +762,12 @@ class Runner:
                     outcome, detail = self.answer(connection, request, provider, deadline)
                 else:
                     clone = Path(request["run"]["work_path"])
+                    seed = cargo_seed.seed_path(self.config.work, request["run"]["repo"])
+                    if request["role"] != "reviewer":
+                        # The author session builds as the check does, so it
+                        # starts from the seed too; it built cold when only the
+                        # check was seeded (sd:1816).
+                        cargo_seed.seed(clone, seed)
                     try:
                         result = self.action(connection, child, request, "provider", deadline,
                                              argv=argv, environment=provider_env, prompt=prompt(request, provider),
@@ -795,8 +801,9 @@ class Runner:
                         if check:
                             # A Rust clone starts from its repository's last
                             # passing build, in its own `target/`; a clone the
-                            # copy fails for builds cold (sd:1814).
-                            seed = cargo_seed.seed_path(self.config.work, request["run"]["repo"])
+                            # copy fails for builds cold (sd:1814). One the
+                            # session seeded or built keeps its `target/`; this
+                            # seeds a clone the session made a Rust one.
                             cargo_seed.seed(clone, seed)
                             # A fresh clone holds no dependencies. Installing
                             # them is setup, and its failure is the runner's

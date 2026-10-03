@@ -147,9 +147,11 @@ A clone is new every run, so a `target/` inside it starts empty. A cold Rust
 build of a large workspace can use all 900 seconds of the check (sd:1814).
 The runner keeps one seed per repository: `<work>/.cargo-seed/<repo name>-<digest>`,
 where the digest is the first 12 hex digits of the SHA-256 of the repository's
-stored key. Before the install and the check, a clone with a root `Cargo.toml`
-and no `target/` gets a copy-on-write copy of that seed as its own `target/`
-(`/bin/cp -c -R -p`, times kept). The runner then touches every tracked file
+stored key. Before an author session starts, and again before the install and
+the check, a clone with a root `Cargo.toml` and no `target/` gets a copy-on-write
+copy of that seed as its own `target/` (`/bin/cp -c -R -p`, times kept). The
+session builds in the seeded `target/`, and the check builds on top of it
+(sd:1816); a skill review session gets no seed. The runner then touches every tracked file
 in the clone, so each copied fingerprint is older than every source there.
 The clone's own crates always rebuild; dependencies whose sources live outside
 the clone, as registry crates do, stay compiled. Nothing is shared while Cargo
