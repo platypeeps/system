@@ -617,6 +617,17 @@ def change_status(
             raise TransitionRefused("work completion requires verified delivery or cancellation evidence")
         if target not in allowed_statuses(connection, item):
             raise TransitionRefused(f"{row['kind']} item {item} cannot move to {target} through task controls")
+        if row["status"] == "done":
+            # A cancel receipt (sd:1005) belongs to the `done` it was written
+            # with; a reopened task drops it, so a later plain `done` is not
+            # read as cancelled. Unreadable fields are left for their repair.
+            try:
+                held = json.loads(row["fields"]) if row["fields"] else {}
+            except ValueError:
+                held = None
+            if isinstance(held, dict) and "completion" in held:
+                del held["completion"]
+                set_item_fields(connection, item, fields=held)
         transition(connection, item, target, who=who, reason=reason)
         if target != "done" or row.get("recurrence") is None:
             return item_state(connection, item)
