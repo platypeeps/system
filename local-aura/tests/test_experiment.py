@@ -209,5 +209,15 @@ class AStart(ExperimentCase):
         self.assertIn("LLM_MODEL=model-from-file", self.docker_calls())
 
 
+class TheComposeFile(unittest.TestCase):
+    """Both Aura servers run the inspected local image, never a pulled one."""
+
+    def test_the_shared_aura_service_never_pulls(self):
+        compose = (Path(__file__).resolve().parent.parent / "experiment" / "docker-compose.yml").read_text()
+        anchor = compose.split("aura-orch: &aura", 1)[1].split("environment:", 1)[0]
+        self.assertIn("pull_policy: never", anchor)
+        self.assertIn("<<: *aura\n", compose.split("aura-single:", 1)[1])
+
+
 if __name__ == "__main__":
     unittest.main()

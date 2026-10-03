@@ -21,6 +21,8 @@ services:
 
   aura-orch: &aura
     image: ${AURA_IMAGE}
+    # The image experiment start inspected; a :latest tag must not pull.
+    pull_policy: never
     command: ["./aura", "webserver", "--verbose"]
     environment: &aura-env
       HOST: "0.0.0.0"
