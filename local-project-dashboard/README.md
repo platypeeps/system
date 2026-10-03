@@ -504,8 +504,9 @@ second writer for them.
 
 ## How it works
 
-- **One invocation per view.** Each Resources view runs `sd_tile.py <name>` as
-  a child, under five seconds and 64 KB (`reports_screen.collect`, reading
+- **One invocation per view.** Each Resources view runs `sd_tile.py <name> <since>` as
+  a child (`<since>` is the view's start on `CLOCK_MONOTONIC`, so the tile's
+  deadline counts from it), under five seconds and 64 KB (`reports_screen.collect`, reading
   through `collectors.Budget`), as the pack's loader once ran
   `dashboard.sh tile <name>` per declared name. Not a style choice: run
   behind one command these collectors take 6.66 s together and would be killed
