@@ -7,6 +7,7 @@ of its own; the criterion 2 grep in `tests/test_markup.py` is the check.
 
 import os
 import re
+import sys
 from unittest.mock import patch
 
 from sd_dashboard import fleet, operations_screen, repos_screen
@@ -74,16 +75,34 @@ class ReposArea(FleetCase):
         self.checkout("fine")
         stuck = self.checkout("stuck")
         self.hanging("git", when=f"*{stuck}*")
-        with patch.object(fleet, "FLEET_SECONDS", 2.0), patch.object(fleet, "FLEET_MARGIN", 0.5):
+        with patch.object(fleet, "FLEET_SECONDS", 3.0), patch.object(fleet, "FLEET_MARGIN", 1.0):
             page = self.repos()
         # The checkouts that answered are on the page; the one that did not
         # is a row that says so, not a row with a branch it made up.
         self.assertEqual(self.cells(page, "repo-name"), ["fine", "stuck"])
         self.assertEqual(self.cells(page, "repo-branch"), ["main", "?"])
-        self.assertEqual(self.cells(page, "repo-note"), ["", "git ran past the budget of 1.5 seconds and was stopped"])
+        self.assertEqual(self.cells(page, "repo-note"), ["", "git ran past the budget of 2 seconds and was stopped"])
         self.assertIn("1 checkout could not be read", page)
         # Cut by the child at its own deadline, so the hung git is gone with
         # it rather than left holding a pipe (the `collectors.run` docstring).
+        self.assertGone("git")
+
+    def test_a_child_slow_to_start_still_answers_before_the_page_kills_it(self):
+        # The child's deadline is counted from the page's start, not its own:
+        # an interpreter that took a second to start under load spent that
+        # second of the margin, the page's kill arrived first, and the page
+        # said "stopped at its budget" with no row at all (sd:2244).
+        stuck = self.checkout("stuck")
+        self.hanging("git", when=f"*{stuck}*")
+        slow = self.shim("slow-python", f'sleep 1.2; exec "{sys.executable}" "$@"')
+        with patch.object(fleet, "FLEET_SECONDS", 3.0), patch.object(fleet, "FLEET_MARGIN", 1.0), \
+                patch.object(sys, "executable", str(slow)):
+            page = self.repos()
+        self.assertNotIn("Repos could not be observed", page)
+        self.assertEqual(self.cells(page, "repo-name"), ["stuck"])
+        # Started or refused depends on how long the start took; either way
+        # the row names the child's budget, not the page's.
+        self.assertRegex(self.cells(page, "repo-note")[0], r"^git .*the budget of 2 seconds")
         self.assertGone("git")
 
     def messy(self, name="messy", *, when="2026-09-02T10:00:00+00:00"):
@@ -126,12 +145,12 @@ class ReposArea(FleetCase):
         self.checkout("fine")
         stuck = self.checkout("stuck")
         self.hanging("git", when=f"*{stuck}*", quiet=True)
-        with patch.object(fleet, "FLEET_SECONDS", 2.0), patch.object(fleet, "FLEET_MARGIN", 0.5):
+        with patch.object(fleet, "FLEET_SECONDS", 3.0), patch.object(fleet, "FLEET_MARGIN", 1.0):
             page = self.repos()
         # stdout closed and the process stayed: that is a hang, said as one,
         # not a command that answered and not "was not started" for the next.
         self.assertEqual(self.cells(page, "repo-name"), ["fine", "stuck"])
-        self.assertEqual(self.cells(page, "repo-note"), ["", "git ran past the budget of 1.5 seconds and was stopped"])
+        self.assertEqual(self.cells(page, "repo-note"), ["", "git ran past the budget of 2 seconds and was stopped"])
         self.assertGone("git")
 
     def test_a_checkout_that_cannot_be_read_is_unknown_and_not_clean(self):
