@@ -117,7 +117,7 @@ class ThePage(BrowserSession):
     def test_every_file_the_page_names_is_served(self):
         _, _, body = self.request("/today")
         named = re.findall(r'(?:src|href)="(/ui/[^"]+)"', body)
-        self.assertEqual(len(named), 10)  # four stylesheets, six scripts
+        self.assertEqual(len(named), 11)  # four stylesheets, seven scripts
         for path in named:
             status, headers, _ = self.request(path)
             self.assertEqual(status, 200, path)
@@ -126,7 +126,7 @@ class ThePage(BrowserSession):
     def test_data_and_page_script_load_before_the_shell_and_the_shell_loads_last(self):
         _, _, body = self.request("/today")
         scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "today.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "today.js", "shell.js"])
         self.assertLess(body.index('src="/ui/markup.js"'), body.index("</head>"))
         self.assertGreater(body.index('src="/ui/icons.js"'), body.index("<body"))
 
@@ -139,7 +139,7 @@ class ThePage(BrowserSession):
         rows = json.loads(body)["rows"]
         self.assertEqual([(row["id"], row["band"], row["source"]) for row in rows],
                          [("job:nightly-sync:7", "broken", "jobs"), ("ahead:pushy:1", "look", "repos")])
-        self.assertIn("fetch('/api/now'", TODAY_JS)
+        self.assertIn("source: '/api/now'", TODAY_JS)
 
     def test_a_path_under_ui_that_is_not_a_file_is_a_404(self):
         for path in ("/ui/", "/ui/nowhere.js", "/ui/../__init__.py", "/ui/%2e%2e/__init__.py", "/ui/today.html",

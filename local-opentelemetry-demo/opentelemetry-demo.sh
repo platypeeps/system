@@ -623,7 +623,7 @@ Makefile-based variant (uses OTEL_DEMO_REPO, not this kind cluster)
 Configuration: \$SYSTEM_TOOLS_CONFIG/opentelemetry-demo/.env or exported
 (copy .env.example). start/upgrade need OTLP_EXPORT_URL (OTLP/HTTP base URL)
 and OTLP_EXPORT_AUTH (auth header value). OTLP_EXPORT_AUTH_HEADER names that
-header (default Authorization; apikey for Mezmo-style ingestion).
+header (default Authorization; apikey for a backend that reads that header).
 EOF
 }
 

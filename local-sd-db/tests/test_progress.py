@@ -12,7 +12,7 @@ from sd_db import connect, create_item, upsert_repo
 from sd_db.migrate import initialise
 from sd_db.progress import (
     cancel_work, completion_record, deliver_associated_work, deliver_work, item_for_artifact,
-    relink_artifact, tracker_freshness, tracker_items,
+    relink_artifact, task_guard, tracker_freshness, tracker_items,
 )
 from sd_db.shadow_sync import write_watermark
 from sd_db.workflow import StaleItem, WorkflowError, allowed_statuses, change_status, edit_item, item_state
@@ -227,6 +227,65 @@ class WorkCompletion(ProgressCase):
             with self.assertRaisesRegex(WorkflowError, "changed during"):
                 deliver_work(self.db, self.item, commit, who="operator")
         self.assertEqual(item_state(self.db, self.item), before)
+
+
+class TaskCancellation(ProgressCase):
+    """sd:1005: a task or followup could only be closed as done, so a
+    finding dropped on purpose read the same as one fixed. `cancel_work`
+    takes its guard from the caller; `task_guard` admits task and followup
+    rows, and the default stays the work guard."""
+
+    def task(self, kind="task", **columns):
+        return create_item(self.db, kind=kind, title="A carried finding", **columns)
+
+    def test_a_task_and_a_followup_cancel_with_a_receipt_and_no_repository(self):
+        for kind in ("task", "followup"):
+            with self.subTest(kind=kind):
+                item = self.task(kind)
+                result = cancel_work(self.db, item, reason="Superseded by sd:2", who="operator", guard=task_guard)
+                self.assertEqual(result["item"]["status"], "done")
+                self.assertIsNone(result["item"]["shipped_at"])
+                receipt = completion_record(result["item"])
+                self.assertEqual((receipt["outcome"], receipt["reason"], receipt["repo"]),
+                                 ("cancelled", "Superseded by sd:2", None))
+                self.assertIn("cancelled: Superseded by sd:2", result["notes"][-1]["body"])
+                again = cancel_work(self.db, item, reason="Superseded by sd:2", who="operator", guard=task_guard)
+                self.assertEqual(again, result)
+
+    def test_the_default_guard_is_still_the_work_guard(self):
+        item = self.task()
+        with self.assertRaisesRegex(WorkflowError, "work items"):
+            cancel_work(self.db, item, reason="Not needed", who="operator")
+        with self.assertRaisesRegex(WorkflowError, "task and followup"):
+            cancel_work(self.db, self.item, reason="Not needed", who="operator", guard=task_guard)
+        for kind in ("personal", "report", "idea"):
+            with self.subTest(kind=kind), self.assertRaisesRegex(WorkflowError, "task and followup"):
+                cancel_work(self.db, self.task(kind), reason="Not needed", who="operator", guard=task_guard)
+
+    def test_a_task_done_already_or_with_live_work_or_a_recurrence_is_refused(self):
+        done = self.task()
+        change_status(self.db, done, "done", who="operator")
+        with self.assertRaisesRegex(WorkflowError, "completed"):
+            cancel_work(self.db, done, reason="Too late", who="operator", guard=task_guard)
+        busy = self.task()
+        self.db.execute("INSERT INTO assignment (item, role, status) VALUES (?, 'author', 'queued')", (busy,))
+        with self.assertRaisesRegex(WorkflowError, "assignment"):
+            cancel_work(self.db, busy, reason="Not needed", who="operator", guard=task_guard)
+        recurring = self.task(recurrence="FREQ=WEEKLY", due="2026-10-05")
+        with self.assertRaisesRegex(WorkflowError, "recurring"):
+            cancel_work(self.db, recurring, reason="Not needed", who="operator", guard=task_guard)
+        self.assertEqual([item_state(self.db, item)["item"]["status"] for item in (busy, recurring)],
+                         ["planning", "planning"])
+
+    def test_a_reopened_cancelled_task_drops_its_receipt(self):
+        """A task stays reopenable. Its receipt must not outlive the reopen:
+        completed later as plain done, it read as cancelled."""
+        item = self.task()
+        cancel_work(self.db, item, reason="Not now", who="operator", guard=task_guard)
+        reopened = change_status(self.db, item, "planning", who="operator")
+        self.assertNotIn("completion", json.loads(reopened["item"]["fields"] or "{}"))
+        finished = change_status(self.db, item, "done", who="operator")
+        self.assertIsNone(completion_record(finished["item"]))
 
 
 class AfterTheFactDelivery(ProgressCase):

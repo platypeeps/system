@@ -409,6 +409,11 @@ EOF
         <string>$JOB_PATH</string>
         <key>HOME</key>
         <string>$HOME</string>
+        <!-- The config root, always: under a root that is not the default
+             one below HOME, exec would otherwise look for the job file in
+             an empty folder (sd:2519). -->
+        <key>SYSTEM_TOOLS_CONFIG</key>
+        <string>$SYSTEM_TOOLS_CONFIG</string>
     </dict>
 
     <key>ProcessType</key>

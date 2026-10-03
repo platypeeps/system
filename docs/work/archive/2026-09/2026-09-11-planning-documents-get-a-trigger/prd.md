@@ -113,7 +113,9 @@ These are assumptions, not requirements, and each is checkable:
   comment 2711; the owner judged the documents good enough (note 2707, line
   8). Five criteria are ticked on that evidence. Two stay open on purpose:
   a second trigger for the same item was not pressed (the dry run reads the
-  working tree, not the row's branch, so it is not the test the page means);
+  working tree, not the row's branch, so it is not the test the page means;
+  `implement.md` does count exec note 718 as that second trigger, and this
+  entry leaves criterion 3 open regardless; annotated 2026-10-03, sd:1238);
   and `sd-status` in the targeted repository showed the same seven
   `status-unreadable` folders before and after the run, all of them task
   rows that predate it, so the run added none but the strict zero is not
