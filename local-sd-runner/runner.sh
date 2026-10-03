@@ -57,7 +57,8 @@ case "${1:-}" in
 esac
 runtime_python="${SD_RUNNER_PYTHON:-$HOME/repos/platypeeps/sd-ai-command-pack/.venv/bin/python}"
 if [ ! -x "$runtime_python" ]; then
-  echo "runner: missing installed runtime $runtime_python; provision the command pack first" >&2
+  # Under launchd this line goes to the err log, which times each line (sd:1953).
+  echo "$(date '+%Y-%m-%dT%H:%M:%S%z') runner: missing installed runtime $runtime_python; provision the command pack first" >&2
   exit 1
 fi
 exec "$runtime_python" -I "$DIR/sd_runner/bootstrap.py" "$@"

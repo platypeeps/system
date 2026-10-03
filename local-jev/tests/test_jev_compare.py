@@ -57,6 +57,8 @@ class Arm(BaseHTTPRequestHandler):
     cost = 0.000185
     # An answer object Kev returns in place of its usual one, when set.
     kev_answer = None
+    # A chat completion with usage but no message, when set.
+    no_message = False
 
     def log_message(self, *args):
         pass
@@ -79,7 +81,8 @@ class Arm(BaseHTTPRequestHandler):
             out = {"content": [{"type": "text", "text": self.text(body)}],
                    "usage": {"input_tokens": 120, "output_tokens": 9}}
         else:
-            out = {"choices": [{"message": {"content": self.text(body)}}],
+            out = {"choices": [] if Arm.no_message else
+                       [{"message": {"content": self.text(body)}}],
                    "usage": {"prompt_tokens": 130, "completion_tokens": 11}}
             # OpenRouter reports the call's cost; Baseten does not.
             if self.path.startswith("/api/"):
@@ -142,6 +145,7 @@ class CompareCase(MeteringCase):
         Arm.reply = None
         Arm.cost = 0.000185
         Arm.kev_answer = None
+        Arm.no_message = False
         self.bin = Path(tempfile.mkdtemp())
 
     def env(self, **extra):
@@ -441,6 +445,36 @@ class TheHaikuArm(CompareCase):
         self.assertIn("is it?", argv)
         # Run from an empty folder, never from the caller's checkout.
         self.assertNotIn(os.getcwd() + "\n", argv)
+
+    def claude_stub(self, result, status=0):
+        stub = self.bin / "claude"
+        stub.write_text("#!/bin/sh\ncat > /dev/null\ncat <<'EOF'\n"
+                        + json.dumps(result) + f"\nEOF\nexit {status}\n")
+        stub.chmod(0o755)
+
+    def test_a_claude_cli_error_result_keeps_the_usage_it_reported(self):
+        failed = {"type": "result", "subtype": "error_during_execution",
+                  "is_error": True, "result": "", "total_cost_usd": 0.004,
+                  "duration_api_ms": 900,
+                  "usage": {"input_tokens": 10, "cache_read_input_tokens": 200,
+                            "output_tokens": 3}}
+        for status in (0, 1):
+            with self.subTest(status=status):
+                self.claude_stub(failed, status)
+                row = self.haiku("claude-cli")
+                self.assertEqual((row["outcome"], row["cause"]),
+                                 ("unavailable", "unavailable"))
+                self.assertIsNone(row["answer"])
+                self.assertEqual((row["tokens_in"], row["tokens_out"]), (210, 3))
+                self.assertAlmostEqual(row["usd"], 0.004)
+
+    def test_a_response_with_no_message_keeps_the_usage_it_reported(self):
+        Arm.no_message = True
+        row = self.haiku("openrouter", JEV_COMPARE_OPENROUTER_KEY="k")
+        self.assertEqual((row["outcome"], row["cause"]), ("invalid", "invalid"))
+        self.assertIsNone(row["answer"])
+        self.assertEqual((row["tokens_in"], row["tokens_out"]), (130, 11))
+        self.assertAlmostEqual(row["usd"], 0.000185)
 
     def test_an_unknown_transport_is_invalid_and_sends_nothing(self):
         row = self.haiku("carrier-pigeon")

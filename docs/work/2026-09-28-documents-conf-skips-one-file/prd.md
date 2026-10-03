@@ -34,11 +34,11 @@ report keeps its place on the tab until someone deletes it from the checkout.
 
 ## Acceptance criteria
 
-- [ ] With `skip|reports|old.html` in the conf, the Documents tab lists the
+- [x] With `skip|reports|old.html` in the conf, the Documents tab lists the
       root and not `old.html`, and `GET` on the file returns 404.
-- [ ] `skip|reports` alone still drops the whole root.
-- [ ] A file name with a space in a three-part line parses to one file.
-- [ ] `local-project-dashboard/tests/test_documents.py` covers the three cases.
+- [x] `skip|reports` alone still drops the whole root.
+- [x] A file name with a space in a three-part line parses to one file.
+- [x] `local-project-dashboard/tests/test_documents.py` covers the three cases.
 - [ ] The mockup's Skip commands name `skip|` lines, and the ui-design Commands
       page shows no `render-skip` text.
 
@@ -53,3 +53,8 @@ report keeps its place on the tab until someone deletes it from the checkout.
 ## Log
 
 - 2026-09-28 created
+- 2026-10-03 requirements 1 to 4 built in this repository: `Config.files`
+  reads the line, `Root.skip` carries it, and the listing and `resolve` both
+  drop the file. `documents.conf.example` and the README show the line; the
+  operator's own `documents.conf` header is theirs to update. Requirement 5
+  (the ui-design mockup and `data/commands.js`) is open in that repository.

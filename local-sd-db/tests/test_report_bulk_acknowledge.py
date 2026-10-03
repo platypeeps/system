@@ -21,7 +21,6 @@ from unittest import mock
 
 import sd_db
 from sd_db import reporting, retention, workflow, writes
-from sd_db.errors import SdDbError
 from sd_db.migrate import initialise
 from sd_db.writes import add_note, create_assignment, create_item, record_state, resolve_note
 
@@ -227,8 +226,27 @@ class TheDryRun(Store):
             with self.subTest(value=value), self.assertRaisesRegex(workflow.WorkflowError, "YYYY-MM-DD"):
                 reporting.cutoff(value)
         # A caller that skipped `cutoff` fails loudly rather than reading another instant.
-        with self.assertRaisesRegex(SdDbError, "carries no timezone"):
+        with self.assertRaisesRegex(workflow.WorkflowError, "pass the cutoff as `cutoff` stamps it"):
             reporting.clean_reports(self.db, before="2026-09-10", now=NOW)
+
+    def test_the_dry_run_and_the_apply_take_only_the_stamp_cutoff_returns(self):
+        """sd:1168: `clean_reports` passed `before` through `stamp`, which takes
+        any aware instant. A library caller that skipped `cutoff` then got a
+        cutoff at another time of day, and a plan over it, that neither surface
+        can issue; another spelling of midnight UTC got a second plan token for
+        the same selection."""
+        self.fixture()
+        plan = self.preview()["plan"]
+        for value in ("2026-09-10T05:00:00+00:00", "2026-09-10T02:00:00+02:00", "2026-09-10T00:00:00Z",
+                      "2026-09-10T00:00:00.000+00:00"):
+            with self.subTest(value=value):
+                with self.assertRaises(workflow.WorkflowError):
+                    reporting.clean_reports(self.db, before=value, now=NOW)
+                before = self.dump()
+                with self.assertRaises(workflow.WorkflowError):
+                    self.apply(plan, before=value)
+                self.assertEqual(self.dump(), before)
+        self.assertEqual(self.preview()["plan"], plan)
 
     def test_a_cutoff_later_than_now_is_refused(self):
         with self.assertRaises(workflow.WorkflowError):

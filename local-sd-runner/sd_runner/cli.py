@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import replace
@@ -257,6 +258,58 @@ def install_plan(config: Config, *, config_path=None) -> dict:
             "apply": "install the reviewed plist only after provisioning storage and confirming preflight passes"}
 
 
+class StampedLines:
+    """A text stream that starts every line it passes on with the local time (sd:1953).
+
+    launchd sends the daemon's stderr to its err log. Without a time on each
+    line, the log could not say when a refusal or a health flip happened.
+    `print` and a thread's traceback write through here; a write to file
+    descriptor 2 itself, by a child or by the interpreter, does not.
+    """
+
+    def __init__(self, stream, clock=time.localtime):
+        self.stream = stream
+        self.clock = clock
+        self.partial = ""
+        self.lock = threading.Lock()
+
+    def write(self, text: str) -> int:
+        with self.lock:
+            lines = (self.partial + text).split("\n")
+            self.partial = lines.pop()
+            for line in lines:
+                self.stream.write(f"{self.stamp()} {line}\n")
+        return len(text)
+
+    def stamp(self) -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%S%z", self.clock())
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+    def close(self) -> None:
+        """Write a last line that has no newline yet; the stream itself stays open."""
+        with self.lock:
+            if self.partial:
+                self.stream.write(f"{self.stamp()} {self.partial}\n")
+                self.partial = ""
+        self.stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+@contextlib.contextmanager
+def stamped_stderr():
+    stamped = StampedLines(sys.stderr)
+    previous, sys.stderr = sys.stderr, stamped
+    # An exception leaves the stream in place: the interpreter writes its
+    # traceback after this frame is gone, and that report is an err log line too.
+    yield stamped
+    sys.stderr = previous
+    stamped.close()
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Owned workflow queue runner")
     parser.add_argument("--config", type=Path)
@@ -315,6 +368,14 @@ def main(argv=None) -> int:
             command.add_argument("--run", type=int)
             command.add_argument("--destination", required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.verb in {"serve", "once"}:
+        # Their stderr is the err log (sd:1953).
+        with stamped_stderr():
+            return dispatch(args)
+    return dispatch(args)
+
+
+def dispatch(args) -> int:
     try:
         if args.verb == "commands":
             from sd_db.runner_palette import main as palette_main

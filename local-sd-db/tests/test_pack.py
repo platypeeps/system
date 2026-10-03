@@ -120,6 +120,23 @@ class EveryWayOfHavingNoDelivered(PackCase):
         self.assertIn("will not import", found.why)
         self.assertIn("the pack is broken", found.why)
 
+    def test_a_library_that_exits_at_import_is_a_refusal(self):
+        """`sys.exit` in a module body is a `SystemExit`, a `BaseException`
+        and not an `Exception`; it is still a pack that will not import."""
+        support.pack(self.home, library="import sys\nsys.exit(3)\n")
+        found = self.installed()
+        self.assertFalse(found.usable)
+        self.assertIn("SystemExit", found.why)
+
+    def test_an_interrupt_during_the_probe_is_not_swallowed(self):
+        """Ctrl-C while the module body runs is the operator stopping the
+        command, not a verdict on the pack. The `BaseException` arm turned it
+        into a refusal and the command carried on (sd:1219)."""
+        support.pack(self.home, library="raise KeyboardInterrupt\n")
+        with self.assertRaises(KeyboardInterrupt):
+            self.installed()
+        self.assertNotIn(pack.PROBE, sys.modules)
+
     def test_a_library_with_none_of_the_wanted_names_is_a_refusal(self):
         support.pack(self.home, library="def status(root, item):\n    return 'no'\n")
         found = self.installed()
@@ -162,19 +179,25 @@ class TheProbeRunsRealModuleBodies(unittest.TestCase):
         home = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, home, True)
         support.pack(home, library=support.PACK_LIBRARY)
-        found = pack.installed(home=home)
+        found = pack.installed(home=home, environ={})
         self.assertTrue(found.usable, found.refusal())
 
     def test_the_probe_leaves_no_entry_behind_on_success_or_failure(self) -> None:
         home = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, home, True)
         support.pack(home, library=support.PACK_LIBRARY)
-        pack.installed(home=home)
+        # An empty environment, as `PackCase.installed` passes: an exported
+        # `XDG_STATE_HOME` sends the probe to a state home with no receipt,
+        # nothing is loaded, and both assertions pass without testing the
+        # probe (sd:1220). The usability and `why` checks prove it ran.
+        self.assertTrue(pack.installed(home=home, environ={}).usable)
         self.assertNotIn(pack.PROBE, sys.modules)
         broken = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, broken, True)
         support.pack(broken, library="raise RuntimeError('boom')\n")
-        self.assertFalse(pack.installed(home=broken).usable)
+        found = pack.installed(home=broken, environ={})
+        self.assertFalse(found.usable)
+        self.assertIn("will not import", found.why)
         self.assertNotIn(pack.PROBE, sys.modules)
 
 
