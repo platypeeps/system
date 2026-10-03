@@ -335,7 +335,7 @@ opentelemetry-collector:
     # The export destination is any OTLP/HTTP backend. The URL and the auth
     # header value come from the otlp-export secret above, so no credential
     # sits in this file. The header NAME is OTLP_EXPORT_AUTH_HEADER (default
-    # Authorization; one example: Mezmo's OTel endpoint reads `apikey`).
+    # Authorization; some OTel endpoints read `apikey`).
     # The collector does not expand ${env:...} in map keys, so
     # opentelemetry-demo.sh adds the header with
     #   --set-string opentelemetry-collector.config.exporters.otlphttp/export.headers.<name>=${env:OTLP_EXPORT_AUTH}
