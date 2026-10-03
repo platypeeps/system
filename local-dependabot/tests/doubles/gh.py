@@ -71,7 +71,10 @@ def main(argv):
     if tail == ["issues"] and method == "GET":
         if repo is None:
             return fail("HTTP 404: Not Found")
-        if query.get("creator") != "dependabot[bot]":
+        # `state=all` too: closed pull requests carry records the watcher
+        # must still see, and a regression to `state=open` would otherwise
+        # be answered with the closed fixtures anyway.
+        if query.get("creator") != "dependabot[bot]" or query.get("state") != "all":
             return fail(f"gh double: unexpected invocation {argv!r}", 2)
         return answer(repo["pulls"] if page == 1 else [])
 

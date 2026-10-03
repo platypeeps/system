@@ -33,9 +33,9 @@ The script turns the export values into the `otlp-export` k8s secret (keys
 through `extraEnvs`. The collector does not expand `${env:...}` in map keys, so
 the script also passes the header name to helm with `--set-string`.
 
-Any OTLP/HTTP backend works. One example is Mezmo: its OTel ingest URL is
-`OTLP_EXPORT_URL`, its ingestion key is `OTLP_EXPORT_AUTH`, and its endpoint
-reads the key from an `apikey` header, so set `OTLP_EXPORT_AUTH_HEADER=apikey`.
+Any OTLP/HTTP backend works: its OTel ingest URL is `OTLP_EXPORT_URL` and its
+ingestion key is `OTLP_EXPORT_AUTH`. A backend that reads the key from an
+`apikey` header needs `OTLP_EXPORT_AUTH_HEADER=apikey`.
 
 ## Gotchas
 

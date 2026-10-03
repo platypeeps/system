@@ -134,7 +134,7 @@ class RankAgainstAStubJev(unittest.TestCase):
             path.rmdir() if path.is_dir() else path.unlink()
         self.tmp.rmdir()
 
-    def rank(self, body=STUB_OK, stage="1"):
+    def rank(self, body=STUB_OK, stage=None):
         jev = self.tmp / "jev.sh"
         jev.write_text(stub(body))
         jev.chmod(0o755)
@@ -316,6 +316,41 @@ class RankAgainstAStubJev(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.result.read_text(), "")
         self.assertIn("empty or absent", result.stderr)
+
+    def test_a_non_finite_or_out_of_range_score_leaves_the_file_byte_for_byte(self):
+        # `float` reads NaN and Infinity, and JSON carries both. A score
+        # outside 0..1 is no answer, so the file stays the reviewer's own.
+        for bad in ("NaN", "Infinity", "-Infinity", "1.5", "-0.2"):
+            with self.subTest(score=bad):
+                self.result.write_text(RESULT)
+                self.answers.write_text(
+                    '{"answers": {"f1": {"noul": %s}, "f2": {"noul": 0.9}, '
+                    '"f3": {"noul": 0.5}}}' % bad)
+                result = self.rank()
+                self.assertUnchanged(result)
+                self.assertIn("did not answer for f1", result.stderr)
+
+
+class TheWriteIsWholeOrNothing(unittest.TestCase):
+    """The gate result is the only copy of the review. A write that fails
+    part way must leave the reviewer's file, not an empty one."""
+
+    def test_a_failed_write_leaves_the_original_and_no_temp_file(self):
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("rank", HERE.parent / "rank.py")
+        rank = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rank)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "adversarial.md"
+            path.write_text(RESULT)
+            # A value `write` refuses, so the write fails after any open.
+            with mock.patch.object(rank, "rank_text", return_value=12345), \
+                    self.assertRaises(TypeError):
+                rank.main(["--in", str(path), "--jev", "/nonexistent"])
+            self.assertEqual(path.read_text(), RESULT)
+            self.assertEqual(sorted(p.name for p in pathlib.Path(tmp).iterdir()),
+                             ["adversarial.md"])
 
 
 class RunDoesNotRankUnlessAskedTo(unittest.TestCase):

@@ -665,8 +665,11 @@ can hand `sd-ship` the runner's result. And the tests do not go through the
 pack's `sd_registry`: the fixture path injects the resolved entry
 (`provider=`, `check=` seams on `Runner.execute`), so `provider_command`'s
 own `start`/`bill`/`reader` fields are covered by inspection, not by a test.
-The `budget_usd` gap PR 6 records still waits on B's reservation library —
-landed 2026-09-16 in #415 for the creation half; see the Log.
+The `budget_usd` gap PR 6 records landed in two halves. The creation-time
+refusal landed 2026-09-16 in #415. The `budget spent` ending still waits on
+B's reservation library, as sd:234 slice 8b; see the Log and "Closing the
+item". (Annotated 2026-10-03, sd:1238: the sentence read as if the whole gap
+both waited and landed.)
 
 ## PR 8 — pulse, sleep, keys, and the service
 

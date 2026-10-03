@@ -521,8 +521,12 @@ def edit_item(
         return item_state(connection, item)
 
 
-def allowed_statuses(connection: sqlite3.Connection, item: int) -> list[str]:
+def allowed_statuses(connection: sqlite3.Connection, item: int, *, state: dict | None = None) -> list[str]:
     """The status choices a write through `change_status` accepts.
+
+    `state` is the item's `item_state` when the caller holds it already, read
+    in the same snapshot, so a caller listing many items reads each history
+    once (sd:2380); it must be this item's.
 
     A `TASK_STATUS_KINDS` item gets `TASK_STATUSES`; database-owned work that
     is not done gets every status but `done`; every other kind, and any item
@@ -536,7 +540,9 @@ def allowed_statuses(connection: sqlite3.Connection, item: int) -> list[str]:
     followup's since sd:809, and since sd:816 the screen renders the matching
     form instead of a hint naming the CLI's `sd task edit`.
     """
-    row = item_state(connection, item)["item"]
+    if state is not None and state["item"]["id"] != item:
+        raise WorkflowError(f"the state given is item {state['item']['id']}'s, not item {item}'s")
+    row = (state if state is not None else item_state(connection, item))["item"]
     active = connection.execute(
         "SELECT 1 FROM assignment WHERE item = ? AND status IN ('queued', 'running') LIMIT 1",
         (item,),
@@ -617,6 +623,17 @@ def change_status(
             raise TransitionRefused("work completion requires verified delivery or cancellation evidence")
         if target not in allowed_statuses(connection, item):
             raise TransitionRefused(f"{row['kind']} item {item} cannot move to {target} through task controls")
+        if row["status"] == "done":
+            # A cancel receipt (sd:1005) belongs to the `done` it was written
+            # with; a reopened task drops it, so a later plain `done` is not
+            # read as cancelled. Unreadable fields are left for their repair.
+            try:
+                held = json.loads(row["fields"]) if row["fields"] else {}
+            except ValueError:
+                held = None
+            if isinstance(held, dict) and "completion" in held:
+                del held["completion"]
+                set_item_fields(connection, item, fields=held)
         transition(connection, item, target, who=who, reason=reason)
         if target != "done" or row.get("recurrence") is None:
             return item_state(connection, item)

@@ -29,12 +29,6 @@ __all__ = ["backlog", "item", "today"]
 VIEWS = ("list", "board", "matrix")
 
 
-def writing_page(connection, *, now, parameters):
-    from .writing_screen import render
-
-    return render(connection, now=now, parameters=parameters)
-
-
 def _cell(key: str):
     return lambda row: row[key]
 

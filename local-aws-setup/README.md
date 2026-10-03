@@ -74,18 +74,19 @@ Prerequisites: `aws` CLI v2 and an admin login for the account.
 
 1. **Log in as admin** under a profile named for the account. `aws login`
    uses your console session, so make sure the browser is signed in to the
-   right account:
+   right account. The profile it writes carries no region, and the CLI refuses
+   a call without one, so every admin command here passes `--region`:
 
    ```sh
    aws login --profile admin-sandbox --region us-east-1
-   aws sts get-caller-identity --profile admin-sandbox   # check Account
+   aws sts get-caller-identity --profile admin-sandbox --region us-east-1   # check Account
    ```
 
 2. **Create the agent user** — no console access, no groups, no inline
    policies:
 
    ```sh
-   aws iam create-user --profile admin-sandbox --user-name agent \
+   aws iam create-user --profile admin-sandbox --region us-east-1 --user-name agent \
      --tags Key=purpose,Value=coding-agent
    ```
 
@@ -118,7 +119,7 @@ Prerequisites: `aws` CLI v2 and an admin login for the account.
    whose `agent-base` predates the tag is adopted once, deliberately:
 
    ```sh
-   aws iam tag-policy --profile admin-sandbox \
+   aws iam tag-policy --profile admin-sandbox --region us-east-1 \
      --policy-arn arn:aws:iam::<account>:policy/agent-base \
      --tags Key=managed-by,Value=local-aws-setup
    ```
@@ -148,7 +149,8 @@ Prerequisites: `aws` CLI v2 and an admin login for the account.
 8. **Tag instances** the agent may manage (as admin):
 
    ```sh
-   aws ec2 create-tags --profile admin-sandbox --resources i-0123456789abcdef0 \
+   aws ec2 create-tags --profile admin-sandbox --region us-east-1 \
+     --resources i-0123456789abcdef0 \
      --tags Key=claude-managed,Value=true
    ```
 
