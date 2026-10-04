@@ -7,6 +7,15 @@ keeps, so the port adds no collector:
 - **merge**: the `comment` note `ship.note_merge` writes (`reads.delivery_notes`) when `sd-ship`
   lands a pull request ("Code delivery <url> at <sha>", then the evidence
   JSON). The time is the note's, which is when the merge was observed.
+- **review**: the review each of those merges carried, from the same note's
+  evidence (operator ruling on sd:2211, 2026-10-03): `review_selection`
+  names who reviewed, and `review_clearance` says how the review let the
+  merge through -- none for a clean or advisory review, `adjudicated` for
+  blocking findings whose dispositions the operator accepted. Only reviews
+  that reached a merge are recorded, so a review that never shipped is not
+  here; the time is the merge's, since the review's own is not recorded.
+  A delivery in the window with no review record is counted in
+  `review_unrecorded`, so the page says so rather than drop it.
 - **run**: runner assignments that started or ended in the window (`reads.recent_assignments`, with the item's repository), as
   `operations.assignment_state` reads them, with the queue revision
   `sd runner requeue` checks. `exec` assignments are left to `command`.
@@ -24,7 +33,7 @@ keeps, so the port adds no collector:
   The read is the latest `JOURNAL_CAP` notes: `journal_unread` counts the
   older ones it left out, so the page says so rather than cut them silently.
 
-The design's other kinds have no collector here. Each is in `unknown` with
+The design's other kinds, deploys and mail, have no collector here. Each is in `unknown` with
 the reason, and the page draws it hatched: unknown is not zero.
 
 A source that raises is named in `sources` with its reason and adds no
@@ -33,6 +42,7 @@ rows, so a failed read never looks like a quiet day. Nothing here writes.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -41,7 +51,7 @@ from pathlib import Path
 from sd_db import operations, reads, runner, runner_exec
 from sd_db.errors import SdDbError
 
-__all__ = ["JOURNAL_CAP", "KINDS", "UNKNOWN", "WINDOW", "document"]
+__all__ = ["JOURNAL_CAP", "KINDS", "UNKNOWN", "WINDOW", "document", "reviews"]
 
 WINDOW = timedelta(hours=24)
 
@@ -53,7 +63,6 @@ KINDS = ("merge", "run", "review", "deploy", "mail", "command")
 
 #: Kinds with no collector, and why. The page shows each as unknown, never as zero.
 UNKNOWN = {
-    "review": "No collector reads reviews. The design read Copilot review mail from Gmail; the dashboard reads no mail.",
     "deploy": "No collector reads deploys. No repository records GitHub deployments, and no deploy log is read.",
     "mail": "No collector reads mail. Brief and status mail stay in Gmail; the dashboard reads no mail.",
 }
@@ -98,6 +107,52 @@ def merges(connection, start: datetime, end: datetime) -> list[dict]:
                     "what": row["title"] or f"{repo}#{number}", "detail": f"{owner}/{repo} · {sha[:12]}",
                     "ref": f"{repo}#{number}", "url": url, "owner": owner, "pr": int(number), "item": row["item"],
                     "commit": sha, "src": "sd-ship delivery note (ship.note_merge)"})
+    return out
+
+
+#: `review_clearance.kind` -> (state, verdict). No clearance is a clean or advisory review.
+_CLEARANCE = {None: ("ok", "clean or advisory"),
+              "adjudicated": ("caution", "blocking findings; the operator accepted their dispositions")}
+
+
+def _evidence(body: str) -> dict:
+    """The JSON `ship.note_merge` writes under the delivery line, or {} when the note carries none."""
+    _, _, rest = body.partition("\n")
+    try:
+        value = json.loads(rest)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def reviews(connection, start: datetime, end: datetime, unrecorded: dict) -> list[dict]:
+    """The review each delivery in the window carried, at the merge's time; `unrecorded` counts deliveries with none."""
+    out, missing = [], 0
+    for row in reads.delivery_notes(connection, since=_iso(start)):
+        at = _inside(row["timestamp"], start, end)
+        match = _DELIVERY.match(row["body"] or "")
+        if at is None or match is None:
+            continue
+        url, owner, repo, number, _ = match.groups()
+        evidence = _evidence(row["body"])
+        selection = evidence.get("review_selection")
+        by = selection.get("reviewed_by") if isinstance(selection, dict) else None
+        if not isinstance(by, list) or not by:
+            missing += 1
+            continue
+        reviewers = [str(name) for name in by]
+        clearance = evidence.get("review_clearance")
+        kind = clearance.get("kind") if isinstance(clearance, dict) else None
+        state, verdict = _CLEARANCE.get(kind, ("unknown", f"cleared as {kind!r}, a kind this page does not know"))
+        head = evidence.get("reviewed_head") if isinstance(evidence.get("reviewed_head"), str) else None
+        names = ", ".join(reviewers)
+        out.append({"id": f"review:{row['id']}", "k": "review", "at": at, "s": state, "repo": repo,
+                    "what": f"{names} reviewed {repo}#{number}", "detail": verdict + (f" · head {head[:12]}" if head else ""),
+                    "ref": f"{repo}#{number}", "url": url, "owner": owner, "pr": int(number), "item": row["item"],
+                    "title": row["title"], "reviewers": reviewers, "requested": selection.get("requested_provider"),
+                    "verdict": verdict, "clearance": kind, "head": head,
+                    "src": "sd-ship delivery note: review_selection and review_clearance"})
+    unrecorded["n"] = missing  # Only a read that finished counts; a failed one leaves 0 and names itself in `sources`.
     return out
 
 
@@ -198,6 +253,7 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
     undated: list[str] = []
     skipped: dict[str, int] = {}
     journal: dict[str, int] = {"unread": 0}
+    unrecorded: dict[str, int] = {"n": 0}
 
     def read_jobs():
         found, missing = jobs(connection, jobs_backend or operations.LaunchdBackend(), start, end)
@@ -205,6 +261,7 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
         return found
 
     for source, collect in (("merge", lambda: merges(connection, start, end)),
+                            ("review", lambda: reviews(connection, start, end, unrecorded)),
                             ("run", lambda: runs(connection, start, end)),
                             ("job", read_jobs),
                             ("command", lambda: commands(connection, end, skipped, journal))):
@@ -217,5 +274,5 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
         events.extend(found)
     events.sort(key=lambda event: (event["at"], event["id"]), reverse=True)
     return {"read": _iso(end), "from": _iso(start), "to": _iso(end), "kinds": list(KINDS), "unknown": UNKNOWN,
-            "sources": sources, "undated": undated, "journal_skipped": skipped,
+            "sources": sources, "undated": undated, "review_unrecorded": unrecorded["n"], "journal_skipped": skipped,
             "journal_cap": JOURNAL_CAP, "journal_unread": journal["unread"], "events": events}

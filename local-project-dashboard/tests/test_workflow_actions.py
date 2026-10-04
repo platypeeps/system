@@ -118,6 +118,23 @@ class BrowserActions(BrowserSession):
                          ("2027-04-30", "planning", "FREQ=YEARLY"))
         self.assertIsNone(reads.item_by_id(self.connection, item)["recurrence"])
 
+    def test_done_on_a_branch_item_with_no_merge_is_refused_by_name_and_a_reason_closes_it(self):
+        # sd:2570. The library refuses the close (sd:1990's rule); the route
+        # answers 400 with the sentence, not a 500, and the row stays open.
+        state = workflow.capture_task(self.connection, title="Fleet work", who="operator")
+        item = state["item"]["id"]
+        self.connection.execute("UPDATE item SET branch = 'fleet/fixture-sd1' WHERE id = ?", (item,))
+        self.connection.commit()
+        revision = workflow.item_state(self.connection, item)["revision"]
+        status, _, body = self.post(f"/api/items/{item}/status", {"revision": revision, "status": "done"})
+        self.assertEqual(status, 400)
+        self.assertIn("worked on branch fleet/fixture-sd1, and no merge of it is recorded", body["error"])
+        self.assertEqual(reads.item_by_id(self.connection, item)["status"], "planning")
+        status, _, state = self.post(f"/api/items/{item}/status", {
+            "revision": revision, "status": "done", "reason": "superseded by another merge"})
+        self.assertEqual(status, 200)
+        self.assertEqual(state["item"]["status"], "done")
+
     def test_stale_browser_does_not_overwrite_a_newer_edit(self):
         state = workflow.capture_task(self.connection, title="Original", who="operator")
         item = state["item"]["id"]

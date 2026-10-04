@@ -1,8 +1,8 @@
 # Design — retire a repo or item row
 
 The shape is a plan and an apply. The plan reads every row the verb would
-remove, every reason it must refuse, and every file and structured
-reference it leaves behind, and hashes that into a fingerprint. Note bodies
+remove, every reason it must refuse, and every file and structured reference
+it leaves behind; the fingerprint hashes the rows and refusals only. Note bodies
 are free text and are not searched (section 1, second table). The apply takes the
 fingerprint and a backup, re-plans inside one `BEGIN IMMEDIATE` transaction,
 files one removal report that holds every removed row, removes the rows
