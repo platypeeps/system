@@ -381,7 +381,10 @@ def registered_for(connection: sqlite3.Connection, root: str, origin: str | None
     The path wins when it is itself registered, so an ordinary checkout is
     unaffected and costs one indexed lookup. Otherwise the origin decides, and
     an unrecognised checkout resolves to itself so the caller's own "not
-    registered" refusal is what the user sees.
+    registered" refusal is what the user sees. So does an origin two
+    registered paths share: the path key is not unique by remote, and the
+    first in path order is a guess about which one a clone was made from
+    (sd:1219).
     """
     probe = paths.keys(root)
     found = connection.execute(
@@ -390,10 +393,11 @@ def registered_for(connection: sqlite3.Connection, root: str, origin: str | None
     if found:
         return str(found["path"])
     if origin:
-        for row in connection.execute(
-                "SELECT path, remote FROM repo WHERE remote IS NOT NULL ORDER BY path"):
-            if same_remote(row["remote"], origin):
-                return str(row["path"])
+        matches = [str(row["path"]) for row in connection.execute(
+            "SELECT path, remote FROM repo WHERE remote IS NOT NULL ORDER BY path")
+            if same_remote(row["remote"], origin)]
+        if len(matches) == 1:
+            return matches[0]
     return root
 
 

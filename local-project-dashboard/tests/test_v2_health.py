@@ -602,7 +602,7 @@ class ThePage(Collectors, BrowserSession):
         self.assertIn("<title>Health · system</title>", body)
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
-        scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
+        scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
         self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "health.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)

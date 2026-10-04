@@ -1,0 +1,56 @@
+"""The catalogue's JOB_COMMANDs read their environment when they run, not when loaded.
+
+`cmd_exec` sources the job file (`load_job`) before it sources
+`~/.config/shell/env.sh`, and under launchd the plist hands the run only
+`HOME` and `PATH`. A `${VAR}` expanded inside a double-quoted JOB_COMMAND is
+therefore read before env.sh has set it, and an operator's SD_PACK_ROOT there
+never reached agent-meter or shadow-sync (sd:1238, 332d7ec72031). Escaped, the
+expansion happens in the `bash -c` that runs the command, after env.sh.
+
+Each example that names SD_PACK_ROOT is found on disk, not listed here, and
+run through `cron-jobs.sh exec` the way launchd runs it, with SD_PACK_ROOT
+set only in the fixture's env.sh.
+"""
+
+import pathlib
+import unittest
+
+from tests.test_cron_jobs import FOLDER, Fixture
+
+EXAMPLES = FOLDER / "examples"
+
+# A pack interpreter and a pack `sd` that only say they were the ones run.
+RECORDER = '#!/bin/sh\nprintf "%s\\n" "$0" >> "$PACK_MARKER"\n'
+
+
+class PackRootFromEnvShTest(unittest.TestCase):
+    def test_every_pack_example_reads_sd_pack_root_from_env_sh(self):
+        jobs = sorted(path for path in EXAMPLES.glob("*.job") if "SD_PACK_ROOT" in path.read_text())
+        self.assertTrue(jobs, "no example names SD_PACK_ROOT; this test checks nothing")
+        for job in jobs:
+            with self.subTest(job=job.name):
+                fx = Fixture()
+                self.addCleanup(fx.destroy)
+                pack = fx.tmp / "custom-pack"
+                marker = fx.tmp / "pack-ran"
+                for relative in (".venv/bin/python", "bin/sd"):
+                    program = pack / relative
+                    program.parent.mkdir(parents=True, exist_ok=True)
+                    program.write_text(RECORDER)
+                    program.chmod(0o755)
+                # The working folders the examples name beside the checkout.
+                for sibling in ("local-agent-meter",):
+                    (fx.tmp / sibling).mkdir(exist_ok=True)
+                env_sh = fx.home / ".config" / "shell" / "env.sh"
+                env_sh.parent.mkdir(parents=True)
+                env_sh.write_text(f'export SD_PACK_ROOT="{pack}"\nexport PACK_MARKER="{marker}"\n')
+                fx.write_job(job.stem, job.read_text())
+                result = fx.exec_job(job.stem)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                ran = marker.read_text().splitlines() if marker.exists() else []
+                self.assertEqual(len(ran), 1, ran)
+                self.assertTrue(pathlib.Path(ran[0]).is_relative_to(pack), ran)
+
+
+if __name__ == "__main__":
+    unittest.main()

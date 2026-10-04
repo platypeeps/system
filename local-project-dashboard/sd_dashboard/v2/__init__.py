@@ -14,6 +14,12 @@ prints the map. The assets are what `static/` holds, enumerated from the
 directory when the module loads: a file added there is served, and nothing
 outside it can be.
 
+Each asset is linked as `/ui/<name>?v=<digest>`, from `VERSIONS`, the map of
+digests computed when this module loads (sd:2141): `page` adds the query to the
+page's links, and `asset` adds it to a stylesheet's `url(...)` references, so a
+font change changes the stylesheet's digest too. `sd_dashboard.caching` says
+when the server may cache an answer for good.
+
 Since sd:2163 the pages are served at the root (`/today`) and the assets under
 `/ui/`, a prefix no v1 route uses; v1 keeps `/static/`. A `/v2/` address that
 names a page or an asset redirects to its new one (`moved`).
@@ -23,11 +29,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
+from .. import caching
 from . import pages as registry
 
-__all__ = ["ASSETS", "CLASSIC", "PAGES", "SCREENS", "SECTIONS", "action", "api", "asset", "listing", "moved", "old", "page"]
+__all__ = ["ASSETS", "CLASSIC", "PAGES", "SCREENS", "SECTIONS", "VERSIONS", "action", "api", "asset", "digests", "listing",
+           "moved", "old", "page"]
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -93,10 +102,46 @@ GENERATED = {"sections.js": _sections()}
 ASSETS = _enumerate() | {name: TYPES[Path(name).suffix] for name in GENERATED}
 
 
+def _stylesheet(name: str, body: bytes, versions: dict[str, str]) -> bytes:
+    """A stylesheet's relative `url(...)` references, each with `?v=` when `versions` names its file."""
+    folder = Path(name).parent
+
+    def versioned(match: re.Match) -> str:
+        target = (folder / match.group(2)).as_posix()
+        version = versions.get(target)
+        return match.group(0) if version is None else f"url({match.group(1)}{match.group(2)}?v={version}{match.group(1)})"
+
+    text = body.decode("utf-8")
+    return re.sub(r"url\((['\"]?)([A-Za-z0-9_][A-Za-z0-9_./-]*)\1\)", versioned, text).encode("utf-8")
+
+
+def _served(name: str, root: Path, versions: dict[str, str]) -> bytes:
+    """The bytes `/ui/<name>` answers with: the file, a stylesheet's references versioned, or a generated one."""
+    body = GENERATED[name] if name in GENERATED else (root / name).read_bytes()
+    return _stylesheet(name, body, versions) if name.endswith(".css") else body
+
+
+def digests(root: Path = STATIC) -> dict[str, str]:
+    """Published name -> the digest of the bytes it is served as, for the assets under `root`.
+
+    Stylesheets last: their bytes carry the digests of the files they name.
+    """
+    names = {name for name in ASSETS if name in GENERATED or (root / name).is_file()}
+    versions = {name: caching.digest(_served(name, root, {})) for name in sorted(names) if not name.endswith(".css")}
+    for name in sorted(names):
+        if name.endswith(".css"):
+            versions[name] = caching.digest(_served(name, root, versions))
+    return versions
+
+
+#: Every asset's digest when the server started; the pages link these (sd:2141).
+VERSIONS = digests()
+
+
 def page(path: str) -> str | None:
-    """The page at a route, or None when the path is not one."""
+    """The page at a route, its asset links carrying `?v=`, or None when the path is not one."""
     name = PAGES.get(path)
-    return None if name is None else (HERE / name).read_text(encoding="utf-8")
+    return None if name is None else caching.link((HERE / name).read_text(encoding="utf-8"), "/ui/", VERSIONS)
 
 
 def api(path: str):
@@ -142,7 +187,7 @@ def asset(name: str) -> tuple[bytes, str] | None:
     kind = ASSETS.get(name)
     if kind is None:
         return None
-    return (GENERATED[name] if name in GENERATED else (STATIC / name).read_bytes()), kind
+    return _served(name, STATIC, VERSIONS), kind
 
 
 def moved(path: str) -> str | None:

@@ -8,7 +8,9 @@ query of the store:
   /backlog (unparked open items, and `done` for the week), each with the
   revision a write sends back and the statuses `workflow.allowed_statuses`
   accepts for it, so the board refuses a move for the reason the library
-  would, before it posts. Each row also carries whether `workflow.edit_item`
+  would, before it posts. Each row carries its `reads.age_bucket` key and the
+  document names the buckets (`ages`), so the page's age filter is the one
+  Operations' histogram counts with (sd:2589). Each row also carries whether `workflow.edit_item`
   takes its fields (`_edit_capability`), so Edit, P2, recurrence and a
   matrix drop are off, with the library's reason, where the edit would fail.
 - `/api/tasks/<id>` is `details`: what `sd task show <id> --json` prints
@@ -98,7 +100,7 @@ def _document(connection, *, now: str) -> dict:
             "assignment": live.get(row["id"]),
             # The due date a completion today gives the next occurrence, for the confirm to name before it writes.
             "next_due": workflow.next_occurrence_due(state["item"]) if row["recurrence"] else None,
-            "status_since": row["status_since"], "revision": state["revision"],
+            "status_since": row["status_since"], "age": reads.age_bucket(row, now=now), "revision": state["revision"],
             # The matrix's urgency is `reads.is_urgent`, decided here. Without the due-date rule it is
             # `urgent_otherwise`, which the page keeps for a due edit made before the rows are read again.
             "urgent": reads.is_urgent(row, now=now),
@@ -107,7 +109,9 @@ def _document(connection, *, now: str) -> dict:
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(connection, row),
         })
-    return {"read": now, "statuses": list(STATUSES), "rows": out}
+    # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
+    ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
+    return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out}
 
 
 def _note(note) -> dict:

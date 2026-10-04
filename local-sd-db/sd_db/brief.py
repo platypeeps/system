@@ -75,22 +75,26 @@ class Brief:
 
 
 def checked_out_branch(path: str | Path) -> str | None:
-    """The branch checked out at `path`, or None on a detached HEAD or no repository.
+    """The branch checked out at `path`, or None on a detached HEAD, a bare repository or no repository.
 
     None is the repository-wide case and not an error: a hook that starts in
     a worktree at a bare commit still gets the open notes of every live item.
+    A bare repository's `HEAD` is still a symbolic ref, to its default branch,
+    but nothing is checked out there, so it is asked first (sd:1219).
     """
-    try:
-        done = subprocess.run(
-            ["git", "-C", str(paths.disk(path)), "symbolic-ref", "--short", "-q", "HEAD"],
-            capture_output=True, text=True, timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError):
+    def git(*argv: str) -> str | None:
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(paths.disk(path)), *argv],
+                capture_output=True, text=True, timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    if git("rev-parse", "--is-bare-repository") != "false":
         return None
-    if done.returncode != 0:
-        return None
-    branch = done.stdout.strip()
-    return branch or None
+    return git("symbolic-ref", "--short", "-q", "HEAD") or None
 
 
 def _line(note: sqlite3.Row, *, with_item: bool) -> str:
@@ -168,24 +172,31 @@ def note_brief(
     with_item = len(items) > 1
     lines = [_line(note, with_item=with_item) for note in notes]
 
-    def commands_after(shown: int) -> tuple[str, ...]:
-        cut_items: list[int] = []
-        for note in notes[shown:]:
-            if note["item"] not in cut_items:
-                cut_items.append(note["item"])
-        return tuple(LIST_COMMAND.format(item=item) for item in cut_items)
-
+    # The size of each candidate is counted, not rendered: every part of
+    # `_render`'s text is followed by one newline, so a candidate is the
+    # header, its lines and its trailer, each plus one byte. Walking from all
+    # notes down keeps the cut items in first-appearance order with one move
+    # per step, and the text is rendered once, for the candidate that fits
+    # (sd:1219: rendering and encoding every prefix was quadratic).
+    sizes = [len(line.encode("utf-8")) + 1 for line in lines]
+    size = len(header.encode("utf-8")) + 1 + sum(sizes)
+    cut_items: list[int] = []
     for shown in range(len(notes), -1, -1):
+        if shown < len(notes):
+            size -= sizes[shown]
+            item = notes[shown]["item"]
+            if item in cut_items:
+                cut_items.remove(item)
+            cut_items.insert(0, item)
         cut = len(notes) - shown
-        commands = commands_after(shown)
+        commands = tuple(LIST_COMMAND.format(item=item) for item in cut_items)
         trailer = _trailer(cut, commands) if cut else None
-        text = _render(header, lines[:shown], trailer)
-        if len(text.encode("utf-8")) <= limit:
+        if size + (len(trailer.encode("utf-8")) + 1 if trailer else 0) <= limit:
+            text = _render(header, lines[:shown], trailer)
             return Brief(text=text, scope=scope, items=ids, shown=shown, cut=cut, commands=commands)
     # Not even the header and a trailer fit: the bound is smaller than a
     # line. Hand back the trailer alone, so the count and the command
     # survive even where the notes do not.
-    commands = commands_after(0)
     return Brief(
         text=_trailer(len(notes), commands) + "\n", scope=scope, items=ids,
         shown=0, cut=len(notes), commands=commands,

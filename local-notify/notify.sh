@@ -329,9 +329,10 @@ jev_ask() {
   printf '%s\n' "$jev_answer"
 }
 
-# Returns 0 only when it actually asked. A non-zero return means the stage
-# declined -- no jev.sh, Jev off or unkeyed, or JEV_NOTIFY switched it off --
-# and the caller must not then announce a routing that never happened.
+# Returns 0 only when it asked and both halves answered. A non-zero return
+# means the stage declined -- no jev.sh, Jev off or unkeyed, or JEV_NOTIFY
+# switched it off -- or Jev gave only part of a route, and the caller must
+# not then announce a routing that never happened.
 jev_route() {
   # Every decline says why on stderr, as the README promises (sd:1364).
   if [ ! -x "$JEV_SH" ]; then
@@ -365,46 +366,58 @@ jev_route() {
     return 1
   }
 
-  if [ "$CHANNELS_SET" = 0 ]; then
-    # Two routes, and imessage is in neither. Escalating to someone's phone
-    # messages is a decision a human makes; an ordinary push is the ceiling.
-    # Neither route is empty either -- Jev chooses among channels, it never
-    # chooses none. Descriptions carry no commas: --criteria splits on them.
-    jev_pick=$(jev_ask choice 'Which route fits this notification?' \
+  # Both halves or neither (sd:1238). The caller runs this only when neither
+  # -c nor -p was given, so both are asked; a pick applied without its score,
+  # or a score without its pick, is a route nobody chose.
+  #
+  # Two routes, and imessage is in neither. Escalating to someone's phone
+  # messages is a decision a human makes; an ordinary push is the ceiling.
+  # Neither route is empty either -- Jev chooses among channels, it never
+  # chooses none. Descriptions carry no commas: --criteria splits on them.
+  jev_channels=""
+  if jev_pick=$(jev_ask choice 'Which route fits this notification?' \
       --id notify-route \
       --criteria 'desk=routine or informational; a banner on the screen the person is already at is enough,phone=needs attention away from the desk; banner plus a push to the phone' \
-      --unsure-below 0.7) || jev_pick=""
+      --unsure-below 0.7); then
     case "$jev_pick" in
-      desk)  CHANNELS="local" ;;
-      phone) CHANNELS="local,ntfy" ;;
-      # `unsure`, empty, or a name outside the two above: today's default. An
-      # unexpected answer is never pasted into CHANNELS, which is the other
-      # half of why imessage cannot arrive this way.
+      desk)   jev_channels="local" ;;
+      phone)  jev_channels="local,ntfy" ;;
+      # `unsure` is an answer: today's default route.
+      unsure) jev_channels="$CHANNELS" ;;
+      # A name outside the three above is not an answer. It is never pasted
+      # into CHANNELS, which is the other half of why imessage cannot arrive
+      # this way.
       *) ;;
     esac
   fi
 
-  if [ "$PRIORITY_SET" = 0 ]; then
-    # `score` prints a position on the levels, 0-based, as a float. Round,
-    # clamp, and map back through the same list -- so the value handed to ntfy
-    # is always one of the five names, never whatever came back.
-    jev_raw=$(jev_ask score 'How urgently does this need a person?' \
+  # `score` prints a position on the levels, 0-based, as a float. Only a
+  # whole decimal number counts: round, clamp, and map back through the same
+  # list, so the value handed to ntfy is always one of the five names. awk's
+  # `^` and `$` anchor the whole value, so a second line fails the match too.
+  jev_priority=""
+  if jev_raw=$(jev_ask score 'How urgently does this need a person?' \
       --id notify-priority \
-      --levels 'min,low,default,high,urgent') || jev_raw=""
-    case "$jev_raw" in
-      ''|*[!0-9.]*) jev_idx="" ;;
-      *) jev_idx=$(awk -v s="$jev_raw" 'BEGIN{i=int(s+0.5); if(i<0)i=0; if(i>4)i=4; print i}') ;;
-    esac
+      --levels 'min,low,default,high,urgent'); then
+    jev_idx=$(awk -v s="$jev_raw" 'BEGIN{
+      if (s !~ /^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/) exit
+      i=int(s+0.5); if(i<0)i=0; if(i>4)i=4; print i}')
     case "$jev_idx" in
-      0) PRIORITY="min" ;;
-      1) PRIORITY="low" ;;
-      2) PRIORITY="default" ;;
-      3) PRIORITY="high" ;;
-      4) PRIORITY="urgent" ;;
+      0) jev_priority="min" ;;
+      1) jev_priority="low" ;;
+      2) jev_priority="default" ;;
+      3) jev_priority="high" ;;
+      4) jev_priority="urgent" ;;
       *) ;;
     esac
   fi
   rm -f "$JEV_REDACT"
+  if [ -z "$jev_channels" ] || [ -z "$jev_priority" ]; then
+    echo "notify.sh: jev gave no complete route; using the defaults" >&2
+    return 1
+  fi
+  CHANNELS="$jev_channels"
+  PRIORITY="$jev_priority"
   return 0
 }
 
