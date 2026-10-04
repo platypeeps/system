@@ -289,6 +289,10 @@ EXCLUDE_GLOBS="*.png *.jpg *.jpeg *.gif *.webp *.ico *.pdf *.zip *.tar *.gz *.tg
 # evidence requirement, 2 without it. Deliberately narrow to `Authorization`:
 # widening it to api_key/token/secret matched 11 vendored test fixtures, and
 # PATTERNS also drives `mask`, which rewrites files in place.
+#
+# The URL entry leaves `[` and `]` out of the user and password: RFC 3986
+# allows neither in userinfo, and a grammar line such as
+# `scheme://[user[:password]@]host` matched as a credential (sd:2591).
 PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
 sk-[A-Za-z0-9]{40,}
@@ -312,10 +316,18 @@ sq0atp-[0-9A-Za-z_-]{20,}
 SG\.[0-9A-Za-z_-]{20,}\.[0-9A-Za-z_-]{20,}
 eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}
 -----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY( BLOCK)?-----
-[a-z][a-z0-9+.-]*://[^/\s:@"\\]{3,}:[^/\s:@"\\]{8,}@
+[a-z][a-z0-9+.-]*://[^]/\s:@"\\\[]{3,}:[^]/\s:@"\\\[]{8,}@
 [Aa]uthorization[^A-Za-z0-9]{1,4}([Bb]earer[^A-Za-z0-9]{1,3})?[A-Za-z0-9+/]{24,}(=|[+][A-Za-z0-9+/]{2,}={0,2})'
 
 command -v rg >/dev/null 2>&1 && HAVE_RG=1 || HAVE_RG=0
+
+# PATTERNS for `grep -E`, the fallback without ripgrep. POSIX ERE has no `\s`:
+# inside a bracket it is a backslash and an `s`, so the URL entry missed every
+# password holding an `s`. Each `\s` in PATTERNS sits in a bracket, where
+# `[:space:]` is the POSIX spelling (sd:2591).
+ere_patterns() {
+  printf '%s\n' "$PATTERNS" | sed 's/\\s/[:space:]/g'
+}
 [ -t 1 ] && S4S_TTY=1 || S4S_TTY=0
 export S4S_TTY
 
@@ -552,7 +564,8 @@ TARGETS_EOF
     else grep "$@" 2>/dev/null || true; fi
   }
   FILES=$(printf '%s\n' "$VALS" | mask_file_list fixed)
-  PFILES=$(printf '%s\n' "$PATTERNS" | mask_file_list regex)
+  if [ "$HAVE_RG" = 1 ]; then PFILES=$(printf '%s\n' "$PATTERNS" | mask_file_list regex)
+  else PFILES=$(ere_patterns | mask_file_list regex); fi
   ALLFILES=$(printf '%s\n%s\n' "$FILES" "$PFILES" | awk 'NF' | sort -u)
   if [ -z "$ALLFILES" ]; then
     echo "nothing to mask — no target file contains your keys or known patterns"
@@ -1334,7 +1347,7 @@ else
 $(targets)
 TARGETS_EOF
   [ $# -gt 0 ] || set -- .
-  RE=$(printf '%s' "$PATTERNS" | tr '\n' '|')
+  RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
   OUT=$(grep -rEIno $EX_D $EX_G -e "$RE" "$@" 2>/dev/null || true)
 fi
