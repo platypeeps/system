@@ -36,9 +36,9 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Data (build) ----------
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
   const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  let tasks = [], READ = null;
+  let tasks = [], READ = null, AGES = [];
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, real: true });
+    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   const label = t => t.id ? `#${t.id}` : (t.kind === 'ops' ? 'ops' : 'no id');
   async function post(path, body) {
@@ -207,25 +207,42 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Filters ----------
   // build: Kind joins Repo, Priority and Due, as v1 /backlog filters by kind and repo (review 2026-09-29, item 17).
-  const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set() };
+  // build (sd:2589): Status, In status (the reads.age_bucket key each row carries), Open only, the text filter and the list's
+  // page take the query v1 /backlog took (status, age, active=1, q, page), so Operations' histogram bars and the capture
+  // check land here with their filter.
+  const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set() };
   const FKEYS = Object.keys(F);
-  const on = () => FKEYS.reduce((n, k) => n + F[k].size, 0);
+  const find = document.getElementById('find-in');
+  let Q = '', pageNo = 1, size = 50;
+  const SIZES = [25, 50, 100, 200];
+  const on = () => FKEYS.reduce((n, k) => n + F[k].size, 0) + (Q ? 1 : 0);
   const dueBucket = t => t.overdue || (t.due && days(t) < 0) ? 'overdue' : !t.due ? 'none' : withinWeek(t) ? 'week' : 'later';
   const DUE_OPTS = [['overdue', 'overdue'], ['week', '≤ 7 days'], ['later', 'later'], ['none', 'no due']];
   function renderFilters() {
     const repos = [...new Set(tasks.map(t => t.repo))].sort(), kinds = [...new Set(tasks.map(t => t.kind))].sort();
+    // The board's statuses, then any other a row or the address names (ready_to_send has no column), so a chip shows it.
+    const statuses = [...STATUSES.map(([st]) => st), ...new Set([...tasks.map(t => t.status), ...F.status].filter(st => !SLABEL[st]))];
     const grp = (key, name, opts, help) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${String(F[key].has(v))}">${l}</button>`)}</div>${help || ''}</div>`;
     put(document.getElementById('filters'), html`${grp('kind', 'Kind', kinds.map(k => [k, k]))}${grp('repo', 'Repo', repos.map(r => [r, r]))}${
       grp('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']])}${
       grp('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. Chips in one group widen the view; groups narrow it.">${ICON('circle-help')}</button>`)}${
+      grp('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
+      grp('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
+      grp('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`)}${
       html`<div class="fsum">${ICON('filter')}<span>${on() ? `${visible().length} of ${tasks.length} shown` : `${tasks.length} tasks`}</span>${on() ? html`<button class="linkbtn" type="button" id="clear-f">Clear all</button>` : ''}</div>`}`);
   }
   document.getElementById('filters').addEventListener('click', e => {
     const c = e.target.closest('[data-f]');
-    if (c) { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); render(); return; }
-    if (e.target.id === 'clear-f') { Object.values(F).forEach(s => s.clear()); render(); }
+    if (c) { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); pageNo = 1; render(); return; }
+    if (e.target.id === 'clear-f') clearFilters();
   });
-  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)));
+  function clearFilters() { Object.values(F).forEach(s => s.clear()); Q = ''; find.value = ''; pageNo = 1; render(); }
+  // The text filter narrows on what a row shows: id, title, repo, status and kind, as v1's ?q= read the visible columns.
+  find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); pageNo = 1; render(); });
+  find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; pageNo = 1; render(); } });
+  const words = t => `#${t.id ?? ''} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind}`.toLowerCase();
+  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
+    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
   // ---------- Commands (products/system/commands.md) ----------
@@ -481,22 +498,32 @@ addEventListener('DOMContentLoaded', () => {
     </div>
     <p class="mnote">Done tasks and ops rows stay off the matrix. A drop edits the task: into Important sets P2, out of it sets P3; crossing into or out of Urgent asks you for the due date, because urgency comes from it. Cancel changes nothing.</p>`);
   }
-  let sortKey = 'p', sortDir = 1;
+  let sortKey = 'p', sortDir = 1, seek = false;
   function renderList() {
-    const v = visible().slice().sort((a, b) => {
+    const all = visible().slice().sort((a, b) => {
       const va = sortKey === 'p' ? (a.p ?? 9) : (a.overdue && !a.due ? -99 : a.due ? days(a) : 999);
       const vb = sortKey === 'p' ? (b.p ?? 9) : (b.overdue && !b.due ? -99 : b.due ? days(b) : 999);
       return (va - vb) * sortDir;
     });
+    // build (sd:2589): the list pages as v1 /backlog paged, 50 a page; board and matrix show every filtered task. A ?row= with
+    // no ?page= opens the page that holds it.
+    const pages = Math.max(1, Math.ceil(all.length / size));
+    if (seek) { seek = false; const i = all.findIndex(t => t.key === selected); if (i >= 0) pageNo = Math.floor(i / size) + 1; }
+    pageNo = Math.min(pageNo, pages);
+    const v = all.slice((pageNo - 1) * size, pageNo * size), from = all.length ? (pageNo - 1) * size + 1 : 0, to = Math.min(pageNo * size, all.length);
     const th = (k, name) => html`<th scope="col"${sortKey === k ? html` aria-sort="${sortDir > 0 ? 'ascending' : 'descending'}"` : ''}><button type="button" data-sort="${k}">${name}${ICON(sortKey === k ? (sortDir > 0 ? 'arrow-up' : 'arrow-down') : 'arrow-up-down')}</button></th>`;
     put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list"><caption class="sr">Tasks</caption><thead><tr><th scope="col"><span class="sr">Select</span></th><th scope="col"><span class="sr">State</span></th><th scope="col" class="label">Id</th><th scope="col" class="label">Title</th><th scope="col" class="label">Repo</th><th scope="col" class="label">Status</th>${th('p', 'P')}${th('due', 'Due')}<th scope="col" aria-label="Actions"></th></tr></thead><tbody>
       ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st}">${st ? GLYPH[st] : ''}</td><td class="mono">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button></td><td class="mono">${t.repo}</td><td>${slabel(t.status)}</td><td><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${dt}</td><td>${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="9" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
-    </tbody></table></div>`);
+    </tbody></table></div>${all.length > SIZES[0] ? html`<nav class="pager" aria-label="Pages"><span>${from}–${to} of ${all.length.toLocaleString()}</span>
+      <span class="pages">${Array.from({ length: pages }, (_, i) => html`<button class="chip" type="button" data-page="${i + 1}" aria-pressed="${String(i + 1 === pageNo)}"${i + 1 === pageNo ? html` aria-current="page"` : ''}>${i + 1}</button>`)}</span>
+      <span class="sizes"><span class="label">Per page</span>${SIZES.map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === size)}">${n}</button>`)}</span></nav>` : ''}`);
   }
   document.getElementById('view-list').addEventListener('click', e => {
     const s = e.target.closest('[data-sort]');
-    if (s) { if (sortKey === s.dataset.sort) sortDir *= -1; else { sortKey = s.dataset.sort; sortDir = 1; } renderList(); writeURL(); return; }
-    if (e.target.id === 'clear-f2') { Object.values(F).forEach(x => x.clear()); render(); return; }
+    if (s) { if (sortKey === s.dataset.sort) sortDir *= -1; else { sortKey = s.dataset.sort; sortDir = 1; } pageNo = 1; renderList(); writeURL(); return; }
+    if (e.target.id === 'clear-f2') { clearFilters(); return; }
+    const pg = e.target.closest('[data-page]'); if (pg) { pageNo = +pg.dataset.page; render(); return; }
+    const sz = e.target.closest('[data-size]'); if (sz) { size = +sz.dataset.size; pageNo = 1; render(); return; }
     const o = e.target.closest('[data-open]'); if (o) select(o.dataset.open, true);
   });
 
@@ -819,13 +846,24 @@ addEventListener('DOMContentLoaded', () => {
   function readFilterURL() {
     const q = new URLSearchParams(location.search);
     FKEYS.forEach(key => (q.get(key) || '').split(',').filter(Boolean).forEach(v => F[key].add(v)));
+    // An age v1 would not accept is dropped, as v1 dropped it; active takes 1 only, as v1's ?active=1 did.
+    [...F.age].forEach(v => { if (!AGES.some(a => a.key === v)) F.age.delete(v); });
+    [...F.active].forEach(v => { if (v !== '1') F.active.delete(v); });
+    find.value = (q.get('q') || '').trim(); Q = find.value.toLowerCase();
+    // A page is decimal digits, as on Documents (sd:2427).
+    const page = q.get('page') || ''; if (/^[1-9]\d*$/.test(page) && Number.isSafeInteger(+page)) pageNo = +page;
+    else seek = !!selected;
+    if (SIZES.includes(+q.get('size'))) size = +q.get('size');
     if (q.get('sort') === 'due') sortKey = 'due';
     if (q.get('dir') === 'desc') sortDir = -1;
   }
   function writeURL() {
     const q = new URLSearchParams(); q.set('view', view);
     FKEYS.forEach(key => { if (F[key].size) q.set(key, [...F[key]].join(',')); });
+    if (Q) q.set('q', Q);
     if (view === 'list' && (sortKey !== 'p' || sortDir < 0)) { q.set('sort', sortKey); if (sortDir < 0) q.set('dir', 'desc'); }
+    if (view === 'list' && pageNo > 1) q.set('page', pageNo);
+    if (view === 'list' && size !== 50) q.set('size', size);
     shell.url(q); // the shell keeps ?row=
   }
   document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
@@ -923,7 +961,7 @@ addEventListener('DOMContentLoaded', () => {
   }
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
-    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read;
+    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || [];
       return { objects: tasks.map(objectOf), state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
     clear: () => { tasks = []; READ = null; },
     draw,
