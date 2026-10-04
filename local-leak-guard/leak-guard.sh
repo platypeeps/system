@@ -176,7 +176,9 @@ cmd_hook() {
     # A deleted ref pushes no commit.
     [ "$lsha" = "$ZERO" ] && continue
     if [ "$rsha" != "$ZERO" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
-      ( check_revs "$lsha" --not "$rsha" ) || status=1
+      # Also skip what another ref of the remote holds: a branch that merges
+      # main pushes main's commits here first, and they are already published.
+      ( check_revs "$lsha" --not "$rsha" --remotes="$remote" ) || status=1
     else
       # A new ref, or a remote tip this clone has never seen: check what no
       # ref of that remote already holds. On a first push that is everything.
