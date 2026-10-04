@@ -10,10 +10,16 @@
 
 # Perl, not timeout(1): macOS ships none, and Homebrew's coreutils is not on
 # launchd's PATH. The command runs in a process group of its own, so the bound
-# ends all of it; INT, TERM and HUP are passed on to that group, so a job's own
-# limit still reaches it. On expiry: one line on stderr naming the command,
-# TERM, then KILL after ST_BOUNDED_GRACE seconds (default 10), and exit 124,
-# the code GNU timeout uses.
+# ends all of it. On expiry: one line on stderr naming the command, TERM to
+# the group, KILL after ST_BOUNDED_GRACE seconds (default 5), and exit 124, the
+# code GNU timeout uses.
+#
+# An INT, TERM or HUP to this process ends the command the same way: the
+# signal goes on to the group, KILL follows after the grace, and the exit is
+# 128 plus the signal. Passing the signal on alone was not enough: cron-jobs
+# TERMs a job's group at its limit and KILLs it after its own grace (10 s by
+# default), and that KILL never reaches a group of its own, so a command that
+# ignored the TERM outlived the job. The default grace stays under that 10 s.
 # shellcheck disable=SC2016 # perl source, expanded by perl
 ST_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
 my ($limit, $grace, @cmd) = @ARGV;
@@ -26,21 +32,27 @@ if (!$pid) {
   POSIX::_exit(127);
 }
 setpgrp($pid, $pid);
-for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { kill $sig, -$pid } }
-my $status;
+my %number = (INT => POSIX::SIGINT(), TERM => POSIX::SIGTERM(), HUP => POSIX::SIGHUP());
+my ($status, $caught);
+# perl retries a waitpid a signal interrupts, so each handler dies to end it.
 eval {
   local $SIG{ALRM} = sub { die "limit\n" };
+  local @SIG{keys %number} = map {
+    my $sig = $_;
+    sub { $caught = $sig; kill $sig, -$pid; die "signal\n" }
+  } keys %number;
   alarm $limit;
-  while (1) {
-    my $done = waitpid($pid, 0);
-    if ($done == $pid) { $status = $?; last }
-    last unless $!{EINTR};
-  }
+  $status = $? if waitpid($pid, 0) == $pid;
   alarm 0;
 };
+alarm 0;
 if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8) }
-print STDERR "timed out after ${limit}s: @cmd\n";
-kill "TERM", -$pid;
+# Ending the group is not interrupted: a second TERM must not leave it half done.
+$SIG{$_} = "IGNORE" for keys %number;
+if (!defined $caught) {
+  print STDERR "timed out after ${limit}s: @cmd\n";
+  kill "TERM", -$pid;
+}
 my $end = Time::HiRes::time() + $grace;
 while (kill 0, -$pid) {
   waitpid($pid, POSIX::WNOHANG());
@@ -48,7 +60,7 @@ while (kill 0, -$pid) {
   Time::HiRes::sleep(0.1);
 }
 waitpid($pid, 0);
-exit 124;'
+exit(defined $caught ? 128 + $number{$caught} : 124);'
 
 # st_bounded SECONDS COMMAND...: run COMMAND; stop it after SECONDS.
 # Exits with COMMAND's code, or 124 when the bound expired.

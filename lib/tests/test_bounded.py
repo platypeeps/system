@@ -28,6 +28,14 @@ def gone(pid, within=5.0):
     return False
 
 
+def kill_group(pgid):
+    """Cleanup: KILL a group a failed case may have left; gone is fine."""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 class Bounded(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -85,6 +93,30 @@ class Bounded(unittest.TestCase):
         process.communicate(timeout=20)
 
         self.assertTrue(gone(child), "the bounded command outlived the TERM")
+
+    def test_a_command_that_ignores_a_term_to_the_caller_is_killed_after_the_grace(self):
+        """cron-jobs TERMs the job's group, then KILLs it after its own grace.
+        The KILL cannot reach a command in a group of its own, so the bound
+        has to end it within its grace and exit, or the command outlives the
+        job and overlaps the next run."""
+        pidfile = self.dir / "child.pid"
+        process = subprocess.Popen(
+            ["/bin/sh", "-c", f'. "{LIB}/bounded.sh"; ST_BOUNDED_GRACE=1 st_bounded 60 '
+                              f"sh -c 'trap \"\" TERM; echo $$ $PPID > \"{pidfile}\"; exec sleep 60'"],
+            start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
+        deadline = time.monotonic() + 10
+        while not pidfile.exists() or len(pidfile.read_text().split()) < 2:
+            self.assertLess(time.monotonic(), deadline, "the command never started")
+            time.sleep(0.05)
+        child, supervisor = (int(word) for word in pidfile.read_text().split())
+        self.addCleanup(kill_group, child)
+
+        os.killpg(process.pid, signal.SIGTERM)
+
+        self.assertTrue(gone(child, 4), "a command ignoring TERM outlived the grace")
+        self.assertTrue(gone(supervisor, 2), "the bound did not exit after the grace")
+        process.communicate(timeout=10)
 
 
 class Step(unittest.TestCase):
