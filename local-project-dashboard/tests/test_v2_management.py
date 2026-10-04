@@ -203,6 +203,17 @@ class TheDocument(ScreenCase):
         self.assertEqual(rows["/repos/widget-copy"]["protection"]["borrowed_from"], "/repos/widget")
         self.assertIsNone(rows["/repos/widget"]["protection"]["borrowed_from"])
 
+    def test_a_protection_row_from_an_older_library_reads_as_the_checkouts_own(self):
+        """An installed `sd_db` from before sd:1607 returns rows with no `borrowed_from`."""
+        from sd_db import protection
+        older = [{key: value for key, value in row.items() if key != "borrowed_from"}
+                 for row in protection.rows(self.connection)]
+        with patch.object(protection, "rows", lambda connection: older):
+            doc = self.document()
+        self.assertIsNotNone(doc["repos"], doc["sources"])
+        rows = {row["path"]: row for row in doc["repos"]}
+        self.assertIsNone(rows[self.ids["checkout"]]["protection"]["borrowed_from"])
+
     def test_git_state_is_primarys_reading_with_its_remedy_or_refusal(self):
         git = {row["name"]: row for row in self.document()["git"]["repos"]}
         self.assertEqual((git["system"]["state"], git["system"]["remedy"]), ("behind", "git -C /repos/system pull --ff-only"))
