@@ -320,6 +320,7 @@
   // One declaration per command; the row button, the action menu, the Details bar and the palette all read it.
   // See products/system/commands.md. A page registers commands and puts its row objects:
   //   shell.commands.register({ id, on, label, key, cli: o => '…', risk: 'safe'|'undo'|'confirm', primary: o => bool, when: o => true|'reason', run: o => 'result', undo: o => {} })
+  //   bulk: true offers it in the bulk bar, one run per picked object; batch: (objs, done) => {} hands the bar's group over in one call.
   //   shell.commands.put({ id, type, label, …facts })   shell.commands.select(id)
   // build (sd:2124): run may return a promise for a write; see settleOne and settleBulk below.
   const REG = [], OBJ = new Map(), picked = new Set();
@@ -359,6 +360,14 @@
       toast(text, undo);
       return { landed: landed.length, failed: failed.length };
     });
+  }
+  // build (sd:2590): a command with batch(objs, done) takes the whole group in one call, as sd run queues a selection as one
+  // request. Its own form names the count and asks first; it calls done() to clear the picks once the group was sent, and
+  // the page toasts the result. Answers whether the command took the group.
+  function handOver(c, objs, done) {
+    if (!c.batch) return false;
+    c.batch(objs, done);
+    return true;
   }
   // bulk:end
   // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
@@ -560,6 +569,7 @@
     // The confirm dialog gets the group, which has no row fields, so consequence is rebuilt from the real objects: one line each, repeats folded.
     const consequence = c.consequence && (() => { const lines = [...new Set(objs.map(o => c.consequence(o)))]; return lines.length > 4 ? `${lines.slice(0, 4).join(' ')} And ${lines.length - 4} more.` : lines.join(' '); });
     // build (sd:2124): the group's toast and Undo wait for every run (settleBulk); run() sees null and toasts nothing itself.
+    if (handOver(c, objs, () => { picked.clear(); renderBulk(); })) return;
     const one = { ...c, cli: () => objs.map(o => cliOf(c, o)).join(' && '), run: () => { const rs = runEach(c, objs); picked.clear(); renderBulk(); settleBulk(c, objs, rs, { toast, plural }); return null; },
       consequence, askFirst: objs.length > 25, risk: c.risk };
     run(one, group);

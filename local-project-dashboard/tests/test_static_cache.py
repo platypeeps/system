@@ -42,7 +42,7 @@ class WhatTheServerCaches(BrowserSession):
         return found[0]
 
     def test_a_page_links_each_asset_with_its_digest_and_that_answer_is_immutable(self):
-        for page, name in (("/today", "shell.js"), ("/today", "fonts.css"), ("/backlog", "dashboard.css")):
+        for page, name in (("/today", "shell.js"), ("/today", "fonts.css"), ("/classic/backlog", "dashboard.css")):
             with self.subTest(page=page, name=name):
                 address = self.linked(page, name)
                 self.assertRegex(address, r"\?v=[0-9a-f]{16}$")

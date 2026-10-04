@@ -29,7 +29,7 @@ from test_workflow_actions import BrowserSession
 V2 = Path(v2.__file__).resolve().parent
 
 #: Every old screen, and where it lives now. An old screen whose path a page took is where that page's module says.
-OLD_SCREENS = ("/backlog", "/protection", "/operations",
+OLD_SCREENS = ("/protection", "/operations",
                *(f"/operations?area={key}" for key in ("jobs", "services", "ports", "progress", "usage", "reports",
                                                         "resources", "trackers", "repos", "sessions", "commands")),
                *(entry.path for page in v2.registry.PAGES for entry in page.takes))

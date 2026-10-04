@@ -15,8 +15,10 @@ from .operations import LABEL_PREFIX
 from .writes import add_note, set_item_fields
 
 
-def readiness(connection, item):
-    state = workflow.item_state(connection, item)
+def readiness(connection, item, *, state=None):
+    """Whether `enqueue` takes the item now, and why not. `state` is the item's `workflow.item_state`, when the caller
+    read it in the same snapshot (the Tasks rows, sd:2590)."""
+    state = state or workflow.item_state(connection, item)
     row = state["item"]
     assignments = [runner.queue_state(connection, held["id"]) for held in connection.execute(
         "SELECT id FROM assignment WHERE item=? ORDER BY id DESC LIMIT 20", (item,))]
