@@ -76,8 +76,9 @@ class Case(unittest.TestCase):
         self.config = fixture_config.copy_config(self.root)
         self.profiles = self.config / "machine-setup/profiles"
 
-    def run_stage(self, stage, *flags, **extra):
-        result = self.fixture.run("update", stage, *flags, **fixture_config.env(self.config), **extra)
+    def run_stage(self, stage, *flags, fixture=None, **extra):
+        fixture = fixture or self.fixture
+        result = fixture.run("update", stage, *flags, **fixture_config.env(self.config), **extra)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
@@ -191,13 +192,18 @@ class TheSatellite(Case):
         self.fixture.registry.unlink()
         self.hub_json = self.fixture.home / ".config/sd/hub.json"
         self.agents = self.fixture.home / "Library/LaunchAgents"
-        # launchd runs only the labels in STUB_LOADED; every call is logged,
-        # so a test can see the stage never boots anything out.
-        self.launchctl_log = self.root / "launchctl.log"
-        write_stub(self.fixture.stubs, "launchctl",
-                   f'echo "$*" >> "{self.launchctl_log}"\n'
+        self.launchctl_log = self.stub_launchd(self.fixture)
+
+    @staticmethod
+    def stub_launchd(fixture):
+        """launchd runs only the labels in STUB_LOADED. Every call is logged,
+        so a test can see the stage never boots anything out."""
+        log = pathlib.Path(fixture.tmp.name) / "launchctl.log"
+        write_stub(fixture.stubs, "launchctl",
+                   f'echo "$*" >> "{log}"\n'
                    'case "$1" in print) case " $STUB_LOADED " in *" ${2##*/} "*) exit 0 ;; esac; exit 113 ;; esac\n'
                    'exit 0\n')
+        return log
 
     def start_hub(self, **options):
         hub = Hub(self.root / "hub", **options)
@@ -205,14 +211,39 @@ class TheSatellite(Case):
         (self.profiles / "work.satellite").write_text(f"# The sd hub.\n127.0.0.1:{hub.port}\n")
         return hub
 
-    def name_hub(self, hub):
+    def name_hub(self, hub, fixture=None):
         """hub.json as the stage writes it, plus the loopback token's file."""
-        self.hub_json.parent.mkdir(parents=True, exist_ok=True)
-        self.hub_json.write_text(json.dumps({"hub": "127.0.0.1", "port": hub.port,
-                                             "token_file": str(hub.token_file)}))
+        hub_json = (fixture or self.fixture).home / ".config/sd/hub.json"
+        hub_json.parent.mkdir(parents=True, exist_ok=True)
+        hub_json.write_text(json.dumps({"hub": "127.0.0.1", "port": hub.port,
+                                        "token_file": str(hub.token_file)}))
 
-    def satellite(self, *flags, loaded=()):
-        return self.run_stage("satellite", *flags, SD_DB_PYTHON=self.fixture.python, STUB_LOADED=" ".join(loaded))
+    def satellite(self, *flags, loaded=(), fixture=None):
+        fixture = fixture or self.fixture
+        return self.run_stage("satellite", *flags, fixture=fixture, SD_DB_PYTHON=fixture.python,
+                              STUB_LOADED=" ".join(loaded))
+
+    def test_two_satellites_with_their_own_homes_pass_against_one_hub(self):
+        # One machine per profile: work and terra, each with its own home
+        # and its own hub.json, against the one hub.
+        hub = self.start_hub()
+        (self.profiles / "terra.satellite").write_text(f"127.0.0.1:{hub.port}\n")
+        terra = Fixture()
+        self.addCleanup(terra.destroy)
+        fixture_config.seal(self, terra.stubs)
+        (terra.state / "profile").write_text("terra\n")
+        terra.registry.unlink()
+        self.stub_launchd(terra)
+        self.assertNotEqual(self.fixture.home, terra.home)
+        for fixture in (self.fixture, terra):
+            with self.subTest(home=fixture.home):
+                self.name_hub(hub, fixture)
+                self.satellite("--apply", fixture=fixture)
+                self.assertEqual(fixture.registry.read_text(), REGISTRY)
+                self.assertEqual(markers(self.satellite(fixture=fixture)), [])
+                self.assertFalse(fixture.db.exists())
+        # The first satellite still passes after the second joined.
+        self.assertEqual(markers(self.satellite()), [])
 
     def launchctl_verbs(self):
         text = self.launchctl_log.read_text() if self.launchctl_log.exists() else ""
@@ -243,19 +274,22 @@ class TheSatellite(Case):
         self.assertEqual(markers(self.satellite()), [])
 
     def test_the_agents_stage_skips_hub_only_agents_while_hub_json_exists(self):
-        # A satellite that shares the hub's profile: personal.agent lists the
-        # hub's three sd agents.
-        (self.fixture.state / "profile").write_text("personal\n")
+        # A guard: no satellite profile lists a hub agent today. One that
+        # adds every hub LaunchAgent later installs none of them.
         self.name_hub_by_hand()
         self.agents.mkdir(parents=True)
-        out = self.run_stage("agents", "--apply")
-        listed = manifest("personal.agent")
-        self.assertTrue(listed and all(label in HUB_ONLY for label in listed), listed)
-        self.assertEqual(markers(out), [])
-        for label in listed:
-            self.assertIn(f"  SKIP    {label} — hub only, and {self.hub_json} makes this machine a satellite", out)
-        self.assertEqual(list(self.agents.iterdir()), [])
-        self.assertNotIn("bootstrap", self.launchctl_verbs())
+        listed = [label for label in HUB_ONLY if ".cron." not in label]
+        for profile in ("work", "terra"):
+            with self.subTest(profile=profile):
+                (self.fixture.state / "profile").write_text(f"{profile}\n")
+                (self.profiles / f"{profile}.agent").write_text("".join(f"{label}\n" for label in listed))
+                out = self.run_stage("agents", "--apply")
+                self.assertEqual(markers(out), [])
+                for label in listed:
+                    self.assertIn(f"  SKIP    {label} — hub only, and {self.hub_json} makes this machine a "
+                                  "satellite", out)
+                self.assertEqual(list(self.agents.iterdir()), [])
+                self.assertNotIn("bootstrap", self.launchctl_verbs())
 
     def name_hub_by_hand(self):
         """A hub.json and no `.satellite`: the stage has no hub to ask."""
@@ -303,12 +337,14 @@ class TheSatellite(Case):
         self.assertTrue(drift[0].startswith(f"  EXTRA   database {self.fixture.db}"), drift)
         self.assertFalse(self.hub_json.exists())
 
-    def test_a_profile_that_runs_the_hub_and_names_a_hub_differs(self):
+    def test_a_personal_satellite_on_the_hub_is_refused_by_name(self):
         (self.fixture.state / "profile").write_text("personal\n")
         (self.profiles / "personal.satellite").write_text("hub.example.test\n")
-        drift = markers(self.satellite())
-        self.assertEqual(len(drift), 1, drift)
-        self.assertIn("a machine is a hub or a satellite, not both", drift[0])
+        drift = markers(self.satellite("--apply"))
+        self.assertEqual(drift, ["  DIFFERS personal.satellite names the hub hub.example.test, and personal.agent "
+                                 "runs the hub's agents; the hub cannot be its own satellite — remove "
+                                 "personal.satellite"])
+        self.assertFalse(self.hub_json.exists())
 
     def test_no_interpreter_is_missing(self):
         self.start_hub()

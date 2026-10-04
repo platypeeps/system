@@ -116,7 +116,7 @@ to it. A profile with only one file is therefore almost exactly `common`.
 | `.service` | `local-*` folders whose docker service should be running |
 | `.cron` | `local-cron-jobs` job names to install; this host's own jobs need no entry |
 | `.spotlight` | Spotlight privacy exclusions: absolute paths, a leading `~` is the account's home |
-| `.satellite` | the sd hub this machine reaches, as `host` or `host:port` (default 8769); one line, on a satellite only |
+| `.satellite` | the sd hub this machine reaches, as `host` or `host:port` (default 8769); one line, on a satellite only. One machine runs each profile: `personal` is the hub, and a profile with this file (`work.satellite`, `terra.satellite`) is a satellite; the hub's own is refused |
 
 Plain lists, one per line, `#` comments and blank lines ignored — the same
 format as `local-repo-sync`.

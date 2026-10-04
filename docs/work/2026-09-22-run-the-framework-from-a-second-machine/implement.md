@@ -114,7 +114,12 @@ Each step ships alone. Steps 1–7 change nothing the hub runs.
    serve --loopback` exits non-zero naming the missing path and creates no
    file (gap (h)). The first launchd run of the agent raises no TCC prompt,
    and `sd-db.sh status` answers from it (gap (c)).
-9. **Satellite stage.** `satellite` in `STAGES`: writes `hub.json`, asserts
+9. **Satellite stage.** One machine runs each machine-setup profile:
+   `personal` is the hub, and a profile with a `<profile>.satellite` file
+   naming the hub is a satellite, today `work.satellite` and
+   `terra.satellite`. Several satellites share one hub, each with its own
+   home and its own `hub.json`; a `personal.satellite` is refused by name.
+   `satellite` in `STAGES`: writes `hub.json`, asserts
    no local `sd.db`, verifies the installed `sd_db` package version equals
    the hub's, installs `providers.yaml` from the hub over the wire. On a
    satellite it reports each hub-only job installed or loaded as `EXTRA`

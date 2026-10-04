@@ -940,9 +940,9 @@ stage_agents() {
   fi
   rendered=$(mktemp -d)
   echo "$agents" | while read -r label; do
-    # A satellite sharing the hub's profile must not start a second runner
-    # or dashboard. Skipped, not removed: the satellite stage reports one
-    # already here.
+    # A guard: no satellite profile lists a hub-only agent today, and one
+    # that adds it later must not start a second runner or dashboard.
+    # Skipped, not removed: the satellite stage reports one already here.
     if [ -e "$SD_HUB_CONFIG" ] && sd_hub_only "$label"; then
       echo "  SKIP    $label — hub only, and $SD_HUB_CONFIG makes this machine a satellite"
       continue
@@ -1300,7 +1300,7 @@ stage_satellite() {
     return 0
   fi
   if sd_in_profile; then
-    echo "  DIFFERS $PROFILE.satellite names the hub $hubs, and $PROFILE.agent runs the hub's agents; a machine is a hub or a satellite, not both"
+    echo "  DIFFERS $PROFILE.satellite names the hub $hubs, and $PROFILE.agent runs the hub's agents; the hub cannot be its own satellite — remove $PROFILE.satellite"
     return 0
   fi
   host=${hubs%%:*}
