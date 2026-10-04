@@ -86,7 +86,7 @@ class EmailRetryTest(unittest.TestCase):
         if recipient:
             env["NOTIFY_EMAIL_TO"] = recipient
         return subprocess.run(["sh", str(script), "-t", "t", "-c", "email", "body"],
-                              env=env, capture_output=True, text=True, timeout=60)
+                              env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
 
     def stub(self, **kw):
         stub = Stub(**kw)
