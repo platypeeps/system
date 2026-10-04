@@ -201,6 +201,17 @@ class TheDocuments(ScreenCase):
         self.assertTrue(rows[report]["urgent_otherwise"])
         self.assertFalse(rows[self.ids["plan"]]["urgent_otherwise"], "a due date is the page's own rule, not sent")
 
+    def test_each_row_carries_the_run_readiness_enqueue_checks(self):
+        # A run of picked rows is offered only where every row can queue, so each row carries runner_controls.readiness,
+        # read from the row's own item_state (sd:2590).
+        from sd_db import runner_controls
+
+        rows = {row["id"]: row for row in tasks_screen.document(self.connection, now=NOW)["rows"]}
+        for item, row in rows.items():
+            ready = runner_controls.readiness(self.connection, item)
+            self.assertEqual(row["run"], {"allowed": ready["allowed"], "reason": ready["reason"]}, f"item {item}")
+        self.assertEqual(rows[self.ids["port"]]["run"]["reason"], "An assignment already owns this item.")
+
     def test_details_carry_run_readiness_and_runner_capabilities(self):
         from sd_db import runner_controls
 
@@ -327,8 +338,10 @@ function shellRun(c, o) {
   document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } }));
 }
 C.run = shellRun;
-// shell.js's runBulk: runEach starts one run per picked object in the same tick, settled by settleBulk.
+// shell.js's runBulk: runEach starts one run per picked object in the same tick, settled by settleBulk. A command with
+// batch(objs, done) takes the whole group in one call instead (handOver, sd:2590); done() clears the picks, recorded here.
 function shellBulk(c, objs) {
+  if (handOver(c, objs, () => { OUT.cleared = (OUT.cleared || 0) + 1; })) return;
   var rs = runEach(c, objs);
   settleBulk(c, objs, rs, { toast: shellToast, plural: window.markup.plural });
   document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: 'bulk', form: true } }));
@@ -1172,6 +1185,92 @@ R.text = (await cmd('item.run').run(C.get('{plan}'))).text;""",
         self.assertEqual(out["R"]["cli"], f"sd run --sequential {plan}")
         self.assertTrue(out["R"]["text"].endswith(f"· sd run --sequential {plan}"), out["R"]["text"])
 
+    # ---------- Run picked and ?skill= (sd:2590) ----------
+    RUN_FORM = """const D = MADE.find(e => /date-dlg/.test(e.className || ''));
+const F = { form: El('form'), cli: El('run-cli'), mode: { value: MODE }, min: { value: MIN }, usd: { value: USD } };
+D.querySelector = sel => sel === 'form' ? F.form : sel === '[name="mode"]:checked' ? F.mode : sel === '#run-min' ? F.min
+  : sel === '#run-usd' ? F.usd : sel === '#run-cli' ? F.cli : El(sel);
+F.form.querySelector = D.querySelector;
+const pickRun = async (keys, v) => { C.runBulk(cmd('item.run'), keys.map(k => C.get(String(k)))); await flush();
+  R.dialog = D.html; R.cli = F.cli.textContent; D.returnValue = v; D.onclose(); await flush(); };
+"""
+
+    def runnable(self, *names):
+        for name in names:
+            self.row(name)["run"] = {"allowed": True, "reason": None}
+
+    def test_picked_rows_queue_in_one_request_in_pick_order_and_undo_cancels_the_last_first(self):
+        self.runnable("plan", "port")
+        plan, port = self.ids["plan"], self.ids["port"]
+        answer = ("(path, body) => path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'a'.repeat(64) }, { id: 8, revision: 'b'.repeat(64) }] }]"
+                  " : /^\\/api\\/runner\\/\\d+\\/cancel$/.test(path) ? [200, {}] : [404, {}]")
+        out = self.run_page(self.RUN_FORM + f"""await pickRun([{port}, {plan}], 'run');
+await lastUndo().undo(); await flush();""", answer, prelude="var MODE = 'parallel', MIN = '45', USD = '2.5';\n")
+        runs = [p for p in out["posts"] if p[0] == "/api/run"]
+        self.assertEqual(len(runs), 1, "the picked rows were queued one request each")
+        self.assertEqual(runs[0][1], {"items": [port, plan], "revisions": {str(port): self.row("port")["revision"], str(plan): self.row("plan")["revision"]},
+                                      "parallel": True, "budget_minutes": 45, "budget_usd": 2.5})
+        self.assertIn("Run 2 tasks", out["R"]["dialog"])
+        self.assertEqual(out["R"]["cli"], f"sd run --parallel --budget-minutes 45 {port} {plan}")
+        self.assertEqual(out["cleared"], 1)
+        self.assertIn([f"Queued 2 tasks for the runner · sd run --parallel --budget-minutes 45 {port} {plan}", True], out["toasts"])
+        self.assertEqual([p[0] for p in out["posts"][1:]], ["/api/runner/8/cancel", "/api/runner/7/cancel"])
+        self.assertEqual(out["toasts"][-1], ["Run undone · 2 assignments cancelled", False])
+
+    def test_a_cancelled_run_form_queues_nothing_and_keeps_the_picks(self):
+        self.runnable("plan", "port")
+        out = self.run_page(self.RUN_FORM + f"await pickRun([{self.ids['plan']}, {self.ids['port']}], 'cancel');",
+                            "() => [500, { error: 'nothing should post' }]", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
+        self.assertEqual(out["posts"], [])
+        self.assertNotIn("cleared", out)
+        self.assertEqual(out["toasts"][-1], ["Nothing queued for 2 tasks.", False])
+
+    def test_a_refused_selection_queues_nothing_and_reads_the_rows_again(self):
+        self.runnable("plan", "port")
+        reads_before = "R.before = OUT.gets.filter(g => g === '/api/tasks').length;\n"
+        out = self.run_page(self.RUN_FORM + reads_before + f"""await pickRun([{self.ids['plan']}, {self.ids['port']}], 'run');
+R.after = OUT.gets.filter(g => g === '/api/tasks').length;""",
+                            "() => [409, { error: 'item 3 changed; reload it' }]", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
+        (run,) = out["posts"]
+        self.assertEqual(run[1]["parallel"], False)
+        self.assertNotIn("budget_usd", run[1])
+        self.assertEqual(out["toasts"][-1], ["Nothing queued: item 3 changed; reload it", False])
+        self.assertGreater(out["R"]["after"], out["R"]["before"], "a stale refusal did not read the rows again")
+
+    def test_run_is_off_with_the_row_reason_before_the_details_are_read(self):
+        # The row carries readiness (sd:2590), so Run says why it is off without opening the Details first.
+        out = self.run_page(f"shellRun(cmd('item.run'), C.get('{self.ids['plan']}')); await flush();")
+        self.assertEqual(out["toasts"][-1], [f"off: item {self.ids['plan']} needs a valid branch", False])
+        self.assertEqual(out["posts"], [])
+
+    SKILLS = "(path) => path === '/api/skills' ? [200, { skills: [{ name: 'sd-review', revision: 's'.repeat(64) }] }] : path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'r'.repeat(64) }] }] : [404, {}]"
+
+    def test_a_skill_in_the_address_rides_on_the_run_with_its_catalog_revision(self):
+        self.runnable("plan", "port")
+        plan, port = self.ids["plan"], self.ids["port"]
+        out = self.run_page(self.RUN_FORM + f"""R.filters = ELS.filters.html; shellRun(cmd('item.run'), C.get('{plan}')); await flush();
+await pickRun([{plan}, {port}], 'run');""", self.SKILLS, search="?skill=sd-review", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
+        one, picked = [p[1] for p in out["posts"] if p[0] == "/api/run"]
+        self.assertEqual((one["skill"], one["skill_revision"]), ("sd-review", "s" * 64))
+        self.assertEqual((picked["skill"], picked["skill_revision"], picked["items"]), ("sd-review", "s" * 64, [plan, port]))
+        self.assertIn("Run with", out["R"]["filters"])
+        self.assertIn("sd-review", out["R"]["filters"])
+        self.assertIn("With the skill <code>sd-review</code>", out["R"]["dialog"])
+        self.assertIn("skill=sd-review", out["urls"][-1])
+
+    def test_an_unknown_or_unread_skill_keeps_run_off_and_says_why(self):
+        self.runnable("plan")
+        plan = self.ids["plan"]
+        cases = {"?skill=nope": (self.SKILLS, "off: no catalog skill nope"),
+                 "?skill=sd-review": ("(path) => path === '/api/skills' ? [503, { error: 'the skill catalog is unavailable' }] : [404, {}]",
+                                      "off: the skill catalog was not read: the skill catalog is unavailable")}
+        for search, (answer, why) in cases.items():
+            with self.subTest(search=search):
+                out = self.run_page(f"R.filters = ELS.filters.html; shellRun(cmd('item.run'), C.get('{plan}')); await flush();", answer, search=search)
+                self.assertEqual(out["toasts"][-1], [why, False])
+                self.assertEqual(out["posts"], [])
+                self.assertIn("Run is off: " + why.removeprefix("off: "), out["R"]["filters"])
+
     def test_the_confirm_names_the_rule_of_a_byday_series(self):
         set_item_fields(self.connection, self.ids["plan"], recurrence="FREQ=WEEKLY;BYDAY=MO,TH")
         self.connection.commit()
@@ -1383,13 +1482,12 @@ class TheOperationsBars(ScreenCase):
 
 
 class TheLinksIntoTasks(unittest.TestCase):
-    """Operations and the v1 capture check open Tasks, not /backlog (sd:2589).
+    """Operations, the v1 capture check (sd:2589) and the Skills page's Run with agent (sd:2590) open Tasks, not /backlog.
 
-    What still links to a /backlog query is the run selection Tasks lacks: the Skills page's Run with agent (?skill=,
-    sd:2590). sd:2356 retires the rest.
+    sd:2356 retires /backlog itself.
     """
 
-    def test_only_the_run_selection_link_opens_a_backlog_query(self):
+    def test_no_link_opens_a_backlog_query(self):
         root = V2.parent
         found = {}
         for path in sorted(root.rglob("*")):
@@ -1397,7 +1495,7 @@ class TheLinksIntoTasks(unittest.TestCase):
                 hits = re.findall(r"""["']/backlog\?""", path.read_text(encoding="utf-8"))
                 if hits:
                     found[path.relative_to(root).as_posix()] = len(hits)
-        self.assertEqual(found, {"skills_screen.py": 1})
+        self.assertEqual(found, {})
 
 
 class TheRegistration(Registers, unittest.TestCase):
