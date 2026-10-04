@@ -161,6 +161,63 @@ class Status(unittest.TestCase):
                 self.assertEqual(len(printed), 1, printed)
                 self.assertFalse(json.loads(printed[0])["ok"])
 
+    def refreshed(self, completed_at, *, retention=None):
+        """A runner.json with its own retention folder, holding one archive-refresh receipt when `completed_at` is set."""
+        retention = retention or Path(self.tmp.name).resolve() / "retention"
+        (retention / ".archive-refresh").mkdir(parents=True, exist_ok=True)
+        self.config.write_text(json.dumps({"database": str(self.database), "retention": str(retention)}))
+        if completed_at:
+            receipt = {"version": 1, "operation": "archive-refresh", "database": str(self.database.resolve()),
+                       "retention_root": str(retention.resolve()), "completed_at": completed_at}
+            (retention / ".archive-refresh" / "one.json").write_text(json.dumps(receipt))
+        return retention
+
+    def test_status_names_the_last_and_next_archive_refresh(self):
+        # sd:2209. The dashboard does not know the runner's config or its
+        # retention folder; it reads the refresh cadence from this body. The
+        # exit code is still the heartbeat's alone.
+        self.heartbeat()
+        self.refreshed("2026-10-02T03:00:00+00:00")
+        code, body = self.status(loaded=True)
+        self.assertEqual(code, 0)
+        schedule = body["archive_refresh_schedule"]
+        self.assertEqual(schedule["last_completed_at"], "2026-10-02T03:00:00+00:00")
+        self.assertEqual(schedule["next_due_at"], "2026-10-03T03:00:00+00:00")
+        self.assertEqual(schedule["cadence_seconds"], 86400)
+
+    def test_a_runner_that_never_refreshed_says_so_and_is_due_now(self):
+        self.heartbeat()
+        self.refreshed(None)
+        code, body = self.status(loaded=True)
+        self.assertEqual(code, 0)
+        self.assertIsNone(body["archive_refresh_schedule"]["last_completed_at"])
+        self.assertTrue(body["archive_refresh_schedule"]["due"])
+
+    def test_an_unreadable_refresh_receipt_is_a_reason_and_not_a_verdict(self):
+        # A receipt from another configuration is refused by the schedule; the
+        # body names why, and the heartbeat still decides the code.
+        self.heartbeat()
+        retention = self.refreshed("2026-10-02T03:00:00+00:00")
+        receipt = retention / ".archive-refresh" / "one.json"
+        receipt.write_text(json.dumps({**json.loads(receipt.read_text()), "database": "/elsewhere/sd.db"}))
+        code, body = self.status(loaded=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(body["archive_refresh_schedule"], {"reason": "archive refresh cadence belongs to another configuration"})
+
+    def test_an_agent_that_is_not_loaded_reads_no_retention_folder(self):
+        # Nothing refreshes without the agent, and the default retention
+        # folder is under ~/Documents, which TCC guards: under launchd an
+        # ungranted read waits instead of failing. local-health-check runs
+        # this verb from a cron job on machines that never installed the
+        # agent, so that path does not touch the folder.
+        self.heartbeat()
+        self.refreshed("2026-10-02T03:00:00+00:00")
+        with patch("sd_runner.archive_refresh.schedule", side_effect=AssertionError("read the retention folder")):
+            code, body = self.status(loaded=False)
+        self.assertEqual(code, 3)
+        self.assertEqual(body["archive_refresh_schedule"],
+                         {"reason": "the runner agent is not loaded, so no archive refresh is scheduled"})
+
     def launcher_env(self, *, loaded, absent):
         # `runner.sh status` asks launchctl itself, so the answer is fixed by
         # a `launchctl` ahead of the real one on PATH: exit 0 is loaded, 113

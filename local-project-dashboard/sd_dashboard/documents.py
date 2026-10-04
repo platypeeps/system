@@ -46,6 +46,8 @@ somebody asks for with a `root|` line, and a symlink is not somebody asking.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import re
 import sys
@@ -111,6 +113,23 @@ POLICY = (
     "font-src data:; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
 )
 
+#: A document opts in to running its own script by its name, and only by its
+#: name (sd:1502). An interactive page -- a map, a chart a reader can drag --
+#: needs script, and the policy above refuses it on purpose.
+APP_SUFFIX = ".app.html"
+
+#: The one host an opted-in page may load script and stylesheets from. Its
+#: tags carry `integrity` hashes, which is the author's half of the bargain;
+#: the host is the server's half.
+APP_HOST = "https://cdnjs.cloudflare.com"
+
+#: An image host an `img|<key>|<host>` line may name: lowercase, dotted, no
+#: scheme, no path. A tile server is the reason a map needs one.
+HOST = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
+
+_SCRIPT = re.compile(rb"<script\b([^>]*)>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
+_SRC = re.compile(rb"\bsrc\s*=", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class Root:
@@ -119,6 +138,8 @@ class Root:
     path: Path
     #: File names a `skip|<key>|<file>` line withholds: neither listed nor served.
     skip: frozenset[str] = frozenset()
+    #: Hosts `img|<key>|<host>` lines name, which this root's opted-in pages may load images from.
+    images: tuple[str, ...] = ()
 
 
 def _label(key: str) -> str:
@@ -222,12 +243,13 @@ def contested(repo_root: Path | None = None) -> dict[str, list[Path]]:
 
 @dataclass(frozen=True)
 class Config:
-    """The three things the file says, none of which is an inventory."""
+    """The things the file says, none of which is an inventory."""
 
     roots: list[Root]
     skipped: set[str]
     labels: dict[str, str]
     files: dict[str, set[str]]
+    images: dict[str, list[str]]
 
 
 def _configured(config_path: Path | None = None) -> Config:
@@ -236,12 +258,13 @@ def _configured(config_path: Path | None = None) -> Config:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return Config([], set(), {}, {})
+        return Config([], set(), {}, {}, {})
     found: list[Root] = []
     seen: set[str] = set()
     skipped: set[str] = set()
     labels: dict[str, str] = {}
     files: dict[str, set[str]] = {}
+    images: dict[str, list[str]] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -256,6 +279,11 @@ def _configured(config_path: Path | None = None) -> Config:
         if len(parts) == 3 and parts[0] == "label" and parts[1] and parts[2]:
             labels.setdefault(parts[1], parts[2])
             continue
+        if len(parts) == 3 and parts[0] == "img" and parts[1] and HOST.fullmatch(parts[2]):
+            hosts = images.setdefault(parts[1], [])
+            if parts[2] not in hosts:
+                hosts.append(parts[2])
+            continue
         if len(parts) != 4 or parts[0] != "root":
             continue
         _, key, label, directory = parts
@@ -263,7 +291,7 @@ def _configured(config_path: Path | None = None) -> Config:
             continue
         seen.add(key)
         found.append(Root(key, label or key, Path(directory).expanduser()))
-    return Config(found, skipped, labels, files)
+    return Config(found, skipped, labels, files, images)
 
 
 def roots(config_path: Path | None = None, repo_root: Path | None = None) -> list[Root]:
@@ -284,7 +312,8 @@ def roots(config_path: Path | None = None, repo_root: Path | None = None) -> lis
             continue
         keys.add(root.key)
         found.append(Root(root.key, config.labels.get(root.key) or root.label, root.path))
-    return [Root(root.key, root.label, root.path, frozenset(config.files.get(root.key, ()))) for root in found]
+    return [Root(root.key, root.label, root.path, frozenset(config.files.get(root.key, ())),
+                 tuple(config.images.get(root.key, ()))) for root in found]
 
 
 def unresolved(config_path: Path | None = None,
@@ -341,8 +370,54 @@ def resolve(key: str, name: str, config_path: Path | None = None,
     reader, and separating "no such root" from "escaped the root" in the
     response would only tell a prober which of the two they achieved.
     """
+    found = located(key, name, config_path, repo_root)
+    return None if found is None else found[1]
+
+
+def located(key: str, name: str, config_path: Path | None = None,
+            repo_root: Path | None = None) -> tuple[Root, Path] | None:
+    """`resolve`, with the root it found: the server reads the root's image hosts."""
     root = _root(key, config_path, repo_root)
-    return None if root is None or name in root.skip else within(root.path, name)
+    target = None if root is None or name in root.skip else within(root.path, name)
+    return None if target is None else (root, target)
+
+
+def policy(root: Root, name: str, body: bytes) -> str:
+    """The policy one served document carries: `POLICY`, or the sandbox for an opted-in page.
+
+    An opted-in page runs in a sandbox without `allow-same-origin`, so its
+    origin is opaque. It holds no dashboard cookie and reads no dashboard
+    storage, and the server refuses its `Origin: null` on `/api/`. It may
+    reach nothing: no `connect-src`, no form, no frame. Its script is the
+    host's, by `integrity`, and its own inline scripts, by digest. Digests
+    rather than `'unsafe-inline'` because the page renders data: a value that
+    smuggles in an `onerror=` attribute must not run.
+
+    The digest is measured here, from the bytes being sent. That is the
+    per-file derivation `DIAGRAM_SCRIPTS` refuses, and the opt-in is what
+    pays for it: naming a file `*.app.html` is somebody saying its own script
+    may run, and the sandbox is what makes saying so cheap.
+    """
+    if not name.endswith(APP_SUFFIX):
+        return POLICY
+    digests = sorted({_digest(match[2]) for match in _SCRIPT.finditer(body) if not _SRC.search(match[1])})
+    images = ["data:", "blob:", APP_HOST, *(f"https://{host}" for host in root.images)]
+    return ("sandbox allow-scripts allow-downloads; default-src 'none'; "
+            f"script-src {' '.join([APP_HOST, *digests])}; "
+            f"style-src 'unsafe-inline' {APP_HOST}; "
+            f"img-src {' '.join(images)}; "
+            "font-src data:; connect-src 'none'; form-action 'none'; "
+            "frame-ancestors 'none'; base-uri 'none'")
+
+
+def _digest(script: bytes) -> str:
+    """A CSP hash source for one inline script, as the browser measures it.
+
+    The HTML parser turns CRLF and a lone CR into LF before the script sees
+    its text, so the digest is taken after the same turn.
+    """
+    text = script.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return "'sha256-%s'" % base64.b64encode(hashlib.sha256(text).digest()).decode("ascii")
 
 
 def documents(root: Root) -> list[dict]:
