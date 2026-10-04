@@ -289,6 +289,7 @@ case "$SUITE_LEG" in
     # folder, which this does.
     run_suite notify "$PYTHON" local-notify/tests/test_notify.py -v
     run_suite notify-email "$PYTHON" local-notify/tests/test_email_retry.py -v
+    run_suite notify-jev-route "$PYTHON" local-notify/tests/test_jev_route.py -v
     # statusline.sh takes render|install and is what Claude Code
     # calls on every refresh; the suite is named directly rather than
     # adding a verb to it. It stubs bun and sysctl, so Linux runs it.
