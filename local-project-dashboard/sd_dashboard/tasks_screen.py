@@ -10,7 +10,9 @@ query of the store:
   accepts for it, so the board refuses a move for the reason the library
   would, before it posts. Each row carries its `reads.age_bucket` key and the
   document names the buckets (`ages`), so the page's age filter is the one
-  Operations' histogram counts with (sd:2589). Each row also carries whether `workflow.edit_item`
+  Operations' histogram counts with (sd:2589). Each row carries
+  `runner_controls.readiness`, the check `/api/run` makes, so a run of picked
+  rows is offered only where every one of them can queue (sd:2590). Each row also carries whether `workflow.edit_item`
   takes its fields (`_edit_capability`), so Edit, P2, recurrence and a
   matrix drop are off, with the library's reason, where the edit would fail.
 - `/api/tasks/<id>` is `details`: what `sd task show <id> --json` prints
@@ -32,7 +34,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sd_db import reads, repos, workflow
+from sd_db import reads, repos, runner_controls, workflow
 
 __all__ = ["details", "document"]
 
@@ -108,10 +110,17 @@ def _document(connection, *, now: str) -> dict:
             # The row's own `item_state`, so each row reads its history once (sd:2380).
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(connection, row),
+            "run": _run(connection, row["id"], state),
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
     return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out}
+
+
+def _run(connection, item: int, state: dict) -> dict:
+    """`runner_controls.readiness` for the row, from the row's own `item_state` (sd:2380)."""
+    ready = runner_controls.readiness(connection, item, state=state)
+    return {"allowed": ready["allowed"], "reason": ready["reason"]}
 
 
 def _note(note) -> dict:
