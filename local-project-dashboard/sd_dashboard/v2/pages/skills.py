@@ -1,6 +1,6 @@
 """Skills (sd:2123): the pack catalog with each skill's weekly use. Try, Review, Promote and Demote post routes the old screen
 posts too, so they stay in server.py's action_route. The old screen moved to /classic/skills when this page took its path; it
-stays in the palette, since it opens the backlog's "Run with agent" for a skill, which the page leaves to the CLI."""
+stays in the palette, since its "Run with agent" opens Tasks with ?skill= (sd:2590), which this page leaves to the CLI."""
 
 from __future__ import annotations
 
