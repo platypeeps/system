@@ -81,6 +81,7 @@
       ${!a.read ? html`<p class="unread"><b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: ${a.missing.join(', ')}.</p>`
         : a.error ? html`<p class="unread"><b>Not read:</b> ${a.error}</p>`
         : a.missing.length ? html`<p class="unread"><b>Not read here:</b> ${a.missing.join(', ')}.</p>` : ''}
+      ${a.stale ? html`<p class="unread"><b>Not re-read:</b> ${a.stale}</p>` : ''}
       ${a.read && !a.error ? pre(a) : ''}
       ${rows.length ? html`<table class="ledger" aria-labelledby="h-${a.id}"><colgroup><col class="g"><col><col class="fix"></colgroup>
         <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Finding</th><th scope="col">Fix</th></tr></thead>
@@ -183,12 +184,12 @@
       AREAS.forEach(a => a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]));
       ROWS = AREAS.flatMap(a => a.rows.map(r => ({ ...r, area: a.id })));
       document.body.dataset.observed = doc.read;
-      const failed = AREAS.filter(a => a.error);
+      const failed = AREAS.filter(a => a.error || a.stale);
       const [w, c] = attention(), unread = AREAS.filter(a => !a.read).length;
       const want = [w ? `${w} warning` : '', c ? `${c} caution` : ''].filter(Boolean).join(', ') || 'no';
       put($('subhead'), html`${AREAS.length} areas · ${want} ${w + c === 1 ? 'row wants' : 'rows want'} you · ${plural(unread, 'area')} with no reader yet · read <time class="rel" datetime="${doc.read}"></time>`);
       return { objects: ROWS.map(r => ({ ...r, label: r.what })),
-        state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error}`).join(' · ')}. The other areas are current.`, source: '/api/health' } : null };
+        state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source: '/api/health' } : null };
     },
     // Nothing from the last read stays on screen: rows, lamps, the observed time and the badge.
     clear: () => {

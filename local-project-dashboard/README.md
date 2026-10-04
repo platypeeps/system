@@ -313,6 +313,7 @@ label|<key>|<label>              a found root, better named
 skip|<key>                       a found root the dashboard should not list
 skip|<key>|<file>                one file of a root, neither listed nor served
 root|<key>|<label>|<directory>   a root that is somewhere else entirely
+img|<key>|<host>                 an image host the root's *.app.html pages may load
 ```
 
 **Reach for `label|` first.** The derived label is the directory name, and it
@@ -356,6 +357,21 @@ which is tighter where it counts: the dashboard permits same-origin script and
 this permits none. `_send` takes the policy per response and assigns it every
 time, because the handler instance is reused across a kept-alive connection and
 a policy left behind would apply to the next page down the same socket.
+
+**A `*.app.html` page may run its own script, in a sandbox (sd:1502).** An
+interactive page, such as a map, needs script, and the policy above refuses it.
+A file named `<name>.app.html` opts in, and only its name opts it in. It is
+served with `sandbox allow-scripts allow-downloads` and without
+`allow-same-origin`, so it runs in an opaque origin: the `SameSite=Strict`
+session cookie is not sent, storage is unavailable, and `/api/` refuses any
+`Origin` other than the dashboard's own, `Origin: null` included. Its script is
+`https://cdnjs.cloudflare.com`, which its tags pin with `integrity`, plus its
+own inline scripts by SHA-256, measured from the bytes served. A digest rather
+than `'unsafe-inline'` keeps an `onerror=` attribute smuggled in through the
+page's data from running. Its images are `data:`, `blob:`, the script host, and
+the hosts its root's `img|<key>|<host>` lines name; it has no `connect-src`, no
+form and no frame. Any other file keeps the no-script policy, whatever it
+carries.
 
 **A found root may not reach past its checkout.** A `docs/dashboard` that is a
 symlink out of the repository is not a root, because enumeration moved the

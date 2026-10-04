@@ -133,7 +133,7 @@ version of the first.
 
 `asks` is a Jev `noul` over one thread: *does the newest message in this email
 thread ask its recipients for a decision or an action?* Gated at 0.7, it is
-`yes`, `no`, or `unknown`. `report` uses it for one thing — ordering. Threads
+`yes` or `no`; `unknown` is the fallback word, and means Jev did not answer. `report` uses it for one thing — ordering. Threads
 that ask for something print first **inside the group they were already in**,
 marked `(asks)`. Nothing is dropped, nothing is hidden, and no thread moves
 between `WAITING ON YOU` and `waiting on them`. A wrong answer therefore costs
@@ -166,6 +166,8 @@ falls back to today's ordering, prints the reason on **stderr**, and leaves
 the exit code alone. Stderr rather than stdout so a degraded run's report is
 identical to a clean one's, and loud rather than silent because a lane that
 quietly stops running is the defect this repo has already been bitten by.
+It is all or nothing: one thread without an answer drops the answers already
+given, so a report is never half in Jev's order and half in today's (sd:2551).
 `report --all` stops asking after 25 questions and leaves the rest in today's
 order.
 

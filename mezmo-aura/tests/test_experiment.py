@@ -41,7 +41,7 @@ class ExperimentCase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
-        self.folder = self.root / "local-aura"
+        self.folder = self.root / "mezmo-aura"
         (self.folder / "experiment").mkdir(parents=True)
         shutil.copy(ENTRYPOINT, self.folder / ENTRYPOINT.name)
         shutil.copytree(FOLDER.parent / "lib", self.root / "lib")
@@ -189,12 +189,12 @@ class AStart(ExperimentCase):
     def test_needs_no_env_file_and_passes_the_model_by_name(self):
         # PR #61 review: an exported-only setup failed on a required env_file.
         self.start(0)
-        self.assertFalse((self.root / "config" / "aura" / ".env").exists())
+        self.assertFalse((self.root / "config" / "mezmo-aura" / ".env").exists())
         self.assertIn("LLM_MODEL=model-exported LLM_API_KEY_SET=yes", self.docker_calls())
 
     def test_an_exported_value_wins_over_the_env_file(self):
         # PR #61 review: .env overwrote the exported LLM_* values.
-        conf = self.root / "config" / "aura"
+        conf = self.root / "config" / "mezmo-aura"
         conf.mkdir(parents=True)
         (conf / ".env").write_text("LLM_MODEL=model-from-file\n", encoding="utf-8")
         self.start(0)
@@ -202,7 +202,7 @@ class AStart(ExperimentCase):
         self.assertNotIn("model-from-file", self.docker_calls())
 
     def test_the_env_file_fills_what_is_not_exported(self):
-        conf = self.root / "config" / "aura"
+        conf = self.root / "config" / "mezmo-aura"
         conf.mkdir(parents=True)
         (conf / ".env").write_text("LLM_MODEL=model-from-file\n", encoding="utf-8")
         self.start(0, LLM_MODEL=None)

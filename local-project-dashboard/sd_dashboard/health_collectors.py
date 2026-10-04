@@ -83,8 +83,9 @@ class Walk:
         return self.run(["git", "-C", str(path), *args])
 
 
-def _registered(connection: sqlite3.Connection) -> list[str]:
-    return [row["path"] for row in repos.registered(connection)]
+def _registered(connection: sqlite3.Connection, repo_paths: list[str] | None) -> list[str]:
+    """The paths the caller read, or the registry's. Health reads it on its own thread and passes the paths."""
+    return list(repo_paths) if repo_paths is not None else [row["path"] for row in repos.registered(connection)]
 
 
 def _default(walk: Walk, path: Path) -> tuple[str, str | None]:
@@ -97,11 +98,12 @@ def _default(walk: Walk, path: Path) -> tuple[str, str | None]:
     return "ok", found.stdout.strip().split("/", 1)[-1]
 
 
-def branch_scan(connection: sqlite3.Connection, *, within: float = BRANCH_SECONDS) -> dict:
+def branch_scan(connection: sqlite3.Connection, *, within: float = BRANCH_SECONDS,
+                repo_paths: list[str] | None = None) -> dict:
     """Each registered repository's local branches already in `origin/HEAD`, and the repositories not read."""
     walk = Walk(within, "the merged-branch walk")
     scan: dict = {"repos": 0, "merged": [], "no_default": [], "unread": []}
-    for key in _registered(connection):
+    for key in _registered(connection, repo_paths):
         path = paths.disk(key)
         state, default = _default(walk, path)
         if state != "ok":
@@ -196,9 +198,9 @@ def _worktrees(walk: Walk, path: Path) -> list[dict]:
             for tree in trees[1:] if tree.get("worktree")]
 
 
-def _build_output(walk: Walk, connection: sqlite3.Connection) -> dict:
+def _build_output(walk: Walk, keys: list[str]) -> dict:
     checked, merged, unread = 0, [], []
-    for key in _registered(connection):
+    for key in keys:
         path = paths.disk(key)
         state, _ = _default(walk, path)
         if state != "ok":
@@ -243,11 +245,13 @@ def _storage(walk: Walk, roots: list[Path]) -> list[dict]:
     return out
 
 
-def disk_scan(connection: sqlite3.Connection, *, within: float = DISK_SECONDS, config: Path | None = None) -> dict:
+def disk_scan(connection: sqlite3.Connection, *, within: float = DISK_SECONDS, config: Path | None = None,
+              repo_paths: list[str] | None = None) -> dict:
     """Volume use, each configured storage folder's sizes and merged worktrees that keep build output."""
+    keys = _registered(connection, repo_paths)
     walk = Walk(within, "the Disk reading")
     volumes = _volumes(walk)
-    build = _build_output(walk, connection)
+    build = _build_output(walk, keys)
     roots, refused, read = storage_roots(config)
     return {"volumes": volumes, "build": build, "storage": _storage(walk, roots), "refused": refused,
             "config": str(read)}
