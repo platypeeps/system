@@ -17,18 +17,20 @@ look at 375 px -- is a manual check recorded on the pull request.
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
 import subprocess
 import unittest
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 from unittest.mock import patch
 
 from sd_db import connect, reads, set_item_fields, upsert_repo, workflow
 from sd_dashboard import server, tasks_screen, v2
 
-from support import NOW, ScreenCase, upsert_shadow
+from support import NOW, ScreenCase, transition, upsert_shadow
 from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
@@ -126,6 +128,18 @@ class TheDocuments(ScreenCase):
         port = rows[self.ids["port"]]
         self.assertEqual((port["assignment"], port["allowed"]), ("running", []))
 
+    def test_each_row_carries_its_age_bucket_and_the_document_names_the_buckets(self):
+        # The age filter is the histogram's (sd:2589): each row's key is reads.age_bucket, and the document lists every
+        # bucket with the label Operations draws, so a bar's ?age= names a chip the page shows.
+        self.age(self.ids["ask"], 10)
+        doc = tasks_screen.document(self.connection, now=NOW)
+        rows = {row["id"]: row for row in reads.backlog_items(self.connection, now=NOW)}
+        for row in doc["rows"]:
+            self.assertEqual(row["age"], reads.age_bucket(rows[row["id"]], now=NOW))
+        self.assertEqual(next(r for r in doc["rows"] if r["id"] == self.ids["ask"])["age"], "7")
+        self.assertEqual(doc["ages"], [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=NOW)])
+        self.assertEqual([age["key"] for age in doc["ages"]], [str(lower) for lower, _ in reads.age_bounds()])
+
     def test_each_row_reads_its_history_once(self):
         # sd:2380: allowed_statuses takes the row's item_state, read in the same snapshot, instead of reading it again.
         calls, real = [], workflow.item_state
@@ -187,6 +201,17 @@ class TheDocuments(ScreenCase):
         self.assertTrue(rows[report]["urgent_otherwise"])
         self.assertFalse(rows[self.ids["plan"]]["urgent_otherwise"], "a due date is the page's own rule, not sent")
 
+    def test_each_row_carries_the_run_readiness_enqueue_checks(self):
+        # A run of picked rows is offered only where every row can queue, so each row carries runner_controls.readiness,
+        # read from the row's own item_state (sd:2590).
+        from sd_db import runner_controls
+
+        rows = {row["id"]: row for row in tasks_screen.document(self.connection, now=NOW)["rows"]}
+        for item, row in rows.items():
+            ready = runner_controls.readiness(self.connection, item)
+            self.assertEqual(row["run"], {"allowed": ready["allowed"], "reason": ready["reason"]}, f"item {item}")
+        self.assertEqual(rows[self.ids["port"]]["run"]["reason"], "An assignment already owns this item.")
+
     def test_details_carry_run_readiness_and_runner_capabilities(self):
         from sd_db import runner_controls
 
@@ -227,7 +252,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Tasks · system</title>", body)
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
-        scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
+        scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
         self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "tasks.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
@@ -262,7 +287,8 @@ STAND_IN = r"""
 var window = globalThis, OUT = { posts: [], gets: [], toasts: [], confirms: [], states: [], attention: [], error: null };
 var innerWidth = 1440, location = { search: '' };
 function URLSearchParams(q) { var m = new Map(); (q || '').replace(/^\?/, '').split('&').filter(Boolean).forEach(p => { var kv = p.split('='); m.set(kv[0], decodeURIComponent(kv[1] || '')); });
-  this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, String(v)); }
+  this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, String(v));
+  this.toString = () => [...m].map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); }
 function El(id) { var e = { id: id, html: null, hidden: false, dataset: {}, style: {}, listeners: {}, value: '',
   classList: { add() {}, remove() {}, toggle() {} },
   addEventListener(t, f) { (e.listeners[t] = e.listeners[t] || []).push(f); }, setAttribute() {}, removeAttribute() {},
@@ -312,8 +338,10 @@ function shellRun(c, o) {
   document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } }));
 }
 C.run = shellRun;
-// shell.js's runBulk: runEach starts one run per picked object in the same tick, settled by settleBulk.
+// shell.js's runBulk: runEach starts one run per picked object in the same tick, settled by settleBulk. A command with
+// batch(objs, done) takes the whole group in one call instead (handOver, sd:2590); done() clears the picks, recorded here.
 function shellBulk(c, objs) {
+  if (handOver(c, objs, () => { OUT.cleared = (OUT.cleared || 0) + 1; })) return;
   var rs = runEach(c, objs);
   settleBulk(c, objs, rs, { toast: shellToast, plural: window.markup.plural });
   document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: 'bulk', form: true } }));
@@ -487,11 +515,15 @@ class TheScript(ScreenCase):
     def row(self, name):
         return next(r for r in self.doc["rows"] if r["id"] == self.ids[name])
 
-    def run_page(self, body, answer="null", *, prelude="", env=None):
-        """Load tasks.js, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R."""
+    def run_page(self, body, answer="null", *, prelude="", env=None, search=""):
+        """Load tasks.js at `search`, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R.
+
+        Each address the page writes is in OUT.urls, as shell.url() received it.
+        """
         script = (prelude + STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + TASKS_SHELL
                   + f"\nconst DOC = {json.dumps(self.doc)}, DETAILS = {json.dumps(self.details)};\n"
                   + "const WRITE = " + answer + ";\nvar DETAIL = null;\n" + STORED
+                  + f"location.search = {json.dumps(search)}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q.toString());\n"
                   + """ANSWER = (path, body) => {
   if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
   var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, DETAILS[m[1]]];
@@ -1153,6 +1185,92 @@ R.text = (await cmd('item.run').run(C.get('{plan}'))).text;""",
         self.assertEqual(out["R"]["cli"], f"sd run --sequential {plan}")
         self.assertTrue(out["R"]["text"].endswith(f"· sd run --sequential {plan}"), out["R"]["text"])
 
+    # ---------- Run picked and ?skill= (sd:2590) ----------
+    RUN_FORM = """const D = MADE.find(e => /date-dlg/.test(e.className || ''));
+const F = { form: El('form'), cli: El('run-cli'), mode: { value: MODE }, min: { value: MIN }, usd: { value: USD } };
+D.querySelector = sel => sel === 'form' ? F.form : sel === '[name="mode"]:checked' ? F.mode : sel === '#run-min' ? F.min
+  : sel === '#run-usd' ? F.usd : sel === '#run-cli' ? F.cli : El(sel);
+F.form.querySelector = D.querySelector;
+const pickRun = async (keys, v) => { C.runBulk(cmd('item.run'), keys.map(k => C.get(String(k)))); await flush();
+  R.dialog = D.html; R.cli = F.cli.textContent; D.returnValue = v; D.onclose(); await flush(); };
+"""
+
+    def runnable(self, *names):
+        for name in names:
+            self.row(name)["run"] = {"allowed": True, "reason": None}
+
+    def test_picked_rows_queue_in_one_request_in_pick_order_and_undo_cancels_the_last_first(self):
+        self.runnable("plan", "port")
+        plan, port = self.ids["plan"], self.ids["port"]
+        answer = ("(path, body) => path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'a'.repeat(64) }, { id: 8, revision: 'b'.repeat(64) }] }]"
+                  " : /^\\/api\\/runner\\/\\d+\\/cancel$/.test(path) ? [200, {}] : [404, {}]")
+        out = self.run_page(self.RUN_FORM + f"""await pickRun([{port}, {plan}], 'run');
+await lastUndo().undo(); await flush();""", answer, prelude="var MODE = 'parallel', MIN = '45', USD = '2.5';\n")
+        runs = [p for p in out["posts"] if p[0] == "/api/run"]
+        self.assertEqual(len(runs), 1, "the picked rows were queued one request each")
+        self.assertEqual(runs[0][1], {"items": [port, plan], "revisions": {str(port): self.row("port")["revision"], str(plan): self.row("plan")["revision"]},
+                                      "parallel": True, "budget_minutes": 45, "budget_usd": 2.5})
+        self.assertIn("Run 2 tasks", out["R"]["dialog"])
+        self.assertEqual(out["R"]["cli"], f"sd run --parallel --budget-minutes 45 {port} {plan}")
+        self.assertEqual(out["cleared"], 1)
+        self.assertIn([f"Queued 2 tasks for the runner · sd run --parallel --budget-minutes 45 {port} {plan}", True], out["toasts"])
+        self.assertEqual([p[0] for p in out["posts"][1:]], ["/api/runner/8/cancel", "/api/runner/7/cancel"])
+        self.assertEqual(out["toasts"][-1], ["Run undone · 2 assignments cancelled", False])
+
+    def test_a_cancelled_run_form_queues_nothing_and_keeps_the_picks(self):
+        self.runnable("plan", "port")
+        out = self.run_page(self.RUN_FORM + f"await pickRun([{self.ids['plan']}, {self.ids['port']}], 'cancel');",
+                            "() => [500, { error: 'nothing should post' }]", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
+        self.assertEqual(out["posts"], [])
+        self.assertNotIn("cleared", out)
+        self.assertEqual(out["toasts"][-1], ["Nothing queued for 2 tasks.", False])
+
+    def test_a_refused_selection_queues_nothing_and_reads_the_rows_again(self):
+        self.runnable("plan", "port")
+        reads_before = "R.before = OUT.gets.filter(g => g === '/api/tasks').length;\n"
+        out = self.run_page(self.RUN_FORM + reads_before + f"""await pickRun([{self.ids['plan']}, {self.ids['port']}], 'run');
+R.after = OUT.gets.filter(g => g === '/api/tasks').length;""",
+                            "() => [409, { error: 'item 3 changed; reload it' }]", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
+        (run,) = out["posts"]
+        self.assertEqual(run[1]["parallel"], False)
+        self.assertNotIn("budget_usd", run[1])
+        self.assertEqual(out["toasts"][-1], ["Nothing queued: item 3 changed; reload it", False])
+        self.assertGreater(out["R"]["after"], out["R"]["before"], "a stale refusal did not read the rows again")
+
+    def test_run_is_off_with_the_row_reason_before_the_details_are_read(self):
+        # The row carries readiness (sd:2590), so Run says why it is off without opening the Details first.
+        out = self.run_page(f"shellRun(cmd('item.run'), C.get('{self.ids['plan']}')); await flush();")
+        self.assertEqual(out["toasts"][-1], [f"off: item {self.ids['plan']} needs a valid branch", False])
+        self.assertEqual(out["posts"], [])
+
+    SKILLS = "(path) => path === '/api/skills' ? [200, { skills: [{ name: 'sd-review', revision: 's'.repeat(64) }] }] : path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'r'.repeat(64) }] }] : [404, {}]"
+
+    def test_a_skill_in_the_address_rides_on_the_run_with_its_catalog_revision(self):
+        self.runnable("plan", "port")
+        plan, port = self.ids["plan"], self.ids["port"]
+        out = self.run_page(self.RUN_FORM + f"""R.filters = ELS.filters.html; shellRun(cmd('item.run'), C.get('{plan}')); await flush();
+await pickRun([{plan}, {port}], 'run');""", self.SKILLS, search="?skill=sd-review", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
+        one, picked = [p[1] for p in out["posts"] if p[0] == "/api/run"]
+        self.assertEqual((one["skill"], one["skill_revision"]), ("sd-review", "s" * 64))
+        self.assertEqual((picked["skill"], picked["skill_revision"], picked["items"]), ("sd-review", "s" * 64, [plan, port]))
+        self.assertIn("Run with", out["R"]["filters"])
+        self.assertIn("sd-review", out["R"]["filters"])
+        self.assertIn("With the skill <code>sd-review</code>", out["R"]["dialog"])
+        self.assertIn("skill=sd-review", out["urls"][-1])
+
+    def test_an_unknown_or_unread_skill_keeps_run_off_and_says_why(self):
+        self.runnable("plan")
+        plan = self.ids["plan"]
+        cases = {"?skill=nope": (self.SKILLS, "off: no catalog skill nope"),
+                 "?skill=sd-review": ("(path) => path === '/api/skills' ? [503, { error: 'the skill catalog is unavailable' }] : [404, {}]",
+                                      "off: the skill catalog was not read: the skill catalog is unavailable")}
+        for search, (answer, why) in cases.items():
+            with self.subTest(search=search):
+                out = self.run_page(f"R.filters = ELS.filters.html; shellRun(cmd('item.run'), C.get('{plan}')); await flush();", answer, search=search)
+                self.assertEqual(out["toasts"][-1], [why, False])
+                self.assertEqual(out["posts"], [])
+                self.assertIn("Run is off: " + why.removeprefix("off: "), out["R"]["filters"])
+
     def test_the_confirm_names_the_rule_of_a_byday_series(self):
         set_item_fields(self.connection, self.ids["plan"], recurrence="FREQ=WEEKLY;BYDAY=MO,TH")
         self.connection.commit()
@@ -1234,6 +1352,150 @@ R.work = five('{port}'); R.done = five('{ask}'); R.ops = five('{plan}');""")
         self.assertEqual(re.findall(r"window\.markup\b", re.sub(r"const \{ [\w, ]+ \} = window\.markup;", "", TASKS_JS)), [])
         # A page-level j/k or Escape handler is drift (the shell owns them through PAGE_LIST).
         self.assertNotRegex(TASKS_JS, r"e\.key === '[jk]'")
+
+
+def keys(fragment: str) -> set[int]:
+    """The ids of the rows or cards a view drew."""
+    return {int(found) for found in re.findall(r'data-key="(\d+)"', fragment or "")}
+
+
+class TheFilterAddress(ScreenCase):
+    """The query v1 /backlog took -- status, age, active, q and page -- read and written by Tasks (sd:2589)."""
+
+    run_page = TheScript.run_page
+
+    def setUp(self):
+        super().setUp()
+        self.ids = seed(self)
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.details = {}
+        self.base = next(r for r in self.doc["rows"] if r["id"] == self.ids["plan"])
+        self.doc["rows"] = [self.made(901, "Send the reply", "ready_to_send", "3", kind="message"),
+                            self.made(902, "Budget review", "ready", "7"),
+                            self.made(903, "Closed last week", "done", "0"),
+                            self.made(904, "Plan the trip", "planning", "14", repo="other")]
+
+    def made(self, number, title, status, age, **more):
+        return {**self.base, "id": number, "title": title, "status": status, "age": age, **more}
+
+    def listed(self, search, body=""):
+        out = self.run_page(body + "\nR.list = ELS['view-list'].html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;",
+                            search=search)
+        return keys(out["R"]["list"]) | keys(out["R"]["board"]), out
+
+    def test_status_age_and_active_narrow_as_v1_did(self):
+        for search, expected in (("?view=list&status=ready_to_send", {901}), ("?view=list&age=7", {902}),
+                                 ("?view=list&active=1", {901, 902, 904}), ("?view=list&active=1&age=0", set()),
+                                 ("?view=list&status=ready,done", {902, 903}),
+                                 # A bucket v1 would not take is dropped, as v1 dropped it.
+                                 ("?view=list&age=5", {901, 902, 903, 904})):
+            with self.subTest(search=search):
+                self.assertEqual(self.listed(search)[0], expected)
+        _, out = self.listed("?view=list&status=ready_to_send&age=3&active=1")
+        for key, value in (("status", "ready_to_send"), ("age", "3"), ("active", "1")):
+            self.assertIn(f'data-f="{key}" data-v="{value}" aria-pressed="true"', out["R"]["filters"])
+        self.assertIn('data-v="14" aria-pressed="false">14-29d<', out["R"]["filters"])
+
+    def test_the_text_filter_reads_q_and_the_box_writes_it(self):
+        self.assertEqual(self.listed("?view=list&q=BUDGET")[0], {902})
+        self.assertEqual(self.listed("?view=list&q=%23904")[0], {904})
+        # The v1 capture check opens /tasks?q=<title> in the default view (static/dashboard.js).
+        self.assertEqual(self.listed("?q=" + quote("Send the reply"))[0], {901})
+        shown, out = self.listed("?view=list", "const box = document.getElementById('find-in'); box.value = ' Trip ';\n"
+                                 "box.listeners.input[0]({ target: box }); await flush();")
+        self.assertEqual(shown, {904})
+        self.assertEqual(out["urls"][-1], "view=list&q=trip")
+
+    def test_the_address_carries_every_filter(self):
+        _, out = self.listed("?view=list&status=ready_to_send&age=3&active=1&q=reply")
+        self.assertEqual(out["urls"][-1], "view=list&status=ready_to_send&age=3&active=1&q=reply")
+
+    def test_the_list_pages_fifty_and_the_address_keeps_the_page(self):
+        self.doc["rows"] = [self.made(1000 + n, f"row {n}", "planning", "0") for n in range(60)]
+        for search, count, words in (("?view=list", 50, "1–50 of 60"), ("?view=list&page=2", 10, "51–60 of 60"),
+                                     ("?view=list&page=2&size=25", 25, "26–50 of 60"), ("?view=list&page=9", 10, "51–60 of 60"),
+                                     ("?view=list&page=1.5", 50, "1–50 of 60")):
+            with self.subTest(search=search):
+                shown, out = self.listed(search)
+                self.assertEqual(len(shown), count)
+                self.assertIn(words, out["R"]["list"])
+        click = "ELS['view-list'].listeners.click[0]({ target: { id: '', closest: s => s === '[data-page]' ? { dataset: { page: '2' } } : null } }); await flush();"
+        shown, out = self.listed("?view=list", click)
+        self.assertEqual(shown, {1000 + n for n in range(50, 60)})
+        self.assertEqual(out["urls"][-1], "view=list&page=2")
+        self.assertIn('data-page="2" aria-pressed="true" aria-current="page"', out["R"]["list"])
+        # A filter change starts the list at its first page again.
+        chip = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'status', v: 'planning' } } : null } }); await flush();"
+        _, out = self.listed("?view=list&page=2", chip)
+        self.assertEqual(out["urls"][-1], "view=list&status=planning")
+        # A short list draws no pager; the board shows every filtered card, whatever the page.
+        self.assertNotIn('class="pager"', self.listed("?view=list&status=ready")[1]["R"]["list"])
+        self.assertEqual(len(self.listed("?view=board&page=2")[0]), 60)
+
+    def test_a_linked_row_opens_the_page_that_holds_it(self):
+        self.doc["rows"] = [self.made(1000 + n, f"row {n}", "planning", "0") for n in range(60)]
+        shown, _ = self.listed("?view=list&row=1055")
+        self.assertIn(1055, shown)
+
+
+class TheOperationsBars(ScreenCase):
+    """Operations' age histogram opens Tasks (sd:2589): follow every bar into tasks.js and compare the rows it lists."""
+
+    run_page = TheScript.run_page
+    DAYS = (0, 2, 5, 10, 20, 40, 90)
+
+    def setUp(self):
+        super().setUp()
+        for days in self.DAYS:
+            self.age(self.item(f"aged {days} days", status="planning"), days)
+        for days in (5, 20):
+            row = self.item(f"unsent for {days} days", status="planning")
+            transition(self.connection, row, "ready_to_send", who="sd-ship")
+            self.age(row, days)
+        # Done this week, so /api/tasks lists it: a bar counts open items only, and its link says active=1.
+        self.age(self.item("recently completed", status="done"), 5)
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.details = {}
+
+    def bars(self):
+        page = self.render("/operations", {"area": ["progress"]})
+        found = []
+        for opening in re.findall(r"<a\s[^>]*>", page):
+            href, age, series = (re.search(rf'{name}="([^"]*)"', opening) for name in ("href", "data-age", "data-series"))
+            if href and age and series:
+                found.append((html.unescape(href.group(1)), age.group(1), series.group(1)))
+        return found
+
+    def test_every_bar_lists_exactly_its_own_rows_on_tasks(self):
+        bars = self.bars()
+        self.assertGreaterEqual(len(bars), 5, "the histogram drew almost no bars")
+        rows = reads.backlog_items(self.connection, now=NOW)
+        for href, key, series in bars:
+            with self.subTest(bucket=key, series=series):
+                parts = urlsplit(href)
+                self.assertEqual(parts.path, "/tasks")
+                expected = {row["id"] for row in rows if row["status"] != "done" and reads.age_bucket(row, now=NOW) == key
+                            and (series != "ready_to_send" or row["status"] == "ready_to_send")}
+                self.assertTrue(expected, "a bar was drawn for a bucket holding no rows")
+                out = self.run_page("R.list = ELS['view-list'].html;", search="?" + parts.query)
+                self.assertEqual(keys(out["R"]["list"]), expected)
+
+
+class TheLinksIntoTasks(unittest.TestCase):
+    """Operations, the v1 capture check (sd:2589) and the Skills page's Run with agent (sd:2590) open Tasks, not /backlog.
+
+    sd:2356 retires /backlog itself.
+    """
+
+    def test_no_link_opens_a_backlog_query(self):
+        root = V2.parent
+        found = {}
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and path.suffix in (".py", ".js", ".html"):
+                hits = re.findall(r"""["']/backlog\?""", path.read_text(encoding="utf-8"))
+                if hits:
+                    found[path.relative_to(root).as_posix()] = len(hits)
+        self.assertEqual(found, {})
 
 
 class TheRegistration(Registers, unittest.TestCase):

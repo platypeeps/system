@@ -380,10 +380,15 @@ def request_cancel(connection, assignment: int, *, expected_revision: str, who) 
         current = queue_state(connection, assignment)
         if current["revision"] != expected_revision:
             raise RunnerRefused("assignment changed; refresh before cancelling")
-        if current["status"] == "queued":
+        owned = current["run"] and not current["run"]["released_at"]
+        # A `running` row no attempt owns -- written by hand, or from before
+        # the runner recorded attempts -- has no process to stop, so the
+        # cancel ends it, as a queued row's does (sd:991, owner note 2706).
+        # "Owned" is `released_at IS NULL`, as in `workflow.change_status`.
+        if current["status"] == "queued" or (current["status"] == "running" and not owned):
             connection.execute("UPDATE assignment SET status = 'cancelled', ended = ?, result = ? WHERE id = ?",
                                (now(), f"cancelled by {who}", assignment))
-        elif current["status"] == "running" and current["run"]:
+        elif current["status"] == "running":
             connection.execute("UPDATE runner_run SET cancel_requested = ?, journal_version = journal_version + 1, updated_at = ? WHERE id = ?",
                                (f"cancelled by {who}", now(), current["run"]["id"]))
         else:

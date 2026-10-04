@@ -211,7 +211,7 @@ def today(connection, *, now: str, parameters) -> str:
         selection(connection, listing.page()[0], selected=listing.selected),
         tag("h2", "Open followups"),
         followup_list.render(),
-        tag("p", tag("a", "Choose the next task from Backlog", href="/backlog", class_="button-link")),
+        tag("p", tag("a", "Choose the next task from Tasks", href="/tasks", class_="button-link")),
         jobs_panel(connection),
         join(board_section),
         cli_equivalents=False,
@@ -338,7 +338,7 @@ def backlog(connection, *, now: str, parameters) -> str:
     )
     listing = Listing(
         name="backlog",
-        path="/backlog",
+        path="/classic/backlog",
         query=query,
         page_number=page_number,
         selected=selected,

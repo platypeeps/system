@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stub date. With $FAKE_DIR/clock present, `date +%s` prints the epoch second
+# it holds, and the curl double advances it by its delays instead of sleeping
+# (sd:2621): the probe's shared deadline is then read off a clock a loaded
+# machine cannot move. Any other call, or no clock file, is the real date.
+if [ "$*" = "+%s" ] && [ -s "$FAKE_DIR/clock" ]; then
+  cat "$FAKE_DIR/clock"
+  exit 0
+fi
+exec /bin/date "$@"

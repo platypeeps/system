@@ -15,8 +15,10 @@ from .operations import LABEL_PREFIX
 from .writes import add_note, set_item_fields
 
 
-def readiness(connection, item):
-    state = workflow.item_state(connection, item)
+def readiness(connection, item, *, state=None):
+    """Whether `enqueue` takes the item now, and why not. `state` is the item's `workflow.item_state`, when the caller
+    read it in the same snapshot (the Tasks rows, sd:2590)."""
+    state = state or workflow.item_state(connection, item)
     row = state["item"]
     assignments = [runner.queue_state(connection, held["id"]) for held in connection.execute(
         "SELECT id FROM assignment WHERE item=? ORDER BY id DESC LIMIT 20", (item,))]
@@ -241,9 +243,11 @@ def control(connection, assignment, verb, *, expected_revision, destination=None
     current = runner.queue_state(connection, assignment)
     if current["revision"] != expected_revision:
         raise workflow.StaleItem("assignment changed; reload before controlling it")
-    if verb == "cancel" and current["status"] == "queued":
-        return runner.request_cancel(connection, assignment, expected_revision=expected_revision, who=who)
     held = current["run"]
+    # Queued work, and a running row no attempt owns (sd:991), have no
+    # process for the service to stop: the library's cancel ends the row.
+    if verb == "cancel" and (current["status"] == "queued" or (current["status"] == "running" and (not held or held["released_at"]))):
+        return runner.request_cancel(connection, assignment, expected_revision=expected_revision, who=who)
     if not held:
         raise workflow.WorkflowError("this assignment has no owned runner attempt to control")
     if verb == "cancel" and current["status"] != "running":

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import re
 from html import unescape
 
+from .caching import STATIC_VERSIONS
 from .markup import Markup, join, tag
 
 __all__ = ["SECTIONS", "Section", "page", "tile", "command_hint"]
@@ -40,7 +41,7 @@ class Section:
 
 SECTIONS = (
     Section("today", "Today", "/"),
-    Section("backlog", "Backlog", "/backlog"),
+    Section("backlog", "Tasks", "/tasks"),
     Section("contributions", "Contributions", "/classic/contributions"),
     Section("writing", "Writing", "/writing"),
     Section("operations", "Operations", "/operations"),
@@ -115,8 +116,9 @@ def page(title: str, current: str, *body: object, subtitle: str | None = None,
         tag("meta", name="viewport", content="width=device-width, initial-scale=1, viewport-fit=cover"),
         tag("meta", name="color-scheme", content="light dark"),
         tag("title", f"{title} — sd"),
-        tag("link", rel="stylesheet", href="/static/dashboard.css"),
-        tag("script", src="/static/dashboard.js", defer=True),
+        # Under their digests, so the server may cache them for good (sd:2141).
+        tag("link", rel="stylesheet", href=f"/static/dashboard.css?v={STATIC_VERSIONS['dashboard.css']}"),
+        tag("script", src=f"/static/dashboard.js?v={STATIC_VERSIONS['dashboard.js']}", defer=True),
     )
     header: list[object] = [tag("h1", title)]
     if subtitle:

@@ -121,7 +121,7 @@ class Criterion7(BrowserSession):
         self.assertRegex(self.refused("done"), r"delivery|merge")
 
     def test_7_17_the_board_and_the_bulk_actions_have_no_status_write(self):
-        status, _, board = self.request("/backlog?view=board")
+        status, _, board = self.request("/classic/backlog?view=board")
         self.assertEqual(status, 200)
         self.assertIn(f'href="/item/{self.work}"', board, "the card is on the board")
         self.assertEqual(self.status_forms(board), [])
@@ -179,15 +179,16 @@ class Criterion7(BrowserSession):
         self.end(owned)
 
         # A running row with no `runner_run`: the item screen renders no
-        # cancel and says so, and the refusal does not send the reader to one.
+        # control, and the screen and the refusal both name the verb that
+        # ends it, `sd runner cancel` (sd:991, owner note 2706).
         by_hand = create_assignment(self.connection, item=self.work, role="author", status="running")
         page = self.page()
         self.assertNotIn(f'action="/api/runner/{by_hand}/cancel"', page)
-        self.assertIn("no supported cancellation backend for this legacy assignment", page)
+        self.assertIn(f"No owned runner attempt was recorded for this legacy assignment; end it with <code>sd runner cancel {by_hand}</code>", page)
         message = self.refused("ready")
         self.assertRegex(message, rf"assignment {by_hand}\b")
-        self.assertIn("running assignment without a runner run, and there is no supported cancel for it yet", message)
-        self.assertNotIn("sd runner cancel", message)
+        self.assertIn(f"running assignment without a runner run; end it with `sd runner cancel {by_hand}`", message)
+        self.assertNotIn("control entry", message)
 
     # -- 7.20 ---------------------------------------------------------------
 

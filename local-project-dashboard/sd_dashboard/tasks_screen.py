@@ -8,7 +8,11 @@ query of the store:
   /backlog (unparked open items, and `done` for the week), each with the
   revision a write sends back and the statuses `workflow.allowed_statuses`
   accepts for it, so the board refuses a move for the reason the library
-  would, before it posts. Each row also carries whether `workflow.edit_item`
+  would, before it posts. Each row carries its `reads.age_bucket` key and the
+  document names the buckets (`ages`), so the page's age filter is the one
+  Operations' histogram counts with (sd:2589). Each row carries
+  `runner_controls.readiness`, the check `/api/run` makes, so a run of picked
+  rows is offered only where every one of them can queue (sd:2590). Each row also carries whether `workflow.edit_item`
   takes its fields (`_edit_capability`), so Edit, P2, recurrence and a
   matrix drop are off, with the library's reason, where the edit would fail.
 - `/api/tasks/<id>` is `details`: what `sd task show <id> --json` prints
@@ -19,6 +23,9 @@ query of the store:
   item's relink and cancel availability (`progress.work_controls`) and its
   external context (`reads.item_shadow` and `progress.tracker_freshness`,
   v1's "External context" block), or `null` when the item has none.
+- `from_backlog` is where a v1 `/backlog` address goes since sd:2356 retired
+  it: the same `/tasks` view with the query v1 read, so a bookmark or an old
+  link keeps its filters.
 
 Every write the page makes goes through a route `server.action_route`
 already answered for v1: status, edit (priority, due, recurrence), note
@@ -30,7 +37,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sd_db import reads, repos, workflow
+from sd_db import reads, repos, runner_controls, workflow
 
 __all__ = ["details", "document"]
 
@@ -98,7 +105,7 @@ def _document(connection, *, now: str) -> dict:
             "assignment": live.get(row["id"]),
             # The due date a completion today gives the next occurrence, for the confirm to name before it writes.
             "next_due": workflow.next_occurrence_due(state["item"]) if row["recurrence"] else None,
-            "status_since": row["status_since"], "revision": state["revision"],
+            "status_since": row["status_since"], "age": reads.age_bucket(row, now=now), "revision": state["revision"],
             # The matrix's urgency is `reads.is_urgent`, decided here. Without the due-date rule it is
             # `urgent_otherwise`, which the page keeps for a due edit made before the rows are read again.
             "urgent": reads.is_urgent(row, now=now),
@@ -106,8 +113,17 @@ def _document(connection, *, now: str) -> dict:
             # The row's own `item_state`, so each row reads its history once (sd:2380).
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(connection, row),
+            "run": _run(connection, row["id"], state),
         })
-    return {"read": now, "statuses": list(STATUSES), "rows": out}
+    # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
+    ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
+    return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out}
+
+
+def _run(connection, item: int, state: dict) -> dict:
+    """`runner_controls.readiness` for the row, from the row's own `item_state` (sd:2380)."""
+    ready = runner_controls.readiness(connection, item, state=state)
+    return {"allowed": ready["allowed"], "reason": ready["reason"]}
 
 
 def _note(note) -> dict:
@@ -191,3 +207,44 @@ def details(connection, item: int, *, now: str) -> dict:
         # (`progress.work_controls`), for a work item; None for any other kind (sd:2200).
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
     }
+
+
+#: The views v1 /backlog had; Tasks has the same three. v1 opened on the list, Tasks on the board.
+BACKLOG_VIEWS = ("list", "board", "matrix")
+
+
+def from_backlog(connection, parameters, *, now: str) -> str:
+    """The `/tasks` address for a v1 `/backlog` query (sd:2356).
+
+    Tasks reads the names v1 read (sd:2589, sd:2590): view, kind, status, age, active, q, page and skill. Its repo filter
+    is the row's label, not the path v1 took, so a path becomes the label `_document` gives it. v1's run picks
+    (`sel`) do not carry over: a run from a link is not a run the operator chose.
+    """
+    from urllib.parse import quote, urlencode
+
+    from .screens import _repo_labels
+
+    def one(key: str) -> str:
+        return (parameters.get(key) or [""])[0]
+
+    view = one("view")
+    query = {"view": view if view in BACKLOG_VIEWS else "list"}
+    for key in ("kind", "status", "age"):
+        if one(key):
+            query[key] = one(key)
+    repo = one("repo")
+    if repo == reads.NO_REPO_TOKEN:
+        query["repo"] = "no repo"
+    elif repo:
+        label = _repo_labels(row["repo"] for row in reads.backlog_items(connection, now=now))(repo)
+        query["repo"] = repo if label == "—" else label
+    if one("active") == "1":
+        query["active"] = "1"
+    if one("q"):
+        query["q"] = one("q")[:200]
+    if one("page").isdigit() and int(one("page")) > 1:
+        query["page"] = str(int(one("page")))
+    if one("skill"):
+        query["skill"] = one("skill")
+    # %20, not +, for a space: every URL decoder reads %20 as a space; decodeURIComponent keeps a + as a plus.
+    return "/tasks?" + urlencode(query, quote_via=quote)

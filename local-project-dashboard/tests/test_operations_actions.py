@@ -63,7 +63,7 @@ class OperationsActions(BrowserSession):
         self.assertNotIn('action="/api/jobs/idle-fixture/retry"', page)
         self.assertIn(f'action="/api/runner/{queued}/cancel"', page)
         self.assertNotIn(f'action="/api/assignments/{running}/cancel"', page)
-        self.assertIn("no supported cancellation backend", page)
+        self.assertIn(f"end it with <code>sd runner cancel {running}</code>", page)
         self.assertNotIn("prompt", page)
         self.assertIn(f"Assignment #{unassigned}", page)
         self.assertNotIn("/item/None", page)

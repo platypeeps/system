@@ -5,7 +5,9 @@ commands. They are separate surfaces.
 
 **The workflow dashboard** (`sd_dashboard/`) opens on the new design's Today, and keeps
 the classic Today, Backlog, Contributions, Writing,
-Operations, Protection, Skills, Documents, Designs, and individual Item pages. Its production launcher uses the
+Operations, Protection, Skills, Documents, Designs, and individual Item pages.
+A `/backlog` address opens Tasks with the same filters (sd:2356); the classic
+Backlog is at `/classic/backlog`. Its production launcher uses the
 command pack's provisioned Python interpreter and installed `sd_db` package;
 it refuses an adjacent source import or a mismatched database schema.
 `./dashboard.sh serve` starts it on loopback;
@@ -54,6 +56,14 @@ old screens it keeps. A page reads its document through the shell's one
 reader, `static/read.js`, once its follow-up adopts it; the page's script says
 so. What each page reads and what it runs is in
 [`docs/pages/`](docs/pages/), one file per page.
+
+Pages link each asset under its content digest, `/ui/<file>?v=<digest>` and
+`/static/<file>?v=<digest>`, from a map the server computes when it starts
+(sd:2141). That answer is `Cache-Control: private, max-age=31536000, immutable`;
+a request without the matching `v` stays `no-store`, as pages and the API are.
+So an edited asset reaches the browser after a restart, with no build step.
+CSS, script and text go gzipped when the browser accepts it; fonts, pages and
+API answers do not. `sd_dashboard/caching.py` says why.
 
 The old screens stay until their section is ported. A page that takes an old
 screen's path moves that screen under `/classic/`, as the old Today moved to
@@ -156,7 +166,7 @@ the selected tab travels in the URL, for example `/operations?area=services`.
 | **Jobs** | Installed scheduled jobs and assignments; retry supported failed jobs, request a running job stop, or cancel a queued assignment. |
 | **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
 | **Ports** | Configured service ports and locally observed TCP listeners, with visible processes, PIDs and listening addresses. Read-only; filter by port, service or process. |
-| **Progress** | Age in status for all active items across repositories, excluding completed and parked items. A bar opens the corresponding active Backlog bucket; Backlog filters do not alter this chart. |
+| **Progress** | Age in status for all active items across repositories, excluding completed and parked items. A bar opens the corresponding active bucket in Tasks; task filters do not alter this chart. |
 | **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, missing-trailer count (walked inside the 10-second budget Health uses; past it the tile says "not read" and that the walk stopped rather than waited on) and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db.sh usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db.sh usage` binds it. |
 | **Reports** | The newest 200 recorded reports — scheduled job output with its source and findings. Open one to follow up, assign work or acknowledge it. Preview the clean reports at a date and acknowledge them in one attributed batch; the emails keep going. |
 | **Resources** | The five legacy vault and machine views — Toolbox, Briefs, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
@@ -170,8 +180,8 @@ request's acceptance is shown separately from the current state; acceptance is
 not proof that a job finished or that an application is healthy.
 Queued assignments can be cancelled without completing their item. A blocked
 assignment can be cancelled once its item is done and no runner attempt holds
-its lease. Running assignments explain when no supported cancellation backend
-exists. A restore
+its lease. A running assignment no runner attempt owns names `sd runner cancel`,
+which ends it. A restore
 blocks starting jobs and starting or restarting services, while supported stop
 controls remain available. Stopping a service unloads it for the current login;
 its plist stays installed and may load again at the next login. Equivalent

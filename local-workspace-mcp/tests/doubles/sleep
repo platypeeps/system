@@ -5,7 +5,8 @@
 # under test costs its process work only and a loaded machine cannot push it
 # past the test's guard. A sleep for the number in $FAKE_DIR/sleep_killed dies
 # by SIGTERM at once, as the watchdog's sleep does when notify_bounded cancels
-# it. The curl double's delays stand in for a slow server and use /bin/sleep.
+# it. The curl double's delays stand in for a slow server: /bin/sleep, or the
+# fake clock the date double reads when a test sets one.
 printf 'sleep %s\n' "$*" >> "$FAKE_DIR/journal"
 if [ -e "$FAKE_DIR/sleep_killed" ] && [ "$1" = "$(cat "$FAKE_DIR/sleep_killed")" ]; then
   kill -TERM $$

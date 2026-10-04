@@ -450,7 +450,7 @@ and the change writes a `comment` note reading `Changed kind <old> -> <new> by
 Three kinds in that table -- `work-idea`, `personal-idea` and `personal` --
 are filed with no repository, which is how they are read as a group:
 `reads.backlog_items(connection, repo=reads.NO_REPO)`, or
-`/backlog?repo=none`. They are `workflow.REPO_LESS_KINDS`, which the pack's
+the dashboard's `/tasks?repo=no%20repo`. They are `workflow.REPO_LESS_KINDS`, which the pack's
 `sd task add` reads.
 
 `followup` was the fourth until sd:809 (2026-09-14). A followup filed from a

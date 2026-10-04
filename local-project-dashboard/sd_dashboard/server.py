@@ -48,7 +48,7 @@ from sd_db.errors import SdDbError
 from sd_db.database import schema_version
 from sd_db.schema import SCHEMA_VERSION
 
-from . import auth, runtime, screens
+from . import auth, caching, runtime, screens
 from .pages import error_page
 
 __all__ = ["CSP", "Dashboard", "SECURITY_HEADERS", "build", "capture_followup", "main", "route"]
@@ -68,11 +68,11 @@ SECURITY_HEADERS = (
     ("Cross-Origin-Resource-Policy", "same-origin"),
 )
 
-STATIC = Path(__file__).resolve().parent / "static"
+STATIC = caching.STATIC
 
 #: The one CSS file and the one JavaScript file, and no third. Criterion 12
 #: reads this tuple and the directory listing and asserts they agree.
-STATIC_FILES = ("dashboard.css", "dashboard.js")
+STATIC_FILES = caching.STATIC_FILES
 
 DEFAULT_PORT = 8767
 SESSION_SECONDS = 3600
@@ -106,8 +106,6 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
     taken = v2.old(path)
     if taken is not None:
         return taken.render(v2.registry.Read(connection=connection, now=now, path=path, parameters=parameters))
-    if path == "/backlog":
-        return screens.backlog(connection, now=now, parameters=parameters)
     if path == "/protection":
         from .protection_screen import render
 
@@ -480,16 +478,26 @@ class Dashboard(BaseHTTPRequestHandler):
             print(f"client {host}:{port} left before the response", file=sys.stderr)
 
     def _send(self, status: int, body: bytes, content_type: str, *, cookie=None,
-              policy: str | None = None, overrides: dict | None = None) -> None:
+              policy: str | None = None, overrides: dict | None = None,
+              cache: str = "no-store", compress: bool = False) -> None:
         # Assigned unconditionally: the handler instance is reused for every
         # request on a kept-alive connection, and a policy left behind would
         # apply to the next page served down the same socket.
         self._policy = policy
         self._overrides = overrides
+        # `compress` is a static file's: `caching` says why nothing else is (sd:2141).
+        encoded = compress and caching.compressible(content_type) and \
+            caching.accepts_gzip(self.headers.get("Accept-Encoding"))
+        if encoded:
+            body = caching.gzipped(body)
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
+        if encoded:
+            self.send_header("Content-Encoding", "gzip")
+        if compress:
+            self.send_header("Vary", "Accept-Encoding")
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -514,9 +522,9 @@ class Dashboard(BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
         if path.startswith("/static/"):
-            return self._static(path[len("/static/") :])
+            return self._static(path[len("/static/") :], split.query)
         if path.startswith("/ui/"):
-            return self._v2_asset(path[len("/ui/") :])
+            return self._v2_asset(path[len("/ui/") :], split.query)
         if path.startswith("/v2/"):
             return self._moved(path, split.query)
         if path.startswith("/documents/"):
@@ -602,6 +610,13 @@ class Dashboard(BaseHTTPRequestHandler):
                              for key in ("id", "title", "kind", "status", "repo", "parked_at")},
                     "revision": state["revision"],
                 })
+            if path == "/backlog":
+                # sd:2356: Tasks took over /backlog; an old address opens Tasks with the same query. v1's screen stays
+                # at /classic/backlog until its run selection is deleted.
+                from .tasks_screen import from_backlog
+
+                location = from_backlog(connection, parameters, now=self.clock())
+                return self._send(301, b"", "text/plain; charset=utf-8", overrides={"Location": location})
             body = route(connection, path, parameters, now=self.clock(), operations_backend=self.operations_backend,
                          services_backend=self.services_backend, ports_backend=self.ports_backend)
         except workflow.MissingItem:
@@ -833,13 +848,14 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._send(200, body, kind, policy=POLICY)
         self._send(200, body, kind, overrides=FONT_HEADERS if kind.startswith("font/") else ASSET_HEADERS)
 
-    def _v2_asset(self, name: str) -> None:
+    def _v2_asset(self, name: str, query: str = "") -> None:
         from .v2 import asset
 
         found = asset(name)
         if found is None:
             return self._send(404, error_page(404, "No such file.").encode("utf-8"), "text/html; charset=utf-8")
-        self._send(200, *found)
+        body, kind = found
+        self._send(200, body, kind, cache=caching.cache_control(body, parse_qs(query)), compress=True)
 
     def _moved(self, path: str, query: str) -> None:
         """A `/v2/` bookmark: 301 to the page's or asset's address since sd:2163, or the 404 of a path that names neither."""
@@ -851,15 +867,16 @@ class Dashboard(BaseHTTPRequestHandler):
         location = f"{target}?{query}" if query else target
         self._send(301, b"", "text/plain; charset=utf-8", overrides={"Location": location})
 
-    def _static(self, name: str) -> None:
+    def _static(self, name: str, query: str = "") -> None:
         if name not in STATIC_FILES:
             return self._send(
                 404, error_page(404, "No such file.").encode("utf-8"),
                 "text/html; charset=utf-8",
             )
-        target = STATIC / name
+        body = (STATIC / name).read_bytes()
         guessed = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        self._send(200, target.read_bytes(), f"{guessed}; charset=utf-8")
+        self._send(200, body, f"{guessed}; charset=utf-8",
+                   cache=caching.cache_control(body, parse_qs(query)), compress=True)
 
 
 class Listener(ThreadingHTTPServer):

@@ -431,7 +431,7 @@
         result.service ? "/operations?area=services" : "/operations?area=jobs");
     } catch (problem) {
       if (completed && capture) {
-        output.textContent = "Saved. Open the item from Backlog to continue.";
+        output.textContent = "Saved. Open the item from Tasks to continue.";
         return;
       }
       output.textContent = "The response was interrupted. Reload to check whether it saved before trying again.";
@@ -441,7 +441,7 @@
         output.textContent = "The response was interrupted; this may already be saved. Check the outcome before retrying. ";
         var check = document.createElement("a");
         check.href = values.revision ? "/item/" + form.elements.namedItem("related_item").value :
-          "/backlog?q=" + encodeURIComponent(values.title);
+          "/tasks?q=" + encodeURIComponent(values.title);
         check.target = "_blank";
         check.rel = "noopener";
         check.textContent = "Check in a new tab";

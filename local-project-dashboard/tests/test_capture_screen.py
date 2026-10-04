@@ -57,7 +57,7 @@ class CaptureScreen(ScreenCase):
         return re.search(r'<section[^>]*id="capture"[^>]*>.*?</section>', page).group(0)
 
     def test_today_and_backlog_start_with_a_task_and_inactive_note_fields(self):
-        for path in ("/classic/today", "/backlog"):
+        for path in ("/classic/today", "/classic/backlog"):
             panel = self.panel(path)
             parsed = Fields(panel)
             self.assertIn("<h2>Capture</h2>", panel)

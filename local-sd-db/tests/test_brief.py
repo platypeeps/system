@@ -194,6 +194,19 @@ class TheBound(BriefCase):
         first_line = result.text.splitlines()[1]
         self.assertTrue(first_line.startswith(f"- [followup #{self.followups[-1]} "), first_line)
 
+    def test_the_cut_renders_the_brief_once(self):
+        # sd:1219 (d15d4d3e5b22): the cut rendered and encoded every prefix
+        # from all notes down, so a backlog cost quadratic work in its bytes.
+        for index in range(40):
+            self.note(self.live, f"followup {index} " + "x" * 200)
+        from unittest import mock
+
+        with mock.patch.object(brief, "_render", wraps=brief._render) as render:
+            result = self.brief(branch="feat/live", limit=2048)
+        self.assertEqual(render.call_count, 1)
+        self.assertGreater(result.cut, 0)
+        self.assertLessEqual(len(result.text.encode("utf-8")), 2048)
+
     def test_a_bound_smaller_than_a_line_still_names_the_count_and_the_command(self):
         result = self.brief(branch="feat/live", limit=10)
         self.assertEqual(result.shown, 0)
@@ -340,6 +353,14 @@ class BranchFromGit(unittest.TestCase):
 
     def test_a_path_that_is_not_a_repository_is_the_repository_case(self):
         self.assertIsNone(brief.checked_out_branch(Path(self.tmp.name) / "nowhere"))
+
+    def test_a_bare_repository_is_the_repository_case(self):
+        # sd:1219 (b26d51b72afb): a bare repository's HEAD still names its
+        # default branch, so the brief took the branch path with nothing
+        # checked out.
+        bare = Path(self.tmp.name) / "bare.git"
+        support.git(Path(self.tmp.name), "clone", "-q", "--bare", str(self.repo), str(bare))
+        self.assertIsNone(brief.checked_out_branch(bare))
 
 
 class SchemaTwo(unittest.TestCase):

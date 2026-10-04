@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 
@@ -536,7 +537,8 @@ class HandRunMirrorTest(unittest.TestCase):
     def test_a_lost_eof_does_not_hang_the_run(self):
         # REGRESSION (sd:773). stop_tee closed the FIFO and waited on tee with
         # nothing else, so a tee that never saw EOF held the run open until
-        # the test's timeout, 60 seconds for a 0.2 second job.
+        # the test's timeout, then 60 seconds for a 0.2 second job; this case
+        # bounds it at 20.
         path = self.fake_tee(LOSES_EOF_TEE)
         self.fx.write_job("nightly", PROMPT_JOB)
         result = self.fx.exec_job("nightly", {"PATH": path}, timeout=20)
@@ -583,6 +585,19 @@ class FixtureCleanupTest(unittest.TestCase):
         self.assertEqual(left.wait(timeout=5), -signal.SIGKILL)
         self.assertIsNone(decoy.poll(), "destroy killed a process outside its fixture")
         self.assertFalse(fx.tmp.exists())
+
+    def test_destroy_kills_a_child_forked_after_the_first_listing(self):
+        # A process can start another between a listing and its kill, as the
+        # fake tee forks its blocked reader (sd:813). The second listing finds
+        # the child; one listing would kill only the parent.
+        fx = Fixture()
+        self.addCleanup(shutil.rmtree, fx.tmp, ignore_errors=True)
+        listings = iter([[(101, "parent")], [(202, "forked child")], []])
+        killed = []
+        with unittest.mock.patch.object(fx, "processes", lambda: next(listings)), \
+                unittest.mock.patch("os.kill", lambda pid, sig: killed.append((pid, sig))):
+            self.assertEqual(fx.kill_survivors(), [(101, "parent"), (202, "forked child")])
+        self.assertEqual(killed, [(101, signal.SIGKILL), (202, signal.SIGKILL)])
 
 
 class StatusExitCodeTest(unittest.TestCase):
@@ -1077,6 +1092,20 @@ class HostJobsTest(unittest.TestCase):
                               env=run, capture_output=True, text=True, timeout=60)
         self.assertNotIn("no such job", done.stdout + done.stderr)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_plist_values_are_xml_escaped(self):
+        """A config root named with `&`, `<` and `>` still renders a plist
+        launchd can parse, holding the root as written (sd:2562)."""
+        self.fx.write_job("demo", self.JOB.format("true"))
+        odd = self.fx.tmp / "cfg & <odd>"
+        odd.symlink_to(self.fx.config)
+        env = {**self.env(), "SYSTEM_TOOLS_CONFIG": str(odd)}
+        result = subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                                env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        self.assertEqual(environment["SYSTEM_TOOLS_CONFIG"], str(odd))
 
     def test_no_host_folder_reads_the_shared_jobs(self):
         self.fx.write_job("demo", self.JOB.format("true"))

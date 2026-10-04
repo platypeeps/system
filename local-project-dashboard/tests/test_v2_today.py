@@ -125,10 +125,10 @@ class ThePage(BrowserSession):
 
     def test_data_and_page_script_load_before_the_shell_and_the_shell_loads_last(self):
         _, _, body = self.request("/today")
-        scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
+        scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
         self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "today.js", "shell.js"])
-        self.assertLess(body.index('src="/ui/markup.js"'), body.index("</head>"))
-        self.assertGreater(body.index('src="/ui/icons.js"'), body.index("<body"))
+        self.assertLess(body.index('src="/ui/markup.js?v='), body.index("</head>"))
+        self.assertGreater(body.index('src="/ui/icons.js?v='), body.index("<body"))
 
     def test_the_session_the_page_opens_reads_now(self):
         """The rows Today paints are `now_screen.document`'s, through the route v1 uses."""
@@ -160,7 +160,9 @@ class TheAssets(BrowserSession):
             with urllib.request.urlopen(f"{self.base}/ui/{name}", timeout=5) as answer:
                 status, headers, body = answer.status, answer.headers, answer.read()
             self.assertEqual(status, 200, name)
-            self.assertEqual(body, v2.GENERATED.get(name) or (V2 / "static" / name).read_bytes(), name)
+            # A stylesheet's references carry their digests (sd:2141); with those taken out it is the file.
+            self.assertEqual(re.sub(rb"\?v=[0-9a-f]{16}", b"", body) if name.endswith(".css") else body,
+                             v2.GENERATED.get(name) or (V2 / "static" / name).read_bytes(), name)
             self.assertEqual(headers["Content-Type"], expected[Path(name).suffix], name)
             self.assertEqual(headers["X-Content-Type-Options"], "nosniff", name)
         self.assertIn("fonts/ibm-plex-sans-var.woff2", on_disk)
@@ -202,7 +204,7 @@ class TheShellPort(BrowserSession):
 
     def test_the_v1_files_are_unchanged_and_no_page_names_a_v2_address(self):
         self.assertEqual(server.STATIC_FILES, ("dashboard.css", "dashboard.js"))
-        for path in ("/", "/today", "/classic/today", "/backlog", "/static/dashboard.js", "/static/dashboard.css"):
+        for path in ("/", "/today", "/classic/today", "/classic/backlog", "/static/dashboard.js", "/static/dashboard.css"):
             status, headers, body = self.request(path)
             self.assertEqual(status, 200, path)
             self.assertNotRegex(body, r"""["'(]/v2/""", path)

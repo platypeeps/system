@@ -394,6 +394,19 @@ class PortParser(unittest.TestCase):
             self.NETSTAT_HEADER + "\ntcp46 0 0 *.8443 *.* LISTEN\ntcp6 0 0 fe80::1%lo0.123 *.* LISTEN\n"), {"8443", "123"})
 
 
+class ChargedClock:
+    """`time` for the collectors module, with `charged` seconds added to `monotonic` (sd:2619)."""
+
+    def __init__(self):
+        self.charged = 0.0
+
+    def monotonic(self):
+        return time.monotonic() + self.charged
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class CollectionBudget(unittest.TestCase):
     """sd:722. The budget belongs to the collector, so both callers inherit it.
 
@@ -553,17 +566,35 @@ class CollectionBudget(unittest.TestCase):
         # Review N1. Each command alone fits the ceiling and the two together
         # do not, so a collection that gave lsof a budget of its own would
         # render here instead of refusing.
-        self.module.collect_ports.budget_seconds = 1.5
-        self.machine_setup("sleep 1\n"
-                           "echo '== service'\n"
+        #
+        # sd:2619. machine-setup's share is charged to the collector's clock
+        # instead of slept: a real `sleep 1` against a 1.5 s budget overran on
+        # its own on a loaded machine, and the refusal named machine-setup.
+        # Charged 29.5 of 30 s, it leaves lsof half a second whatever the load,
+        # and lsof's real second always overruns that.
+        self.module.collect_ports.budget_seconds = 30.0
+        self.machine_setup("echo '== service'\n"
                            "echo '  + local-alpha                      9000                                     stopped'\n"
                            "echo '  ---     1 startable, 1 in this profile'\n"
                            "echo '  add by hand: profiles/common.service'\n")
-        (self.bin / "lsof").write_text("#!/bin/sh\nsleep 1\nexit 1\n")
-        html, elapsed = self.page()
+        finished = self.root / "lsof-finished"
+        (self.bin / "lsof").write_text(f'#!/bin/sh\nsleep 1\ntouch "{finished}"\nexit 1\n')
+        clock = ChargedClock()
+        run = self.module.Budget.run
+
+        def charged(budget, argv, **kwargs):
+            result = run(budget, argv, **kwargs)
+            if Path(str(argv[0])) == self.module.MACHINE_SETUP:
+                clock.charged += 29.5
+            return result
+
+        with patch.object(self.module, "time", clock), patch.object(self.module.Budget, "run", charged):
+            html, _ = self.page()
+        self.assertEqual(clock.charged, 29.5, "machine-setup was not read through the budget")
         self.assertIn("exceeded its collection budget", html)
-        self.assertIn("lsof ran past its budget", html)
-        self.assertLess(elapsed, 1.5 + 1.0)
+        self.assertIn("lsof ran past its budget of 30 seconds", html)
+        # Cut, not waited out: lsof writes its marker only when its second ends.
+        self.assertFalse(finished.exists(), "the page waited for lsof instead of stopping it")
 
     def busy_netstat(self, *, listen, rows=1000):
         """A netstat table over 64KB: `rows` TIME_WAIT connections, then `listen`."""
