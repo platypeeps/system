@@ -48,6 +48,8 @@ import re
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -93,6 +95,23 @@ BACKUP_MANIFEST = "backup-manifest.json"
 # A restore must stop with a usable current database when another process
 # holds the writer lock, rather than waiting forever inside sqlite.backup.
 RESTORE_SECONDS = 30
+
+#: How long the destination has to finish a test write before a run gives up
+#: on it (`probe_destination`).
+PROBE_SECONDS = 30
+
+#: The test write, run in a child of its own: open, write and remove one small
+#: file in the destination, or in the nearest part of it that exists.
+_PROBE = """\
+import os, sys
+directory = sys.argv[1]
+while not os.path.exists(directory) and os.path.dirname(directory) != directory:
+    directory = os.path.dirname(directory)
+path = os.path.join(directory, f".sd-db-probe-{os.getpid()}")
+with open(path, "xb") as handle:
+    handle.write(b"probe")
+os.remove(path)
+"""
 PUBLICATION_RESTORE_INTENT = "publication-restore-intent.json"
 
 
@@ -920,6 +939,37 @@ def require_mount(mount: Path, destination: Path,
         )
 
 
+def probe_destination(root: Path) -> None:
+    """Refuse unless a test write under `root` finishes within `PROBE_SECONDS`.
+
+    On some nights macOS stops answering permission checks for launchd jobs.
+    Each open then blocks for seconds and fails with EINTR, Python retries it
+    (PEP 475), and the backup ran until the job's two-hour limit killed it
+    with nothing said (sd:2660). The write runs in a child, so an open that
+    never returns holds the child and not this process. A probe that fails at
+    once is not this check's to name: the writes below fail the same way and
+    say which step did.
+    """
+    try:
+        child = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", _PROBE, str(root)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        raise BackupError(f"the probe of backup destination {root} did not start: {error}") from None
+    try:
+        child.wait(timeout=PROBE_SECONDS)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise BackupError(
+            f"backup destination {root} did not answer within {PROBE_SECONDS:g} s"
+        ) from None
+
+
 def run(
     *,
     home: Path | str,
@@ -935,7 +985,8 @@ def run(
     `keep` retains that many owned backups; `keep_days` retains owned backups
     by age (`prune_older`). They are two answers to one question, so asking
     both is refused. `mount` names the volume the destination must be on,
-    checked before anything is written (`require_mount`).
+    checked before anything is written (`require_mount`). The destination
+    must then finish a test write in time (`probe_destination`).
     """
     _check_keep(keep)
     if keep == 0:
@@ -958,6 +1009,7 @@ def run(
         # The default root is on a disk that may be detached. Falling back to
         # the home would hide that, so a run names the fix and writes nothing.
         require_mount(DEFAULT_MOUNT, root, "mount the disk or pass --destination PATH")
+    probe_destination(root)
     run_id = uuid.uuid4().hex
 
     checkpointed = True

@@ -19,8 +19,10 @@ import hashlib
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
@@ -42,6 +44,17 @@ FORMAT = "# format: app|kind|name[|key]  (names only — safe to commit)\n"
 # The format line before labels were encoded (sd:1273).
 OLD_FORMAT = "# format: app|kind|name  (names only — safe to commit)\n"
 
+# codex is outdated, and its upgrade never finishes: a brew stalled on a
+# permission check nobody can answer, as on the nights of sd:2660.
+BREW_HANG_STUB = """#!/bin/sh
+case "$1" in
+  outdated) echo codex ;;
+  upgrade) : > "$BREW_STARTED"; exec sleep 60 ;;
+esac
+"""
+
+STEP_LINE = r"\[step \d\d:\d\d:\d\d\] brew upgrade codex \(bound {}s\)"
+
 GIT_STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "$GIT_LOG"
 exit 0
@@ -58,7 +71,8 @@ class Fixture(unittest.TestCase):
         self.script = self.folder / "ai-apps.sh"
         shutil.copy(SCRIPT, self.script)
         (self.tmp / "lib").mkdir()
-        shutil.copy(FOLDER.parent / "lib" / "config.sh", self.tmp / "lib" / "config.sh")
+        for library in (FOLDER.parent / "lib").glob("*.sh"):
+            shutil.copy(library, self.tmp / "lib" / library.name)
         self.script.chmod(0o755)
         (self.folder / "profiles").mkdir()
 
@@ -149,6 +163,65 @@ class QuietNightTest(Fixture):
 
         self.assertFalse(self.git_log.exists(),
                          self.git_log.read_text() if self.git_log.exists() else "")
+
+
+class HungStepTest(Fixture):
+    """A brew step that hangs names itself and ends (sd:2660).
+
+    The nightly captures the update's output for its report, so a hang used
+    to leave nothing in the job log until the job's limit killed it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._double(self.bin / "brew", BREW_HANG_STUB)
+        self.started = self.tmp / "brew-started"
+
+    def test_a_hung_upgrade_is_logged_and_stopped_at_its_bound(self):
+        """REGRESSION: the step is bounded and named in the log."""
+        result = self.run_tool("nightly", extra_env={
+            "AI_APPS_STEP_TIMEOUT": "2", "BREW_STARTED": str(self.started)})
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stderr, STEP_LINE.format(2))
+        self.assertIn("timed out after 2s: brew upgrade codex", result.stdout)
+        self.assertIn("timed out after 2s: brew upgrade codex", self.notify_log.read_text())
+
+    def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
+        """REGRESSION: the job's limit ends the run; it does not carry on.
+
+        The TERM trap removed the temporary folder and returned, so the run
+        went on to write the capture into it: `cap: No such file or
+        directory` in the log of the night the limit fired.
+        """
+        env = dict(os.environ)
+        env.update(AI_APPS_PROFILE="personal", AI_APPS_PROFILES_DIR=str(self.folder / "profiles"),
+                   MACHINE_SETUP_STATE=str(self.tmp / "no-such-state"), HOME=str(self.home),
+                   NOTIFY_LOG=str(self.notify_log), GIT_LOG=str(self.git_log),
+                   BREW_STARTED=str(self.started), PATH=f"{self.bin}:{env['PATH']}")
+        # A group of its own, as cron-jobs' run_bounded gives a job: its limit
+        # sends TERM to the whole group.
+        process = subprocess.Popen(["sh", str(self.script), "nightly"], env=env,
+                                   cwd=str(self.tmp), stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(self._reap, process)
+        deadline = time.monotonic() + 20
+        while not self.started.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertTrue(self.started.exists(), "brew upgrade never started")
+
+        os.killpg(process.pid, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=30)
+
+        self.assertEqual(process.returncode, 143, stdout + stderr)
+        self.assertNotIn("No such file or directory", stdout + stderr)
+        self.assertRegex(stderr, STEP_LINE.format(1800))
+
+    @staticmethod
+    def _reap(process):
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
 
 
 class ConfigDirTest(Fixture):

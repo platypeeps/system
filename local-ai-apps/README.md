@@ -70,6 +70,9 @@ and `setup <profile> --apply` pulls a machine toward the chosen manifest.
 upgrades the six apps through brew and re-captures the inventory, emailing
 via local-notify only when an app was upgraded or the inventory moved.
 The `.inv` diff lands in `<config>/ai-apps/profiles/`.
+Each brew call names itself in the job log as it starts.
+A query stops after 600 s and an upgrade after 1800 s; `AI_APPS_STEP_TIMEOUT` sets one bound in seconds for both.
+A hung call then ends and names its step, instead of running until the job's limit.
 
 ## Where inventories come from
 

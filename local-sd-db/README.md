@@ -589,6 +589,9 @@ Age, not a count, because a sleeping Mac misses hourly runs and 168 runs would t
 Only directories past the window are opened, so an hourly run does not verify the whole week.
 `--require-mount PATH` refuses before writing anything unless PATH is mounted and holds the destination.
 A detached disk's mount point is an ordinary directory on the boot disk; the refusal exits 1 and mails.
+Before anything is written, a child process writes and removes one small file in the destination.
+If that write has not finished within 30 s, the run exits 1 and mails `backup destination DIR did not answer within 30 s`.
+Reason: on some nights macOS stops answering permission checks for launchd jobs, and the run then hung until its job limit.
 `--no-row-prune` skips the nightly row prune and its report item; the hourly job passes it.
 Retention checks the complete manifest and checkpoint before deleting a directory.
 Legacy backups without this manifest remain available for restore and are never pruned.
