@@ -576,7 +576,7 @@ The disk is mounted `noowners`: every account sees itself as a snapshot's owner,
 The nightly `sd-db-backup` job writes to the default, `/Volumes/local/Backup/sd-backups`, and refuses when the disk is not mounted.
 After the snapshot, the same job copies `/Volumes/local/Backup` to the NAS; that copy is the off-machine one.
 The hourly `sd-db-backup-hourly` job writes to the attached USB disk, `/Volumes/local/Backup Local/sd-backups`.
-`sd-db.sh backup --keep N` explicitly requests retention of N verified owned backups.
+`sd-db.sh backup --keep N` explicitly requests retention of N verified owned backups, this run's included; `--keep 0` is refused.
 `sd-db.sh backup --keep-days N` instead deletes verified owned backups older than N days.
 A directory goes only when its whole day lies more than N days back, so 7 keeps between 7 and 8 days.
 Age, not a count, because a sleeping Mac misses hourly runs and 168 runs would then reach past a week.

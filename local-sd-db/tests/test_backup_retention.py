@@ -142,9 +142,9 @@ class Retention(BackupCase):
     def test_cli_retention_parser_accepts_only_explicit_supported_values(self):
         self.assertIsNone(retention("all"))
         self.assertEqual(retention("30"), 30)
-        self.assertEqual(retention("0"), 0)
         import argparse
-        for value in ("-1", "yes", "", "٣٠", "3.0"):
+        # 0 is refused: the count includes the backup the run takes (sd:2599).
+        for value in ("0", "-1", "yes", "", "٣٠", "3.0"):
             with self.assertRaises(argparse.ArgumentTypeError):
                 retention(value)
 

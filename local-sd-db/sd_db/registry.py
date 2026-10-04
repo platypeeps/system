@@ -404,9 +404,15 @@ def read(
 
 
 def writable(connection: sqlite3.Connection) -> bool:
-    """Whether this connection may write. `database.connect(write=False)`
-    sets `query_only`, and every connection comes from there."""
+    """Whether this connection may write, as far as `query_only` says.
+    `database.connect(write=False)` sets it and also opens `mode=ro`, which
+    no pragma reports; `ensure_seeded` catches that one at the write."""
     return not connection.execute("PRAGMA query_only").fetchone()[0]
+
+
+#: SQLite's primary result code for a write to a read-only database; the
+#: extended codes carry it in their low byte.
+SQLITE_READONLY = 8
 
 
 def order_policy(connection: sqlite3.Connection) -> dict | None:
@@ -468,8 +474,15 @@ def ensure_seeded(connection: sqlite3.Connection, registry: Registry) -> int:
     bills = {row[0] for row in connection.execute("SELECT name FROM bill")}
     if registry.providers.keys() <= present and registry.bills.keys() <= bills:
         return 0
-    with transaction(connection):
-        return seed(connection, registry)
+    try:
+        with transaction(connection):
+            return seed(connection, registry)
+    except sqlite3.OperationalError as error:
+        # A `mode=ro` open whose `query_only` was switched off: read-only all
+        # the same, so it seeds nothing, like the connection `writable` sees.
+        if (getattr(error, "sqlite_errorcode", 0) or 0) & 0xFF != SQLITE_READONLY:
+            raise
+        return 0
 
 
 def merge(registry: Registry, connection: sqlite3.Connection) -> Registry:
