@@ -10,6 +10,9 @@ The contract under test is that the routing is additive and on. It runs
 unless JEV_NOTIFY switches this stage off (`0`, `off`, `false`, `no`,
 `disabled`) or the stub `jev enabled` declines, and every failure past that
 point must still deliver the notification on the defaults.
+
+The fixtures leave JEV_NOTIFY unset, as every deployed run does (sd:1183):
+`1` is not an on-switch, only a word that is not an off-word.
 """
 
 import os
@@ -39,13 +42,22 @@ if [ "$verb" = enabled ]; then
   # the named stage variable been used to switch this stage off. Unset means
   # on, and only the FLAG_OFF words switch it off -- an unrecognised word
   # leaves the stage on, so a typo cannot silently stop a lane.
-  [ "${JEV_STUB_ENABLED:-1}" = 1 ] || exit 3
+  # `--why` prints the reason on stdout, as the real one does.
+  why=""
+  case " $* " in *" --why "*) why=1 ;; esac
+  if [ "${JEV_STUB_ENABLED:-1}" != 1 ]; then
+    [ -z "$why" ] || echo "jev: no TYPESAFE_API_KEY on this machine"
+    exit 3
+  fi
   if [ -n "${2:-}" ]; then
     eval "word=\${$2:-}"
     case "$(printf '%s' "$word" | tr '[:upper:]' '[:lower:]')" in
-      0|off|false|no|disabled) exit 3 ;;
+      0|off|false|no|disabled)
+        [ -z "$why" ] || echo "jev: $2 switched this stage off here"
+        exit 3 ;;
     esac
   fi
+  [ -z "$why" ] || echo "jev: enabled"
   exit 0
 fi
 # Stdin is the state only when `--state -` says so, as in the real one: `record`
@@ -109,6 +121,10 @@ TOPIC = "secret-topic-name"
 TOKEN = "tk_secret_token"
 IMESSAGE_TO = "+15551234567"
 EMAIL_TO = "operator@example.test"
+
+#: The one gate call notify.sh makes: `--record` counts the decline, `--why`
+#: prints its reason for stderr.
+GATE = "ARGV\tenabled\tJEV_NOTIFY\t--record\t--why\t--caller\tlocal-notify"
 
 
 class Fixture:
@@ -219,7 +235,7 @@ class DefaultBehaviourTest(NotifyTestCase):
         # The stub says `phone`, which is today's default channel set, so the
         # delivery is unchanged; what this asserts is that the stage ran.
         self.assertTrue(self.ntfy_sent())
-        self.assertIn("ARGV\tenabled\tJEV_NOTIFY\t--record\t--caller\tlocal-notify", self.jev_calls(),
+        self.assertIn(GATE, self.jev_calls(),
                       "an unset JEV_NOTIFY did not reach jev")
 
     def test_the_switch_off_asks_nothing(self):
@@ -288,7 +304,7 @@ class DefaultBehaviourTest(NotifyTestCase):
         """A typo must not silently stop the lane, so only FLAG_OFF counts."""
         r = self.fx.run(["msg"], env={"JEV_NOTIFY": "yes"})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("ARGV\tenabled\tJEV_NOTIFY\t--record\t--caller\tlocal-notify", self.jev_calls(),
+        self.assertIn(GATE, self.jev_calls(),
                       "'yes' was read as a switch-off")
 
     def test_the_gate_records_its_decline_under_this_tools_own_name(self):
@@ -302,7 +318,7 @@ class DefaultBehaviourTest(NotifyTestCase):
         r = self.fx.run(["msg"], env={"JEV_NOTIFY": "0"})
         self.assertEqual(r.returncode, 0, r.stderr)
         gates = [c for c in self.jev_calls() if c.split("\t")[1] == "enabled"]
-        self.assertEqual(gates, ["ARGV\tenabled\tJEV_NOTIFY\t--record\t--caller\tlocal-notify"], gates)
+        self.assertEqual(gates, [GATE], gates)
 
     def test_every_judgment_call_names_this_caller_and_its_stage(self):
         """One name across the switch, the ledger and the per-stage report.
@@ -328,25 +344,58 @@ class DefaultBehaviourTest(NotifyTestCase):
         self.assertEqual(self.priority_header(), "default")
 
 
+class DeclineReasonTest(NotifyTestCase):
+    """Every decline says why on stderr, as the README promises (sd:1364):
+    the switch off, no key, and `jev.sh` missing. The notification still
+    goes out on the defaults."""
+
+    def test_the_switch_off_says_so(self):
+        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "0"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.ntfy_sent())
+        self.assertIn("notify.sh: jev not asked: JEV_NOTIFY switched this stage off here; "
+                      "using the defaults", r.stderr)
+
+    def test_no_key_says_so(self):
+        r = self.fx.run(["msg"], env={"JEV_STUB_ENABLED": "0"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.ntfy_sent())
+        self.assertIn("notify.sh: jev not asked: no TYPESAFE_API_KEY on this machine; "
+                      "using the defaults", r.stderr)
+
+    def test_a_missing_jev_sh_says_so(self):
+        self.fx.jev.unlink()
+        r = self.fx.run(["msg"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.ntfy_sent())
+        self.assertIn("notify.sh: jev not asked: ", r.stderr)
+        self.assertIn("/local-jev/jev.sh is missing; using the defaults", r.stderr)
+
+    def test_a_stage_that_runs_prints_no_decline(self):
+        r = self.fx.run(["msg"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("jev not asked", r.stderr)
+
+
 class ExplicitFlagsWinTest(NotifyTestCase):
     """An explicit -c or -p is an instruction. Jev is not consulted at all."""
 
     def test_explicit_channels_bypass_jev(self):
-        r = self.fx.run(["-c", "local", "msg"], env={"JEV_NOTIFY": "1"})
+        r = self.fx.run(["-c", "local", "msg"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.jev_calls(), [])
         self.assertTrue(self.banner_sent())
         self.assertFalse(self.ntfy_sent())
 
     def test_explicit_priority_bypasses_jev(self):
-        r = self.fx.run(["-p", "urgent", "msg"], env={"JEV_NOTIFY": "1"})
+        r = self.fx.run(["-p", "urgent", "msg"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.jev_calls(), [])
         self.assertEqual(self.priority_header(), "urgent")
 
     def test_explicit_priority_survives_a_jev_that_wants_another(self):
         r = self.fx.run(["-p", "min", "msg"],
-                        env={"JEV_NOTIFY": "1", "JEV_STUB_SCORE": "4.0"})
+                        env={"JEV_STUB_SCORE": "4.0"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.priority_header(), "min")
 
@@ -355,7 +404,7 @@ class SwitchOffTest(NotifyTestCase):
     """`jev enabled` exiting 3 is a machine that is off or was never keyed."""
 
     def test_jev_disabled_gives_todays_default(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1", "JEV_STUB_ENABLED": "0"})
+        r = self.fx.run(["msg"], env={"JEV_STUB_ENABLED": "0"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.verbs(), ["enabled"], "asked a question after `enabled` said no")
         self.assertTrue(self.ntfy_sent())
@@ -372,30 +421,30 @@ class RoutingTest(NotifyTestCase):
         """
 
     def test_jev_answering_desk_keeps_the_alert_off_the_phone(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1", "JEV_STUB_CHOICE": "desk"})
+        r = self.fx.run(["msg"], env={"JEV_STUB_CHOICE": "desk"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("choice", self.verbs())
         self.assertTrue(self.banner_sent())
         self.assertFalse(self.ntfy_sent())
 
     def test_jev_answering_phone_keeps_both_channels(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1", "JEV_STUB_CHOICE": "phone"})
+        r = self.fx.run(["msg"], env={"JEV_STUB_CHOICE": "phone"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.banner_sent())
         self.assertTrue(self.ntfy_sent())
 
     def test_a_score_picks_the_priority(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1", "JEV_STUB_SCORE": "3.0"})
+        r = self.fx.run(["msg"], env={"JEV_STUB_SCORE": "3.0"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.priority_header(), "high")
 
     def test_a_score_out_of_range_is_clamped_not_pasted_through(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1", "JEV_STUB_SCORE": "97"})
+        r = self.fx.run(["msg"], env={"JEV_STUB_SCORE": "97"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.priority_header(), "urgent")
 
     def test_unsure_keeps_the_default_route(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1", "JEV_STUB_CHOICE": "unsure"})
+        r = self.fx.run(["msg"], env={"JEV_STUB_CHOICE": "unsure"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.banner_sent())
         self.assertTrue(self.ntfy_sent())
@@ -405,18 +454,18 @@ class ImessageIsNotJevsToGiveTest(NotifyTestCase):
     """Escalating to someone's phone messages is a decision a human makes."""
 
     def test_imessage_is_not_among_the_criteria_offered(self):
-        self.fx.run(["msg"], env={"JEV_NOTIFY": "1"})
+        self.fx.run(["msg"])
         self.assertNotIn("imessage", self.fx.read(self.fx.jev_log))
 
     def test_an_answer_naming_imessage_is_ignored(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1", "JEV_STUB_CHOICE": "imessage"})
+        r = self.fx.run(["msg"], env={"JEV_STUB_CHOICE": "imessage"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.imessage_sent())
         self.assertTrue(self.ntfy_sent(), "an unexpected answer must leave the default alone")
 
     def test_an_answer_naming_a_channel_list_is_ignored(self):
         r = self.fx.run(["msg"],
-                        env={"JEV_NOTIFY": "1", "JEV_STUB_CHOICE": "local,ntfy,imessage"})
+                        env={"JEV_STUB_CHOICE": "local,ntfy,imessage"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.imessage_sent())
         self.assertTrue(self.ntfy_sent())
@@ -426,8 +475,7 @@ class FailureDegradesTest(NotifyTestCase):
     """Every failure degrades to today's defaults. Not silent, not fatal."""
 
     def test_a_failing_jev_still_delivers_on_the_defaults(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1",
-                                      "JEV_STUB_CHOICE_FAIL": "1",
+        r = self.fx.run(["msg"], env={"JEV_STUB_CHOICE_FAIL": "1",
                                       "JEV_STUB_SCORE_FAIL": "1"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.banner_sent())
@@ -436,8 +484,7 @@ class FailureDegradesTest(NotifyTestCase):
         self.assertIn("jev", r.stderr, "a degraded call must say so on stderr")
 
     def test_a_slow_jev_does_not_hold_the_alert(self):
-        r = self.fx.run(["msg"], env={"JEV_NOTIFY": "1",
-                                      "JEV_STUB_SLEEP": "6",
+        r = self.fx.run(["msg"], env={"JEV_STUB_SLEEP": "6",
                                       "JEV_TIMEOUT": "1"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.ntfy_sent())
@@ -457,8 +504,7 @@ class FailureDegradesTest(NotifyTestCase):
         branch below, where `jev` answered unusably, must not -- `jev` wrote
         the cause there itself, and a second copy counts one decision twice.
         """
-        self.fx.run(["msg"], env={"JEV_NOTIFY": "1",
-                                  "JEV_STUB_SLEEP": "6",
+        self.fx.run(["msg"], env={"JEV_STUB_SLEEP": "6",
                                   "JEV_TIMEOUT": "1"})
         rows = self.baseline_rows()
         self.assertTrue(rows, "the timeout wrote no control-arm row at all")
@@ -505,8 +551,7 @@ class FailureDegradesTest(NotifyTestCase):
         deduplication, so a cause repeated here reads as two declines for one
         decision.
         """
-        self.fx.run(["msg"], env={"JEV_NOTIFY": "1",
-                                  "JEV_STUB_CHOICE_FAIL": "1",
+        self.fx.run(["msg"], env={"JEV_STUB_CHOICE_FAIL": "1",
                                   "JEV_STUB_SCORE_FAIL": "1"})
         rows = self.baseline_rows()
         self.assertTrue(rows, "a failed answer wrote no control-arm row")
@@ -522,7 +567,7 @@ class PrivacyTest(NotifyTestCase):
     alert text. Only the title and the message are allowed out."""
 
     def test_only_the_title_and_the_message_are_sent(self):
-        self.fx.run(["-t", "Disk", "the volume is full"], env={"JEV_NOTIFY": "1"})
+        self.fx.run(["-t", "Disk", "the volume is full"])
         state = self.fx.read(self.fx.jev_state_log)
         self.assertIn("Title: Disk", state)
         self.assertIn("Message: the volume is full", state)
@@ -530,7 +575,7 @@ class PrivacyTest(NotifyTestCase):
             self.assertTrue(line.startswith(("Title: ", "Message: ")), line)
 
     def test_no_credential_reaches_jev(self):
-        self.fx.run(["-t", "Disk", "the volume is full"], env={"JEV_NOTIFY": "1"})
+        self.fx.run(["-t", "Disk", "the volume is full"])
         sent = self.fx.read(self.fx.jev_state_log) + self.fx.read(self.fx.jev_log)
         for secret in (TOPIC, TOKEN, IMESSAGE_TO, EMAIL_TO):
             self.assertNotIn(secret, sent, f"{secret!r} left the machine")

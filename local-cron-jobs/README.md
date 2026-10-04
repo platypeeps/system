@@ -148,6 +148,19 @@ entries and loads `<prefix>.cron.<name>` into `gui/$UID` (prefix from
 `SYSTEM_TOOLS_LABEL_PREFIX`, default `local.system-tools`). Re-run `install`
 after editing a job to apply changes.
 
+A reinstall waits up to about 10 seconds after `bootout` for launchd to release
+the label: a job that is running holds it a little longer, and a `bootstrap`
+in that window fails with `5: Input/output error`. A refused `bootstrap` is
+retried once. If it fails again, `install` prints `failed: <job> (<launchctl
+message>)` instead of `installed:` and exits 1. `install --all` goes on to the
+next job and names every failed job at the end (sd:2574).
+
+Every plist names `PATH`, `HOME` and `SYSTEM_TOOLS_CONFIG`, the root `install`
+ran under: launchd gives a job only the environment its plist names, so `exec`
+finds the job file under a non-default root too (sd:2519). A plist installed
+before that names no root, and `verify` reports it `STALE` until `install`
+rewrites it.
+
 Every plist runs `/bin/bash <dir>/local-cron-jobs/cron-jobs.sh exec <name>`.
 The `local-machine-setup` cron stage reads that command to tell its own agents
 from another installer's agent under the same label prefix. It uninstalls only
@@ -190,6 +203,13 @@ recovery. A failure is now retired only by positive, self-contained evidence
 that a later run succeeded. No record, a record in an earlier format, a record
 from another lifetime, a fresh lifetime, a label launchd does not hold: each
 of those is silence. Silence suppresses no failure and invents none.
+
+**The run stamps its times.** `logs/.<job>.stamp` holds `started=` from the
+moment the run takes its lock, and `ended=` and `exit=` once it records an
+outcome, all in UTC (sd:2210). A start with no end is a run in progress or one
+no trap saw end. launchd keeps no run time and a log's write time is not one,
+so the dashboard's Management page reads this file as the job's last run.
+`status` does not read it.
 
 **The run writes its own outcome down.** `logs/.<job>.runs` is written by a
 completed run and by nothing else. `exit=<code>` is that run's own exit code

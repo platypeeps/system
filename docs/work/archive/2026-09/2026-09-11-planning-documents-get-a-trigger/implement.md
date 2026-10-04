@@ -103,7 +103,7 @@ the integration level rather than by reading `runner.py`.
 Done, 2026-09-11 (this paragraph said "Not done" until 2026-09-17): the end-to-end run. `local.system-tools.sd-runner` is live and `dispatch_allowed` is true, so a successful enqueue dispatched at once: six `exec` assignments on sd:442, notes 686 to 718, 14:35Z to 16:30Z,
 through the button. The fifth, exec note 709, wrote all three documents in 15 min 49 s and exited 1 at `register()`, on the registration path before #337; the runner's closeout pushed the branch anyway, and the folder merged as
 `docs/work/2026-09-11-system-local-health-check-does-not-sweep-status/` in `2639a7aa` (#255), whose commit body calls it the first output of the sd-plan trigger, sent from the palette button onto a real row. The sixth, exec note 718 (16:30:01Z to 16:30:24Z, exit 0),
-ended "already planned; nothing to do" and pushed nothing: a second trigger on the same row made no second folder, which is acceptance criterion 3's live evidence. What remains is the owner's judgement of that output, or a second run on the
+ended "already planned; nothing to do" and pushed nothing: a second trigger on the same row made no second folder, which is acceptance criterion 3's live evidence. (The 2026-09-17 delivery entry in `prd.md`'s Log does not accept it and leaves criterion 3 unticked; annotated 2026-10-03, sd:1238.) What remains is the owner's judgement of that output, or a second run on the
 merged code, as the sd:438 note of 2026-09-17 lays out; either way the last acceptance criterion closes on a written judgement and nothing else.
 
 **Silently dropped entries are their own finding.** A malformed entry does not

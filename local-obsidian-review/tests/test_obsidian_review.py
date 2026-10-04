@@ -27,7 +27,9 @@ import harness  # noqa: E402
 GOLDEN_LIST = (harness.FIXTURES / "golden_list.txt").read_text()
 GOLDEN_HTML = (harness.FIXTURES / "golden_body.html").read_text().rstrip("\n")
 
-ON = {"JEV_OBSIDIAN_REVIEW": "1"}
+#: Unset is on, and unset is what every deployed run has, so the fixtures
+#: run the stage that way (sd:1183). `1` is checked once, explicitly, below.
+ON: dict = {}
 #: `JEV_OBSIDIAN_REVIEW` switches the stage off and nothing switches it on:
 #: unset is on. Yesterday's digest is therefore the run that sets it to 0.
 OFF = {"JEV_OBSIDIAN_REVIEW": "0"}
@@ -92,7 +94,7 @@ class DigestTest(unittest.TestCase):
         # The flip: every one of these integrations was opt-in, and an opt-in
         # that defaults to off makes each one added after it silently never
         # run. Unset now reaches Jev; the machine-wide answers still decide.
-        self.assertEqual(self.digest(), self.digest(ON))
+        self.assertEqual(self.digest(), self.digest({"JEV_OBSIDIAN_REVIEW": "1"}))
         self.assertNotEqual(self.digest(), self.digest(OFF))
 
     def test_jev_disabled_is_byte_for_byte_yesterdays_digest(self):
@@ -110,9 +112,9 @@ class DigestTest(unittest.TestCase):
         env.update({
             "OBSIDIAN_VAULT": str(self.root / "vault"),
             "NOTIFY_RECORD": str(self.root / "notify.args"),
-            "JEV_OBSIDIAN_REVIEW": "1",
             "JEV_STUB_ASK_FAIL": "1",
         })
+        env.pop("JEV_OBSIDIAN_REVIEW", None)
         proc = subprocess.run(
             ["sh", str(self.root / "local-obsidian-review" / "obsidian-review.sh"),
              "run"],
@@ -174,7 +176,7 @@ class DigestTest(unittest.TestCase):
         record = self.root / "actions.calls"
         self.digest({**OFF,
                      "ACTIONS_STUB_RECORD": str(record),
-                     "ACTIONS_STUB_SIGNS": "https://mac.example.ts.net"})
+                     "ACTIONS_STUB_SIGNS": "https://mac.example.test"})
         calls = [line.split(" ", 1) for line in
                  record.read_text().splitlines() if line]
         verbs = [verb for verb, _ in calls]
@@ -184,7 +186,7 @@ class DigestTest(unittest.TestCase):
         # them had any reason to reach the daemon.
         self.assertEqual(
             {base for verb, base in calls if verb == "url"},
-            {"https://mac.example.ts.net"})
+            {"https://mac.example.test"})
 
     def test_one_signing_timeout_retires_the_signer_for_the_run(self):
         """sd:1203, review round 2. Caching discovery is not the whole breaker.
@@ -198,7 +200,7 @@ class DigestTest(unittest.TestCase):
         record = self.root / "actions.calls"
         self.digest({**OFF,
                      "ACTIONS_STUB_RECORD": str(record),
-                     "ACTIONS_STUB_SIGNS": "https://mac.example.ts.net",
+                     "ACTIONS_STUB_SIGNS": "https://mac.example.test",
                      "ACTIONS_STUB_SIGN_HANG": "30"})
         verbs = [line.split(" ", 1)[0] for line in
                  record.read_text().splitlines() if line]
