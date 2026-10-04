@@ -354,10 +354,19 @@ calendar_xml() { # cron expression -> StartCalendarInterval plist XML
 
 # The Label and the ProgramArguments below are how local-machine-setup's cron
 # stage knows a plist as ours (cron_plist_ours): change them together.
+xml_escape() { # text: the text with &, < and > as XML entities
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 write_plist() { # job name
-  local job="$1" label plist
+  local job="$1" label plist x_label x_root x_job x_log x_path x_home x_config
   label="$(label_for "$job")"
   plist="$(plist_for "$job")"
+  # Every value below is XML text: a path holding `&` or `<` made a plist
+  # launchd cannot parse (sd:2562).
+  x_label="$(xml_escape "$label")"; x_root="$(xml_escape "$ROOT")"; x_job="$(xml_escape "$job")"
+  x_log="$(xml_escape "$LOG_DIR/$job.log")"; x_path="$(xml_escape "$JOB_PATH")"
+  x_home="$(xml_escape "$HOME")"; x_config="$(xml_escape "$SYSTEM_TOOLS_CONFIG")"
   {
     cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -365,18 +374,18 @@ write_plist() { # job name
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>$label</string>
+    <string>$x_label</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>$ROOT/cron-jobs.sh</string>
+        <string>$x_root/cron-jobs.sh</string>
         <string>exec</string>
-        <string>$job</string>
+        <string>$x_job</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>$ROOT</string>
+    <string>$x_root</string>
 
 EOF
     calendar_xml "$JOB_SCHEDULE"
@@ -386,9 +395,9 @@ EOF
     <false/>
 
     <key>StandardOutPath</key>
-    <string>$LOG_DIR/$job.log</string>
+    <string>$x_log</string>
     <key>StandardErrorPath</key>
-    <string>$LOG_DIR/$job.log</string>
+    <string>$x_log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -406,14 +415,14 @@ EOF
              word above used to be in backticks, so rendering a plist ran
              brew doctor and pasted its output into this comment. -->
         <key>PATH</key>
-        <string>$JOB_PATH</string>
+        <string>$x_path</string>
         <key>HOME</key>
-        <string>$HOME</string>
+        <string>$x_home</string>
         <!-- The config root, always: under a root that is not the default
              one below HOME, exec would otherwise look for the job file in
              an empty folder (sd:2519). -->
         <key>SYSTEM_TOOLS_CONFIG</key>
-        <string>$SYSTEM_TOOLS_CONFIG</string>
+        <string>$x_config</string>
     </dict>
 
     <key>ProcessType</key>

@@ -269,7 +269,7 @@ class WorkflowControls(BrowserSession):
     def test_a_followup_with_a_repository_and_a_branch_is_not_offered_a_run(self):
         prepared = self.prepared_followup()
         runnable = self.item("Still a task", kind="task", repo="/repos/system", branch="task/runnable", status="planning")
-        backlog = self.request("/backlog")[2]
+        backlog = self.request("/classic/backlog")[2]
         boxes = {item: re.search(rf'<input[^>]*id="run-item-{item}"[^>]*>', backlog) for item in (prepared, runnable)}
         self.assertIsNotNone(boxes[prepared])
         self.assertIn(" disabled", boxes[prepared].group(0))

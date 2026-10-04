@@ -17,13 +17,22 @@ done
 # consume curl_seq or read curl_mode, so a sequence counts initializes only.
 # $FAKE_DIR/delete_code overrides the DELETE answer; `fail` exits 7, as a
 # refused connection does. $FAKE_DIR/note_delay: seconds the notification takes.
+# A delay is slept for real, or added to $FAKE_DIR/clock when that file
+# exists: the date double reads the clock, so no real time passes (sd:2621).
+delay() {
+  if [ -s "$FAKE_DIR/clock" ]; then
+    echo $(( $(cat "$FAKE_DIR/clock") + $1 )) > "$FAKE_DIR/clock"
+  else
+    /bin/sleep "$1"
+  fi
+}
 if [ "$method" = DELETE ]; then
   dc=$(cat "$FAKE_DIR/delete_code" 2>/dev/null || echo 200)
   if [ "$dc" = fail ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi
   printf '%s' "$dc"; exit 0
 fi
 case "$data" in *notifications/initialized*)
-  [ -s "$FAKE_DIR/note_delay" ] && /bin/sleep "$(cat "$FAKE_DIR/note_delay")"
+  [ -s "$FAKE_DIR/note_delay" ] && delay "$(cat "$FAKE_DIR/note_delay")"
   [ -n "$body" ] && : > "$body"; printf 202; exit 0 ;;
 esac
 # $FAKE_DIR/curl_seq, when present, answers one line per call before
@@ -36,7 +45,7 @@ if [ -s "$FAKE_DIR/curl_seq" ]; then
 fi
 [ -n "$mode" ] || mode=$(cat "$FAKE_DIR/curl_mode" 2>/dev/null || echo ok)
 # $FAKE_DIR/curl_delay: seconds an initialize takes before it answers.
-[ -s "$FAKE_DIR/curl_delay" ] && /bin/sleep "$(cat "$FAKE_DIR/curl_delay")"
+[ -s "$FAKE_DIR/curl_delay" ] && delay "$(cat "$FAKE_DIR/curl_delay")"
 case "$mode" in
   hang)
     echo "curl: (28) Operation timed out after 10002 milliseconds with 0 bytes received" >&2

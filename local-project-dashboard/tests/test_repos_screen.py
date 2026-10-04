@@ -71,17 +71,27 @@ class ReposArea(FleetCase):
         self.assertIn("does not exist", page)
         self.assertNotIn("0 checkouts under", page)
 
+    def cut(self):
+        """The note a row gets when the child's deadline cuts its git.
+
+        The two hang tests run under the production budget, not a short one:
+        the checkout that answers has to be read inside the same deadline, and
+        under gate load a 2-second one cut it too, so both rows came back
+        unread and sorted by name (sd:2621). A machine that cannot read one
+        checkout in this budget fails the real page as well.
+        """
+        return f"git ran past the budget of {fleet.FLEET_SECONDS - fleet.FLEET_MARGIN:g} seconds and was stopped"
+
     def test_a_hung_checkout_is_cut_at_the_budget_and_the_page_says_which(self):
         self.checkout("fine")
         stuck = self.checkout("stuck")
         self.hanging("git", when=f"*{stuck}*")
-        with patch.object(fleet, "FLEET_SECONDS", 3.0), patch.object(fleet, "FLEET_MARGIN", 1.0):
-            page = self.repos()
+        page = self.repos()
         # The checkouts that answered are on the page; the one that did not
         # is a row that says so, not a row with a branch it made up.
         self.assertEqual(self.cells(page, "repo-name"), ["fine", "stuck"])
         self.assertEqual(self.cells(page, "repo-branch"), ["main", "?"])
-        self.assertEqual(self.cells(page, "repo-note"), ["", "git ran past the budget of 2 seconds and was stopped"])
+        self.assertEqual(self.cells(page, "repo-note"), ["", self.cut()])
         self.assertIn("1 checkout could not be read", page)
         # Cut by the child at its own deadline, so the hung git is gone with
         # it rather than left holding a pipe (the `collectors.run` docstring).
@@ -145,12 +155,11 @@ class ReposArea(FleetCase):
         self.checkout("fine")
         stuck = self.checkout("stuck")
         self.hanging("git", when=f"*{stuck}*", quiet=True)
-        with patch.object(fleet, "FLEET_SECONDS", 3.0), patch.object(fleet, "FLEET_MARGIN", 1.0):
-            page = self.repos()
+        page = self.repos()
         # stdout closed and the process stayed: that is a hang, said as one,
         # not a command that answered and not "was not started" for the next.
         self.assertEqual(self.cells(page, "repo-name"), ["fine", "stuck"])
-        self.assertEqual(self.cells(page, "repo-note"), ["", "git ran past the budget of 2 seconds and was stopped"])
+        self.assertEqual(self.cells(page, "repo-note"), ["", self.cut()])
         self.assertGone("git")
 
     def test_a_checkout_that_cannot_be_read_is_unknown_and_not_clean(self):

@@ -121,7 +121,7 @@ class Criterion7(BrowserSession):
         self.assertRegex(self.refused("done"), r"delivery|merge")
 
     def test_7_17_the_board_and_the_bulk_actions_have_no_status_write(self):
-        status, _, board = self.request("/backlog?view=board")
+        status, _, board = self.request("/classic/backlog?view=board")
         self.assertEqual(status, 200)
         self.assertIn(f'href="/item/{self.work}"', board, "the card is on the board")
         self.assertEqual(self.status_forms(board), [])
