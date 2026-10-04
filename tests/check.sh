@@ -144,25 +144,13 @@ if [ "$(uname -s)" = Darwin ]; then
     jobs="$jobs macos-$suite"
   done
 fi
-# The dashboard leg asserts wall-clock deadlines: a child that must answer
-# inside its own budget, a page that must refuse before its kill arrives. With
-# every job at the same priority those budgets are a race against the other
-# legs, and the leg failed on a different timing test almost every run while
-# the same suite passed alone (1513 tests, twice). The other jobs are
-# throughput work with no deadline of their own, so they yield. `nice` goes
-# after the env assignments: `isolated` hands its arguments to `env -i`, which
-# would otherwise try to run `SUITE_SHARD=...` as the command.
-NICE="nice -n 10"
 pids=""
 for job in $jobs; do
-  # Unquoted on purpose: $NICE is a command prefix that must word-split, and
-  # it is empty for the one leg that keeps its priority.
   case "$job" in
-    leg-dashboard) isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg dashboard ;;
-    leg-*) isolated $NICE /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "${job#leg-}" ;;
+    leg-*) isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "${job#leg-}" ;;
     tools-*) isolated SUITE_SHARD="${job#tools-}/$TOOLS_SHARDS" \
-               $NICE /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg tools ;;
-    macos-*) isolated $NICE sh "$DIR/run-macos-only.sh" "${job#macos-}" ;;
+               /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg tools ;;
+    macos-*) isolated sh "$DIR/run-macos-only.sh" "${job#macos-}" ;;
   esac > "$work/$job.log" 2>&1 &
   pids="$pids $!"
 done
