@@ -713,6 +713,27 @@ class Connection:
     def iterdump(self):
         return iter(self._call("iterdump")["value"])
 
+    def registry_bytes(self) -> bytes:
+        """The hub's `providers.yaml`, beside the database this session opened.
+
+        Seam 7 of the design: the registry is the one file beside the
+        database a satellite reads. `RegistryError` when the hub has none.
+        """
+        import io
+
+        size = self._call("registry")["value"]
+        sink = io.BytesIO()
+        self._fetch(size, sink)
+        return sink.getvalue()
+
+    def _fetch(self, size: int, sink) -> None:
+        """Read the `size` bytes the hub staged into `sink`, one `chunk` at a time."""
+        while sink.tell() < size:
+            chunk = decode_value(self._call("chunk", offset=sink.tell(), length=CHUNK)["value"])
+            if not chunk:
+                raise RemoteError(f"the hub's image ended at {sink.tell()} of {size} bytes")
+            sink.write(chunk)
+
     def set_trace_callback(self, callback) -> None:
         """Traced on the hub, where the statements run, and replayed here.
 
@@ -738,11 +759,7 @@ class Connection:
             # The image comes in chunks, so its size is not bounded by one
             # frame (`MAX_FRAME`).
             with open(staged, "wb") as image:
-                while image.tell() < size:
-                    chunk = decode_value(self._call("chunk", offset=image.tell(), length=CHUNK)["value"])
-                    if not chunk:
-                        raise RemoteError(f"the hub's image ended at {image.tell()} of {size} bytes")
-                    image.write(chunk)
+                self._fetch(size, image)
             staging = sqlite3.connect(staged)
             try:
                 staging.backup(target, pages=pages, progress=progress, sleep=sleep)
