@@ -410,6 +410,13 @@ class WhichRepositoryACloneSpeaksFor(RegisterCase):
             "/Users/nobody/repos/clone",
         )
 
+    def test_an_origin_two_registered_paths_share_resolves_to_itself(self):
+        """sd:1219 (941f61d80ffc, a09df0750b08): the first path in path order was a guess."""
+        upsert_repo(self.db, "/srv/example.test/repos/clone",
+                    remote="git@github.com:platypeeps/system.git", status_source="row")
+        clone = "/Volumes/sd-work/worktrees/442/5-1-abc"
+        self.assertEqual(registered_for(self.db, clone, "git@github.com:platypeeps/system.git"), clone)
+
 
 class WhatCountsAsOneRemote(unittest.TestCase):
     def test_the_git_suffix_and_a_trailing_slash_are_not_differences(self):
