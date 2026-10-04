@@ -73,6 +73,8 @@ The `.inv` diff lands in `<config>/ai-apps/profiles/`.
 Each brew call names itself in the job log as it starts.
 A query stops after 600 s and an upgrade after 1800 s; `AI_APPS_STEP_TIMEOUT` sets one bound in seconds for both.
 A hung call then ends and names its step, instead of running until the job's limit.
+A brew step that fails or times out fails the night with exit 1, so cron-jobs raises its failure banner and push.
+A night with nothing outdated and no inventory change stays quiet.
 
 ## Where inventories come from
 

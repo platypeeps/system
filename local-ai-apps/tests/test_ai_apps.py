@@ -53,6 +53,21 @@ case "$1" in
 esac
 """
 
+# The query itself never finishes, so nothing is checked or upgraded.
+BREW_OUTDATED_HANG_STUB = """#!/bin/sh
+case "$1" in
+  outdated) exec sleep 60 ;;
+esac
+"""
+
+# codex is outdated, and its upgrade fails at once.
+BREW_UPGRADE_FAILS_STUB = """#!/bin/sh
+case "$1" in
+  outdated) echo codex ;;
+  upgrade) echo "Error: codex: download failed" >&2; exit 1 ;;
+esac
+"""
+
 STEP_LINE = r"\[step \d\d:\d\d:\d\d\] brew upgrade codex \(bound {}s\)"
 
 GIT_STUB = """#!/bin/sh
@@ -178,11 +193,12 @@ class HungStepTest(Fixture):
         self.started = self.tmp / "brew-started"
 
     def test_a_hung_upgrade_is_logged_and_stopped_at_its_bound(self):
-        """REGRESSION: the step is bounded and named in the log."""
+        """REGRESSION: the step is bounded and named in the log. The night
+        then fails (FailedUpdateTest), and still mails its report."""
         result = self.run_tool("nightly", extra_env={
             "AI_APPS_STEP_TIMEOUT": "2", "BREW_STARTED": str(self.started)})
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertRegex(result.stderr, STEP_LINE.format(2))
         self.assertIn("timed out after 2s: brew upgrade codex", result.stdout)
         self.assertIn("timed out after 2s: brew upgrade codex", self.notify_log.read_text())
@@ -222,6 +238,42 @@ class HungStepTest(Fixture):
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.communicate()
+
+
+class FailedUpdateTest(Fixture):
+    """A failed or timed-out update step fails the night (sd:2662).
+
+    The update's code used to be dropped with `|| true`. A brew query that
+    timed out on a quiet night then exited 0 with no mail: the step line in
+    the job log was the only trace. A nonzero exit is the nightly's failure
+    channel, as for a failed capture: cron-jobs raises its failure banner
+    and push.
+    """
+
+    def test_a_timed_out_query_fails_a_quiet_night(self):
+        """REGRESSION: the quiet night is the one nothing else reports."""
+        first = self.run_tool("nightly")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.notify_log.unlink(missing_ok=True)
+        self._double(self.bin / "brew", BREW_OUTDATED_HANG_STUB)
+
+        result = self.run_tool("nightly", extra_env={
+            "AI_APPS_STEP_TIMEOUT": "1", "ST_BOUNDED_GRACE": "1"})
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ai-apps: the app update failed (exit 1)", result.stderr)
+        self.assertIn("timed out after 1s: brew outdated --quiet", result.stdout)
+        self.assertFalse(self.notify_log.exists(), "an unchanged inventory mailed")
+
+    def test_a_failed_upgrade_mails_the_report_and_fails(self):
+        """REGRESSION: the report still goes, and the night still fails."""
+        self._double(self.bin / "brew", BREW_UPGRADE_FAILS_STUB)
+
+        result = self.run_tool("nightly")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ai-apps: the app update failed (exit 1)", result.stderr)
+        self.assertIn("Error: codex: download failed", self.notify_log.read_text())
 
 
 class ConfigDirTest(Fixture):
