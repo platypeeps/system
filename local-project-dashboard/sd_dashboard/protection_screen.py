@@ -112,6 +112,12 @@ def _reason(row):
     return tag("span", row.get("reason") or "unknown", class_="protection-reason")
 
 
+def _observed(row):
+    """When it was read, and from which checkout when this one borrowed a sibling's row (sd:1607)."""
+    when = row.get("observed_at") or "never"
+    return f"{when} · borrowed from {row['borrowed_from']}" if row.get("borrowed_from") else when
+
+
 def _summary(rows):
     counts = {status: sum(1 for row in rows if row["status"] == status) for status in ORDER}
     observed = [row["observed_at"] for row in rows if row.get("observed_at")]
@@ -135,7 +141,7 @@ def render(connection, *, parameters):
     for flag_id, label in FLAGS:
         columns.append(Column(flag_id, label, lambda row, flag_id=flag_id: _flag_cell(row, flag_id),
                               text=lambda row, flag_id=flag_id: _flag_text(row, flag_id), css="column-meta"))
-    columns.append(Column("observed_at", "Observed", lambda row: row.get("observed_at") or "never", css="column-meta"))
+    columns.append(Column("observed_at", "Observed", _observed, text=_observed, css="column-meta"))
     columns.append(Column("reason", "Reason", _reason, text=lambda row: row.get("reason") or "" if row["status"] == "unknown" else ""))
     listing = Listing("protection", columns, rows, path="/protection", query=query, page_number=number,
                       selected=selected,
