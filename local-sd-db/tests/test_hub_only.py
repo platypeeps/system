@@ -71,66 +71,103 @@ class OverTheWire(unittest.TestCase):
         self.assertIn(self.hub, str(caught.exception))
 
 
-class TheLocks(OverTheWire):
-    def test_control_gate_refuses_a_remote_connection_and_takes_no_lock(self):
-        def enter():
-            with control_gate(self.connection):
-                self.fail("the gate was entered over the wire")
-
-        self.assertHubOnly("service controls and restore", enter)
-        self.assertFalse((self.root / "operation-locks").exists())
-
-    def test_the_publication_journal_refuses_a_remote_connection(self):
-        self.assertHubOnly("the publication journal", lambda: publication_journal.root(self.connection))
-
-    def test_repo_and_item_remove_refuse_a_remote_connection(self):
-        self.assertHubOnly("repo and item remove", lambda: removal._store_directory(self.connection))
-        self.assertHubOnly("repo and item remove", lambda: removal._main_file(self.connection))
+LOG = "0" * 32 + ".log"
 
 
-class TheDirectories(OverTheWire):
-    """Each directory beside the database, resolved over the wire, refuses."""
+def _enter(gate):
+    with gate:
+        raise AssertionError("the gate was entered")
 
-    def test_the_retention_prune_refuses_before_its_backup_check(self):
-        self.assertHubOnly("the retention prune", lambda: retention.prune(self.connection, object()))
 
-    def test_the_executions_prune_refuses_to_resolve_an_output(self):
-        row = {"id": 1, "output_path": str(self.root / "executions" / ("0" * 32 + ".log"))}
-        self.assertHubOnly("the executions prune", lambda: retention._output_files(self.connection, row))
+#: Every verb that refuses by the connection's kind, as `(verb, attempt)`.
+#: `attempt(connection, case)` reads `case.root`, the database's folder, and
+#: `case.note`, an exec note. `TheVerbs` runs each over the wire and expects
+#: `HubOnly`; `TheSameVerbsOnTheHub` runs each on the hub's own file and
+#: expects it to reach its own checks.
+VERBS = [
+    ("service controls and restore", lambda c, t: _enter(control_gate(c))),
+    ("the publication journal", lambda c, t: publication_journal.root(c)),
+    ("repo and item remove", lambda c, t: removal._store_directory(c)),
+    ("repo and item remove", lambda c, t: removal._main_file(c)),
+    ("the retention prune", lambda c, t: retention.prune(c, object())),
+    ("the executions prune",
+     lambda c, t: retention._output_files(c, {"id": 1, "output_path": str(t.root / "executions" / LOG)})),
+    ("the runner's executions directory", lambda c, t: runner_exec.read_execution(c, t.note)),
+    ("runner controls", lambda c, t: runner_controls.control(c, 1, "cancel", expected_revision=0, who="test")),
+    ("runner controls", lambda c, t: runner_exec.reconcile(c, t.note)),
+    ("the runner's executions directory", lambda c, t: runner_exec.prepare(
+        c, 1, "command", {}, expected_revision=0, expected_catalog="", who="test")),
+    ("the runner's executions directory", lambda c, t: runner_exec._validate(c, [1], "{}")),
+    ("the writing cutover",
+     lambda c, t: writing.cutover_pieces(c, str(t.root / "repo"), expected_fingerprint="", who="test")),
+    ("the writing cutover journal", lambda c, t: writing._journal_path(c, str(t.root / "repo"))),
+]
 
-    def test_reading_an_execution_refuses(self):
-        local = database.connect(self.served.database)
-        try:
-            item = create_item(local, kind="work", title="exec")
-            local.execute(
-                "INSERT INTO note (item, timestamp, kind, body, started, output_path) VALUES (?, ?, 'exec', '{}', ?, ?)",
-                (item, "2026-10-04T00:00:00+00:00", "2026-10-04T00:00:00+00:00",
-                 str(self.root / "executions" / ("0" * 32 + ".log"))))
-            note = local.execute("SELECT id FROM note WHERE kind = 'exec'").fetchone()[0]
-            local.commit()
-        finally:
-            local.close()
-        self.assertHubOnly("the runner's executions directory",
-                           lambda: runner_exec.read_execution(self.connection, note))
 
-    def test_runner_controls_refuse_before_they_read_the_assignment(self):
-        self.assertHubOnly("runner controls", lambda: runner_controls.control(
-            self.connection, 1, "cancel", expected_revision=0, who="test"))
-        self.assertHubOnly("runner controls", lambda: runner_exec.reconcile(self.connection, 1))
+def exec_note(path: Path) -> int:
+    """An exec note whose log would sit in `executions/` beside `path`."""
+    local = database.connect(path)
+    try:
+        item = create_item(local, kind="work", title="exec")
+        local.execute(
+            "INSERT INTO note (item, timestamp, kind, body, started, output_path) VALUES (?, ?, 'exec', '{}', ?, ?)",
+            (item, "2026-10-04T00:00:00+00:00", "2026-10-04T00:00:00+00:00",
+             str(path.parent / "executions" / LOG)))
+        note = local.execute("SELECT id FROM note WHERE kind = 'exec'").fetchone()[0]
+        local.commit()
+        return note
+    finally:
+        local.close()
 
-    def test_an_execution_refuses_before_it_is_prepared_or_validated(self):
-        self.assertHubOnly("the runner's executions directory", lambda: runner_exec.prepare(
-            self.connection, 1, "command", {}, expected_revision=0, expected_catalog="", who="test"))
-        self.assertHubOnly("the runner's executions directory",
-                           lambda: runner_exec._validate(self.connection, [1], "{}"))
 
-    def test_the_writing_cutover_refuses_before_it_reads_the_repository(self):
-        self.assertHubOnly("the writing cutover", lambda: writing.cutover_pieces(
-            self.connection, str(self.root / "repo"), expected_fingerprint="", who="test"))
+def state(path: Path) -> tuple[list[str], list[str]]:
+    """The database's rows and the names in its folder: a refusal changes neither."""
+    raw = sqlite3.connect(path)
+    try:
+        dump = list(raw.iterdump())
+    finally:
+        raw.close()
+    return dump, sorted(str(p.relative_to(path.parent)) for p in path.parent.rglob("*")
+                        if not p.name.startswith(path.name + "-"))
 
-    def test_the_writing_cutover_journal_refuses(self):
-        self.assertHubOnly("the writing cutover journal",
-                           lambda: writing._journal_path(self.connection, str(self.root / "repo")))
+
+class TheVerbs(OverTheWire):
+    """Each hub-only verb, reached over the wire, refuses and writes nothing."""
+
+    def test_each_verb_refuses_naming_itself_and_the_hub_and_writes_nothing(self):
+        self.note = exec_note(self.served.database)
+        for verb, attempt in VERBS:
+            with self.subTest(verb=verb, attempt=attempt.__code__.co_firstlineno):
+                before = state(self.served.database)
+                self.assertHubOnly(verb, lambda: attempt(self.connection, self))
+                self.assertEqual(state(self.served.database), before)
+
+
+@wire.hub_only
+class TheSameVerbsOnTheHub(unittest.TestCase):
+    """The same calls on the hub's own file pass the refusal and reach their own checks.
+
+    The arguments are not a real run, so most then refuse for their own
+    reason; the suites that mark these paths `hub_only` run them for real.
+    """
+
+    def test_each_verb_passes_the_refusal_on_the_hubs_own_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.root = Path(folder)
+            path = self.root / "sd.db"
+            initialise(path)
+            self.note = exec_note(path)
+            for verb, attempt in VERBS:
+                with self.subTest(verb=verb, attempt=attempt.__code__.co_firstlineno):
+                    connection = database.connect(path)
+                    try:
+                        attempt(connection, self)
+                    except remote.HubOnly as error:
+                        self.fail(f"{verb} refused on the hub's own file: {error}")
+                    except Exception:  # noqa: BLE001 - its own refusal, past the hub check
+                        pass
+                    finally:
+                        connection.close()
 
 
 class TheSatellitePaths(Satellite):
