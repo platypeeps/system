@@ -291,6 +291,19 @@ class TheLostCommit(OutcomeCase):
         self.assertEqual(client.outcome(raised.exception.rid), remote.RECORDED)
         self.assertEqual(count(self.path), 1)
 
+    def test_an_ask_the_hub_never_answers_ends_at_its_own_timeout(self):
+        """A hub that accepts and never answers must not hold the client past
+        the bound: each ask has its own timeout."""
+        silent = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(silent.close)
+        client = self.connect()
+        client.port = silent.getsockname()[1]
+        started = time.monotonic()
+        with mock.patch.object(remote, "OUTCOME_ASK_TIMEOUT", 0.3), \
+                self.assertRaises(remote.HubUnreachable):
+            client.outcome(remote.new_request_id())
+        self.assertLess(time.monotonic() - started, 5)
+
     def test_a_commit_for_an_id_this_session_does_not_own_is_refused(self):
         """(e) Only R's owner commits R: another session's COMMIT naming R is
         refused and not applied, with or without a transaction of its own."""
