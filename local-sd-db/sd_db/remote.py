@@ -320,6 +320,13 @@ def rebuild_error(described: dict) -> BaseException:
     return error
 
 
+class StatementRefused(RemoteError, sqlite3.DatabaseError):
+    """The hub refused a statement that would reach past the served file
+    (`sd_db.serve.confine`). The refused statement did not run. A
+    `sqlite3.DatabaseError` too, so a caller that handles SQLite's own
+    "not authorized" handles this the same way."""
+
+
 # -- rows ------------------------------------------------------------------
 
 _shapes: dict[tuple[str, ...], sqlite3.Cursor] = {}

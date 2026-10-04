@@ -75,6 +75,62 @@ class PeerRefused(remote.RemoteError):
     """The session's TCP peer is not one this listener admits. Nothing opened."""
 
 
+#: The PRAGMAs a session may run, from a grep for `PRAGMA` across
+#: `local-sd-db/sd_db`, `local-sd-runner` and `local-project-dashboard`
+#: (2026-10-04, step 7's review); the command pack's `bin/` names none.
+#: `foreign_key_list` is the table-valued `pragma_foreign_key_list` in
+#: `removal`. `page_count` is the one the `serialize` op runs inside
+#: SQLite. Every other PRAGMA is refused, `writable_schema` above all.
+PRAGMAS = frozenset({
+    "busy_timeout", "data_version", "database_list", "foreign_key_check", "foreign_key_list",
+    "foreign_keys", "index_info", "index_list", "integrity_check", "journal_mode", "page_count",
+    "query_only", "table_info", "user_version",
+})
+#: Those a session may give an argument: a table to describe, or a setting
+#: of its own connection. Setting `journal_mode` or `user_version` changes
+#: the file for every reader, so a session reads them only.
+PRAGMAS_WITH_ARGUMENT = frozenset({
+    "busy_timeout", "foreign_key_check", "foreign_key_list", "foreign_keys", "index_info",
+    "index_list", "integrity_check", "query_only", "table_info",
+})
+
+
+def confine(connection: sqlite3.Connection, refusals: list[str]) -> None:
+    """Keep every statement of a session inside the file the hub opened.
+
+    `ATTACH` opens another file as the hub process, and `VACUUM` writes one
+    through it (`VACUUM INTO` the named file, a bare `VACUUM` a temporary
+    one), so both are refused. SQLite authorizes a `VACUUM` as the `ATTACH`
+    it runs, so one reason names both. `DETACH` has nothing to detach. So is
+    `load_extension`, which this module never enables. A refusal appends its
+    reason to `refusals`, which the session sends back as `StatementRefused`.
+    Installed after the hub's own open, so its own pragmas run first, and
+    before the first client statement. Installing it expires the statements
+    the open prepared, so a cached hub pragma is authorized again.
+    """
+
+    def authorize(action, first, second, _database, _trigger):
+        if action == sqlite3.SQLITE_ATTACH:
+            refusals.append(f"ATTACH or VACUUM would open {first or 'a temporary file'} as the hub; "
+                            "a session works on the served database only")
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_DETACH:
+            refusals.append("DETACH is not served over the wire; a session attaches nothing")
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_PRAGMA:
+            name = (first or "").lower()
+            if name not in (PRAGMAS if second is None else PRAGMAS_WITH_ARGUMENT):
+                shown = f"PRAGMA {name}" + ("" if second is None else f"({second})")
+                refusals.append(f"{shown} is not served over the wire")
+                return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_FUNCTION and (second or "").lower() == "load_extension":
+            refusals.append("load_extension is not served over the wire")
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    connection.set_authorizer(authorize)
+
+
 class Log:
     """One line per event on a stream, and the run's longest gap."""
 
@@ -150,6 +206,8 @@ class Session(socketserver.BaseRequestHandler):
         gap = 0.0
         gap_before = ""
         first_sql = ""
+        # Reasons `confine` refused a statement, per frame.
+        refusals: list[str] = []
         try:
             while True:
                 try:
@@ -167,6 +225,7 @@ class Session(socketserver.BaseRequestHandler):
                         gap = received - last_answer
                         gap_before = _brief(frame)
                 refused = False
+                refusals.clear()
                 try:
                     op = frame.get("op")
                     opening = connection is None and op == "open"
@@ -201,6 +260,7 @@ class Session(socketserver.BaseRequestHandler):
                             create=bool(frame.get("create", False)),
                             busy_timeout=int(frame.get("busy_timeout", database.BUSY_TIMEOUT)),
                         )
+                        confine(connection, refusals)
                         answer = _answer(connection, None)
                     elif op == "execute":
                         sql = frame["sql"]
@@ -244,6 +304,10 @@ class Session(socketserver.BaseRequestHandler):
                     else:
                         raise remote.RemoteError(f"unknown operation {op!r}")
                 except Exception as error:  # every failure goes back as a frame
+                    if refusals and isinstance(error, sqlite3.DatabaseError):
+                        # SQLite says only "not authorized"; the reason is ours.
+                        error = remote.StatementRefused(f"refused: {'; '.join(dict.fromkeys(refusals))}")
+                        server.log.line(f"session {self.number} {error}")
                     answer = {"ok": False, "error": remote.describe_error(error)}
                     if connection is not None:
                         answer["in_transaction"] = connection.in_transaction

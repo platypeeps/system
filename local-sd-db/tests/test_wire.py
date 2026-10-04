@@ -292,6 +292,95 @@ class TheWire(ServedCase):
         self.assertTrue(summary and float(summary.group(1)) >= 200, log)
 
 
+class TheConfinement(ServedCase):
+    """Step 7's review: a session's SQL stays inside the served file.
+
+    A refused statement is an error frame and the session keeps serving: the
+    statement never ran, and the authorizer still guards the next one.
+    """
+
+    def wire(self) -> remote.Connection:
+        wire = self.served.connect()
+        self.addCleanup(wire.close)
+        return wire
+
+    def assertServing(self, wire: remote.Connection) -> None:
+        self.assertEqual(wire.execute("SELECT count(*) FROM probe").fetchone()[0], 0)
+
+    def assertRefusedEveryWay(self, wire: remote.Connection, sql: str, named: str) -> None:
+        """`sql` is refused through each op that runs SQL, as `StatementRefused`
+        naming `named`, and the session serves the next statement."""
+        for op, run in (("execute", lambda: wire.execute(sql)),
+                        ("executemany", lambda: wire.executemany(sql, [()])),
+                        ("executescript", lambda: wire.executescript(sql))):
+            with self.subTest(sql=sql, op=op):
+                with self.assertRaisesRegex(remote.StatementRefused, re.escape(named)) as caught:
+                    run()
+                self.assertIsInstance(caught.exception, sqlite3.DatabaseError)
+                self.assertServing(wire)
+
+    def test_attach_and_detach_are_refused_and_open_no_file(self):
+        wire = self.wire()
+        other = self.root / "other.db"
+        self.assertRefusedEveryWay(wire, f"ATTACH DATABASE '{other}' AS other", f"ATTACH or VACUUM would open {other}")
+        self.assertFalse(other.exists())
+        self.assertRefusedEveryWay(wire, "DETACH DATABASE main", "DETACH is not served")
+        self.assertIn(f"refused: ATTACH or VACUUM would open {other}", self.served.stop())
+
+    def test_vacuum_into_goes_through_attach_and_creates_no_file(self):
+        actions = []
+        probe = sqlite3.connect(":memory:")
+        self.addCleanup(probe.close)
+        probe.set_authorizer(lambda action, *_: actions.append(action) or sqlite3.SQLITE_OK)
+        probe.execute(f"VACUUM INTO '{self.root / 'probe-copy.db'}'")
+        self.assertIn(sqlite3.SQLITE_ATTACH, actions)
+        wire = self.wire()
+        copy = self.root / "copy.db"
+        with self.assertRaisesRegex(remote.StatementRefused, re.escape(f"ATTACH or VACUUM would open {copy}")):
+            wire.execute("VACUUM INTO ?", (str(copy),))
+        self.assertRefusedEveryWay(wire, f"VACUUM main INTO '{copy}'", f"ATTACH or VACUUM would open {copy}")
+        self.assertRefusedEveryWay(wire, "VACUUM", "ATTACH or VACUUM would open a temporary file")
+        self.assertFalse(copy.exists())
+
+    def test_a_pragma_off_the_allowlist_is_refused(self):
+        wire = self.wire()
+        for sql, named in (
+            ("PRAGMA writable_schema = ON", "PRAGMA writable_schema(ON)"),
+            ("PRAGMA main.writable_schema = ON", "PRAGMA writable_schema(ON)"),
+            ("PRAGMA writable_schema", "PRAGMA writable_schema"),
+            ("PRAGMA user_version = 99", "PRAGMA user_version(99)"),
+            ("PRAGMA journal_mode = DELETE", "PRAGMA journal_mode(DELETE)"),
+            # The hub's own open ran this exact text, so it sits in the
+            # statement cache; the authorizer still sees it.
+            ("PRAGMA journal_mode = WAL", "PRAGMA journal_mode(WAL)"),
+            ("PRAGMA mmap_size", "PRAGMA mmap_size"),
+            # A table-valued pragma, inside DML so `executemany` runs it too.
+            ("INSERT INTO probe (name) SELECT name FROM pragma_function_list", "PRAGMA function_list"),
+        ):
+            self.assertRefusedEveryWay(wire, sql, named + " is not served")
+        self.assertEqual(wire.execute("PRAGMA user_version").fetchone()[0], schema.SCHEMA_VERSION)
+        self.assertEqual(wire.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+
+    def test_load_extension_is_refused(self):
+        wire = self.wire()
+        self.assertRefusedEveryWay(wire, "SELECT load_extension('absent')", "load_extension is not served")
+        self.assertRefusedEveryWay(wire, "INSERT INTO probe (name) SELECT load_extension('absent')",
+                                   "load_extension is not served")
+
+    def test_allowed_pragmas_and_verb_traffic_pass(self):
+        wire = self.wire()
+        for sql in ("PRAGMA table_info(probe)", "SELECT * FROM pragma_table_info('probe')",
+                    "PRAGMA database_list", "PRAGMA busy_timeout = 6000", "PRAGMA integrity_check"):
+            with self.subTest(sql=sql):
+                self.assertTrue(wire.execute(sql).fetchall())
+        wire.execute("PRAGMA foreign_keys = ON")
+        self.assertEqual(wire.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(wire.execute("PRAGMA busy_timeout").fetchone()[0], 6000)
+        item = create_item(wire, kind="work", title="over the confined wire")
+        self.assertEqual(wire.execute("SELECT title FROM item WHERE id = ?", (item,)).fetchone()[0],
+                         "over the confined wire")
+
+
 def other_build(root: Path) -> Path:
     """A copy of this `local-sd-db` with the same versions and one changed file.
 
