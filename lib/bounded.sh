@@ -1,5 +1,5 @@
-# Bounded steps for unattended jobs. Source it; it defines functions and one
-# variable and runs nothing else.
+# Bounded steps for unattended jobs. Source it; it defines functions and two
+# variables and runs nothing else.
 #
 #   . "$DIR/../lib/bounded.sh"
 #   st_step 1800 brew upgrade
@@ -11,15 +11,17 @@
 # Perl, not timeout(1): macOS ships none, and Homebrew's coreutils is not on
 # launchd's PATH. The command runs in a process group of its own, so the bound
 # ends all of it. On expiry: one line on stderr naming the command, TERM to
-# the group, KILL after ST_BOUNDED_GRACE seconds (default 5), and exit 124, the
-# code GNU timeout uses.
+# the group, KILL after ST_BOUNDED_GRACE seconds (default
+# ST_BOUNDED_DEFAULT_GRACE), and exit 124, the code GNU timeout uses.
 #
 # An INT, TERM or HUP to this process ends the command the same way: the
 # signal goes on to the group, KILL follows after the grace, and the exit is
 # 128 plus the signal. Passing the signal on alone was not enough: cron-jobs
 # TERMs a job's group at its limit and KILLs it after its own grace (10 s by
 # default), and that KILL never reaches a group of its own, so a command that
-# ignored the TERM outlived the job. The default grace stays under that 10 s.
+# ignored the TERM outlived the job. The default grace stays well under that
+# 10 s; lib/tests/test_bounded.py reads cron-jobs' default to hold it there.
+ST_BOUNDED_DEFAULT_GRACE=5
 # shellcheck disable=SC2016 # perl source, expanded by perl
 ST_BOUNDED='use strict; use POSIX (); use Time::HiRes ();
 my ($limit, $grace, @cmd) = @ARGV;
@@ -67,7 +69,7 @@ exit(defined $caught ? 128 + $number{$caught} : 124);'
 st_bounded() {
     _st_seconds=$1
     shift
-    perl -e "$ST_BOUNDED" "$_st_seconds" "${ST_BOUNDED_GRACE:-10}" "$@"
+    perl -e "$ST_BOUNDED" "$_st_seconds" "${ST_BOUNDED_GRACE:-$ST_BOUNDED_DEFAULT_GRACE}" "$@"
 }
 
 # st_step SECONDS COMMAND...: log COMMAND, then run it under st_bounded.

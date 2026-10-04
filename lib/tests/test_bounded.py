@@ -1,6 +1,7 @@
 """lib/bounded.sh: a step that hangs ends at its bound and names itself (sd:2660)."""
 
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -9,6 +10,15 @@ import unittest
 from pathlib import Path
 
 LIB = Path(__file__).resolve().parents[1]
+CRON_JOBS = LIB.parent / "local-cron-jobs" / "cron-jobs.sh"
+
+
+def cron_jobs_grace():
+    """cron-jobs' default grace between a job's TERM and its KILL, read from
+    the script itself so the two defaults cannot drift apart unseen."""
+    found = re.findall(r'"\$\{CRON_JOBS_TIMEOUT_GRACE:-(\d+)\}"', CRON_JOBS.read_text())
+    assert len(set(found)) == 1, found
+    return int(found[0])
 
 
 def shell(script, **kwargs):
@@ -99,11 +109,30 @@ class Bounded(unittest.TestCase):
         The KILL cannot reach a command in a group of its own, so the bound
         has to end it within its grace and exit, or the command outlives the
         job and overlaps the next run."""
+        self.term_a_command_that_ignores_it(grace="1", within=4)
+
+    def test_the_default_grace_ends_the_command_well_inside_cron_jobs_grace(self):
+        """With neither grace set, the whole stop -- TERM, grace, KILL, exit --
+        ends at least two seconds before cron-jobs' KILL would arrive."""
+        self.term_a_command_that_ignores_it(grace=None, within=cron_jobs_grace() - 2)
+
+    def test_a_term_during_the_bound_s_own_stop_does_not_extend_it(self):
+        """The timeout path: the bound expired and its stop is under way when
+        cron-jobs' TERM arrives. The stop finishes on its own clock, still
+        well inside cron-jobs' grace."""
+        self.term_a_command_that_ignores_it(grace=None, within=cron_jobs_grace() - 2,
+                                            bound=1, delay=1.5)
+
+    def term_a_command_that_ignores_it(self, grace, within, bound=60, delay=0.0):
         pidfile = self.dir / "child.pid"
+        env = {k: v for k, v in os.environ.items() if k != "ST_BOUNDED_GRACE"}
+        if grace is not None:
+            env["ST_BOUNDED_GRACE"] = grace
         process = subprocess.Popen(
-            ["/bin/sh", "-c", f'. "{LIB}/bounded.sh"; ST_BOUNDED_GRACE=1 st_bounded 60 '
+            ["/bin/sh", "-c", f'. "{LIB}/bounded.sh"; st_bounded {bound} '
                               f"sh -c 'trap \"\" TERM; echo $$ $PPID > \"{pidfile}\"; exec sleep 60'"],
-            start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=env)
         self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
         deadline = time.monotonic() + 10
         while not pidfile.exists() or len(pidfile.read_text().split()) < 2:
@@ -111,11 +140,14 @@ class Bounded(unittest.TestCase):
             time.sleep(0.05)
         child, supervisor = (int(word) for word in pidfile.read_text().split())
         self.addCleanup(kill_group, child)
+        time.sleep(delay)
 
         os.killpg(process.pid, signal.SIGTERM)
+        termed = time.monotonic()
 
-        self.assertTrue(gone(child, 4), "a command ignoring TERM outlived the grace")
-        self.assertTrue(gone(supervisor, 2), "the bound did not exit after the grace")
+        self.assertTrue(gone(child, within), "a command ignoring TERM outlived the grace")
+        self.assertTrue(gone(supervisor, max(0.0, termed + within - time.monotonic()) + 0.2),
+                        "the bound did not exit inside the grace")
         process.communicate(timeout=10)
 
 
