@@ -1,6 +1,6 @@
-"""Tasks (sd:2124): the page's rows and one item's Details, read as v1 /backlog and /item/<id> read them. The old
-Backlog stays in the palette: the page has no run selection, age buckets, paging or status filter yet, and
-Operations > Progress links to it."""
+"""Tasks (sd:2124): the page's rows and one item's Details, read as v1 /backlog and /item/<id> read them. The page
+takes v1's status, age, active, q and page filters, and Operations > Progress links here (sd:2589). The old Backlog
+stays in the palette: the page has no run selection or ?skill= yet (sd:2590)."""
 
 from __future__ import annotations
 

@@ -59,6 +59,21 @@ def dark_fleet(area):
     raise ValueError("fleet collection was stopped at its budget")
 
 
+def runner_status(body, code=0, err=""):
+    """A `runner.sh status` stand-in: its exit code, its one-line body and its stderr."""
+    return lambda: (code, "" if body is None else json.dumps(body) + "\n", err)
+
+
+SCHEDULE = {"last_completed_at": "2026-09-06T03:00:00+00:00", "next_due_at": "2026-09-07T03:00:00+00:00", "due": False,
+            "cadence_seconds": 86400}
+REFRESHED = runner_status({"ok": True, "interval_seconds": 10, "archive_refresh_schedule": SCHEDULE})
+
+
+def stamp(backend, name, text):
+    """The cron-jobs wrapper's `logs/.<job>.stamp` for `name` (sd:2210)."""
+    (backend.cron_root / "logs" / f".{name}.stamp").write_text(text)
+
+
 class NoServices:
     """A services backend double that lists nothing, so no launchctl call is made."""
 
@@ -86,13 +101,85 @@ class TheDocument(ScreenCase):
         self.ids = seed(self)
         self.jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
 
-    def document(self, read=fleet):
-        return management_screen.document(self.connection, now=NOW, fleet=read, jobs=self.jobs, services=NoServices())
+    def document(self, read=fleet, runner=REFRESHED):
+        return management_screen.document(self.connection, now=NOW, fleet=read, jobs=self.jobs, services=NoServices(),
+                                          runner=runner)
 
     def test_every_source_is_read_and_says_so(self):
         doc = self.document()
-        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "services", "jobs")})
+        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "services", "jobs",
+                                                          "archive")})
         self.assertEqual(doc["read"], NOW)
+
+    def test_a_job_carries_its_last_run_from_the_wrappers_stamp(self):
+        """sd:2210: launchd keeps no run time; the cron-jobs wrapper stamps each run's start, end and exit."""
+        stamp(self.jobs, "nightly-sync", "started=2026-09-06T02:15:00Z\nended=2026-09-06T02:16:30Z\nexit=7\n")
+        jobs = {job["name"]: job for job in self.document()["jobs"]}
+        self.assertEqual(jobs["nightly-sync"]["last_run"], {"state": "finished", "started": "2026-09-06T02:15:00Z",
+                                                            "ended": "2026-09-06T02:16:30Z", "exit": 7, "reason": ""})
+        quiet = jobs["quiet"]["last_run"]
+        self.assertEqual((quiet["state"], quiet["started"]), ("none", None))
+        self.assertIn("no run stamp", quiet["reason"])
+
+    def test_a_stamp_with_no_end_is_open_and_a_broken_one_is_unread_with_its_reason(self):
+        stamp(self.jobs, "nightly-sync", "started=2026-09-06T02:15:00Z\n")
+        stamp(self.jobs, "quiet", "started=yesterday\nended=2026-09-06T02:16:30Z\nexit=0\n")
+        jobs = {job["name"]: job["last_run"] for job in self.document()["jobs"]}
+        self.assertEqual(jobs["nightly-sync"], {"state": "open", "started": "2026-09-06T02:15:00Z", "ended": None, "exit": None,
+                                                "reason": ""})
+        self.assertEqual((jobs["quiet"]["state"], jobs["quiet"]["reason"]), ("unread", "the run stamp names no start time"))
+        stamp(self.jobs, "quiet", "started=2026-09-06T02:15:00Z\nended=2026-09-06T02:16:30Z\n")
+        quiet = {job["name"]: job["last_run"] for job in self.document()["jobs"]}["quiet"]
+        self.assertEqual((quiet["state"], quiet["reason"]), ("unread", "the run stamp has an end without an exit code"))
+
+    def test_the_archive_refresh_is_what_runner_status_prints(self):
+        """sd:2209: the dashboard does not know the runner's config; `runner.sh status` names the last and next refresh."""
+        self.assertEqual(self.document()["archive"], {"last": "2026-09-06T03:00:00+00:00", "next": "2026-09-07T03:00:00+00:00",
+                                                      "due": False})
+        never = runner_status({"ok": False, "reason": "heartbeat stale",
+                               "archive_refresh_schedule": {**SCHEDULE, "last_completed_at": None, "due": True}}, code=1)
+        self.assertEqual(self.document(runner=never)["archive"], {"last": None, "next": "2026-09-07T03:00:00+00:00", "due": True})
+
+    def test_an_archive_refresh_runner_status_does_not_name_is_a_reason(self):
+        cases = {
+            "runner.sh status names no archive refresh: runner runtime is not provisioned: /x/python":
+                runner_status({"ok": False, "reason": "runner runtime is not provisioned: /x/python"}, code=3),
+            "runner.sh status names no archive refresh; the runner predates sd:2209": runner_status({"ok": True}),
+            "the archive refresh was not read: archive refresh cadence belongs to another configuration":
+                runner_status({"ok": True, "archive_refresh_schedule": {"reason": "archive refresh cadence belongs to another configuration"}}),
+            "runner.sh status printed no body: runner: the runner heartbeat body is a JSON array":
+                runner_status(None, code=1, err="runner: the runner heartbeat body is a JSON array\n"),
+            "runner.sh status exited 2: usage": runner_status(None, code=2, err="usage\n"),
+            "runner.sh status printed a body that is not JSON": lambda: (0, "{not json\n", ""),
+            "runner.sh status named a next refresh that is not a time": runner_status(
+                {"ok": True, "archive_refresh_schedule": {**SCHEDULE, "next_due_at": "soon"}}),
+        }
+        for reason, runner in cases.items():
+            with self.subTest(reason=reason):
+                doc = self.document(runner=runner)
+                self.assertIsNone(doc["archive"])
+                self.assertEqual(doc["sources"]["archive"], reason)
+                self.assertEqual(doc["sources"]["jobs"], "")
+
+    def test_runner_status_runs_this_checkouts_runner_sh_within_its_ceiling(self):
+        calls = []
+
+        def ran(argv, **options):
+            calls.append((argv, options.get("timeout")))
+            return subprocess.CompletedProcess(argv, 3, '{"ok": false}\n', "")
+
+        with patch.object(management_screen.subprocess, "run", ran):
+            self.assertEqual(management_screen.runner_status(), (3, '{"ok": false}\n', ""))
+        runner_sh = Path(management_screen.__file__).resolve().parents[2] / "local-sd-runner" / "runner.sh"
+        self.assertTrue(runner_sh.is_file())
+        self.assertEqual(calls, [(["sh", str(runner_sh), "status"], management_screen.RUNNER_SECONDS)])
+
+        def slow(argv, **options):
+            raise subprocess.TimeoutExpired(argv, options["timeout"])
+
+        with patch.object(management_screen.subprocess, "run", slow):
+            doc = self.document(runner=management_screen.runner_status)
+        self.assertEqual(doc["sources"]["archive"], f"runner.sh status ran past its {management_screen.RUNNER_SECONDS:g} seconds")
 
     def test_a_repo_carries_its_row_its_review_file_and_its_protection_reading(self):
         rows = {row["path"]: row for row in self.document()["repos"]}
@@ -176,6 +263,9 @@ class ThePage(BrowserSession):
         patcher = patch("sd_db.services.ServiceBackend", NoServices)
         patcher.start()
         self.addCleanup(patcher.stop)
+        runner = patch.object(management_screen, "runner_status", REFRESHED)
+        runner.start()
+        self.addCleanup(runner.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.backend = JobsBackend(self.tmp.name, jobs=[("quiet", "idle", 0, None)])
@@ -188,7 +278,7 @@ class ThePage(BrowserSession):
         self.assertEqual(headers["Content-Security-Policy"], server.CSP)
         self.assertIn("<title>Management · system</title>", body)
         self.assertEqual(Refused(body).found, [])
-        scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
+        scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
         self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "management.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
@@ -201,6 +291,7 @@ class ThePage(BrowserSession):
         self.assertEqual(status, 200)
         doc = json.loads(body)
         self.assertEqual(doc["sources"]["services"], "")
+        self.assertEqual((doc["sources"]["archive"], doc["archive"]["next"]), ("", SCHEDULE["next_due_at"]))
         self.assertIn(self.ids["checkout"], [row["path"] for row in doc["repos"]])
 
     def test_the_repo_write_flips_once_and_refuses_the_same_before_again(self):
@@ -242,7 +333,9 @@ class PageScript(ScreenCase):
         super().setUp()
         self.ids = seed(self)
         jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
-        self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices())
+        stamp(jobs, "nightly-sync", "started=2026-09-06T02:15:00Z\nended=2026-09-06T02:16:30Z\nexit=7\n")
+        self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices(),
+                                              runner=REFRESHED)
 
     def run_page(self, body, answer="null", doc=None, search="", extra=""):
         script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA + READ_SHELL + extra
@@ -573,6 +666,55 @@ class TheMinuteMarks(PageScript):
         out = self.run_page("""R.got = [human([{ Minute: 5 }, { Minute: 30 }]), human([{ Minute: 0 }, { Minute: 15 }, { Minute: 45 }]),
   human([{ Minute: 30 }, { Minute: 0 }]), human([{ Minute: 0 }, { Minute: 20 }, { Minute: 40 }]), human([{ Minute: 10 }, { Minute: 10 }])];""")
         self.assertEqual(out["R"]["got"], ["hourly at :05, :30", "hourly at :00, :15, :45", "every 30 min", "every 20 min", "hourly at :10"])
+
+
+class TheLastRun(PageScript):
+    """sd:2210 and sd:2209: Schedules shows each job's stamped last run; the lane strip shows the archive refresh."""
+
+    def test_each_schedule_row_shows_its_stamped_last_run_or_why_not(self):
+        out = self.run_page("R.sched = ELS['view-schedules'].html;", search="?view=schedules")
+        sched = out["R"]["sched"]
+        self.assertIn(">Last run<", sched)
+        self.assertIn('data-k="last"><time class="rel" datetime="2026-09-06T02:16:30Z"', sched)
+        self.assertIn("exit 7", sched)
+        self.assertIn('<span class="g-unknown" aria-hidden="true">▨</span> not stamped', sched)
+
+    def test_a_run_with_no_end_says_so_and_a_running_one_says_since(self):
+        doc = json.loads(json.dumps(self.doc))
+        for job in doc["jobs"]:
+            job["last_run"] = {"state": "open", "started": "2026-09-06T02:15:00Z", "ended": None, "exit": None, "reason": ""}
+            if job["name"] == "quiet":
+                job["state"] = "running"
+        out = self.run_page("R.sched = ELS['view-schedules'].html;", doc=doc, search="?view=schedules")
+        sched = out["R"]["sched"]
+        self.assertIn('<span class="g-caution" aria-hidden="true">▲</span> no end', sched)
+        self.assertIn('<span class="g-queued" aria-hidden="true">◌</span> since', sched)
+
+    def test_the_details_name_the_stamp_or_the_reason_there_is_none(self):
+        out = self.run_page("selectRow('cron:nightly-sync', false); R.failed = ELS.details.html; selectRow('cron:quiet', false); R.quiet = ELS.details.html;",
+                            search="?view=schedules")
+        self.assertIn("<dt>Last run</dt>", out["R"]["failed"])
+        self.assertIn('datetime="2026-09-06T02:15:00Z"', out["R"]["failed"])
+        self.assertIn('datetime="2026-09-06T02:16:30Z"', out["R"]["failed"])
+        self.assertIn("exit 7", out["R"]["failed"])
+        self.assertIn("logs/.nightly-sync.stamp", out["R"]["failed"])
+        self.assertIn("no run stamp", out["R"]["quiet"])
+
+    def test_the_lane_strip_names_the_last_and_next_archive_refresh(self):
+        out = self.run_page("R.lane = ELS['view-lane'].html;", search="?view=lane")
+        lane = out["R"]["lane"]
+        self.assertIn('<span class="label">Archive refresh</span>', lane)
+        self.assertIn('datetime="2026-09-06T03:00:00+00:00"', lane)
+        self.assertIn('datetime="2026-09-07T03:00:00+00:00" data-future', lane)
+
+    def test_an_archive_refresh_not_read_is_unknown_with_its_reason(self):
+        doc = dict(self.doc, archive=None, sources=dict(self.doc["sources"], archive="runner.sh status ran past its 15 seconds"))
+        out = self.run_page("R.lane = ELS['view-lane'].html;", doc=doc, search="?view=lane")
+        self.assertIn('<span class="g-unknown" aria-hidden="true">▨</span> not read: runner.sh status ran past its 15 seconds',
+                      out["R"]["lane"])
+        never = dict(self.doc, archive={"last": None, "next": "2026-09-06T12:00:00+00:00", "due": True})
+        out = self.run_page("R.lane = ELS['view-lane'].html;", doc=never, search="?view=lane")
+        self.assertIn('<span class="g-caution" aria-hidden="true">▲</span> never run · due', out["R"]["lane"])
 
 
 class TheRegistration(Registers, unittest.TestCase):

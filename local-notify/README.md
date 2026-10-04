@@ -127,7 +127,13 @@ answers two questions from the title and the message:
 - a `choice` between `desk` (channels `local`) and `phone` (channels
   `local,ntfy`, today's default);
 - a `score` on `min,low,default,high,urgent`, rounded and clamped back onto
-  that same list, which becomes the ntfy priority.
+  that same list, which becomes the ntfy priority. Only a decimal number
+  counts: `-1` clamps to `min`, and `.` or `1..2` is no answer.
+
+The two answers apply together or not at all. When either question fails, or
+the choice is not `desk`, `phone` or `unsure`, or the score is no number, both
+the channels and the priority stay at the default, and stderr says
+`jev gave no complete route`.
 
 An explicit `-c` **or** `-p` skips the call entirely — either flag means the
 caller has already decided the route, and half-deciding it is worse than the

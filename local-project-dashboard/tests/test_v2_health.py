@@ -27,6 +27,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -131,7 +132,7 @@ REAL_DISK_SCAN, REAL_BRANCH_SCAN = health_collectors.disk_scan, health_collector
 
 
 def scan_of(scan):
-    return lambda connection: scan
+    return lambda connection, **_: scan
 
 
 class Collectors:
@@ -139,6 +140,9 @@ class Collectors:
 
     def setUp(self):
         super().setUp()
+        # A scan left running by an earlier test, or its kept answer, is not this test's.
+        health_screen._SCANS.clear()
+        self.addCleanup(health_screen._SCANS.clear)
         for name, scan in (("disk_scan", DISK), ("branch_scan", BRANCHES)):
             patcher = patch.object(health_collectors, name, scan_of(scan))
             patcher.start()
@@ -415,7 +419,8 @@ class TheDocument(Collectors, ScreenCase):
             self.repo(f"/checkouts/{name}")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
             started = time.monotonic()
-            doc = self.doc(branches=lambda connection: REAL_BRANCH_SCAN(connection, within=0.5))
+            doc = self.doc(branches=lambda connection: REAL_BRANCH_SCAN(
+                connection, within=0.5, repo_paths=["/checkouts/one", "/checkouts/two"]))
             elapsed = time.monotonic() - started
         br = doc["areas"][4]
         self.assertLess(elapsed, 3, "the page waited on the branch walk instead of stopping it")
@@ -481,13 +486,105 @@ class TheDocument(Collectors, ScreenCase):
         self.stub("du", "exec sleep 5\n")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
             started = time.monotonic()
-            doc = self.doc(disk=lambda connection: REAL_DISK_SCAN(connection, within=1, config=config))
+            doc = self.doc(disk=lambda connection: REAL_DISK_SCAN(connection, within=1, config=config, repo_paths=[]))
             elapsed = time.monotonic() - started
         disk = doc["areas"][0]
         self.assertLess(elapsed, 3, "the page waited on du instead of stopping it")
         self.assertEqual(disk["error"], "")
         rows = {row["id"]: row for row in disk["rows"]}
         self.assertEqual(rows[f"rs:{store}"]["detail"], "du did not finish inside the Disk budget")
+
+
+    def test_the_walkers_run_at_once_so_the_page_waits_for_the_slowest_not_the_sum(self):
+        # Five walkers of 0.8 s each: in series the page took 4 s, at once it takes one walker's time.
+        def slow(answer):
+            def read(*args, **kwargs):
+                time.sleep(0.8)
+                return answer(*args, **kwargs)
+            return read
+        started = time.monotonic()
+        doc = self.doc(fleet=slow(fleet_of(TREES)), trailers=slow(trailers_of(3)), ports=slow(ports_snapshot),
+                       disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0, f"the readers ran one after another: {elapsed:.1f} s")
+        self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
+                         [(key, "", True) for key in ("disk", "attr", "wt", "br", "ports", "prot")])
+
+    def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
+        def stuck(area):
+            time.sleep(3)
+            return fleet_of(TREES)(area)
+        with patch.object(health_screen, "PAGE_SECONDS", 0.5):
+            started = time.monotonic()
+            doc = self.doc(fleet=stuck)
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.5, "the page waited on a reader past its budget")
+        wt = doc["areas"][3]
+        self.assertEqual((wt["rows"], wt["error"]), ([], "the Worktrees reader was still running at the page's budget of "
+                                                         "0.5 seconds and was left rather than waited on"))
+        self.assertEqual(doc["areas"][2]["rows"][0]["id"], "attr:weeks")
+
+    def test_the_default_walkers_get_the_registry_as_paths_not_the_connection(self):
+        # A sqlite connection refuses a second thread: a default walker handed it would be its area's error.
+        alpha = cloned(Path(self.tmp.name) / "alpha")
+        git("-C", str(alpha), "branch", "merged-one")
+        self.repo(str(alpha))
+        with patch.object(health_collectors, "branch_scan", REAL_BRANCH_SCAN):
+            doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0),
+                                         ports=ports_snapshot, protection=protection_of([]), disk=scan_of(DISK))
+        br = doc["areas"][4]
+        self.assertEqual((br["error"], [row["id"] for row in br["rows"]]), ("", [f"br:{alpha}"]))
+
+
+class OneScanPerArea(Collectors, ScreenCase):
+    """A reader past the page's budget holds one thread however often the page is read (sd:2520 review).
+
+    The page made a thread pool per request and left a stuck reader's worker
+    alive, so each timed-out refresh added a thread, and the interpreter
+    joined them all at exit.
+    """
+
+    def blocked(self):
+        """A fleet reader that blocks until the test ends, and the threads it ran on."""
+        gate, threads = threading.Event(), []
+
+        def read(area):
+            threads.append(threading.current_thread())
+            gate.wait(10)
+            return fleet_of(TREES)(area)
+        self.addCleanup(gate.set)
+        return read, threads
+
+    def doc(self, fleet, now=NOW):
+        return health_screen.document(self.connection, now=now, fleet=fleet, trailers=trailers_of(3),
+                                      ports=ports_snapshot, protection=protection_of(PROTECTION))
+
+    def test_timed_out_requests_leave_at_most_one_live_worker_for_a_blocked_reader(self):
+        read, threads = self.blocked()
+        with patch.object(health_screen, "PAGE_SECONDS", 0.2):
+            docs = [self.doc(read) for _ in range(4)]
+        self.assertLessEqual(len([thread for thread in threads if thread.is_alive()]), 1, threads)
+        self.assertEqual(len(threads), 1, "a request started a second scan while the first still ran")
+        self.assertTrue(all(thread.daemon for thread in threads), "interpreter exit would wait on the scan")
+        self.assertTrue(all(doc["areas"][3]["error"] for doc in docs))
+        self.assertIn(f"that scan started at {NOW}, and no second one starts while it runs", docs[-1]["areas"][3]["error"])
+
+    def test_a_reader_still_running_shows_its_last_answer_marked_stale(self):
+        first = self.doc(fleet_of(TREES))["areas"][3]
+        self.assertEqual((first["error"], first["stale"]), ("", ""))
+        read, _ = self.blocked()
+        later = "2026-09-05T12:30:00Z"
+        with patch.object(health_screen, "PAGE_SECONDS", 0.2):
+            wt = self.doc(read, now=later)["areas"][3]
+        self.assertEqual((wt["error"], wt["rows"], wt["at"]), ("", first["rows"], NOW))
+        self.assertTrue(wt["stale"].startswith("the Worktrees reader was still running at the page's budget"), wt["stale"])
+        self.assertTrue(wt["stale"].endswith(f"these rows are the read of {NOW}"), wt["stale"])
+
+    def test_a_reader_that_finishes_answers_again_on_the_next_request(self):
+        self.doc(fleet_of(TREES))
+        wt = self.doc(fleet_of([]), now="2026-09-05T12:30:00Z")["areas"][3]
+        self.assertEqual((wt["error"], wt["stale"], wt["at"]), ("", "", "2026-09-05T12:30:00Z"))
+        self.assertNotEqual(wt["rows"], self.doc(fleet_of(TREES))["areas"][3]["rows"])
 
 
 class ThePage(Collectors, BrowserSession):
@@ -505,7 +602,7 @@ class ThePage(Collectors, BrowserSession):
         self.assertIn("<title>Health · system</title>", body)
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
-        scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
+        scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
         self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "health.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
@@ -615,6 +712,19 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("<b>Not read:</b> fleet collection was stopped at its budget: sessions", out["R"]["areas"])
         self.assertEqual(out["states"][-1]["kind"], "partial")
         self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": "findings to watch"})
+
+    def test_a_stale_area_keeps_its_rows_and_says_it_was_not_re_read(self):
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(0),
+                                     ports=ports_snapshot, protection=protection_of([]), disk=scan_of(CLEAN_DISK),
+                                     branches=scan_of(CLEAN_BRANCHES))
+        wt = doc["areas"][3]
+        wt["stale"] = "the Worktrees reader was still running; these rows are the read of " + NOW
+        out = self.run_page("R.areas = ELS.areas.html;", doc)
+        self.assertIn("<b>Not re-read:</b> the Worktrees reader was still running; these rows are the read of " + NOW,
+                      out["R"]["areas"])
+        self.assertIn(f'data-id="{wt["rows"][0]["id"]}"', out["R"]["areas"])
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("Worktrees: the Worktrees reader was still running", out["states"][-1]["text"])
 
     def test_a_trailer_count_over_its_budget_shows_as_the_refusal_not_a_stall(self):
         def refused(connection, *, now):

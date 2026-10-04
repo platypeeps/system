@@ -909,6 +909,89 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
             self.assertIn(name, text)
 
 
+class InstallBootstrapTest(unittest.TestCase):
+    """sd:2574. `install` reports a bootstrap launchd refused.
+
+    REGRESSION. On a job that runs often, `bootout` returned before launchd
+    finished tearing the label down; `bootstrap` then printed `Bootstrap
+    failed: 5: Input/output error`, and `install --all` printed `installed:`
+    for the job anyway, with nothing loaded. `install` now waits for the label
+    to leave launchd after `bootout`, retries a refused bootstrap once, and
+    otherwise prints `failed:` and exits 1. launchctl is the stub on PATH.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.calls = self.fx.tmp / "launchctl-calls"
+        self.fx.write_job("demo", 'JOB_SCHEDULE="*/10 * * * *"\nJOB_COMMAND="true"\n')
+
+    def run_script(self, *args, env=None):
+        base = {"PATH": self.fx.path(stub_bin(self.fx.tmp)),
+                "HOME": str(self.fx.home),
+                "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "CRON_TEST_HELD": "0",
+                "CRON_TEST_CALLS": str(self.calls),
+                "CRON_TEST_BOOTSTRAP_COUNT": str(self.fx.tmp / "bootstrap-count")}
+        base.update(env or {})
+        return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
+                              env=base, capture_output=True, text=True, timeout=60)
+
+    def bootstraps(self):
+        return [line for line in self.calls.read_text().splitlines() if line.startswith("launchctl bootstrap")]
+
+    def test_a_refused_bootstrap_is_retried_once(self):
+        result = self.run_script("install", "demo", env={"CRON_TEST_BOOTSTRAP_FAILS": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+        self.assertNotIn("failed:", result.stdout + result.stderr)
+        self.assertEqual(len(self.bootstraps()), 2)
+
+    def test_a_bootstrap_refused_twice_is_reported_failed(self):
+        result = self.run_script("install", "demo", env={"CRON_TEST_BOOTSTRAP_FAILS": "99"})
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("failed: demo (Bootstrap failed: 5: Input/output error)", out)
+        self.assertNotIn("installed:", out)
+        self.assertEqual(len(self.bootstraps()), 2)
+        self.assertNotIn("launchctl enable", self.calls.read_text())
+
+    def test_install_all_goes_on_and_names_the_failed_jobs(self):
+        self.fx.write_job("other", 'JOB_SCHEDULE="0 * * * *"\nJOB_COMMAND="true"\n')
+        result = self.run_script("install", "--all", env={"CRON_TEST_BOOTSTRAP_FAILS": "99"})
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("failed: demo (", out)
+        self.assertIn("failed: other (", out)
+        self.assertNotIn("installed:", out)
+        self.assertIn("install failed for: demo other", result.stderr)
+        self.assertEqual(len(self.bootstraps()), 4)
+
+    def test_bootstrap_waits_for_the_label_to_leave_launchd(self):
+        # launchd still holds the label for a moment after `bootout` returns:
+        # the stub keeps answering `print` until a file it removes a second
+        # after `bootout` is gone. The old fixed half-second sleep did not wait.
+        held = self.fx.tmp / "held"
+        held.write_text("")
+        # A folder of its own: run_script rewrites stub_bin's launchctl.
+        stub = self.fx.tmp / "teardown-bin"
+        stub.mkdir()
+        launchctl = stub / "launchctl"
+        text = (stub_bin(self.fx.tmp) / "launchctl").read_text().replace(
+            'case "$1" in\n',
+            'case "$1" in\n'
+            f'  bootout) (sleep 1; rm -f \'{held}\') >/dev/null 2>&1 & exit 0 ;;\n'
+            f'  print) [ -e \'{held}\' ] || exit 1 ;;\n', 1)
+        launchctl.write_text(text)
+        launchctl.chmod(launchctl.stat().st_mode | stat.S_IXUSR)
+        result = self.run_script("install", "demo", env={"CRON_TEST_HELD": "1", "PATH": self.fx.path(stub)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls.read_text().splitlines()
+        after = calls[calls.index(next(c for c in calls if c.startswith("launchctl bootout"))) + 1:]
+        before_bootstrap = after[:after.index(self.bootstraps()[0])]
+        self.assertGreaterEqual(sum(c.startswith("launchctl print") for c in before_bootstrap), 2, calls)
+        self.assertFalse(held.exists())
+
+
 class HostJobsTest(unittest.TestCase):
     """Per-machine job lists: <config>/cron-jobs/jobs/<host>/.
 
@@ -1083,6 +1166,16 @@ def stub_bin(tmp):
         "      printf '\\tjetsam coalition = {\\n\\t\\tID = " + JETSAM + "\\n\\t}\\n'\n"
         "    fi\n"
         "    exit 0 ;;\n"
+        # sd:2574. A bootstrap that launchd refuses: the first
+        # CRON_TEST_BOOTSTRAP_FAILS calls exit 5 with launchd's own message.
+        # Unset, bootstrap succeeds silently as before.
+        "  bootstrap)\n"
+        "    [ -n \"${CRON_TEST_BOOTSTRAP_FAILS:-}\" ] || exit 0\n"
+        "    n=$(( $(cat \"$CRON_TEST_BOOTSTRAP_COUNT\" 2>/dev/null || echo 0) + 1 ))\n"
+        "    echo \"$n\" > \"$CRON_TEST_BOOTSTRAP_COUNT\"\n"
+        "    [ \"$n\" -gt \"$CRON_TEST_BOOTSTRAP_FAILS\" ] && exit 0\n"
+        "    echo 'Bootstrap failed: 5: Input/output error' >&2\n"
+        "    exit 5 ;;\n"
         "esac\n"
         "exit 0\n")
     launchctl.chmod(launchctl.stat().st_mode | stat.S_IXUSR)
@@ -2085,6 +2178,57 @@ class UnfinishedRunTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout)
         self.assertFalse(self.attempt.exists())
 
+
+UTC_STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+
+
+class RunStampTest(UnfinishedRunTest.__base__):
+    """Each run stamps its start, end and exit code beside its log (sd:2210).
+
+    launchd keeps no run time, and a log's write time is not one: Management
+    reads `logs/.<job>.stamp` as the job's last run. The start is written when
+    the run takes its lock, the end and exit when it records an outcome, so a
+    stamp with a start and no end is a run in progress or one no trap saw end.
+    """
+
+    setUp = UnfinishedRunTest.setUp
+    job = UnfinishedRunTest.job
+    exec_job = UnfinishedRunTest.exec_job
+    kill_a_run = UnfinishedRunTest.kill_a_run
+
+    def stamp(self):
+        text = (self.fx.folder / "logs" / ".demo.stamp").read_text()
+        return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+    def test_a_finished_run_stamps_its_start_end_and_exit(self):
+        self.assertEqual(self.exec_job('"exit 7"').returncode, 7)
+        failed = self.stamp()
+        self.assertEqual(sorted(failed), ["ended", "exit", "started"])
+        self.assertRegex(failed["started"], UTC_STAMP)
+        self.assertRegex(failed["ended"], UTC_STAMP)
+        self.assertLessEqual(failed["started"], failed["ended"])
+        self.assertEqual(failed["exit"], "7")
+        self.assertEqual(self.exec_job('"true"').returncode, 0)
+        passed = self.stamp()
+        self.assertEqual(passed["exit"], "0")
+        self.assertGreaterEqual(passed["started"], failed["started"])
+
+    def test_a_run_that_fails_before_its_command_still_stamps_its_end(self):
+        """The EXIT trap's path: an unusable JOB_DIR ends the shell at the `cd`."""
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n'
+                                  f'JOB_DIR="{self.fx.tmp}/no-such-dir"\n')
+        done = subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "exec", "demo"],
+                              env=stub_env(self.fx, self.bin, 4), capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(self.stamp()["exit"], "1")
+        self.assertRegex(self.stamp()["ended"], UTC_STAMP)
+
+    def test_a_run_no_trap_saw_end_leaves_a_start_and_no_end(self):
+        self.assertEqual(self.exec_job('"true"').returncode, 0)
+        self.assertEqual(self.kill_a_run().returncode, -signal.SIGKILL)
+        killed = self.stamp()
+        self.assertEqual(sorted(killed), ["started"])
+        self.assertRegex(killed["started"], UTC_STAMP)
 
 
 def kill_group(pgid):

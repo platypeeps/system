@@ -462,7 +462,9 @@ switched off is skipped — sources this file in a subshell the way
 line naming each enabled entry whose `env:` variable is unset or empty there.
 Names only, never a value.
 
-**An empty value is fine and doctor stays quiet about it.** The names are
+**Outside that check, an empty value is fine and doctor stays quiet about
+it.** A name an enabled provider entry reads through `env:` must carry a value,
+as the paragraph above says; every other name may be empty. The names are
 deliberately the same on every machine so the file diffs cleanly, so a machine
 with no business holding a given credential keeps the name with nothing after
 the `=`. That is a statement, not an unfinished edit: it needs no value, no

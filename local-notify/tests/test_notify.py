@@ -35,6 +35,7 @@ JEV_STUB = r"""#!/bin/sh
   printf '\n'
 } >> "$JEV_LOG"
 verb="$1"
+state_next=0
 if [ "$verb" = enabled ]; then
   # `enabled STAGE` answers both halves, as the real one does: can Jev answer
   # on this machine (JEV_STUB_ENABLED stands in for key and switch), and has
@@ -59,8 +60,18 @@ if [ "$verb" = enabled ]; then
   [ -z "$why" ] || echo "jev: enabled"
   exit 0
 fi
-cat >> "$JEV_STATE_LOG"
-if [ -n "${JEV_STUB_SLEEP:-}" ]; then sleep "$JEV_STUB_SLEEP"; fi
+# Stdin is the state only when `--state -` says so, as in the real one: `record`
+# takes none, and a stub that read it anyway held a caller whose stdin stayed
+# open until the suite's bound (sd:1613).
+for a in "$@"; do
+  if [ "$state_next" = 1 ] && [ "$a" = - ]; then cat >> "$JEV_STATE_LOG"; fi
+  state_next=0
+  [ "$a" = --state ] && state_next=1
+done
+# Only a question is slow: `record` answers nothing and sends nothing.
+case "$verb" in
+  choice|score) if [ -n "${JEV_STUB_SLEEP:-}" ]; then sleep "$JEV_STUB_SLEEP"; fi ;;
+esac
 case "$verb" in
   choice)
     if [ "${JEV_STUB_CHOICE_FAIL:-0}" = 1 ]; then exit 1; fi
@@ -148,7 +159,7 @@ class Fixture:
         path.write_text(body)
         path.chmod(0o755)
 
-    def run(self, args, env=None):
+    def environ(self, env=None):
         environ = {
             "PATH": f"{self.bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "HOME": str(self.root),
@@ -163,9 +174,13 @@ class Fixture:
             "NOTIFY_EMAIL_TO": EMAIL_TO,
         }
         environ.update(env or {})
+        return environ
+
+    def run(self, args, env=None):
         return subprocess.run(
             ["sh", str(self.script)] + args,
-            env=environ, capture_output=True, text=True, timeout=60,
+            env=self.environ(env), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=60,
         )
 
     def read(self, path):
@@ -501,6 +516,31 @@ class FailureDegradesTest(NotifyTestCase):
                  "--decline", "timeout"],
                 "a killed jev recorded no cause, so nothing anywhere counts "
                 "this timeout as a decline")
+
+    def test_an_open_stdin_does_not_hold_a_degraded_alert(self):
+        """A caller's stdin left open, as a backgrounded runner leaves it, is never read (sd:1613).
+
+        `jev record` takes no state, so nothing on the degraded path reads
+        stdin. A stub that read it anyway held each degraded run until the
+        suite's 60-second bound: four errors and a run near 300 seconds,
+        seen under load and gone on a foreground rerun.
+        """
+        environ = self.fx.environ({"JEV_NOTIFY": "1", "JEV_STUB_CHOICE_FAIL": "1",
+                                   "JEV_STUB_SCORE_FAIL": "1"})
+        process = subprocess.Popen(["sh", str(self.fx.script), "msg"], env=environ,
+                                   stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            self.fail("notify.sh waited on its open stdin")
+        finally:
+            process.stdin.close()
+        self.assertEqual(process.returncode, 0)
+        self.assertTrue(self.ntfy_sent())
+        self.assertTrue(self.baseline_rows(), "the degraded run recorded no control-arm row")
 
     def test_a_jev_that_answered_badly_leaves_the_cause_to_jev(self):
         """The other half of the same rule, so neither half can drift alone.

@@ -55,6 +55,14 @@ reader, `static/read.js`, once its follow-up adopts it; the page's script says
 so. What each page reads and what it runs is in
 [`docs/pages/`](docs/pages/), one file per page.
 
+Pages link each asset under its content digest, `/ui/<file>?v=<digest>` and
+`/static/<file>?v=<digest>`, from a map the server computes when it starts
+(sd:2141). That answer is `Cache-Control: private, max-age=31536000, immutable`;
+a request without the matching `v` stays `no-store`, as pages and the API are.
+So an edited asset reaches the browser after a restart, with no build step.
+CSS, script and text go gzipped when the browser accepts it; fonts, pages and
+API answers do not. `sd_dashboard/caching.py` says why.
+
 The old screens stay until their section is ported. A page that takes an old
 screen's path moves that screen under `/classic/`, as the old Today moved to
 `/classic/today`, and its page module says where. Every other old screen keeps its path.
@@ -156,7 +164,7 @@ the selected tab travels in the URL, for example `/operations?area=services`.
 | **Jobs** | Installed scheduled jobs and assignments; retry supported failed jobs, request a running job stop, or cancel a queued assignment. |
 | **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
 | **Ports** | Configured service ports and locally observed TCP listeners, with visible processes, PIDs and listening addresses. Read-only; filter by port, service or process. |
-| **Progress** | Age in status for all active items across repositories, excluding completed and parked items. A bar opens the corresponding active Backlog bucket; Backlog filters do not alter this chart. |
+| **Progress** | Age in status for all active items across repositories, excluding completed and parked items. A bar opens the corresponding active bucket in Tasks; task filters do not alter this chart. |
 | **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, missing-trailer count (walked inside the 10-second budget Health uses; past it the tile says "not read" and that the walk stopped rather than waited on) and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db.sh usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db.sh usage` binds it. |
 | **Reports** | The newest 200 recorded reports — scheduled job output with its source and findings. Open one to follow up, assign work or acknowledge it. Preview the clean reports at a date and acknowledge them in one attributed batch; the emails keep going. |
 | **Resources** | The five legacy vault and machine views — Toolbox, Briefs, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
@@ -313,6 +321,7 @@ label|<key>|<label>              a found root, better named
 skip|<key>                       a found root the dashboard should not list
 skip|<key>|<file>                one file of a root, neither listed nor served
 root|<key>|<label>|<directory>   a root that is somewhere else entirely
+img|<key>|<host>                 an image host the root's *.app.html pages may load
 ```
 
 **Reach for `label|` first.** The derived label is the directory name, and it
@@ -356,6 +365,21 @@ which is tighter where it counts: the dashboard permits same-origin script and
 this permits none. `_send` takes the policy per response and assigns it every
 time, because the handler instance is reused across a kept-alive connection and
 a policy left behind would apply to the next page down the same socket.
+
+**A `*.app.html` page may run its own script, in a sandbox (sd:1502).** An
+interactive page, such as a map, needs script, and the policy above refuses it.
+A file named `<name>.app.html` opts in, and only its name opts it in. It is
+served with `sandbox allow-scripts allow-downloads` and without
+`allow-same-origin`, so it runs in an opaque origin: the `SameSite=Strict`
+session cookie is not sent, storage is unavailable, and `/api/` refuses any
+`Origin` other than the dashboard's own, `Origin: null` included. Its script is
+`https://cdnjs.cloudflare.com`, which its tags pin with `integrity`, plus its
+own inline scripts by SHA-256, measured from the bytes served. A digest rather
+than `'unsafe-inline'` keeps an `onerror=` attribute smuggled in through the
+page's data from running. Its images are `data:`, `blob:`, the script host, and
+the hosts its root's `img|<key>|<host>` lines name; it has no `connect-src`, no
+form and no frame. Any other file keeps the no-script policy, whatever it
+carries.
 
 **A found root may not reach past its checkout.** A `docs/dashboard` that is a
 symlink out of the repository is not a root, because enumeration moved the

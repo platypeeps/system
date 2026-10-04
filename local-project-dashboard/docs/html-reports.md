@@ -119,6 +119,12 @@ archived, and sometimes mailed. The Documents policy runs no script, and
 neither does a mail client. A chart that needs a script to render is a blank
 rectangle in all three places.
 
+A page that cannot work without script, such as a map, is named
+`<name>.app.html`. The Documents screen then serves it in a sandbox that runs
+its inline scripts and pinned `cdnjs.cloudflare.com` scripts; the README's
+Documents section gives the whole policy. It is a page, not a report: it is
+not mailed and has no storage.
+
 - Give each chart a `viewBox`, `role="img"` and a text label, so it scales and
   reads without the picture.
 - An image that is not SVG is a `data:` URI; the policy refuses anything else.
