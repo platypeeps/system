@@ -210,11 +210,14 @@ def holders(path: Path) -> set[int]:
 
     A process can open a clone file through a hard link outside the clone,
     and the table then names the outside link. `+D` matched by device and
-    inode, so that process held the clone; it still does. A regular file on
-    the clone's device with more than one link, named outside the clone, is
-    looked up by inode in one walk of the clone's entries (`_linked_inside`).
-    The walk runs only when such a file is open, and a mount inside the clone
-    sends the whole question to `+D`.
+    inode, so that process held the clone; it still does. Every regular file
+    on the clone's device named outside the clone is looked up by inode in
+    one walk of the clone's entries (`_linked_inside`), whatever its link
+    count: an outside link unlinked after the open leaves one link, the
+    clone's, while the table still names the outside path (sd:1775 review 3).
+    So the walk runs whenever such a file is open, which on the system disk
+    is nearly always; it reads directory entries, not a stat of each file.
+    A mount inside the clone sends the whole question to `+D`.
 
     lsof escapes the names it prints (`_verbatim`). A clone whose path holds a
     character it escapes is selected by filesystem with `+D` instead, since
@@ -232,14 +235,13 @@ def holders(path: Path) -> set[int]:
     device = path.stat().st_dev
     prefixes = {os.fsencode(root) for root in roots}
     held, aliases = set(), {}
-    for pid, fields in _files(_lsof(path, "ptDikn", "+L")):
-        name, links = fields.get(b"n", b""), fields.get(b"k", b"")
+    for pid, fields in _files(_lsof(path, "ptDin")):
+        name = fields.get(b"n", b"")
         if pid is None:
             continue
         if any(name == root or name.startswith(root + b"/") for root in prefixes):
             held.add(pid)
-        elif fields.get(b"t") == b"REG" and not (links.isdigit() and int(links) < 2) \
-                and fields.get(b"D", b"").lower() in {b"", f"0x{device:x}".encode()}:
+        elif fields.get(b"t") == b"REG" and fields.get(b"D", b"").lower() in {b"", f"0x{device:x}".encode()}:
             inode = fields.get(b"i", b"")
             if not inode.isdigit():
                 raise RunnerRefused(f"cannot verify clone holders: lsof gave no inode for {os.fsdecode(name)}")

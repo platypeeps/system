@@ -194,6 +194,32 @@ class HardLinkAliases(FakeLsof):
         elsewhere.write_text("x")
         self.assertEqual(self.lsof(stderr="", stdout=self.alias(elsewhere)), set())
 
+    def test_an_outside_link_unlinked_after_open_is_a_holder(self):
+        """The outside name is gone and the clone's name is the one link left (sd:1775 review 3).
+
+        The open descriptor still names the outside path, now with nlink 1,
+        so a filter on more than one link let a process that writes clone
+        content go unnoticed. The inode is matched whatever the link count.
+        """
+        inside = self.clone / "deep/held"
+        inside.parent.mkdir()
+        inside.write_text("x")
+        table = self.alias(inside)
+        (self.root / "outside").unlink()
+        self.assertEqual(inside.stat().st_nlink, 1)
+        for printed in ("", " (deleted)"):
+            with self.subTest(printed=printed):
+                stdout = table.replace("\nk2\n", "\nk1\n").replace(f"n{self.root}/outside\n", f"n{self.root}/outside{printed}\n")
+                self.assertIn("\nk1\n", stdout)
+                self.assertEqual(self.lsof(stderr="", stdout=stdout), {4242})
+
+    def test_a_single_link_file_with_no_name_in_the_clone_is_not_a_holder(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.write_text("x")
+        found = elsewhere.stat()
+        stdout = f"p4242\nf6\ntREG\nD0x{found.st_dev:x}\ni{found.st_ino}\nk1\nn{elsewhere}\n"
+        self.assertEqual(self.lsof(stderr="", stdout=stdout), set())
+
     def test_a_linked_file_without_an_inode_refuses(self):
         found = self.clone.stat()
         self.refused(stderr="", stdout=f"p4242\nf6\ntREG\nD0x{found.st_dev:x}\nk2\nn{self.root}/outside\n")
