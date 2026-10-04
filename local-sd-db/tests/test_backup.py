@@ -98,6 +98,15 @@ class TheSnapshot(BackupCase):
         self.assertFalse(snapshots[0].directory.exists())
         self.assertTrue(snapshots[-1].directory.exists())
 
+    def test_keep_zero_is_refused_before_it_deletes_the_backup_it_takes(self):
+        # The run's own snapshot is one of the N it keeps, so 0 would remove
+        # it and then fail the row prune that re-verifies it.
+        earlier = run(home=self.home)
+        with self.assertRaises(BackupError) as raised:
+            run(home=self.home, keep=0)
+        self.assertIn("at least 1", str(raised.exception))
+        self.assertEqual(sorted(backup_root(self.home).iterdir()), [earlier.directory])
+
 
 class TheRestoreAndCompare(BackupCase):
     def test_an_empty_database_backs_up_and_restores(self):
@@ -874,6 +883,19 @@ class TheDatabaseWaitingForMigrate(BackupCase):
         self.assertIn("prune skipped", completed.stdout)
         self.assertNotIn("did not open", completed.stderr)
 
+    def test_the_job_reports_the_snapshots_its_count_removed(self):
+        # The read-only copy skips the row prune, but `--keep` still applies
+        # file retention to the owned backups, and the summary must say so.
+        first = datetime(2026, 9, 1, tzinfo=UTC)
+        older = [run(home=self.home, when=first + timedelta(days=day)) for day in range(3)]
+        self.older()
+        environment = dict(os.environ, HOME=str(self.home), PYTHON=sys.executable)
+        completed = subprocess.run([str(ENTRYPOINT), "backup", "--keep", "1"], capture_output=True,
+                                   text=True, input="", env=environment, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual([snapshot.directory.exists() for snapshot in older], [False, False, True])
+        self.assertIn("2 old snapshot(s) removed; row prune skipped", completed.stdout)
+
 
 class JobRun(BackupCase):
     """Runs `sd-db.sh backup` -- the entrypoint the scheduled job runs -- and
@@ -1259,7 +1281,7 @@ class TheJobsReportOfABrokenSource(JobRun):
         """
         completed = self.job(expect=1, argv=["--keep", "nope"])
         output = completed.stdout + completed.stderr
-        self.assertIn("keep must be 'all' or a nonnegative integer", output)
+        self.assertIn("keep must be 'all' or a positive integer", output)
         sent = self.mails()
         self.assertEqual(len(sent), 1, sent)
         subject = " ".join(sent[0].argv)
@@ -1569,6 +1591,9 @@ class TheHourlyJobsFlags(JobRun):
         self.assertIn("not allowed with argument", completed.stderr)
         completed = self.job(expect=1, argv=["--keep-days", "0"])
         self.assertIn("keep-days must be a positive integer", completed.stderr)
+        completed = self.job(expect=1, argv=["--keep", "0"])
+        self.assertIn("keep must be 'all' or a positive integer", completed.stderr)
+        self.assertFalse(backup_root(self.home).exists())
 
 
 class TheRestoreCheckOnABareFile(unittest.TestCase):
@@ -1625,6 +1650,28 @@ class TheRestoreCheckOnABareFile(unittest.TestCase):
 
         self.assertFalse(check.accepted)
         self.assertIn("incompatible table set", check.refusal)
+
+    def test_a_store_missing_an_index_or_a_trigger_is_refused(self):
+        # `record_check` upserts through `runner_check`, and the publication
+        # trigger is the payload's immutability; tables and columns alone
+        # pass a store without either.
+        for statement, name in (("DROP INDEX runner_check", "runner_check"),
+                                ("DROP TRIGGER publication_payload_immutable",
+                                 "publication_payload_immutable")):
+            with self.subTest(name=name):
+                database = Path(self.tmp.name) / f"{name}.db"
+                make_store(database)
+                raw = sqlite3.connect(database)
+                try:
+                    raw.execute(statement)
+                    raw.commit()
+                finally:
+                    raw.close()
+
+                check = check_restorable(database)
+
+                self.assertFalse(check.accepted)
+                self.assertIn(name, check.refusal or "")
 
     def test_a_file_that_is_not_a_database_is_a_refusal_not_a_traceback(self):
         self.database.write_bytes(b"not a database at all")

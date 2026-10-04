@@ -15,7 +15,9 @@ For a local-only service, create an explicit JSON configuration such as
 ```
 
 An optional `database` field names an absolute database path. Without it the
-database is `~/.local/share/sd/sd.db`. `SD_DASHBOARD_PYTHON` may select another
+database is `~/.local/share/sd/sd.db`. The provider controls read the registry,
+`providers.yaml`, from the folder that holds the database; a missing file is a
+`RegistryError` naming that path. `SD_DASHBOARD_PYTHON` may select another
 provisioned interpreter; its `sd_db` must be an installed package within that
 interpreter, and its schema must match the database.
 

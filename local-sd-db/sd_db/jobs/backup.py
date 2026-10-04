@@ -37,9 +37,10 @@ BROKEN_SOURCE = 3
 def retention(value: str) -> int | None:
     if value == "all":
         return None
-    if value.isascii() and value.isdecimal():
+    # Zero is refused: the count includes the backup this run takes.
+    if value.isascii() and value.isdecimal() and int(value) > 0:
         return int(value)
-    raise argparse.ArgumentTypeError("keep must be 'all' or a nonnegative integer")
+    raise argparse.ArgumentTypeError("keep must be 'all' or a positive integer")
 
 
 def days(value: str) -> int:
@@ -55,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                              "which is refused while /Volumes/local is not mounted")
     kept = parser.add_mutually_exclusive_group()
     kept.add_argument("--keep", type=retention, default=None, metavar="all|N",
-                      help="all disables deletion; N retains that many verified owned backups")
+                      help="all disables deletion; N (at least 1) retains that many verified owned backups, this one included")
     kept.add_argument("--keep-days", type=days, default=None, metavar="N",
                       help="delete verified owned backups taken more than N days ago")
     parser.add_argument("--require-mount", type=Path, default=None, metavar="PATH",
@@ -94,12 +95,13 @@ def main(argv: list[str] | None = None) -> int:
         # The source could not be written: it waits for `migrate`. The copy
         # is on disk and compared by counts; the prune is a write and the
         # retention table would refuse a snapshot no checkpoint row proves,
-        # so neither runs, and `--keep` never counts this directory.
+        # so neither runs, and `--keep` never counts this directory. File
+        # retention of the owned backups did run in `run`, so say what it removed.
         print(
             f"sd-db backup: {snapshot.directory} — {rows} row(s) across "
             f"{len(snapshot.counts)} table(s), compared by counts; {beside}; taken read-only "
             f"before `migrate`, so no checkpoint row proves it and retention will not own it; "
-            f"prune skipped{broken}",
+            f"{len(snapshot.removed)} old snapshot(s) removed; row prune skipped{broken}",
             file=stream,
         )
         return BROKEN_SOURCE if snapshot.violations else 0
