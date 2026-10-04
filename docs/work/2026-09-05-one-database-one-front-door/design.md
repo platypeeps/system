@@ -39,7 +39,7 @@ restores and holds its rows.
 ## 3. Obsidian leaves the process
 
 The vault becomes a knowledge base and stops being a process surface: no
-ladders, no tasks, no crons, nothing the pack reads. Its four process cron
+ladders, no tasks, no process crons, nothing the pack reads. Its four process cron
 jobs go, under item C's landing order and not this item's (requirement 3,
 amended 2026-09-12); `vault-cleanup` and `vault-map` are maintenance of the
 knowledge base and stay.
