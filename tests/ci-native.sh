@@ -103,6 +103,12 @@ python3 tests/test_citations.py
 # runs here before the venv, and the guard below demands this line.
 python3 tests/test_jev_contract.py
 
+# The system's protection gap ids against the pack's, which owns them
+# (sd:1372): sd_db's GAP_IDS and the dashboard's GAPS columns, each
+# compared with ACKNOWLEDGEABLE_GAPS read from the pinned pack copy in
+# SD_ACCEPTANCE_PACK. Stdlib only, so it runs here before the venv.
+python3 tests/test_gap_vocabulary.py
+
 # Only the vendor helper folders, mezmo-*, name the product they help
 # with (sd:2535): a tracked line outside them that does fails here
 # naming its path and line, unless the file's ALLOWED entry gives a
