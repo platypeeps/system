@@ -24,7 +24,9 @@ probe and an unknown one is neither lifted nor carried that run.
 and applies the same two gates, then searches each admitted repository's
 Dependabot pull requests, open and closed, for the block. Open records are
 evaluated, probes run serially; closed records are read only to detect
-supersession. Lifted: the record is edited to `lifting`, then one comment
+supersession: no probe runs on them and no ordinary comment is posted, but a
+carried record does gain `carried-to` (section 3; annotated 2026-10-03,
+sd:1238). Lifted: the record is edited to `lifting`, then one comment
 with the evidence, `@dependabot rebase`, the record edited to `lifted`, a
 `LIFTED` log line. Not lifted: a `HELD` line and silence on the pull
 request. A record found at `lifting` is resumed, never repeated; one

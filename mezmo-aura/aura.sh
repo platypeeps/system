@@ -9,23 +9,42 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
 
-# <config>/aura/.env provides the API keys config.toml templates in, the
+# The config folder is <config>/mezmo-aura/: convention 3 keeps a mezmo-*
+# folder's full name. Until sd:2539 this tool was local-aura and read
+# <config>/aura/. Nothing here moves the operator's files: a machine with only
+# the old folder is told the command that does, and help and test still answer.
+TOOL=mezmo-aura
+CONF="$(st_config_dir "$TOOL")"
+OLD_CONF="$(st_config_dir aura)"
+case "${1:-}" in
+  -h|--help|help|test|'') ;;
+  *)
+    if [ -d "$OLD_CONF" ] && [ ! -d "$CONF" ]; then
+      echo "aura.sh: the config folder moved from $OLD_CONF to $CONF (sd:2539), and the old one is not read." >&2
+      echo "  Move it: mv $OLD_CONF $CONF" >&2
+      exit 1
+    elif [ -d "$OLD_CONF" ]; then
+      echo "aura.sh: $OLD_CONF is no longer read; $CONF is. Remove the old folder once nothing in it is needed." >&2
+    fi ;;
+esac
+
+# <config>/mezmo-aura/.env provides the API keys config.toml templates in, the
 # checkout `server-repo` and `image` build, and the experiment's settings;
 # values already exported win over every one of them.
 WIN="OPENAI_API_KEY MEZMO_API_KEY AURA_REPO LLM_PROVIDER LLM_MODEL LLM_API_KEY
   AURA_IMAGE AURA_ORCH_PORT AURA_SINGLE_PORT AURA_OTLP_ENDPOINT GENAI_TRACES_GRPC_PORT
   AURA_TRACES OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME OTEL_RECORD_CONTENT"
 for var in $WIN; do eval "ENV_$var=\${$var:-}"; done
-st_source_env aura
+st_source_env "$TOOL"
 for var in $WIN; do
   if eval "[ -n \"\$ENV_$var\" ]"; then eval "$var=\$ENV_$var"; fi
 done
 [ -n "${OPENAI_API_KEY:-}" ] && export OPENAI_API_KEY
 [ -n "${MEZMO_API_KEY:-}" ] && export MEZMO_API_KEY
 
-# A config.toml in <config>/aura/ replaces the one beside this script.
-if [ -f "$(st_config_dir aura)/config.toml" ]; then
-  DEFAULT_CONFIG="$(st_config_dir aura)/config.toml"
+# A config.toml in <config>/mezmo-aura/ replaces the one beside this script.
+if [ -f "$CONF/config.toml" ]; then
+  DEFAULT_CONFIG="$CONF/config.toml"
 else
   DEFAULT_CONFIG="$DIR/config.toml"
 fi
@@ -35,7 +54,7 @@ need_keys() {
   for var in OPENAI_API_KEY MEZMO_API_KEY; do
     eval "value=\${$var:-}"
     if [ -z "$value" ]; then
-      st_missing "$var" aura .env
+      st_missing "$var" "$TOOL" .env "$TOOL"
       exit 1
     fi
   done
@@ -65,7 +84,7 @@ EXAMPLE=examples/quickstart-orchestration-math
 # install and server-repo build from the checkout; they need no example.
 need_checkout() {
   if [ -z "${AURA_REPO:-}" ]; then
-    st_missing AURA_REPO aura .env
+    st_missing AURA_REPO "$TOOL" .env "$TOOL"
     exit 1
   fi
   if [ ! -f "$AURA_REPO/Cargo.toml" ]; then
@@ -76,7 +95,7 @@ need_checkout() {
 
 need_repo() {
   if [ -z "${AURA_REPO:-}" ]; then
-    st_missing AURA_REPO aura .env
+    st_missing AURA_REPO "$TOOL" .env "$TOOL"
     exit 1
   fi
   if [ ! -d "$AURA_REPO/$EXAMPLE" ]; then
@@ -90,7 +109,7 @@ need_llm() {
   for var in LLM_PROVIDER LLM_MODEL LLM_API_KEY; do
     eval "value=\${$var:-}"
     if [ -z "$value" ]; then
-      st_missing "$var" aura .env
+      st_missing "$var" "$TOOL" .env "$TOOL"
       exit 1
     fi
   done
@@ -280,11 +299,14 @@ traces: server, server-repo and the experiment export OTLP to
   prompts and answers; for a server, export OTEL_RECORD_CONTENT=true.
 
 config:
-  <config>/aura/.env         OPENAI_API_KEY, MEZMO_API_KEY, AURA_REPO, and
-                             LLM_PROVIDER, LLM_MODEL, LLM_API_KEY for the
-                             experiment; copy .env.example. Exported values win.
-  <config>/aura/config.toml  replaces config.toml beside this script.
+  <config>/mezmo-aura/.env         OPENAI_API_KEY, MEZMO_API_KEY, AURA_REPO, and
+                                   LLM_PROVIDER, LLM_MODEL, LLM_API_KEY for the
+                                   experiment; copy .env.example. Exported
+                                   values win.
+  <config>/mezmo-aura/config.toml  replaces config.toml beside this script.
   <config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system.
+  <config>/aura/ is the folder before sd:2539: with only it present, every
+  verb but help and test stops and names the mv that moves it.
   CONFIG_PATH                one server config for this run only.
 HELPEOF
     exit 0

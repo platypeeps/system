@@ -133,6 +133,23 @@ class TheRefusals(unittest.TestCase):
                 self.assertNotEqual(text, SHIPPED)
                 self.assertIn("tab in indentation or content", self.refuse(text))
 
+    def test_response_format_is_a_per_entry_opt_in(self):
+        # sd:2553 (system half of sd:1827): only an entry that names it asks
+        # the endpoint to hold its answer to a schema.
+        registry = parse(SHIPPED.replace("model: kimi-k3,", "model: kimi-k3, response_format: json_schema,"))
+        self.assertEqual(registry.providers["kimi"].response_format, "json_schema")
+        self.assertIsNone(registry.providers["minimax"].response_format)
+        self.assertIsNone(parse(SHIPPED).providers["kimi"].response_format)
+
+    def test_invalid_response_format_refuses(self):
+        for field in ("response_format: json_object", "response_format: true", "response_format: []"):
+            with self.subTest(field=field):
+                self.assertIn("response_format",
+                              self.refuse(SHIPPED.replace("model: kimi-k3,", f"model: kimi-k3, {field},")))
+        # A start entry's session makes its own calls; there is no body to put it in.
+        self.assertIn("response_format", self.refuse(
+            SHIPPED.replace('start: "claude -p",', 'start: "claude -p", response_format: json_schema,')))
+
     def test_invalid_reasoning_controls_refuse(self):
         for field in ("thinking: true", "thinking: enabled", "reasoning_effort: []",
                       "reasoning_effort: medium", "thinking: disabled, reasoning_effort: none"):
@@ -417,6 +434,14 @@ class TheRowsOverTheFile(unittest.TestCase):
         self.assertFalse(registry.providers["minimax"].enabled)
         self.assertEqual(registry.providers["baseten"].reasoning_effort, "none")
         self.assertEqual(registry.resolve("reviewer").name, "baseten")
+
+    def test_response_format_survives_operational_overrides(self):
+        text = SHIPPED.replace("model: kimi-k3,", "model: kimi-k3, response_format: json_schema,")
+        (self.home / ".local/share/sd/providers.yaml").write_text(text)
+        set_provider_state(self.connection, "kimi", enabled=False, reason="paused")
+        registry = read_registry(home=self.home, connection=self.connection)
+        self.assertEqual(registry.providers["kimi"].response_format, "json_schema")
+        self.assertFalse(registry.providers["kimi"].enabled)
 
 
 class TheFirstOpen(unittest.TestCase):

@@ -134,14 +134,15 @@ one:
       `no findings — system healthy` (or only findings that were present
       before the change), and the run finishes in under 60 seconds. Any
       `usage:` text or a `gito` line in the findings is a fail.
-- [x] With `local-sd-plan/sd-plan.sh` made to exit 1 (e.g. `SD_PLAN_STATUS_FORCE=1`
+- [ ] With `local-sd-plan/sd-plan.sh` made to exit 1 (e.g. `SD_PLAN_STATUS_FORCE=1`
       or an equivalent test seam the design names), `health-check.sh check`
       prints a finding naming `local-sd-plan`, and the finding's remedy does
       not mention a service key or a pipeline id. (No seam forces
       `sd-plan` itself to exit 1; the shape is proven by the suite's
       `local-declares-broken` fixture, and the remedy is now the tool's own
       first line by construction, so no sweep finding can carry another
-      tool's text. `sd-plan.sh status` exits 3 on this machine.)
+      tool's text. `sd-plan.sh status` exits 3 on this machine. Unticked
+      2026-10-03, sd:1238: not evidenced, because no exit-1 seam ran.)
 - [x] With `mezmo-pipeline/pipeline.sh` made to exit 1, the finding's remedy
       is the Mezmo-specific one, and no other tool's finding carries it.
 - [x] A scratch sibling folder whose entrypoint declares the contract and
@@ -158,7 +159,9 @@ one:
 - [x] `local-health-check/health-check.sh help` no longer says `mezmo:` as a
       stage name; it describes the sweep.
 - [x] `sd-docs-lint` from the repository root exits 0 after the change (rule
-      7: every `path:line` above still points where it says).
+      7: every `path:line` above still points where it says; annotated
+      2026-10-03, sd:1238: rule 6 checks `path:line` into Markdown only, so
+      citations into code are not verified by this lint).
 
 ## References
 
