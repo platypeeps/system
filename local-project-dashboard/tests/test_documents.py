@@ -12,8 +12,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sd_dashboard import documents
+
+from test_workflow_actions import BrowserSession
 
 
 class Roots(unittest.TestCase):
@@ -547,6 +550,115 @@ class PerResponsePolicy(unittest.TestCase):
         sent = self.headers(POLICY)
         self.assertEqual(sent["X-Frame-Options"], "DENY")
         self.assertEqual(sent["X-Content-Type-Options"], "nosniff")
+
+
+#: An opted-in page as an interactive map is built: a pinned library by integrity, a data block, and its own inline script.
+APP_PAGE = (
+    b'<html><head><script src="https://cdnjs.cloudflare.com/ajax/libs/x/1/x.min.js" integrity="sha256-AAAA"'
+    b' crossorigin="anonymous"></script>\r\n<script id="data" type="application/json">{"a": 1}</script>'
+    b'</head><body><script>\r\nrender(document.body);\r\n</script></body></html>'
+)
+
+
+def directives(value):
+    """A policy as `{directive: [sources]}`, so a test asserts the whole list a directive allows."""
+    parsed = {}
+    for part in value.split(";"):
+        words = part.split()
+        if words:
+            parsed[words[0]] = words[1:]
+    return parsed
+
+
+class AppPolicy(unittest.TestCase):
+    """sd:1502. A `*.app.html` page runs its own script in a sandbox; every other page keeps `POLICY`."""
+
+    def setUp(self):
+        self.root = documents.Root("civic", "Civic", Path("/nowhere"), images=("tiles.example.test",))
+
+    def test_an_opted_in_page_runs_in_a_sandbox_without_its_origin(self):
+        policy = directives(documents.policy(self.root, "map.app.html", APP_PAGE))
+        self.assertEqual(policy["sandbox"], ["allow-scripts", "allow-downloads"])
+        self.assertEqual(policy["default-src"], ["'none'"])
+        self.assertEqual(policy["connect-src"], ["'none'"])
+        self.assertEqual(policy["form-action"], ["'none'"])
+        self.assertEqual(policy["frame-ancestors"], ["'none'"])
+
+    def test_its_script_is_the_pinned_host_and_its_own_inline_script_by_digest(self):
+        import base64
+        import hashlib
+
+        # The parser hands the script LF where the file has CRLF; the digest has to be of what the browser hashes.
+        inline = base64.b64encode(hashlib.sha256(b"\nrender(document.body);\n").digest()).decode()
+        data = base64.b64encode(hashlib.sha256(b'{"a": 1}').digest()).decode()
+        policy = directives(documents.policy(self.root, "map.app.html", APP_PAGE))
+        self.assertEqual(sorted(policy["script-src"]),
+                         sorted(["https://cdnjs.cloudflare.com", f"'sha256-{inline}'", f"'sha256-{data}'"]))
+
+    def test_its_images_come_from_the_hosts_its_root_names(self):
+        policy = directives(documents.policy(self.root, "map.app.html", APP_PAGE))
+        self.assertEqual(policy["img-src"],
+                         ["data:", "blob:", "https://cdnjs.cloudflare.com", "https://tiles.example.test"])
+
+    def test_any_other_page_keeps_the_no_script_policy_whatever_it_carries(self):
+        for name in ("brief.html", "app.html", "map.app.htm.html", "mapapp.html"):
+            self.assertEqual(documents.policy(self.root, name, APP_PAGE), documents.POLICY, name)
+
+    def test_an_img_line_names_a_host_and_a_malformed_one_names_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "documents.conf"
+            conf.write_text("root|civic|Civic|/tmp/reports\n"
+                            "img|civic|tiles.example.test\nimg|civic|tiles.example.test\n"
+                            "img|civic|https://evil.example.test\nimg|civic|a.example.test/path\n"
+                            "img|civic|*.example.test\nimg|civic|nodot\nimg|civic|b.example.test x\n",
+                            encoding="utf-8")
+            (root,) = documents.roots(conf, Path(tmp))
+        self.assertEqual(root.images, ("tiles.example.test",))
+
+
+class AppServing(BrowserSession):
+    """The served bytes: the header a browser receives, and what `/api/` answers a sandboxed page."""
+
+    def setUp(self):
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        reports = base / "reports"
+        reports.mkdir()
+        (reports / "map.app.html").write_bytes(APP_PAGE)
+        (reports / "brief.html").write_bytes(APP_PAGE)
+        conf = base / "documents.conf"
+        conf.write_text(f"root|civic|Civic|{reports}\nimg|civic|tiles.example.test\n", encoding="utf-8")
+        for name, value in (("CONFIG", conf), ("REPO_ROOT", base / "repos")):
+            patcher = patch.object(documents, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_an_opted_in_page_is_served_in_the_sandbox_and_sets_no_cookie(self):
+        status, headers, _ = self.request("/documents/civic/map.app.html")
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["Content-Security-Policy"].startswith("sandbox allow-scripts allow-downloads;"))
+        self.assertNotIn("allow-same-origin", headers["Content-Security-Policy"])
+        self.assertNotIn("Set-Cookie", headers)
+
+    def test_any_other_page_is_served_under_the_no_script_policy(self):
+        status, headers, _ = self.request("/documents/civic/brief.html")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Security-Policy"], documents.POLICY)
+
+    def test_api_refuses_a_sandboxed_origin_even_with_a_valid_session(self):
+        # The control first: the same cookie, without an Origin, reads.
+        self.assertEqual(self.request("/api/contributions", headers={"Cookie": self.cookie})[0], 200)
+        for origin in ("null", "http://other.example.test"):
+            for method in ("GET", "HEAD"):
+                status, _, _ = self.request("/api/contributions", method=method,
+                                            headers={"Cookie": self.cookie, "Origin": origin})
+                self.assertEqual(status, 403, (origin, method))
+
+    def test_api_still_reads_with_the_dashboards_own_origin(self):
+        status, _, _ = self.request("/api/contributions", headers={"Cookie": self.cookie, "Origin": self.base})
+        self.assertEqual(status, 200)
 
 
 if __name__ == "__main__":
