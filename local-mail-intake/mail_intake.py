@@ -482,11 +482,16 @@ def record_baseline(script: Path,
 
 
 def judge_asks(rows: list[dict], environ: dict[str, str], err) -> None:
-    """Annotate rows with `asks` (yes/no/unknown), in place.
+    """Annotate rows with `asks` (yes or no), in place.
 
-    A row this cannot answer for keeps no `asks` key at all, or an explicit
-    `unknown`, and `asks_first` leaves both where they were. Returning early
-    is always safe: the report is complete either way.
+    A row this cannot answer for keeps no `asks` key at all, and
+    `asks_first` leaves it where it was. Returning early is always safe: the
+    report is complete either way.
+
+    All or nothing (sd:2551). One thread Jev could not answer -- a failed
+    call, an unreadable answer -- drops every answer already given, so the
+    report is today's order exactly. Keeping them would sort some threads by
+    Jev and the rest by arrival, an order neither arm of the comparison is.
     """
     script = jev_script()
     if not script.exists():
@@ -522,7 +527,7 @@ def judge_asks(rows: list[dict], environ: dict[str, str], err) -> None:
                  "--stage", JEV_STAGE, "--fallback", "unknown"],
                 state_for_jev(row), environ)
         except Exception as error:
-            print(f"jev: {error}; the rest keep today's order", file=err)
+            print(f"jev: {error}; the report keeps today's order", file=err)
             # A call was made and did not answer, so the old path -- today's
             # order -- is what the report carries. That is the control arm,
             # and it is worth a row; the gate decline above is not, because
@@ -537,14 +542,24 @@ def judge_asks(rows: list[dict], environ: dict[str, str], err) -> None:
                 script, environ,
                 "timeout" if isinstance(error, subprocess.TimeoutExpired)
                 else "unavailable")
-            break
+            _drop_answers(rows)
+            return
         asked += 1
         if code != 0 or answer not in ("yes", "no"):
-            print(f"jev: no answer for one thread (rc={code}); it keeps "
-                  "today's place", file=err)
-            row["asks"] = "unknown"
-            continue
+            print(f"jev: no answer for one thread (rc={code}); the report "
+                  "keeps today's order", file=err)
+            # `jev` returned, so it has written its own cause; this row says
+            # only that today's order is what the report carried.
+            record_baseline(script, environ)
+            _drop_answers(rows)
+            return
         row["asks"] = answer
+
+
+def _drop_answers(rows: list[dict]) -> None:
+    """Forget every answer, so `asks_first` returns today's order and nothing is marked."""
+    for row in rows:
+        row.pop("asks", None)
 
 
 def asks_first(rows: list[dict]) -> list[dict]:
