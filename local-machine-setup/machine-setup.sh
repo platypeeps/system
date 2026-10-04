@@ -102,7 +102,7 @@ FORCE=0
 
 # Dotfiles safe to copy into the repo. ~/.bash_profile is deliberately absent:
 # it holds ~40 live API keys, and capturing it would commit them.
-DOTFILES=".zshrc .zshenv .zprofile .bash_aliases .gitconfig .gitignore_global .ssh/config .config/gh/config.yml .prism/.env .gito/.env .aws/config"
+DOTFILES=".zshrc .zshenv .zprofile .bash_aliases .gitconfig .gitignore_global .ssh/config .config/gh/config.yml .prism/.env .gito/.env .aws/config .vale.ini"
 # Dotfiles installed 0600 rather than with cp's default mode. Not because
 # they hold secrets — capture refuses those — but because they sit where a
 # secret would go, and a world-readable ~/.gito/.env is how the last one
