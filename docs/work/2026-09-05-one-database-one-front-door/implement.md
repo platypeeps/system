@@ -2151,3 +2151,17 @@ person and a line on this item, and none of them closable by a test:
   migrations 003 to 011. Status sites: rows 17 and 18 read as closed and
   landed, and the cap-routing sites record pack #1012. Every edit above the
   ratchet keys keeps its line count, so the keys stay put.
+
+- **2026-10-04** — sd:991 delivers the 7.19 recovery (note 2706), on branch
+  `runner-cancel-no-run`. `sd runner cancel N` ends a `running` row with no
+  unreleased `runner_run` as `cancelled`, with `cancelled by <who>`, in
+  `source:local-sd-db/sd_db/runner.py::request_cancel`; and
+  `source:local-sd-db/sd_db/runner_controls.py::control` sends such a row to
+  that cancel and not to the service. A released attempt counts as no
+  attempt, matching the owned test in `workflow.change_status`. The criterion 7
+  paragraph above, which says the item screen and both entries refuse this row,
+  is history from that branch on. The refusal and the item screen hint now
+  name `sd runner cancel N`. Five new 7.19 tests in
+  `local-sd-db/tests/test_criterion_7.py` cover the two entries, a row with
+  no run and a row whose only run was released. Appended, so the ratchet
+  keys above stay put.

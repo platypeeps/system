@@ -128,9 +128,8 @@ class Criterion7(unittest.TestCase):
         A `queued` row has no process, so the way out is the library's own
         cancel; a `running` row with an owned run has one, so the way out is
         the runner's control entry, `sd runner cancel <id>` on the item
-        screen; and a `running` row with no `runner_run` -- which
-        `request_cancel` and `runner_controls.control` both refuse -- is
-        told there is no supported cancel, rather than sent to one.
+        screen; and a `running` row with no `runner_run` has no process to
+        stop, so the way out is the same verb, which ends the row (sd:991).
         """
         queued = runner.enqueue(self.db, [self.item], who="operator")[0]["id"]
         message = self.refusal("ready")
@@ -151,12 +150,10 @@ class Criterion7(unittest.TestCase):
 
         by_hand = create_assignment(self.db, item=self.item, role="author", status="running")
         self.assertIsNone(runner.queue_state(self.db, by_hand)["run"])
-        with self.assertRaisesRegex(runner.RunnerRefused, "running owned attempt"):
-            runner.request_cancel(self.db, by_hand, expected_revision=runner.queue_state(self.db, by_hand)["revision"], who="operator")
         message = self.refusal("ready")
         self.assertRegex(message, rf"assignment {by_hand}\b")
-        self.assertIn("running assignment without a runner run, and there is no supported cancel for it yet", message)
-        self.assertNotIn("sd runner cancel", message)
+        self.assertIn(f"running assignment without a runner run; end it with `sd runner cancel {by_hand}`", message)
+        self.assertNotIn("control entry", message)
 
     def test_7_19_a_running_row_whose_only_attempt_was_released_names_no_control_entry(self):
         """A released `runner_run` is history, not an active attempt.
@@ -174,9 +171,63 @@ class Criterion7(unittest.TestCase):
                                          (released,)).fetchone()[0], "running")
         message = self.refusal("ready")
         self.assertRegex(message, rf"assignment {released}\b")
-        self.assertIn("running assignment without a runner run, and there is no supported cancel for it yet", message)
+        self.assertIn(f"running assignment without a runner run; end it with `sd runner cancel {released}`", message)
         self.assertNotIn("control entry", message)
         self.end(released)
+
+    # -- 7.19 recovery (sd:991) ----------------------------------------------
+
+    def ended_running_row_frees_the_item(self, cancel, *, released=False):
+        """A `running` row no attempt owns: the cancel ends it, with the note.
+
+        The owner's decision (note 2706): `sd runner cancel <id>` ends a
+        `running` row with no `runner_run` `cancelled`, with a `cancelled by
+        <who>` note in the cancel's own write. It waits on no runner.
+        """
+        if released:
+            assignment = runner.enqueue(self.db, [self.item], who="operator")[0]["id"]
+            root = Path(self.tmp.name)
+            runner.claim(self.db, assignment, owner="fixture", work_root=root / "work", retention_root=root / "retained")
+            self.db.execute("UPDATE runner_run SET released_at = '2026-01-01T00:00:00Z' WHERE assignment = ?", (assignment,))
+            self.db.commit()
+        else:
+            assignment = create_assignment(self.db, item=self.item, role="author", status="running")
+        self.assertRegex(self.refusal("ready"), rf"assignment {assignment}\b")
+        with self.no_runner():
+            result = cancel(assignment)
+        self.assertEqual((result["id"], result["status"], result["result"]), (assignment, "cancelled", "cancelled by operator"))
+        self.assertTrue(result["ended"])
+        freed = change_status(self.db, self.item, "ready", who="operator")
+        self.assertEqual(freed["item"]["status"], "ready")
+
+    def control_cancel(self, assignment):
+        current = runner.queue_state(self.db, assignment)
+        return runner_controls.control(self.db, assignment, "cancel", expected_revision=current["revision"], who="operator")
+
+    def request_cancel(self, assignment):
+        current = runner.queue_state(self.db, assignment)
+        return runner.request_cancel(self.db, assignment, expected_revision=current["revision"], who="operator")
+
+    def test_7_19_the_runner_control_cancel_ends_a_running_row_with_no_run(self):
+        self.ended_running_row_frees_the_item(self.control_cancel)
+
+    def test_7_19_the_library_cancel_ends_a_running_row_with_no_run(self):
+        self.ended_running_row_frees_the_item(self.request_cancel)
+
+    def test_7_19_the_runner_control_cancel_ends_a_running_row_whose_only_attempt_was_released(self):
+        self.ended_running_row_frees_the_item(self.control_cancel, released=True)
+
+    def test_7_19_the_library_cancel_ends_a_running_row_whose_only_attempt_was_released(self):
+        self.ended_running_row_frees_the_item(self.request_cancel, released=True)
+
+    def test_7_19_a_running_row_with_an_owned_attempt_is_only_asked_to_stop(self):
+        owned = runner.enqueue(self.db, [self.item], who="operator")[0]["id"]
+        root = Path(self.tmp.name)
+        runner.claim(self.db, owned, owner="fixture", work_root=root / "work", retention_root=root / "retained")
+        result = self.request_cancel(owned)
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["run"]["cancel_requested"], "cancelled by operator")
+        self.assertIsNone(result["ended"])
 
     # -- 7.20 ---------------------------------------------------------------
 
