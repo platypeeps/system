@@ -143,7 +143,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
 | `macos` | apply `defaults` settings | — |
-| `tooling` | fnm node versions, rtk hooks, Chrome as mailto handler | `fnm`, `rtk`, `duti` |
+| `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin plus `local-statusline` as `statusLine`), Chrome as mailto handler | `fnm`, `rtk`, `claude`, `duti` |
 | `system` | useLS, sudo grace period, firewall + stealth (needs sudo once), 700 on the credential dirs, Spotlight privacy exclusions from `<profile>.spotlight` | `plutil`, `PlistBuddy`, `launchctl` |
 | `obsidian` | report vault plugins vs `<profile>.obsidian` (report-only) | `python3` |
 | `iterm2` | point iTerm2 at the synced prefs folder in `<profile>.iterm2` | — |
