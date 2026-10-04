@@ -114,9 +114,13 @@ class Store(unittest.TestCase):
         return self.store / "runner-journal"
 
     def counts(self, connection=None):
+        # `request_outcome` is the hub's own row per remote write transaction
+        # (sd:1335): over the wire the `state` writes the tests set aside add
+        # one each, and a local run writes none.
         connection = connection or self.db
         return {name: connection.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
-                for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                if name != "request_outcome"}
 
     def apply(self, kind, target, fingerprint, **changes):
         return removal.apply(self.db, kind, target, fingerprint=fingerprint, home=self.home, with_items=True,
