@@ -101,6 +101,17 @@ def _affordable(client, entry, reserve, reserve_seconds=0):
             and budget.remaining - reserve >= _cost(entry))
 
 
+def _held(connection, key):
+    """The reason `contributions._hold` recorded for `key`, or "" when its last heartbeat is not a hold."""
+    row = connection.execute("SELECT body FROM state WHERE kind='heartbeat' AND key=? ORDER BY id DESC LIMIT 1",
+                             ("contribution-observe:" + key,)).fetchone()
+    try:
+        body = json.loads(row["body"]) if row else {}
+    except (TypeError, ValueError, RecursionError):
+        return ""
+    return str(body.get("reason") or "") if isinstance(body, dict) and body.get("ok") is False else ""
+
+
 def _dependency_name(dependency):
     return dependency.get("url") or dependency.get("contains_pull") or dependency["kind"]
 
@@ -174,58 +185,78 @@ def refresh(connection, planned, issues, *, client, observed_at, search_complete
     ordered = _order(pending)
     snapshots = dict(planned["snapshots"])
     completed, incomplete, attempted, terminal = [], [], [], set()
-    operator = None
-    if any(_kind(row) != "item" for row in ordered) and _affordable(client, ordered[0], reserve, reserve_seconds):
-        try:
-            operator = github.identity(client.get("/user"))
-        except (github.Unavailable, KeyError, TypeError) as error:
-            errors.append(str(error))
-    for entry in ordered:
-        key = entry["key"]
-        # Stop rather than start an attempt the budget cannot finish: an
-        # unattempted entry keeps its place at the head of the queue, while a
-        # half-read one would be held on its own key for nothing.
-        if not _affordable(client, entry, reserve, reserve_seconds):
-            break
-        attempted.append(entry)
-        if key not in snapshots:
-            snapshots[key] = core.snapshot(connection, key)
-        try:
-            if _kind(entry) != "item":
-                collect, observe = (github.issue, core.observe_issue) if _kind(entry) == "issue" else (github.pull, core.observe_pull)
+    operator, identified = None, False
+    # Pagination is not priced, so the client itself stops at the reserve: an
+    # attempt that pages past it fails on the budget and is held, and the
+    # collectors that follow keep their requests (sd:1219).
+    held, client.floor = getattr(client, "floor", 0), reserve
+    try:
+        for entry in ordered:
+            key = entry["key"]
+            # Stop rather than start an attempt the budget cannot finish: an
+            # unattempted entry keeps its place at the head of the queue, while a
+            # half-read one would be held on its own key for nothing. The identity
+            # read is one more request before the first detail that needs it, so
+            # it is priced with that detail and never spent on a free `item`
+            # entry's budget (sd:1219).
+            identify = _kind(entry) != "item" and not identified
+            if not _affordable(client, entry, reserve + identify, reserve_seconds):
+                break
+            if identify:
+                identified = True
                 try:
-                    if operator is None:
-                        raise github.Unavailable("authenticated GitHub identity unavailable")
-                    observation = collect(client, entry["url"], operator, observed_at=observed_at,
-                                          why=entry["why"], blocking_labels=entry["blocking_labels"])
-                except (github.Unavailable, KeyError, TypeError, AttributeError) as error:
-                    observation = {"complete": False, "observed_at": observed_at,
-                                   "reason": str(error) if isinstance(error, github.Unavailable) else "malformed GitHub contribution response"}
-                saved = observe(connection, entry["url"], observation, expected_revision=snapshots[key]["revision"])
-                complete = observation["complete"] and saved["revision"] != snapshots[key]["revision"]
-                reason = observation.get("reason", "")
-                if complete and observation["state"] in {"closed", "merged"} and not any(
-                        notice["status"] == "pending" for notice in saved["notifications"].values()):
-                    terminal.add(key)
-            else:
-                observations = [github.dependency(client, dependency) for dependency in entry["depends_on"]
-                                if dependency["kind"] != "item"]
-                complete = all(row["state"] != "unknown" for row in observations)
-                # The dependency's own reason -- a release with no configured
-                # tag, a 503 -- is what the item's heartbeat has to say, or the
-                # operator reads "incomplete" every night with nothing to act on.
-                reason = "; ".join(f"{_dependency_name(row['dependency'])}: {row['reason']}" for row in observations
-                                   if row["state"] == "unknown" and row.get("reason"))
-                saved = core.observe_dependencies(connection, entry["item"], observations, observed_at=observed_at,
-                                                  expected_revision=snapshots[key]["revision"], complete=complete,
-                                                  reason=reason)
-                complete = complete and saved["revision"] != snapshots[key]["revision"]
-            if complete:
-                completed.append(key)
-            else:
-                incomplete.append(f"{key}: {reason}" if reason else key)
-        except (ValueError, WorkflowError) as error:
-            incomplete.append(f"{key}: refused: {error}")
+                    operator = github.identity(client.get("/user"))
+                except (github.Unavailable, KeyError, TypeError) as error:
+                    errors.append(str(error))
+            attempted.append(entry)
+            if key not in snapshots:
+                snapshots[key] = core.snapshot(connection, key)
+            try:
+                if _kind(entry) != "item":
+                    collect, observe = (github.issue, core.observe_issue) if _kind(entry) == "issue" else (github.pull, core.observe_pull)
+                    try:
+                        if operator is None:
+                            raise github.Unavailable("authenticated GitHub identity unavailable")
+                        observation = collect(client, entry["url"], operator, observed_at=observed_at,
+                                              why=entry["why"], blocking_labels=entry["blocking_labels"])
+                    except (github.Unavailable, KeyError, TypeError, AttributeError) as error:
+                        observation = {"complete": False, "observed_at": observed_at,
+                                       "reason": str(error) if isinstance(error, github.Unavailable) else "malformed GitHub contribution response"}
+                    saved = observe(connection, entry["url"], observation, expected_revision=snapshots[key]["revision"])
+                    complete = observation["complete"] and saved["revision"] != snapshots[key]["revision"]
+                    reason = observation.get("reason", "")
+                    if complete and observation["state"] in {"closed", "merged"} and not any(
+                            notice["status"] == "pending" for notice in saved["notifications"].values()):
+                        terminal.add(key)
+                else:
+                    observations = [github.dependency(client, dependency) for dependency in entry["depends_on"]
+                                    if dependency["kind"] != "item"]
+                    complete = all(row["state"] != "unknown" for row in observations)
+                    # The dependency's own reason -- a release with no configured
+                    # tag, a 503 -- is what the item's heartbeat has to say, or the
+                    # operator reads "incomplete" every night with nothing to act on.
+                    reason = "; ".join(f"{_dependency_name(row['dependency'])}: {row['reason']}" for row in observations
+                                       if row["state"] == "unknown" and row.get("reason"))
+                    saved = core.observe_dependencies(connection, entry["item"], observations, observed_at=observed_at,
+                                                      expected_revision=snapshots[key]["revision"], complete=complete,
+                                                      reason=reason)
+                    complete = complete and saved["revision"] != snapshots[key]["revision"]
+                if complete:
+                    completed.append(key)
+                else:
+                    # A read the core held -- an unknown actor, a proof mismatch --
+                    # has no collector reason; the core's own is on the heartbeat (sd:1219).
+                    reason = reason or _held(connection, snapshots[key]["key"])
+                    incomplete.append(f"{key}: {reason}" if reason else key)
+            except (ValueError, WorkflowError) as error:
+                incomplete.append(f"{key}: refused: {error}")
+                # The refusal -- a revision another observer moved -- is this
+                # contribution's, so its own heartbeat says so (sd:1219).
+                with transaction(connection):
+                    record_state(connection, "heartbeat", key="contribution-observe:" + snapshots[key]["key"],
+                                 body={"ok": False, "reason": f"refused: {error}"})
+    finally:
+        client.floor = held
     attempted_keys = {row["key"] for row in attempted}
     remaining = [row for row in pending if row["key"] not in attempted_keys]
     rotated = remaining + [row for row in attempted if row["key"] not in terminal]

@@ -261,6 +261,78 @@ class ContributionSync(SyncCase):
         self.assertIn("refused", result.incomplete[0])
         self.assertEqual(self.sent, [])
 
+    def test_a_refused_observation_is_on_the_contributions_own_heartbeat(self):
+        # sd:1219 (98e77da3d566, 3dff0970d20f): a revision another observer moved
+        # was reported as incomplete, but the contribution's heartbeat still said
+        # its last read was good.
+        self.run_sync([URL])
+        key = "github:" + URL
+        before = core.snapshot(self.db, key)
+        transport = self.api.__call__
+        def concurrent(path, fields, timeout):
+            if path == ROOT + "/pulls/7/reviews?per_page=100":
+                core.observe_pull(self.db, URL, {**before["observation"], "observed_at": (self.now + timedelta(minutes=1)).isoformat()},
+                                  expected_revision=before["revision"])
+            return transport(path, fields, timeout)
+        client = self.api.client()
+        client.transport = concurrent
+        result = sync(self.db, now=self.now, runner=self.search(), contribution_client=client, notifier=self.notify)
+        self.assertEqual(len(result.incomplete), 1)
+        self.assertTrue(result.incomplete[0].startswith(key + ": refused: "), result.incomplete)
+        self.assertEqual(self.observe_heartbeat(key), {"ok": False, "reason": result.incomplete[0][len(key) + 2:]})
+        self.assertEqual(core.projection(self.db)[0]["freshness"]["status"], "unknown")
+
+    def test_a_read_the_core_holds_is_reported_with_the_cores_reason(self):
+        # sd:1219 (f03e4681d0f6, 1e4c0796d882): a complete read the core held --
+        # here an author with no id -- was reported as the bare key, because the
+        # reason came only from the collector.
+        self.run_sync([URL])
+        key = "github:" + URL
+        observation = core.snapshot(self.db, key)["observation"]
+        held = {**observation, "observed_at": (self.now + timedelta(minutes=1)).isoformat(), "author": {"id": None}}
+        with patch.object(adapter.github, "pull", return_value=held):
+            result = self.run_sync()
+        self.assertEqual(result.incomplete, [f"{key}: GitHub actor identity is unknown"])
+        self.assertEqual(self.tracker_heartbeat()["incomplete"], result.incomplete)
+
+    def test_the_identity_read_is_not_spent_on_a_free_item_entry_budget(self):
+        # sd:1219 (c1bb03157cda, 2e2e55d8e012): with a free `item` entry at the
+        # head, the identity read was priced against that entry's zero cost and
+        # spent a request held for the collectors that follow.
+        self.run_sync([URL])
+        planned = adapter.plan(self.db)
+        item = {"key": "item:999", "item": 999, "depends_on": [], "explicit": True}
+        planned["pending"].insert(0, item)
+        planned["snapshots"][item["key"]] = core.snapshot(self.db, item["key"])
+        client = self.api.client(requests=3)
+        result = adapter.refresh(self.db, planned, [], client=client, observed_at=self.now.isoformat(), reserve=3)
+        self.assertEqual(client.budget.remaining, 3)
+        self.assertNotIn("/user", [call[0] for call in self.api.calls[-3:]])
+        self.assertEqual(result["queued"], 1)
+
+    def test_a_pull_that_pages_past_its_price_stops_at_the_reserve(self):
+        # sd:1219 (76ef6f5d1cfb, 2e2e55d8e012): `_cost` prices one page per
+        # list, so a pull with more pages read on into the requests reserved for
+        # the collectors that follow. The client now stops at the reserve, and
+        # the pull is held on its own key.
+        self.run_sync([URL])
+        comments = ROOT + "/issues/7/comments?per_page=100"
+        def comment(number):
+            return {"id": number, "user": {"id": 2, "login": "maintainer"}, "body": "More", "author_association": "MEMBER", "updated_at": AT}
+        def page(number):
+            return f'<https://api.github.com{ROOT}/issues/7/comments?per_page=100&page={number}>; rel="next"'
+        self.api.rows[comments] = Response(200, {"Link": page(2)}, json.dumps([comment(19)]))
+        self.api.rows[comments + "&page=2"] = Response(200, {"Link": page(3)}, json.dumps([comment(20)]))
+        self.api.rows[comments + "&page=3"] = [comment(21)]
+        planned = adapter.plan(self.db)
+        # The identity 1 and the pull's price 9 fit beside a reserve of 3; the
+        # pull's two extra pages do not.
+        client = self.api.client(requests=1 + 9 + 3)
+        result = adapter.refresh(self.db, planned, [], client=client, observed_at=self.now.isoformat(), reserve=3)
+        self.assertEqual(client.budget.remaining, 3)
+        self.assertEqual(result["incomplete"], ["github:" + URL + ": contribution collection budget exhausted"])
+        self.assertEqual(client.floor, 0)
+
     def clone_pull(self, numbers):
         urls = [URL.rsplit("/", 1)[0] + f"/{number}" for number in numbers]
         original = list(self.api.rows.items())
