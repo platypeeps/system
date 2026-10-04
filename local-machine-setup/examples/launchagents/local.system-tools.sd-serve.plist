@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- A template. The agents stage replaces @LABEL@ with the label (this
+     file's name), @HOME@ with $HOME and @ROOT@ with the checkout root.
+     The sd hub's server for satellites, on the hub only. It serves
+     ~/.local/share/sd/sd.db and never creates it: under the wrong home it
+     exits naming the path it looked for, and KeepAlive retries on the
+     throttle. Loopback until the tailnet listener lands; that change drops
+     the flag (step 7 of docs/work/2026-09-22-run-the-framework-from-a-second-machine). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>@LABEL@</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@ROOT@/local-sd-db/sd-db.sh</string>
+		<string>serve</string>
+		<string>--loopback</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/@LABEL@.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/@LABEL@.err</string>
+</dict>
+</plist>

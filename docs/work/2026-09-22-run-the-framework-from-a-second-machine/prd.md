@@ -120,9 +120,13 @@ Two shapes are ruled out by the measured facts, and the design records why:
   verb fails with one named error naming the hub, and exits non-zero. It
   never creates, opens or writes a local file. The satellite's
   `~/.local/share/sd/sd.db` must not exist.
-- **R5 — hub services stay on the hub.** Runner, dashboard, backups,
-  `task-actions`, cron intake and digests keep running on this machine and
-  keep opening the local file. Nothing about them changes in this item.
+- **R5 — hub services stay on the hub, and a satellite runs none.** A
+  satellite is a machine with `~/.config/sd/hub.json`. It runs no hub
+  service: no dashboard (8443 or 8768), no runner, no backups, no
+  `task-actions`, no cron intake and no digests. It also holds no local sd
+  database: `~/.local/share/sd/sd.db` must not exist (R4). The hub keeps
+  running these services, and they keep opening the local file. Nothing
+  about them changes in this item. Operator ruling, 2026-10-04.
 - **R6 — receipts land in the hub database.** `sd-ship`'s delivery receipt
   (`ship.save`), `sd-review`'s judgments and meter samples written from the
   satellite are rows on the hub the next morning's digest reads. Ledger
@@ -234,6 +238,15 @@ Each one names its check. A partial pass is not a pass.
     the prune on 2026-10-04 (design Q1). (j) The hub answers `absent` for R: `TransactionLost(R)` leaves the
     `with` block, zero; the verb run again under a new id: one, and the
     note's owner is the item that run created.
+12. **A satellite runs no hub service.** On the satellite, a hub-only
+    LaunchAgent or backup job that is installed or loaded makes
+    `machine-setup.sh status` count one `EXTRA` each, and the stage
+    removes nothing. With `hub.json` present, `update agents --apply`
+    prints `SKIP` for each hub-only label and installs none. Check:
+    `local-machine-setup/tests/test_hub_and_satellite.py`; on the second
+    laptop, `status` counts zero drift, `launchctl list` names no hub-only
+    label, nothing listens on 8443 or 8768, and
+    `test ! -e ~/.local/share/sd/sd.db` passes.
 
 ## Deliberately out of scope
 
