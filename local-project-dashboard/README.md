@@ -125,7 +125,8 @@ what its default branch enforces, gap by gap, with the ids and sentences
 `sd-status` prints for one repository — `enforce_admins`, `required_checks`,
 `strict`, `required_not_produced`, `produced_not_required`, `reviews` — and
 the two merge-settings flags beside them. Two baseline flags follow (sd:1741):
-"Rulesets only" (`protection_source`) and "Requires ci" (`required_check`).
+"Rulesets only" (`protection_source`) and "Required check" (`required_check`).
+A clean "Required check" cell names the check: `ci`, or `sd/local-gate` for a `repo.ci = local` repository.
 A repository outside the operator's owners carries neither, and both cells
 read as not applicable. Nothing on the page calls GitHub: the
 rows are a nightly observation written by the shadow collector (`sd shadow

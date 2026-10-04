@@ -112,7 +112,7 @@ class ProtectionScreen(ScreenCase):
     def test_the_two_baseline_flags_are_columns_and_another_owner_reads_not_applicable(self):
         """sd:1741, S3: one column each, read from `merge_settings`."""
         labels = dict(FLAGS)
-        self.assertEqual((labels["protection_source"], labels["required_check"]), ("Rulesets only", "Requires ci"))
+        self.assertEqual((labels["protection_source"], labels["required_check"]), ("Rulesets only", "Required check"))
         upsert_repo(self.connection, "/repos/classic", remote="git@github.com:platypeeps/classic.git")
         upsert_repo(self.connection, "/repos/product", remote="git@github.com:example-corp/product.git")
         self.observe("/repos/classic", "protected", flags=FLAGS_CLEAN[:2] + [
@@ -122,7 +122,7 @@ class ProtectionScreen(ScreenCase):
         self.observe("/repos/product", "protected", flags=FLAGS_CLEAN[:2])
         body = self.render("/protection")
         self.assertIn(">Rulesets only<", body)
-        self.assertIn(">Requires ci<", body)
+        self.assertIn(">Required check<", body)
         rows = self.rows(body)
         classic = next(row for row in rows if "platypeeps/classic" in row)
         self.assertEqual(classic.count(">GAP<"), 2)
@@ -131,6 +131,22 @@ class ProtectionScreen(ScreenCase):
         product = next(row for row in rows if "example-corp/product" in row)
         self.assertEqual(product.count("protection-na"), 2)
         self.assertEqual(product.count(">ok<"), len(GAPS) + 2)  # every gap, both merge flags
+
+    def test_the_required_check_cell_names_the_local_gate_for_a_local_ci_repository(self):
+        """sd:2509. The column read "Requires ci" over a `repo.ci = local` row,
+        whose baseline check is `sd/local-gate`; each cell now names its own."""
+        upsert_repo(self.connection, "/repos/gated", remote="git@github.com:platypeeps/gated.git", ci="local")
+        upsert_repo(self.connection, "/repos/actions", remote="git@github.com:platypeeps/actions.git", ci="github")
+        gated = [{"id": "required_check", "value": "sd/local-gate", "flagged": False, "gap": "`sd/local-gate` is not a required check"}]
+        self.observe("/repos/gated", "protected", flags=FLAGS_CLEAN[:3] + gated)
+        self.observe("/repos/actions", "protected")
+        body = self.render("/protection")
+        self.assertNotIn("Requires ci", body)
+        rows = self.rows(body)
+        self.assertIn("<code>sd/local-gate</code>", next(row for row in rows if "platypeeps/gated" in row))
+        actions = next(row for row in rows if "platypeeps/actions" in row)
+        self.assertIn("<code>ci</code>", actions)
+        self.assertNotIn("sd/local-gate", actions)
 
     def test_reason_and_gap_text_are_escaped(self):
         upsert_repo(self.connection, "/repos/odd", remote="git@github.com:platypeeps/odd.git")

@@ -1347,6 +1347,14 @@ class Rows(SyncCase):
         self.assertEqual(rows[path]["gaps"], [])
         self.assertIsNone(rows[other]["slug"])
 
+    def test_a_row_carries_the_repositorys_ci_so_the_screen_names_its_baseline_check(self):
+        """sd:2509. The screen labelled the column `ci` for a repository that requires `sd/local-gate`."""
+        local = self.register("gated", "git@github.com:platypeeps/gated.git", ci="local")
+        actions = self.register("actions", "git@github.com:platypeeps/actions.git", ci="github")
+        rows = {row["repo"]: row for row in protection.rows(self.db)}
+        self.assertEqual((rows[local]["ci"], rows[actions]["ci"]), ("local", "github"))
+        self.assertEqual(protection.baseline_check(rows[local]["ci"]), protection.LOCAL_GATE_CHECK)
+
     def test_an_observed_row_carries_its_gaps_and_flags(self):
         path = self.register("seen", "https://github.com/platypeeps/seen", PR_WORKFLOW)
         client, _ = self.client({"repos/platypeeps/seen": repo_payload(allow_rebase_merge=True),

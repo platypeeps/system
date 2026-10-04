@@ -11,7 +11,7 @@ not a passed one.
 from sd_db import protection
 
 from .listing import Column, Listing
-from .markup import tag
+from .markup import join, tag
 from .pages import page
 
 GAPS = (
@@ -25,9 +25,10 @@ GAPS = (
 )
 #: Read from the row's `merge_settings` list. The last two are the fleet
 #: baseline (sd:1741): a repository another owner holds carries neither, so
-#: its two cells read as not applicable.
+#: its two cells read as not applicable. The required check is `ci`, or
+#: `sd/local-gate` under `repo.ci = local`, so each cell names its own (sd:2509).
 FLAGS = (("squash_message", "Squash message"), ("rebase_merge", "Rebase merge"),
-         ("protection_source", "Rulesets only"), ("required_check", "Requires ci"))
+         ("protection_source", "Rulesets only"), ("required_check", "Required check"))
 
 #: Which gap columns a status can answer. `unprotected` has no admins rule to
 #: be exempt from, no checks to be strict about, no contexts to compare and
@@ -89,7 +90,8 @@ def _flag_cell(row, flag_id):
         return tag("span", NOT_APPLICABLE, class_="protection-na")
     flag = found[0]
     if not flag.get("flagged"):
-        return tag("span", "ok", class_="protection-ok")
+        ok = tag("span", "ok", class_="protection-ok")
+        return join([ok, tag("code", protection.baseline_check(row.get("ci")))], " ") if flag_id == "required_check" else ok
     return tag("details", tag("summary", "GAP", class_="protection-gap"),
                tag("p", tag("code", str(flag.get("value") or "")), " ", flag.get("gap") or "",
                    class_="protection-sentence"), class_="protection-detail")
@@ -99,7 +101,9 @@ def _flag_text(row, flag_id):
     found = [flag for flag in row["merge_settings"] if flag.get("id") == flag_id]
     if row["status"] == "unknown" or not found:
         return ""
-    return f"gap {found[0].get('value') or ''}" if found[0].get("flagged") else "ok"
+    if found[0].get("flagged"):
+        return f"gap {found[0].get('value') or ''}"
+    return f"ok {protection.baseline_check(row.get('ci'))}" if flag_id == "required_check" else "ok"
 
 
 def _reason(row):
