@@ -213,6 +213,13 @@ class TheBound(BriefCase):
         self.assertEqual(result.cut, len(self.followups) + 1)
         self.assertIn(f"sd note list {self.live}", result.text)
 
+    def test_the_one_text_over_the_bound_is_the_trailer_alone(self):
+        # The documented exception to "within `limit`" (sd:1219): the text is
+        # the trailer and nothing else, and it is longer than the bound.
+        result = self.brief(branch="feat/live", limit=10)
+        self.assertEqual(result.text, brief._trailer(result.cut, result.commands) + "\n")
+        self.assertGreater(len(result.text.encode("utf-8")), 10)
+
 
 class WhichItems(BriefCase):
     """Requirement 7's two cases: the branch's item, or every live item."""

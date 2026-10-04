@@ -13,10 +13,11 @@ assumes by never reading a `meter` row at all.
 The row names the provider and the bill the provider is on, and the bill is
 the registry's answer, not the caller's: the sampler knows `claude` and
 `codex` by the names `codexbar` uses, and the registry says what each is
-billed to. So the registry is read through the connection, which also seeds
-the `provider` and `bill` rows the row's foreign keys point at on a store
-nothing has read yet -- inside the row's own transaction, after every
-refusal, so a refused sample writes nothing at all. A provider the registry
+billed to. So `sample` reads the registry file beside the connection's
+database, which writes nothing, and only after every refusal calls
+`ensure_seeded` for the `provider` and `bill` rows the row's foreign keys
+point at on a store nothing has read yet -- inside the row's own
+transaction, so a refused sample writes nothing at all. A provider the registry
 does not name is refused; so is a percentage outside 0..100 and a window
 that is not a positive number of minutes, because a row the reader cannot
 draw as a gauge is worse than a gap in the series.
