@@ -46,7 +46,10 @@ failed, so the cron failure push covers a lost digest, not findings.
 - Environment: `OBSIDIAN_VAULT` (default `~/Documents/Obsidian Vault`; exported, or set in `<config>/obsidian-review/.env` outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`), see `.env.example`),
   `JEV_OBSIDIAN_REVIEW` (on unless switched off, below),
   `OBSIDIAN_REVIEW_TODAY` (the `YYYY-MM-DD` note ages count from;
-  default today, and the suite pins it).
+  default today, and the suite pins it),
+  `OBSIDIAN_REVIEW_SIGN_TIMEOUT` (seconds one signed link may take, default
+  15; a link that runs out is tried once more, then the digest keeps
+  Open-only links and writes why to stderr, with the load averages).
 
 ## Ordering, and the optional Jev ranking
 

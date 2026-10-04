@@ -61,6 +61,10 @@ environment:
                           off; unset means on
   OBSIDIAN_TASKS_TODAY    YYYY-MM-DD the digest counts due and overdue from
                           (default: today); the test suite pins it
+  OBSIDIAN_TASKS_SIGN_TIMEOUT
+                          seconds one signed link may take (default: 15); a
+                          link that runs out is tried once more, then the
+                          digest keeps Open-only links and says why on stderr
 HELPEOF
     exit 0
     ;;
@@ -104,13 +108,25 @@ def field(text, name):
 # digest keeps Open-only links for the rest of the run instead of dying on
 # `subprocess.TimeoutExpired` (sd:1770; local-obsidian-review did the same
 # in sd:1203).
-ACTION_URL_TIMEOUT = 5
+# A signature costs a `sh` and a `python3` start: 0.1 s on an idle machine.
+# The nightly slots share the machine with agent jobs, and there it took over
+# 5 s: load1 was 131 at 07:28 on 2026-10-03 and the 07:30 review went
+# unsigned; the 03:00 task digest went unsigned on 10-01 and 10-03 (sd:2536).
+# Nothing in the call waits on a daemon, a keychain or the network once the
+# base is known, so the wait is most likely CPU. The bound is 15 s, a call that runs out
+# is tried once more, and the fallback says why, with the load averages.
+# OBSIDIAN_TASKS_SIGN_TIMEOUT sets the bound in seconds.
+try:
+    ACTION_URL_TIMEOUT = int(os.environ.get("OBSIDIAN_TASKS_SIGN_TIMEOUT") or 15)
+except ValueError:
+    ACTION_URL_TIMEOUT = 15
+ACTION_URL_TRIES = 2
 BASE_URL_TIMEOUT = 10
 
 #: Empty until `signer_base()` runs; ``[""]`` means discovery failed.
 _base = []
 
-#: Set by the first signing timeout, so a slow signer costs one timeout a
+#: Set by the first signing failure, so a slow signer costs one bounded wait a
 #: run, not one a button.
 _signer_down = []
 
@@ -119,22 +135,28 @@ def signer_base():
     """The base URL for signed links, resolved once per run; "" on failure."""
     if _base:
         return _base[0]
+    why = ""
     try:
         r = subprocess.run(["sh", actions, "base-url"],
                            capture_output=True, text=True,
                            timeout=BASE_URL_TIMEOUT)
         base = r.stdout.strip() if r.returncode == 0 else ""
+        if not base:
+            why = "base-url exited %d" % r.returncode
     except subprocess.TimeoutExpired:
         base = ""
+        why = "base-url did not answer within %ds" % BASE_URL_TIMEOUT
         sys.stderr.write(
             "obsidian-tasks.sh: %s base-url did not answer within %ds\n"
             % (actions, BASE_URL_TIMEOUT))
-    except OSError:
+    except OSError as exc:
         base = ""
+        why = "%s could not run: %s" % (actions, exc.strerror or exc)
     if not base:
         sys.stderr.write(
             "obsidian-tasks.sh: action links unsigned -- no base URL could be "
-            "discovered; the digest keeps Open-only links for this run\n")
+            "discovered (%s, %s); the digest keeps Open-only links for this "
+            "run\n" % (why, load_text()))
     _base.append(base)
     return base
 
@@ -148,22 +170,37 @@ def action_url(stem, action, days="3"):
     if not base:
         return ""
     env = dict(os.environ, TASK_ACTIONS_BASE_URL=base)
+    for _ in range(ACTION_URL_TRIES):
+        try:
+            r = subprocess.run(["sh", actions, "url", stem, action, days],
+                               capture_output=True, text=True, env=env,
+                               timeout=ACTION_URL_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            continue
+        except OSError as exc:
+            return unsigned("%s could not run: %s" % (actions, exc.strerror or exc))
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+        # The exit code only: the signer's stderr is not copied into a log.
+        return unsigned("%s url exited %d" % (actions, r.returncode))
+    return unsigned("%s did not sign within %ds, %d times"
+                    % (actions, ACTION_URL_TIMEOUT, ACTION_URL_TRIES))
+
+
+def load_text():
     try:
-        r = subprocess.run(["sh", actions, "url", stem, action, days],
-                           capture_output=True, text=True, env=env,
-                           timeout=ACTION_URL_TIMEOUT)
-        return r.stdout.strip() if r.returncode == 0 else ""
-    except subprocess.TimeoutExpired:
-        # With the base in hand this call touches no daemon, so this is a
-        # slow machine rather than a stalled one; the answer is the same.
-        _signer_down.append(True)
-        sys.stderr.write(
-            "obsidian-tasks.sh: action links unsigned -- %s did not sign "
-            "within %ds; the digest keeps Open-only links for this run\n"
-            % (actions, ACTION_URL_TIMEOUT))
-        return ""
+        return "load averages %.1f %.1f %.1f" % os.getloadavg()
     except OSError:
-        return ""
+        return "load averages unknown"
+
+
+def unsigned(why):
+    """Retire the signer for this run, say why once, and give an empty link."""
+    _signer_down.append(True)
+    sys.stderr.write(
+        "obsidian-tasks.sh: action links unsigned -- %s (%s); the digest keeps "
+        "Open-only links for this run\n" % (why, load_text()))
+    return ""
 
 # Jev orders the digest; it never decides what is in it. It runs unless
 # `jev enabled JEV_OBSIDIAN_TASKS` declines -- unkeyed, the fleet switch off,

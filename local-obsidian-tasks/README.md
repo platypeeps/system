@@ -104,3 +104,6 @@ script in `OBSIDIAN_TASKS_TODAY`, so a run that crosses midnight cannot count
   Jev ordering off; unset means on
 - `OBSIDIAN_TASKS_TODAY` — the `YYYY-MM-DD` due and overdue count from
   (default today); the test suite pins it
+- `OBSIDIAN_TASKS_SIGN_TIMEOUT` — seconds one signed link may take (default
+  15). A link that runs out is tried once more; then the digest keeps
+  Open-only links and writes why to stderr, with the load averages (sd:2536)
