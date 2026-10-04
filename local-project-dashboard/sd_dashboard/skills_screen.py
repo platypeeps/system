@@ -35,7 +35,7 @@ def render(connection, *, parameters, now):
         address = "/api/skills/" + quote(name, safe="")
         availability = "On " + ", ".join(skill["paths"]) if skill["paths"] else "Trial" if skill["status"] == "trial" else "Available to try"
         actions = [form(address + "/review", label="Review skill", command=f"sd skill review {name}", revision=revision, compact=True),
-                   tag("a", "Run with agent", href="/backlog?skill=" + quote(name), class_="button-link")]
+                   tag("a", "Run with agent", href="/tasks?skill=" + quote(name), class_="button-link")]
         if not skill["paths"]:
             if skill["status"] != "trial":
                 actions.append(form(address + "/try", label="Start 30-day trial", command=f"sd skill try {name}", revision=revision, compact=True))
