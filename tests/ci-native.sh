@@ -271,7 +271,7 @@ case "$SUITE_LEG" in
     run_suite maintenance sh local-maintenance/maintenance.sh test -v
     run_suite opentelemetry-collector sh local-opentelemetry-collector/opentelemetry-collector.sh test -v
     run_suite genai-traces sh local-genai-traces/genai-traces.sh test -v
-    run_suite aura sh local-aura/aura.sh test -v
+    run_suite aura sh mezmo-aura/aura.sh test -v
     # local-mirror-sync has no test verb of its own: mirror-sync.sh
     # takes sync|plan|list and adding a fourth would change what a
     # pair list means. The suite is named directly, like notify
