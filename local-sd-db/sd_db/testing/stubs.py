@@ -171,7 +171,12 @@ if __name__ == "__main__":
 TAILSCALE = PREAMBLE + r'''
 
 def main(argv):
-    """`status`, `status --json`, `ip -4`. The answer is the state file."""
+    """`status`, `status --json`, `ip -4`, `whois --json [--proto=tcp] IP[:PORT]`.
+
+    The answer is the state file. `whois` answers from `whois`, a map from
+    the peer's IP to the record the real command prints, and fails for an
+    IP it does not hold, as the real one does.
+    """
     current = state()
     if not argv:
         return record(argv, 1)
@@ -180,13 +185,18 @@ def main(argv):
             sys.stderr.write("Tailscale is stopped.\n")
             return record(argv, 1)
         if "--json" in argv:
+            own = {
+                "HostName": current.get("hostname", "fixture"),
+                "TailscaleIPs": current.get("ips", ["100.64.0.1"]),
+                "Online": True,
+                "UserID": 1,
+            }
+            if current.get("tags"):
+                own["Tags"] = current["tags"]
             sys.stdout.write(json.dumps({
                 "BackendState": current.get("backend", "Running"),
-                "Self": {
-                    "HostName": current.get("hostname", "fixture"),
-                    "TailscaleIPs": current.get("ips", ["100.64.0.1"]),
-                    "Online": True,
-                },
+                "Self": own,
+                "User": {"1": {"LoginName": current.get("login", "operator@example.test")}},
                 "Peer": current.get("peers", {}),
             }) + "\n")
         else:
@@ -196,6 +206,19 @@ def main(argv):
     if argv[0] == "ip":
         ips = current.get("ips", ["100.64.0.1"])
         sys.stdout.write(ips[0] + "\n")
+        return record(argv, 0)
+    if argv[0] == "whois":
+        flags = [value for value in argv[1:] if value.startswith("-")]
+        targets = [value for value in argv[1:] if not value.startswith("-")]
+        if len(targets) != 1 or any(flag not in ("--json", "--proto=tcp", "--proto=udp") for flag in flags):
+            sys.stderr.write("usage: tailscale whois [--json] [--proto=tcp|udp] ip[:port]\n")
+            return record(argv, 1)
+        ip = targets[0].rsplit(":", 1)[0] if targets[0].count(":") == 1 else targets[0]
+        known = current.get("whois", {})
+        if ip not in known:
+            sys.stderr.write(f"peer not found for {targets[0]}\n")
+            return record(argv, 1)
+        sys.stdout.write(json.dumps(known[ip]) + "\n")
         return record(argv, 0)
     sys.stderr.write(f"tailscale: unknown subcommand {argv[0]}\n")
     return record(argv, 1)

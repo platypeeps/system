@@ -335,13 +335,19 @@ Usage: sd-db.sh <command>
               same side of 0.5 and the mean |dp|), and accuracy and Brier on
               pairs that carry a label. The old `judgments` report reads only
               the jev and baseline arms. A read only.
-  serve --loopback [--port N] [--database PATH]
-              Serve the database to `sd_db.remote` connections on
-              127.0.0.1 (default port 8769, 0 picks a free one). Loopback
-              only until peer identity lands. Writes a fresh token to
-              <database>.serve.token (mode 0600) and refuses a session
-              without it. Takes <database>.serve.lock and refuses to start
-              when another server owns it. Never creates a database. Logs
+  serve [--loopback] [--port N] [--database PATH]
+              Serve the database to `sd_db.remote` connections (default
+              port 8769, 0 picks a free one). With --loopback: bind
+              127.0.0.1, write a fresh token to <database>.serve.token
+              (mode 0600) and refuse a session without it. Without it:
+              bind this node's Tailscale IPv4 address, carry no token, and
+              admit a session only from an untagged node of this node's
+              owner, by `tailscale whois` on the TCP peer; refuse this
+              node's own addresses, and any session that names another
+              file. Refusals are logged before any SQL runs. A tagged or
+              stopped node does not listen. Takes <database>.serve.lock
+              and refuses to start when another server owns it. Never
+              creates a database. Logs
               each write transaction's longest gap between frames, and the
               longest of the run on exit.
               Restart it after installing sd_db: it states the build it

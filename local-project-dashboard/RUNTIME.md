@@ -121,6 +121,7 @@ It does not create a Serve route or expose a LAN listener.
 Each request resolves its TCP peer through `tailscale whois --json --proto=tcp`.
 Only the configured operator can access the dashboard.
 Tagged devices, forwarded identity headers, and unavailable identity evidence are refused.
+The peer rules live in `sd_db.tailnet`, which `sd-db.sh serve` shares; the installed library must carry that module.
 The current node address and absence of a conflicting Serve listener are checked on each remote request.
 Session expiry, operator and origin binding, CSRF, HttpOnly, and SameSite remain enforced.
 The IP origin uses HTTP, so its cookie omits the browser's Secure attribute.

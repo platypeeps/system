@@ -8,11 +8,11 @@ connection and cursor surface the library touches, which
 `sd_db.testing.surface` names and proves against the whole suite; anything
 else raises `AttributeError`.
 
-Steps 2 to 4 of the plan: loopback only. The `open` frame carries the
-owner-only token the server wrote beside the database; peer identity for
-another machine waits for step 7. It also carries the handshake of step 3:
-this build's package version and `SCHEMA_VERSION`, beside the protocol
-version every frame carries. The hub refuses any difference with
+Steps 2 to 4 and 7 of the plan. On loopback, the `open` frame carries the
+owner-only token the server wrote beside the database; on the tailnet, the
+hub admits the session by its TCP peer and reads no token. It also carries
+the handshake of step 3: this build's package version and `SCHEMA_VERSION`,
+beside the protocol version every frame carries. The hub refuses any difference with
 `BuildMismatch` before it opens anything. The frame already carries the
 request id field (`rid`, `None` until step 5 gives write transactions an
 id), so later steps add checks and not fields.
@@ -241,10 +241,10 @@ def _read_exactly(sock: socket.socket, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def read_frame(sock: socket.socket) -> dict:
+def read_frame(sock: socket.socket, limit: int = MAX_FRAME) -> dict:
     (size,) = _HEADER.unpack(_read_exactly(sock, _HEADER.size))
-    if size > MAX_FRAME:
-        raise RemoteError(f"frame of {size} bytes exceeds {MAX_FRAME}")
+    if size > limit:
+        raise RemoteError(f"frame of {size} bytes exceeds {limit}")
     return json.loads(_read_exactly(sock, size).decode("utf-8"))
 
 

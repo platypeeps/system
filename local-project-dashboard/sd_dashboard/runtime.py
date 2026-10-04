@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
-import ipaddress
 import json
 import os
 import plistlib
@@ -116,25 +115,15 @@ def _check_direct_serve(config, status):
 
 
 def peer_login(peer):
-    """Identify the TCP peer through the local Tailscale daemon, never headers."""
+    """Identify the TCP peer through the local Tailscale daemon, never headers.
+
+    The rules are `sd_db.tailnet`'s, shared with `sd-db.sh serve`: a tagged,
+    expired or mismatched node has no login."""
+    from sd_db import tailnet
+
     try:
-        address, port = peer
-        ip = ipaddress.IPv4Address(address)
-        if ip not in ipaddress.IPv4Network("100.64.0.0/10") or type(port) is not int or not 1 <= port <= 65535:
-            return None
-    except (TypeError, ValueError):
-        return None
-    try:
-        result = json.loads(_run(["tailscale", "whois", "--json", "--proto=tcp", f"{ip}:{port}"]).stdout)
-        node, user = result["Node"], result["UserProfile"]
-        if not isinstance(node, dict) or not isinstance(user, dict):
-            raise ValueError("missing Tailscale peer identity")
-        addresses = {ipaddress.ip_interface(value).ip for value in node.get("Addresses", [])}
-        if ip not in addresses or node.get("Tags") or node.get("Expired"):
-            return None
-        login = user.get("LoginName")
-        return login if isinstance(login, str) and login and login == login.strip() else None
-    except (KeyError, TypeError, ValueError) as error:
+        return tailnet.login(peer, lambda arguments: _run(arguments).stdout)
+    except tailnet.TailnetError as error:
         raise RuntimeRefused("cannot identify the dashboard's Tailscale peer") from error
 
 

@@ -83,6 +83,14 @@ class TheTailscaleStub(StubCase):
         completed = self.run_stub("tailscale", "status", expect=1)
         self.assertIn("stopped", completed.stderr.lower())
 
+    def test_whois_answers_the_record_the_test_set_and_fails_for_any_other_peer(self):
+        record = {"Node": {"Addresses": ["100.64.0.20/32"]}, "UserProfile": {"LoginName": "owner@example.test"}}
+        self.stubs.state("tailscale", {"whois": {"100.64.0.20": record}})
+        out = self.run_stub("tailscale", "whois", "--json", "--proto=tcp", "100.64.0.20:45678").stdout
+        self.assertEqual(json.loads(out), record)
+        self.run_stub("tailscale", "whois", "--json", "--proto=tcp", "100.64.0.21:45678", expect=1)
+        self.run_stub("tailscale", "whois", "--bogus", "100.64.0.20:45678", expect=1)
+
 
 class TheCurlStub(StubCase):
     def test_it_performs_the_request_so_the_double_sees_it(self):

@@ -26,7 +26,7 @@ import sd_db
 from sd_db import create_item, database, initialise, remote, schema
 from sd_db.serve import read_token
 from sd_db.database import transaction
-from sd_db.testing import surface
+from sd_db.testing import Stubs, surface
 
 HERE = Path(__file__).resolve().parents[1]
 SD_DB = HERE / "sd-db.sh"
@@ -471,12 +471,15 @@ class TheServer(ServedCase):
             with self.subTest(host=host), self.assertRaises(SystemExit):
                 wire.install(host, self.served.port, self.served.token)
 
-    def test_serve_binds_loopback_only_and_never_creates(self):
+    def test_serve_never_creates_a_database(self):
+        """Without `--loopback` too: the missing file refuses before Tailscale is asked."""
+        stubs = Stubs(self.root / "stubs", names=("tailscale",))
         bare = subprocess.run(["sh", str(SD_DB), "serve"], capture_output=True, text=True,
-                              env=environment(self.root), timeout=60)
+                              env=stubs.environment(environment(self.root)), timeout=60)
         self.assertEqual(bare.returncode, 1)
-        self.assertIn("--loopback", bare.stderr)
-        self.assertEqual(list((self.root / "home" / ".local" / "share" / "sd").glob("*serve*")), [])
+        self.assertIn("no database at", bare.stderr)
+        self.assertEqual(stubs.calls("tailscale"), [])
+        self.assertFalse((self.root / "home" / ".local" / "share" / "sd").exists())
         absent = self.root / "nothing" / "sd.db"
         missing = subprocess.run(
             ["sh", str(SD_DB), "serve", "--loopback", "--port", "0", "--database", str(absent)],
