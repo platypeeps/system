@@ -280,14 +280,20 @@ the connection while the original subprocess is still running.
 
 ## What must remain on the hub
 
+A row marked *hub only* never exists on a satellite (R5, ruled
+2026-10-04): a satellite runs none of these services and holds no local sd
+database. Their launchd jobs are named once, in
+`source:local-machine-setup/machine-setup.sh::SD_HUB_ONLY_AGENTS`; the
+satellite stage reports each one installed or loaded as `EXTRA`.
+
 | Capability | Why it cannot move | Where it is declared |
 |---|---|---|
-| The database file | One writer; WAL sidecars | `DEFAULT_RELATIVE`, `local-sd-db/sd_db/database.py` |
-| Runner (`local.system-tools.sd-runner`) | Leases and `executions/` are hub paths | `personal.agent` |
-| Dashboard (`local.system-tools.sd-dashboard`) | Reads the file; serves 8443 and 8768 | `personal.agent`, `RUNTIME.md` |
-| `task-actions` | Funnel-published; per-machine TCC | `personal.agent` |
-| `sd-db-backup`, `offsite-*`, `mirror-sync-nightly` | Snapshot the local file and the NAS mount | `personal.cron` |
-| Cron intake and digests | Write rows on a schedule; one clock | `personal.cron` |
+| The database file — *hub only* | One writer; WAL sidecars | `DEFAULT_RELATIVE`, `local-sd-db/sd_db/database.py` |
+| Runner (`local.system-tools.sd-runner`) — *hub only* | Leases and `executions/` are hub paths | `personal.agent` |
+| Dashboard (`local.system-tools.sd-dashboard`) — *hub only* | Reads the file; serves 8443 and 8768 | `personal.agent`, `RUNTIME.md` |
+| `task-actions` — *hub only* | Funnel-published; per-machine TCC | `personal.agent` |
+| `sd-db-backup`, `offsite-*`, `mirror-sync-nightly` — *hub only* | Snapshot the local file and the NAS mount | `personal.cron` |
+| Cron intake and digests — *hub only* | Write rows on a schedule; one clock | `personal.cron` |
 | `repo remove`, `item remove`, `restore`, `migrate` | Take `control_gate` and move journal files | `sd-db.sh help` |
 | Delivery: the `sd-ship` merge and every path under `repository_lock` | A lock held over a droppable session cannot outlive the subprocesses it guards | `repository_lock`, `local-sd-db/sd_db/ship.py`; Decision |
 | Service controls and every path under `control_gate` | Same reason; `PRAGMA database_list` names a hub path | `control_gate`, `local-sd-db/sd_db/operations.py` |

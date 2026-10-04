@@ -20,7 +20,7 @@ import time
 import unittest
 
 from tests import fixture_config
-from tests.test_backbone import DRIFT_WORDS, FOLDER, ROOT, ROUTE_PRESENT, SCRIPT, Fixture, manifest
+from tests.test_backbone import DRIFT_WORDS, FOLDER, ROOT, ROUTE_PRESENT, SCRIPT, Fixture, manifest, write_stub
 
 from sd_db.migrate import initialise
 
@@ -40,6 +40,11 @@ roles:
 
 def markers(text):
     return [line for line in text.splitlines() if DRIFT_WORDS.search(line)]
+
+
+# The hub's launchd jobs as the script lists them, so no test keeps a copy.
+HUB_ONLY = [f"{fixture_config.LABEL_PREFIX}.{suffix}" for suffix in
+            re.search(r'^SD_HUB_ONLY_AGENTS="([^"]*)"', SCRIPT.read_text(), re.M).group(1).split()]
 
 
 class TheServeAgent(unittest.TestCase):
@@ -124,6 +129,15 @@ class TheHub(Case):
                                  "a satellite too; remove it"])
         self.assertTrue(stray.exists(), "the stage removed hub.json")
 
+    def test_criterion_7_a_hub_json_on_the_hub_counts_one_extra_across_the_sd_stages(self):
+        stray = self.fixture.home / ".config/sd/hub.json"
+        stray.parent.mkdir(parents=True)
+        stray.write_text('{"hub": "hub.example.test", "port": 8769}\n')
+        out = self.run_stage("sd") + self.run_stage("satellite") + self.run_stage("agents")
+        drift = markers(out)
+        self.assertEqual(len(drift), 1, drift)
+        self.assertIn(f"EXTRA   {stray}", drift[0])
+
 
 class Hub:
     """A loopback `sd-db.sh serve` over a fresh database, with a registry beside it."""
@@ -176,6 +190,14 @@ class TheSatellite(Case):
         # A satellite holds no registry until the stage installs the hub's.
         self.fixture.registry.unlink()
         self.hub_json = self.fixture.home / ".config/sd/hub.json"
+        self.agents = self.fixture.home / "Library/LaunchAgents"
+        # launchd runs only the labels in STUB_LOADED; every call is logged,
+        # so a test can see the stage never boots anything out.
+        self.launchctl_log = self.root / "launchctl.log"
+        write_stub(self.fixture.stubs, "launchctl",
+                   f'echo "$*" >> "{self.launchctl_log}"\n'
+                   'case "$1" in print) case " $STUB_LOADED " in *" ${2##*/} "*) exit 0 ;; esac; exit 113 ;; esac\n'
+                   'exit 0\n')
 
     def start_hub(self, **options):
         hub = Hub(self.root / "hub", **options)
@@ -189,8 +211,56 @@ class TheSatellite(Case):
         self.hub_json.write_text(json.dumps({"hub": "127.0.0.1", "port": hub.port,
                                              "token_file": str(hub.token_file)}))
 
-    def satellite(self, *flags):
-        return self.run_stage("satellite", *flags, SD_DB_PYTHON=self.fixture.python)
+    def satellite(self, *flags, loaded=()):
+        return self.run_stage("satellite", *flags, SD_DB_PYTHON=self.fixture.python, STUB_LOADED=" ".join(loaded))
+
+    def launchctl_verbs(self):
+        text = self.launchctl_log.read_text() if self.launchctl_log.exists() else ""
+        return {line.split()[0] for line in text.splitlines()}
+
+    def test_a_hub_only_plist_on_a_satellite_is_extra_and_stays(self):
+        self.name_hub_by_hand()
+        self.agents.mkdir(parents=True)
+        for label in HUB_ONLY:
+            (self.agents / f"{label}.plist").write_text("<plist/>\n")
+        drift = markers(self.satellite("--apply"))
+        self.assertEqual(drift, [f"  EXTRA   {self.agents / label}.plist — hub only, and this machine is a "
+                                 "satellite; remove it by hand" for label in HUB_ONLY])
+        self.assertEqual(sorted(p.name for p in self.agents.iterdir()), sorted(f"{l}.plist" for l in HUB_ONLY))
+        self.assertLessEqual(self.launchctl_verbs(), {"print"})
+
+    def test_a_loaded_hub_agent_with_no_plist_is_extra(self):
+        (self.profiles / "work.satellite").write_text("hub.example.test\n")
+        runner = f"{fixture_config.LABEL_PREFIX}.sd-runner"
+        out = self.satellite("--apply", loaded=[runner])
+        extra = [line for line in markers(out) if line.startswith("  EXTRA")]
+        self.assertEqual(extra, [f"  EXTRA   {runner} loaded with no plist — hub only, and this machine is "
+                                 "a satellite; boot it out by hand"])
+        self.assertLessEqual(self.launchctl_verbs(), {"print"})
+
+    def test_a_satellite_with_no_hub_agent_counts_no_extra(self):
+        self.name_hub_by_hand()
+        self.assertEqual(markers(self.satellite()), [])
+
+    def test_the_agents_stage_skips_hub_only_agents_while_hub_json_exists(self):
+        # A satellite that shares the hub's profile: personal.agent lists the
+        # hub's three sd agents.
+        (self.fixture.state / "profile").write_text("personal\n")
+        self.name_hub_by_hand()
+        self.agents.mkdir(parents=True)
+        out = self.run_stage("agents", "--apply")
+        listed = manifest("personal.agent")
+        self.assertTrue(listed and all(label in HUB_ONLY for label in listed), listed)
+        self.assertEqual(markers(out), [])
+        for label in listed:
+            self.assertIn(f"  SKIP    {label} — hub only, and {self.hub_json} makes this machine a satellite", out)
+        self.assertEqual(list(self.agents.iterdir()), [])
+        self.assertNotIn("bootstrap", self.launchctl_verbs())
+
+    def name_hub_by_hand(self):
+        """A hub.json and no `.satellite`: the stage has no hub to ask."""
+        self.hub_json.parent.mkdir(parents=True, exist_ok=True)
+        self.hub_json.write_text('{"hub": "hub.example.test", "port": 8769}\n')
 
     def test_a_profile_without_a_hub_skips(self):
         out = self.satellite()

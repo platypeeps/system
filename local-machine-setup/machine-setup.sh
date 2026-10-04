@@ -940,6 +940,13 @@ stage_agents() {
   fi
   rendered=$(mktemp -d)
   echo "$agents" | while read -r label; do
+    # A satellite sharing the hub's profile must not start a second runner
+    # or dashboard. Skipped, not removed: the satellite stage reports one
+    # already here.
+    if [ -e "$SD_HUB_CONFIG" ] && sd_hub_only "$label"; then
+      echo "  SKIP    $label — hub only, and $SD_HUB_CONFIG makes this machine a satellite"
+      continue
+    fi
     src="$AGENT_DIR/$label.plist"
     dst="$HOME/Library/LaunchAgents/$label.plist"
     if [ -f "$src" ]; then
@@ -1148,6 +1155,16 @@ SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 sd_in_profile() { manifest agent | grep -qxF -e "$LABEL_PREFIX.sd-dashboard" -e "$LABEL_PREFIX.sd-runner"; }
 # The satellite's selector (`sd_db.hub`); on the hub its presence is drift.
 SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
+# The hub's own launchd jobs, by label suffix: the one list of what a
+# satellite never runs (prd R5 of the second-machine plan). The cron jobs
+# are the backups, installed by the cron stage under `<prefix>.cron.`.
+# The satellite stage reports each one present as EXTRA; the agents stage
+# skips each one while hub.json exists.
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-runner sd-serve task-actions cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly"
+sd_hub_only() { # label
+  for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
+  return 1
+}
 # The interpreter whose installed sd_db the satellite stage checks: the
 # pack's, as sd-db.sh picks it.
 SD_DB_PYTHON="${SD_DB_PYTHON:-$SD_PACK_ROOT/.venv/bin/python}"
@@ -1260,6 +1277,20 @@ stage_sd() {
 stage_satellite() {
   echo "== satellite"
   hubs=$(manifest satellite)
+  # A satellite runs no hub service (prd R5). Detect only: the operator
+  # decides which role is wrong. On a hub profile the sd stage's one EXTRA
+  # for hub.json names the conflict instead (criterion 7).
+  if ! sd_in_profile && { [ -n "$hubs" ] || [ -e "$SD_HUB_CONFIG" ]; }; then
+    for sho in $SD_HUB_ONLY_AGENTS; do
+      sho_label="$LABEL_PREFIX.$sho"
+      sho_plist="$HOME/Library/LaunchAgents/$sho_label.plist"
+      if [ -e "$sho_plist" ]; then
+        echo "  EXTRA   $sho_plist — hub only, and this machine is a satellite; remove it by hand"
+      elif launchctl print "gui/$(id -u)/$sho_label" >/dev/null 2>&1; then
+        echo "  EXTRA   $sho_label loaded with no plist — hub only, and this machine is a satellite; boot it out by hand"
+      fi
+    done
+  fi
   if [ -z "$hubs" ]; then
     echo "  SKIP    no sd hub in this profile ($PROFILE.satellite)"
     return 0
