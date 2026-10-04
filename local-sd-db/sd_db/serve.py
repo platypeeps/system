@@ -62,7 +62,8 @@ without the prune, so no row is ever deleted:
   and ROLLBACK unless the hub routes them, whatever the text: a comment
   or a trailing statement cannot end a write transaction without its row
   (the review of 2026-10-04). A transaction a `SAVEPOINT` opens is a read
-  under `query_only`, and a script opens none. The client does not check
+  under `query_only`, and a script opens none. Inside a read, a client
+  cannot set `query_only` (the second review of 2026-10-04). The client does not check
   this itself: a text `remote.statement` misses goes as a plain statement,
   and this refusal answers it.
 - A session silent for `IDLE_TIMEOUT` inside an open transaction is closed,
@@ -255,6 +256,18 @@ class Session(socketserver.BaseRequestHandler):
             # such a transaction as a read.
             return self._deny(f"SAVEPOINT {arg2} outside the hub's transaction handling; "
                               f"a script opens no transaction")
+        if action == sqlite3.SQLITE_PRAGMA:
+            # SQLite passes the pragma's name as `arg1` and its value as
+            # `arg2`, whatever the case, spacing or schema prefix. Inside a
+            # read the hub holds, `query_only` keeps the read's COMMIT or
+            # RELEASE from committing writes no id owns. The hub's own
+            # `query_only` statements run in `_quiet`, under `routing`.
+            # Reading it stays allowed, and so does setting it outside a
+            # read: the library reads it to tell a writable connection.
+            if (arg1 or "").lower() == "query_only" and arg2 is not None \
+                    and self.kind == "read" and not self.routing:
+                return self._deny("query_only is the hub's inside a read transaction; "
+                                  "end the read first")
         return sqlite3.SQLITE_OK
 
     def _deny(self, reason: str) -> int:

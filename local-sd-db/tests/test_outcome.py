@@ -633,6 +633,38 @@ class TheTransactionBoundary(OutcomeCase):
         self.assertEqual(client.execute("PRAGMA query_only").fetchone()[0], 0)
         self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
 
+    def test_a_read_cannot_switch_query_only_off(self):
+        # The second review of 2026-10-04: with `query_only` off, a read's
+        # COMMIT or RELEASE would commit writes no id owns. The hub runs
+        # `PRAGMA query_only = 0` itself first, so a statement cached from
+        # that text must not pass unchecked.
+        for opening, closing in (("BEGIN", "COMMIT"), ("SAVEPOINT snap", "RELEASE snap")):
+            for pragma in ("PRAGMA query_only=OFF", "pragma QUERY_ONLY = 0", "PRAGMA main.query_only=false",
+                           "PRAGMA query_only = 0"):
+                with self.subTest(opening=opening, pragma=pragma):
+                    client = self.connect()
+                    client.execute(opening)
+                    with self.assertRaisesRegex(remote.RemoteError, "query_only is the hub's"):
+                        client.execute(pragma)
+                    with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                        client.execute("INSERT INTO probe (name) VALUES ('r')")
+                    self.assertEqual(client.execute("PRAGMA query_only").fetchone()[0], 1)
+                    client.execute(closing)
+                    self.assertFalse(client.in_transaction)
+                    client.close()
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
+
+    def test_query_only_stays_the_clients_outside_a_read(self):
+        # The library reads it to tell a writable connection, and a `mode=ro`
+        # open may switch it off; neither holds a transaction for the hub.
+        client = self.connect()
+        client.execute("PRAGMA query_only = ON")
+        with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+            client.execute("INSERT INTO probe (name) VALUES ('o')")
+        client.execute("PRAGMA query_only = OFF")
+        client.execute("INSERT INTO probe (name) VALUES ('o')")
+        self.assertEqual(count(self.path), 1)
+
     def test_a_script_cannot_open_a_transaction(self):
         client = self.connect()
         for script in ("BEGIN IMMEDIATE; INSERT INTO probe (name) VALUES ('s'); COMMIT;",
