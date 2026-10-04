@@ -1,8 +1,8 @@
 <!doctype html>
 <!--
   Tasks (sd:2124), at /tasks. Built from the design source's products/system/designs/v2/tasks.html at d82daa1, with design.md and commands.md.
-  Data: /api/tasks (tasks_screen.document: the rows reads.backlog_items gives v1 /backlog, with each row's revision and allowed
-  statuses), read when the page opens and after a write; /api/tasks/<id> (tasks_screen.details: the sd task show <id> JSON split into
+  Data: /api/tasks (tasks_screen.document: the rows reads.backlog_items gives v1 /backlog, with each row's revision, allowed
+  statuses and age bucket), read when the page opens and after a write; /api/tasks/<id> (tasks_screen.details: the sd task show <id> JSON split into
   status history and notes, the item's assignments, and its external context), read when a task is selected.
   Writes: the v1 action routes (status, edit, note resolve, runner requeue and cancel, run, capture). Nothing here is sample data.
 -->
@@ -48,7 +48,13 @@
 
   <div id="state" hidden></div>
   <div id="views"></div>
-  <div class="filters" id="filters" aria-label="Filters"></div>
+  <div class="filters" role="group" aria-label="Filters">
+    <div class="ffind">
+      <label class="label" for="find-in">Text</label>
+      <input id="find-in" type="search" autocomplete="off" spellcheck="false" placeholder="title, #id, repo">
+    </div>
+    <div class="fset" id="filters"></div>
+  </div>
 
   <section id="view-board" aria-label="Board"></section>
   <section id="view-matrix" aria-label="Eisenhower matrix" hidden></section>
