@@ -176,7 +176,7 @@ class DigestTest(unittest.TestCase):
         record = self.root / "actions.calls"
         self.digest({**OFF,
                      "ACTIONS_STUB_RECORD": str(record),
-                     "ACTIONS_STUB_SIGNS": "https://mac.example.ts.net"})
+                     "ACTIONS_STUB_SIGNS": "https://mac.example.test"})
         calls = [line.split(" ", 1) for line in
                  record.read_text().splitlines() if line]
         verbs = [verb for verb, _ in calls]
@@ -186,7 +186,7 @@ class DigestTest(unittest.TestCase):
         # them had any reason to reach the daemon.
         self.assertEqual(
             {base for verb, base in calls if verb == "url"},
-            {"https://mac.example.ts.net"})
+            {"https://mac.example.test"})
 
     def test_one_signing_timeout_retires_the_signer_for_the_run(self):
         """sd:1203, review round 2. Caching discovery is not the whole breaker.
@@ -200,7 +200,7 @@ class DigestTest(unittest.TestCase):
         record = self.root / "actions.calls"
         self.digest({**OFF,
                      "ACTIONS_STUB_RECORD": str(record),
-                     "ACTIONS_STUB_SIGNS": "https://mac.example.ts.net",
+                     "ACTIONS_STUB_SIGNS": "https://mac.example.test",
                      "ACTIONS_STUB_SIGN_HANG": "30"})
         verbs = [line.split(" ", 1)[0] for line in
                  record.read_text().splitlines() if line]
