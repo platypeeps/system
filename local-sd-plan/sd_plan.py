@@ -13,7 +13,6 @@ import argparse
 import itertools
 import json
 import os
-import pwd
 import re
 import shlex
 import shutil
@@ -609,41 +608,6 @@ def claude_binary() -> str:
         f"set SD_PLAN_CLAUDE to the binary that should do the planning{override_hint()}")
 
 
-def planning_environment() -> dict:
-    """The agent's credentials are in the login keychain, and it needs `USER`.
-
-    `sd_db.runner_exec.process_plan` hands a queued command a deliberately
-    minimal environment -- `HOME`, `PATH`, `LANG`, the two git knobs -- and
-    in the pack's installed copy `USER` is not in it (the last paragraph says
-    which copy sets it). The agent stores its OAuth credential as a keychain
-    generic password, reads that credential under the name in `USER`, and
-    without one reports `Not logged in - Please run /login` and exits 0, so
-    the planning run looked like a clean refusal rather than a broken
-    environment.
-
-    Bisected against the runner's exact environment: `LOGNAME` does not
-    substitute, and `USER` alone is sufficient.
-
-        env -i HOME=$HOME PATH=/usr/bin:/bin LANG=en_US.UTF-8 claude -p ok
-            -> Not logged in
-        ... with USER=$(id -un) -> ok
-
-    Derived from the uid rather than read from the environment: the keychain
-    this unlocks is the one belonging to the user actually running, so an
-    ambient `USER` disagreeing with `getuid()` is wrong for this purpose
-    rather than an override worth honouring.
-
-    This repository's `runner_exec.process_plan` sets `USER` the same way
-    since sd:458, but the runner loads the pack's installed copy of `sd_db`
-    under `python -I`, which still lacks it until the pack re-installs at a
-    tag past that change. Until then this is what puts `USER` in front of
-    the agent; once the installed copy carries it, this can go.
-    """
-    environment = dict(os.environ)
-    environment["USER"] = pwd.getpwuid(os.getuid()).pw_name
-    return environment
-
-
 #: What the pages must survive once pushed (sd:990). The first unattended run
 #: pushed pages that passed `sd-docs-lint` and failed the pack's citation gate:
 #: four `path:line` citations into code and one `source:` locator naming a
@@ -712,8 +676,10 @@ def agent(root: Path, slug: str, row: dict, documents=DOCUMENTS) -> None:
     )
     argv = ([*shlex.split(override), slug, str(row["id"])] if override else
             [claude_binary(), "-p", prompt, "--dangerously-skip-permissions"])
-    environment = planning_environment()
-    environment["SD_PLAN_DOCUMENTS"] = " ".join(documents)
+    # The agent reads its keychain credential under `USER`. The runner's
+    # `process_plan` sets it from the uid (sd:458), so this passes the
+    # environment through and sets none of its own (sd:2557).
+    environment = {**os.environ, "SD_PLAN_DOCUMENTS": " ".join(documents)}
     done = subprocess.run(argv, cwd=str(root), check=False, env=environment)
     if done.returncode != 0:
         raise Refused(f"the planning run exited {done.returncode}")
