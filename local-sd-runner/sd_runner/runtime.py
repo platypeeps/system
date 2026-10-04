@@ -1270,11 +1270,25 @@ except ImportError:
 _canonical = getattr(journal, "canonical", lambda record: record)
 
 
+def _keyed_only(record: dict, row: dict) -> dict:
+    """`against` for a library before sd:2581: the record keyed, the row unused.
+
+    Such a library is built for schema 17 or older, where `runner_run.repo` is
+    NOT NULL, so no row is detached; a NULL repo there still differs.
+    """
+    return _canonical(record)
+
+
+_against = getattr(journal, "against", _keyed_only)
+
+
 def journal_differs(external: dict, current: dict) -> bool:
     """Whether a journal record and a run row (or two records) disagree.
 
     Both sides keyed: a record written before migration 014 names its
     repository by the absolute path the row now holds as a `~/` key, and is
-    the same run (sd:1447). A different repository still differs.
+    the same run (sd:1447). A different repository still differs. A row that
+    `repo remove` detached has no repo, while its journal keeps the one it
+    had (sd:2581); that pair agrees when all else does.
     """
-    return _canonical(external) != _canonical(current)
+    return _against(external, current) != _canonical(current)

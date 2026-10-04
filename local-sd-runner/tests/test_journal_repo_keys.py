@@ -111,6 +111,45 @@ class JournalRepoKeys(unittest.TestCase):
         with self.assertRaisesRegex(store.RunnerRefused, "identity changed: repo"):
             journal.persist(self.database, store.run_state(self.db, self.ident))
 
+    # -- a row `repo remove` detached (sd:2581) -------------------------------
+
+    def detach(self, *, released: bool = True, detached_from: str | None = "~/repos/x") -> None:
+        """Release the run (or not), write its journal from the row, then move the row's repo as the remove does."""
+        if released:
+            self.db.execute("UPDATE runner_run SET released_at=? WHERE id=?", (STAMP, self.ident))
+        write_raw(self.database, store.run_state(self.db, self.ident))
+        self.db.execute("UPDATE runner_run SET repo=NULL, detached_from=? WHERE id=?", (detached_from, self.ident))
+
+    def reasons(self) -> list[str]:
+        return [hold["reason"] for hold in self.holds()]
+
+    def test_a_detached_row_and_the_journal_that_names_its_repository_are_not_a_hold(self):
+        self.detach()
+        self.assertEqual(self.holds(), [])
+        self.assertEqual(reconciliation.plan(self.config)["entries"], [])
+
+    def test_a_detached_row_whose_journal_names_another_repository_holds(self):
+        """Review on sd:2581: a journal naming a repository the row never had is a conflict."""
+        upsert_repo(self.db, "~/repos/other")
+        self.detach(detached_from="~/repos/other")
+        self.assertIn("same-version database and ownership journal conflict", self.reasons())
+
+    def test_a_null_repo_without_provenance_holds(self):
+        """Review on sd:2581: a repo lost by a hand edit or a partial restore is not a detach."""
+        self.detach(detached_from=None)
+        self.assertIn("same-version database and ownership journal conflict", self.reasons())
+
+    def test_an_open_row_with_no_repository_still_holds(self):
+        self.detach(released=False)
+        self.assertIn("same-version database and ownership journal conflict", self.reasons())
+
+    def test_against_a_library_without_against_a_detached_row_holds(self):
+        """Review on sd:2581: the fallback for an older library never reads a NULL repo as a detach."""
+        from sd_runner import runtime
+        self.detach()
+        with mock.patch.object(runtime, "_against", runtime._keyed_only):
+            self.assertIn("same-version database and ownership journal conflict", self.reasons())
+
     def test_a_record_with_a_bad_digest_is_refused_and_left_untouched(self):
         path = self.journal_with(str(self.home / "repos" / "x"))
         envelope = json.loads(path.read_text())

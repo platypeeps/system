@@ -43,6 +43,9 @@ def canonical(record: dict) -> dict:
     both sides agree byte for byte; a path outside the home, or a record
     compared without `$HOME`, is kept as it is.
     """
+    if "detached_from" not in record:
+        # Written before migration 018, which added the column (sd:2581).
+        record = {**record, "detached_from": None}
     repo = record.get("repo")
     try:
         keyed = paths.home_relative(repo) if isinstance(repo, str) else repo
@@ -128,6 +131,29 @@ def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRef
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)
+
+
+def detached(row: dict) -> bool:
+    """Whether `repo remove` detached this `runner_run` row (sd:2581): released, no repo, and the repo it had."""
+    return row.get("repo") is None and bool(row.get("detached_from")) and bool(row.get("released_at"))
+
+
+def against(record: dict, row: dict) -> dict:
+    """`record` keyed (`canonical`), as `row` should read it once `repo remove` detached it (sd:2581).
+
+    The remove moves the row's repository to `detached_from` in the database
+    only. The journal keeps naming it and is never rewritten: a file write
+    cannot roll back with the transaction. So a released record whose
+    repository is the detached row's `detached_from` reads as that move, and
+    then agrees with the row when all else does. Any other record is returned
+    keyed and unchanged, so a journal naming a repository the row never had,
+    or a row whose repo went NULL some other way, still differs.
+    """
+    keyed = canonical(record)
+    if detached(row) and keyed.get("released_at") and keyed.get("detached_from") is None \
+            and keyed.get("repo") == canonical(row).get("detached_from"):
+        return {**keyed, "repo": None, "detached_from": keyed["repo"]}
+    return keyed
 
 
 def read(path: Path) -> dict:
