@@ -4,8 +4,10 @@
 # the same build the dashboard serves under (RUNTIME_PYTHON_DEFAULT in
 # local-project-dashboard/dashboard.sh). Under any other python3 the script
 # still appends the JSONL line and records the missing import as an error.
+# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
+# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
 JOB_SCHEDULE="0 */4 * * *"
-JOB_COMMAND="\"${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}/.venv/bin/python\" \"$ROOT/../local-agent-meter/agent-meter.py\""
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-ai-command-pack}/.venv/bin/python\" \"$ROOT/../local-agent-meter/agent-meter.py\""
 JOB_DIR="$ROOT/../local-agent-meter"
 JOB_PROMPT=""
 JOB_MODEL=""
