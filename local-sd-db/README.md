@@ -53,6 +53,12 @@ backup, and the fixture harness both repositories test against.
                     the repo it had. An in-place edit, as 009's.
                     Carries its reverse in its header, run before 017's
                     (sd:2581)
+      schema/019_request_outcome.sql  `request_outcome`: one row per write
+                    transaction a remote session committed, inserted by
+                    `serve` inside that transaction, so a satellite whose
+                    COMMIT answer was lost can ask whether it landed. No
+                    row is pruned. Carries its reverse in its header, run
+                    before 018's (sd:1335)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the

@@ -59,6 +59,7 @@ COLUMNS = {
     "repo": {"key": "path", "none": "remote mode runner_merge managed ci status_source pieces_source created_at updated_at"},
     "repo_protection": {"key": "repo", "history": "body reason",
                         "none": "observed_at status default_branch"},
+    "request_outcome": {"none": "id committed_at"},
     "runner_lease": {"key": "repo", "none": "run branch exclusive acquired_at released_at"},
     "runner_run": {"key": "repo detached_from", "hub-only": "work_path retained_path",
                    "history": "detail delivery_proof ignored_manifest quarantine",
@@ -204,6 +205,8 @@ class TheMigration(AThirteenStore):
                 self.assertEqual(under, [], f"{table}.{column}")
         for table in ("note", "assignment", "judgment", "publication_claim"):
             self.assertEqual(after[table], self.before[table], table)
+        # 019 adds `request_outcome` after 014, empty.
+        self.assertEqual(after.pop("request_outcome"), [])
         self.assertEqual({table: len(value) for table, value in after.items()},
                          {table: len(value) for table, value in self.before.items()})
         self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
@@ -233,9 +236,10 @@ class TheMigration(AThirteenStore):
         connection = sqlite3.connect(self.database, isolation_level=None)
         paths.install(connection)
         connection.execute("PRAGMA foreign_keys = ON")
-        # 018, 017, 016 and 015 came after 014 and are reversed first, newest
-        # first: 014's reverse is written against the table at 14, without
+        # 019 to 015 came after 014 and are reversed first, newest first:
+        # 014's reverse is written against the table at 14, without
         # `repo.managed`, `repo.ci` or `runner_run.detached_from`.
+        connection.executescript(reverse_script("019_request_outcome.sql"))
         connection.executescript(reverse_script("018_runner_run_repo_nullable.sql"))
         connection.executescript(reverse_script("017_judgment_compare_arms.sql"))
         connection.executescript(reverse_script("016_repo_ci.sql"))
