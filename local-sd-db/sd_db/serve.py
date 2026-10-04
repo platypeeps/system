@@ -40,9 +40,12 @@ without the prune, so no row is ever deleted:
   the statement runs, and an id seen before is refused.
 - `COMMIT` from the owner inserts the `request_outcome` row on the same
   connection, then commits: the row and the writes land together or not
-  at all. A transaction that changed nothing (no row, no schema, no
-  `user_version`) gets no row: it wrote nothing either way, and the table,
-  which is never pruned, does not grow on quiet ticks. The server's row
+  at all. Each attempt checks for the row inside the transaction: a COMMIT
+  a deferred foreign key failed leaves the transaction open, and a
+  `ROLLBACK TO` can remove the row it inserted. A transaction that changed
+  nothing (no row, no schema, no `user_version`) gets no row: it wrote
+  nothing either way, and the table, which is never pruned, does not grow
+  on quiet ticks. The server's row
   stays out of the session's `total_changes`. A `COMMIT` naming an R the
   session does not own is refused and not applied, and a write
   transaction's `COMMIT` without its R too.
@@ -55,6 +58,13 @@ without the prune, so no row is ever deleted:
 - A plain `BEGIN` carries no R and opens a read transaction under
   `query_only` (gap C2). Its `COMMIT` or `ROLLBACK` needs no R and writes
   no row.
+- SQLite's authorizer on the session's connection refuses BEGIN, COMMIT
+  and ROLLBACK unless the hub routes them, whatever the text: a comment
+  or a trailing statement cannot end a write transaction without its row
+  (the review of 2026-10-04). A transaction a `SAVEPOINT` opens is a read
+  under `query_only`, and a script opens none. The client does not check
+  this itself: a text `remote.statement` misses goes as a plain statement,
+  and this refusal answers it.
 - A session silent for `IDLE_TIMEOUT` inside an open transaction is closed,
   which rolls it back: below `database.BUSY_TIMEOUT`, so a hub writer
   waiting behind an abandoned satellite gets the lock (gap (g)).
@@ -73,6 +83,7 @@ import sqlite3
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import database, remote
@@ -207,8 +218,6 @@ class Session(socketserver.BaseRequestHandler):
         #: or `None` for none, or one opened some other way.
         self.kind: str | None = None
         self.rid: str | None = None
-        #: The `request_outcome` row is inserted in the open transaction.
-        self.recorded = False
         #: What the open write transaction had changed when it began.
         self.mark: tuple = ()
         #: Rows the server inserted, kept out of `total_changes`.
@@ -216,12 +225,57 @@ class Session(socketserver.BaseRequestHandler):
         #: The connection's own `query_only`, restored when a read ends.
         self.query_only = 0
         self.traced: list[str] = []
+        #: The hub runs or routes the statement now, so `_authorize` passes it.
+        self.routing = False
+        #: An `executescript` runs now.
+        self.script = False
+        #: Why `_authorize` refused the statement, for the error frame.
+        self.denied: str | None = None
+
+    def _authorize(self, action: int, arg1, arg2, database_name, trigger) -> int:
+        """SQLite's authorizer on the session's connection.
+
+        SQLite calls it for each statement it prepares, with what the
+        statement does, so a transaction boundary is seen whatever its text
+        looks like: a comment, a trailing statement, any case. One case per
+        action code; later rules add theirs here. Python caches a prepared
+        statement by its text and does not authorize it again, so a case
+        gives one answer per text in `execute`.
+        """
+        if action == sqlite3.SQLITE_TRANSACTION:
+            # BEGIN, COMMIT and ROLLBACK run only as `_statement` routes
+            # them, so a write transaction owns its id and records its row.
+            if self.routing:
+                return sqlite3.SQLITE_OK
+            return self._deny(f"{arg1} outside the hub's transaction handling; send BEGIN IMMEDIATE, "
+                              f"BEGIN, COMMIT or ROLLBACK as the whole statement, with no comment")
+        if action == sqlite3.SQLITE_SAVEPOINT and self.script:
+            # A script's SAVEPOINT would open a transaction no frame holds,
+            # and its RELEASE would commit it. In `execute`, `_adopt` holds
+            # such a transaction as a read.
+            return self._deny(f"SAVEPOINT {arg2} outside the hub's transaction handling; "
+                              f"a script opens no transaction")
+        return sqlite3.SQLITE_OK
+
+    def _deny(self, reason: str) -> int:
+        self.denied = f"refused: {reason}"
+        return sqlite3.SQLITE_DENY
+
+    @contextmanager
+    def _routed(self):
+        """A transaction statement the hub runs on purpose."""
+        self.routing = True
+        try:
+            yield
+        finally:
+            self.routing = False
 
     def _quiet(self, connection: sqlite3.Connection, sql: str, params=()) -> sqlite3.Cursor:
         """A statement of the server's own, kept out of the session's trace."""
         mark = len(self.traced)
         try:
-            return connection.execute(sql, params)
+            with self._routed():
+                return connection.execute(sql, params)
         finally:
             del self.traced[mark:]
 
@@ -245,6 +299,10 @@ class Session(socketserver.BaseRequestHandler):
             return self._begin_read(connection, frame.get("rid"), sql, params)
         if kind == "commit":
             return self._commit(connection, frame.get("rid"), lambda: connection.execute(sql, params))
+        if kind is not None:
+            # ROLLBACK, or a BEGIN inside a transaction, which SQLite refuses.
+            with self._routed():
+                return _answer(connection, connection.execute(sql, params))
         return _answer(connection, connection.execute(sql, params))
 
     def _begin_write(self, connection: sqlite3.Connection, rid, sql: str, params) -> dict:
@@ -261,7 +319,8 @@ class Session(socketserver.BaseRequestHandler):
                 raise remote.RemoteError(f"refused: request id {rid} was used before; "
                                          f"a write transaction takes a new id")
             try:
-                answer = _answer(connection, connection.execute(sql, params))
+                with self._routed():
+                    answer = _answer(connection, connection.execute(sql, params))
                 if self._recorded(connection, rid):
                     raise remote.RemoteError(f"refused: request id {rid} has committed before; "
                                              f"a write transaction takes a new id")
@@ -270,7 +329,7 @@ class Session(socketserver.BaseRequestHandler):
                     self._quiet(connection, "ROLLBACK")
                 owners.settle(rid)
                 raise
-            self.kind, self.rid, self.recorded = "write", rid, False
+            self.kind, self.rid = "write", rid
             self.mark = self._changes(connection)
         return answer
 
@@ -284,7 +343,8 @@ class Session(socketserver.BaseRequestHandler):
         before = int(self._quiet(connection, "PRAGMA query_only").fetchone()[0])
         self._quiet(connection, "PRAGMA query_only = ON")
         try:
-            answer = _answer(connection, connection.execute(sql, params))
+            with self._routed():
+                answer = _answer(connection, connection.execute(sql, params))
         except BaseException:
             self._quiet(connection, f"PRAGMA query_only = {before}")
             raise
@@ -310,12 +370,15 @@ class Session(socketserver.BaseRequestHandler):
                 # A transaction that changed nothing gets no row: committed
                 # or not, it wrote nothing, so `absent` and its "run the verb
                 # again" stay true, and a quiet tick adds no row to the hub.
-                if not self.recorded and self._changes(connection) != self.mark:
+                # The row is looked for at each attempt, never remembered: a
+                # failed COMMIT leaves the transaction open, and a ROLLBACK TO
+                # may since have removed the row it inserted.
+                if self._changes(connection) != self.mark and not self._recorded(connection, rid):
                     self._quiet(connection, "INSERT INTO request_outcome (id, committed_at) VALUES (?, ?)",
                                 (rid, now()))
-                    self.recorded = True
                     self.hidden += 1
-                answer = _answer(connection, run())
+                with self._routed():
+                    answer = _answer(connection, run())
                 if _fault is not None:
                     _fault("after-commit", self)
                 self._settle(connection)
@@ -327,7 +390,8 @@ class Session(socketserver.BaseRequestHandler):
                 f"refused: COMMIT names request {rid}, which this session does not own; "
                 f"nothing was committed"
             )
-        return _answer(connection, run())
+        with self._routed():
+            return _answer(connection, run())
 
     def _settle(self, connection: sqlite3.Connection | None) -> None:
         """End the session's hold once its transaction has ended, however it ended."""
@@ -339,7 +403,19 @@ class Session(socketserver.BaseRequestHandler):
                 owners.settle(self.rid)
         elif connection is not None:
             self._quiet(connection, f"PRAGMA query_only = {self.query_only}")
-        self.kind, self.rid, self.recorded, self.mark = None, None, False, ()
+        self.kind, self.rid, self.mark = None, None, ()
+
+    def _adopt(self, connection: sqlite3.Connection) -> None:
+        """Hold a transaction the hub did not open as a read.
+
+        Only a `SAVEPOINT` outside a transaction opens one: `_authorize`
+        refuses every other way. The library reads a snapshot that way, and
+        the RELEASE that ends it would commit any write without an id.
+        """
+        if connection.in_transaction and self.kind is None:
+            self.query_only = int(self._quiet(connection, "PRAGMA query_only").fetchone()[0])
+            self._quiet(connection, "PRAGMA query_only = ON")
+            self.kind = "read"
 
     def _outcome(self, connection: sqlite3.Connection, rid) -> str:
         rid = _request_id(rid)
@@ -382,6 +458,7 @@ class Session(socketserver.BaseRequestHandler):
                     return
                 sock.settimeout(None)
                 received = time.monotonic()
+                self.denied = None
                 writing = connection is not None and first_sql != ""
                 if writing:
                     frames += 1
@@ -429,6 +506,7 @@ class Session(socketserver.BaseRequestHandler):
                             create=bool(frame.get("create", False)),
                             busy_timeout=int(frame.get("busy_timeout", database.BUSY_TIMEOUT)),
                         )
+                        connection.set_authorizer(self._authorize)
                         answer = _answer(connection, None)
                     elif op == "execute":
                         sql = frame["sql"]
@@ -448,12 +526,17 @@ class Session(socketserver.BaseRequestHandler):
                                 f"refused: executescript would commit the open {self.kind} "
                                 f"transaction without its COMMIT; end it first"
                             )
-                        connection.executescript(frame["sql"])
+                        self.script = True
+                        try:
+                            connection.executescript(frame["sql"])
+                        finally:
+                            self.script = False
                         answer = _answer(connection, None)
                     elif op == "commit":
                         answer = self._commit(connection, frame.get("rid"), connection.commit)
                     elif op == "rollback":
-                        connection.rollback()
+                        with self._routed():
+                            connection.rollback()
                         answer = _answer(connection, None)
                     elif op == "outcome":
                         value = self._outcome(connection, frame.get("rid"))
@@ -488,6 +571,9 @@ class Session(socketserver.BaseRequestHandler):
                     else:
                         raise remote.RemoteError(f"unknown operation {op!r}")
                 except Exception as error:  # every failure goes back as a frame
+                    if self.denied is not None:
+                        # SQLite says only "not authorized"; `_authorize` said why.
+                        error = remote.RemoteError(self.denied)
                     answer = {"ok": False, "error": remote.describe_error(error)}
                     if connection is not None:
                         answer["in_transaction"] = connection.in_transaction
@@ -496,6 +582,7 @@ class Session(socketserver.BaseRequestHandler):
                 if connection is not None:
                     # A ROLLBACK, or a transaction SQLite ended on an error.
                     self._settle(connection)
+                    self._adopt(connection)
                 answer["v"] = remote.PROTOCOL_VERSION
                 answer["rid"] = frame.get("rid") if isinstance(frame, dict) else None
                 if traced:

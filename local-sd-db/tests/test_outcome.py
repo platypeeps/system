@@ -564,6 +564,121 @@ class TheReadTransaction(OutcomeCase):
         self.assertEqual(count(self.path, "request_outcome"), 0)
 
 
+class TheTransactionBoundary(OutcomeCase):
+    """The review of 2026-10-04: SQLite, not the statement's text, decides
+    what ends a transaction. Each case ends with the writes and the outcome
+    row both on the hub, or neither."""
+
+    def deferred(self) -> None:
+        """`child.parent` is checked at COMMIT, not at the insert."""
+        raw = sqlite3.connect(self.path)
+        raw.executescript(
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY);"
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, parent INTEGER NOT NULL"
+            " REFERENCES parent (id) DEFERRABLE INITIALLY DEFERRED);"
+        )
+        raw.close()
+
+    @staticmethod
+    def commit(client: remote.Connection, op: str) -> None:
+        if op == "execute":
+            client.execute("COMMIT")
+        else:
+            client.commit()
+
+    def test_a_commit_the_classifier_misses_is_refused_and_commits_nothing(self):
+        for sql in ("COMMIT; -- done", "COMMIT /* done */", "-- done\nEND"):
+            with self.subTest(sql=sql):
+                client = self.connect()
+                client.execute("BEGIN IMMEDIATE")
+                rid = client._rid
+                client.execute("INSERT INTO probe (name) VALUES ('w')")
+                with self.assertRaisesRegex(remote.RemoteError, "outside the hub's transaction handling"):
+                    client.execute(sql)
+                self.assertTrue(client.in_transaction)
+                self.assertEqual((count(self.path), recorded(self.path, rid)), (0, False))
+                client.execute("COMMIT")
+                self.assertEqual((count(self.path), recorded(self.path, rid)), (1, True))
+                client.execute("DELETE FROM probe")
+
+    def test_a_begin_the_classifier_misses_opens_nothing(self):
+        # A commented BEGIN IMMEDIATE would own no id; a commented BEGIN
+        # would escape `query_only`.
+        for sql in ("/* x */ BEGIN IMMEDIATE", "BEGIN IMMEDIATE; -- x", "-- x\nBEGIN"):
+            with self.subTest(sql=sql):
+                client = self.connect()
+                with self.assertRaisesRegex(remote.RemoteError, "outside the hub's transaction handling"):
+                    client.execute(sql)
+                self.assertFalse(client.in_transaction)
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
+
+    def test_mixed_case_boundaries_are_routed(self):
+        client = self.connect()
+        client.execute("begin Immediate")
+        rid = client._rid
+        self.assertIsNotNone(rid)
+        client.execute("INSERT INTO probe (name) VALUES ('w')")
+        client.execute("Commit Transaction")
+        self.assertEqual((count(self.path), recorded(self.path, rid)), (1, True))
+
+    def test_a_transaction_a_savepoint_opens_is_a_read(self):
+        # The library's snapshot reads open a transaction with SAVEPOINT; it
+        # writes nothing, or its RELEASE would commit writes with no id.
+        client = self.connect()
+        client.execute("SAVEPOINT snap")
+        with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+            client.execute("INSERT INTO probe (name) VALUES ('s')")
+        client.execute("RELEASE snap")
+        self.assertFalse(client.in_transaction)
+        self.assertEqual(client.execute("PRAGMA query_only").fetchone()[0], 0)
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
+
+    def test_a_script_cannot_open_a_transaction(self):
+        client = self.connect()
+        for script in ("BEGIN IMMEDIATE; INSERT INTO probe (name) VALUES ('s'); COMMIT;",
+                       "SAVEPOINT s; INSERT INTO probe (name) VALUES ('s'); RELEASE s;"):
+            with self.subTest(script=script):
+                with self.assertRaisesRegex(remote.RemoteError, "outside the hub's transaction handling"):
+                    client.executescript(script)
+                self.assertFalse(client.in_transaction)
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
+
+    def test_rollback_to_a_savepoint_after_a_failed_commit_keeps_the_row(self):
+        # The failed COMMIT inserted the outcome row; ROLLBACK TO removes it,
+        # and the next COMMIT must insert it again.
+        self.deferred()
+        for op in ("execute", "commit"):
+            with self.subTest(op=op):
+                client = self.connect()
+                client.execute("BEGIN IMMEDIATE")
+                rid = client._rid
+                client.execute("SAVEPOINT before")
+                client.execute("INSERT INTO child (parent) VALUES (7)")
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "FOREIGN KEY"):
+                    self.commit(client, op)
+                self.assertTrue(client.in_transaction)
+                client.execute("ROLLBACK TO before")
+                client.execute("INSERT INTO probe (name) VALUES (?)", (op,))
+                self.commit(client, op)
+                self.assertEqual((count(self.path, "child"), recorded(self.path, rid)), (0, True))
+        self.assertEqual(count(self.path), 2)
+
+    def test_a_failed_commit_fixed_in_place_commits_once_with_its_row(self):
+        self.deferred()
+        for parent, op in ((7, "execute"), (8, "commit")):
+            with self.subTest(op=op):
+                client = self.connect()
+                client.execute("BEGIN IMMEDIATE")
+                rid = client._rid
+                client.execute("INSERT INTO child (parent) VALUES (?)", (parent,))
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "FOREIGN KEY"):
+                    self.commit(client, op)
+                client.execute("INSERT INTO parent (id) VALUES (?)", (parent,))
+                self.commit(client, op)
+                self.assertTrue(recorded(self.path, rid))
+        self.assertEqual((count(self.path, "child"), count(self.path, "request_outcome")), (2, 2))
+
+
 CHILD = """
 import os, signal, sys, time
 from pathlib import Path

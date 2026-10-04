@@ -149,7 +149,9 @@ def statement(sql: str) -> str | None:
     `write` opens a write transaction (`BEGIN IMMEDIATE` or `EXCLUSIVE`) and
     carries a request id; `read` is a plain or deferred `BEGIN`, which
     carries none. `ROLLBACK TO` a savepoint is not a rollback of the
-    transaction. Both sides classify with this one function.
+    transaction. Both sides classify with this one function. A text it
+    misses, such as `COMMIT; -- done`, goes as a plain statement, and the
+    hub's authorizer refuses the transaction statement in it.
     """
     text = " ".join(sql.strip().rstrip(";").split()).upper()
     begun = _BEGIN.fullmatch(text)
