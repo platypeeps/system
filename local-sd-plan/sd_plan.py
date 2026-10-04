@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import json
 import os
 import pwd
 import re
@@ -20,6 +21,9 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import system_tools_config  # noqa: E402
 
 try:
     from sd_db import connect, reads, repos, runner_controls, runner_exec
@@ -58,7 +62,11 @@ def slugify(title: str) -> str:
 
     Truncation is on a hyphen boundary rather than mid-word: `...rule-6-che`
     reads as a typo, and the cut is arbitrary either way, so it may as well
-    fall where a reader expects one.
+    fall where a reader expects one. The exception is a first word longer
+    than `SLUG_LIMIT`: no boundary falls inside the limit, so that word is
+    cut (sd:1181). It is kept, not refused, because a changed rule renames
+    the folder and branch of every row it reaches, and the nightly then
+    plans those rows again.
     """
     flattened = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     if len(flattened) > SLUG_LIMIT:
@@ -548,6 +556,18 @@ def has_row(repo: str, relative: str, connection=None) -> bool:
         connection.close()
 
 
+def override_hint() -> str:
+    """Where an override reaches a queued run, said after "set SD_...".
+
+    `runner_exec.process_plan` hands a queued run a fixed environment, so an
+    exported value never arrives there. `sd-plan.sh item` sources the tool's
+    `.env` from the config folder, which it finds under the `HOME` that
+    environment keeps (sd:1181).
+    """
+    return (f" (export it, or set it in {system_tools_config.config_dir('sd-plan')}/.env, "
+            "the one place a queued run reads it)")
+
+
 def claude_binary() -> str:
     """Where the agent is, not what it is called.
 
@@ -576,7 +596,7 @@ def claude_binary() -> str:
         if resolved is None:
             raise Refused(
                 f"SD_PLAN_CLAUDE={explicit} is not an executable file; "
-                "set it to the binary that should do the planning")
+                f"set it to the binary that should do the planning{override_hint()}")
         return resolved
     found = shutil.which("claude")
     if found:
@@ -586,7 +606,7 @@ def claude_binary() -> str:
         return str(installed)
     raise Refused(
         "no `claude` on PATH and none at ~/.local/bin/claude; "
-        "set SD_PLAN_CLAUDE to the binary that should do the planning")
+        f"set SD_PLAN_CLAUDE to the binary that should do the planning{override_hint()}")
 
 
 def planning_environment() -> dict:
@@ -705,7 +725,9 @@ def pack_entrypoint() -> Path:
     `SD_PACK_ROOT` when set, else the checkout path the rest of this
     repository assumes (`local-bin-links/bin-links.sh`,
     `local-cron-jobs/examples/shadow-sync-nightly.job`). An environment variable
-    rather than a config file, because those callers already answer to one.
+    rather than a config file, because those callers already answer to one;
+    a queued run, which the runner gives no `SD_PACK_ROOT`, reads it from the
+    tool's `.env`, which `sd-plan.sh item` sources (sd:1181).
 
     Asked before the planning run, not at registration: a pack that is not
     there would otherwise surface only after the agent had spent minutes
@@ -718,7 +740,7 @@ def pack_entrypoint() -> Path:
         raise Refused(
             f"no pack at {root}: {entrypoint} is not a file, and the folder's row is "
             f"made by its `sd work register`; set SD_PACK_ROOT to the "
-            f"sd-ai-command-pack checkout")
+            f"sd-ai-command-pack checkout{override_hint()}")
     return entrypoint
 
 
@@ -777,6 +799,18 @@ PER_REPOSITORY = 1
 HOLDING = ("queued", "running", "ending", "blocked")
 
 
+def planning_run(assignment) -> bool:
+    """Whether an assignment is a `plan-item` run: an `exec` whose palette request names it."""
+    scope = assignment["scope"] or ""
+    if assignment["role"] != "exec" or not scope.startswith("palette:"):
+        return False
+    try:
+        request = json.loads(scope.removeprefix("palette:"))
+    except ValueError:
+        return False
+    return isinstance(request, dict) and request.get("command") == "plan-item"
+
+
 def candidates(connection, repo: str):
     """The rows in one repository this job would plan, best first, one at a time.
 
@@ -815,22 +849,31 @@ def candidates(connection, repo: str):
             continue
         if has_row(key, f"docs/work/{slug}/prd.md", connection):
             continue
-        held = {found["status"] for found in connection.execute(
-            f"SELECT status FROM assignment WHERE item = ? AND status IN ({','.join('?' * len(HOLDING))})",
-            (row["id"], *HOLDING))}
+        held = connection.execute(
+            f"SELECT id, role, scope, status FROM assignment WHERE item = ? AND status IN "
+            f"({','.join('?' * len(HOLDING))})", (row["id"], *HOLDING)).fetchall()
         if held:
             # Work under way is its own news. A row held only by a blocked
             # run is held on every night after, so a silent skip loses it.
-            # The newest assignment and not `held`: a recovery run that has
+            # The newest planning run and not `held`: a recovery run that has
             # finished is no longer a `HOLDING` status, so the blocked run it
             # replaced is all `held` holds, and the row was told to plan again
-            # what it had already planned again (sd:793).
-            newest = connection.execute(
-                "SELECT status FROM assignment WHERE item = ? ORDER BY id DESC LIMIT 1",
-                (row["id"],)).fetchone()
-            if newest["status"] == "blocked":
+            # what it had already planned again (sd:793). A planning run and
+            # not any run: planning again settles neither a blocked review nor
+            # a newer one of another role, so that run is named instead
+            # (sd:1181).
+            newest = next((found for found in connection.execute(
+                "SELECT role, scope, status FROM assignment WHERE item = ? ORDER BY id DESC",
+                (row["id"],)) if planning_run(found)), None)
+            other = next((found for found in held
+                          if found["status"] == "blocked" and not planning_run(found)), None)
+            if newest is not None and newest["status"] == "blocked":
                 print(f"sd-plan: item {row['id']} in {repo} is held by a blocked run; "
                       "plan it again from the item's button", file=sys.stderr)
+            elif other is not None:
+                print(f"sd-plan: item {row['id']} in {repo} is held by a blocked {other['role']} "
+                      f"run (assignment {other['id']}); the nightly plans it once that run is settled",
+                      file=sys.stderr)
             continue
         # The branch the row has, and `plan/<slug>` only when it has none: a
         # row renamed after its setup keeps the branch it was set up on, so

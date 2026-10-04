@@ -244,15 +244,17 @@ Neither belongs here, and both are small:
   syntax — every existing CLI takes a bare integer — and it is chosen to match
   the `Work: sd:<id>` trailer a person already writes.
 
-`item` calls this repository's own `local-sd-db/sd-db.sh work register`, which
-works here and nowhere else. The verb has since landed — `sd work register` is
-in the pack as of `platypeeps/sd-ai-command-pack#816` — and the call did not
-move, because the ordering constraint was never the verb. It is a runtime that
-can execute it: `sd` resolves through the pack checkout, every cached runtime
-under `~/.local/share/sd/runtimes/` carries an `sd_db` older than
-`register_work_item` and `registered_for`, and the pack's own guard refuses
-before reaching the row. Still not a permanent shape; the condition that ends
-it is a provisioned runtime carrying the library, not the next pack release.
+`item` calls the pack's `sd work register`, which landed in
+`platypeeps/sd-ai-command-pack#816`. It runs `$SD_PACK_ROOT/bin/sd` under the
+interpreter `sd-plan.sh` pinned, not under that file's shebang
+(`source:local-sd-plan/sd_plan.py::register`). It registers what it writes in
+every repository, not only this one.
+
+Correction (sd:1181): an earlier version of this paragraph said `item` called
+this repository's `local-sd-db/sd-db.sh work register`, and that a provisioned
+runtime carrying `register_work_item` was the condition for moving the call.
+The call has since moved to the pack's verb, so that condition no longer gates
+anything.
 
 ## 7. What is deliberately not built
 
