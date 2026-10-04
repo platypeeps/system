@@ -204,6 +204,13 @@ that a later run succeeded. No record, a record in an earlier format, a record
 from another lifetime, a fresh lifetime, a label launchd does not hold: each
 of those is silence. Silence suppresses no failure and invents none.
 
+**The run stamps its times.** `logs/.<job>.stamp` holds `started=` from the
+moment the run takes its lock, and `ended=` and `exit=` once it records an
+outcome, all in UTC (sd:2210). A start with no end is a run in progress or one
+no trap saw end. launchd keeps no run time and a log's write time is not one,
+so the dashboard's Management page reads this file as the job's last run.
+`status` does not read it.
+
 **The run writes its own outcome down.** `logs/.<job>.runs` is written by a
 completed run and by nothing else. `exit=<code>` is that run's own exit code
 and is always written. `runs=<n>`/`lifetime=<coalition id>`/`boot=<kern.boottime

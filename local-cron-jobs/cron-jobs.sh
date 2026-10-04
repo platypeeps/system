@@ -576,8 +576,10 @@ record_run_report() { # job, run identity, start, end, exit, log offset
 #
 # Set while a run owns the log and owes it an outcome; cleared by whoever
 # writes one. Global, not `local` to cmd_exec: a trap that fires on the way
-# out of the shell cannot read a function's locals.
+# out of the shell cannot read a function's locals. EXEC_STARTED is the run's
+# start, which the stamp's end is written beside, for the same reason.
 EXEC_JOB=""
+EXEC_STARTED=""
 
 # The job's lock is a kernel `flock` on `logs/.<job>.flock`, taken on fd 8
 # (sd:1251). The kernel releases it when the last process holding the file
@@ -859,6 +861,7 @@ launchd_is_running() { # job
 # record's claim instead of letting it answer for this run.
 record_outcome() { # job, exit code
   local seen lifetime boot record
+  record_stamp "$1" "$EXEC_STARTED" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$2"
   seen="$(launchd_runs "$1")"
   lifetime="$(launchd_lifetime "$1")"
   boot="$(boot_token)"
@@ -886,6 +889,21 @@ record_outcome() { # job, exit code
 # could not remove is the only evidence that there WAS a second run.
 record_attempt() { # job
   boot_token > "$LOG_DIR/.$1.attempt" 2>/dev/null || true
+}
+
+# The run's times, for readers that want when a job last ran (sd:2210):
+# launchd keeps no run time, and a log's write time is not one. `started=` is
+# written when the run takes its lock, and `ended=` and `exit=` join it when
+# the run records an outcome, so a start with no end is a run in progress or
+# one no trap saw end. UTC, written to a temp file and renamed into place. A
+# stamp that cannot be written costs the run nothing: `status` reads no time.
+record_stamp() { # job, started, [ended, exit]
+  local stamp="$LOG_DIR/.$1.stamp"
+  {
+    printf 'started=%s\n' "$2"
+    [ -z "${3:-}" ] || printf 'ended=%s\nexit=%s\n' "$3" "$4"
+  } > "$stamp.tmp" 2>/dev/null || return 0
+  mv -f "$stamp.tmp" "$stamp" 2>/dev/null || return 0
 }
 
 # The marker carries the boot it was written in, and a marker from an earlier
@@ -1091,9 +1109,11 @@ cmd_exec() { # invoked by launchd (and by `run`)
   report_run="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
   start_tee "$LOG_DIR/$job.log"
   EXEC_JOB="$job"
+  EXEC_STARTED="$report_started"
   # From here the run owes an outcome, and the trap above writes one for every
   # exit it can see. The marker is what a run that dies unseen leaves behind.
   record_attempt "$job"
+  record_stamp "$job" "$EXEC_STARTED"
 
   load_job "$job"
 
