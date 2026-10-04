@@ -394,13 +394,15 @@ def _check_runner_records(connection: sqlite3.Connection, directory: Path) -> No
 
 
 def _compatible_runner_records(saved: dict[str, bytes], live: dict[str, bytes]) -> None:
+    from .runner_journal import canonical
     for name in set(saved) & set(live):
         old, current = (json.loads(data)["record"] for data in (saved[name], live[name]))
         # A journal written before migration 014 names the repository by its
         # absolute path and one written after by its `~/` key (sd:1439).
+        # One written before migration 018 has no `detached_from` (sd:2581).
         if (any(old[key] != current[key] for key in ("id", "assignment", "run", "branch", "work_path", "retained_path"))
                 or not (old["repo"] == current["repo"] or paths.same(old["repo"], current["repo"]))
-                or old["journal_version"] == current["journal_version"] and old != current):
+                or old["journal_version"] == current["journal_version"] and canonical(old) != canonical(current)):
             raise BackupError(f"runner journal conflicts with live evidence: {name}; preserve both copies")
 
 

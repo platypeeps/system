@@ -846,7 +846,8 @@ class MovedItemRuns(Store):
         result = self.apply("repo", self.source, fingerprint)
         self.assertEqual(result["detached"], [self.run])
         row = self.db.execute("SELECT * FROM runner_run WHERE id=?", (self.run,)).fetchone()
-        self.assertEqual((row["repo"], row["assignment"], row["journal_version"]), (None, self.work, version))
+        self.assertEqual((row["repo"], row["detached_from"], row["assignment"], row["journal_version"]),
+                         (None, self.source, self.work, version))
         self.assertIsNone(self.db.execute("SELECT 1 FROM repo WHERE path=?", (self.source,)).fetchone())
         self.assertEqual(list(self.db.execute("PRAGMA foreign_key_check")), [])
         # The journal keeps the repository as provenance; the remove never writes it.
@@ -908,6 +909,21 @@ class MovedItemRuns(Store):
         connection = sd_db.connect(restored); self.addCleanup(connection.close)
         row = connection.execute("SELECT repo FROM runner_run WHERE id=?", (self.run,)).fetchone()
         self.assertEqual(row["repo"], self.source)
+        backup._check_runner_records(connection, state)
+
+    def test_a_backup_taken_after_the_removal_restores_against_the_live_journal(self):
+        """Review on sd:2581: the restored row has no repo, and its `detached_from` is what the journal names."""
+        journal = self.journal([self.run])
+        self.apply("repo", self.source, self.plan_repo(self.source)["fingerprint"])
+        directory = Path(removal.backups.run(home=self.home, database=self.store / "sd.db", keep=None).directory)
+        other = self.root / "other-home"
+        state = other / ".local/share/sd"
+        state.mkdir(parents=True)
+        shutil.copytree(journal, state / "runner-journal")
+        restored = backup.restore(directory, home=other)
+        connection = sd_db.connect(restored); self.addCleanup(connection.close)
+        row = connection.execute("SELECT repo, detached_from FROM runner_run WHERE id=?", (self.run,)).fetchone()
+        self.assertEqual(tuple(row), (None, self.source))
         backup._check_runner_records(connection, state)
 
 

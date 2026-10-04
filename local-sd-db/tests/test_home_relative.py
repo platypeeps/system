@@ -60,7 +60,7 @@ COLUMNS = {
     "repo_protection": {"key": "repo", "history": "body reason",
                         "none": "observed_at status default_branch"},
     "runner_lease": {"key": "repo", "none": "run branch exclusive acquired_at released_at"},
-    "runner_run": {"key": "repo", "hub-only": "work_path retained_path",
+    "runner_run": {"key": "repo detached_from", "hub-only": "work_path retained_path",
                    "history": "detail delivery_proof ignored_manifest quarantine",
                    "none": "id assignment run branch owner journal_version start_step end_step "
                            "end_action outcome supervisor_pid supervisor_pgid supervisor_start "
@@ -233,9 +233,10 @@ class TheMigration(AThirteenStore):
         connection = sqlite3.connect(self.database, isolation_level=None)
         paths.install(connection)
         connection.execute("PRAGMA foreign_keys = ON")
-        # 017, 016 and 015 came after 014 and are reversed first, newest
+        # 018, 017, 016 and 015 came after 014 and are reversed first, newest
         # first: 014's reverse is written against the table at 14, without
-        # `repo.managed` or `repo.ci`.
+        # `repo.managed`, `repo.ci` or `runner_run.detached_from`.
+        connection.executescript(reverse_script("018_runner_run_repo_nullable.sql"))
         connection.executescript(reverse_script("017_judgment_compare_arms.sql"))
         connection.executescript(reverse_script("016_repo_ci.sql"))
         connection.executescript(reverse_script("015_repo_managed.sql"))

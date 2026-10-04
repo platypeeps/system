@@ -906,17 +906,19 @@ def _delete(connection, plan) -> None:
 
 
 def _detach(connection, plan) -> None:
-    """Null `repo` on each run the plan detaches (sd:2581), and nothing else.
+    """Move each run the plan detaches from `repo` to `detached_from` (sd:2581), and nothing else.
 
-    The journal is not rewritten: a file write cannot roll back with this
-    transaction, so a later failure would leave it ahead of the row. It keeps
-    the repository as provenance, and `runner_journal.against` reads it as
-    the detached row. Nothing else on the row moves, not `journal_version` nor
-    `updated_at`, so the backup's journal check and the runner's restore holds
-    still see one run; the removal record says when and from which repo.
+    `detached_from` is the provenance `runner_journal.against` checks: the
+    journal is not rewritten, since a file write cannot roll back with this
+    transaction, and it keeps naming that repository. `journal_version` and
+    `updated_at` stay, because they say which journal record the row matches,
+    and that record is unchanged; a bump with no journal write is a row newer
+    than its journal, which the nightly backup refuses. A detached row cannot
+    be detached again: its `repo` no longer matches.
     """
     for entry in plan.get("detach", []):
-        taken = connection.execute("UPDATE runner_run SET repo = NULL WHERE id = ? AND repo = ? AND released_at IS NOT NULL",
+        taken = connection.execute("UPDATE runner_run SET repo = NULL, detached_from = repo"
+                                   " WHERE id = ? AND repo = ? AND released_at IS NOT NULL AND detached_from IS NULL",
                                    (entry["run"], entry["repo"])).rowcount
         if taken != 1:
             raise RemovalRefused(f"runner_run {entry['run']}: the plan detached it from {entry['repo']} and the update took {taken}")

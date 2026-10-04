@@ -1268,8 +1268,18 @@ except ImportError:
 # A library before sd:1447 has no `runner_journal.canonical`; against it a
 # record and a row compare as written, as they did before.
 _canonical = getattr(journal, "canonical", lambda record: record)
-# A library before sd:2581 detaches no row; against it a record reads as `_canonical` does.
-_against = getattr(journal, "against", lambda record, row: _canonical(record))
+
+
+def _keyed_only(record: dict, row: dict) -> dict:
+    """`against` for a library before sd:2581: the record keyed, the row unused.
+
+    Such a library is built for schema 17 or older, where `runner_run.repo` is
+    NOT NULL, so no row is detached; a NULL repo there still differs.
+    """
+    return _canonical(record)
+
+
+_against = getattr(journal, "against", _keyed_only)
 
 
 def journal_differs(external: dict, current: dict) -> bool:

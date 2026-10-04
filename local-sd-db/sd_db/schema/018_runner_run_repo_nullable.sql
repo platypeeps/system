@@ -7,6 +7,16 @@
 -- the repository it had. The item keeps its run history; nothing is rewritten
 -- to a repository the run never ran in.
 --
+-- `runner_run.detached_from` is that repository, written by the same UPDATE
+-- that sets `repo` to NULL. The run's journal file keeps naming it and is
+-- never rewritten (a file write cannot roll back with the remove), so the
+-- journal and the row agree only through this column: `runner_journal.against`
+-- reads a journal as detached only when its repository is the row's
+-- `detached_from`. A row whose `repo` went NULL any other way has no
+-- provenance, and still differs from its journal. No foreign key: the
+-- repository row is gone by then. A journal written before this file has no
+-- such field, and `runner_journal.canonical` reads it as NULL.
+--
 -- SQLite cannot drop a NOT NULL, and the rebuild is not available, for 009's
 -- reason: `runner_lease.run` references `runner_run(id)` with no `ON DELETE`,
 -- `migrate` wraps every file in a transaction, and `PRAGMA foreign_keys` is a
@@ -17,11 +27,12 @@
 -- repository's leases go with it (P4).
 --
 -- The guard runs before `writable_schema` is on, as in 009. It accepts the
--- shape 005 wrote and the shape this file produces, because the restore path
--- replays migrations onto a snapshot that may already have the new shape
--- (`backup._upgrade_restore_candidate`). Any other shape aborts the file
+-- shape 005 wrote and the nullable one; any other shape aborts the file
 -- through `item.kind`'s CHECK, and the store stays at 17. GLOB, not LIKE:
--- `replace` is case-sensitive, so the guard is too.
+-- `replace` is case-sensitive, so the guard is too. A store that already has
+-- `detached_from` aborts on the `ADD COLUMN` instead, untouched: the restore
+-- path migrates only a snapshot older than 18
+-- (`backup._upgrade_restore_candidate`), so nothing replays this file.
 --
 -- The reverse, run by hand with the runner and the dashboard stopped. It
 -- refuses while a detached run exists: put each one's repository back from
@@ -37,6 +48,7 @@
 --                             '    repo TEXT NOT NULL REFERENCES repo(path),')
 --    WHERE type = 'table' AND name = 'runner_run';
 --   PRAGMA writable_schema = RESET;
+--   ALTER TABLE runner_run DROP COLUMN detached_from;
 --   CREATE TABLE reverse_018_cookie (x INTEGER);
 --   DROP TABLE reverse_018_cookie;
 --   PRAGMA user_version = 17;
@@ -58,6 +70,8 @@ UPDATE sqlite_master
  WHERE type = 'table' AND name = 'runner_run';
 
 PRAGMA writable_schema = RESET;
+
+ALTER TABLE runner_run ADD COLUMN detached_from TEXT;
 
 -- 009's cookie pair: `writable_schema` leaves the schema cookie alone, so an
 -- open connection would keep the NOT NULL. `migrate` runs with the runner and

@@ -761,8 +761,9 @@ class TheNullableRunRepo(SchemaCase):
     The column is edited in place, as 009 edited `item`, because
     `runner_lease.run` references `runner_run(id)` and the rebuild cannot drop
     the old copy inside `migrate`'s transaction. So the proofs are 009's:
-    rows survive, the index is still there, a replay is a no-op, and a shape
-    the file does not know is refused untouched.
+    rows survive, the index is still there, and a shape the file does not
+    know is refused untouched. It also adds `detached_from`, the repository a
+    detached run had, so a replay is refused untouched too.
     """
 
     RUN = "a" * 32
@@ -803,7 +804,8 @@ class TheNullableRunRepo(SchemaCase):
         connection = connect(self.path, write=True)
         self.addCleanup(connection.close)
         self.assertEqual(tuple(connection.execute(
-            "SELECT id, assignment, repo, branch FROM runner_run").fetchone()), (self.RUN, 6, "/repo", "sd/x"))
+            "SELECT id, assignment, repo, branch, detached_from FROM runner_run").fetchone()),
+            (self.RUN, 6, "/repo", "sd/x", None))
         connection.execute("UPDATE runner_run SET repo = NULL WHERE id = ?", (self.RUN,))
         self.assertIsNone(connection.execute("SELECT repo FROM runner_run").fetchone()[0])
         # The lease keeps its NOT NULL, and the foreign key still binds a run's repo.
@@ -817,16 +819,21 @@ class TheNullableRunRepo(SchemaCase):
         self.assertEqual(connection.execute("PRAGMA writable_schema").fetchone()[0], 0)
         self.assertEqual(sorted(tables(connection)), sorted(TABLES))
 
-    def test_a_replay_onto_the_shape_it_produces_changes_nothing(self):
+    def test_a_replay_onto_the_shape_it_produces_is_refused_untouched(self):
+        """Nothing replays 018: the restore path migrates only a snapshot older than 18."""
         self._at_version_seventeen()
         migrate(self.path)
-        connection = connect(self.path, write=True)
-        self.addCleanup(connection.close)
-        before = self._run_sql(connection)
-        connection.executescript(f"BEGIN;\n{self._body()}\nCOMMIT;")
-        self.assertEqual(self._run_sql(connection), before)
-        self.assertEqual(connection.execute(
-            "SELECT count(*) FROM item WHERE kind LIKE 'migration-%'").fetchone()[0], 0)
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        before = self._run_sql(raw)
+        with self.assertRaisesRegex(sqlite3.OperationalError, "duplicate column name: detached_from"):
+            raw.executescript(f"BEGIN;\n{self._body()}\nCOMMIT;")
+        try:
+            raw.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        self.assertEqual(self._run_sql(raw), before)
+        self.assertEqual(raw.execute("PRAGMA writable_schema").fetchone()[0], 0)
 
     def test_a_shape_this_migration_does_not_recognise_is_refused_untouched(self):
         self._at_version_seventeen()

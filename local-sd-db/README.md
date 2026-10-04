@@ -49,7 +49,8 @@ backup, and the fixture harness both repositories test against.
                     it drops the comparison rows (sd:2366)
       schema/018_runner_run_repo_nullable.sql  `runner_run.repo` may be
                     NULL: `repo remove` detaches a released run of an item
-                    that moved to another repo. An in-place edit, as 009's.
+                    that moved to another repo, and adds `detached_from`,
+                    the repo it had. An in-place edit, as 009's.
                     Carries its reverse in its header, run before 017's
                     (sd:2581)
       schema.py     the version, the table list, the migration files
@@ -1125,9 +1126,10 @@ the commit removes nothing and exits 1.
 A run on the repo whose item moved to another repo (`sd task edit N
 --belongs-to`) is not removed and does not refuse (sd:2581). The preview
 lists it under "detached, kept with their item"; the apply sets its `repo`
-to NULL (migration 018) and changes nothing else on the row. Its journal is
-not rewritten: it keeps the repo as provenance, and a released row with no
-repo agrees with it. The record's `detached:` lines name the repo each run
+to NULL and copies the old value to `detached_from` (both migration 018);
+nothing else on the row changes. Its journal is not rewritten: it keeps the
+repo, and a detached row agrees with it only when the journal's repo is the
+row's `detached_from`. The record's `detached:` lines name the repo each run
 had. P4 still holds such a run: it
 must be released, with no retained clone on disk. Its released lease names
 the repo, so it goes with the repo. An item with no repo at all still
