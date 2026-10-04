@@ -21,6 +21,9 @@ query of the store:
   item's relink and cancel availability (`progress.work_controls`) and its
   external context (`reads.item_shadow` and `progress.tracker_freshness`,
   v1's "External context" block), or `null` when the item has none.
+- `from_backlog` is where a v1 `/backlog` address goes since sd:2356 retired
+  it: the same `/tasks` view with the query v1 read, so a bookmark or an old
+  link keeps its filters.
 
 Every write the page makes goes through a route `server.action_route`
 already answered for v1: status, edit (priority, due, recurrence), note
@@ -195,3 +198,44 @@ def details(connection, item: int, *, now: str) -> dict:
         # (`progress.work_controls`), for a work item; None for any other kind (sd:2200).
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
     }
+
+
+#: The views v1 /backlog had; Tasks has the same three. v1 opened on the list, Tasks on the board.
+BACKLOG_VIEWS = ("list", "board", "matrix")
+
+
+def from_backlog(connection, parameters, *, now: str) -> str:
+    """The `/tasks` address for a v1 `/backlog` query (sd:2356).
+
+    Tasks reads the names v1 read (sd:2589, sd:2590): view, kind, status, age, active, q, page and skill. Its repo filter
+    is the row's label, not the path v1 took, so a path becomes the label `_document` gives it. v1's run picks
+    (`sel`) do not carry over: a run from a link is not a run the operator chose.
+    """
+    from urllib.parse import quote, urlencode
+
+    from .screens import _repo_labels
+
+    def one(key: str) -> str:
+        return (parameters.get(key) or [""])[0]
+
+    view = one("view")
+    query = {"view": view if view in BACKLOG_VIEWS else "list"}
+    for key in ("kind", "status", "age"):
+        if one(key):
+            query[key] = one(key)
+    repo = one("repo")
+    if repo == reads.NO_REPO_TOKEN:
+        query["repo"] = "no repo"
+    elif repo:
+        label = _repo_labels(row["repo"] for row in reads.backlog_items(connection, now=now))(repo)
+        query["repo"] = repo if label == "—" else label
+    if one("active") == "1":
+        query["active"] = "1"
+    if one("q"):
+        query["q"] = one("q")[:200]
+    if one("page").isdigit() and int(one("page")) > 1:
+        query["page"] = str(int(one("page")))
+    if one("skill"):
+        query["skill"] = one("skill")
+    # %20, not +, for a space: every URL decoder reads %20 as a space; decodeURIComponent keeps a + as a plus.
+    return "/tasks?" + urlencode(query, quote_via=quote)

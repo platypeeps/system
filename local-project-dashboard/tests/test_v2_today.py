@@ -204,7 +204,7 @@ class TheShellPort(BrowserSession):
 
     def test_the_v1_files_are_unchanged_and_no_page_names_a_v2_address(self):
         self.assertEqual(server.STATIC_FILES, ("dashboard.css", "dashboard.js"))
-        for path in ("/", "/today", "/classic/today", "/backlog", "/static/dashboard.js", "/static/dashboard.css"):
+        for path in ("/", "/today", "/classic/today", "/classic/backlog", "/static/dashboard.js", "/static/dashboard.css"):
             status, headers, body = self.request(path)
             self.assertEqual(status, 200, path)
             self.assertNotRegex(body, r"""["'(]/v2/""", path)

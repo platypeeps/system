@@ -106,8 +106,6 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
     taken = v2.old(path)
     if taken is not None:
         return taken.render(v2.registry.Read(connection=connection, now=now, path=path, parameters=parameters))
-    if path == "/backlog":
-        return screens.backlog(connection, now=now, parameters=parameters)
     if path == "/protection":
         from .protection_screen import render
 
@@ -612,6 +610,13 @@ class Dashboard(BaseHTTPRequestHandler):
                              for key in ("id", "title", "kind", "status", "repo", "parked_at")},
                     "revision": state["revision"],
                 })
+            if path == "/backlog":
+                # sd:2356: Tasks took over /backlog; an old address opens Tasks with the same query. v1's screen stays
+                # at /classic/backlog until its run selection is deleted.
+                from .tasks_screen import from_backlog
+
+                location = from_backlog(connection, parameters, now=self.clock())
+                return self._send(301, b"", "text/plain; charset=utf-8", overrides={"Location": location})
             body = route(connection, path, parameters, now=self.clock(), operations_backend=self.operations_backend,
                          services_backend=self.services_backend, ports_backend=self.ports_backend)
         except workflow.MissingItem:

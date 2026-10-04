@@ -17,3 +17,8 @@ OK stays off until it is typed (sd:2200), and `progress.work_controls` turns
 each off where sd would refuse it. The page reads through the shell's reader,
 `read.js` (sd:2484): a landed write rereads, a row the read no longer lists runs
 no command, and a failed reread keeps the rows and says the write landed.
+
+A v1 `/backlog` address answers 301 to `/tasks` with the query v1 read
+(`tasks_screen.from_backlog`, sd:2356); a repository path becomes the label
+Tasks filters on. v1's screen stays at `/classic/backlog`, in the palette,
+until its run selection is deleted.

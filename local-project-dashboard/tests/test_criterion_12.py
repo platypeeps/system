@@ -46,7 +46,7 @@ STATIC = HERE / "sd_dashboard" / "static"
 class TheSections(ScreenCase):
     def test_the_three_sections_this_pull_request_lands_exist(self):
         self.item("an item")
-        for path in ("/classic/today", "/backlog", "/item/1"):
+        for path in ("/classic/today", "/classic/backlog", "/item/1"):
             page = self.render(path)
             self.assertIn("<!doctype html>", page)
             self.assertIn("/static/dashboard.css", page)
@@ -91,9 +91,9 @@ class DeliberateWriteControls(ScreenCase):
     def pages(self):
         return {
             "/classic/today": self.render("/classic/today"),
-            "/backlog": self.render("/backlog"),
-            "/backlog?view=board": self.render("/backlog", {"view": ["board"]}),
-            "/backlog?view=matrix": self.render("/backlog", {"view": ["matrix"]}),
+            "/classic/backlog": self.render("/classic/backlog"),
+            "/classic/backlog?view=board": self.render("/classic/backlog", {"view": ["board"]}),
+            "/classic/backlog?view=matrix": self.render("/classic/backlog", {"view": ["matrix"]}),
             f"/item/{self.id}": self.render(f"/item/{self.id}"),
         }
 
@@ -299,7 +299,7 @@ class OnTheWire(ScreenCase):
 
     def test_every_response_carries_the_policy_and_the_frame_refusal(self):
         for path, expected in (
-            ("/", 200), ("/classic/today", 200), ("/backlog", 200), (f"/item/{self.id}", 200),
+            ("/", 200), ("/classic/today", 200), ("/classic/backlog", 200), (f"/item/{self.id}", 200),
             ("/static/dashboard.js", 200), ("/static/dashboard.css", 200),
             ("/item/999999", 404), ("/nowhere", 404),
         ):
