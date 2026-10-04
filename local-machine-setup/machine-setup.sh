@@ -1807,11 +1807,17 @@ cmd_capture() {
   # A profile file holds only what common does not already provide, so capture
   # subtracts the common manifest instead of dumping the whole machine.
   brew tap 2>/dev/null | sort > "$tmp/have.tap"
-  brew leaves 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/have.brew"
+  brew leaves 2>/dev/null | sort -u > "$tmp/have.brew"
   common_manifest tap  > "$tmp/common.tap"
   common_manifest brew | sed 's|.*/||' | sort -u > "$tmp/common.brew"
   comm -23 "$tmp/have.tap"  "$tmp/common.tap"  > "$tmp/out.tap"
-  comm -23 "$tmp/have.brew" "$tmp/common.brew" > "$tmp/out.brew"
+  # Compare bare names, but write the spelling brew printed: `leaves`
+  # tap-qualifies a third-party formula, and a bare name in the profile could
+  # install a core formula of the same name instead. FILENAME, not NR == FNR:
+  # an empty common manifest would make every machine line look like common.
+  awk 'FILENAME == ARGV[1] { common[$0] = 1; next }
+       { n = $0; sub(/.*\//, "", n); if (!(n in common)) print }' \
+    "$tmp/common.brew" "$tmp/have.brew" > "$tmp/out.brew"
   brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
   common_manifest cask > "$tmp/common.cask"
   comm -23 "$tmp/have.cask" "$tmp/common.cask" > "$tmp/out.cask"

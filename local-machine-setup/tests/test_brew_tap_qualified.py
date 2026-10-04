@@ -7,6 +7,8 @@ is ambiguous, so `brew leaves` can print `owner/tap/name` for something
 * `capture` subtracted the common manifest from `brew leaves` without
   normalizing either side, so the tap-qualified spelling never matched
   common's bare one and capture wrote a second entry for one formula.
+  It compares bare names now, but writes the spelling brew printed: a bare
+  name for a third-party formula would install a core one of the same name.
 * `status` strips the tap prefix, but `manifest` deduplicates before that
   strip. Both spellings therefore collapsed to the same bare name twice in
   the wanted set, and `comm` reported the duplicate as a formula that was
@@ -29,8 +31,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
-TAP = "ianjwhite99/tap"
-FORMULA = "opencode-with-claude"
+TAP = "example-owner/tap"
+FORMULA = "example-formula"
 QUALIFIED = f"{TAP}/{FORMULA}"
 
 # Installed, and reported the way brew actually reports it: bare from
@@ -138,6 +140,31 @@ class TapQualifiedFormula(unittest.TestCase):
         result = self.run_verb("status")
 
         self.assertIn("  missing : absent-formula", result.stdout)
+
+
+    def profile_brew(self):
+        """The written brew manifest. Not the exit code: the fixture's agent
+        roster holds its own manifest, which exits non-zero by design."""
+        path = self.profiles / "personal.brew"
+        return [l for l in path.read_text().splitlines()
+                if l.strip() and not l.startswith("#")]
+
+    def test_capture_does_not_repeat_a_formula_common_names_bare(self):
+        (self.profiles / "common.brew").write_text(f"{FORMULA}\n")
+        (self.profiles / "personal.brew").write_text("")
+
+        result = self.run_verb("capture", "--apply", "--additive")
+
+        self.assertEqual(self.profile_brew(), [], result.stdout)
+
+    def test_capture_keeps_the_tap_spelling_of_a_formula_common_lacks(self):
+        """A bare name could resolve to a core formula of the same name."""
+        (self.profiles / "common.brew").write_text("")
+        (self.profiles / "personal.brew").write_text("")
+
+        result = self.run_verb("capture", "--apply", "--additive")
+
+        self.assertEqual(self.profile_brew(), [QUALIFIED], result.stdout)
 
 
 if __name__ == "__main__":
