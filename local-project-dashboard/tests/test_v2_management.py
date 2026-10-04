@@ -191,6 +191,18 @@ class TheDocument(ScreenCase):
         # A checkout not on disk has no review reading at all, not an absent file.
         self.assertIsNone(rows["/repos/system"]["review"])
 
+    def test_a_checkout_borrowing_a_siblings_protection_row_names_the_lender(self):
+        """sd:1607: the GitHub panel says which checkout's reading it shows."""
+        upsert_repo(self.connection, "/repos/widget", remote="git@github.com:example/widget.git")
+        upsert_repo(self.connection, "/repos/widget-copy", remote="git@github.com:example/widget.git")
+        self.connection.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
+                                "VALUES ('/repos/widget', '2026-10-04T01:00:00Z', 'protected', 'main', '{}')")
+        self.connection.commit()
+        rows = {row["path"]: row for row in self.document()["repos"]}
+        self.assertEqual(rows["/repos/widget-copy"]["protection"]["status"], "protected")
+        self.assertEqual(rows["/repos/widget-copy"]["protection"]["borrowed_from"], "/repos/widget")
+        self.assertIsNone(rows["/repos/widget"]["protection"]["borrowed_from"])
+
     def test_git_state_is_primarys_reading_with_its_remedy_or_refusal(self):
         git = {row["name"]: row for row in self.document()["git"]["repos"]}
         self.assertEqual((git["system"]["state"], git["system"]["remedy"]), ("behind", "git -C /repos/system pull --ff-only"))

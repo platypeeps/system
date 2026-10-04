@@ -89,7 +89,8 @@ def _review(path: str) -> dict | None:
 
 def _protection(row: dict) -> dict:
     return {"status": row["status"], "observed_at": row["observed_at"], "default_branch": row["default_branch"],
-            "reason": row["reason"], "gaps": [{"id": gap.get("id"), "gap": gap.get("gap")} for gap in row["gaps"]]}
+            "reason": row["reason"], "gaps": [{"id": gap.get("id"), "gap": gap.get("gap")} for gap in row["gaps"]],
+            "borrowed_from": row["borrowed_from"]}
 
 
 def _repos(connection) -> list[dict]:

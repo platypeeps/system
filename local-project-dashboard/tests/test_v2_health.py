@@ -33,7 +33,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import reads
+from sd_db import reads, upsert_repo
 
 from sd_dashboard import health_collectors, health_screen, server, v2
 
@@ -294,6 +294,19 @@ class TheDocument(Collectors, ScreenCase):
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0), ports=ports_snapshot)
         (row,) = doc["areas"][8]["rows"]
         self.assertEqual((row["state"], row["reason"], row["cells"]), ("unknown", "not yet observed", []))
+
+    def test_a_checkout_borrowing_a_siblings_row_names_the_lender(self):
+        """sd:1607: a second checkout of one repository reads its sibling's row, and says whose."""
+        upsert_repo(self.connection, "/checkouts/widget", remote="git@github.com:example/widget.git")
+        upsert_repo(self.connection, "/checkouts/widget-copy", remote="git@github.com:example/widget.git")
+        self.connection.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
+                                "VALUES ('/checkouts/widget', '2026-10-04T01:00:00Z', 'protected', 'main', '{}')")
+        self.connection.commit()
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0), ports=ports_snapshot)
+        rows = {row["id"]: row for row in doc["areas"][8]["rows"]}
+        self.assertEqual(rows["prot:/checkouts/widget-copy"]["status"], "protected")
+        self.assertEqual(rows["prot:/checkouts/widget-copy"]["facts"]["Borrowed from"], "/checkouts/widget")
+        self.assertNotIn("Borrowed from", rows["prot:/checkouts/widget"]["facts"])
 
     def test_a_slow_git_walk_is_stopped_at_its_budget_and_is_the_attribution_error(self):
         stub = Path(self.tmp.name) / "bin"
