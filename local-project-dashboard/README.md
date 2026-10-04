@@ -135,6 +135,8 @@ repositories sort first, then unknown, then protected. Unknown is not
 protected: a repository whose protection could not be read (a 403, a timeout,
 an exhausted request budget, or one never observed) carries its own marker and
 its reason, and shows no gap cells at all.
+A checkout with no row of its own borrows the latest row of a sibling checkout of the same GitHub repository.
+Its Observed cell then names the lender: `<time> · borrowed from <path>` (sd:1607).
 
 **Writing** has its own view and stage controls. Its list filters by stage,
 saved readiness decision, and active or parked pieces. An item's review panel
