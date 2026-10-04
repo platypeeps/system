@@ -129,7 +129,7 @@ class ThePage(Pack, BrowserSession):
         self.assertEqual(headers["Content-Security-Policy"], server.CSP)
         self.assertIn("<title>Skills · system</title>", body)
         self.assertEqual(Refused(body).found, [])
-        scripts = re.findall(r'<script src="/ui/([^"]+)"', body)
+        scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
         self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "skills.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)

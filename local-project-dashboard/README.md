@@ -55,6 +55,14 @@ reader, `static/read.js`, once its follow-up adopts it; the page's script says
 so. What each page reads and what it runs is in
 [`docs/pages/`](docs/pages/), one file per page.
 
+Pages link each asset under its content digest, `/ui/<file>?v=<digest>` and
+`/static/<file>?v=<digest>`, from a map the server computes when it starts
+(sd:2141). That answer is `Cache-Control: private, max-age=31536000, immutable`;
+a request without the matching `v` stays `no-store`, as pages and the API are.
+So an edited asset reaches the browser after a restart, with no build step.
+CSS, script and text go gzipped when the browser accepts it; fonts, pages and
+API answers do not. `sd_dashboard/caching.py` says why.
+
 The old screens stay until their section is ported. A page that takes an old
 screen's path moves that screen under `/classic/`, as the old Today moved to
 `/classic/today`, and its page module says where. Every other old screen keeps its path.
