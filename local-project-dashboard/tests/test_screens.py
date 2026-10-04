@@ -506,8 +506,12 @@ class TheHistogramBarIsAFilter(ScreenCase):
         return found
 
     def follow(self, href: str) -> str:
+        """A bar opens Tasks (sd:2589), which draws its rows in the browser; `test_v2_tasks.TheOperationsBars` follows
+        each bar there. v1 /backlog reads the same query until sd:2356 retires it, so the server-side checks here
+        render it with the bar's query."""
         parts = urlsplit(href)
-        return self.render(parts.path, parse_qs(parts.query))
+        self.assertEqual(parts.path, "/tasks")
+        return self.render("/backlog", parse_qs(parts.query))
 
     def listed(self, page: str) -> set[int]:
         """The item ids the list shows, off the row links the listing writes."""
@@ -587,7 +591,8 @@ class TheHistogramBarIsAFilter(ScreenCase):
         landed = self.follow(self.bars(self.progress())[0][0])
         back = re.search(r'data-clear="age"[^>]*>\s*<a href="([^"]*)"', landed)
         self.assertIsNotNone(back, landed[landed.index("data-clear") - 200:][:400])
-        everything = self.follow(html.unescape(back.group(1)))
+        way_back = urlsplit(html.unescape(back.group(1)))
+        everything = self.render(way_back.path, parse_qs(way_back.query))
         self.assertEqual(self.listed(everything), set(self.ages))
 
     def test_progress_scope_ignores_backlog_filters_and_excludes_done_and_parked(self):
@@ -599,7 +604,7 @@ class TheHistogramBarIsAFilter(ScreenCase):
         self.connection.commit()
         page = self.progress({"q": ["unsent"], "status": ["ready_to_send"], "age": ["3"]})
         self.assertIn("All active items across repositories", page)
-        self.assertIn("Backlog filters do not affect this chart", page)
+        self.assertIn("Task filters do not affect this chart", page)
         self.assertIn('role="img"', page)
         totals = re.findall(r'<text[^>]*class="chart-value"[^>]*>([0-9]+)</text>', page)
         self.assertEqual([int(value) for value in totals], [1, 1, 2, 1, 2, 1, 1])

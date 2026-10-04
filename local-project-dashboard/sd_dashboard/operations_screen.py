@@ -47,11 +47,12 @@ def _progress(connection, now):
     observed = reporting.metrics(connection, now=now)
     rows = [row for row in reads.backlog_items(connection, now=now) if row["status"] != "done"]
 
-    def backlog_link(bucket, series):
+    # Tasks reads the query v1 /backlog read: view, active, age and status (sd:2589).
+    def tasks_link(bucket, series):
         filters = {"view": "list", "active": "1", "age": bucket.key}
         if series == "ready_to_send":
             filters["status"] = "ready_to_send"
-        return "/backlog?" + urlencode(sorted(filters.items()))
+        return "/tasks?" + urlencode(sorted(filters.items()))
 
     return tag("section", tag("h2", "Observed workflow activity"),
         tag("p", f"{observed['since']} through {observed['until']}", class_="hint"),
@@ -59,9 +60,9 @@ def _progress(connection, now):
             tile("finished review attempts", observed["finished_review_attempts"]),
             tile("recorded deliveries", observed["recorded_deliveries"]), class_="tiles"),
         tag("p", observed["interpretation"], class_="hint"), tag("h2", "Age in status"),
-        tag("p", "All active items across repositories, excluding completed and parked items. Backlog filters do not affect this chart.", class_="hint"),
-        tag("p", "Select a bar to open that age bucket in Backlog.", class_="hint"),
-        age_histogram_svg(reads.age_histogram(rows, now=now), link=backlog_link))
+        tag("p", "All active items across repositories, excluding completed and parked items. Task filters do not affect this chart.", class_="hint"),
+        tag("p", "Select a bar to open that age bucket in Tasks.", class_="hint"),
+        age_histogram_svg(reads.age_histogram(rows, now=now), link=tasks_link))
 
 
 def _number_detail(number: reads.Number):
