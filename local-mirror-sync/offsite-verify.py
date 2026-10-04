@@ -129,13 +129,19 @@ def _snapshot_sort_key(match: re.Match[str]) -> tuple[str, int]:
 
 
 def _newest_snapshot(backups: Path) -> Path | None:
+    """The newest dated snapshot, or None when there is none.
+
+    A directory that is gone has none. Any other failure to list it raises:
+    on a night macOS stops answering permission checks, the open fails with
+    EINTR, and "no dated snapshot" would hide that (sd:2660).
+    """
     matches: list[re.Match[str]] = []
     try:
         for entry in os.scandir(backups):
             match = SNAPSHOT_NAME.match(entry.name)
             if match and entry.is_dir():
                 matches.append(match)
-    except OSError:
+    except FileNotFoundError:
         return None
     if not matches:
         return None
@@ -159,7 +165,11 @@ def verify_database(root: Path, report: Report, *, max_age_hours: float, now: da
     backups = root / "sd-backups"
     if not report.check(backups.is_dir(), f"database snapshots directory exists: {backups}"):
         return
-    snapshot = _newest_snapshot(backups)
+    try:
+        snapshot = _newest_snapshot(backups)
+    except OSError as error:
+        report.fail(f"cannot list {backups}: {error.strerror} (errno {error.errno})")
+        return
     if not report.check(snapshot is not None, f"a dated snapshot exists under {backups}"):
         return
     assert snapshot is not None

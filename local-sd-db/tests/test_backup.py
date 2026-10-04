@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from datetime import UTC, datetime, timedelta
@@ -106,6 +107,58 @@ class TheSnapshot(BackupCase):
             run(home=self.home, keep=0)
         self.assertIn("at least 1", str(raised.exception))
         self.assertEqual(sorted(backup_root(self.home).iterdir()), [earlier.directory])
+
+
+class TheDestinationProbe(BackupCase):
+    """A destination that does not answer fails the run in seconds (sd:2660).
+
+    On some nights macOS stops answering permission checks for launchd jobs.
+    Each open then fails with EINTR, Python retries it, and the backup ran
+    until the job's two-hour limit killed it. A child that sleeps stands in
+    for the blocked open: no test can make macOS stall on purpose.
+    """
+
+    def hang(self):
+        # `create=True`: the attributes are this change's, and without it a
+        # run against the code before it errors out instead of failing.
+        return mock.patch.multiple(backup_module, create=True,
+                                   _PROBE="import time; time.sleep(60)", PROBE_SECONDS=0.5)
+
+    def checkpoints(self):
+        connection = self.open(write=False)
+        return connection.execute(
+            "SELECT count(*) FROM state WHERE kind = 'checkpoint'").fetchone()[0]
+
+    def test_a_destination_that_does_not_answer_fails_within_the_bound(self):
+        root = backup_root(self.home)
+        root.mkdir(parents=True)
+        started = time.monotonic()
+
+        with self.hang(), self.assertRaises(BackupError) as raised:
+            run(home=self.home)
+
+        self.assertEqual(str(raised.exception),
+                         f"backup destination {root} did not answer within 0.5 s")
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(list(root.iterdir()), [])
+        self.assertEqual(self.checkpoints(), 0)
+
+    def test_the_job_exits_1_naming_the_destination(self):
+        stderr = io.StringIO()
+        with self.hang(), mock.patch.dict(os.environ, {"HOME": str(self.home)}), \
+                contextlib.redirect_stderr(stderr):
+            status = job_backup.main([])
+
+        self.assertEqual(status, 1)
+        self.assertEqual(stderr.getvalue(), f"sd-db backup: backup destination "
+                         f"{backup_root(self.home)} did not answer within 0.5 s\n")
+
+    def test_the_bound_is_thirty_seconds(self):
+        self.assertEqual(backup_module.PROBE_SECONDS, 30)
+
+    def test_the_probe_leaves_no_file_behind(self):
+        snapshot = run(home=self.home)
+        self.assertEqual(list(backup_root(self.home).iterdir()), [snapshot.directory])
 
 
 class TheRestoreAndCompare(BackupCase):

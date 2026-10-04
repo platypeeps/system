@@ -3687,27 +3687,62 @@ cmd_doctor() {
   echo "  no hard failures"
 }
 
+# `run` with a bound, for the brew and mas calls of the upgrade sweep. An
+# apply logs the step as it starts and stops it after SECONDS, or after
+# MACHINE_SETUP_STEP_TIMEOUT seconds when that is set: a call that hangs then
+# names itself in the log and ends, where it used to run until the job's limit
+# killed the whole job (sd:2660). lib/bounded.sh is sourced here, not at the
+# top: suites run copies of this script with no lib/ beside them.
+run_step() { # seconds, command...
+  _step_seconds=${MACHINE_SETUP_STEP_TIMEOUT:-$1}
+  shift
+  if [ "$APPLY" -eq 1 ]; then
+    command -v st_step >/dev/null 2>&1 || . "$ROOT/lib/bounded.sh"
+    st_step "$_step_seconds" "$@" </dev/null
+  else
+    printf '  [dry-run] %s\n' "$*"
+  fi
+}
+
 # Maintenance sweep: refresh what is already installed. Dry run by default
-# like every other mutating verb.
+# like every other mutating verb. A step that fails or times out does not stop
+# the sweep; the steps after it still run, and the sweep exits 1 naming it.
 cmd_upgrade() {
   echo "upgrade : brew + App Store maintenance sweep"
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will change; re-run with --apply"
   echo
+  failed=""
   if command -v brew >/dev/null 2>&1; then
-    run brew update
-    run brew upgrade
-    run brew upgrade --cask
-    run brew cleanup --prune=all
+    run_step 600 brew update || failed="$failed, brew update"
+    run_step 1800 brew upgrade || failed="$failed, brew upgrade"
+    run_step 1800 brew upgrade --cask || failed="$failed, brew upgrade --cask"
+    run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
     echo "  brew MISSING — https://brew.sh"
   fi
   if command -v mas >/dev/null 2>&1; then
-    run mas upgrade
+    run_step 1200 mas upgrade || failed="$failed, mas upgrade"
   else
     echo "  mas MISSING (brew install mas)"
   fi
   echo
   echo "  afterwards: $(basename "$0") status   # drift check"
+  if [ -n "$failed" ]; then
+    echo "  failed steps: ${failed#, }"
+    return 1
+  fi
+}
+
+# outdated_lists before|after: what brew and mas call outdated, one sorted
+# file per kind under $tmp. Each query is a bounded step; one that fails or
+# times out leaves its file empty.
+outdated_lists() {
+  run_step 300 brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.$1" || :
+  run_step 300 brew outdated --cask --quiet 2>/dev/null | sort > "$tmp/cask.$1" || :
+  : > "$tmp/mas.$1"
+  if command -v mas >/dev/null 2>&1; then
+    run_step 300 mas outdated 2>/dev/null | sort > "$tmp/mas.$1" || :
+  fi
 }
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
@@ -3719,14 +3754,23 @@ cmd_upgrade_report() {
   APPLY=1
   notify="$ROOT/local-notify/notify.sh"
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT INT TERM
+  # EXIT removes the folder; a signal exits, and so runs EXIT. A TERM trap
+  # that only removed it returned into the run, which then wrote into the
+  # folder it had just removed (sd:2660).
+  trap 'rm -rf "$tmp"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # fd 3 is the job log. The sweep's output goes into the mail, and each step
+  # names itself here as it starts, so a hang names its step.
+  exec 3>&2
+  # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+  ST_STEP_FD3=1
 
   # `brew update` first so the outdated snapshot is accurate; cmd_upgrade
   # repeats it, but the second run is a fast no-op.
-  brew update >/dev/null 2>&1 || :
-  brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.before" || :
-  brew outdated --cask --quiet 2>/dev/null | sort > "$tmp/cask.before" || :
-  mas outdated 2>/dev/null | sort > "$tmp/mas.before" || :
+  run_step 600 brew update >/dev/null 2>&1 || :
+  outdated_lists before
 
   if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ]      && [ ! -s "$tmp/mas.before" ]; then
     echo "nothing outdated — no upgrade, no email"
@@ -3737,9 +3781,7 @@ cmd_upgrade_report() {
   cmd_upgrade > "$tmp/out" 2>&1 || rc=1
   cat "$tmp/out"
 
-  brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.after" || :
-  brew outdated --cask --quiet 2>/dev/null | sort > "$tmp/cask.after" || :
-  mas outdated 2>/dev/null | sort > "$tmp/mas.after" || :
+  outdated_lists after
 
   {
     printf 'machine-setup upgrade report — %s on %s\n' \
@@ -4071,7 +4113,10 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
   doctor sd        those sd checks alone, exit 1 on any FAIL
   test             run the unittest suite in tests/ (extra args go to unittest)
   upgrade          maintenance sweep: brew update/upgrade/cleanup + mas
-                   upgrade (dry run without --apply, like everything else)
+                   upgrade (dry run without --apply, like everything else);
+                   an apply logs each step as it starts and stops it at its
+                   bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
+                   runs the rest, and exits 1 naming the steps that failed
   upgrade-report   cron flavor of upgrade: always applies, emails what got
                    upgraded / what failed / what is still outdated (quiet
                    no-op when nothing is outdated); exits 1 only when the

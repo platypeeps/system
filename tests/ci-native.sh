@@ -304,6 +304,7 @@ case "$SUITE_LEG" in
     run_suite workspace-mcp sh local-workspace-mcp/workspace-mcp.sh test -v
     run_suite network-testing sh network-testing/network-testing.sh test -v
     run_suite lib "$PYTHON" lib/tests/test_config.py -v
+    run_suite lib-bounded "$PYTHON" lib/tests/test_bounded.py -v
     run_suite machine-setup sh local-machine-setup/machine-setup.sh test -v
     run_suite mock-mcp sh local-mock-mcp/mock-mcp.sh test -v
     run_suite fluentbit sh local-fluentbit/fluentbit.sh test -v

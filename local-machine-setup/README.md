@@ -38,6 +38,9 @@ change I made on this machine back into its profile*.
 ./machine-setup.sh doctor sd           # those sd checks alone
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
 ./machine-setup.sh upgrade --apply     # brew update/upgrade/cleanup + mas upgrade
+                                       # each step is logged as it starts and
+                                       # stopped at its bound (300-1800 s, or
+                                       # MACHINE_SETUP_STEP_TIMEOUT seconds)
 ./machine-setup.sh upgrade-report      # upgrade + email summary (cron: Sundays 04:00)
 ./machine-setup.sh checklist           # manual new-machine steps
 ./machine-setup.sh decommission        # retire machine: dirty-repo scan, job/agent
