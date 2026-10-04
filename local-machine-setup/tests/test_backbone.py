@@ -707,6 +707,23 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("no runner interpreter at", out)
         self.assertIn("ok      enabled providers' variables set in the runner's environment: one (FIXTURE_KEY_ONE)", out)
 
+    def test_the_runner_interpreter_the_installed_plist_names_is_the_one_asked(self):
+        # The runner's plist may carry SD_RUNNER_PYTHON in EnvironmentVariables;
+        # with neither the environment nor env.sh naming one, that is the
+        # interpreter runner.sh starts, and the one doctor must ask.
+        self.fixture.make_database()
+        label = "local.system-tools.sd-runner"
+        plist = plistlib.loads(fixture_config.render(AGENTS / f"{label}.plist", label,
+                                                     self.fixture.home, ROOT).encode())
+        plist["EnvironmentVariables"] = {"SD_RUNNER_PYTHON": str(self.fixture.python)}
+        installed = self.fixture.home / "Library/LaunchAgents" / f"{label}.plist"
+        installed.parent.mkdir(parents=True)
+        installed.write_bytes(plistlib.dumps(plist))
+        code, out = self.doctor(SD_RUNNER_PYTHON="")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("no runner interpreter at", out)
+        self.assertIn("ok      enabled providers' variables set in the runner's environment: one (FIXTURE_KEY_ONE)", out)
+
     def test_a_profile_without_sd_agents_skips_every_check(self):
         (self.fixture.state / "profile").write_text("work\n")
         code, out = self.doctor()
