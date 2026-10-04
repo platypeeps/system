@@ -1,0 +1,1 @@
+{"schema_version": 1, "key": "tree", "reason": "make check reads no commit message, trailer, range or tag of this checkout: audit at eaaac2f (sd:2594) found every git log/show/rev-list/merge-base/interpret-trailers call in a fixture repository, and every call at the root is git ls-files or git grep"}

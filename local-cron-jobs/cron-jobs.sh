@@ -409,6 +409,11 @@ EOF
         <string>$JOB_PATH</string>
         <key>HOME</key>
         <string>$HOME</string>
+        <!-- The config root, always: under a root that is not the default
+             one below HOME, exec would otherwise look for the job file in
+             an empty folder (sd:2519). -->
+        <key>SYSTEM_TOOLS_CONFIG</key>
+        <string>$SYSTEM_TOOLS_CONFIG</string>
     </dict>
 
     <key>ProcessType</key>
@@ -571,8 +576,10 @@ record_run_report() { # job, run identity, start, end, exit, log offset
 #
 # Set while a run owns the log and owes it an outcome; cleared by whoever
 # writes one. Global, not `local` to cmd_exec: a trap that fires on the way
-# out of the shell cannot read a function's locals.
+# out of the shell cannot read a function's locals. EXEC_STARTED is the run's
+# start, which the stamp's end is written beside, for the same reason.
 EXEC_JOB=""
+EXEC_STARTED=""
 
 # The job's lock is a kernel `flock` on `logs/.<job>.flock`, taken on fd 8
 # (sd:1251). The kernel releases it when the last process holding the file
@@ -854,6 +861,7 @@ launchd_is_running() { # job
 # record's claim instead of letting it answer for this run.
 record_outcome() { # job, exit code
   local seen lifetime boot record
+  record_stamp "$1" "$EXEC_STARTED" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$2"
   seen="$(launchd_runs "$1")"
   lifetime="$(launchd_lifetime "$1")"
   boot="$(boot_token)"
@@ -881,6 +889,21 @@ record_outcome() { # job, exit code
 # could not remove is the only evidence that there WAS a second run.
 record_attempt() { # job
   boot_token > "$LOG_DIR/.$1.attempt" 2>/dev/null || true
+}
+
+# The run's times, for readers that want when a job last ran (sd:2210):
+# launchd keeps no run time, and a log's write time is not one. `started=` is
+# written when the run takes its lock, and `ended=` and `exit=` join it when
+# the run records an outcome, so a start with no end is a run in progress or
+# one no trap saw end. UTC, written to a temp file and renamed into place. A
+# stamp that cannot be written costs the run nothing: `status` reads no time.
+record_stamp() { # job, started, [ended, exit]
+  local stamp="$LOG_DIR/.$1.stamp"
+  {
+    printf 'started=%s\n' "$2"
+    [ -z "${3:-}" ] || printf 'ended=%s\nexit=%s\n' "$3" "$4"
+  } > "$stamp.tmp" 2>/dev/null || return 0
+  mv -f "$stamp.tmp" "$stamp" 2>/dev/null || return 0
 }
 
 # The marker carries the boot it was written in, and a marker from an earlier
@@ -1086,9 +1109,11 @@ cmd_exec() { # invoked by launchd (and by `run`)
   report_run="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
   start_tee "$LOG_DIR/$job.log"
   EXEC_JOB="$job"
+  EXEC_STARTED="$report_started"
   # From here the run owes an outcome, and the trap above writes one for every
   # exit it can see. The marker is what a run that dies unseen leaves behind.
   record_attempt "$job"
+  record_stamp "$job" "$EXEC_STARTED"
 
   load_job "$job"
 
@@ -1199,16 +1224,35 @@ cmd_exec() { # invoked by launchd (and by `run`)
   [ "$rc" -eq 0 ] || exit "$rc"
 }
 
+# `bootout` returns before launchd has torn a running label down, and a
+# `bootstrap` in that window fails with `5: Input/output error` (sd:2574).
+# Wait, bounded at about ten seconds, until `launchctl print` no longer finds it.
+wait_unloaded() { # job
+  local tries=0
+  while is_loaded "$1" && [ "$tries" -lt 20 ]; do
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+}
+
 cmd_install() {
-  local job="$1"
+  local job="$1" err
   load_job "$job"
   mkdir -p "$AGENT_DIR"
   write_plist "$job"
   if is_loaded "$job"; then
     launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
-    sleep 0.5
+    wait_unloaded "$job"
   fi
-  launchctl bootstrap "$DOMAIN" "$(plist_for "$job")"
+  # One retry: a refused bootstrap is reported, never followed by `installed:`.
+  if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
+    sleep 1
+    wait_unloaded "$job"
+    if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
+      echo "failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
+      return 1
+    fi
+  fi
   launchctl enable "$DOMAIN/$(label_for "$job")"
   # No record is written here, and that is the ninth round of the #486 review.
   # `install` bootstraps the label, so launchd is at `runs = 0` and
@@ -1448,8 +1492,9 @@ each_or_one() { # cmd, target
     # --all is every job this machine should run: the shared jobs folder plus
     # this host's folder (and any extra directory); other hosts' folders are
     # never read. --every is its older spelling, kept working.
-    local rc=0
-    for j in $(all_jobs); do "$cmd" "$j" || rc=1; done
+    local rc=0 failed=""
+    for j in $(all_jobs); do "$cmd" "$j" || { rc=1; failed="$failed $j"; }; done
+    [ -z "$failed" ] || echo "${cmd#cmd_} failed for:$failed" >&2
     return $rc
   else
     "$cmd" "$target"

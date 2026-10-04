@@ -89,6 +89,27 @@ def heartbeat_state(config: Config) -> dict:
         connection.close()
 
 
+def archive_refresh_schedule(config: Config, *, loaded: bool) -> dict:
+    """`status`'s `archive_refresh_schedule` (sd:2209): the last and next archive refresh, or the reason it is not read.
+
+    The dashboard reads it from the status body, because it does not know the
+    runner's config or retention folder. It never changes the exit code: the
+    heartbeat alone decides that. An agent that is not loaded refreshes
+    nothing, and its path reads no retention folder: the default one is under
+    ~/Documents, where an ungranted read under launchd waits instead of
+    failing, and local-health-check runs this verb from a cron job. A loaded
+    agent's interpreter already reads that folder for the runner itself.
+    """
+    if not loaded:
+        return {"reason": "the runner agent is not loaded, so no archive refresh is scheduled"}
+    from . import archive_refresh
+    try:
+        report = archive_refresh.schedule(config)
+    except (OSError, ValueError, KeyError, TypeError, SdDbError) as error:
+        return {"reason": str(error) or type(error).__name__}
+    return {key: report[key] for key in ("last_completed_at", "next_due_at", "due", "cadence_seconds")}
+
+
 #: Seconds `restart` waits for the new daemon's healthy heartbeat.
 RESTART_WAIT = 180
 #: Seconds the verb retries its lock while the daemon probes it.
@@ -448,9 +469,11 @@ def dispatch(args) -> int:
                     result = heartbeat_state(config)
                 except (OSError, ValueError, SdDbError, sqlite3.Error) as error:
                     result = {"ok": False, "reason": str(error)}
+                result = {**result, "archive_refresh_schedule": archive_refresh_schedule(config, loaded=False)}
                 print(json.dumps(result, default=str))
                 return 3
             result = heartbeat_state(config)
+            result = {**result, "archive_refresh_schedule": archive_refresh_schedule(config, loaded=True)}
             print(json.dumps(result, default=str))
             # A body that does not say it is healthy is not healthy: a health
             # verb that defaults to 0 passes whatever forgot the field (sd:1387).
