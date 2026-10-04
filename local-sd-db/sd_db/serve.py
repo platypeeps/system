@@ -88,10 +88,11 @@ PRAGMAS = frozenset({
 })
 #: Those a session may give an argument: a table to describe, or a setting
 #: of its own connection. Setting `journal_mode` or `user_version` changes
-#: the file for every reader, so a session reads them only.
+#: the file for every reader, so a session reads them only. `query_only`
+#: is the hub's to set: a read transaction runs under it (step 5).
 PRAGMAS_WITH_ARGUMENT = frozenset({
     "busy_timeout", "foreign_key_check", "foreign_key_list", "foreign_keys", "index_info",
-    "index_list", "integrity_check", "query_only", "table_info",
+    "index_list", "integrity_check", "table_info",
 })
 
 

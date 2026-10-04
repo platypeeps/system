@@ -354,12 +354,18 @@ class TheConfinement(ServedCase):
             # statement cache; the authorizer still sees it.
             ("PRAGMA journal_mode = WAL", "PRAGMA journal_mode(WAL)"),
             ("PRAGMA mmap_size", "PRAGMA mmap_size"),
+            # A read transaction runs under `query_only`; a session never
+            # switches it, either way.
+            ("PRAGMA query_only = OFF", "PRAGMA query_only(OFF)"),
+            ("PRAGMA query_only = 0", "PRAGMA query_only(0)"),
+            ("PRAGMA query_only = ON", "PRAGMA query_only(ON)"),
             # A table-valued pragma, inside DML so `executemany` runs it too.
             ("INSERT INTO probe (name) SELECT name FROM pragma_function_list", "PRAGMA function_list"),
         ):
             self.assertRefusedEveryWay(wire, sql, named + " is not served")
         self.assertEqual(wire.execute("PRAGMA user_version").fetchone()[0], schema.SCHEMA_VERSION)
         self.assertEqual(wire.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        self.assertEqual(wire.execute("PRAGMA query_only").fetchone()[0], 0)
 
     def test_load_extension_is_refused(self):
         wire = self.wire()
