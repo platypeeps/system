@@ -109,10 +109,7 @@ class Hub:
         if create:
             # `init` and `migrate` are hub verbs, and a satellite holds no
             # database to create (R4).
-            raise remote.RemoteError(
-                f"this machine is a satellite of the sd hub {self.host} ({self.config}); "
-                f"`init` and `migrate` run on the hub, and nothing was created here"
-            )
+            raise remote.HubOnly("init and migrate", f"{self.host}:{self.port}")
         try:
             return remote.connect(self.host, self.port, None, token=self.token, write=write,
                                   busy_timeout=busy_timeout, timeout=CONNECT_TIMEOUT)

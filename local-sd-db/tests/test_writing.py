@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from sd_db import connect, upsert_repo
 from sd_db.migrate import initialise
+from sd_db.testing.wire import hub_only
 from sd_db.workflow import StaleItem, WorkflowError
 from sd_db.writing import (
     change_stage, cutover_pieces, cutover_preview, import_piece, list_pieces,
@@ -228,6 +229,7 @@ class SharedTransitions(WritingCase):
 
 
 class Cutover(WritingCase):
+    @hub_only
     def test_registration_after_cutover_retires_new_template_bookkeeping_once(self):
         self.cutover()
         new = self.repo / "content/2026/new/index.md"
@@ -255,6 +257,7 @@ class Cutover(WritingCase):
         self.assertTrue(any("metadata" in difference for difference in report["differences"]))
         self.assertTrue(any("body" in difference for difference in report["differences"]))
 
+    @hub_only
     def test_killed_cutover_restores_from_durable_journal(self):
         before = self.index.read_bytes()
         script = """import os, sys
@@ -277,6 +280,7 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
         self.assertEqual(self.index.read_bytes(), before)
         self.assertEqual(piece_state(self.db, self.item)["writing"]["owner"], "file")
 
+    @hub_only
     def test_failed_cutover_preserves_concurrent_edit_and_names_recovery_backup(self):
         preview = cutover_preview(self.db, str(self.repo))
         changed = b"Concurrent user edit\n"
@@ -290,6 +294,7 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
                 cutover_pieces(self.db, str(self.repo), expected_fingerprint=preview["fingerprint"], who="operator")
         self.assertEqual(self.index.read_bytes(), changed)
 
+    @hub_only
     def test_cutover_records_verified_authority_receipt(self):
         self.cutover()
         receipt = self.db.execute("SELECT * FROM state WHERE kind='verified' AND key=?", (f"{self.repo}:pieces_source",)).fetchone()
@@ -297,6 +302,7 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
         self.assertTrue(receipt["resolved_at"])
         self.assertEqual(json.loads(receipt["body"])["rows"], 1)
 
+    @hub_only
     def test_retired_status_and_metadata_edits_leave_all_source_bytes_unchanged(self):
         self.gates()
         change_stage(self.db, self.item, "ready", who="operator")
@@ -311,6 +317,7 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
         self.assertEqual(after, before)
         self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
 
+    @hub_only
     def test_preview_writes_nothing_and_cutover_status_writes_only_database(self):
         before = self.index.read_bytes()
         state = piece_state(self.db, self.item)
@@ -326,6 +333,7 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
         self.assertEqual(self.index.read_bytes(), retired)
         self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
 
+    @hub_only
     def test_cutover_refuses_changed_files_without_changing_row_owner(self):
         preview = cutover_preview(self.db, str(self.repo))
         self.index.write_text(self.index.read_text() + "Changed after preview\n")
@@ -333,6 +341,7 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
             cutover_pieces(self.db, str(self.repo), expected_fingerprint=preview["fingerprint"], who="operator")
         self.assertEqual(piece_state(self.db, self.item)["writing"]["owner"], "file")
 
+    @hub_only
     def test_cutover_failure_restores_exact_files_and_database(self):
         before = self.index.read_bytes()
         preview = cutover_preview(self.db, str(self.repo))
@@ -342,6 +351,7 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
         self.assertEqual(self.index.read_bytes(), before)
         self.assertEqual(piece_state(self.db, self.item)["writing"]["owner"], "file")
 
+    @hub_only
     def test_row_owner_import_never_overwrites_current_database_stage(self):
         self.cutover()
         change_stage(self.db, self.item, "drafting", correct=True, reason="Rework", who="operator")
@@ -349,6 +359,7 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
             import_piece(self.db, str(self.repo), self.piece, who="operator")
         self.assertEqual(piece_state(self.db, self.item)["item"]["stage"], "drafting")
 
+    @hub_only
     def test_parked_pieces_are_preserved_and_excluded_from_default_list(self):
         parked = self.repo / "content-parked/2026/parked/index.md"
         parked.parent.mkdir(parents=True)
@@ -423,6 +434,7 @@ class WorktreeCheckout(WritingCase):
         self.assertIn("Other repository prose", document)
         self.assertNotIn("Worktree prose", document)
 
+    @hub_only
     def test_registration_refuses_a_worktree_and_leaves_its_file_alone(self):
         self.cutover()
         new = self.worktree / "content/2026/new/index.md"

@@ -17,6 +17,7 @@ from unittest import mock
 from sd_db import connect, create_item, paths, publication_journal, ship, upsert_repo
 from sd_db.database import transaction
 from sd_db.migrate import initialise
+from sd_db.testing.wire import hub_only
 from sd_db.workflow import WorkflowError
 
 KEY = "~/repos/x"
@@ -104,6 +105,7 @@ class DeliveryProof(StoreCase):
                     self.finalize(other)
 
 
+@hub_only
 class PublicationJournal(StoreCase):
     """`publication_journal.for_piece` finds a manifest by repository and piece."""
 

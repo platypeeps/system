@@ -29,6 +29,7 @@ import sd_db
 from sd_db import contribution_sync, contributions, removal, reporting, retention, runner_journal
 from sd_db.contribution_sync import QUEUE
 from sd_db.migrate import initialise
+from sd_db.testing.wire import hub_only
 from sd_db.writes import (add_note, create_assignment, create_item, record_state, resolve_note, resolve_state,
                           upsert_repo)
 
@@ -171,6 +172,7 @@ class ActorIsChecked(Store):
                          "a\x1eb", "a\x7fb", "a\x1bb"):
                 with self.subTest(name=name, text=text), self.assertRaisesRegex(removal.RemovalRefused, "G4"):
                     removal.check_actor(**{**WHO, name: text})
+        @hub_only
         removal.check_actor(**{**WHO, "who": "Alex Morgan", "reason": "done — the probe is retired"})
 
     def test_the_apply_refuses_a_line_break_before_it_reads_anything(self):
@@ -183,6 +185,7 @@ class ActorIsChecked(Store):
         self.assertEqual(self.counts(), before)
 
 
+@hub_only
 class ItemRows(Store):
 
     def test_an_item_lists_exactly_its_rows(self):
@@ -198,6 +201,7 @@ class ItemRows(Store):
         self.assertEqual(plan["counts"], {"item": 1, "note": 3, "assignment": 1})
         self.assertEqual(plan["refusals"], [])
         row = plan["rows"][0]["row"]
+        @hub_only
         self.assertEqual(set(row), {r[1] for r in self.db.execute("PRAGMA table_info(item)")})
 
     def test_the_plan_writes_nothing(self):
@@ -205,6 +209,7 @@ class ItemRows(Store):
         self.assignment(item)
         before = tuple(self.db.iterdump())
         self.plan(item)
+        @hub_only
         self.assertEqual(before, tuple(self.db.iterdump()))
 
     def test_a_note_added_after_a_plan_changes_the_fingerprint(self):
@@ -231,6 +236,8 @@ class ItemRows(Store):
         self.db.execute("CREATE TABLE fixture_child (item INTEGER REFERENCES item(id))")
         self.db.execute("CREATE TABLE fixture_upper (run INTEGER REFERENCES RUNNER_RUN(id))")
         self.assertEqual(children() - set(removal.REFERENCES), {("fixture_child", "item"), ("fixture_upper", "run")})
+
+@hub_only
 
 
 class GuardsOnEitherVerb(Store):
@@ -260,6 +267,8 @@ class GuardsOnEitherVerb(Store):
                 self.assertEqual(len(self.refused(plan, "G6")), expected)
                 self.assertEqual(plan["fingerprint"], fingerprint)
         self.assertIn("put back", self.refused(self.plan(item), "G6")[0]["message"])
+
+@hub_only
 
 
 class APlanReadsOneSnapshot(Store):
@@ -319,6 +328,8 @@ class APlanReadsOneSnapshot(Store):
         self.assertEqual(removal.plan_item(read_only, item, home=self.home)["fingerprint"], self.plan(item)["fingerprint"])
         self.assertFalse(read_only.in_transaction)
 
+@hub_only
+
 
 class AssignmentIdsAreNotReused(Store):
     """A1: a removed assignment id must stay below a surviving one (C-2, C-23)."""
@@ -350,6 +361,8 @@ class AssignmentIdsAreNotReused(Store):
 
     def test_an_item_with_no_assignment_is_not_refused(self):
         self.assertEqual(self.refused(self.plan(self.item()), "A1"), [])
+
+@hub_only
 
 
 class ItemRefusals(Store):
@@ -535,6 +548,8 @@ class ItemRefusals(Store):
         self.assertEqual([(r["table"], r["key"]) for r in self.refused(plan, "I11")], [("note", note)])
         self.assertRegex(plan["fingerprint"], r"^[0-9a-f]{64}$")
 
+@hub_only
+
 
 class RunsAndClones(Store):
     """I6: runs, leases and retained clones (D4, option a)."""
@@ -677,6 +692,8 @@ class RunsAndClones(Store):
         root.mkdir(parents=True)
         self.assertEqual(self.i6(), [])
 
+@hub_only
+
 
 class RepoRefusals(Store):
 
@@ -804,6 +821,8 @@ class RepoRefusals(Store):
         add_note(self.db, item, "followup", "open", session="alex")
         self.assertEqual(len(self.refused(self.plan_repo(self.source), "I7")), 1)
 
+@hub_only
+
 
 class MovedItemRuns(Store):
     """sd:2581: a run of an item moved to another repo no longer holds the old repo's remove.
@@ -925,6 +944,8 @@ class MovedItemRuns(Store):
         row = connection.execute("SELECT repo, detached_from FROM runner_run WHERE id=?", (self.run,)).fetchone()
         self.assertEqual(tuple(row), (None, self.source))
         backup._check_runner_records(connection, state)
+
+@hub_only
 
 
 class TheProbe(Store):
@@ -1060,6 +1081,7 @@ class ImportedSources(Store):
         filed = self.db.execute("SELECT source FROM item WHERE source IS NOT NULL AND external_id='probe:r1'").fetchone()
         self.assertIsNotNone(filed, state)
         self.assertEqual(set(removal.IMPORTED), declared | {filed["source"]})
+        @hub_only
         self.assertEqual(len(set(removal.IMPORTED)), len(removal.IMPORTED))
 
     def test_an_item_from_each_importer_is_reported_and_one_from_drafts_is_not(self):
@@ -1072,6 +1094,8 @@ class ImportedSources(Store):
         for source, external in (("drafts", "probe:drafts"), ("register", None), (None, "probe:none")):
             with self.subTest(source=source, external=external):
                 self.assertEqual(self.plan(self.item(source=source, external_id=external))["warnings"], [])
+
+@hub_only
 
 
 class UnknownChildTables(Store):
@@ -1152,6 +1176,7 @@ class QuotedTextIsCapped(Store):
         self.assertEqual(removal._quoted("x" * 200), "x" * 200)
         self.assertEqual(removal._quoted("x" * 201), "x" * 200 + "...")
         self.assertEqual(removal._quoted(Path("/y")), "/y")
+        @hub_only
         self.assertEqual(removal.QUOTED, 200)
 
     def test_a_100_001_character_retained_path_gives_a_short_refusal_that_names_the_run(self):
@@ -1167,6 +1192,7 @@ class QuotedTextIsCapped(Store):
                 refusal, = self.refused(plan, "I6")
                 self.assertEqual(refusal["key"], run)
                 self.assertLess(len(refusal["message"]), 1_000)
+                @hub_only
                 self.assertIn(retained_path[:200] + "...", refusal["message"])
 
     def test_a_100_001_character_repo_path_gives_short_p1_p2_and_p3_refusals(self):
@@ -1187,6 +1213,7 @@ class QuotedTextIsCapped(Store):
                 self.assertIn(path[:200] + "...", refusal["message"])
                 self.assertEqual(refusal["commands"], [])
         self.assertEqual([r["message"] for r in self.refused(plans["P2"], "P2")],
+                         @hub_only
                          [f"repo {path[:200]}... has status_source retiring"])
 
     def test_a_repo_row_too_large_for_a_note_gives_a_short_r1_refusal(self):
@@ -1199,6 +1226,7 @@ class QuotedTextIsCapped(Store):
         refusal, = [r for r in self.refused(plan, "R1") if r["table"] == "repo"]
         self.assertEqual(refusal["key"], path)
         self.assertLess(len(refusal["message"]), 1_000)
+        @hub_only
         self.assertIn(f"repo row {path[:200]}... is ", refusal["message"])
 
     def test_other_stored_text_in_refusals_is_capped_too(self):
@@ -1220,6 +1248,8 @@ class QuotedTextIsCapped(Store):
         self.assertIn("k" * 200 + "...", message)
         self.assertNotIn("k" * 201, message)
 
+
+@hub_only
 
 
 class TheRecord(Store):
@@ -1355,6 +1385,8 @@ class TheRecord(Store):
         self.assertEqual(lines[6], "removed:")
         self.assertEqual(lines[7:12], [f"{e['table']} {e['row']['id']}" for e in plan["rows"]])
         self.assertEqual(lines[-1], "")
+
+@hub_only
 
 
 class TheApply(Store):

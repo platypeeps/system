@@ -25,6 +25,7 @@ from sd_db.jobs.cli import command_status
 from sd_db.migrate import migrate
 from sd_db.schema import SCHEMA_DIR, SCHEMA_VERSION
 from sd_db.testing import make_store
+from sd_db.testing.wire import hub_only
 from sd_db.writes import record_cost, record_skill_use, set_item_fields, upsert_repo
 
 WHEN = "2026-09-24T00:00:00+00:00"
@@ -290,6 +291,7 @@ class TheWriters(HomeCase):
         self.checkout.mkdir(parents=True)
         git(self.checkout, "init", "-q", "-b", "main")
 
+    @hub_only
     def test_each_writer_stores_the_key(self):
         c = self.connection
         repos.add(c, self.checkout, home=self.home)
@@ -409,6 +411,7 @@ class TwoHomes(HomeCase):
         # makes the `copytree` above raise shutil.Error.
         self.assertEqual(maintenance_children(self.checkout), [])
 
+    @hub_only
     def test_every_lookup_finds_the_row_written_under_the_other_home(self):
         c = self.connection
         here = str(self.checkout)

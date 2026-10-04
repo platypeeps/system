@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 from sd_db.errors import BackupError
 from sd_db.jobs.backup import retention
+from sd_db.testing.wire import hub_only
 
 from .test_backup import BackupCase, ENTRYPOINT
 
@@ -19,6 +20,7 @@ class Retention(BackupCase):
     def snapshot(self, day=0, **kwargs):
         return backup.run(home=self.home, when=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(days=day), **kwargs)
 
+    @hub_only
     def test_no_delete_mode_never_calls_rmtree(self):
         with patch.object(backup.shutil, "rmtree", side_effect=AssertionError("deletion reached")):
             first = self.snapshot()
@@ -27,6 +29,7 @@ class Retention(BackupCase):
         self.assertTrue(first.directory.exists())
         self.assertTrue(second.directory.exists())
 
+    @hub_only
     def test_explicit_retention_removes_only_verified_owned_backups(self):
         snapshots = [self.snapshot(day) for day in range(3)]
         latest = self.snapshot(3, keep=2)
@@ -34,6 +37,7 @@ class Retention(BackupCase):
         self.assertTrue(snapshots[2].directory.exists())
         self.assertTrue(latest.directory.exists())
 
+    @hub_only
     def test_unrelated_and_unowned_dated_directories_are_preserved(self):
         owned = self.snapshot()
         root = backup.backup_root(self.home)
@@ -45,6 +49,7 @@ class Retention(BackupCase):
         for path in protected:
             self.assertEqual((path / "keep.txt").read_text(), "unowned data")
 
+    @hub_only
     def test_runner_retention_and_dated_symlinks_are_preserved(self):
         owned = self.snapshot()
         root = backup.backup_root(self.home)
@@ -58,6 +63,7 @@ class Retention(BackupCase):
         self.assertTrue(all(path.is_symlink() for path in links))
         self.assertEqual((target / "work").read_text(), "retained output")
 
+    @hub_only
     def test_malformed_or_wrong_checkpoint_manifests_are_preserved(self):
         invalid = self.snapshot()
         (invalid.directory / backup.BACKUP_MANIFEST).write_text("not json")
@@ -71,6 +77,7 @@ class Retention(BackupCase):
         self.assertTrue(invalid.directory.exists())
         self.assertTrue(wrong_checkpoint.directory.exists())
 
+    @hub_only
     def test_changed_contents_and_added_empty_directories_are_preserved(self):
         changed = self.snapshot()
         with (changed.directory / "sd.db").open("ab") as stream:
@@ -79,6 +86,7 @@ class Retention(BackupCase):
         (extended.directory / "unrelated").mkdir()
         self.assertEqual(backup.prune(backup.backup_root(self.home), 0), [])
 
+    @hub_only
     def test_moved_backup_cannot_claim_its_new_path(self):
         original = self.snapshot()
         moved = original.directory.with_name("2025-01-01")
@@ -86,6 +94,7 @@ class Retention(BackupCase):
         self.assertEqual(backup.prune(backup.backup_root(self.home), 0), [])
         self.assertTrue(moved.exists())
 
+    @hub_only
     def test_linked_manifest_or_internal_entry_blocks_deletion(self):
         linked = self.snapshot()
         manifest = linked.directory / backup.BACKUP_MANIFEST
@@ -96,6 +105,7 @@ class Retention(BackupCase):
         (internal.directory / "external").symlink_to(self.home / "missing")
         self.assertEqual(backup.prune(backup.backup_root(self.home), 0), [])
 
+    @hub_only
     def test_same_day_retention_sorts_numeric_suffixes(self):
         snapshots = [self.snapshot() for _ in range(12)]
         self.assertEqual(backup.prune(backup.backup_root(self.home), 2),
@@ -103,6 +113,7 @@ class Retention(BackupCase):
         self.assertTrue(snapshots[-1].directory.exists())
         self.assertTrue(snapshots[-2].directory.exists())
 
+    @hub_only
     def test_linked_root_refuses_numeric_retention(self):
         self.snapshot()
         link = self.home / "backup-link"
@@ -148,6 +159,7 @@ class Retention(BackupCase):
             with self.assertRaises(argparse.ArgumentTypeError):
                 retention(value)
 
+    @hub_only
     def test_cli_forwards_explicit_numeric_retention(self):
         for day in range(3):
             self.snapshot(day)
@@ -158,6 +170,7 @@ class Retention(BackupCase):
         self.assertIn("2 old snapshot(s) removed", result.stdout)
         self.assertEqual(len(list(backup.backup_root(self.home).iterdir())), 2)
 
+    @hub_only
     def test_changed_ownership_at_final_check_preserves_backup(self):
         snapshot = self.snapshot()
         identity = backup._owned_backup(snapshot.directory)

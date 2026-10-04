@@ -20,6 +20,7 @@ from sd_db import connect, create_item, reads, reporting, upsert_repo, workflow
 from sd_db.errors import SdDbError
 from sd_db.migrate import initialise
 from sd_db.schema import migrations
+from sd_db.testing.wire import hub_only
 from sd_db.writes import add_note, set_item_fields, transition, upsert_shadow
 from sd_db.writing import cutover_pieces, cutover_preview, import_piece, list_pieces, park_piece
 
@@ -278,6 +279,7 @@ class ParkedWritingReads(unittest.TestCase):
             self.assertEqual(reads.today_items(connection, now=NOW), [])
             self.assertEqual(reads.backlog_items(connection, now=NOW), [])
 
+    @hub_only
     def test_park_and_revive_change_today_and_backlog_but_preserve_explicit_writing_inventory(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

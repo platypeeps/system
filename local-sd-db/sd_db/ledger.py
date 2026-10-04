@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from . import paths, reporting
+from . import database as _database
 from .database import transaction
 from .errors import RegistryError, SdDbError
 from .registry import Provider, Registry, read as read_registry
@@ -64,7 +65,8 @@ MAX_CALL_ID = 160
 class LedgerRefused(SdDbError):
     """A reservation, claim or settlement the ledger will not make.
 
-    `scope` names what refused it -- `bill`, `assignment`, or `call` -- and
+    `scope` names what refused it -- `bill`, `assignment`, `call`, or `hub`
+    for a satellite (gap C1) -- and
     the numbers travel with the message, so the runner can write its
     `budget spent` note with the amount rather than parsing the text.
     """
@@ -226,7 +228,13 @@ def release_orphans(
     Run by every reservation, before its own transaction so a refused
     reservation does not roll the sweep back, and exported for `sd usage`. `is_alive` is the process check, replaceable by a test that
     wants a pid to be dead without killing anything.
+
+    Over a remote connection it sweeps nothing (gap C1 of the second-machine
+    design): `alive` asks this machine's kernel, and every hub owner would
+    read as dead here. The hub sweeps before each of its own reservations.
     """
+    if _database.served_by(connection) is not None:
+        return Released()
     deleted: list[str] = []
     bound: list[str] = []
     with transaction(connection):
@@ -520,7 +528,18 @@ def reserve(
     Refused inside a caller's open transaction: `transaction` nests as a
     savepoint there and takes no lock of its own, so the check would read
     under whatever lock the caller holds, which may be none.
+
+    Over a remote connection it refuses, naming the hub (gap C1 of the
+    second-machine design): the owner pid is this machine's, and the hub's
+    sweep would read it as dead. Provider calls charged here run on the hub.
     """
+    hub = _database.served_by(connection)
+    if hub is not None:
+        raise LedgerRefused(
+            f"provider calls are charged on the sd hub only; this machine reaches "
+            f"the database on {hub}. Run this provider on the hub",
+            scope="hub",
+        )
     if not isinstance(call_id, str) or not 1 <= len(call_id) <= MAX_CALL_ID:
         raise LedgerRefused(
             f"a call id is a non-empty string of at most {MAX_CALL_ID} "

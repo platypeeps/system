@@ -28,6 +28,7 @@ HOLDER = """
 import sys, time
 from pathlib import Path
 from sd_db import ship
+from sd_db.testing.wire import hub_only
 with ship.repository_lock(Path(sys.argv[1]), sys.argv[2],
                           holder={"command": "sd-ship prepare --item 1872", "item": 1872}):
     print("held", flush=True)
@@ -66,6 +67,7 @@ class ShipLockHolder(unittest.TestCase):
         child.wait()
         return child.pid
 
+    @hub_only
     def test_the_refusal_names_the_holder_pid_command_item_and_age(self):
         child = self.hold()
         with self.assertRaises(WorkflowError) as refused:
@@ -87,6 +89,7 @@ class ShipLockHolder(unittest.TestCase):
         child.wait(timeout=10)
         self.assertEqual(self.lock_path().read_text(), "")
 
+    @hub_only
     def test_a_record_whose_pid_is_gone_never_blocks(self):
         with ship.repository_lock(self.database, REPOSITORY):
             pass
@@ -101,6 +104,7 @@ class ShipLockHolder(unittest.TestCase):
             self.assertEqual(json.loads(self.lock_path().read_text())["item"], 8)
         self.assertLess(time.monotonic() - started, 1.0)
 
+    @hub_only
     def test_status_lists_a_held_lock_and_not_an_idle_file(self):
         with ship.repository_lock(self.database, "fixture/idle"):
             pass
@@ -115,6 +119,7 @@ class ShipLockHolder(unittest.TestCase):
         states = sorted(entry["state"] for entry in ship.lock_files(self.database))
         self.assertEqual(states, ["held", "idle"])
 
+    @hub_only
     def test_without_wait_the_refusal_is_immediate(self):
         self.hold()
         started = time.monotonic()
@@ -123,6 +128,7 @@ class ShipLockHolder(unittest.TestCase):
                 self.fail("second owner")
         self.assertLess(time.monotonic() - started, 0.5)
 
+    @hub_only
     def test_wait_refuses_at_the_deadline_and_names_the_holder(self):
         child = self.hold()
         started = time.monotonic()
@@ -135,6 +141,7 @@ class ShipLockHolder(unittest.TestCase):
         self.assertIn(f"pid {child.pid}", str(refused.exception))
         self.assertIn("waited 1.5s", str(refused.exception))
 
+    @hub_only
     def test_wait_runs_once_the_holder_releases(self):
         """Within a poll of the release, timed from the holder's own clock.
 
