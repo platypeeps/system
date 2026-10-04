@@ -16,12 +16,13 @@ addEventListener('DOMContentLoaded', () => {
   const KINDS = [
     { id: 'merge', name: 'Merges', icon: 'git-pull-request', src: 'sd-ship delivery notes' },
     { id: 'run', name: 'Runs', icon: 'play', src: 'runner assignments and launchd jobs' },
-    { id: 'review', name: 'Reviews', icon: 'bot', src: 'none' },
+    // build: a review is the one its merge carried, from the delivery note (sd:2211); one that never shipped is not recorded.
+    { id: 'review', name: 'Reviews', icon: 'bot', src: 'sd-ship delivery notes: the review each merge carried' },
     { id: 'deploy', name: 'Deploys', icon: 'hard-drive-download', src: 'none' },
     { id: 'mail', name: 'Mail', icon: 'mail', src: 'none' },
     { id: 'command', name: 'Commands', icon: 'terminal', src: 'the execution journal: notes of kind exec' },
   ];
-  const SOURCES = { merge: ['merge'], run: ['run', 'job'], command: ['command'] };
+  const SOURCES = { merge: ['merge'], run: ['run', 'job'], review: ['review'], command: ['command'] };
   const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };
   const kindOf = id => KINDS.find(k => k.id === id);
   const hhmm = iso => iso.slice(11, 16);
@@ -65,7 +66,7 @@ addEventListener('DOMContentLoaded', () => {
       const failed = Object.entries(doc.sources).filter(([, why]) => why);
       return { objects: EVENTS.map(objectOf),
         state: failed.length ? { kind: 'partial', text: failed.map(([s, why]) => `${s}: ${why}`).join(' · '), source: '/api/activity' }
-          : !EVENTS.some(inWindow) ? { kind: 'empty', text: 'No merge, run or command in the last 24 hours.' } : null };
+          : !EVENTS.some(inWindow) ? { kind: 'empty', text: 'No merge, run, review or command in the last 24 hours.' } : null };
     },
     clear: () => { DOC = null; EVENTS = []; REPOS = []; Object.keys(OUTPUT).forEach(id => delete OUTPUT[id]); delete document.body.dataset.observed; },
     draw: () => update(),
@@ -132,6 +133,8 @@ addEventListener('DOMContentLoaded', () => {
       merge: html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(EVENTS.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`,
       run: html`<span class="ph"><b>${jobsFailed}</b> jobs failed</span> · <span class="ph">${asg.filter(e => e.status === 'blocked').length} of ${asg.length} runs blocked</span>`,
       command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} in the journal</span>`,
+      // build: the design's "want changes · approve" has no source; a delivery records clean or adjudicated (sd:2211).
+      review: html`<span class="ph"><b>${n('review', 'caution')}</b> adjudicated</span> · <span class="ph">${n('review', 'ok')} clean</span>${DOC?.review_unrecorded ? html` · <span class="ph">${plural(DOC.review_unrecorded, 'merge')} unrecorded</span>` : ''}`,
     };
     const d = new Date(OBSERVED);
     put($('annunciator'), html`
@@ -266,7 +269,7 @@ addEventListener('DOMContentLoaded', () => {
     { name: 'Failed', params: { state: 'warning' } },
     { name: 'Last hour', params: { range: '1h' } },
     { name: 'Merges', params: { kind: 'merge' } },
-    // build: the design's Reviews view is left out; no collector reads reviews.
+    { name: 'Reviews', params: { kind: 'review' } },
     { name: 'Command journal', params: { kind: 'command', range: 'all' } },
     { name: 'Failed in the last hour', params: { state: 'warning', range: '1h' } },
   ];
@@ -291,6 +294,10 @@ addEventListener('DOMContentLoaded', () => {
   function facts(e) {
     const f = { When: utc(e.at) };
     if (e.k === 'merge') Object.assign(f, { Repo: `${e.owner}/${e.repo}`, 'Pull request': e.ref, Item: e.item ? `sd:${e.item}` : '—', Commit: e.commit });
+    // build: the design's Verdict and Summary, from the delivery note; When is the merge's, as the review's own is not recorded.
+    if (e.k === 'review') Object.assign(f, { When: `${utc(e.at)} · the merge it let through`, Repo: `${e.owner}/${e.repo}`, 'Pull request': e.ref,
+      Item: e.item ? `sd:${e.item}` : '—', 'Reviewed by': e.reviewers.join(', '), Requested: e.requested || 'no provider named', Verdict: e.verdict,
+      'Reviewed head': e.head || 'not recorded' });
     if (e.k === 'run' && e.n) Object.assign(f, { Assignment: `#${e.n}`, Item: e.item ? `sd:${e.item}` : '—', Role: e.role, Provider: e.provider || '—', Status: e.status, Started: utc(e.started), Ended: utc(e.ended) });
     if (e.k === 'run' && e.job) Object.assign(f, { Job: e.job, 'Last run': e.rc, Detail: e.detail });
     if (e.k === 'command') Object.assign(f, { Note: String(e.note), Item: e.item ? `sd:${e.item} · ${e.title || ''}` : '—', Command: e.command, Scope: e.scope || 'not recorded',
@@ -326,7 +333,7 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Commands (products/system/commands.md): declared once, rendered by the shell ----------
   // build: an event's object carries what its commands need from the document: the pull request, the assignment and its queue
   // revision, the job and its revision and retry capability, the execution record.
-  const TYPE = { merge: 'pull request', command: 'command' };
+  const TYPE = { merge: 'pull request', review: 'review', command: 'command' };
   function objectOf(e) { return { ...e, id: e.id, type: e.k === 'run' ? (e.job ? 'job' : 'assignment') : TYPE[e.k], label: e.what, event: e.id }; }
   const ev = o => EVENTS.find(e => e.id === o.event) || o;
   // A command's run returns landing(...): the shell's run contract (shell.js, bulk:start) waits for the write, toasts its
@@ -350,6 +357,9 @@ addEventListener('DOMContentLoaded', () => {
   C.register(
     { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
     { id: 'pr.item', on: 'pull request', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
+    // build: the design's review.open; its review.lane re-runs a review, which a recorded one cannot ask for, so it is left out.
+    { id: 'review.open', on: 'review', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
+    { id: 'review.item', on: 'review', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
     // asg.requeue and jobs.retry are the one declarations in commands.md; Management, Reports, Today and Briefs declare them the same way.
     // build: requeue posts to /api/runner/<n>/requeue with the queue revision; Undo cancels the queued run with the revision it answered.
     { id: 'asg.requeue', on: 'assignment', label: 'Requeue', key: 'q', risk: 'undo', bulk: true, primary: o => ev(o).status === 'blocked',

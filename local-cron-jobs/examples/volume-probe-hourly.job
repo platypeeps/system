@@ -1,0 +1,10 @@
+# Hourly bounded read of the paths launchd jobs depend on (local-volume-probe,
+# sd:2541). On 2026-10-01 every launchd job that opened a file on the external
+# volume waited for 16 hours while interactive sessions kept writing to it;
+# nothing said so until the jobs' own timeouts ran out (sd:2537). This job
+# runs `status` in launchd context, the context that stalled, and exits 1
+# naming each path still waiting at VOLUME_PROBE_TIMEOUT, so the failure
+# notification fires within the hour. The nightly health check runs the same
+# `status` through its sweep; this job only shortens the wait.
+JOB_SCHEDULE="5 * * * *"
+JOB_COMMAND="sh \"$ROOT/../local-volume-probe/volume-probe.sh\" status"

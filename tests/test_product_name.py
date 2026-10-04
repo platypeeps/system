@@ -42,10 +42,6 @@ ALLOWED = {
     "CLAUDE.md": "states the rule, so it names the product the rule is about",
     "README.md": "its folder table tells a reader what the mezmo-* folders hold",
     "docs/work/archive/": "delivered records that are never edited; the citation gate exempts them too",
-    "local-aura/": (
-        "wraps the vendor's aura and its hosted MCP server; a move to a mezmo- "
-        "folder also moves the operator's config folder, so it is a follow-up"
-    ),
     "tests/test_product_name.py": "spells the word it searches for",
 }
 

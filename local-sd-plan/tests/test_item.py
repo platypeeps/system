@@ -130,6 +130,10 @@ class ItemCase(unittest.TestCase):
         # or the checkout `sd-plan.sh test` found when nothing named one.
         environment["SD_PLAN_PYTHON"] = sys.executable
         environment["SD_PACK_ROOT"] = str(PACK)
+        # The config folder under this case's home, as the runner's fixed
+        # environment resolves it, and never a developer's own `.env`.
+        environment.pop("SYSTEM_TOOLS_CONFIG", None)
+        environment.pop("XDG_CONFIG_HOME", None)
         for name, value in (env or {}).items():
             if value is None:
                 environment.pop(name, None)
@@ -151,6 +155,14 @@ class ItemCase(unittest.TestCase):
         out = subprocess.run(["git", "ls-remote", "--heads", str(self.origin)],
                              capture_output=True, text=True, check=True).stdout
         return sorted(line.split("refs/heads/")[1] for line in out.splitlines() if line)
+
+    def config_env(self, **values):
+        """`<config>/sd-plan/.env` under this case's home, where a queued run finds it."""
+        path = self.home / ".config" / "system" / "sd-plan" / ".env"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f"{name}={value}\n" for name, value in values.items()),
+                        encoding="utf-8")
+        return path
 
 
 class TheSlug(unittest.TestCase):
@@ -179,6 +191,15 @@ class TheSlug(unittest.TestCase):
         # And it really did have to cut: a case that fits teaches nothing.
         self.assertGreater(len(re.sub(r"[^a-z0-9]+", "-", title.lower())),
                            sd_plan.SLUG_LIMIT)
+
+    def test_a_first_word_longer_than_the_limit_is_the_one_mid_word_cut(self):
+        """No hyphen falls inside the limit, so no cut between words exists (sd:1181).
+
+        Kept rather than refused, and kept as it was: a slug names a row's
+        folder and branch, so a changed rule re-plans every row it renames.
+        """
+        word = "a" * (sd_plan.SLUG_LIMIT + 12)
+        self.assertEqual(sd_plan.slugify(f"{word} and more"), word[:sd_plan.SLUG_LIMIT])
 
     def test_a_title_with_nothing_to_slugify_is_refused(self):
         with self.assertRaises(sd_plan.Refused):
@@ -534,6 +555,14 @@ class WhereItRegisters(ItemCase):
                 self.assertIn(f"no pack at {self.home}/repos/platypeeps/sd-ai-command-pack",
                               done.stderr)
 
+    def test_a_queued_run_reads_sd_pack_root_from_the_config_folder(self):
+        """`process_plan` passes HOME and drops SD_PACK_ROOT, so the `.env` is how it arrives (sd:1181)."""
+        named = self.home / "pack-named-in-config"
+        self.config_env(SD_PACK_ROOT=named)
+        identifier = self.task()
+        done = self.plan(str(identifier), expect=1, env={"SD_PACK_ROOT": None})
+        self.assertIn(f"no pack at {named}", done.stderr)
+
     def test_a_refusal_from_the_pack_fails_the_run_and_pushes_nothing(self):
         pack = self.fake_pack(
             "import sys\n"
@@ -870,6 +899,20 @@ class WhichAgentItRuns(ItemCase):
                                        subprocess.CompletedProcess(a[0], 0)):
                     sd_plan.agent(self.repo, "a-slug", {"id": 1})
         self.assertTrue(os.path.isabs(seen[0][0]), seen[0])
+
+
+    def test_a_queued_run_reads_sd_plan_claude_from_the_config_folder(self):
+        """The refusal says to set SD_PLAN_CLAUDE; on the queue only the `.env` can (sd:1181).
+
+        The runner's PATH and no `~/.local/bin/claude`, so without the `.env`
+        the run refuses for want of a binary instead of naming this one.
+        """
+        named = self.home / "claude-named-in-config"
+        self.config_env(SD_PLAN_CLAUDE=named)
+        identifier = self.task()
+        done = self.plan(str(identifier), expect=1,
+                         env={"SD_PLAN_AGENT": None, "SD_PLAN_CLAUDE": None, **self.bare_path()})
+        self.assertIn(f"SD_PLAN_CLAUDE={named} is not an executable file", done.stderr)
 
 
 class WhichUserItPlansAs(ItemCase):

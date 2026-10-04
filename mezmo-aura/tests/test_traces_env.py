@@ -75,7 +75,7 @@ class ServerEnvironment(unittest.TestCase):
         self.assertEqual(self.otel(AURA_TRACES="0"), {})
 
     def env_file(self, text):
-        conf = Path(self.env["SYSTEM_TOOLS_CONFIG"]) / "aura"
+        conf = Path(self.env["SYSTEM_TOOLS_CONFIG"]) / "mezmo-aura"
         conf.mkdir(parents=True)
         (conf / ".env").write_text(text, encoding="utf-8")
 
