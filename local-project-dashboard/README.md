@@ -5,7 +5,9 @@ commands. They are separate surfaces.
 
 **The workflow dashboard** (`sd_dashboard/`) opens on the new design's Today, and keeps
 the classic Today, Backlog, Contributions, Writing,
-Operations, Protection, Skills, Documents, Designs, and individual Item pages. Its production launcher uses the
+Operations, Protection, Skills, Documents, Designs, and individual Item pages.
+A `/backlog` address opens Tasks with the same filters (sd:2356); the classic
+Backlog is at `/classic/backlog`. Its production launcher uses the
 command pack's provisioned Python interpreter and installed `sd_db` package;
 it refuses an adjacent source import or a mismatched database schema.
 `./dashboard.sh serve` starts it on loopback;

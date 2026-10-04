@@ -19,7 +19,7 @@ class RunBudget(WorkflowControls):
         self.repo()
         item = self.item("Budgeted", kind="task", repo="/repos/system", branch="task/budget", status="ready")
         # The field renders on the item page and on the Backlog's selection dialog, optional and empty.
-        for path in (f"/item/{item}", "/backlog"):
+        for path in (f"/item/{item}", "/classic/backlog"):
             with self.subTest(path=path):
                 page = self.request(path)[2]
                 found = re.search(r'<input[^>]*name="budget_usd"[^>]*>', page)
