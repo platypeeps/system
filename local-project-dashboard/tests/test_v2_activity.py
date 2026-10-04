@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -56,7 +57,9 @@ def seed(case):
     port = case.item("Port the page", kind="work", repo=repo)
     old = case.item("An old slice", kind="work", repo=repo)
     note_merge(case.connection, port, {"pull_request": {"url": "https://github.com/example-org/system/pull/41"},
-                                       "merge_commit": "1acdcf6" + "0" * 33})
+                                       "merge_commit": "1acdcf6" + "0" * 33, "reviewed_head": "b0d1e5" + "0" * 34,
+                                       "review_selection": {"requested_provider": None, "reviewed_by": ["codex"]},
+                                       "review_clearance": None})
     note_merge(case.connection, old, {"pull_request": {"url": "https://github.com/example-org/system/pull/7"},
                                       "merge_commit": "abcdef1" + "0" * 33})
     case.note(port, "Code delivery is a phrase, not a record", kind="comment")
@@ -180,14 +183,65 @@ class TheDocument(ScreenCase):
                          "only the journal reaches before the window")
 
     def test_a_kind_with_no_collector_is_named_with_its_reason(self):
-        self.assertEqual(set(self.doc["unknown"]), {"review", "deploy", "mail"})
+        self.assertEqual(set(self.doc["unknown"]), {"deploy", "mail"})
         self.assertTrue(all(reason.startswith("No collector reads") for reason in self.doc["unknown"].values()))
-        self.assertEqual(self.doc["sources"], {"merge": "", "run": "", "job": "", "command": ""})
+        self.assertEqual(self.doc["sources"], {"merge": "", "review": "", "run": "", "job": "", "command": ""})
+
+    # --- reviews: the review each merge carried (operator ruling on sd:2211) ---
+
+    def test_a_review_is_the_one_a_merge_in_the_window_carried(self):
+        reviews = [event for event in self.doc["events"] if event["k"] == "review"]
+        self.assertEqual([event["id"] for event in reviews], [f"review:{self.ids['merge']}"])
+        review = reviews[0]
+        self.assertEqual((review["at"], review["s"], review["repo"], review["ref"], review["pr"], review["item"]),
+                         (INSIDE, "ok", "system", "system#41", 41, self.ids["port"]))
+        self.assertEqual((review["reviewers"], review["requested"], review["clearance"], review["head"]),
+                         (["codex"], None, None, "b0d1e5" + "0" * 34))
+        self.assertEqual(review["what"], "codex reviewed system#41")
+        self.assertEqual(review["detail"], "clean or advisory · head b0d1e5000000")
+        self.assertEqual(self.doc["review_unrecorded"], 0, "the old merge is outside the window; the phrase is no delivery")
+
+    def deliver(self, number, evidence):
+        item = self.item(f"Slice {number}", kind="work", repo=self.repo())
+        note_merge(self.connection, item, {"pull_request": {"url": f"https://github.com/example-org/system/pull/{number}"},
+                                           "merge_commit": f"{number:07d}" + "0" * 33, **evidence})
+        self.connection.execute("UPDATE note SET timestamp = ? WHERE body LIKE ?", (INSIDE, f"Code delivery %/pull/{number} %"))
+        self.connection.commit()
+        doc = activity_screen.document(self.connection, now=NOW, jobs_backend=backend(self))
+        return doc, {event["id"]: event for event in doc["events"] if event["k"] == "review" and event["pr"] == number}
+
+    def test_blocking_findings_whose_dispositions_were_accepted_are_a_caution(self):
+        doc, found = self.deliver(52, {"review_selection": {"requested_provider": "codex", "reviewed_by": ["codex"]},
+                                       "review_clearance": {"kind": "adjudicated", "key": "ship-adjudication:x", "revision": 3}})
+        (review,) = found.values()
+        self.assertEqual((review["s"], review["clearance"], review["requested"]), ("caution", "adjudicated", "codex"))
+        self.assertIn("accepted their dispositions", review["verdict"])
+        self.assertEqual(review["detail"], review["verdict"], "no reviewed head recorded, so none is named")
+
+    def test_a_clearance_this_page_does_not_know_is_unknown_not_clean(self):
+        _, found = self.deliver(53, {"review_selection": {"reviewed_by": ["kimi"]}, "review_clearance": {"kind": "waived"}})
+        (review,) = found.values()
+        self.assertEqual(review["s"], "unknown")
+        self.assertIn("'waived'", review["verdict"])
+
+    def test_a_merge_with_no_review_record_is_counted_not_drawn(self):
+        for number, evidence in ((54, {}), (55, {"review_selection": {"reviewed_by": []}})):
+            doc, found = self.deliver(number, evidence)
+            self.assertEqual(found, {})
+        self.assertEqual(doc["review_unrecorded"], 2)
+        self.assertEqual(sum(1 for e in doc["events"] if e["k"] == "merge"), 3, "each is still a merge")
+
+    def test_a_review_read_that_fails_is_named_and_merges_still_answer(self):
+        with patch.object(activity_screen, "reviews", side_effect=sqlite3.OperationalError("database locked")):
+            doc = activity_screen.document(self.connection, now=NOW, jobs_backend=backend(self))
+        self.assertEqual(doc["sources"]["review"], "database locked")
+        self.assertEqual((doc["review_unrecorded"], sum(1 for e in doc["events"] if e["k"] == "merge")), (0, 1))
+        self.assertFalse(any(e["k"] == "review" for e in doc["events"]))
 
     def test_a_source_that_fails_is_named_and_the_others_still_answer(self):
         doc = activity_screen.document(self.connection, now=NOW, jobs_backend=backend(self, refuse="launchctl did not answer"))
         self.assertEqual(doc["sources"]["job"], "launchctl did not answer")
-        self.assertEqual({event["k"] for event in doc["events"]}, {"merge", "run", "command"})
+        self.assertEqual({event["k"] for event in doc["events"]}, {"merge", "review", "run", "command"})
         self.assertFalse(any(event["id"].startswith("job:") for event in doc["events"]))
 
 
@@ -262,6 +316,8 @@ class TheScript(ScreenCase):
         self.assertEqual(out["R"]["reg"], [
             ["pr.open", "pull request", "safe", "o", None, True, False, False],
             ["pr.item", "pull request", "safe", "i", None, True, False, False],
+            ["review.open", "review", "safe", "o", None, True, False, False],
+            ["review.item", "review", "safe", "i", None, True, False, False],
             ["asg.requeue", "assignment", "undo", "q", None, True, True, True],
             ["asg.get", "assignment", "safe", "o", None, True, False, False],
             ["asg.item", "assignment", "safe", "i", None, True, False, False],
@@ -277,7 +333,7 @@ class TheScript(ScreenCase):
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         lanes = out["R"]["lanes"]
-        for kind in ("review", "deploy", "mail"):
+        for kind in ("deploy", "mail"):
             self.assertRegex(lanes, rf'data-kind="{kind}"[^>]*>.*?<span class="n">▨</span>')
             self.assertRegex(out["R"]["ann"], rf'<div class="cell" data-kind="{kind}" data-state="unknown">')
         self.assertIn('data-kind="command" data-state="warning"', out["R"]["ann"])
@@ -353,6 +409,31 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", "() =
         self.assertEqual(out["toasts"], [[f"Output of note {note} shown in Details", False]])
         self.assertEqual(out["posts"], [])
 
+    def test_reviews_draw_as_a_kind_with_a_source_not_hatched(self):
+        out = self.run_page("R.lanes = ELS.lanes.html; R.ann = ELS.annunciator.html; R.rows = ELS.rows.html;")
+        self.assertRegex(out["R"]["lanes"], r'data-kind="review"[^>]*><svg[^>]*></svg><span>Reviews</span><span class="n">1</span>')
+        self.assertIn('<button class="cell" type="button" data-kind="review" data-state="ok"', out["R"]["ann"])
+        self.assertIn("<b>0</b> adjudicated</span> · <span class=\"ph\">1 clean</span>", out["R"]["ann"])
+        self.assertNotIn("unrecorded", out["R"]["ann"])
+        self.assertIn("codex reviewed system#41", out["R"]["rows"])
+        self.assertIn("Reviews", out["views"])
+
+    def test_a_review_shows_who_reviewed_and_how_it_let_the_merge_through(self):
+        review = f"review:{self.ids['merge']}"
+        out = self.run_page("ELS.rows.listeners.click[0]({ target: { closest: s => s === 'tr[data-id]' ? { dataset: { id: '%s' } } : null } });"
+                            "R.details = ELS.details.html; R.open = cmd('review.open').cli(C.get('%s'));" % (review, review))
+        details = out["R"]["details"]
+        for term, value in (("Reviewed by", "codex"), ("Verdict", "clean or advisory"), ("Requested", "no provider named"),
+                            ("Reviewed head", "b0d1e5" + "0" * 34), ("Pull request", "system#41")):
+            self.assertIn(f"<dt>{term}</dt><dd>{value}</dd>", details)
+        self.assertIn("the merge it let through", details)
+        self.assertEqual(out["R"]["open"], "gh pr view 41 --repo example-org/system --web")
+
+    def test_merges_with_no_review_record_are_said_on_the_lamp(self):
+        doc = dict(self.doc, review_unrecorded=2)
+        out = self.run_page("R.ann = ELS.annunciator.html;", doc=doc)
+        self.assertIn("1 clean · 2 merges unrecorded", re.sub(r"<[^>]+>", "", out["R"]["ann"]))
+
     def test_a_lamp_its_chip_and_its_lane_add_to_one_kind_set(self):
         click = "ELS.%s.listeners.click[0]({ target: { closest: s => s === '%s' ? { dataset: { kind: '%s' } } : null } });"
         out = self.run_page(click % ("lanes", ".lane-btn", "run") + click % ("annunciator", "button.cell", "merge")
@@ -407,7 +488,8 @@ R.table = ELS['chart-table'].html; R.lanes = ELS.lanes.html;""")
         self.assertEqual(sum(cells), len(re.findall(r'<rect class="tick', out["R"]["lanes"])))
         inside = [e for e in self.doc["events"] if e["repo"] == "system" and e["at"] >= self.doc["from"]]
         self.assertEqual(sum(cells), len(inside))
-        self.assertEqual(sorted(e["k"] for e in inside), ["merge", "run", "run"], "the merge and the item's two runs")
+        self.assertEqual(sorted(e["k"] for e in inside), ["merge", "review", "run", "run"],
+                         "the merge, the review it carried and the item's two runs")
 
     def test_the_runs_cell_counts_failed_jobs_and_blocked_assignments_apart(self):
         doc = json.loads(json.dumps(self.doc))
