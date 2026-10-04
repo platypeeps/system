@@ -1,6 +1,7 @@
 """Tasks (sd:2124): the page's rows and one item's Details, read as v1 /backlog and /item/<id> read them. The page
-takes v1's status, age, active, q and page filters, and Operations > Progress links here (sd:2589). A /backlog
-address opens this page with its query (sd:2356); the old screen is at /classic/backlog, in the palette."""
+takes v1's status, age, active, q and page filters, and Operations > Progress links here (sd:2589). Picked rows run as
+one selection, with ?skill= from the classic Skills page (sd:2590). A /backlog address opens this page with its query
+(sd:2356); the old screen is at /classic/backlog, in the palette."""
 
 from __future__ import annotations
 

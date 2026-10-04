@@ -17,6 +17,13 @@ OK stays off until it is typed (sd:2200), and `progress.work_controls` turns
 each off where sd would refuse it. The page reads through the shell's reader,
 `read.js` (sd:2484): a landed write rereads, a row the read no longer lists runs
 no command, and a failed reread keeps the rows and says the write landed.
+Picked rows run as one selection (sd:2590): one `POST /api/run` queues them in
+pick order, sequential or parallel, with a time limit and an optional dollar
+budget per assignment, or refuses them all. Each row carries
+`runner_controls.readiness`, so Run is offered only where every picked row can
+queue. `?skill=<name>`, from the classic Skills page, sends that skill with its
+catalog revision from `/api/skills`; an unknown or unreadable skill keeps Run
+off and says why.
 
 A v1 `/backlog` address answers 301 to `/tasks` with the query v1 read
 (`tasks_screen.from_backlog`, sd:2356); a repository path becomes the label
