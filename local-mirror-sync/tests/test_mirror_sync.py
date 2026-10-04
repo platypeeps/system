@@ -302,6 +302,35 @@ class UnmountedShare(Fixture):
         self.assertTrue((mirror / "precious.txt").is_file())
 
 
+class FileDestinationLabels(Fixture):
+    """A file source needs a folder destination. The summary must say which
+    way it is wrong, the same way the stderr line says it (review of #453)."""
+
+    def test_a_missing_folder_is_labelled_missing(self) -> None:
+        source = self.write(self.work / "notes.txt", "notes\n")
+        absent = self.work / "inbox"
+        conf = self.write(self.work / "pairs.conf", f"{source}|{absent}\n")
+
+        result = self.run_sync(conf)
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("file destination missing: ", result.stderr)
+        self.assertIn(f"{absent} (file destination missing)", result.stdout)
+
+    def test_a_file_where_the_folder_should_be_is_labelled_not_a_directory(self) -> None:
+        source = self.write(self.work / "notes.txt", "notes\n")
+        blocker = self.write(self.work / "inbox", "not a folder\n")
+        conf = self.write(self.work / "pairs.conf", f"{source}|{blocker}\n")
+
+        result = self.run_sync(conf)
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("file destination is not a directory: ", result.stderr)
+        self.assertIn(f"{blocker} (file destination not a directory)", result.stdout)
+        self.assertNotIn("(file destination missing)", result.stdout)
+        self.assertEqual(blocker.read_text(), "not a folder\n")
+
+
 # Stand-ins for the tools behind an evicted destination file and a source
 # that loses files mid-pass. Neither can be staged for real in CI: a dataless
 # file needs iCloud, and a vanished file needs a race. State lives in files

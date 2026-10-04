@@ -504,10 +504,10 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
                              "local-mail-intake")
             self.assertEqual(argv[argv.index("--stage") + 1], "JEV_MAIL_INTAKE")
 
-    def test_the_stage_set_on_is_not_enough_when_jev_is_disabled(self):
+    def test_the_stage_unset_is_not_enough_when_jev_is_disabled(self):
         _, expected, _ = self.baseline()
         with mock.patch.object(mi, "run_jev", return_value=(3, "")) as runner:
-            code, text, err = self.report({mi.JEV_STAGE: "1"})
+            code, text, err = self.report({})
         self.assertEqual(text, expected)
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("not enabled here", err)
@@ -522,7 +522,7 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
             return 0, "yes" if "fence variance" in state else "no"
 
         with mock.patch.object(mi, "run_jev", side_effect=answers):
-            code, text, _ = self.report({mi.JEV_STAGE: "1"})
+            code, text, _ = self.report({})
         self.assertEqual(code, mi.EXIT_FOUND)
         you = text.index("WAITING ON YOU")
         variance = text.index("Please approve the fence variance", you)
@@ -543,7 +543,7 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
             raise OSError("boom")
 
         with mock.patch.object(mi, "run_jev", side_effect=blows_up):
-            code, text, err = self.report({mi.JEV_STAGE: "1"})
+            code, text, err = self.report({})
         self.assertEqual(text, expected)
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("boom", err, "a lane that degrades must say so")
@@ -552,10 +552,56 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
         _, expected, _ = self.baseline()
         with mock.patch.object(mi, "run_jev",
                                side_effect=lambda a, s, e=None: (0, "" if a[1] != "enabled" else "")):
-            code, text, err = self.report({mi.JEV_STAGE: "1"})
+            code, text, err = self.report({})
         self.assertEqual(text, expected)
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("no answer", err)
+
+    def answers_then(self, failure):
+        """Jev says the variance thread asks, then `failure` answers the third thread.
+
+        The third thread is the last asked, so a run that keeps the answers
+        before a failure sorts the variance thread first and marks it.
+        """
+        calls = []
+
+        def fake(args, state, environ=None):
+            if args[1] in ("enabled", "record"):
+                calls.append(args[1])
+                return 0, ""
+            calls.append("noul")
+            if "Thanks all" in state:
+                return failure()
+            return 0, "yes" if "fence variance" in state else "no"
+
+        return fake, calls
+
+    def test_a_failure_after_an_answer_drops_every_answer(self):
+        """All or nothing (sd:2551): one thread Jev could not answer puts the whole report back in today's order."""
+        _, expected, _ = self.baseline()
+
+        def boom():
+            raise OSError("boom")
+
+        fake, calls = self.answers_then(boom)
+        with mock.patch.object(mi, "run_jev", side_effect=fake):
+            code, text, err = self.report({})
+        self.assertEqual(text, expected)
+        self.assertEqual(code, mi.EXIT_FOUND)
+        self.assertIn("boom", err)
+        self.assertIn("today's order", err)
+        self.assertEqual(calls, ["enabled", "noul", "noul", "noul", "record"])
+
+    def test_an_unreadable_answer_after_an_answer_drops_every_answer(self):
+        _, expected, _ = self.baseline()
+        fake, calls = self.answers_then(lambda: (0, "maybe"))
+        with mock.patch.object(mi, "run_jev", side_effect=fake):
+            code, text, err = self.report({})
+        self.assertEqual(text, expected)
+        self.assertEqual(code, mi.EXIT_FOUND)
+        self.assertIn("no answer", err)
+        # Today's order is what the report carried, so the control arm gets its row.
+        self.assertEqual(calls, ["enabled", "noul", "noul", "noul", "record"])
 
 
 class TestTheSwitchReachesTheChild(unittest.TestCase):
@@ -636,7 +682,7 @@ class TestNothingPrivateLeavesTheMachine(unittest.TestCase):
             return (0, "") if args[1] == "enabled" else (0, "yes")
 
         with mock.patch.object(mi, "run_jev", side_effect=capture):
-            mi.cmd_report(state_dir, io.StringIO(), environ={mi.JEV_STAGE: "1"},
+            mi.cmd_report(state_dir, io.StringIO(), environ={},
                           err=io.StringIO())
 
         everything = "\n".join(" ".join(args) + "\n" + state for args, state in sent)

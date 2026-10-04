@@ -14,8 +14,8 @@ usage() {
 Usage: ci-native.sh preflight
        ci-native.sh leg shared|dashboard|runner|tools
 
-  preflight  the fixture digest, sd-docs-lint, the citation and Jev contract
-             gates, the unwired-suite guard, and the venv at
+  preflight  the fixture digest, sd-docs-lint, the citation, Jev contract
+             and product-name gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with local-sd-db installed
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
@@ -102,6 +102,19 @@ python3 tests/test_citations.py
 # what `--unsure-below` itself prints. Stdlib and git only, so it
 # runs here before the venv, and the guard below demands this line.
 python3 tests/test_jev_contract.py
+
+# The system's protection gap ids against the pack's, which owns them
+# (sd:1372): sd_db's GAP_IDS and the dashboard's GAPS columns, each
+# compared with ACKNOWLEDGEABLE_GAPS read from the pinned pack copy in
+# SD_ACCEPTANCE_PACK. Stdlib only, so it runs here before the venv.
+python3 tests/test_gap_vocabulary.py
+
+# Only the vendor helper folders, mezmo-*, name the product they help
+# with (sd:2535): a tracked line outside them that does fails here
+# naming its path and line, unless the file's ALLOWED entry gives a
+# reason. Stdlib and git only, so it runs here before the venv, and
+# the guard below demands this line.
+python3 tests/test_product_name.py
 
 # The run_suite lines at the bottom are a hand-maintained list, and
 # a folder that grows a suite without a line here is never run --
@@ -258,7 +271,7 @@ case "$SUITE_LEG" in
     run_suite maintenance sh local-maintenance/maintenance.sh test -v
     run_suite opentelemetry-collector sh local-opentelemetry-collector/opentelemetry-collector.sh test -v
     run_suite genai-traces sh local-genai-traces/genai-traces.sh test -v
-    run_suite aura sh local-aura/aura.sh test -v
+    run_suite aura sh mezmo-aura/aura.sh test -v
     # local-mirror-sync has no test verb of its own: mirror-sync.sh
     # takes sync|plan|list and adding a fourth would change what a
     # pair list means. The suite is named directly, like notify
@@ -298,6 +311,7 @@ case "$SUITE_LEG" in
     run_suite ai-songs-backup sh local-ai-songs-backup/ai-songs-backup.sh test -v
     run_suite github-rulesets sh github-rulesets/github-rulesets.sh test -v
     run_suite config-check sh local-config-check/config-check.sh test -v
+    run_suite volume-probe sh local-volume-probe/volume-probe.sh test -v
     # mezmo-pipeline's suite is shell with its own tally, not
     # unittest, so run_suite's summary check cannot read it. It
     # stubs curl and makes no network call; the gate is a nonzero

@@ -2,7 +2,7 @@
  * build: the command lane has no rule of its own; it uses the lane grammar as it stands. */
 /* Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
  * Activity v2: annunciator → 24h lane chart (one lane per kind) → kind and repo filters → one timeline, hour bands, newest first → details.
- * build: the rows are /api/activity (activity_screen.py); reviews, deploys and mail have no collector and say so. */
+ * build: the rows are /api/activity (activity_screen.py); deploys and mail have no collector and say so. */
 
 /* Annunciator (Today grammar) */
 .annunciator { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl); padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); list-style: none; }

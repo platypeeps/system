@@ -42,8 +42,8 @@ class FromCheckout(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
-        (root / "local-aura").mkdir()
-        self.entrypoint = root / "local-aura" / ENTRYPOINT.name
+        (root / "mezmo-aura").mkdir()
+        self.entrypoint = root / "mezmo-aura" / ENTRYPOINT.name
         shutil.copy(ENTRYPOINT, self.entrypoint)
         shutil.copytree(FOLDER.parent / "lib", root / "lib")
         stubs = root / "bin"

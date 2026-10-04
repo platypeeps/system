@@ -13,6 +13,7 @@ import datetime
 import json
 import pathlib
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -23,7 +24,9 @@ import harness  # noqa: E402
 GOLDEN_LIST = (harness.FIXTURES / "golden_list.txt").read_text()
 GOLDEN_HTML = (harness.FIXTURES / "golden_body.html").read_text().rstrip("\n")
 
-ON = {"JEV_OBSIDIAN_TASKS": "1"}
+#: Unset is on, and unset is what every deployed run has, so the fixtures
+#: run the stage that way (sd:1183). `1` is checked once, explicitly, below.
+ON: dict = {}
 #: `JEV_OBSIDIAN_TASKS` switches the stage off and nothing switches it on:
 #: unset is on. Yesterday's digest is therefore the run that sets it to 0.
 OFF = {"JEV_OBSIDIAN_TASKS": "0"}
@@ -74,7 +77,7 @@ class DigestTest(unittest.TestCase):
         # The flip: every one of these integrations was opt-in, and an opt-in
         # that defaults to off makes each one added after it silently never
         # run. Unset now reaches Jev; the machine-wide answers still decide.
-        self.assertEqual(self.digest(), self.digest(ON))
+        self.assertEqual(self.digest(), self.digest({"JEV_OBSIDIAN_TASKS": "1"}))
         self.assertNotEqual(self.digest(), self.digest(OFF))
 
     def test_jev_disabled_is_byte_for_byte_yesterdays_digest(self):
@@ -96,9 +99,9 @@ class DigestTest(unittest.TestCase):
         env.update({
             "OBSIDIAN_VAULT": str(self.root / "vault"),
             "NOTIFY_RECORD": str(self.root / "notify.args"),
-            "JEV_OBSIDIAN_TASKS": "1",
             "JEV_STUB_ASK_FAIL": "1",
         })
+        env.pop("JEV_OBSIDIAN_TASKS", None)
         proc = subprocess.run(
             ["sh", str(self.root / "local-obsidian-tasks" / "obsidian-tasks.sh"),
              "run"],
@@ -194,11 +197,63 @@ class DigestTest(unittest.TestCase):
         self.digest({**OFF,
                      "ACTIONS_STUB_RECORD": str(record),
                      "ACTIONS_STUB_SIGNS": "https://signer.example.test",
-                     "ACTIONS_STUB_SIGN_HANG": "30"})
+                     "ACTIONS_STUB_SIGN_HANG": "3",
+                     "OBSIDIAN_TASKS_SIGN_TIMEOUT": "1"})
         verbs = [line.split(" ", 1)[0] for line in
                  record.read_text().splitlines() if line]
         self.assertEqual(verbs.count("base-url"), 1, verbs)
-        self.assertEqual(verbs.count("url"), 1, verbs)
+        # The first link is tried once more (sd:2536); no later link is tried.
+        self.assertEqual(verbs.count("url"), 2, verbs)
+
+    # --- a slow signer at night (sd:2536) ---------------------------------
+
+    def signing(self, **extra):
+        """A run against a stub that signs; returns (stderr, html, url calls)."""
+        record = self.root / "actions.calls"
+        record.unlink(missing_ok=True)
+        state = self.root / "stub-state"
+        shutil.rmtree(state, ignore_errors=True)
+        state.mkdir()
+        proc, html = harness.run_proc(self.root, {
+            **OFF, "ACTIONS_STUB_RECORD": str(record), "ACTIONS_STUB_STATE": str(state),
+            "ACTIONS_STUB_SIGNS": "https://signer.example.test", **extra})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        verbs = [line.split(" ", 1)[0] for line in record.read_text().splitlines() if line]
+        return proc.stderr, html, verbs.count("url")
+
+    def test_a_signer_slower_than_five_seconds_still_signs(self):
+        # 0.1 s by day, over 5 s under the nightly load: the old bound gave up.
+        err, html, _ = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="6")
+        self.assertNotIn("action links unsigned", err)
+        self.assertIn("https://signer.example.test/task?stub=1", html)
+
+    def test_a_signing_timeout_is_tried_once_more(self):
+        _, _, links = self.signing()
+        err, html, calls = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="3", OBSIDIAN_TASKS_SIGN_TIMEOUT="1")
+        self.assertNotIn("action links unsigned", err)
+        self.assertIn("https://signer.example.test/task?stub=1", html)
+        self.assertEqual(calls, links + 1)
+
+    def test_a_signer_that_never_answers_says_why_with_the_load(self):
+        err, html, calls = self.signing(ACTIONS_STUB_SIGN_HANG="3", OBSIDIAN_TASKS_SIGN_TIMEOUT="1")
+        self.assertEqual(err.count("action links unsigned"), 1, err)
+        self.assertRegex(err, r"action links unsigned -- \S+task-actions\.sh did not sign "
+                              r"within 1s, 2 times \(load averages [0-9.]+ [0-9.]+ [0-9.]+\)")
+        self.assertNotIn("/task?stub=1", html)
+        self.assertEqual(calls, 2)
+
+    def test_a_signer_that_exits_non_zero_says_why(self):
+        # Before sd:2536 a failed `url` gave an empty link and said nothing.
+        err, html, calls = self.signing(ACTIONS_STUB_SIGN_EXIT="1")
+        self.assertEqual(err.count("action links unsigned"), 1, err)
+        self.assertRegex(err, r"task-actions\.sh url exited 1 \(load averages ")
+        self.assertNotIn("/task?stub=1", html)
+        self.assertEqual(calls, 1)
+
+    def test_a_base_url_failure_says_why(self):
+        err, _, calls = self.signing(ACTIONS_STUB_SIGNS="")
+        self.assertRegex(err, r"no base URL could be discovered \(base-url exited 1, load averages ")
+        self.assertEqual(calls, 0)
 
     # --- what leaves the machine -----------------------------------------
 

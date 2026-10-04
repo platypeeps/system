@@ -21,7 +21,9 @@ from sd_db.workflow import WorkflowError
 
 REPOSITORY = "fixture/repo"
 
-#: Hold the lock, say so on stdout, and release after argv[3] seconds.
+#: Hold the lock, say so on stdout, and release after argv[3] seconds. The
+#: last line is the monotonic time it let go, so a waiter's latency is measured
+#: from the release itself; under load the sleep's wake-up runs late (sd:2597).
 HOLDER = """
 import sys, time
 from pathlib import Path
@@ -30,6 +32,7 @@ with ship.repository_lock(Path(sys.argv[1]), sys.argv[2],
                           holder={"command": "sd-ship prepare --item 1872", "item": 1872}):
     print("held", flush=True)
     time.sleep(float(sys.argv[3]))
+    print("released", time.monotonic(), flush=True)
 """
 
 
@@ -133,12 +136,19 @@ class ShipLockHolder(unittest.TestCase):
         self.assertIn("waited 1.5s", str(refused.exception))
 
     def test_wait_runs_once_the_holder_releases(self):
-        self.hold(seconds=1.0)
-        started = time.monotonic()
+        """Within a poll of the release, timed from the holder's own clock.
+
+        `time.monotonic` is one clock for every process on the machine. A
+        bound timed from `hold()` returning also counted the holder's late
+        wake-up under load, and failed at 3.1 s against 2.5 s (sd:2597).
+        """
+        child = self.hold(seconds=1.0)
         with ship.repository_lock(self.database, REPOSITORY, wait=10, holder={"item": 9}):
-            elapsed = time.monotonic() - started
+            acquired = time.monotonic()
             self.assertEqual(json.loads(self.lock_path().read_text())["pid"], os.getpid())
-        self.assertLess(elapsed, 1.0 + ship.WAIT_POLL_SECONDS + 1.0)
+        word, released = child.stdout.readline().split()
+        self.assertEqual(word, "released")
+        self.assertLess(acquired - float(released), ship.WAIT_POLL_SECONDS + 1.0)
 
     def test_a_negative_wait_is_refused(self):
         with self.assertRaises(WorkflowError):

@@ -521,8 +521,12 @@ def edit_item(
         return item_state(connection, item)
 
 
-def allowed_statuses(connection: sqlite3.Connection, item: int) -> list[str]:
+def allowed_statuses(connection: sqlite3.Connection, item: int, *, state: dict | None = None) -> list[str]:
     """The status choices a write through `change_status` accepts.
+
+    `state` is the item's `item_state` when the caller holds it already, read
+    in the same snapshot, so a caller listing many items reads each history
+    once (sd:2380); it must be this item's.
 
     A `TASK_STATUS_KINDS` item gets `TASK_STATUSES`; database-owned work that
     is not done gets every status but `done`; every other kind, and any item
@@ -536,7 +540,9 @@ def allowed_statuses(connection: sqlite3.Connection, item: int) -> list[str]:
     followup's since sd:809, and since sd:816 the screen renders the matching
     form instead of a hint naming the CLI's `sd task edit`.
     """
-    row = item_state(connection, item)["item"]
+    if state is not None and state["item"]["id"] != item:
+        raise WorkflowError(f"the state given is item {state['item']['id']}'s, not item {item}'s")
+    row = (state if state is not None else item_state(connection, item))["item"]
     active = connection.execute(
         "SELECT 1 FROM assignment WHERE item = ? AND status IN ('queued', 'running') LIMIT 1",
         (item,),
@@ -553,6 +559,40 @@ def allowed_statuses(connection: sqlite3.Connection, item: int) -> list[str]:
             return []
         return [status for status in STATUSES if status != "done"]
     return []
+
+
+#: The names a default branch goes by; a row on one has no branch of its own
+#: to land, so a close needs no merge of it (the pack's `DEFAULT_BRANCHES`).
+DEFAULT_BRANCHES = ("main", "master")
+#: The comment `ship.note_merge` writes for each merge of an item.
+CODE_DELIVERY = re.compile(r"Code delivery (\S+) at ([0-9a-f]{40,64})\b")
+#: The sentence every delivering transition writes.
+DELIVERED_AT = re.compile(r"delivered at ([0-9a-f]{40,64})\b")
+
+
+def _refuse_unlanded_branch(state: dict, item: int) -> None:
+    """Refuse a reasonless close of a row worked on its own branch (sd:1990, sd:2570).
+
+    `sd runner prepare --branch` records the branch an item is worked on.
+    Three such items were closed while their branches had no pull request,
+    and the pack's `sd task status` now refuses that; the rule lives here so
+    the dashboard's status write keeps it too. A recorded merge (the `Code
+    delivery` comment or a delivering transition) closes the row as before,
+    and so does any reason, which the transition records: the pack's
+    `--delivered-by` arrives as its delivery sentence.
+    """
+    row = state["item"]
+    branch = row.get("branch") or ""
+    if not branch or branch.removeprefix("origin/") in DEFAULT_BRANCHES:
+        return
+    for note in state["notes"]:
+        body = note.get("body") or ""
+        if CODE_DELIVERY.match(body) or (note.get("kind") == "status_change" and DELIVERED_AT.search(body)):
+            return
+    raise TransitionRefused(
+        f"item {item} was worked on branch {branch}, and no merge of it is recorded; "
+        f"close it with a reason saying why no pull request is needed, or name the merge "
+        f"that landed it with `sd task status {item} done --delivered-by <commit>`")
 
 
 def change_status(
@@ -617,6 +657,19 @@ def change_status(
             raise TransitionRefused("work completion requires verified delivery or cancellation evidence")
         if target not in allowed_statuses(connection, item):
             raise TransitionRefused(f"{row['kind']} item {item} cannot move to {target} through task controls")
+        if target == "done" and reason is None:
+            _refuse_unlanded_branch(state, item)
+        if row["status"] == "done":
+            # A cancel receipt (sd:1005) belongs to the `done` it was written
+            # with; a reopened task drops it, so a later plain `done` is not
+            # read as cancelled. Unreadable fields are left for their repair.
+            try:
+                held = json.loads(row["fields"]) if row["fields"] else {}
+            except ValueError:
+                held = None
+            if isinstance(held, dict) and "completion" in held:
+                del held["completion"]
+                set_item_fields(connection, item, fields=held)
         transition(connection, item, target, who=who, reason=reason)
         if target != "done" or row.get("recurrence") is None:
             return item_state(connection, item)

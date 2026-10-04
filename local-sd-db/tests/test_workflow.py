@@ -172,6 +172,16 @@ class StatusGuards(WorkflowCase):
             change_status(self.db, item, "ready", who="operator")
         self.assertEqual(allowed_statuses(self.db, item), [])
 
+    def test_allowed_statuses_takes_the_state_the_caller_read(self):
+        # sd:2380: a caller that read the item's state passes it, and the history is not read again.
+        item = create_item(self.db, kind="task", title="Listed")
+        other = create_item(self.db, kind="idea", title="Another")
+        state, others = item_state(self.db, item), item_state(self.db, other)
+        with patch("sd_db.workflow.item_state", side_effect=AssertionError("the history was read again")):
+            self.assertEqual(allowed_statuses(self.db, item, state=state), list(TASK_STATUSES))
+            with self.assertRaisesRegex(WorkflowError, f"item {other}'s, not item {item}'s"):
+                allowed_statuses(self.db, item, state=others)
+
     def assert_finishes_with_history(self, kind):
         item = create_item(self.db, kind=kind, title=f"A {kind} item")
         finished = change_status(self.db, item, "done", who="operator")
@@ -255,6 +265,52 @@ class StatusGuards(WorkflowCase):
         with self.assertRaisesRegex(WorkflowError, "task"):
             edit_item(self.db, item, {"body": "Replace"}, who="operator")
         self.assertEqual(json.loads(item_state(self.db, item)["item"]["body"]), {"Goals": "Keep"})
+
+
+class BranchItemClose(WorkflowCase):
+    """sd:2570: a row worked on its own branch needs its merge, or a reason,
+    to close; the pack's `sd task status` rule (sd:1990), held by the library."""
+
+    SHA = "a" * 40
+
+    def on_branch(self, branch):
+        item = self.capture()["item"]["id"]
+        self.db.execute("UPDATE item SET branch = ? WHERE id = ?", (branch, item))
+        self.db.commit()
+        return item
+
+    def test_a_reasonless_close_with_no_merge_recorded_is_refused_and_leaves_the_row(self):
+        item = self.on_branch("fleet/fixture-sd1")
+        before = item_state(self.db, item)
+        with self.assertRaisesRegex(TransitionRefused,
+                                    "worked on branch fleet/fixture-sd1, and no merge of it is recorded"):
+            change_status(self.db, item, "done", who="dashboard")
+        self.assertEqual(item_state(self.db, item), before)
+
+    def test_a_reason_closes_it_and_the_transition_records_it(self):
+        item = self.on_branch("fleet/fixture-sd1")
+        finished = change_status(self.db, item, "done", who="dashboard", reason="superseded by another merge")
+        self.assertEqual(finished["item"]["status"], "done")
+        self.assertIn("superseded by another merge", finished["notes"][-1]["body"])
+
+    def test_a_recorded_merge_closes_it_plainly(self):
+        merged = self.on_branch("fleet/fixture-sd1")
+        add_note(self.db, merged, "comment", f"Code delivery https://github.example.test/o/r/pull/7 at {self.SHA}")
+        self.assertEqual(change_status(self.db, merged, "done", who="dashboard")["item"]["status"], "done")
+        delivered = self.on_branch("fleet/fixture-sd2")
+        change_status(self.db, delivered, "done", who="sd-ship", reason=f"delivered at {self.SHA} on refs/heads/main")
+        change_status(self.db, delivered, "planning", who="operator")
+        self.assertEqual(change_status(self.db, delivered, "done", who="dashboard")["item"]["status"], "done")
+
+    def test_a_row_on_the_default_branch_or_none_still_closes_plainly(self):
+        for branch in ("main", "origin/master", None):
+            with self.subTest(branch=branch):
+                item = self.on_branch(branch)
+                self.assertEqual(change_status(self.db, item, "done", who="dashboard")["item"]["status"], "done")
+
+    def test_other_moves_of_a_branch_row_are_unchanged(self):
+        item = self.on_branch("fleet/fixture-sd1")
+        self.assertEqual(change_status(self.db, item, "blocked", who="dashboard")["item"]["status"], "blocked")
 
 
 class KindEditing(WorkflowCase):

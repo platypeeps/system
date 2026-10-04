@@ -20,6 +20,13 @@ source guarded on its own so one that fails is a reason and not an empty list
   worktree counts and the sd-* processes it lists.
 - `services` and `jobs`: `services.inventory` and `operations.inventory`,
   v1 Operations > Services and > Jobs, with the revision each write sends.
+  Each job carries `last_run`, read from `<cron_root>/logs/.<job>.stamp`, the
+  start, end and exit the cron-jobs wrapper writes for every run (sd:2210):
+  launchd keeps no run time, and a log's write time is not one.
+- `archive`: the runner's last and next archive refresh, as `runner.sh
+  status` prints them (sd:2209). The dashboard does not know the runner's
+  config or retention folder, so it runs this checkout's `runner.sh status`
+  and reads its one-line body.
 
 Every write the page makes goes through a route `server.action_route`
 answers: runner requeue and cancel, job retry, service start, stop and
@@ -31,6 +38,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,7 +48,7 @@ from sd_db.errors import SdDbError
 from . import fleet as fleet_module
 from .repos_screen import primary
 
-__all__ = ["document", "set_repo"]
+__all__ = ["document", "last_run", "runner_status", "set_repo"]
 
 #: How many assignments and merges the page lists; the history counts every row.
 LATEST = 40
@@ -48,6 +56,11 @@ MERGES = 12
 #: The largest sd-review.json the page shows in full.
 REVIEW_BYTES = 16384
 FAILURES = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
+#: The largest run stamp read; the wrapper writes three short lines.
+STAMP_BYTES = 512
+#: `runner.sh status`'s ceiling: one Python start and one database read.
+RUNNER_SECONDS = 15.0
+RUNNER = Path(__file__).resolve().parents[2] / "local-sd-runner" / "runner.sh"
 
 
 def _review(path: str) -> dict | None:
@@ -154,19 +167,115 @@ def _services(connection, backend) -> list[dict]:
             for entry in services.inventory(connection, backend=backend)["services"]]
 
 
+def _time(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def last_run(cron_root, name: str) -> dict:
+    """The job's last run, from the stamp the cron-jobs wrapper writes beside its log (sd:2210).
+
+    `state` is `finished` (a start, an end and an exit code), `open` (a start
+    and no end: a run in progress, or one no trap saw end), `none` (no stamp:
+    the job has not run since the wrapper began writing one) or `unread`;
+    `reason` says why for the last two.
+    """
+    out = {"state": "unread", "started": None, "ended": None, "exit": None, "reason": ""}
+    if not isinstance(cron_root, (str, Path)):
+        return out | {"reason": "the jobs backend names no logs folder"}
+    try:
+        raw = (Path(cron_root) / "logs" / f".{name}.stamp").read_bytes()[:STAMP_BYTES + 1]
+    except FileNotFoundError:
+        return out | {"state": "none", "reason": "no run stamp: the job has not run since its wrapper began writing one"}
+    except OSError as error:
+        return out | {"reason": f"the run stamp is unreadable: {error.strerror or error}"}
+    if len(raw) > STAMP_BYTES:
+        return out | {"reason": "the run stamp is larger than the wrapper writes"}
+    fields = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            fields[key] = value
+    started, ended, code = fields.get("started"), fields.get("ended"), fields.get("exit")
+    if not _time(started):
+        return out | {"reason": "the run stamp names no start time"}
+    if ended is None and code is None:
+        return out | {"state": "open", "started": started}
+    if not _time(ended):
+        return out | {"reason": "the run stamp has an exit code without an end time"}
+    if code is None or not code.isdigit():
+        return out | {"reason": "the run stamp has an end without an exit code"}
+    return out | {"state": "finished", "started": started, "ended": ended, "exit": int(code)}
+
+
 def _jobs(connection, backend) -> list[dict]:
     keep = ("name", "label", "service", "schedule", "state", "pid", "last_exit", "last_signal", "revision", "capabilities")
-    return [{key: job.get(key) for key in keep} for job in operations.inventory(connection, backend=backend)["jobs"]]
+    # `cron_root` places the logs folder, as Activity and Now read it; a backend without one still lists its jobs.
+    root = getattr(backend, "cron_root", None)
+    return [{key: job.get(key) for key in keep} | {"last_run": last_run(root, job.get("name") or "")}
+            for job in operations.inventory(connection, backend=backend)["jobs"]]
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None) -> dict:
+def runner_status() -> tuple[int, str, str]:
+    """This checkout's `runner.sh status`: its exit code, stdout and stderr, within `RUNNER_SECONDS` (sd:2209)."""
+    try:
+        done = subprocess.run(["sh", str(RUNNER), "status"], capture_output=True, text=True, timeout=RUNNER_SECONDS,
+                              check=False)
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"runner.sh status ran past its {RUNNER_SECONDS:g} seconds") from None
+    return done.returncode, done.stdout, done.stderr
+
+
+def _archive(status) -> dict:
+    """The last and next archive refresh from `runner.sh status`'s body; ValueError names what it does not say.
+
+    The exit code is the heartbeat's verdict (0, 1 or 3) and not this
+    source's: a stale heartbeat still prints the schedule.
+    """
+    code, out, err = status()
+    said = (err.strip().splitlines() or [""])[-1]
+    if code not in (0, 1, 3):
+        raise ValueError(f"runner.sh status exited {code}" + (f": {said}" if said else ""))
+    line = (out.strip().splitlines() or [""])[0]
+    if not line:
+        raise ValueError("runner.sh status printed no body" + (f": {said}" if said else ""))
+    try:
+        body = json.loads(line)
+    except ValueError:
+        raise ValueError("runner.sh status printed a body that is not JSON") from None
+    if not isinstance(body, dict):
+        raise ValueError("runner.sh status printed a body that is not an object")
+    schedule = body.get("archive_refresh_schedule")
+    if schedule is None:
+        reason = body.get("reason")
+        raise ValueError(f"runner.sh status names no archive refresh: {reason}" if isinstance(reason, str) and reason
+                         else "runner.sh status names no archive refresh; the runner predates sd:2209")
+    if not isinstance(schedule, dict):
+        raise ValueError("runner.sh status named an archive refresh that is not an object")
+    if schedule.get("reason"):
+        raise ValueError(f"the archive refresh was not read: {schedule['reason']}")
+    last, upcoming = schedule.get("last_completed_at"), schedule.get("next_due_at")
+    if last is not None and not _time(last):
+        raise ValueError("runner.sh status named a last refresh that is not a time")
+    if not _time(upcoming):
+        raise ValueError("runner.sh status named a next refresh that is not a time")
+    return {"last": last, "next": upcoming, "due": schedule.get("due") is True}
+
+
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None, runner=None) -> dict:
     """Every source the page reads, and the reason for each one that could not be read.
 
     `fleet` is `fleet.collect`'s shape, the seam a test fills; `jobs` and
     `services` are the operations and services backends, the launchd ones
-    by default.
+    by default; `runner` is `runner_status`'s shape.
     """
     read = fleet or fleet_module.collect
+    status = runner or runner_status
     out: dict = {"read": now, "sources": {}}
     for source, collect in (("repos", lambda: _repos(connection)),
                             ("git", lambda: _git(read, now)),
@@ -174,7 +283,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
                             ("assignments", lambda: _assignments(connection)),
                             ("sessions", lambda: _sessions(read)),
                             ("services", lambda: _services(connection, services)),
-                            ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend()))):
+                            ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend())),
+                            ("archive", lambda: _archive(status))):
         try:
             out[source] = collect()
         except FAILURES as failure:

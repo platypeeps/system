@@ -1,4 +1,4 @@
-# local-aura
+# mezmo-aura
 
 Run and poke Mezmo aura locally: web server on `:3033` (`aura webserver`,
 installed or run from a source checkout), CLI, and quick curl smoke tests.
@@ -66,7 +66,7 @@ then exits 1 when any one failed or came back without an answer.
 
 ## Configuration
 
-Private values live outside the checkout, in `<config>/aura/`.
+Private values live outside the checkout, in `<config>/mezmo-aura/`.
 `<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`.
 
 | File | Holds |
@@ -75,6 +75,14 @@ Private values live outside the checkout, in `<config>/aura/`.
 | `config.toml` | Optional. Replaces `config.toml` beside the script. |
 
 Values already exported win over `.env`.
+
+This folder was `local-aura` until sd:2539, and it read `<config>/aura/`.
+Convention 3 keeps a `mezmo-*` folder's full name, so the config folder moved too.
+With only `<config>/aura/` present, every verb except `help` and `test` stops.
+The message names both paths and the `mv` that moves the folder; the script moves nothing.
+With both folders present, the script reads the new one and names the old one on stderr.
+The experiment's compose project is now `mezmo-aura-experiment`.
+Stop an experiment started before the rename with `docker compose -p local-aura-experiment down`.
 `server` and `server-repo` stop and name the missing variable when a key is unset.
 
 ## Gotchas

@@ -29,6 +29,7 @@ from sd_db import connect, reads, set_item_fields, upsert_repo, workflow
 from sd_dashboard import server, tasks_screen, v2
 
 from support import NOW, ScreenCase, upsert_shadow
+from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
@@ -39,6 +40,8 @@ MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 # The shell's run contract for writes, as shell.js has it: the stand-in runs these, not a copy.
 SETTLE_JS = re.search(r"^  // bulk:start\n(.*?)^  // bulk:end$", SHELL_JS, re.S | re.M).group(1)
+# The confirm dialog with its fields, as shell.js has it (sd:2200).
+CONFIRM = re.search(r"^  // confirm:start\n(.*?)^  // confirm:end$", SHELL_JS, re.S | re.M)
 
 
 def seed(case):
@@ -123,6 +126,30 @@ class TheDocuments(ScreenCase):
         port = rows[self.ids["port"]]
         self.assertEqual((port["assignment"], port["allowed"]), ("running", []))
 
+    def test_each_row_reads_its_history_once(self):
+        # sd:2380: allowed_statuses takes the row's item_state, read in the same snapshot, instead of reading it again.
+        calls, real = [], workflow.item_state
+
+        def counted(connection, item):
+            calls.append(item)
+            return real(connection, item)
+
+        with patch.object(workflow, "item_state", counted):
+            doc = tasks_screen.document(self.connection, now=NOW)
+        self.assertEqual(sorted(calls), sorted(row["id"] for row in doc["rows"]), "a row's history was read more than once")
+        for row in doc["rows"]:
+            self.assertEqual(row["allowed"], workflow.allowed_statuses(self.connection, row["id"]), row["id"])
+        details = tasks_screen.details(self.connection, self.ids["plan"], now=NOW)
+        self.assertEqual(details["allowed"], workflow.allowed_statuses(self.connection, self.ids["plan"]))
+
+    def test_the_details_carry_the_work_controls_for_a_work_item_only(self):
+        # sd:2200: relink and cancel are on where progress.work_controls says the mutation would take them.
+        from sd_db import progress
+
+        port = tasks_screen.details(self.connection, self.ids["port"], now=NOW)
+        self.assertEqual(port["work"], progress.work_controls(self.connection, self.ids["port"]))
+        self.assertIsNone(tasks_screen.details(self.connection, self.ids["plan"], now=NOW)["work"])
+
     def test_the_details_split_the_show_reading_into_its_sections(self):
         got = tasks_screen.details(self.connection, self.ids["plan"], now=NOW)
         state = workflow.item_state(self.connection, self.ids["plan"])
@@ -201,7 +228,7 @@ class ThePage(BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "tasks.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "tasks.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -269,11 +296,16 @@ SHELL = SETTLE_JS + r"""
 var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
   rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
+// A command with fields asks for them (shell.js's confirm): FIELD_VALUES is what the operator typed, and a required field left
+// empty keeps OK off, so nothing runs.
+var FIELD_VALUES = {};
 function shellRun(c, o) {
   var off = c.when ? c.when(o) : true;
   if (off !== true) { OUT.toasts.push({ msg: 'off: ' + off }); return; }
-  if (c.risk === 'confirm') OUT.confirms.push(c.id);
-  var msg = c.run ? c.run(o) : '';
+  if (c.risk === 'confirm' || c.fields) OUT.confirms.push(c.id);
+  var v = c.fields ? Object.fromEntries(c.fields(o).map(f => [f.name, String(FIELD_VALUES[f.name] || '').trim()])) : undefined;
+  if (c.fields && c.fields(o).some(f => f.required && !v[f.name])) { OUT.toasts.push({ msg: 'not run: OK is off until ' + c.fields(o).filter(f => f.required && !v[f.name]).map(f => f.label).join(', ') + ' is typed' }); return; }
+  var msg = c.run ? c.run(o, v) : '';
   if (thenable(msg)) { settleOne(c, o, msg, { toast: shellToast }); return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } })); }
   if (msg === null) return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id, form: true } }));
   OUT.toasts.push({ msg: msg || c.label, undo: c.risk === 'undo' && c.undo ? () => c.undo(o) : null });
@@ -288,7 +320,7 @@ function shellBulk(c, objs) {
 }
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
-window.shell = { commands: C, ICON: () => mk`<svg></svg>`, toast: shellToast,
+window.shell = { commands: C, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a) };
 const cmd = id => REG.find(c => c.id === id);
@@ -296,6 +328,20 @@ const flush = async () => { for (let i = 0; i < 400; i++) await null; };
 const open = key => document.dispatchEvent(new CustomEvent('shell:open', { detail: String(key) }));
 const lastToast = () => OUT.toasts[OUT.toasts.length - 1];
 const lastUndo = () => OUT.toasts.filter(t => t.undo).pop();
+"""
+# What Tasks adds to the shared stand-in: shell.row() as shell.js answers it, and the real reader (sd:2484).
+TASKS_SHELL = """window.shell.row = () => new URLSearchParams(location.search).get('row');
+""" + READ_SHELL
+# A landed write's readback moves the stored row with it, as the server's next read lists it: the page rereads after each
+# landed write, and a reread that brought back the row as it was before would undo the write on the page.
+STORED = r"""
+const STORED_FIELDS = ['status', 'priority', 'due', 'recurrence', 'recurrence_anchor'];
+function stored(a) {
+  const body = a && a[0] < 300 && a[1], row = body && body.item && body.revision && DOC.rows.find(r => r.id === body.item.id);
+  if (row) { STORED_FIELDS.forEach(k => { if (k in body.item) row[k] = body.item[k]; }); row.revision = body.revision; }
+  return a;
+}
+const storing = a => a && typeof a.then === 'function' ? a.then(stored) : stored(a);
 """
 
 
@@ -360,6 +406,68 @@ OUT.toasts[0].undo(); await flush();""")
         self.assertEqual(out["undone"], [["1", {"text": "Moved #1"}]])
 
 
+class TheConfirmFields(unittest.TestCase):
+    """shell.js's confirmAction with fields (sd:2200), run against a stand-in dialog: OK is off until a required field is typed."""
+
+    def confirm(self, body):
+        self.assertIsNotNone(CONFIRM, "shell.js has no confirm:start block")
+        script = "var window = globalThis;\n" + MARKUP_JS + r"""
+const { html } = window.markup, put = (el, m) => { el.html = String(m); };
+var OUT = { focused: null, result: null, error: null };
+const yes = { disabled: false }, no = {}, line = { textContent: '' }, inputs = { reason: { value: '', tagName: 'INPUT' } }, L = {};
+const form = { elements: inputs, addEventListener: (t, f) => { (L[t] = L[t] || []).push(f); },
+  querySelector: s => s === '[value="yes"]' ? yes : s === '#confirm-cli' ? line : null,
+  requestSubmit: b => { confirmDlg.returnValue = b === yes ? 'yes' : 'no'; confirmDlg.onclose(); } };
+var confirmDlg = { html: '', returnValue: '', onclose: null, querySelector: s => s === 'form' ? form : s === '[value="no"]' ? no : null };
+const modal = (d, first) => { OUT.focused = first === inputs.reason ? 'reason' : first === no ? 'keep' : null; return null; };
+const type = v => { inputs.reason.value = v; (L.input || []).forEach(f => f({})); };
+const key = k => { let stopped = false; (L.keydown || []).forEach(f => f({ key: k, target: inputs.reason, preventDefault: () => { stopped = true; } })); return stopped; };
+const close = v => { confirmDlg.returnValue = v; confirmDlg.onclose(); };
+""" + CONFIRM.group(1) + r"""
+(async () => { try {
+""" + body + """
+} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();
+function run() { return JSON.stringify(OUT); }
+"""
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out
+
+    FIELDS = """const p = confirmAction({ title: 'Cancel item: #7 Port the page?', cli: v => `sd work cancel 7 --reason ${v.reason || "'<why>'"}`,
+  ok: 'Cancel item', fields: [{ name: 'reason', label: 'Reason', required: true }] });
+"""
+
+    def test_ok_stays_off_until_a_required_field_is_typed(self):
+        out = self.confirm(self.FIELDS + """OUT.steps = [[yes.disabled, line.textContent]];
+type('   '); OUT.steps.push([yes.disabled, line.textContent]);
+type('superseded'); OUT.steps.push([yes.disabled, line.textContent]);
+close('yes'); OUT.result = await p; OUT.form = confirmDlg.html;""")
+        self.assertEqual(out["steps"], [[True, "sd work cancel 7 --reason '<why>'"], [True, "sd work cancel 7 --reason '<why>'"],
+                                        [False, "sd work cancel 7 --reason superseded"]])
+        self.assertEqual(out["focused"], "reason")
+        self.assertEqual((out["result"]["yes"], out["result"]["values"]), (True, {"reason": "superseded"}))
+        self.assertIn('id="cf-reason" name="reason"', out["form"])
+        self.assertIn('required aria-required="true"', out["form"])
+        self.assertIn('value="no" formnovalidate', out["form"])
+
+    def test_a_close_on_ok_with_the_field_empty_runs_nothing_and_enter_is_ok(self):
+        out = self.confirm(self.FIELDS + """OUT.enterEmpty = [key('Enter'), confirmDlg.returnValue];
+close('yes'); OUT.result = await p;
+const q = confirmAction({ title: 't', fields: [{ name: 'reason', label: 'Reason', required: true }] });
+type('done elsewhere'); key('Enter'); OUT.second = await q;""")
+        self.assertEqual(out["enterEmpty"], [True, ""], "Enter with the field empty closed the dialog")
+        self.assertFalse(out["result"]["yes"], "OK ran with the required field empty")
+        self.assertEqual((out["second"]["yes"], out["second"]["values"]), (True, {"reason": "done elsewhere"}))
+
+    def test_a_confirm_without_fields_is_unchanged(self):
+        out = self.confirm("""const p = confirmAction({ title: 'Delete: x?', cli: 'sd x' }); OUT.off = yes.disabled; close('yes'); OUT.result = await p;""")
+        self.assertEqual(out["focused"], "keep")
+        self.assertFalse(out["off"])
+        self.assertEqual((out["result"]["yes"], out["result"]["values"]), (True, {}))
+
+
 def state_answer(row, **changes):
     """A write's readback, `workflow.item_state` shaped, for a row of the tasks document."""
     item = {"id": row["id"], "status": row["status"], "priority": row["priority"], "due": row["due"],
@@ -381,13 +489,13 @@ class TheScript(ScreenCase):
 
     def run_page(self, body, answer="null", *, prelude="", env=None):
         """Load tasks.js, fire DOMContentLoaded, run `body` (async), and return OUT plus what `body` set on R."""
-        script = (prelude + STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
+        script = (prelude + STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + TASKS_SHELL
                   + f"\nconst DOC = {json.dumps(self.doc)}, DETAILS = {json.dumps(self.details)};\n"
-                  + "const WRITE = " + answer + ";\nvar DETAIL = null;\n"
+                  + "const WRITE = " + answer + ";\nvar DETAIL = null;\n" + STORED
                   + """ANSWER = (path, body) => {
-  if (path === '/api/tasks') return [200, DOC];
+  if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
   var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, DETAILS[m[1]]];
-  return WRITE ? WRITE(path, body) : [404, { error: 'no answer' }];
+  return WRITE ? storing(WRITE(path, body)) : [404, { error: 'no answer' }];
 };\n""" + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -412,8 +520,8 @@ class TheScript(ScreenCase):
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.run", "item", "undo", "r", None, True, True],
             ["item.delete", "item", "confirm", None, None, False, False],
-            ["work.relink", "item", "safe", "l", False, True, False],
-            ["work.cancel", "item", "confirm", "w", False, True, False],
+            ["work.relink", "item", "safe", "l", True, True, False],
+            ["work.cancel", "item", "confirm", "w", True, True, False],
             ["item.recur", "item", "undo", None, None, True, True],
             ["item.recur.clear", "item", "undo", None, None, True, True],
             ["note.resolve", "note", "confirm", "v", None, True, False],
@@ -500,6 +608,58 @@ open({ask}); await flush(); shellRun(cmd('item.status.ready'), C.get('{ask}')); 
         self.assertEqual(out["gets"], ["/api/tasks", f"/api/tasks/{ask}", "/api/tasks", f"/api/tasks/{ask}"])
         self.assertIn("Written elsewhere", out["R"]["html"])
 
+    # sd:2484: the rows are read through shell.read (read.js), as Activity and Documents read theirs.
+    def test_a_landed_write_reads_the_rows_again_and_a_row_no_longer_listed_runs_nothing(self):
+        ask, port = self.ids["ask"], self.ids["port"]
+        answer = f"""(path, body) => {{ DOC.rows = DOC.rows.filter(r => r.id !== {port});
+  return [200, {{ item: {{ id: {ask}, status: body.status, priority: 3, due: null, recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]; }}"""
+        out = self.run_page(f"""shellRun(cmd('item.status.ready'), C.get('{ask}')); await flush();
+R.types = [C.get('{ask}').type, C.get('{port}').type]; R.board = ELS['view-board'].html;""", answer)
+        self.assertEqual(out["gets"], ["/api/tasks", "/api/tasks"], "the landed write did not read the rows again")
+        self.assertEqual(out["R"]["types"], ["item", "not listed"])
+        self.assertNotIn("Port the page", out["R"]["board"])
+
+    def test_a_failed_reread_after_a_write_keeps_the_rows_and_says_the_write_landed(self):
+        ask = self.ids["ask"]
+        answer = f"(path, body) => [200, {{ item: {{ id: {ask}, status: body.status, priority: 3, due: null, recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
+        out = self.run_page(f"""const A = ANSWER; ANSWER = (path, body) => path === '/api/tasks' ? [500, {{ error: 'database is locked' }}] : A(path, body);
+shellRun(cmd('item.status.ready'), C.get('{ask}')); await flush();
+R.board = ELS['view-board'].html; R.details = ELS.details.html; R.type = C.get('{ask}').type;""", answer)
+        self.assertIn("Answer the question", out["R"]["board"], "the failed reread dropped the rows")
+        self.assertEqual(out["R"]["type"], "not listed")
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertTrue(out["states"][-1]["text"].startswith("The change landed; the tasks were not read again: database is locked."), out["states"][-1])
+        self.assertIn("The tasks were not read again after the change, so nothing is selected.", out["R"]["details"])
+
+    def test_a_read_sent_before_a_newer_one_never_draws_over_it(self):
+        # A refused write loads the rows; a task is added while that read is out. Each read's answer is the rows as they
+        # were when it was sent, and the newest is answered first: the older answer must not draw the added task away.
+        ask = self.ids["ask"]
+        new = {**self.row("ask"), "id": 99, "title": "Call the bank", "kind": "task", "status": "planning"}
+        answer = f"""(path, body) => path === '/api/items' ? (DOC.rows.push({json.dumps(new)}), [201, {{ item: {{ id: 99, title: 'Call the bank' }} }}])
+  : [409, {{ error: 'The item changed. Reload it.' }}]"""
+        out = self.run_page(f"""const A = ANSWER, HELD = []; DETAIL = id => DETAILS[id] ? [200, DETAILS[id]] : [404, {{ error: 'no such item' }}];
+ANSWER = (path, body) => {{ if (path !== '/api/tasks') return A(path, body); const snap = A(path, body); return new Promise(r => HELD.push(() => r(snap))); }};
+shellRun(cmd('item.status.ready'), C.get('{ask}')); await flush();
+var box = document.getElementById('shift-in'); box.value = 'Call the bank';
+box.listeners.keydown.forEach(f => f({{ key: 'Enter', preventDefault() {{}}, stopPropagation() {{}} }})); await flush();
+for (let i = 0; i < 4; i++) {{ HELD.splice(0).reverse().forEach(f => f()); await flush(); }}
+R.board = ELS['view-board'].html; R.listed = C.get('99') ? C.get('99').type : null;""", answer)
+        self.assertIn("Call the bank", out["R"]["board"], "an older read drew over the newer one")
+        self.assertEqual(out["R"]["listed"], "item")
+
+    def test_a_failed_load_draws_no_row_and_lights_unknown(self):
+        out = self.run_page("R.board = ELS['view-board'].html; R.details = ELS.details.html;", prelude="var FAIL_TASKS = 'database is locked';\n")
+        self.assertEqual(out["states"][-1], {"kind": "error", "text": "The tasks were not read: database is locked. Reload retries it.", "source": "/api/tasks"})
+        self.assertEqual(out["attention"][-1], {"state": "unknown", "n": 0, "what": "tasks not read"})
+        self.assertNotIn('data-key="', out["R"]["board"])
+        self.assertIn("The tasks were not read, so nothing is selected.", out["R"]["details"])
+
+    def test_the_read_guards_are_the_readers_not_a_copy(self):
+        self.assertIn("shell.read({", TASKS_JS)
+        for own in (r"\brereading\b", r"\bwrote\b", r"getJSON\('/api/tasks'\)", r"\bstarted = "):
+            self.assertIsNone(re.search(own, TASKS_JS), own)
+
     def test_a_repeating_task_offers_no_remove_due_date(self):
         # workflow._recurring refuses a repeating item with no due date, so neither the Edit dialog nor the move out of
         # Urgent offers Remove due date on one; each says why instead (review, PR #46).
@@ -531,15 +691,54 @@ shellRun(cmd('note.resolve'), C.get('note:{note}')); await flush();""", answer)
         self.assertEqual(out["posts"], [[f"/api/notes/{note}/resolve", {"revision": row["revision"]}, 64]])
         self.assertEqual(out["toasts"], [[f"Resolved note {note} · sd note resolve {note}", False]])
 
-    def test_relink_and_cancel_are_copy_only_lines(self):
-        port, plan = self.ids["port"], self.ids["plan"]
-        out = self.run_page(f"""open({port}); await flush();
-R.relink = [cmd('work.relink').when(C.get('{port}')), cmd('work.relink').cli(C.get('{port}'))];
-R.cancel = [cmd('work.cancel').when(C.get('{port}')), cmd('work.cancel').cli(C.get('{port}')), cmd('work.cancel').when(C.get('{plan}'))];""")
-        self.assertEqual(out["R"]["relink"], [True, f"sd work relink {port} <moved path>"])
-        self.assertEqual(out["R"]["cancel"], [True, f"sd work cancel {port} --reason '<why>'",
-                                              "sd work cancel acts on a work item; this is a task"])
+    def owned_work(self):
+        """A work item in a repository the database owns, with no assignment: sd work relink and cancel take it."""
+        owned = self.repo("/repos/owned")
+        upsert_repo(self.connection, owned, status_source="row")
+        mine = self.item("Owned work", kind="work", repo=owned, path="docs/work/mine/prd.md")
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.details[str(mine)] = tasks_screen.details(self.connection, mine, now=NOW)
+        return mine
+
+    def test_relink_and_cancel_post_to_the_work_routes_with_the_typed_text(self):
+        # sd:2200: both execute through /api/items/<id>/(relink|cancel) with the row's revision, after the confirm takes
+        # the text only the operator has. Neither offers Undo.
+        mine = self.owned_work()
+        row = next(r for r in self.doc["rows"] if r["id"] == mine)
+        answer = f"""(path, body) => [200, {{ item: {{ id: {mine}, status: path.endsWith('/cancel') ? 'done' : 'planning', priority: null, due: null, recurrence: null }},
+  notes: [], revision: path.endsWith('/cancel') ? 'c'.repeat(64) : 'b'.repeat(64) }}]"""
+        out = self.run_page(f"""open({mine}); await flush();
+R.fields = [cmd('work.relink').fields(C.get('{mine}')), cmd('work.cancel').fields(C.get('{mine}'))].map(fs => fs.map(f => [f.name, f.required, f.placeholder]));
+R.when = [cmd('work.relink').when(C.get('{mine}')), cmd('work.cancel').when(C.get('{mine}'))];
+R.cli = [cmd('work.relink').cli(C.get('{mine}')), cmd('work.cancel').cli(C.get('{mine}'), {{ reason: "it's superseded" }})];
+FIELD_VALUES = {{ path: 'docs/work/moved/prd.md' }}; shellRun(cmd('work.relink'), C.get('{mine}')); await flush();
+FIELD_VALUES = {{ reason: "it's superseded" }}; shellRun(cmd('work.cancel'), C.get('{mine}')); await flush();""", answer)
+        self.assertEqual(out["R"]["fields"], [[["path", True, "docs/work/mine/prd.md"]], [["reason", True, "why the work stops"]]])
+        self.assertEqual(out["R"]["when"], [True, True])
+        self.assertEqual(out["R"]["cli"], [f"sd work relink {mine} <moved path>", f"sd work cancel {mine} --reason 'it'\\''s superseded'"])
+        self.assertEqual(out["confirms"], ["work.relink", "work.cancel"])
+        self.assertEqual(out["posts"], [[f"/api/items/{mine}/relink", {"path": "docs/work/moved/prd.md", "revision": row["revision"]}, 64],
+                                        [f"/api/items/{mine}/cancel", {"reason": "it's superseded", "revision": "b" * 64}, 64]])
+        self.assertEqual(out["toasts"], [[f"#{mine} relinked → docs/work/moved/prd.md · sd work relink {mine} 'docs/work/moved/prd.md'", False],
+                                         [f"#{mine} cancelled · sd work cancel {mine} --reason 'it'\\''s superseded'", False]])
+
+    def test_cancel_with_no_reason_posts_nothing(self):
+        mine = self.owned_work()
+        out = self.run_page(f"""open({mine}); await flush(); FIELD_VALUES = {{ reason: '   ' }}; shellRun(cmd('work.cancel'), C.get('{mine}')); await flush();""")
         self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"], [["not run: OK is off until Reason is typed", False]])
+
+    def test_relink_and_cancel_are_off_where_sd_work_refuses_them(self):
+        # The seeded work row's repository lets its files own status, and it has a running assignment: progress.work_controls
+        # gives the reason the mutation would. A task row is not work at all.
+        port, plan = self.ids["port"], self.ids["plan"]
+        why = self.details[str(port)]["work"]["reason"]
+        out = self.run_page(f"""open({port}); await flush(); open({plan}); await flush();
+R.port = [cmd('work.relink').when(C.get('{port}')), cmd('work.cancel').when(C.get('{port}'))];
+R.plan = [cmd('work.relink').when(C.get('{plan}')), cmd('work.cancel').when(C.get('{plan}'))];""")
+        self.assertTrue(why)
+        self.assertEqual(out["R"]["port"], [why, why])
+        self.assertEqual(out["R"]["plan"], ["sd work relink acts on a work item; this is a task", "sd work cancel acts on a work item; this is a task"])
 
     def test_recur_needs_a_due_date_and_undo_clears_it(self):
         plan, ask = self.ids["plan"], self.ids["ask"]
@@ -658,7 +857,9 @@ R.matrix = ELS['view-matrix'].html;""")
         row.update(due="2026-12-01", urgent=False)
         self.assertTrue(reads.is_urgent({"due": "2026-09-14", "status": "ready", "kind": "task"}, now=read))
         answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-14', recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
-        out = self.run_page(f"""shellRun(cmd('item.status.in_progress'), C.get('{plan}')); await flush();
+        # The landed write's reread is held: what the page shows meanwhile is its own placement, not the server's.
+        out = self.run_page(f"""const A = ANSWER; ANSWER = (path, body) => path === '/api/tasks' ? new Promise(() => {{}}) : A(path, body);
+shellRun(cmd('item.status.in_progress'), C.get('{plan}')); await flush();
 document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); await flush(); R.matrix = ELS['view-matrix'].html;""",
                             answer, prelude=self.SEP6, env={"TZ": "America/Denver"})
         quads = dict(re.findall(r'data-q="(\w+)"(.*?)(?=data-q="|$)', out["R"]["matrix"], re.S))
@@ -735,7 +936,8 @@ R.early = OUT.toasts.length; await flush(); lastUndo().undo(); await flush();"""
         answer = self.landed_plan(f"path === '/api/items/{ask}/status'")
         out = self.run_page(f"""shellBulk(cmd('item.status.blocked'), [C.get('{plan}'), C.get('{ask}')]); await flush();
 R.gets = OUT.gets.length; lastUndo().undo(); await flush();""", answer)
-        self.assertEqual(out["R"]["gets"], 2, "the refused write did not read the rows again")
+        # The first read, the landed write's reread, and the refused write's load (sd:2484).
+        self.assertEqual(out["R"]["gets"], 3, "the refused write did not read the rows again")
         self.assertIn(["Status → Blocked · 1 item · 1 of 2 not changed: The item changed. Reload it.", True], out["toasts"])
         self.assertEqual(out["toasts"][-1], [f"Status → Blocked undone · 1 of 2 reversed · not reversed: #{ask} Answer the question (its change did not land)", False])
         self.assertEqual([p[0] for p in out["posts"]].count(f"/api/items/{ask}/status"), 1, "Undo wrote the refused item")
@@ -956,11 +1158,38 @@ R.text = (await cmd('item.run').run(C.get('{plan}'))).text;""",
         self.connection.commit()
         self.doc = tasks_screen.document(self.connection, now=NOW)
         plan = self.ids["plan"]
-        out = self.run_page(f"R.text = cmd('item.complete').consequence(C.get('{plan}'));")
-        # The library computes no BYDAY date, so the completion ends that series; the confirm names the rule and says so.
+        out = self.run_page(f"""const o = C.get('{plan}'); R.text = cmd('item.complete').consequence(o); R.danger = cmd('item.complete').danger(o);
+R.done = cmd('item.status.done').when(o);""")
+        # The library walks no BYDAY rule, so the completion ends that series; the confirm names the rule and says so, on the
+        # danger button, since the series ends for good (sd:2250, case 3).
         self.assertIsNone(self.row("plan")["next_due"])
-        self.assertIn("(FREQ=WEEKLY;BYDAY=MO,TH)", out["R"]["text"])
-        self.assertTrue(out["R"]["text"].startswith(f"Completes #{plan} and ends the series"), out["R"]["text"])
+        self.assertEqual(out["R"]["text"], f"Completes #{plan} and ends the series: sd cannot walk FREQ=WEEKLY;BYDAY=MO,TH, so no next occurrence opens. There is no Undo.")
+        self.assertTrue(out["R"]["danger"])
+        self.assertEqual(out["R"]["done"], "it repeats: 5 completes it and ends the series, since sd cannot walk its rule")
+
+    def test_a_rule_whose_date_the_page_has_not_read_says_sd_sets_it(self):
+        # sd:2250, cases 1 and 2. The row's next_due is the date the confirm names, on a plain confirm button. A readback
+        # that moves the due date leaves the next date unknown until the rows are read again (the reread is held here): the
+        # confirm names the valid rule and says sd sets its date.
+        plan = self.ids["plan"]
+        self.row("plan").update(recurrence="FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=9", next_due="2026-11-09")
+        answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-10', recurrence: 'FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=9' }}, notes: [], revision: 'b'.repeat(64) }}]"
+        out = self.run_page(f"""const o = C.get('{plan}'); R.dated = [cmd('item.complete').consequence(o), cmd('item.complete').danger(o)];
+const A = ANSWER; ANSWER = (path, body) => path === '/api/tasks' ? new Promise(() => {{}}) : A(path, body);
+shellRun(cmd('item.status.in_progress'), o); await flush();
+R.undated = [cmd('item.complete').consequence(o), cmd('item.complete').danger(o)];""", answer)
+        rule = "FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=9"
+        self.assertEqual(out["R"]["dated"], [f"Completes #{plan} and opens the next occurrence, due Nov 9 ({rule}). A move back would leave two open tasks, so there is no Undo.", False])
+        self.assertEqual(out["R"]["undated"], [f"Completes #{plan} and opens the next occurrence ({rule}); sd sets its date. A move back would leave two open tasks, so there is no Undo.", False])
+
+    def test_the_rule_parts_the_page_walks_are_the_librarys(self):
+        from sd_db import recurrence
+
+        parts = re.search(r"const PARTS = new Set\(\[([^\]]*)\]\)", TASKS_JS)
+        self.assertIsNotNone(parts)
+        self.assertEqual(tuple(re.findall(r"'([A-Z]+)'", parts.group(1))), recurrence.PARTS)
+        # The shell's confirm colour asks the command where it declares danger(o).
+        self.assertIn("danger: c.danger ? !!c.danger(o) : c.risk === 'confirm'", SHELL_JS)
 
     def test_work_ops_and_done_rows_have_neither_key_5_command(self):
         port, ask, plan = self.ids["port"], self.ids["ask"], self.ids["plan"]

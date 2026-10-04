@@ -282,6 +282,14 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if set(values) != {"revision"}:
             raise ValueError("Provide the current report revision.")
         return lambda connection: reporting.acknowledge(connection, int(match[1]), expected_revision=values["revision"], who="dashboard")
+    # The Reports page's Undo (sd:2395): it posts the revision its acknowledge answered, so a report changed since is stale.
+    match = re.fullmatch(r"/api/reports/([1-9][0-9]*)/reopen", path)
+    if match:
+        from sd_db import reporting
+
+        if set(values) != {"revision"}:
+            raise ValueError("Provide the revision the acknowledgement answered.")
+        return lambda connection: reporting.reopen(connection, int(match[1]), expected_revision=values["revision"], who="dashboard")
     if path == "/api/reports/acknowledge-clean":
         from sd_db import reporting
 
@@ -507,6 +515,10 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Untrusted dashboard host."})
         split = urlsplit(self.path)
         path = split.path
+        # A read carries the dashboard's own origin or none. `Origin: null` is a sandboxed page (sd:1502): its cookie
+        # is withheld by SameSite, and this refusal holds if a browser ever sends one anyway.
+        if path.startswith("/api/") and self.headers.get_all("Origin", [context.origin]) != [context.origin]:
+            return self._json(403, {"error": "A dashboard read must come from the dashboard's own origin."})
         if path == "/health":
             return self._health()
         if path == "/favicon.ico":
@@ -782,11 +794,11 @@ class Dashboard(BaseHTTPRequestHandler):
         rather than fought: the document gets its own address and its own,
         tighter policy.
         """
-        from .documents import POLICY, resolve
+        from .documents import located, policy
 
         key, _, name = tail.partition("/")
-        target = resolve(key, name)
-        if target is None:
+        found = located(key, name)
+        if found is None:
             # One answer for every way of missing. Telling a prober which of
             # "no such root" and "outside the root" they reached is telling
             # them how the check works.
@@ -794,6 +806,7 @@ class Dashboard(BaseHTTPRequestHandler):
                 404, error_page(404, "No such document.").encode("utf-8"),
                 "text/html; charset=utf-8",
             )
+        root, target = found
         try:
             body = target.read_bytes()
         except OSError as problem:
@@ -801,7 +814,8 @@ class Dashboard(BaseHTTPRequestHandler):
                 503, error_page(503, str(problem)).encode("utf-8"),
                 "text/html; charset=utf-8",
             )
-        self._send(200, body, "text/html; charset=utf-8", policy=POLICY)
+        # A `*.app.html` page gets a sandbox and its own script; every other page gets none (sd:1502).
+        self._send(200, body, "text/html; charset=utf-8", policy=policy(root, name, body))
 
     def _design(self, tail: str) -> None:
         """One file from the ui-design checkout, at its path in the tree.
