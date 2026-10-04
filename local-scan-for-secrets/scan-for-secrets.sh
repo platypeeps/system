@@ -289,6 +289,10 @@ EXCLUDE_GLOBS="*.png *.jpg *.jpeg *.gif *.webp *.ico *.pdf *.zip *.tar *.gz *.tg
 # evidence requirement, 2 without it. Deliberately narrow to `Authorization`:
 # widening it to api_key/token/secret matched 11 vendored test fixtures, and
 # PATTERNS also drives `mask`, which rewrites files in place.
+#
+# The URL entry leaves `[` and `]` out of the user and password: RFC 3986
+# allows neither in userinfo, and a grammar line such as
+# `scheme://[user[:password]@]host` matched as a credential (sd:2591).
 PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
 sk-[A-Za-z0-9]{40,}
@@ -312,7 +316,7 @@ sq0atp-[0-9A-Za-z_-]{20,}
 SG\.[0-9A-Za-z_-]{20,}\.[0-9A-Za-z_-]{20,}
 eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}
 -----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY( BLOCK)?-----
-[a-z][a-z0-9+.-]*://[^/\s:@"\\]{3,}:[^/\s:@"\\]{8,}@
+[a-z][a-z0-9+.-]*://[^]/\s:@"\\\[]{3,}:[^]/\s:@"\\\[]{8,}@
 [Aa]uthorization[^A-Za-z0-9]{1,4}([Bb]earer[^A-Za-z0-9]{1,3})?[A-Za-z0-9+/]{24,}(=|[+][A-Za-z0-9+/]{2,}={0,2})'
 
 command -v rg >/dev/null 2>&1 && HAVE_RG=1 || HAVE_RG=0

@@ -68,5 +68,33 @@ class RelativeInvocation(unittest.TestCase):
         self.assert_clean_run(result)
 
 
+class UrlCredentials(unittest.TestCase):
+    """A URL's userinfo cannot hold `[` or `]` (RFC 3986, 3.2.1), so the
+    bracketed grammar line `scheme://[user[:password]@]host` is not a
+    credential (sd:2591); a real `user:password@` still is."""
+
+    def scan(self, text: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "home").mkdir()
+            (root / "tree").mkdir()
+            (root / "tree" / "remote.py").write_text(text, encoding="utf-8")
+            env = dict(os.environ, HOME=str(root / "home"), SYSTEM_TOOLS_CONFIG=str(root / "config"))
+            env.pop("S4S_CONF", None)
+            return subprocess.run(["sh", str(SCRIPT)], cwd=root / "tree", env=env,
+                                  capture_output=True, text=True, timeout=120)
+
+    def test_a_bracketed_grammar_line_is_not_a_finding(self) -> None:
+        result = self.scan("#: `scheme://[user[:password]@]host[:port]/path`, the URL form of a remote.\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("embedded credentials", result.stdout)
+
+    def test_a_url_with_a_password_is_still_a_finding(self) -> None:
+        # Joined here, so this file is not a finding of the repository scan.
+        result = self.scan("REMOTE = 'https://alice:" + "correct-horse-battery@example.test/repo.git'\n")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("URL with embedded credentials", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

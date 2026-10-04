@@ -1078,6 +1078,20 @@ class HostJobsTest(unittest.TestCase):
         self.assertNotIn("no such job", done.stdout + done.stderr)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
+    def test_plist_values_are_xml_escaped(self):
+        """A config root named with `&`, `<` and `>` still renders a plist
+        launchd can parse, holding the root as written (sd:2562)."""
+        self.fx.write_job("demo", self.JOB.format("true"))
+        odd = self.fx.tmp / "cfg & <odd>"
+        odd.symlink_to(self.fx.config)
+        env = {**self.env(), "SYSTEM_TOOLS_CONFIG": str(odd)}
+        result = subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                                env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        environment = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        self.assertEqual(environment["SYSTEM_TOOLS_CONFIG"], str(odd))
+
     def test_no_host_folder_reads_the_shared_jobs(self):
         self.fx.write_job("demo", self.JOB.format("true"))
         self.assertEqual(list(self.rows()), ["demo"])
