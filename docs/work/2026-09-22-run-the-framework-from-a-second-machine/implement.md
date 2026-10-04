@@ -132,8 +132,10 @@ Each step ships alone. Steps 1–7 change nothing the hub runs.
     `/Users/<second-login>`; repository paths are home-relative since sd:1439
     (gap (a)). Prerequisites, before the stage runs:
     - **One interactive account.** List the satellite's local accounts
-      with a uid of 501 or more. A second one reopens Q3 in `design.md`:
-      take option B, a token beside the identity, first.
+      with a uid of 501 or more. This checks logins only: under Q3 A every
+      process on the satellite, service accounts included, is trusted (the
+      trust boundary in `design.md`, Q3). A second login reopens Q3: take
+      option B, a token beside the identity, first.
     - **Home-relative paths.** Check: a satellite session under
       `/Users/<second-login>` reads `sd today` and resolves every registered
       checkout.

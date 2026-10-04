@@ -757,6 +757,18 @@ dashboard's `peer_login` already refuses tagged and expired nodes, in
 
 **Ruled 2026-10-04: A.**
 
+**The trust boundary under A is the whole satellite machine.** Every
+process on the operator's node carries the node's Tailscale identity:
+interactive logins, system service accounts below uid 501, and any account
+created later. Each one passes `whois` and can run any statement the wire
+accepts against the hub. A trusts the satellite as a machine, not as a
+login, and A's risk column ("any local account") includes service accounts.
+Step 10's account listing checks only that no second interactive login
+exists; it does not narrow the boundary. A process the operator does not
+trust with the hub database must not run on the satellite. If that stops
+holding, take B: an owner-readable token checks the local user, which
+`whois` cannot.
+
 **Recommendation: A.** It keeps R7, passes criterion 6, and closes the
 hub's second-account path. Step 10 first lists the satellite's local
 accounts. If the satellite has a second interactive account, take B
