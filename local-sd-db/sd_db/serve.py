@@ -40,8 +40,12 @@ without the prune, so no row is ever deleted:
   the statement runs, and an id seen before is refused.
 - `COMMIT` from the owner inserts the `request_outcome` row on the same
   connection, then commits: the row and the writes land together or not
-  at all. A `COMMIT` naming an R the session does not own is refused and
-  not applied, and a write transaction's `COMMIT` without its R too.
+  at all. A transaction that changed nothing (no row, no schema, no
+  `user_version`) gets no row: it wrote nothing either way, and the table,
+  which is never pruned, does not grow on quiet ticks. The server's row
+  stays out of the session's `total_changes`. A `COMMIT` naming an R the
+  session does not own is refused and not applied, and a write
+  transaction's `COMMIT` without its R too.
 - `ROLLBACK`, a transaction SQLite ends itself, and the socket closing
   settle ownership.
 - `outcome(R)` answers `in_flight` while a session owns R, else `recorded`
@@ -205,6 +209,10 @@ class Session(socketserver.BaseRequestHandler):
         self.rid: str | None = None
         #: The `request_outcome` row is inserted in the open transaction.
         self.recorded = False
+        #: What the open write transaction had changed when it began.
+        self.mark: tuple = ()
+        #: Rows the server inserted, kept out of `total_changes`.
+        self.hidden = 0
         #: The connection's own `query_only`, restored when a read ends.
         self.query_only = 0
         self.traced: list[str] = []
@@ -216,6 +224,13 @@ class Session(socketserver.BaseRequestHandler):
             return connection.execute(sql, params)
         finally:
             del self.traced[mark:]
+
+    def _changes(self, connection: sqlite3.Connection) -> tuple:
+        """Rows changed, and the schema and user versions: DDL and
+        `PRAGMA user_version` move no row but are writes all the same."""
+        return (connection.total_changes,
+                self._quiet(connection, "PRAGMA schema_version").fetchone()[0],
+                self._quiet(connection, "PRAGMA user_version").fetchone()[0])
 
     def _recorded(self, connection: sqlite3.Connection, rid: str) -> bool:
         return self._quiet(connection, "SELECT 1 FROM request_outcome WHERE id = ?", (rid,)).fetchone() is not None
@@ -256,6 +271,7 @@ class Session(socketserver.BaseRequestHandler):
                 owners.settle(rid)
                 raise
             self.kind, self.rid, self.recorded = "write", rid, False
+            self.mark = self._changes(connection)
         return answer
 
     def _begin_read(self, connection: sqlite3.Connection, rid, sql: str, params) -> dict:
@@ -289,12 +305,16 @@ class Session(socketserver.BaseRequestHandler):
                     f"nothing was committed"
                 )
             with self.server.owners.lock(rid):  # type: ignore[attr-defined]
-                if not self.recorded:
-                    if _fault is not None:
-                        _fault("before-commit", self)
+                if _fault is not None:
+                    _fault("before-commit", self)
+                # A transaction that changed nothing gets no row: committed
+                # or not, it wrote nothing, so `absent` and its "run the verb
+                # again" stay true, and a quiet tick adds no row to the hub.
+                if not self.recorded and self._changes(connection) != self.mark:
                     self._quiet(connection, "INSERT INTO request_outcome (id, committed_at) VALUES (?, ?)",
                                 (rid, now()))
                     self.recorded = True
+                    self.hidden += 1
                 answer = _answer(connection, run())
                 if _fault is not None:
                     _fault("after-commit", self)
@@ -319,7 +339,7 @@ class Session(socketserver.BaseRequestHandler):
                 owners.settle(self.rid)
         elif connection is not None:
             self._quiet(connection, f"PRAGMA query_only = {self.query_only}")
-        self.kind, self.rid, self.recorded = None, None, False
+        self.kind, self.rid, self.recorded, self.mark = None, None, False, ()
 
     def _outcome(self, connection: sqlite3.Connection, rid) -> str:
         rid = _request_id(rid)
@@ -443,7 +463,8 @@ class Session(socketserver.BaseRequestHandler):
                         connection.set_trace_callback(traced.append if frame.get("on") else None)
                         answer = _answer(connection, None)
                     elif op == "total_changes":
-                        answer = {**_answer(connection, None), "value": connection.total_changes}
+                        answer = {**_answer(connection, None),
+                                  "value": connection.total_changes - self.hidden}
                     elif op == "serialize":
                         # The size now, the bytes in `chunk` answers, so no
                         # frame carries more than `remote.CHUNK` of them.

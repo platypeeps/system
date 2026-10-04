@@ -458,6 +458,27 @@ class TheOwnership(OutcomeCase):
             local.execute("INSERT INTO probe (name) VALUES ('local')")
         self.assertEqual((count(self.path), count(self.path, "request_outcome")), (1, 0))
 
+    def test_a_write_transaction_that_changes_nothing_adds_no_row(self):
+        # A replay that writes nothing must write nothing over the wire too:
+        # no row, and `total_changes` as a local connection counts it.
+        client = self.connect()
+        before = client.total_changes
+        with transaction(client):
+            client.execute("UPDATE probe SET name = 'none' WHERE name = 'missing'")
+        self.assertEqual((count(self.path, "request_outcome"), client.total_changes), (0, before))
+        with transaction(client):
+            client.execute("INSERT INTO probe (name) VALUES ('one')")
+        self.assertEqual((count(self.path, "request_outcome"), client.total_changes), (1, before + 1))
+
+    def test_a_write_that_moves_no_row_is_still_recorded(self):
+        # DDL and `user_version` change no row; they are writes all the same.
+        client = self.connect()
+        with transaction(client):
+            client.execute("CREATE TABLE extra (x)")
+        with transaction(client):
+            client.execute("PRAGMA user_version = 99")
+        self.assertEqual(count(self.path, "request_outcome"), 2)
+
     def test_request_ids_are_ulids_that_order_by_time(self):
         early, late = remote.new_request_id(1_700_000_000.0), remote.new_request_id(1_800_000_000.0)
         self.assertTrue(remote.REQUEST_ID.fullmatch(early) and remote.REQUEST_ID.fullmatch(late))

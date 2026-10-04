@@ -54,7 +54,8 @@ backup, and the fixture harness both repositories test against.
                     Carries its reverse in its header, run before 017's
                     (sd:2581)
       schema/019_request_outcome.sql  `request_outcome`: one row per write
-                    transaction a remote session committed, inserted by
+                    transaction a remote session committed that changed
+                    something, inserted by
                     `serve` inside that transaction, so a satellite whose
                     COMMIT answer was lost can ask whether it landed. No
                     row is pruned. Carries its reverse in its header, run
