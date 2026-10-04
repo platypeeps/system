@@ -117,3 +117,37 @@ class BackupCheck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Detached(unittest.TestCase):
+    """sd:2581: `repo remove` detaches a released run, and its journal holds `repo` NULL.
+
+    Only a released run may lose its repository, and only that one field may
+    change: an open run with none, or a detached run given a repository back,
+    is still refused.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="sd2581-")
+        self.addCleanup(self.temp.cleanup)
+        self.database = Path(self.temp.name).resolve() / "sd.db"
+        self.record = {"id": uuid.uuid4().hex, "assignment": 6, "run": 1, "repo": "/srv/repos/x", "branch": "sd/x",
+                       "owner": "runner", "work_path": "/w", "retained_path": "/r", "created_at": STAMP,
+                       "journal_version": 3, "released_at": STAMP}
+
+    def test_a_released_run_may_lose_its_repository_once(self):
+        runner_journal.persist(self.database, self.record)
+        detached = {**self.record, "repo": None, "journal_version": 4}
+        path = runner_journal.persist(self.database, detached)
+        self.assertEqual(runner_journal.read(path), detached)
+        with self.assertRaisesRegex(runner_journal.RunnerRefused, "identity changed: repo"):
+            runner_journal.persist(self.database, {**detached, "repo": "/srv/repos/y", "journal_version": 5})
+
+    def test_an_open_run_with_no_repository_is_still_invalid(self):
+        path = write_raw(self.database, {**self.record, "repo": None, "released_at": None})
+        with self.assertRaisesRegex(runner_journal.RunnerRefused, "invalid repo"):
+            runner_journal.read(path)
+        other = {**self.record, "id": uuid.uuid4().hex, "released_at": None}
+        runner_journal.persist(self.database, other)
+        with self.assertRaisesRegex(runner_journal.RunnerRefused, "identity changed: repo"):
+            runner_journal.persist(self.database, {**other, "repo": None, "journal_version": 4})

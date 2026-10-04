@@ -805,6 +805,57 @@ class RepoRefusals(Store):
         self.assertEqual(len(self.refused(self.plan_repo(self.source), "I7")), 1)
 
 
+class MovedItemRuns(Store):
+    """sd:2581: a run of an item moved to another repo no longer holds the old repo's remove.
+
+    `sd task edit N --belongs-to` moves the item and leaves its finished runs
+    naming the old repo. The remove detaches each one (migration 018): the row
+    stays with its item, `repo` goes NULL, its journal says the same, and the
+    record names the repo it had.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.source = self.repo()
+        self.target = self.repo("target")
+        self.moved = self.item(repo=self.target, title="moved away")
+        self.work = self.assignment(self.moved)
+        self.newer()
+        self.run = self.attempt(self.work, self.source)
+        self.lease(self.run, self.source)
+
+    def test_the_preview_detaches_the_run_instead_of_refusing(self):
+        plan = self.plan_repo(self.source)
+        self.assertEqual(plan["refusals"], [])
+        self.assertEqual(plan["detach"], [{"run": self.run, "repo": self.source, "item": self.moved,
+                                           "item_repo": self.target}])
+        self.assertNotIn(("runner_run", self.run), self.keys(plan))
+        # Its released lease names the repo, so it goes with it, as P4 has it.
+        self.assertIn(("runner_lease", self.run), self.keys(plan))
+
+    def test_a_detached_run_is_still_held_to_p4(self):
+        self.db.execute("UPDATE runner_run SET released_at=NULL WHERE id=?", (self.run,))
+        self.assertEqual([r["key"] for r in self.refused(self.plan_repo(self.source), "P4")],
+                         [self.run])
+
+    def test_the_apply_keeps_the_run_with_its_item_and_its_journal_agrees(self):
+        journal = self.journal([self.run])
+        version = self.db.execute("SELECT journal_version FROM runner_run WHERE id=?", (self.run,)).fetchone()[0]
+        fingerprint = self.plan_repo(self.source)["fingerprint"]
+        result = self.apply("repo", self.source, fingerprint)
+        self.assertEqual(result["detached"], [self.run])
+        row = self.db.execute("SELECT * FROM runner_run WHERE id=?", (self.run,)).fetchone()
+        self.assertEqual((row["repo"], row["assignment"], row["journal_version"]), (None, self.work, version + 1))
+        self.assertIsNone(self.db.execute("SELECT 1 FROM repo WHERE path=?", (self.source,)).fetchone())
+        self.assertEqual(list(self.db.execute("PRAGMA foreign_key_check")), [])
+        record = runner_journal.read(journal / f"{self.run}.json")
+        self.assertEqual((record["repo"], record["journal_version"]), (None, version + 1))
+        _, _, text = self.record(result["record"])
+        self.assertIn(f"detached:\nrunner_run {self.run} repo {self.source}\n", text)
+        # The nightly backup checks every row against its journal: it must pass.
+        removal.backups.run(home=self.home, database=self.store / "sd.db", keep=None)
+
+
 class TheProbe(Store):
     """sd:744's rows, rebuilt from `design.md` section 7, and the files beside them."""
 

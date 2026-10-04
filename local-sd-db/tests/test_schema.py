@@ -754,6 +754,101 @@ class TheCiColumn(SchemaCase):
             connection.execute("SELECT ci FROM repo WHERE path = '/one'").fetchone()[0], "local")
 
 
+class TheNullableRunRepo(SchemaCase):
+    """Migration 18. `runner_run.repo` may be NULL: `repo remove` detaches a
+    released run of an item that moved to another repo (sd:2581).
+
+    The column is edited in place, as 009 edited `item`, because
+    `runner_lease.run` references `runner_run(id)` and the rebuild cannot drop
+    the old copy inside `migrate`'s transaction. So the proofs are 009's:
+    rows survive, the index is still there, a replay is a no-op, and a shape
+    the file does not know is refused untouched.
+    """
+
+    RUN = "a" * 32
+
+    def _at_version_seventeen(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                if version > 17:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.execute("INSERT INTO repo (path, created_at, updated_at) VALUES ('/repo', 't', 't')")
+            connection.execute("INSERT INTO item (id, kind, repo, title, status, created_at, updated_at) "
+                               "VALUES (4, 'work', '/repo', 'work', 'done', 't', 't')")
+            connection.execute("INSERT INTO assignment (id, item, role, status) VALUES (6, 4, 'author', 'done')")
+            connection.execute("INSERT INTO runner_run (id, assignment, run, repo, branch, owner, work_path, "
+                               "retained_path, created_at, updated_at, released_at) "
+                               "VALUES (?, 6, 1, '/repo', 'sd/x', 'runner', '/w', '/r', 't', 't', 't')", (self.RUN,))
+            connection.execute("INSERT INTO runner_lease (run, repo, branch, exclusive, acquired_at, released_at) "
+                               "VALUES (?, '/repo', 'sd/x', 1, 't', 't')", (self.RUN,))
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _body(self):
+        return dict(schema_module.migrations())[18].read_text(encoding="utf-8")
+
+    def _run_sql(self, connection):
+        return connection.execute("SELECT sql FROM sqlite_master WHERE name = 'runner_run'").fetchone()[0]
+
+    def test_the_run_survives_and_its_repo_may_now_be_null(self):
+        self._at_version_seventeen()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (17, list(range(18, SCHEMA_VERSION + 1))))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        self.assertEqual(tuple(connection.execute(
+            "SELECT id, assignment, repo, branch FROM runner_run").fetchone()), (self.RUN, 6, "/repo", "sd/x"))
+        connection.execute("UPDATE runner_run SET repo = NULL WHERE id = ?", (self.RUN,))
+        self.assertIsNone(connection.execute("SELECT repo FROM runner_run").fetchone()[0])
+        # The lease keeps its NOT NULL, and the foreign key still binds a run's repo.
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("UPDATE runner_lease SET repo = NULL")
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("UPDATE runner_run SET repo = '/elsewhere'")
+        self.assertEqual([row[1] for row in connection.execute("PRAGMA index_list(runner_run)")
+                          if not row[1].startswith("sqlite_")], ["runner_by_assignment"])
+        self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual(connection.execute("PRAGMA writable_schema").fetchone()[0], 0)
+        self.assertEqual(sorted(tables(connection)), sorted(TABLES))
+
+    def test_a_replay_onto_the_shape_it_produces_changes_nothing(self):
+        self._at_version_seventeen()
+        migrate(self.path)
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        before = self._run_sql(connection)
+        connection.executescript(f"BEGIN;\n{self._body()}\nCOMMIT;")
+        self.assertEqual(self._run_sql(connection), before)
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM item WHERE kind LIKE 'migration-%'").fetchone()[0], 0)
+
+    def test_a_shape_this_migration_does_not_recognise_is_refused_untouched(self):
+        self._at_version_seventeen()
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        current = self._run_sql(raw)
+        mangled = current.replace("    repo TEXT NOT NULL REFERENCES repo(path),",
+                                  "    repo text not null references repo(path),")
+        self.assertNotEqual(mangled, current, "the mangle matched nothing, so this proves nothing")
+        raw.execute("PRAGMA writable_schema = ON")
+        raw.execute("UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = 'runner_run'", (mangled,))
+        raw.execute("PRAGMA writable_schema = RESET")
+        with self.assertRaises(sqlite3.IntegrityError):
+            raw.executescript(f"BEGIN;\n{self._body()}\nCOMMIT;")
+        try:
+            raw.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        self.assertEqual(self._run_sql(raw), mangled)
+        self.assertEqual(raw.execute("PRAGMA writable_schema").fetchone()[0], 0)
+
+
 class TheConnection(SchemaCase):
     def test_wal_and_foreign_keys_are_on(self):
         initialise(self.path)

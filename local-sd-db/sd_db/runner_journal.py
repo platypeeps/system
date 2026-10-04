@@ -130,6 +130,16 @@ def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRef
         os.close(descriptor)
 
 
+def detached(record: dict) -> bool:
+    """Whether `record` is a released run whose repository was removed (sd:2581).
+
+    `repo remove` sets such a run's `repo` to NULL (migration 018) and writes
+    the journal from the row, so the journal says so too. Only a released run
+    is ever detached; an open one with no repository is still invalid.
+    """
+    return record.get("repo") is None and bool(record.get("released_at"))
+
+
 def read(path: Path) -> dict:
     try:
         if path.is_symlink() or not re.fullmatch(r"[a-f0-9]{32}\.json", path.name):
@@ -139,6 +149,8 @@ def read(path: Path) -> dict:
         if not isinstance(record, dict) or type(record.get("journal_version")) is not int or record["journal_version"] < 0:
             raise ValueError("invalid journal version")
         for name in ("id", "repo", "branch", "work_path", "retained_path", "owner", "created_at"):
+            if name == "repo" and detached(record):
+                continue
             if not isinstance(record.get(name), str) or not record[name]:
                 raise ValueError(f"invalid {name}")
         if type(record.get("assignment")) is not int or type(record.get("run")) is not int:
@@ -173,6 +185,9 @@ def persist(database: Path, record: dict) -> Path:
             # the same repository by its absolute path (sd:1447).
             keyed, previous = canonical(record), canonical(previous)
             for name in ("id", "assignment", "run", "repo", "branch", "work_path", "retained_path"):
+                # A released run's repository may go, once: `repo remove` detaches it (sd:2581).
+                if name == "repo" and detached(keyed) and previous.get("released_at"):
+                    continue
                 if previous[name] != keyed[name]:
                     raise RunnerRefused(f"run journal identity changed: {name}")
             if previous.get("released_at") and not record.get("released_at"):
