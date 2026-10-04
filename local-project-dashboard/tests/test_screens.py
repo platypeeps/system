@@ -251,7 +251,7 @@ class OperationsUsage(ScreenCase):
             self.assertIn(expected, page)
         self.assertNotIn("Age in status", page)
         self.assertNotIn("Jobs needing attention", page)
-        for path in ("/classic/today", "/backlog"):
+        for path in ("/classic/today", "/classic/backlog"):
             relocated = self.render(path)
             self.assertNotIn("Week, cost and provider details", relocated)
             self.assertNotIn("fixture-plan:", relocated)
@@ -265,23 +265,23 @@ class Backlog(ScreenCase):
         for repo in ("/repos/team-a/shared", "/repos/team-b/shared"):
             upsert_repo(self.connection, repo)
             self.item("A long descriptive item title for the compact layout", repo=repo)
-        page = self.render("/backlog")
+        page = self.render("/classic/backlog")
         self.assertIn("team-a/shared", page)
         self.assertIn("team-b/shared", page)
         self.assertNotIn(">/repos/team-a/shared<", page)
-        filtered = self.render("/backlog", {"q": ["/repos/team-a/shared"]})
+        filtered = self.render("/classic/backlog", {"q": ["/repos/team-a/shared"]})
         self.assertIn("A long descriptive item title", filtered)
         self.assertNotIn("team-b/shared", listing_content(filtered, "backlog"))
 
     def test_empty_due_column_hides_only_when_its_displayed_rows_are_empty(self):
-        empty = self.render("/backlog")
+        empty = self.render("/classic/backlog")
         self.assertNotRegex(empty, r'<th[^>]*>Due</th>')
         dated = self.item("Dated layout fixture", due="2026-09-20")
-        page = self.render("/backlog")
+        page = self.render("/classic/backlog")
         self.assertRegex(page, r'<th[^>]*>Due</th>')
         self.assertIn('datetime="2026-09-20" aria-label="2026-09-20"', page)
-        self.assertNotRegex(self.render("/backlog", {"q": ["backlog"]}), r'<th[^>]*>Due</th>')
-        self.assertIn(f'href="/item/{dated}"', self.render("/backlog", {"q": ["2026-09-20"]}))
+        self.assertNotRegex(self.render("/classic/backlog", {"q": ["backlog"]}), r'<th[^>]*>Due</th>')
+        self.assertIn(f'href="/item/{dated}"', self.render("/classic/backlog", {"q": ["2026-09-20"]}))
 
     def setUp(self):
         super().setUp()
@@ -298,31 +298,31 @@ class Backlog(ScreenCase):
         rows = reads.backlog_items(self.connection, now=self.now)
         ids = {row["id"] for row in rows}
         for view in ("list", "board", "matrix"):
-            page = self.render("/backlog", {"view": [view]})
+            page = self.render("/classic/backlog", {"view": [view]})
             shown = {item for item in ids if f'href="/item/{item}"' in page}
             self.assertEqual(shown, ids, f"{view} shows a different row set")
 
     def test_the_view_toggle_is_carried_by_the_url(self):
-        page = self.render("/backlog", {"view": ["board"]})
+        page = self.render("/classic/backlog", {"view": ["board"]})
         self.assertIn("view=board", page)
         self.assertIn('aria-current="page"', page)
 
     def test_an_unknown_view_is_the_list(self):
-        page = self.render("/backlog", {"view": ["../../etc"]})
+        page = self.render("/classic/backlog", {"view": ["../../etc"]})
         self.assertIn("listing-table", page)
 
     def test_the_board_has_a_column_per_status_word(self):
-        page = self.render("/backlog", {"view": ["board"]})
+        page = self.render("/classic/backlog", {"view": ["board"]})
         for status in reads.BOARD_COLUMNS:
             self.assertIn(f"{status.replace('_', ' ')} (", page)
 
     def test_blocked_and_ready_to_send_are_places_not_words(self):
-        page = self.render("/backlog", {"view": ["board"]})
+        page = self.render("/classic/backlog", {"view": ["board"]})
         self.assertIn("lane-blocked", page)
         self.assertIn("lane-ready_to_send", page)
 
     def test_the_matrix_has_four_quadrants_and_priority_is_importance(self):
-        page = self.render("/backlog", {"view": ["matrix"]})
+        page = self.render("/classic/backlog", {"view": ["matrix"]})
         for label in ("important, urgent", "important, not urgent",
                       "not important, urgent", "not important, not urgent"):
             self.assertIn(label, page)
@@ -336,7 +336,7 @@ class Backlog(ScreenCase):
 
     def test_the_age_histogram_is_absent_from_every_backlog_view(self):
         for view in ("list", "board", "matrix"):
-            page = self.render("/backlog", {"view": [view]})
+            page = self.render("/classic/backlog", {"view": [view]})
             self.assertNotIn("chart-histogram", page)
             self.assertNotIn("Age in status</h2>", page)
             self.assertIn("view-toggle", page)
@@ -346,20 +346,20 @@ class Backlog(ScreenCase):
         self.assertIn("chart-bar-ready-to-send", page)
 
     def test_the_filter_and_the_paging_are_the_one_component(self):
-        page = listing_content(self.render("/backlog", {"q": ["backlog 4"]}), "backlog")
+        page = listing_content(self.render("/classic/backlog", {"q": ["backlog 4"]}), "backlog")
         self.assertIn("backlog 4", page)
         self.assertNotIn("backlog 5", page)
 
     def test_the_filter_is_the_same_in_all_three_views(self):
         for view in ("list", "board", "matrix"):
-            page = self.render("/backlog", {"view": [view], "q": ["backlog 4"]})
+            page = self.render("/classic/backlog", {"view": [view], "q": ["backlog 4"]})
             self.assertIn(f'href="/item/{self.ids[4]}"', page)
             self.assertNotIn(f'href="/item/{self.ids[5]}"', page)
 
     def test_paging_past_fifty(self):
         for index in range(60):
             self.item(f"filler {index}", repo="/repos/system")
-        page = self.render("/backlog")
+        page = self.render("/classic/backlog")
         self.assertIn(" of 66", page)
         self.assertIn("listing-pager", page)
         self.assertEqual(page.count('<td class="listing-select">'), 0)
@@ -507,11 +507,11 @@ class TheHistogramBarIsAFilter(ScreenCase):
 
     def follow(self, href: str) -> str:
         """A bar opens Tasks (sd:2589), which draws its rows in the browser; `test_v2_tasks.TheOperationsBars` follows
-        each bar there. v1 /backlog reads the same query until sd:2356 retires it, so the server-side checks here
-        render it with the bar's query."""
+        each bar there. v1's screen, at /classic/backlog since sd:2356, reads the same query, so the server-side checks
+        here render it with the bar's query."""
         parts = urlsplit(href)
         self.assertEqual(parts.path, "/tasks")
-        return self.render("/backlog", parse_qs(parts.query))
+        return self.render("/classic/backlog", parse_qs(parts.query))
 
     def listed(self, page: str) -> set[int]:
         """The item ids the list shows, off the row links the listing writes."""

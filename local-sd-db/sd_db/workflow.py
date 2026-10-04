@@ -624,10 +624,9 @@ def change_status(
             # running row with an owned `runner_run` is stopped from the
             # runner's control entry, the same verb. A running row with no
             # run -- a row written by hand, or from before the runner
-            # recorded attempts -- has no supported cancel: `request_cancel`
-            # and `runner_controls.control` both refuse it and the item
-            # screen renders no control, so the refusal says so rather than
-            # naming a verb that cannot clear it.
+            # recorded attempts -- has no process to stop, and the same verb
+            # ends it `cancelled` (sd:991, owner note 2706); the item screen
+            # renders no control for it, so the refusal names the verb.
             #
             # Owned is `released_at IS NULL`, which is what every active-run
             # query filters on (`runner_controls.control`, `runner_exec`,
@@ -642,8 +641,7 @@ def change_status(
                                     (active["id"],)).fetchone():
                 way_out = f"stop it from the runner's control entry, `sd runner cancel {active['id']}`"
             else:
-                way_out = ("it is a running assignment without a runner run, and there is no "
-                           "supported cancel for it yet (sd:234)")
+                way_out = f"it is a running assignment without a runner run; end it with `sd runner cancel {active['id']}`"
             raise TransitionRefused(f"item {item} has queued or running assignment {active['id']}; {way_out}")
         if row["status"] == target:
             return state

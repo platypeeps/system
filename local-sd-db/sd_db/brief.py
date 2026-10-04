@@ -56,7 +56,10 @@ LIST_COMMAND = "sd note list {item}"
 class Brief:
     """A rendered brief and the numbers behind it.
 
-    `text` is what the hook injects, already within the bound; it is empty
+    `text` is what the hook injects, already within the bound unless the
+    bound is smaller than the trailer alone: then it is that trailer, over
+    the bound, because the count and the command are what the reader needs
+    to find the rest (`note_brief`). It is empty
     when there is nothing open, so a caller injects nothing rather than a
     header over no notes. `scope` says which of requirement 7's two cases
     applied: `"branch"` when the checked-out branch matched a live item,
@@ -154,6 +157,11 @@ def note_brief(
     next one, with the trailer that would then be needed, no longer fits.
     Whatever was cut is counted, and the trailer names `sd note list <item>`
     for every item a cut note belongs to, so the rest is one command away.
+
+    One case exceeds `limit`: a bound too small for the header and the
+    trailer together. The text is then the trailer alone, even when the
+    trailer is longer than `limit`; a brief with no count and no command
+    would hide that anything was cut (sd:1219).
     """
     if branch is None:
         branch = checked_out_branch(repo)

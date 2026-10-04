@@ -3625,6 +3625,19 @@ assignment row before the runner is shown as waiting on item D.
   `runner_lease`, `repo_protection` and `judgment`, so the live database
   holds sixteen. Both edits keep their line counts, so no cited line moved.
 
+- **2026-10-04** — The 7.19 recovery decided on 2026-09-17 is delivered by
+  sd:991, on branch `runner-cancel-no-run`. A `running` assignment that no
+  unreleased `runner_run` owns is now ended by `sd runner cancel <id>`: both
+  `source:local-sd-db/sd_db/runner.py::request_cancel` and
+  `source:local-sd-db/sd_db/runner_controls.py::control` write `cancelled`
+  with a `cancelled by <who>` result, and wait on no runner. An attempt that
+  is still owned is only asked to stop, as before. The status refusal now
+  ends "it is a running assignment without a runner run; end it with
+  `sd runner cancel N`", and the item screen names the same verb but renders
+  no control. `sd assignments cancel` still refuses every `running` row. The
+  refusals that criterion 7's paragraph quotes for this gap are history from
+  that branch on. Appended, not inserted.
+
 ## September 9, 2026 backup-retention amendment
 
 Initial scheduled activation uses `backup --keep all` and deletes no backups.

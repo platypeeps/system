@@ -56,7 +56,9 @@ def assignment_controls(assignment):
         elif held.get("end_step"):
             details.append(tag("p", "Finishing cleanup: " + held["end_step"], class_="hint"))
     if assignment["status"] == "running" and not held:
-        details.append(tag("p", "There is no supported cancellation backend for this legacy assignment; no owned runner attempt was recorded.", class_="hint"))
+        # No process to stop, so no control; the verb ends the row (sd:991).
+        details.append(tag("p", "No owned runner attempt was recorded for this legacy assignment; end it with ",
+            tag("code", f"sd runner cancel {identity}"), ".", class_="hint"))
     if (assignment["status"] == "queued" or (assignment["status"] == "running" and held)) and not (held and held.get("cancel_requested")):
         details.append(form(f"/api/runner/{identity}/cancel", label="Cancel queued assignment" if assignment["status"] == "queued" else "Request stop",
             command=f"sd runner cancel {identity}", revision=revision, compact=True))

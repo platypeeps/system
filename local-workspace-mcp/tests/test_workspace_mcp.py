@@ -67,6 +67,14 @@ class WorkspaceMcpCase(unittest.TestCase):
         return subprocess.run(["sh", str(SCRIPT), *args], env=env, capture_output=True,
                               text=True, timeout=60)
 
+    def clock(self) -> None:
+        """Read the probe's deadline off a fake clock the curl double advances (sd:2621).
+
+        The doubles' delays then cost no real time, so a loaded machine cannot
+        spend the deadline before the script reads it.
+        """
+        (self.fake / "clock").write_text("1000000000\n")
+
     def journal(self, prefix: str) -> list[str]:
         path = self.fake / "journal"
         if not path.exists():
@@ -111,15 +119,16 @@ class StatusTests(WorkspaceMcpCase):
 
     def test_probe_completes_the_handshake_and_closes_its_session(self) -> None:
         self.given()
+        self.clock()
         r = self.run_sh("status")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         calls = self.journal("curl")
         (note,) = [c for c in calls if "notifications/initialized" in c]
         self.assertIn("mcp-session-id: abc123", note)
-        self.assertIn(max_time(note), (9, 10))
+        self.assertEqual(max_time(note), 10)
         (close,) = [c for c in calls if "-X DELETE" in c]
         self.assertIn("mcp-session-id: abc123", close)
-        self.assertIn(max_time(close), (9, 10))
+        self.assertEqual(max_time(close), 10)
         self.assertLess(calls.index(note), calls.index(close))
 
     def test_the_handshake_gets_only_the_time_initialize_left(self) -> None:
@@ -127,19 +136,21 @@ class StatusTests(WorkspaceMcpCase):
         # local-health-check's 30s bound. They share one deadline instead.
         # The close's floor is set to 1 here so only the shared deadline binds.
         self.given()
+        self.clock()
         (self.fake / "curl_delay").write_text("2\n")
         r = self.run_sh("status", WORKSPACE_MCP_TIMEOUT="4", WORKSPACE_MCP_CLOSE_TIMEOUT="1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         calls = self.journal("curl")
         (note,) = [c for c in calls if "notifications/initialized" in c]
         (close,) = [c for c in calls if "-X DELETE" in c]
-        self.assertLessEqual(max_time(note), 2)
-        self.assertLessEqual(max_time(close), 2)
+        self.assertEqual(max_time(note), 2)
+        self.assertEqual(max_time(close), 2)
 
     def test_no_time_left_after_initialize_is_broken_and_still_closes(self) -> None:
         # The server made a session; leaving it open because the server was
         # slow is how a slow server collects one session per probe.
         self.given()
+        self.clock()
         (self.fake / "curl_delay").write_text("3\n")
         r = self.run_sh("status", WORKSPACE_MCP_TIMEOUT="3")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
@@ -174,6 +185,7 @@ class StatusTests(WorkspaceMcpCase):
         # WORKSPACE_MCP_CLOSE_TIMEOUT, so the probe stays bounded at
         # TIMEOUT + CLOSE_TIMEOUT and leaves no session behind.
         self.given()
+        self.clock()
         (self.fake / "curl_delay").write_text("1\n")
         (self.fake / "note_delay").write_text("2\n")
         r = self.run_sh("status", WORKSPACE_MCP_TIMEOUT="3", WORKSPACE_MCP_CLOSE_TIMEOUT="2")

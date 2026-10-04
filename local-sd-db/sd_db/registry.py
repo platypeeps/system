@@ -7,8 +7,9 @@ variables its process receives, and the two role lists. The `provider` and
 each role's automatic order, and a bill's cap. A checkpoint makes NULL ranks
 explicit exclusions after the operator configures membership. The file seeds those tables on
 the first read through a writable connection (`ensure_seeded`, which `read`
-calls) and never again; from then on the library merges the two on every
-read, so the pack's `sd-review` and the dashboard see one registry. A
+calls); a later writable read seeds only a provider or bill the file has
+gained since, and never rewrites a row that exists. On every read the
+library merges the two, so the pack's `sd-review` and the dashboard see one registry. A
 read-only connection cannot seed and gets the merged view all the same,
 which for an unseeded table is the file alone.
 

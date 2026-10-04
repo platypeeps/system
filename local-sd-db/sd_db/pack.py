@@ -182,7 +182,7 @@ def _load(path: Path):
     is reached whenever a field annotation is a *string* needing resolution
     against the defining module. `bin/sd_lib.py` has `from __future__ import
     annotations`, so every annotation there is a string, and its first
-    dataclass (`:254`) dies unregistered with `'NoneType' object has no
+    dataclass dies unregistered with `'NoneType' object has no
     attribute '__dict__'`.
 
     The first version left the registration out and so refused *every* pack.
