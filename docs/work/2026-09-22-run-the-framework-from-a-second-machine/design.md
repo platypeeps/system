@@ -168,7 +168,7 @@ Costs, stated:
   **Recovery, as the protocol's reply to `outcome(R)`.** Four answers:
 
   - `recorded` — the row exists; the transaction committed. The client
-    sends `ack(R)`, then returns the outcome to its caller; nothing runs.
+    returns the outcome to its caller; nothing runs.
   - `in_flight` — R is owned by a live connection. The client waits with a
     bounded backoff and asks again; at the bound it raises
     `UnknownOutcome(R)` naming the id. The bound (60 seconds) is longer
@@ -177,14 +177,14 @@ Costs, stated:
     long holds the write lock the runner and the dashboard wait on, and is
     closed; gap (g) below says why 4 and not 30), so an abandoned owner is
     always settled inside the bound.
-  - `absent` — no row, no owner, and R inside the retry lifetime: the
+  - `absent` — no row and no owner: the
     transaction did not commit. The client raises `TransactionLost(R)`,
     and R is never sent again: a `BEGIN IMMEDIATE` carrying an R the hub
-    has seen — owned, recorded or acknowledged — is refused, so an id is
+    has seen — owned or recorded — is refused, so an id is
     used once.
-  - `expired` — R is older than the retry lifetime, or already
-    acknowledged. Never answered `absent`, so a pruned row cannot be read
-    as a transaction that did not run.
+  - `expired` — not built. It answered for a pruned or acknowledged row,
+    and the prune is deferred (Q1, ruled 2026-10-04). So the protocol
+    has three answers, not four.
 
   What `TransactionLost(R)` is: the exception leaves the
   `with transaction(connection)` block the way `sqlite3.OperationalError`
@@ -202,7 +202,12 @@ Costs, stated:
   note, that later statements depend on, and no re-execution can know them
   without running the body again.
 
-  **Retention and lifetime.** A `recorded` row stays for R's retry
+  **Retention: rows stay.** Ruled 2026-10-04 (Q1 = B): no row is ever
+  deleted, so `absent` stays sound without a lifetime. The lifetime,
+  `ack(R)`, the prune and `ClockSkew` below are deferred to a later row,
+  kept here as that row's design.
+
+  *Deferred design.* A `recorded` row stays for R's retry
   lifetime, **7 days** from the time in R: longer than any hub outage or
   laptop suspension the operator would tolerate before intervening, and
   short enough that the table stays small. `ack(R)` marks the row consumed
@@ -294,6 +299,7 @@ the connection while the original subprocess is still running.
 | `providers.yaml`, `commands.yaml` | Read beside the database | `registry.beside`, `runner_exec` |
 | Ledger reservations, the orphan sweep, and every provider call charged through `sd_db.calls` | The sweep judges an owner by a local `os.kill`; a pid from another kernel reads as dead | `release_orphans`, `local-sd-db/sd_db/ledger.py`; gap C1 |
 | Every directory beside the database (`executions/`, `runner-journal/`, `runner-ending/`, `publications/`, the two recovery-evidence directories) | Under a remote connection there is no directory to be beside | `publication_journal.root`, `registry.beside`; gap (b) |
+| The `sd writing` state read (`writing.piece_state`) | It reads the publication journal beside the database; found by step 1 | `piece_state`, `local-sd-db/sd_db/writing.py`; gap (b) |
 
 The satellite keeps: sessions, `sd-review` (its judgments go to the hub; its
 CLI provider lanes run, and its URL-provider lanes are refused by name, gap
@@ -319,28 +325,26 @@ C1), `sd-ship` up to the pull request, `sd-note`, `sd-status`, `sd task`,
 3. `source:local-sd-db/sd_db/database.py::transaction` — generates R, a
    ULID, when it sends `BEGIN IMMEDIATE`; sends R again with `COMMIT`;
    raises `UnknownOutcome` on a lost response and asks `outcome(R)` before
-   it returns; acknowledges `recorded` before returning; raises
+   it returns; raises
    `TransactionLost(R)` on `absent`. It keeps no copy of the statements it
    forwarded. A local connection
    ignores R. R belongs to the outermost transaction only; a savepoint
    inside it carries none.
 4. The proxy's `BEGIN` and `COMMIT` handlers and the per-id lock —
-   register ownership at `BEGIN`; refuse `ClockSkew`; refuse a `COMMIT`
+   register ownership at `BEGIN`; refuse a `COMMIT`
    from a non-owner; insert the `request_outcome` row on the same
    connection, then commit; settle ownership on `COMMIT`, `ROLLBACK` and
-   socket close; answer `outcome(R)` with `recorded`, `in_flight`, `absent`
-   or `expired`; refuse a `BEGIN` carrying an R already seen; record
-   `ack(R)`. A plain `BEGIN` carries no R and opens a read transaction
+   socket close; answer `outcome(R)` with `recorded`, `in_flight` or
+   `absent`; refuse a `BEGIN` carrying an R already seen. A plain `BEGIN` carries no R and opens a read transaction
    instead, which none of the above applies to; gap C2.
 5. `request_outcome` — one table,
-   `(id TEXT PRIMARY KEY, committed_at TEXT, acked_at TEXT)`, added by a
+   `(id TEXT PRIMARY KEY, committed_at TEXT)`, added by a
    migration under `local-sd-db/sd_db/schema/` and a `SCHEMA_VERSION` bump
-   in the same commit. It takes slot `015`: sd:1099's migration landed as
-   `012_recurrence.sql` and sd:1439's as `014_home_relative_repo_paths.sql`.
+   in the same commit. It takes slot `019`, the next free slot: the schema
+   is at 18 since sd:2581 (`018_runner_run_repo_nullable.sql`).
    If another migration lands first, take the next free slot. The table joins the
-   list in `local-sd-db/sd_db/schema.py`. Rows live for the 7-day retry
-   lifetime measured from the time in R, acknowledged or not; the nightly
-   prune deletes only rows past it, from the `sd-db-backup` job; gap (e).
+   list in `local-sd-db/sd_db/schema.py`. Rows are never deleted (Q1,
+   ruled 2026-10-04), so gap (e) is moot.
 6. The session's first frame — package version, `SCHEMA_VERSION`, protocol
    version; `BuildMismatch` on any difference in package version. It
    carries no `$HOME`: repository paths are home-relative; gap (a).
@@ -379,7 +383,7 @@ is unaddressed; the subsections give the reasons.
 | (b) | Directories beside the database have no satellite answer | **Decided.** Hub-only, refused by connection kind; the registry bytes are the one exception | Seam 2; hub table; implement steps 1, 6 |
 | (c) | TCC under launchd is moot by construction, and unstated | **Decided.** Stated below; one launchd run measures the serve agent | Implement step 8 |
 | (d) | The SSH agent is not involved, and that is unstated | **Decided.** Stated below; the deploy key covers the `common.cron` pushes | Implement step 10 |
-| (e) | The nightly prune of `request_outcome` names no job and no slot | **Decided.** A command in the `sd-db-backup` job | Seam 5; implement step 5 |
+| (e) | The nightly prune of `request_outcome` names no job and no slot | **Moot 2026-10-04.** Q1 = B builds no prune; rows stay | Seam 5; Q1 |
 | (f) | `local.system-tools.sd-serve` carries an absolute path into this repository | **Decided.** Named as a gotcha with its three readers | Implement steps 8, 12 |
 | (g) | A satellite's held `BEGIN IMMEDIATE` blocks the runner and the dashboard | **Decided.** Open-transaction idle timeout of 4 s, below `BUSY_TIMEOUT`, with two measurements | A2 recovery; implement steps 2, 5, 10 |
 | (h) | The serve agent's user decides which database is opened | **Decided.** Operator's gui domain; `serve` never creates a database | Implement step 8 |
@@ -558,6 +562,10 @@ slot needs a scheduled wake", satellite or not.
 
 ### (e) — the prune runs in `sd-db-backup`
 
+**Moot since 2026-10-04.** The operator took Q1 option B, which builds no
+prune, so no job runs one. The decision below stands for the later row that
+adds the prune.
+
 All cron stays on the hub, so the satellite has none. The prune is one more
 command in the hub's `sd-db-backup` job
 (`local-cron-jobs/jobs/sd-db-backup.job`), after the backup. That job runs
@@ -652,6 +660,120 @@ When `hub.json` names a hub, `default_path()` returns
 this path, or any path equal to it to the hub. R1 holds without a pack
 edit.
 
+## Questions for a ruling (2026-10-04)
+
+On 2026-09-30 the operator asked for the step 5+ questions with options
+(item note 6996). Steps 1–4 are built (#568, #574). Steps 5, 6 and 7 wait
+for the three rulings below, one per step. All three come before step 10,
+the first real satellite. Each step still ships alone, in any order.
+
+| Q | Step | Recommendation | `prd.md` change |
+|---|---|---|---|
+| Q1 | 5 | B: the outcome protocol without the prune | R12 and criterion 11 shrink |
+| Q2 | 6 | A: hub-only tests run locally under `--remote` | None |
+| Q3 | 7 | A: Tailscale identity only, plus a self-address refusal | None |
+
+**Ruled 2026-10-04.** The operator took every recommendation: Q1 B, Q2 A,
+Q3 A. Q1's `prd.md` edits are applied, and the implement page follows.
+
+**The count.** The ruling expected three questions, and the evidence
+agrees. Four other candidates were checked and need no ruling:
+
+- **x1, pack callers of `default_path()`.** Closed on 2026-09-25. Step 4
+  made `default_path()` hub-aware, so R1 holds with no pack edit.
+- **Satellite-side merge.** Out of scope in `prd.md`. It needs fencing and
+  its own row.
+- **`writing.piece_state`.** Decided under gap (b): `sd writing` state is
+  hub-only. The hub table above now lists it.
+- **A satellite that follows the hub's build.** The handshake compares a
+  digest of the package files. So each hub library deploy refuses every
+  satellite until it installs the same build. Steps 5–7 do not depend on
+  it. Step 9 decides it.
+
+**The costs** are build hours for one builder, including review rounds.
+Steps 3 and 4 took four Codex rounds, and the estimates assume three or
+four. They are estimates, not measurements.
+
+### Q1 — step 5: the full unknown-outcome protocol, or a first cut?
+
+R12 and criterion 11 ask for ten behaviours. Four parts exist only because
+the nightly prune deletes rows: the 7-day lifetime, `expired`, `ack(R)` and
+`ClockSkew`. If no row is ever deleted, `absent` stays sound without them.
+No row and no owner still proves that R did not commit.
+
+| Option | Cost | Risk | Unblocks |
+|---|---|---|---|
+| **A. Full R12, as designed.** Ownership from `BEGIN`, the record inside the transaction, the C2 read path and the 4 s idle timeout. Also the lifetime, `ack`, `expired`, `ClockSkew` and the prune in `sd-db-backup`. | 16–20 h | The largest change to `remote` and `serve`, so the most review rounds | Criterion 11 (a)–(j); R12 as written |
+| **B. The protocol without the prune.** As A, minus the lifetime, `expired`, `ack`, `ClockSkew` and the prune. Rows stay forever. | 10–12 h | `request_outcome` gains one row per satellite write transaction. `sd-db.sh status` cannot list unread outcomes | Criterion 11 (a)–(e) and (j); (f)–(i) move to a later row with the prune |
+| **C. Detect only.** A lost response raises `UnknownOutcome` naming the verb. No R and no table; the operator checks by hand before a re-run. | 2–3 h | A re-run can duplicate a row. R12 is not met | Step 10 soonest; criterion 11 fails |
+
+**Ruled 2026-10-04: B.**
+
+**Recommendation: B.** It keeps the guarantee that matters: a retry never
+duplicates a row. It costs about 60% of A. At an assumed 500 satellite
+write transactions a day, the table gains about 180,000 rows a year. That
+is roughly 20 MB, beside a database of 584 MB (measured 2026-10-04). Add the prune when the table
+measures large; A's design then applies unchanged. B needs two `prd.md`
+edits, both applied 2026-10-04. R12 drops the lifetime, `expired` and
+`ack`. Criterion 11 drops (f)–(i). Gap (e) becomes moot.
+
+### Q2 — step 6: how does criterion 1 survive the hub-only refusals?
+
+Step 6 refuses by connection kind (seam 2, gap (b)). Step 1 found the cost.
+Over loopback, the control, beside-directory and publication tests would
+then refuse. Criterion 1 needs the same count with zero skips, so those
+tests must still run somewhere. Nobody has counted them; step 6 counts them
+first.
+
+| Option | Cost | Risk | Unblocks |
+|---|---|---|---|
+| **A. A test-scoped carve-out.** A `hub_only` marker on those tests. Under `--remote`, the harness opens their connections locally and prints how many. New loopback tests assert each refusal. A guard test runs each marked test over the wire and expects `HubOnly`. | 4–6 h | A marker can hide a path the proxy should carry. The guard test catches that | Step 6, with criterion 1 as written |
+| **B. Loopback counts as the hub.** The refusal asks whether the client runs on the hub's machine, not what kind of connection it holds. The open reply carries a machine identity that the client compares. | 3–4 h | The wire suite never meets a refusal. A wrong answer on a satellite enters `repository_lock` over a droppable session: the R3 failure | Step 6; the refusals need a separate fake-satellite test |
+| **C. Amend criterion 1.** The wire count equals the local count minus a named list of hub-only tests, which the harness excludes. | 2 h | The list drifts as tests are added. Criterion 1 gets weaker | Step 6 soonest |
+
+**Ruled 2026-10-04: A.**
+
+**Recommendation: A.** The proxy does not carry hub-only paths, by design,
+so running their tests locally is honest. Criterion 1 keeps its count.
+The refusal stays keyed on connection kind. Seam 2 chose that key because
+`PRAGMA database_list` names the hub's path over the wire.
+
+### Q3 — step 7: is the Tailscale identity alone the credential?
+
+R7 says the peer's Tailscale identity is the credential. The endpoint
+carries no bearer secret. Step 2's review then found a second local account
+on this hub (implement log, step 2, round 1). `tailscale whois` names a
+node's owner, not its local user. So a process of any account on the
+operator's node passes it. On the hub, a second account that dials the
+hub's own Tailscale address most likely passes too; not measured. The
+dashboard's `peer_login` already refuses tagged and expired nodes, in
+`local-project-dashboard/sd_dashboard/runtime.py`. Step 7 reuses it.
+
+| Option | Cost | Risk | Unblocks |
+|---|---|---|---|
+| **A. Identity only, plus a self-address refusal.** The listener refuses a peer whose address is one of the hub's own. Loopback keeps the owner-only token. | 4–5 h | Any local account on the satellite passes | Step 7 and criterion 6 as written; R7 unchanged |
+| **B. Identity and a stable token.** The token becomes persistent, with a rotate verb. The satellite stage copies it once, mode 0600. | 6–8 h, plus 1 h in step 9 | One secret on two machines, so R7 needs an amendment. A rotation refuses the satellite by name until it copies the token again | Step 7 with two independent checks; closes the satellite's local-account gap |
+| **C. Token only on the tailnet listener.** No `whois`. | 2–3 h | A leaked token admits any tailnet node, tagged nodes included | Nothing: it fails criterion 6 and R8 |
+
+**Ruled 2026-10-04: A.**
+
+**The trust boundary under A is the whole satellite machine.** Every
+process on the operator's node carries the node's Tailscale identity:
+interactive logins, system service accounts below uid 501, and any account
+created later. Each one passes `whois` and can run any statement the wire
+accepts against the hub. A trusts the satellite as a machine, not as a
+login, and A's risk column ("any local account") includes service accounts.
+Step 10's account listing checks only that no second interactive login
+exists; it does not narrow the boundary. A process the operator does not
+trust with the hub database must not run on the satellite. If that stops
+holding, take B: an owner-readable token checks the local user, which
+`whois` cannot.
+
+**Recommendation: A.** It keeps R7, passes criterion 6, and closes the
+hub's second-account path. Step 10 first lists the satellite's local
+accounts. If the satellite has a second interactive account, take B
+instead.
+
 ## Failure modes
 
 | Condition | Behaviour | Named by |
@@ -666,9 +788,7 @@ edit.
 | Late `COMMIT` from a connection that no longer owns R | Refused, not applied; the count is unchanged | seam 4 |
 | Original session's socket closed with R owned | SQLite rolls back on close and ownership is released under the per-id lock; only then is `absent` answered | seam 4 |
 | `absent` answered for R | `TransactionLost(R)` leaves the `with` block; nothing written; the verb run again computes every value afresh, `lastrowid` included | seam 3 |
-| Retry lifetime passed, row pruned | `expired`, answered from R's own age before any lookup; never `absent`; the verb reports it and runs nothing | R12, criterion 11 |
-| Retry of an acknowledged R | `expired`; the row is retained for the lifetime, so a young acknowledged id is never `absent` | R12, criterion 11 |
-| Satellite clock off by more than five minutes | `ClockSkew` at `BEGIN`, naming both clocks; nothing runs | seam 4 |
+| Retry of an old R | Answered from the row, which is never deleted: `recorded`, or `absent` if it never committed; `expired`, `ack` and `ClockSkew` are not built | R12, Q1 |
 | Hub restarts | Sessions gone; the next statement raises `HubUnreachable`; ownership is empty and `request_outcome` is the whole truth | A2, seam 5 |
 | A second server started over the same file | Refused at start by `<database>.serve.lock`; one ownership registry per file | A2 |
 | Clock skew in row stamps | `writes.now()` values differ by the skew; no ordering decision depends on them across machines | seam 8 |
