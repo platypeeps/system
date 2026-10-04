@@ -33,6 +33,7 @@ If `rtk` misbehaves, re-run the command through `rtk proxy <cmd>` — that
 bypasses the filtering, so identical output means the wrapper is at fault and
 different output means the command itself is. If the wrapper is at fault, fall
 back to the bare command and say so; do not keep retrying through `rtk`.
+Run `grep -h` as `rtk proxy grep -h …`: the wrapper mangles `-h` (sd:1320).
 
 # GitHub: MCP before `gh`
 
@@ -46,6 +47,8 @@ These tools are usually **deferred**: only their names are loaded, so they look 
 `ToolSearch("select:mcp__github__pull_request_read,mcp__github__list_pull_requests,mcp__github__get_commit")`
 
 Then call them normally. One extra round-trip buys structured JSON and field selection instead of parsing CLI text.
+
+Read merge state with `pull_request_read` `get`, not `list_pull_requests`: the list reports `merged:false` for merged PRs.
 
 Use `gh` when no MCP equivalent exists, or when the MCP server is disconnected or unavailable.
 Examples include `gh run watch`, `gh pr checkout`, and workflow dispatch without an equivalent loaded MCP tool.
