@@ -110,8 +110,10 @@ class MeterRun(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    def run_meter(self, *args, pythonpath=None):
+    def run_meter(self, *args, pythonpath=None, home=None):
         env = dict(os.environ)
+        if home is not None:
+            env["HOME"] = str(home)
         env["PATH"] = os.pathsep.join([str(self.bin), env.get("PATH", "/usr/bin:/bin")])
         env["CODEXBAR_FIXTURES"] = str(self.fixtures)
         if pythonpath is not None:
@@ -152,6 +154,27 @@ class MeterRun(unittest.TestCase):
              ("codex", "openai", 10080, 23.0, stamp, "meter") + (None,) * 6],
         )
         self.assertIn("sd_db 4 rows", done.stdout)
+
+    def test_the_scheduled_run_without_db_writes_to_the_store_under_home(self):
+        """The job passes no `--db`, so `sd_db.connect(None)` picks
+        `$HOME/.local/share/sd/sd.db` and its registry beside it. HOME here
+        is a directory the test owns; PYTHONPATH names the library this
+        suite imported, since a user site under the real HOME is not read."""
+        home = Path(self.tmp.name) / "home"
+        store = home / ".local/share/sd"
+        store.mkdir(parents=True)
+        (store / "providers.yaml").write_text(REGISTRY, encoding="utf-8")
+        initialise(store / "sd.db")
+        library = str(Path(sd_db.__file__).resolve().parents[1])
+        done = self.run_meter(pythonpath=library, home=home)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertNotIn("sd_db", record["errors"])
+        self.assertEqual(record["sd_db"], {"rows": 4})
+        self.db = store / "sd.db"
+        self.assertEqual([row[:3] for row in self.meter_rows()],
+                         [("claude", "anthropic", 300), ("claude", "anthropic", 10080),
+                          ("codex", "openai", 300), ("codex", "openai", 10080)])
 
     def test_a_missing_database_is_an_error_entry_and_the_jsonl_line_still_lands(self):
         gone = self.state / "elsewhere" / "sd.db"

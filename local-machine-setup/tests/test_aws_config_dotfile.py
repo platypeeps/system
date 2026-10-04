@@ -105,7 +105,8 @@ class AwsConfigDotfileTest(unittest.TestCase):
         self.config.write_text(edited)
         self.assertEqual(self.run_stage(),
                          ["  DIFFERS .aws/config — edited here; keep it with 'capture --apply', discard it with --force"])
-        self.run_stage("--apply", "--force")
+        self.assertEqual(self.run_stage("--apply", "--force"),
+                         ["  DIFFERS .aws/config — edited here; --force overwrites (backup kept)"])
         self.assertEqual(self.config.read_text(), signed_in(tracked()))
         self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
         self.assertEqual(self.run_stage(), ["  ok      .aws/config"])
@@ -118,7 +119,8 @@ class AwsConfigDotfileTest(unittest.TestCase):
         self.assertEqual(self.run_stage(),
                          ["  DIFFERS .aws/config — machine and repo disagree, nothing recorded says which moved; "
                           "review, then 'capture --apply' or --force"])
-        self.run_stage("--apply", "--force")
+        self.assertEqual(self.run_stage("--apply", "--force"),
+                         ["  DIFFERS .aws/config — nothing recorded; --force overwrites (backup kept)"])
         self.assertEqual(self.config.read_text(), signed_in(tracked()))
         self.assertEqual(len(list(self.config.parent.glob("config.bak-*"))), 1)
         self.assertEqual(self.run_stage(), ["  ok      .aws/config"])
