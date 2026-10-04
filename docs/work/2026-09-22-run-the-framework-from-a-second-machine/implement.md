@@ -45,28 +45,29 @@ Each step ships alone. Steps 1–7 change nothing the hub runs.
    file present with no server raises `HubUnreachable` and creates nothing;
    file present beside a local `sd.db` refuses.
 5. **Unknown outcome: ownership from `BEGIN`, the record in the
-   transaction, retention with a lifetime.** One migration:
-   `request_outcome (id TEXT PRIMARY KEY, committed_at TEXT, acked_at TEXT)`
+   transaction, rows retained.** One migration:
+   `request_outcome (id TEXT PRIMARY KEY, committed_at TEXT)`
    under `local-sd-db/sd_db/schema/`, `SCHEMA_VERSION` bumped, the table
    added to the list in `local-sd-db/sd_db/schema.py`. The migration takes
-   slot `015`, after sd:1099's `012` and sd:1439's `014`. If another
-   migration lands first, take the next free slot.
+   slot `019`, the next free slot: the schema is at 18 since sd:2581
+   (`018_runner_run_repo_nullable.sql`). If another migration lands first,
+   take the next free slot. The scope is Q1 option B in `design.md`,
+   ruled 2026-10-04: no prune, no lifetime, no `expired`, no `ack(R)`, no
+   `ClockSkew`. Rows are never deleted.
    The hub: one lock per id; `BEGIN
-   IMMEDIATE` with R registers ownership before the statement runs and
-   refuses `ClockSkew` past five minutes; `COMMIT` from the owner inserts
+   IMMEDIATE` with R registers ownership before the statement runs, and
+   refuses an R it has already seen; `COMMIT` from the owner inserts
    the record on the same connection, then commits; `COMMIT` from anyone
    else is refused; `ROLLBACK` and socket close settle ownership; the
    open-transaction idle timeout is 4 seconds, below `BUSY_TIMEOUT`
    (gap (g)); a plain `BEGIN` with no R opens a read transaction under
    `query_only`, whose `COMMIT` or `ROLLBACK` needs no R and writes no
    outcome row (gap C2); `outcome(R)` answers
-   `recorded`, `in_flight`, `absent` or `expired`, the last from R's age
-   (7 days) before any lookup; `ack(R)` sets `acked_at`; the nightly prune
-   deletes rows past the lifetime only, as one more command in the hub's
-   `sd-db-backup` job, after the backup (gap (e)). The client: `transaction` generates
+   `recorded`, `in_flight` or `absent`. No job prunes the table, so gap (e)
+   is moot. The client: `transaction` generates
    a ULID at `BEGIN IMMEDIATE`, sends R with `COMMIT`, raises
    `UnknownOutcome(R)` on a lost response, asks `outcome(R)` with a
-   60-second backoff bound, acknowledges `recorded` before returning, and
+   60-second backoff bound, returns `recorded` without re-running, and
    raises `TransactionLost(R)` on `absent`. It keeps no copy of the
    statements; nothing is re-sent under an old R.
    Check (criterion 11): (a) response dropped → `UnknownOutcome`,
@@ -74,9 +75,8 @@ Each step ships alone. Steps 1–7 change nothing the hub runs.
    `recorded`, +1, row exists; (c) `kill -9` before the commit, restart,
    retry → `absent`, `TransactionLost`, +0; verb run again, +1; (d) `COMMIT` frame held, reconnect, ask →
    `in_flight`; release → `recorded`, +1; (e) `COMMIT` from a non-owner →
-   refused, +0; (f) prune, retry a young id → answers unchanged; (g) id
-   past the lifetime → `expired`, +0; (h) ack, then retry → `expired`, +0;
-   (i) skewed id → `ClockSkew`, +0; (j) hub answers `absent` for R →
+   refused, +0; (f) to (i) were dropped with the prune (Q1, ruled
+   2026-10-04); (j) hub answers `absent` for R →
    `TransactionLost(R)`, +0; the verb run again under a new id → +1, and
    the note's owner is the item that run created. A local connection ignores R: the local suite is
    unchanged. Check (gap C2): `usage.read`, `reads.usage_month` and
@@ -90,10 +90,15 @@ Each step ships alone. Steps 1–7 change nothing the hub runs.
    does every resolution of a directory beside the database that step 1
    listed, first `publication_journal.root` (gap (b)). `ledger.reserve`
    raises `LedgerRefused` naming the hub, and `ledger.release_orphans`
-   sweeps nothing (gap C1).
+   sweeps nothing (gap C1). Criterion 1 survives by Q2 option A in
+   `design.md`, ruled 2026-10-04. Tests that reach a hub-only path carry a
+   `hub_only` marker, and under `--remote` the harness opens their
+   connections locally and prints how many. A guard test runs each marked
+   test over the wire and expects `HubOnly`.
    Check: over loopback, `sd-ship`'s delivery path refuses with that
    message and takes no lock; `sd-ship` to the pull request passes without
    reaching either gate; the serve log for the session records no lock.
+   The `--remote` summary line equals the local one, zero skips.
    `sd-review` over loopback reports a URL provider as refused, runs its
    CLI lanes, and leaves every existing reservation row unchanged; no
    directory appears beside the client's default path.
@@ -101,7 +106,11 @@ Each step ships alone. Steps 1–7 change nothing the hub runs.
    `tailscale whois --json --proto=tcp`, reuse the dashboard's refusal rules
    (`direct_context`, `local-project-dashboard/sd_dashboard/auth.py`).
    Check: a request from a tagged node is refused with no SQL run
-   (criterion 6); the operator's node is accepted.
+   (criterion 6); the operator's node is accepted. Q3 option A in
+   `design.md`, ruled 2026-10-04: no token on the tailnet listener, and a
+   peer whose address is one of the hub's own is refused. Loopback keeps
+   the owner-only token. Check also: a session from the hub's own Tailscale
+   address is refused with no SQL run.
 8. **Hub LaunchAgent and profile.** `local.system-tools.sd-serve` in
    `launchagents/`, listed in `personal.agent`; `stage_sd` loads it and
    prints `MISSING` when absent, `EXTRA` for a `hub.json` on the hub. The
@@ -131,6 +140,11 @@ Each step ships alone. Steps 1–7 change nothing the hub runs.
 10. **First real satellite: the second laptop.** The laptop runs as
     `/Users/<second-login>`; repository paths are home-relative since sd:1439
     (gap (a)). Prerequisites, before the stage runs:
+    - **One interactive account.** List the satellite's local accounts
+      with a uid of 501 or more. This checks logins only: under Q3 A every
+      process on the satellite, service accounts included, is trusted (the
+      trust boundary in `design.md`, Q3). A second login reopens Q3: take
+      option B, a token beside the identity, first.
     - **Home-relative paths.** Check: a satellite session under
       `/Users/<second-login>` reads `sd today` and resolves every registered
       checkout.
@@ -191,10 +205,10 @@ Named before the work:
   serve log; the hub's lane merges.
 - **Same schema, different build, refused** (criterion 10). Both
   directions; after a simulated hub upgrade too.
-- **Lost `COMMIT`, ten ways** (criterion 11). Response dropped, hub killed
-  after and before the commit, frame delayed, non-owner commit, prune,
-  expiry, acknowledgement, skew, `absent`: the count moves by exactly
-  one where a commit is promised and by zero everywhere else.
+- **Lost `COMMIT`, six ways** (criterion 11). Response dropped, hub killed
+  after and before the commit, frame delayed, non-owner commit, `absent`:
+  the count moves by exactly one where a commit is promised and by zero
+  everywhere else.
 - **Drift both ways** (criterion 7). `--fail-on-drift` exits 1 on each.
 - **Latency** (criterion 8). Two numbers in the log.
 - **Gaps raised after #517.** Read transactions over `write=False` (step 5,
@@ -207,9 +221,11 @@ Named before the work:
 
 ## BLOCKING
 
-None open. Gap (a), the satellite's home, is closed: repository paths
-became home-relative in sd:1439, which landed on 2026-09-24. No step
-waits. The design page's gap table maps every gap to its decision.
+None open. The operator ruled on the three step 5+ questions on
+2026-10-04, recorded in `design.md`, "Questions for a ruling
+(2026-10-04)". No step waits. Gap (a), the satellite's home, is closed: repository paths
+became home-relative in sd:1439, which landed on 2026-09-24. The design
+page's gap table maps every gap to its decision.
 
 ## Log
 
@@ -581,3 +597,21 @@ Not verified. Nothing ran on a second machine: the server still binds
 loopback only, and `token_file` stands in for step 7's peer identity. The
 digest covers the package's own files, not the Python interpreter or the
 `sqlite3` library it links.
+
+2026-10-04 — the step 5+ questions drafted for a ruling; docs only, no
+code. The operator asked for them on 2026-09-30 (item note 6996). The
+design page gains "Questions for a ruling (2026-10-04)". Q1 is step 5's
+scope. Q2 is how criterion 1 survives step 6's refusals. Q3 is whether a
+token joins step 7's peer identity. The evidence gives three questions, as the
+ruling expected. x1 is closed, satellite merge is out of scope, and
+`writing.piece_state` joins the hub table under gap (b). Step 5's migration
+moves from slot `015` to `019`: migrations 015 to 018 landed meanwhile, the
+last for sd:2581.
+
+2026-10-04 — the operator ruled and took every recommendation: Q1 = B,
+Q2 = A, Q3 = A. Q1 changes `prd.md`. R12 drops the retry lifetime,
+`expired` and `ack(R)`, and criterion 11 drops (f) to (i). Step 5 drops the
+prune, `ClockSkew` and the `acked_at` column. Gap (e) is moot, because no
+job prunes the table. Step 6 carries the `hub_only` test carve-out. Step 7
+refuses the hub's own address, and step 10 lists the satellite's accounts
+first. The `BLOCKING` section is clear again.
