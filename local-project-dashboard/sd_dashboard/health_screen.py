@@ -240,7 +240,9 @@ def _protection_rows(found: list[dict]) -> tuple[list[dict], dict]:
                       f"{branch} · {', '.join(cell[0] for cell in gaps) if gaps else 'every check passes'}",
             "kind": "Branch protection · " + status,
             "facts": {"Repository": repo["repo"], "Slug": repo.get("slug") or "no github.com remote", "Status": status,
-                      "Branch": branch, "Observed": repo.get("observed_at") or "never"},
+                      "Branch": branch, "Observed": repo.get("observed_at") or "never",
+                      # A sibling checkout's row, read for this one (sd:1607).
+                      **({"Borrowed from": repo["borrowed_from"]} if repo.get("borrowed_from") else {})},
             "status": status, "name": name, "branch": branch, "reason": repo.get("reason") or "unknown" if status == "unknown" else "",
             "sentence": unprotected or "", "cells": [] if status == "unknown" else cells, "gaps": len(gaps),
         })

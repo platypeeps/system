@@ -76,6 +76,16 @@ class ProtectionScreen(ScreenCase):
         self.assertIn("platypeeps/new", rows[1])
         self.assertIn("someone/private", rows[2])
 
+    def test_a_second_checkout_shows_its_siblings_row_and_names_the_lender(self):
+        """sd:1607. A second checkout of one repository read `not yet observed`."""
+        upsert_repo(self.connection, "/repos/widget", remote="git@github.com:example/widget.git")
+        upsert_repo(self.connection, "/repos/widget-copy", remote="https://github.com/example/widget")
+        self.observe("/repos/widget", "protected")
+        body = self.render("/protection")
+        self.assertIn("2 protected · 0 unprotected · 0 unknown", body)
+        self.assertIn(f"{AT} · borrowed from /repos/widget", body)
+        self.assertEqual(body.count("borrowed from"), 1)
+
     def test_unknown_rows_show_no_gap_cells_and_carry_their_reason(self):
         self.fleet()
         rows = self.rows(self.render("/protection"))
