@@ -238,6 +238,17 @@ class Queue(unittest.TestCase):
         self.assertIsNone(recovered['delivery_proof'])
         self.assertIsNone(recovered['released_at'])
 
+    def test_a_journal_written_before_migration_018_still_recovers(self):
+        """sd:2581: 018 added `detached_from`; a journal written before it has no such field."""
+        assignment = runner.enqueue(self.db, self.items[:1], who="operator")[0]
+        current = self.claim(assignment['id'])['run']
+        record = {name: value for name, value in current.items() if name != 'detached_from'}
+        record['journal_version'] = current['journal_version'] + 2
+        snapshot = runner.revision(runner.recovery_snapshot(self.db, current['id']))
+        recovered = runner.recover_from_journal(self.db, record, expected_snapshot=snapshot)
+        self.assertIsNone(recovered['detached_from'])
+        self.assertEqual(recovered['outcome'], 'blocked')
+
     def test_recovery_refuses_competing_exclusive_lease_atomically(self):
         assignment = runner.enqueue(self.db, self.items[:1], who="operator")[0]
         current = self.claim(assignment['id'])['run']

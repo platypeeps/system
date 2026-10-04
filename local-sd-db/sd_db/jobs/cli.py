@@ -832,6 +832,11 @@ def _print_preview(kind: str, options: dict, plan: dict) -> int:
     print("sd-db: removed:")
     for entry in plan["rows"]:
         print(f"sd-db:   {entry['table']} {removal._key(entry['table'], entry['row'])}")
+    if plan.get("detach"):
+        # Runs of items moved to another repo stay, with no repo (sd:2581).
+        print("sd-db: detached, kept with their item:")
+        for entry in plan["detach"]:
+            print(f"sd-db:   runner_run {entry['run']} of item {entry['item']}, now on {entry['item_repo']}")
     if plan["refusals"]:
         print("sd-db: refused:")
         for refusal in plan["refusals"]:
@@ -862,6 +867,8 @@ def _print_apply(result: dict) -> int:
     """What the apply did. Exit 4 when the rows are gone but the move stopped: the lines finish it."""
     counts = ", ".join(f"{count} {table}" for table, count in result["removed"].items())
     print(f"sd-db: removed {counts}")
+    for run in result.get("detached", []):
+        print(f"sd-db: detached runner_run {run}")
     print(f"sd-db: record item {result['record']} in {result['notes']} note(s); backup {result['backup']}")
     for path in result["moved"]:
         print(f"sd-db: moved {path}")

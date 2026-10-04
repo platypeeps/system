@@ -105,7 +105,7 @@ INSERT_ORDER = ("repo", "repo_protection", "item", "note", "assignment", "runner
 REFERENCES = {
     ("item", "repo"): "P3: refused, or removed with --with-items",
     ("repo_protection", "repo"): "removed with the repo",
-    ("runner_run", "repo"): "P4 and P6: released runs removed with their items",
+    ("runner_run", "repo"): "P4 and P6: released runs removed with their items, or detached when the item moved (sd:2581)",
     ("runner_lease", "repo"): "P4: released leases removed with the repo",
     ("note", "item"): "removed with the item, each note listed",
     ("assignment", "item"): "I3: removed when done or cancelled",
@@ -584,7 +584,7 @@ def _left(connection, store, tables, repo=None):
     return list(dict.fromkeys(left))
 
 
-def _finish(connection, kind, target, tables, refusals, *, with_items=False, repo=None):
+def _finish(connection, kind, target, tables, refusals, *, with_items=False, repo=None, detach=()):
     """Order, hash and annotate a plan. G6 is read after the fingerprint (C-64)."""
     unique = []
     for refusal in refusals:
@@ -594,7 +594,9 @@ def _finish(connection, kind, target, tables, refusals, *, with_items=False, rep
     for refusal in _unreadable(rows):
         if refusal not in unique:
             unique.append(refusal)
-    canonical = json.dumps({"rows": rows, "refusals": sorted([r["code"], r["table"], str(r["key"])] for r in unique)},
+    detach = list(detach)
+    canonical = json.dumps({"rows": rows, "detach": detach,
+                            "refusals": sorted([r["code"], r["table"], str(r["key"])] for r in unique)},
                            sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=repr)
     fingerprint = hashlib.sha256(canonical.encode()).hexdigest()
     put_back = _put_back(connection, kind, fingerprint)
@@ -609,7 +611,7 @@ def _finish(connection, kind, target, tables, refusals, *, with_items=False, rep
     warnings = [f"item {item['id']} was imported from {item['source']} as {item['external_id']}; "
                 f"the next import can bring it back" for item in tables.get("item", [])
                 if item["source"] in IMPORTED and item["external_id"] is not None]
-    plan = {"kind": kind, "target": target, "with_items": with_items, "rows": rows,
+    plan = {"kind": kind, "target": target, "with_items": with_items, "rows": rows, "detach": detach,
             "counts": {table: len(tables[table]) for table in INSERT_ORDER if tables.get(table)},
             "refusals": unique,
             "move": {"files": files,
@@ -703,6 +705,9 @@ def _record(plan, *, who, reason, backup, note_limit=None, max_notes=None):
         lines.append(f"backup: {backup}")
     lines += [f"rows: {len(plan['rows'])} in {len(chunks)} note(s)", "removed:"]
     lines += [f"{entry['table']} {_key(entry['table'], entry['row'])}" for entry in plan["rows"]]
+    if plan.get("detach"):
+        # The put-back line for each detached run: the repo its row named (sd:2581).
+        lines += ["detached:", *(f"runner_run {entry['run']} repo {entry['repo']}" for entry in plan["detach"])]
     if plan["move"]["files"]:
         lines += ["move after commit:", *(f"file {path}" for path in plan["move"]["files"]), f"to {plan['move']['to']}"]
     if plan["left"]:
@@ -773,11 +778,20 @@ def _plan_repo(connection, path, *, with_items, home):
             refusals += _run_refusals(connection, "I6", item_runs, _leases(connection, item_runs))
     planned = {item["id"] for item in tables["item"]}
     by_assignment = _runs(connection, tables["assignment"])
-    on_repo = _rows(connection, "SELECT r.*, a.item AS plan_item FROM runner_run r LEFT JOIN assignment a"
-                                " ON a.id = r.assignment WHERE r.repo=? ORDER BY r.assignment, r.run, r.id", (path,))
+    on_repo = _rows(connection, "SELECT r.*, a.item AS plan_item, i.repo AS item_repo FROM runner_run r"
+                                " LEFT JOIN assignment a ON a.id = r.assignment LEFT JOIN item i ON i.id = a.item"
+                                " WHERE r.repo=? ORDER BY r.assignment, r.run, r.id", (path,))
     runs = {run["id"]: run for run in by_assignment}
+    detach = []
     for run in on_repo:
-        owner = run.pop("plan_item")
+        owner, home_now = run.pop("plan_item"), run.pop("item_repo")
+        if owner not in planned and home_now is not None and home_now != path:
+            # sd:2581: the item moved to another repo (`sd task edit --belongs-to`).
+            # The run stays with it and loses only its link to this repo
+            # (migration 018); P4 below still holds it to a released run with
+            # no clone on disk, and the record names the repo it had.
+            detach.append({"run": run["id"], "repo": path, "item": owner, "item_repo": home_now})
+            continue
         if owner not in planned:
             refusals.append(_refusal("P6", "runner_run", run["id"],
                                      f"runner run {run['id']} on this repo belongs to assignment {run['assignment']}, "
@@ -804,7 +818,7 @@ def _plan_repo(connection, path, *, with_items, home):
                                                          f"{checkout.path}; the next seed adds the repo back"))
     tables = {**tables, "runner_run": runs, "runner_lease": leases}
     refusals += _reuse(connection, tables["assignment"]) + malformed
-    return _finish(connection, "repo", path, tables, refusals, with_items=with_items, repo=path)
+    return _finish(connection, "repo", path, tables, refusals, with_items=with_items, repo=path, detach=detach)
 
 
 # ---------------------------------------------------------------- the apply
@@ -889,6 +903,25 @@ def _delete(connection, plan) -> None:
         taken = connection.execute(f"DELETE FROM {table} WHERE {column} IN ({_marks(keys[table])})", keys[table]).rowcount
         if taken != len(keys[table]):
             raise RemovalRefused(f"{table}: the plan named {len(keys[table])} rows and the delete took {taken}")
+
+
+def _detach(connection, plan) -> None:
+    """Move each run the plan detaches from `repo` to `detached_from` (sd:2581), and nothing else.
+
+    `detached_from` is the provenance `runner_journal.against` checks: the
+    journal is not rewritten, since a file write cannot roll back with this
+    transaction, and it keeps naming that repository. `journal_version` and
+    `updated_at` stay, because they say which journal record the row matches,
+    and that record is unchanged; a bump with no journal write is a row newer
+    than its journal, which the nightly backup refuses. A detached row cannot
+    be detached again: its `repo` no longer matches.
+    """
+    for entry in plan.get("detach", []):
+        taken = connection.execute("UPDATE runner_run SET repo = NULL, detached_from = repo"
+                                   " WHERE id = ? AND repo = ? AND released_at IS NOT NULL AND detached_from IS NULL",
+                                   (entry["run"], entry["repo"])).rowcount
+        if taken != 1:
+            raise RemovalRefused(f"runner_run {entry['run']}: the plan detached it from {entry['repo']} and the update took {taken}")
 
 
 def _regular(path: Path, what: str) -> None:
@@ -1098,6 +1131,7 @@ def apply(connection: sqlite3.Connection, plan_kind: str, target, *, fingerprint
                 for chunk in chunks:
                     add_note(connection, record, "comment", chunk, session=who)
                 transition(connection, record, "done", who=who, reason="removal record")
+                _detach(connection, plan)
                 _delete(connection, plan)
                 violations = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
                 if violations:
@@ -1121,4 +1155,5 @@ def apply(connection: sqlite3.Connection, plan_kind: str, target, *, fingerprint
             raise
         moved, error, commands = _move(database.parent, plan, record)
     return {"record": record, "notes": len(chunks), "removed": plan["counts"], "backup": str(snapshot.directory),
+            "detached": [entry["run"] for entry in plan.get("detach", [])],
             "moved": moved, "move_error": error, "move_commands": commands}

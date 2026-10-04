@@ -147,9 +147,11 @@ class TheMigration(unittest.TestCase):
             path = Path(tmp) / "sd.db"
             initialise(path)
             raw = sqlite3.connect(path, isolation_level=None)
-            text = (SCHEMA_DIR / "017_judgment_compare_arms.sql").read_text()
-            raw.executescript("\n".join(line[4:] for line in text.splitlines()
-                                        if line.startswith("--   ")))
+            # 018 came after 017 and is reversed first: its `ADD COLUMN` does not replay (sd:2581).
+            for name in ("018_runner_run_repo_nullable.sql", "017_judgment_compare_arms.sql"):
+                text = (SCHEMA_DIR / name).read_text()
+                raw.executescript("\n".join(line[4:] for line in text.splitlines()
+                                            if line.startswith("--   ")))
             self.assertEqual(raw.execute("PRAGMA user_version").fetchone()[0], 16)
             raw.execute(
                 "INSERT INTO judgment (id, timestamp, caller, stage, arm, provider, "
