@@ -1,10 +1,11 @@
 """The tracker collector, in the library, writing `shadow` and its watermark.
 
-The pack's `dashboard` package holds the only collector that refreshes the
-tracker rows. A one-time import of `index.sqlite` would therefore leave
+When this module was written, the pack's `dashboard` package held the only
+collector that refreshed the tracker rows. A one-time import of
+`index.sqlite` would therefore have left
 `shadow` frozen on the day of the switch: correct at midnight, wrong by
-lunch, and nothing in the system would say so. So the collector moves here
-first, and PR 6's retire of `index.sqlite` is gated on a sync *after* the
+lunch, and nothing in the system would have said so. So the collector moved
+here first, and PR 6's retire of `index.sqlite` is gated on a sync *after* the
 import having brought in a new issue.
 
 **This module is the collector, not the command.** `sd shadow sync` is a verb
