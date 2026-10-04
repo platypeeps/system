@@ -935,6 +935,10 @@ def run(
     checked before anything is written (`require_mount`).
     """
     _check_keep(keep)
+    if keep == 0:
+        # The snapshot this run takes is one of the `keep` it retains, so 0
+        # deletes it and the row prune then refuses a backup that is gone.
+        raise BackupError("backup retention keeps at least 1: the count includes this run's backup")
     _check_keep_days(keep_days)
     if keep is not None and keep_days is not None:
         raise BackupError("backup retention takes a count or an age, not both")
@@ -1090,6 +1094,21 @@ def run(
     )
 
 
+def _schema_objects(connection: sqlite3.Connection, table_names: list[str]) -> dict[tuple[str, str], tuple]:
+    """Each table's indexes by shape (unique, origin, partial, key columns),
+    and every trigger and view by the table it is on."""
+    shape: dict[tuple[str, str], tuple] = {}
+    for table in table_names:
+        for _, name, unique, origin, partial in connection.execute(f"PRAGMA index_list({table})"):
+            columns = tuple(row[2] for row in connection.execute(f'PRAGMA index_info("{name}")'))
+            shape[("index", name)] = (table, unique, origin, partial, columns)
+    for kind, name, table in connection.execute(
+        "SELECT type, name, tbl_name FROM sqlite_master WHERE type IN ('trigger', 'view')"
+    ):
+        shape[(kind, name)] = (table,)
+    return shape
+
+
 def _check_restore(connection: sqlite3.Connection, *, version: int = SCHEMA_VERSION) -> dict[str, int]:
     """Check the complete candidate, including a misleading version number."""
     result = connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -1113,6 +1132,14 @@ def _check_restore(connection: sqlite3.Connection, *, version: int = SCHEMA_VERS
             expected = reference.execute(f"PRAGMA table_info({table})").fetchall()
             if actual != expected:
                 raise BackupError(f"restore candidate has incompatible columns in {table}")
+        # Tables and columns alone pass a store missing an index or a trigger:
+        # `record_check` upserts through `runner_check`, and a trigger holds
+        # the publication payload immutable.
+        wanted, found = _schema_objects(reference, expected_tables), _schema_objects(connection, expected_tables)
+        changed = sorted(name for kind, name in wanted.keys() | found.keys()
+                         if wanted.get((kind, name)) != found.get((kind, name)))
+        if changed:
+            raise BackupError("restore candidate has incompatible indexes or triggers: " + ", ".join(changed))
     finally:
         reference.close()
     # A snapshot taken by `run` of a source that was already broken arrives

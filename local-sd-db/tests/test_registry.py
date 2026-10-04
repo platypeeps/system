@@ -523,6 +523,18 @@ class TheFirstOpen(unittest.TestCase):
         self.assertEqual(self.counts(writer), (6, 6))
         self.assertEqual(self.counts(reader), (6, 6))
 
+    def test_a_read_only_open_with_query_only_off_still_seeds_nothing(self):
+        # `mode=ro` holds even when `query_only` is switched off, so the
+        # connection cannot seed; it must get the file view, not a write error.
+        reader = connect(home=self.home, write=False)
+        self.addCleanup(reader.close)
+        reader.execute("PRAGMA query_only = OFF")
+        registry = read_registry(home=self.home, connection=reader)
+        self.assertEqual(self.counts(reader), (0, 0))
+        self.assertFalse(reader.in_transaction)
+        self.assertEqual(registry.resolve("reviewer").name, "codex")
+        self.assertEqual(ensure_seeded(reader, parse(SHIPPED, "providers.yaml")), 0)
+
     def test_a_row_the_dashboard_toggled_survives_a_later_read(self):
         writer = connect(home=self.home)
         self.addCleanup(writer.close)
