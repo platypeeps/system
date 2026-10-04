@@ -29,7 +29,7 @@ partly running or failing. `local-health-check` reads those codes.
 
 ## What exports here
 
-- `local-aura`: `aura.sh server`, `server-repo` and `experiment` set
+- `mezmo-aura`: `aura.sh server`, `server-repo` and `experiment` set
   `OTEL_EXPORTER_OTLP_ENDPOINT` to this service unless one is already exported.
 - `local-jev`: with `JEV_TRACES_URL=http://127.0.0.1:4338/v1/traces` in
   `<config>/jev/.env`, each call sends one metadata-only span.
