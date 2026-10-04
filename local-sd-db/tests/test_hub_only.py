@@ -238,6 +238,8 @@ class TheLedger(OverTheWire):
         self.assertIn(self.hub, str(caught.exception))
         self.assertEqual(self.reservations(), [])
 
+    # Its setup reserves on the hub's own file; `sd-db.sh test --remote` would send that over the wire.
+    @wire.hub_only
     def test_release_orphans_sweeps_nothing_and_leaves_every_reservation(self):
         local = database.connect(self.served.database)
         try:

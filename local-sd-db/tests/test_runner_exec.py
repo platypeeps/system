@@ -91,6 +91,7 @@ class Palette(PaletteFixture):
             with self.subTest(change=change), self.assertRaises(SdDbError): self.prepare(**change)
             self.assertEqual(before, self.snapshot())
 
+    @hub_only
     def test_missing_mutates_scope_shell_and_embedded_placeholder_reject_the_entry_by_name(self):
         original = dict(self.entries["inspect"])
         variants = [({key: value for key, value in original.items() if key != "mutates"}, "required"),
@@ -599,6 +600,7 @@ class TheStandingRefusal(PaletteFixture):
                 ("an item placeholder declared a provider", "declare_the_item_a_provider", "provider placeholder must name a configured provider"),
                 ("an item placeholder declared a destination", "declare_the_item_a_destination", "destination must be a new absolute directory"))
 
+    @hub_only
     def test_it_answers_every_standing_refusal_and_prepare_makes_the_very_same_one(self):
         """Each staged in turn, asked both ways, and undone before the next.
 
@@ -622,6 +624,7 @@ class TheStandingRefusal(PaletteFixture):
             self.db.execute("DELETE FROM state WHERE kind='restore'"); self.db.commit()
         self.assertIsNone(self.ask(self.sha()))
 
+    @hub_only
     def test_it_does_not_answer_a_refusal_that_resolves_the_value(self):
         """The other direction, and the reason the set is not simply every refusal.
 
@@ -650,6 +653,7 @@ class TheStandingRefusal(PaletteFixture):
     def exec_notes(self):
         return self.db.execute("SELECT COUNT(*) FROM note WHERE item=? AND kind='exec'", (self.item,)).fetchone()[0]
 
+    @hub_only
     def test_asked_for_a_queue_it_refuses_a_command_prepare_would_not_queue(self):
         """sd:814: a worktree command that does not mutate runs at once, and is never queued.
 
@@ -703,6 +707,7 @@ class TheStandingRefusal(PaletteFixture):
              ("a destination that is relative", "destination", "relative/path", "destination must be a new absolute directory"),
              ("a destination longer than its bound", "destination", "/" + "d" * 4000, "destination must be a new absolute directory"))
 
+    @hub_only
     def test_it_answers_every_form_check_its_entry_kinds_have(self):
         """One case per check in `_shape`, staged and asked both ways.
 

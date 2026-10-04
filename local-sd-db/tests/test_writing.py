@@ -412,6 +412,7 @@ class WorktreeCheckout(WritingCase):
                 with checkout(str(self.repo), path):
                     pass
 
+    @hub_only
     def test_cutover_and_recovery_refuse_a_worktree(self):
         with checkout(str(self.repo), self.worktree):
             with self.assertRaisesRegex(WorkflowError, "registered checkout"):
