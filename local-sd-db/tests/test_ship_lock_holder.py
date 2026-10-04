@@ -18,6 +18,7 @@ from pathlib import Path
 
 from sd_db import ship
 from sd_db.workflow import WorkflowError
+from sd_db.testing.wire import hub_only
 
 REPOSITORY = "fixture/repo"
 
@@ -28,7 +29,6 @@ HOLDER = """
 import sys, time
 from pathlib import Path
 from sd_db import ship
-from sd_db.testing.wire import hub_only
 with ship.repository_lock(Path(sys.argv[1]), sys.argv[2],
                           holder={"command": "sd-ship prepare --item 1872", "item": 1872}):
     print("held", flush=True)
