@@ -14,7 +14,6 @@ and the refusal to run against a dirty tree.
 import json
 import re
 import os
-import pwd
 import shlex
 import subprocess
 import sys
@@ -926,38 +925,24 @@ class WhichUserItPlansAs(ItemCase):
     and exited 0 -- which reached `plan()` as a planning run that produced no
     documents rather than as a broken environment. The credential is a
     keychain generic password read under the name in `USER`, and the runner's
-    minimal environment carries no `USER` at all.
+    minimal environment carried no `USER` at all.
+
+    The runner's `sd_db.runner_exec.process_plan` now sets `USER` from the
+    uid (sd:458), in the installed copy the runner loads too, and
+    `local-sd-db/tests/test_runner_exec.py` pins it. So sd-plan hands the
+    agent the environment it was given and sets no `USER` of its own
+    (sd:2557).
     """
 
-    def test_the_user_is_the_uid_and_not_the_ambient_name(self):
-        """Derived, so a wrong ambient value cannot survive into the keychain."""
-        with mock.patch.dict(os.environ, {"USER": "somebody-else"}):
-            self.assertEqual(sd_plan.planning_environment()["USER"],
-                             pwd.getpwuid(os.getuid()).pw_name)
-
-    def test_an_environment_without_a_user_still_gets_one(self):
-        """The runner's case exactly: HOME and PATH, and nothing else."""
-        with mock.patch.dict(os.environ, {}, clear=True):
-            os.environ["HOME"] = str(self.home)
-            os.environ["PATH"] = "/usr/bin:/bin"
-            self.assertEqual(sd_plan.planning_environment()["USER"],
-                             pwd.getpwuid(os.getuid()).pw_name)
-
-    def test_the_rest_of_the_environment_is_carried_through(self):
-        """Adding `USER` must not become replacing everything else."""
-        with mock.patch.dict(os.environ, {"HOME": "/somewhere", "LANG": "en_US.UTF-8"}):
-            environment = sd_plan.planning_environment()
-        self.assertEqual(environment["HOME"], "/somewhere")
-        self.assertEqual(environment["LANG"], "en_US.UTF-8")
-
-    def test_the_planning_run_is_given_the_environment(self):
-        """Pinning the call site: the helper existing is not the fix."""
+    def test_the_planning_run_is_given_the_callers_environment_unchanged(self):
+        """The runner's `USER` reaches the agent as the runner set it; nothing here replaces it."""
         installed = self.home / ".local" / "bin" / "claude"
         installed.parent.mkdir(parents=True, exist_ok=True)
         installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         installed.chmod(0o755)
         seen = {}
-        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
+        given = {"PATH": "/usr/bin:/bin", "USER": "example-runner-user", "LANG": "en_US.UTF-8"}
+        with mock.patch.dict(os.environ, given, clear=False):
             os.environ.pop("SD_PLAN_CLAUDE", None)
             os.environ.pop("SD_PLAN_AGENT", None)
             with mock.patch.object(sd_plan.Path, "home", lambda: self.home):
@@ -966,7 +951,9 @@ class WhichUserItPlansAs(ItemCase):
                         lambda *a, **k: seen.update(k) or
                         subprocess.CompletedProcess(a[0], 0)):
                     sd_plan.agent(self.repo, "a-slug", {"id": 1})
-        self.assertIn("USER", seen.get("env", {}))
+        environment = seen.get("env", {})
+        self.assertEqual({key: environment.get(key) for key in given}, given)
+        self.assertEqual(environment.get("SD_PLAN_DOCUMENTS"), " ".join(sd_plan.DOCUMENTS))
 
 
 class HowAnOverrideIsSplit(ItemCase):

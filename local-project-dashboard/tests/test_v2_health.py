@@ -270,7 +270,7 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual(len(prot["extra"]["checks"]), 11)
         cells = lambda key: {cell[0]: cell[1:] for cell in rows[key]["cells"]}
         alpha = cells("prot:/checkouts/alpha")
-        self.assertEqual((alpha["Reviews"], alpha["Admins"], alpha["Squash message"], alpha["Requires ci"], alpha["Rebase merge"]),
+        self.assertEqual((alpha["Reviews"], alpha["Admins"], alpha["Squash message"], alpha["Required check"], alpha["Rebase merge"]),
                          (["gap", "no approving review is required"], ["ok"], ["ok"],
                           ["gap", "sd/local-gate · required_check sentence"], ["na"]))
         beta = cells("prot:/checkouts/beta")

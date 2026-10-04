@@ -1848,7 +1848,7 @@ def rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     """
     out = []
     for row in connection.execute(
-        "SELECT repo.path, repo.remote, p.observed_at, p.status, p.default_branch, "
+        "SELECT repo.path, repo.remote, repo.ci, p.observed_at, p.status, p.default_branch, "
         "p.reason, p.body FROM repo LEFT JOIN repo_protection p ON p.repo = repo.path "
         "ORDER BY repo.path"
     ):
@@ -1863,6 +1863,8 @@ def rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
         out.append({
             "repo": row["path"],
             "remote": row["remote"],
+            # The screen names the baseline check from it: `baseline_check(ci)` (sd:2509).
+            "ci": row["ci"],
             "slug": f"{slug[0]}/{slug[1]}" if slug else None,
             "status": status,
             "observed_at": row["observed_at"],
