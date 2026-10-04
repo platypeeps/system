@@ -606,3 +606,27 @@ prune, `ClockSkew` and the `acked_at` column. Gap (e) is moot, because no
 job prunes the table. Step 6 carries the `hub_only` test carve-out. Step 7
 refuses the hub's own address, and step 10 lists the satellite's accounts
 first. The `BLOCKING` section is clear again.
+
+2026-10-04 — step 6 built, loopback only. `HubOnly` in `sd_db.remote`
+names the verb and the hub. `database.served_by` decides by the
+connection's kind, or for a path by `hub.json` and the default path, never
+by `PRAGMA database_list` (seam 2). `refuse_hub_only` runs before any lock,
+directory or write. The refusals, from the design's hub table and step 1's
+list: `repository_lock`; `control_gate`; every function that reads
+`PRAGMA database_list` except `registry.beside` (seam 7) and `migrate`
+(its `create=True` open refuses first); `backup.run` and `restore`; `init`
+and `migrate` on a satellite; `runner_controls.control` and the
+`runner_exec` entries. `ledger.reserve` raises `LedgerRefused` with scope
+`hub`, and `ledger.release_orphans` sweeps nothing (C1).
+`tests/test_hub_only.py` drives one verb table twice: over the wire each
+verb refuses and leaves the rows and the folder unchanged, and on the
+hub's own file each passes the refusal. A guard test fails any function
+that reads the pragma before it refuses. Q2 = A: the `hub_only` marks sit
+on the tests the unmarked wire run refused, and `TheMarks` runs each marked
+test over the wire and fails one that meets no refusal. Finding:
+`writing.piece_state` reads `publication_claim` rows and the piece's own
+checkout, not a directory beside the database. It refuses nothing, so the
+`sd writing` state read works on a satellite; the hub table's row for it
+is wrong. Not built: the pack-level checks (`sd-ship` and `sd-review` over
+loopback, the serve log with no lock); the library refusals they reach are
+tested.

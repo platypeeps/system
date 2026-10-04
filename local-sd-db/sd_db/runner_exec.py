@@ -312,7 +312,8 @@ def _standing(connection, command, values, *, expected_catalog, screen, path, ho
     its kind is refused on the form and never on the row, and the dashboard
     sends 400 for it where a well-typed value on the same request would have
     got 409 with `reload` for a stale row, or 404 for a row that is not
-    there (`local-project-dashboard/sd_dashboard/server.py:548`). Nothing
+    there (`except workflow.StaleItem as problem`, in `do_POST` of
+    `local-project-dashboard/sd_dashboard/server.py`). Nothing
     branches on the difference -- `dashboard.js` reads `error` alone, and the
     CLI exits 1 for any of them -- so it is recorded here rather than pinned
     by a test, which is what a reader of either code would need (sd:820).
