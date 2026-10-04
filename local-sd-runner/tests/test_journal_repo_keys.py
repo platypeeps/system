@@ -111,6 +111,24 @@ class JournalRepoKeys(unittest.TestCase):
         with self.assertRaisesRegex(store.RunnerRefused, "identity changed: repo"):
             journal.persist(self.database, store.run_state(self.db, self.ident))
 
+    # -- a row `repo remove` detached (sd:2581) -------------------------------
+
+    def detach(self, *, released: bool = True) -> None:
+        """Release the run (or not), write its journal from the row, then null the row's repo as the remove does."""
+        if released:
+            self.db.execute("UPDATE runner_run SET released_at=? WHERE id=?", (STAMP, self.ident))
+        write_raw(self.database, store.run_state(self.db, self.ident))
+        self.db.execute("UPDATE runner_run SET repo=NULL WHERE id=?", (self.ident,))
+
+    def test_a_detached_row_and_the_journal_that_names_its_repository_are_not_a_hold(self):
+        self.detach()
+        self.assertEqual(self.holds(), [])
+        self.assertEqual(reconciliation.plan(self.config)["entries"], [])
+
+    def test_an_open_row_with_no_repository_still_holds(self):
+        self.detach(released=False)
+        self.assertIn("same-version database and ownership journal conflict", [hold["reason"] for hold in self.holds()])
+
     def test_a_record_with_a_bad_digest_is_refused_and_left_untouched(self):
         path = self.journal_with(str(self.home / "repos" / "x"))
         envelope = json.loads(path.read_text())

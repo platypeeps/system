@@ -1125,8 +1125,10 @@ the commit removes nothing and exits 1.
 A run on the repo whose item moved to another repo (`sd task edit N
 --belongs-to`) is not removed and does not refuse (sd:2581). The preview
 lists it under "detached, kept with their item"; the apply sets its `repo`
-to NULL (migration 018), rewrites its journal to match, and the record's
-`detached:` lines name the repo each run had. P4 still holds such a run: it
+to NULL (migration 018) and changes nothing else on the row. Its journal is
+not rewritten: it keeps the repo as provenance, and a released row with no
+repo agrees with it. The record's `detached:` lines name the repo each run
+had. P4 still holds such a run: it
 must be released, with no retained clone on disk. Its released lease names
 the repo, so it goes with the repo. An item with no repo at all still
 refuses its runs (P6). Exit 4 means the rows are gone and

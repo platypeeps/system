@@ -810,8 +810,8 @@ class MovedItemRuns(Store):
 
     `sd task edit N --belongs-to` moves the item and leaves its finished runs
     naming the old repo. The remove detaches each one (migration 018): the row
-    stays with its item, `repo` goes NULL, its journal says the same, and the
-    record names the repo it had.
+    stays with its item and `repo` goes NULL. Its journal is left as it was,
+    naming the repo, and the record names it too.
     """
 
     def setUp(self):
@@ -838,22 +838,77 @@ class MovedItemRuns(Store):
         self.assertEqual([r["key"] for r in self.refused(self.plan_repo(self.source), "P4")],
                          [self.run])
 
-    def test_the_apply_keeps_the_run_with_its_item_and_its_journal_agrees(self):
+    def test_the_apply_keeps_the_run_with_its_item_and_leaves_its_journal(self):
         journal = self.journal([self.run])
+        before = (journal / f"{self.run}.json").read_bytes()
         version = self.db.execute("SELECT journal_version FROM runner_run WHERE id=?", (self.run,)).fetchone()[0]
         fingerprint = self.plan_repo(self.source)["fingerprint"]
         result = self.apply("repo", self.source, fingerprint)
         self.assertEqual(result["detached"], [self.run])
         row = self.db.execute("SELECT * FROM runner_run WHERE id=?", (self.run,)).fetchone()
-        self.assertEqual((row["repo"], row["assignment"], row["journal_version"]), (None, self.work, version + 1))
+        self.assertEqual((row["repo"], row["assignment"], row["journal_version"]), (None, self.work, version))
         self.assertIsNone(self.db.execute("SELECT 1 FROM repo WHERE path=?", (self.source,)).fetchone())
         self.assertEqual(list(self.db.execute("PRAGMA foreign_key_check")), [])
-        record = runner_journal.read(journal / f"{self.run}.json")
-        self.assertEqual((record["repo"], record["journal_version"]), (None, version + 1))
+        # The journal keeps the repository as provenance; the remove never writes it.
+        self.assertEqual((journal / f"{self.run}.json").read_bytes(), before)
         _, _, text = self.record(result["record"])
         self.assertIn(f"detached:\nrunner_run {self.run} repo {self.source}\n", text)
         # The nightly backup checks every row against its journal: it must pass.
         removal.backups.run(home=self.home, database=self.store / "sd.db", keep=None)
+
+    def two_detached(self):
+        """A second released run of the moved item, and both runs' journals as bytes."""
+        second = self.attempt(self.work, self.source, number=2)
+        self.lease(second, self.source)
+        journal = self.journal([self.run, second])
+        return [self.run, second], {run: (journal / f"{run}.json").read_bytes() for run in (self.run, second)}
+
+    def test_a_journal_write_that_fails_on_the_second_run_leaves_every_journal_as_it_was(self):
+        """Review on sd:2581: a file write cannot roll back with the transaction, so the remove makes none."""
+        runs, before = self.two_detached()
+        fingerprint = self.plan_repo(self.source)["fingerprint"]
+        real = runner_journal.persist
+        calls = []
+
+        def second_fails(database, record):
+            calls.append(record["id"])
+            if len(calls) == 2:
+                raise OSError("disk full on the second journal")
+            return real(database, record)
+        with mock.patch.object(runner_journal, "persist", side_effect=second_fails):
+            try:
+                self.apply("repo", self.source, fingerprint)
+            except (OSError, removal.RemovalRefused):
+                pass
+        after = {run: (self.store / "runner-journal" / f"{run}.json").read_bytes() for run in runs}
+        self.assertEqual(after, before)
+        repos = {row["repo"] for row in self.db.execute("SELECT repo FROM runner_run WHERE id IN (?, ?)", runs)}
+        self.assertEqual(len(repos), 1)  # the rows moved together, or not at all
+
+    def test_a_removal_that_rolls_back_leaves_the_rows_and_the_journals(self):
+        runs, before = self.two_detached()
+        fingerprint = self.plan_repo(self.source)["fingerprint"]
+        with mock.patch.object(removal, "_delete", side_effect=removal.RemovalRefused("stopped after the detach")), \
+                self.assertRaisesRegex(removal.RemovalRefused, "stopped after the detach"):
+            self.apply("repo", self.source, fingerprint)
+        self.assertEqual([row["repo"] for row in self.db.execute("SELECT repo FROM runner_run WHERE id IN (?, ?)", runs)],
+                         [self.source, self.source])
+        self.assertEqual({run: (self.store / "runner-journal" / f"{run}.json").read_bytes() for run in runs}, before)
+
+    def test_the_removals_backup_restores_against_the_live_journal(self):
+        """Review on sd:2581: restoring the pre-removal backup must not meet a journal that says NULL."""
+        journal = self.journal([self.run])
+        fingerprint = self.plan_repo(self.source)["fingerprint"]
+        result = self.apply("repo", self.source, fingerprint)
+        other = self.root / "other-home"
+        state = other / ".local/share/sd"
+        state.mkdir(parents=True)
+        shutil.copytree(journal, state / "runner-journal")  # the live journal after the removal
+        restored = backup.restore(Path(result["backup"]), home=other)
+        connection = sd_db.connect(restored); self.addCleanup(connection.close)
+        row = connection.execute("SELECT repo FROM runner_run WHERE id=?", (self.run,)).fetchone()
+        self.assertEqual(row["repo"], self.source)
+        backup._check_runner_records(connection, state)
 
 
 class TheProbe(Store):

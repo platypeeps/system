@@ -378,12 +378,13 @@ def _check_runner_records(connection: sqlite3.Connection, directory: Path) -> No
     rows = list(connection.execute("SELECT * FROM runner_run"))
     if not rows:
         return
-    from .runner_journal import canonical
+    from .runner_journal import against, canonical
     files = _runner_files(directory / "runner-journal")
     for row in rows:
         # A record written before migration 014 names the repository by its
         # absolute path; the row names the key. Both sides keyed (sd:1447).
-        record = canonical(json.loads(files.get(f"{row['id']}.json", b"{}" )).get("record", {}))
+        # A row `repo remove` detached has no repo; its journal keeps it (sd:2581).
+        record = against(json.loads(files.get(f"{row['id']}.json", b"{}" )).get("record", {}), dict(row))
         row = canonical(dict(row))
         identity = ("id", "assignment", "run", "repo", "branch", "work_path", "retained_path")
         if (any(record.get(name) != row[name] for name in identity)

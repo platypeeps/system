@@ -1268,6 +1268,8 @@ except ImportError:
 # A library before sd:1447 has no `runner_journal.canonical`; against it a
 # record and a row compare as written, as they did before.
 _canonical = getattr(journal, "canonical", lambda record: record)
+# A library before sd:2581 detaches no row; against it a record reads as `_canonical` does.
+_against = getattr(journal, "against", lambda record, row: _canonical(record))
 
 
 def journal_differs(external: dict, current: dict) -> bool:
@@ -1275,6 +1277,8 @@ def journal_differs(external: dict, current: dict) -> bool:
 
     Both sides keyed: a record written before migration 014 names its
     repository by the absolute path the row now holds as a `~/` key, and is
-    the same run (sd:1447). A different repository still differs.
+    the same run (sd:1447). A different repository still differs. A row that
+    `repo remove` detached has no repo, while its journal keeps the one it
+    had (sd:2581); that pair agrees when all else does.
     """
-    return _canonical(external) != _canonical(current)
+    return _against(external, current) != _canonical(current)

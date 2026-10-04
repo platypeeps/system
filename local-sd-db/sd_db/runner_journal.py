@@ -130,14 +130,23 @@ def lock(path: Path, *, blocking=True, noun="runner", held=None, error=RunnerRef
         os.close(descriptor)
 
 
-def detached(record: dict) -> bool:
-    """Whether `record` is a released run whose repository was removed (sd:2581).
+def detached(row: dict) -> bool:
+    """Whether a `runner_run` row was detached by `repo remove` (sd:2581): released, with no repo (migration 018)."""
+    return row.get("repo") is None and bool(row.get("released_at"))
 
-    `repo remove` sets such a run's `repo` to NULL (migration 018) and writes
-    the journal from the row, so the journal says so too. Only a released run
-    is ever detached; an open one with no repository is still invalid.
+
+def against(record: dict, row: dict) -> dict:
+    """`record` keyed (`canonical`), as `row` should read it: with no repo when the row is detached (sd:2581).
+
+    `repo remove` nulls a moved item's released run in the database only. The
+    journal keeps the repository the run had, as provenance, and is never
+    rewritten: a file write cannot roll back with the transaction. So a
+    detached row agrees with its journal when all else does, and the
+    removal's own backup, whose row still names the repository, matches the
+    live journal byte for byte when it is restored.
     """
-    return record.get("repo") is None and bool(record.get("released_at"))
+    keyed = canonical(record)
+    return {**keyed, "repo": None} if detached(row) and keyed.get("released_at") else keyed
 
 
 def read(path: Path) -> dict:
@@ -149,8 +158,6 @@ def read(path: Path) -> dict:
         if not isinstance(record, dict) or type(record.get("journal_version")) is not int or record["journal_version"] < 0:
             raise ValueError("invalid journal version")
         for name in ("id", "repo", "branch", "work_path", "retained_path", "owner", "created_at"):
-            if name == "repo" and detached(record):
-                continue
             if not isinstance(record.get(name), str) or not record[name]:
                 raise ValueError(f"invalid {name}")
         if type(record.get("assignment")) is not int or type(record.get("run")) is not int:
@@ -185,9 +192,6 @@ def persist(database: Path, record: dict) -> Path:
             # the same repository by its absolute path (sd:1447).
             keyed, previous = canonical(record), canonical(previous)
             for name in ("id", "assignment", "run", "repo", "branch", "work_path", "retained_path"):
-                # A released run's repository may go, once: `repo remove` detaches it (sd:2581).
-                if name == "repo" and detached(keyed) and previous.get("released_at"):
-                    continue
                 if previous[name] != keyed[name]:
                     raise RunnerRefused(f"run journal identity changed: {name}")
             if previous.get("released_at") and not record.get("released_at"):

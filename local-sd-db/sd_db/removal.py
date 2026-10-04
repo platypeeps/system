@@ -905,25 +905,21 @@ def _delete(connection, plan) -> None:
             raise RemovalRefused(f"{table}: the plan named {len(keys[table])} rows and the delete took {taken}")
 
 
-def _detach(connection, plan) -> list[dict]:
-    """Null `repo` on each run the plan detaches (sd:2581), and return the rows as the journal must hold them.
+def _detach(connection, plan) -> None:
+    """Null `repo` on each run the plan detaches (sd:2581), and nothing else.
 
-    The journal version moves with the row, as every runner write moves it,
-    so the backup's journal check and the runner's restore holds read the two
-    as one. The apply persists each journal last, inside the transaction: a
-    journal that cannot be written rolls the remove back and leaves the old
-    journal whole. Only a commit that fails after it leaves a journal newer
-    than the row, which the runner then holds on until an operator reads it.
+    The journal is not rewritten: a file write cannot roll back with this
+    transaction, so a later failure would leave it ahead of the row. It keeps
+    the repository as provenance, and `runner_journal.against` reads it as
+    the detached row. Nothing else on the row moves, not `journal_version` nor
+    `updated_at`, so the backup's journal check and the runner's restore holds
+    still see one run; the removal record says when and from which repo.
     """
-    stamp, rows = now(), []
     for entry in plan.get("detach", []):
-        taken = connection.execute(
-            "UPDATE runner_run SET repo = NULL, journal_version = journal_version + 1, updated_at = ?"
-            " WHERE id = ? AND repo = ? AND released_at IS NOT NULL", (stamp, entry["run"], entry["repo"])).rowcount
+        taken = connection.execute("UPDATE runner_run SET repo = NULL WHERE id = ? AND repo = ? AND released_at IS NOT NULL",
+                                   (entry["run"], entry["repo"])).rowcount
         if taken != 1:
             raise RemovalRefused(f"runner_run {entry['run']}: the plan detached it from {entry['repo']} and the update took {taken}")
-        rows.append(dict(connection.execute("SELECT * FROM runner_run WHERE id = ?", (entry["run"],)).fetchone()))
-    return rows
 
 
 def _regular(path: Path, what: str) -> None:
@@ -1133,15 +1129,13 @@ def apply(connection: sqlite3.Connection, plan_kind: str, target, *, fingerprint
                 for chunk in chunks:
                     add_note(connection, record, "comment", chunk, session=who)
                 transition(connection, record, "done", who=who, reason="removal record")
-                detached = _detach(connection, plan)
+                _detach(connection, plan)
                 _delete(connection, plan)
                 violations = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
                 if violations:
                     raise RemovalRefused(f"the deletes left {len(violations)} foreign key violation(s), "
                                          f"{violations[0][0]} row {violations[0][1]} first; nothing was removed")
                 _check(stop)
-                for row in detached:
-                    runner_journal.persist(database, row)
         except KeyboardInterrupt:
             if record is not None and not connection.in_transaction and connection.execute(
                     "SELECT 1 FROM item WHERE id=? AND source='cron-report' AND external_id=?",

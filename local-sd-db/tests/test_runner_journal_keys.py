@@ -110,21 +110,27 @@ class BackupCheck(unittest.TestCase):
         runner_journal.persist(self.database, self.row)
         self.assertEqual(json.loads(path.read_text())["record"], self.row)
 
+    def test_a_detached_row_passes_against_the_journal_that_names_its_repository(self):
+        """sd:2581: the removal nulls the row only; the backup check reads the two as one run."""
+        self.db.execute("UPDATE runner_run SET released_at=? WHERE id=?", (STAMP, self.ident))
+        row = dict(self.db.execute("SELECT * FROM runner_run WHERE id=?", (self.ident,)).fetchone())
+        write_raw(self.database, row)
+        self.db.execute("UPDATE runner_run SET repo=NULL WHERE id=?", (self.ident,))
+        backup._check_runner_records(self.db, self.database.parent)
+
     def test_persist_still_refuses_another_repository(self):
         write_raw(self.database, {**self.row, "repo": str(self.home / "repos" / "other")})
         with self.assertRaisesRegex(Exception, "identity changed: repo"):
             runner_journal.persist(self.database, {**self.row, "journal_version": 1})
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class Detached(unittest.TestCase):
-    """sd:2581: `repo remove` detaches a released run, and its journal holds `repo` NULL.
+    """sd:2581: `repo remove` nulls a released run's `repo` in the row; its journal keeps the repository.
 
-    Only a released run may lose its repository, and only that one field may
-    change: an open run with none, or a detached run given a repository back,
-    is still refused.
+    The journal is never rewritten by the remove, so it cannot drift ahead of
+    a transaction that rolled back. `against` reads it as the detached row,
+    and only a released row with no repo is read that way; the journal
+    itself still cannot lose its repository.
     """
 
     def setUp(self):
@@ -135,19 +141,23 @@ class Detached(unittest.TestCase):
                        "owner": "runner", "work_path": "/w", "retained_path": "/r", "created_at": STAMP,
                        "journal_version": 3, "released_at": STAMP}
 
-    def test_a_released_run_may_lose_its_repository_once(self):
-        runner_journal.persist(self.database, self.record)
-        detached = {**self.record, "repo": None, "journal_version": 4}
-        path = runner_journal.persist(self.database, detached)
-        self.assertEqual(runner_journal.read(path), detached)
-        with self.assertRaisesRegex(runner_journal.RunnerRefused, "identity changed: repo"):
-            runner_journal.persist(self.database, {**detached, "repo": "/srv/repos/y", "journal_version": 5})
+    def test_a_detached_row_reads_its_journal_without_the_repository(self):
+        row = {**self.record, "repo": None}
+        self.assertEqual(runner_journal.against(self.record, row), row)
 
-    def test_an_open_run_with_no_repository_is_still_invalid(self):
-        path = write_raw(self.database, {**self.record, "repo": None, "released_at": None})
+    def test_an_open_row_with_no_repository_still_differs(self):
+        record = {**self.record, "released_at": None}
+        row = {**record, "repo": None}
+        self.assertEqual(runner_journal.against(record, row)["repo"], "/srv/repos/x")
+
+    def test_the_journal_itself_cannot_lose_its_repository(self):
+        runner_journal.persist(self.database, self.record)
+        with self.assertRaisesRegex(runner_journal.RunnerRefused, "identity changed: repo"):
+            runner_journal.persist(self.database, {**self.record, "repo": None, "journal_version": 4})
+        path = write_raw(self.database, {**self.record, "id": uuid.uuid4().hex, "repo": None})
         with self.assertRaisesRegex(runner_journal.RunnerRefused, "invalid repo"):
             runner_journal.read(path)
-        other = {**self.record, "id": uuid.uuid4().hex, "released_at": None}
-        runner_journal.persist(self.database, other)
-        with self.assertRaisesRegex(runner_journal.RunnerRefused, "identity changed: repo"):
-            runner_journal.persist(self.database, {**other, "repo": None, "journal_version": 4})
+
+
+if __name__ == "__main__":
+    unittest.main()
