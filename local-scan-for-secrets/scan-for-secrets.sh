@@ -320,6 +320,14 @@ eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}
 [Aa]uthorization[^A-Za-z0-9]{1,4}([Bb]earer[^A-Za-z0-9]{1,3})?[A-Za-z0-9+/]{24,}(=|[+][A-Za-z0-9+/]{2,}={0,2})'
 
 command -v rg >/dev/null 2>&1 && HAVE_RG=1 || HAVE_RG=0
+
+# PATTERNS for `grep -E`, the fallback without ripgrep. POSIX ERE has no `\s`:
+# inside a bracket it is a backslash and an `s`, so the URL entry missed every
+# password holding an `s`. Each `\s` in PATTERNS sits in a bracket, where
+# `[:space:]` is the POSIX spelling (sd:2591).
+ere_patterns() {
+  printf '%s\n' "$PATTERNS" | sed 's/\\s/[:space:]/g'
+}
 [ -t 1 ] && S4S_TTY=1 || S4S_TTY=0
 export S4S_TTY
 
@@ -556,7 +564,8 @@ TARGETS_EOF
     else grep "$@" 2>/dev/null || true; fi
   }
   FILES=$(printf '%s\n' "$VALS" | mask_file_list fixed)
-  PFILES=$(printf '%s\n' "$PATTERNS" | mask_file_list regex)
+  if [ "$HAVE_RG" = 1 ]; then PFILES=$(printf '%s\n' "$PATTERNS" | mask_file_list regex)
+  else PFILES=$(ere_patterns | mask_file_list regex); fi
   ALLFILES=$(printf '%s\n%s\n' "$FILES" "$PFILES" | awk 'NF' | sort -u)
   if [ -z "$ALLFILES" ]; then
     echo "nothing to mask — no target file contains your keys or known patterns"
@@ -1338,7 +1347,7 @@ else
 $(targets)
 TARGETS_EOF
   [ $# -gt 0 ] || set -- .
-  RE=$(printf '%s' "$PATTERNS" | tr '\n' '|')
+  RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
   OUT=$(grep -rEIno $EX_D $EX_G -e "$RE" "$@" 2>/dev/null || true)
 fi

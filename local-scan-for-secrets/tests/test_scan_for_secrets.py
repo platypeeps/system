@@ -73,27 +73,35 @@ class UrlCredentials(unittest.TestCase):
     bracketed grammar line `scheme://[user[:password]@]host` is not a
     credential (sd:2591); a real `user:password@` still is."""
 
-    def scan(self, text: str) -> subprocess.CompletedProcess:
+    def scan(self, text: str, path: str) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             (root / "home").mkdir()
             (root / "tree").mkdir()
             (root / "tree" / "remote.py").write_text(text, encoding="utf-8")
-            env = dict(os.environ, HOME=str(root / "home"), SYSTEM_TOOLS_CONFIG=str(root / "config"))
+            env = dict(os.environ, HOME=str(root / "home"), SYSTEM_TOOLS_CONFIG=str(root / "config"), PATH=path)
             env.pop("S4S_CONF", None)
             return subprocess.run(["sh", str(SCRIPT)], cwd=root / "tree", env=env,
                                   capture_output=True, text=True, timeout=120)
 
+    #: The scan uses ripgrep when PATH has it and `grep -E` otherwise; the
+    #: gate's PATH has no ripgrep. Both are checked where both exist.
+    SEARCHERS = {"inherited PATH": os.environ.get("PATH", "/usr/bin:/bin"), "grep -E": "/usr/bin:/bin"}
+
     def test_a_bracketed_grammar_line_is_not_a_finding(self) -> None:
-        result = self.scan("#: `scheme://[user[:password]@]host[:port]/path`, the URL form of a remote.\n")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertNotIn("embedded credentials", result.stdout)
+        for searcher, path in self.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan("#: `scheme://[user[:password]@]host[:port]/path`, the URL form of a remote.\n", path)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("embedded credentials", result.stdout)
 
     def test_a_url_with_a_password_is_still_a_finding(self) -> None:
-        # Joined here, so this file is not a finding of the repository scan.
-        result = self.scan("REMOTE = 'https://alice:" + "correct-horse-battery@example.test/repo.git'\n")
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("URL with embedded credentials", result.stdout)
+        for searcher, path in self.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                # Joined here, so this file is not a finding of the repository scan.
+                result = self.scan("REMOTE = 'https://alice:" + "correct-horse-battery@example.test/repo.git'\n", path)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("URL with embedded credentials", result.stdout)
 
 
 if __name__ == "__main__":
