@@ -148,6 +148,13 @@ entries and loads `<prefix>.cron.<name>` into `gui/$UID` (prefix from
 `SYSTEM_TOOLS_LABEL_PREFIX`, default `local.system-tools`). Re-run `install`
 after editing a job to apply changes.
 
+A reinstall waits up to about 10 seconds after `bootout` for launchd to release
+the label: a job that is running holds it a little longer, and a `bootstrap`
+in that window fails with `5: Input/output error`. A refused `bootstrap` is
+retried once. If it fails again, `install` prints `failed: <job> (<launchctl
+message>)` instead of `installed:` and exits 1. `install --all` goes on to the
+next job and names every failed job at the end (sd:2574).
+
 Every plist names `PATH`, `HOME` and `SYSTEM_TOOLS_CONFIG`, the root `install`
 ran under: launchd gives a job only the environment its plist names, so `exec`
 finds the job file under a non-default root too (sd:2519). A plist installed

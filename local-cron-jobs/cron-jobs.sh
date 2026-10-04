@@ -1224,16 +1224,35 @@ cmd_exec() { # invoked by launchd (and by `run`)
   [ "$rc" -eq 0 ] || exit "$rc"
 }
 
+# `bootout` returns before launchd has torn a running label down, and a
+# `bootstrap` in that window fails with `5: Input/output error` (sd:2574).
+# Wait, bounded at about ten seconds, until `launchctl print` no longer finds it.
+wait_unloaded() { # job
+  local tries=0
+  while is_loaded "$1" && [ "$tries" -lt 20 ]; do
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+}
+
 cmd_install() {
-  local job="$1"
+  local job="$1" err
   load_job "$job"
   mkdir -p "$AGENT_DIR"
   write_plist "$job"
   if is_loaded "$job"; then
     launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
-    sleep 0.5
+    wait_unloaded "$job"
   fi
-  launchctl bootstrap "$DOMAIN" "$(plist_for "$job")"
+  # One retry: a refused bootstrap is reported, never followed by `installed:`.
+  if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
+    sleep 1
+    wait_unloaded "$job"
+    if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
+      echo "failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
+      return 1
+    fi
+  fi
   launchctl enable "$DOMAIN/$(label_for "$job")"
   # No record is written here, and that is the ninth round of the #486 review.
   # `install` bootstraps the label, so launchd is at `runs = 0` and
@@ -1473,8 +1492,9 @@ each_or_one() { # cmd, target
     # --all is every job this machine should run: the shared jobs folder plus
     # this host's folder (and any extra directory); other hosts' folders are
     # never read. --every is its older spelling, kept working.
-    local rc=0
-    for j in $(all_jobs); do "$cmd" "$j" || rc=1; done
+    local rc=0 failed=""
+    for j in $(all_jobs); do "$cmd" "$j" || { rc=1; failed="$failed $j"; }; done
+    [ -z "$failed" ] || echo "${cmd#cmd_} failed for:$failed" >&2
     return $rc
   else
     "$cmd" "$target"
