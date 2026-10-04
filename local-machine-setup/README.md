@@ -116,6 +116,7 @@ to it. A profile with only one file is therefore almost exactly `common`.
 | `.service` | `local-*` folders whose docker service should be running |
 | `.cron` | `local-cron-jobs` job names to install; this host's own jobs need no entry |
 | `.spotlight` | Spotlight privacy exclusions: absolute paths, a leading `~` is the account's home |
+| `.satellite` | the sd hub this machine reaches, as `host` or `host:port` (default 8769); one line, on a satellite only |
 
 Plain lists, one per line, `#` comments and blank lines ignored — the same
 format as `local-repo-sync`.
@@ -137,7 +138,8 @@ Run in order. Pass one as the second argument to run it alone.
 | `prompts` | shared agent system prompt into each tool's global instructions | `local-agent-prompt` |
 | `repos` | clone/pull the repo fleet | `local-repo-sync` |
 | `cron` | install launch agents: the profile's `.cron` jobs plus every job in this host's own folder (`cron-jobs/jobs/<host>/`). A `CRON_JOBS_EXTRA_DIRS` job runs only when the profile names it. Any other job that `local-cron-jobs` installed is `EXTRA` and is uninstalled. An agent under `<prefix>.cron.` that `local-cron-jobs` did not install is `FOREIGN` and stays in place, even when the profile names it; one whose plist cannot be read is `UNKNOWN` and stays too. The stage knows its own plists by their label and their `cron-jobs.sh exec <job>` command, which every installed job carries. When the host folder cannot be read, the stage prints `MISSING host job list` and uninstalls nothing | `local-cron-jobs` |
-| `sd` | the workflow database (`sd-db.sh init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard` or `<prefix>.sd-runner`. Runs before `agents`, because both agents open the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/runner.json` or `dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db` | `local-sd-db`, `tailscale` |
+| `sd` | the workflow database (`sd-db.sh init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard` or `<prefix>.sd-runner`. Runs before `agents`, because both agents open the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/runner.json` or `dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db`. On the hub, a profile without `<prefix>.sd-serve` or a config folder without its template is `MISSING`, and a `~/.config/sd/hub.json` is `EXTRA` and stays | `local-sd-db`, `tailscale` |
+| `satellite` | on a profile with a `.satellite`: writes `~/.config/sd/hub.json`, checks that the pack's installed `sd_db` is the hub's build (`DIFFERS` names both values), and installs the hub's `providers.yaml`. A local `sd.db` is `EXTRA` and stops the stage; a hub that does not answer is `SKIP`. Installs no LaunchAgent | `sd_db.satellite` under `SD_DB_PYTHON` (default: the pack's virtualenv) |
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
 | `macos` | apply `defaults` settings | — |
