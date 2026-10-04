@@ -394,6 +394,17 @@ and since sd:816 the screen renders the matching form rather than naming
 `personal-idea` and `report` keep their own workflows and get no status
 choices. Any item with a queued or running assignment gets none.
 
+**A row worked on its own branch closes on its merge or on a reason.**
+`workflow.change_status` refuses `done` for a row whose `branch` is set and is
+not `main` or `master`, unless a merge is recorded (the `Code delivery`
+comment `ship.note_merge` writes, or a delivering transition) or the caller
+gives a reason, which the transition records (sd:2570). The pack's
+`sd task status` holds the same rule (sd:1990), and its `--delivered-by`
+arrives here as the delivery sentence. The dashboard's status form answers
+the refusal with its sentence and takes the reason in its Reason field. The
+v2 task board's status move sends no reason, so there it shows the refusal
+only.
+
 **`proposal` collides the same way, and only these two do.** `note.kind` is
 its own closed list of seven -- `followup`, `decision`, `proposal`,
 `question`, `comment`, `exec`, `status_change` -- and the intersection with

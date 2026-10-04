@@ -557,6 +557,52 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("no answer", err)
 
+    def answers_then(self, failure):
+        """Jev says the variance thread asks, then `failure` answers the third thread.
+
+        The third thread is the last asked, so a run that keeps the answers
+        before a failure sorts the variance thread first and marks it.
+        """
+        calls = []
+
+        def fake(args, state, environ=None):
+            if args[1] in ("enabled", "record"):
+                calls.append(args[1])
+                return 0, ""
+            calls.append("noul")
+            if "Thanks all" in state:
+                return failure()
+            return 0, "yes" if "fence variance" in state else "no"
+
+        return fake, calls
+
+    def test_a_failure_after_an_answer_drops_every_answer(self):
+        """All or nothing (sd:2551): one thread Jev could not answer puts the whole report back in today's order."""
+        _, expected, _ = self.baseline()
+
+        def boom():
+            raise OSError("boom")
+
+        fake, calls = self.answers_then(boom)
+        with mock.patch.object(mi, "run_jev", side_effect=fake):
+            code, text, err = self.report({})
+        self.assertEqual(text, expected)
+        self.assertEqual(code, mi.EXIT_FOUND)
+        self.assertIn("boom", err)
+        self.assertIn("today's order", err)
+        self.assertEqual(calls, ["enabled", "noul", "noul", "noul", "record"])
+
+    def test_an_unreadable_answer_after_an_answer_drops_every_answer(self):
+        _, expected, _ = self.baseline()
+        fake, calls = self.answers_then(lambda: (0, "maybe"))
+        with mock.patch.object(mi, "run_jev", side_effect=fake):
+            code, text, err = self.report({})
+        self.assertEqual(text, expected)
+        self.assertEqual(code, mi.EXIT_FOUND)
+        self.assertIn("no answer", err)
+        # Today's order is what the report carried, so the control arm gets its row.
+        self.assertEqual(calls, ["enabled", "noul", "noul", "noul", "record"])
+
 
 class TestTheSwitchReachesTheChild(unittest.TestCase):
     """`run_jev` spawns the only subprocess, and `jev enabled JEV_MAIL_INTAKE`

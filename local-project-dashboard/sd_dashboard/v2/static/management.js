@@ -94,6 +94,22 @@ function human(schedule) {
   const daily = schedule.some(pinned) ? '' : 'daily ';
   return schedule.length > 2 ? `${daily}${schedule.length}× (${one(schedule[0])}…${one(schedule.at(-1))})` : `${daily}${schedule.map(one).join(', ')}`;
 }
+// build (sd:2210): a job's last run is the cron-jobs wrapper's stamp, logs/.<job>.stamp; launchd keeps no run time.
+// A stamp with no end is a run in progress when launchd says running, and a run no trap saw end when it does not.
+const runOf = c => c.last_run || { state: 'unread', reason: why('jobs') || 'not read' };
+function lastCell(c) {
+  const r = runOf(c);
+  if (r.state === 'finished') return html`<time class="rel" datetime="${r.ended}"></time>${r.exit ? ` · exit ${r.exit}` : ''}`;
+  if (r.state === 'open') return c.state === 'running' ? html`<span class="g-queued" aria-hidden="true">◌</span> since <time class="rel" datetime="${r.started}"></time>`
+    : html`<span class="g-caution" aria-hidden="true">▲</span> no end · <time class="rel" datetime="${r.started}"></time>`;
+  return html`<span class="g-unknown" aria-hidden="true">▨</span> ${r.state === 'none' ? 'not stamped' : 'unread'}`;
+}
+function lastDetail(c) {
+  const r = runOf(c);
+  if (r.state === 'finished') return html`started <time class="rel" datetime="${r.started}" data-long></time> · ended <time class="rel" datetime="${r.ended}" data-long></time> · exit ${r.exit}`;
+  if (r.state === 'open') return html`${c.state === 'running' ? 'running since' : 'no end recorded; started'} <time class="rel" datetime="${r.started}" data-long></time>`;
+  return html`<span class="g-unknown" aria-hidden="true">▨</span> ${r.reason}`;
+}
 // build: a job's state is operations.inventory's; failed is warning, unknown and unloaded are unknown, the rest ok.
 const stateOf = j => j.state === 'failed' ? 'warning' : ['unknown', 'unloaded'].includes(j.state) ? 'unknown' : j.state === 'interrupted' ? 'caution' : 'ok';
 
@@ -543,6 +559,13 @@ document.addEventListener('shell:picked', e => document.querySelectorAll('.ledge
 
 // ---------- Ship lane ----------
 const LS = { sort: 'id', dir: -1 };
+// build (sd:2209): runner.sh status names the last and next archive refresh; the dashboard does not read the runner's config.
+function archiveVal() {
+  const a = DOC.archive;
+  if (!a) return html`<span class="g-unknown" aria-hidden="true">▨</span> not read: ${why('archive') || 'no reading'}`;
+  if (!a.last) return html`<span class="g-caution" aria-hidden="true">▲</span> never run${a.due ? ' · due' : ''}`;
+  return html`last <time class="rel" datetime="${a.last}"></time> · ${a.due ? html`<span class="g-caution" aria-hidden="true">▲</span> due` : html`next <time class="rel" datetime="${a.next}" data-future></time>`}`;
+}
 const asgRepo = a => (a.repo || 'no repo').replace(/^~\/repos\//, '');
 function renderLane() {
   const el = document.getElementById('view-lane');
@@ -557,6 +580,7 @@ function renderLane() {
       <li><span class="label">Queue</span><span class="val">${queued.length} queued · ${running.length} running</span></li>
       <li><span class="label">Claim</span><span class="val">${lease.length ? `${lease.length} merge running` : 'no merge running'}</span></li>
       <li><span class="label">Runner merge</span><span class="val">${REPOS.filter(r => r.merge === 'auto').length} repos auto</span></li>
+      <li><span class="label">Archive refresh</span><span class="val">${archiveVal()}</span></li>
     </ul>
     <div class="sec-head"><h2 id="queue-h">Queue <button class="help" type="button" aria-label="Help: merge lane" data-help="<b>One writer per repo.</b> A merge or serial assignment takes an exclusive lease on its repo; nothing else in that repo starts until the lease is released. The runner queues a merge only for runner_merge=auto repos, after a done author run with a reviewed head.">${I('circle-help')}</button></h2><p class="tally">assignment table · ${hhmm(READ)} UTC</p></div>
     ${LANE.live.length ? html`<table class="ledger" aria-labelledby="queue-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Assignment</th><th scope="col">Repo</th><th scope="col">Role</th><th scope="col">Since</th>${ACTH}</tr></thead>
@@ -655,13 +679,13 @@ function renderSchedules() {
   clampPage(rows.length, SS);
   const start = (SS.page - 1) * SS.size;
   put(el, html`
-    <div class="sec-head"><h2 id="sch-h">Schedules <button class="help" type="button" aria-label="Help: Schedules" data-help="<b>launchd calendar jobs, ranked.</b> Failed first, then by next run. Times are this browser's clock; launchd reads the Mac's.">${I('circle-help')}</button></h2>
+    <div class="sec-head"><h2 id="sch-h">Schedules <button class="help" type="button" aria-label="Help: Schedules" data-help="<b>launchd calendar jobs, ranked.</b> Failed first, then by next run. Last run is the cron-jobs wrapper's stamp of each run's start, end and exit. Times are this browser's clock; launchd reads the Mac's.">${I('circle-help')}</button></h2>
       <p class="tally"><span class="g-warning">■ ${failed} failed</span><span class="g-ok">● ${CRON.length - failed} not failed</span><span>launchd · ${hhmm(READ)} UTC</span></p></div>
     <div class="filters"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span><button class="chip" type="button" data-state-f="failed" aria-pressed="${String(chips.state === 'failed')}">failed</button></div>
       <p class="fsum"><span>${rows.length} of ${CRON.length}</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h"><thead>${sortHead([[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']], SS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h"><thead>${sortHead([[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']], SS)}</thead>
       <tbody>${rows.slice(start, start + SS.size).map((c, i, a) => html`<tr data-id="cron:${c.name}"${i && a[i - 1].rank !== c.rank ? html` class="band-start"` : ''}><td class="g g-${c.rank}">${GLYPH[c.rank]}<span class="sr">${c.rank}</span></td>
-        <td class="what"><button type="button">${c.name}</button></td><td class="d mono">${human(c.schedule)}</td><td class="d mono">${c.state}</td><td class="d mono" data-k="next"><time class="rel" datetime="${c.next}" data-future data-empty="never"></time></td>
+        <td class="what"><button type="button">${c.name}</button></td><td class="d mono">${human(c.schedule)}</td><td class="d mono">${c.state}</td><td class="d mono" data-k="last">${lastCell(c)}</td><td class="d mono" data-k="next"><time class="rel" datetime="${c.next}" data-future data-empty="never"></time></td>
         <td class="d num" data-k="exit">${c.last_signal != null ? `sig ${c.last_signal}` : c.last_exit === null || c.last_exit === undefined ? html`<span class="no">—</span>` : c.last_exit}</td>${ACT('cron:' + c.name)}</tr>`)}</tbody></table>`
       : html`<p class="empty">${CRON.length ? html`No job matches. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No launchd calendar job is installed.'}</p>`}`);
   if (rows.length > SS.size || SS.size !== 25) el.querySelector('table').after(pager(rows.length, SS, renderSchedules));
@@ -708,7 +732,8 @@ function selectRow(id, open) {
   if (kind === 'cron') {
     const c = CRON.find(x => x.name === key); if (!c) return;
     h = html`<p class="kind"><span class="g-${c.rank}" aria-hidden="true">${GLYPH[c.rank]}</span> Schedule · ${c.state}</p><h2>${c.name}</h2>
-      <dl><dt>Service</dt><dd>${c.service || '—'}</dd><dt>Schedule</dt><dd>${human(c.schedule)}</dd><dt>Next run</dt><dd><time class="rel" datetime="${c.next}" data-future data-long data-empty="never"></time></dd><dt>Last exit</dt><dd>${c.last_signal != null ? `signal ${c.last_signal}` : c.last_exit ?? 'not run since load'}${c.last_exit === 127 ? ' · command not found' : ''}</dd></dl>
+      <dl><dt>Service</dt><dd>${c.service || '—'}</dd><dt>Schedule</dt><dd>${human(c.schedule)}</dd><dt>Next run</dt><dd><time class="rel" datetime="${c.next}" data-future data-long data-empty="never"></time></dd><dt>Last exit</dt><dd>${c.last_signal != null ? `signal ${c.last_signal}` : c.last_exit ?? 'not run since load'}${c.last_exit === 127 ? ' · command not found' : ''}</dd>
+      <dt>Last run</dt><dd>${lastDetail(c)}</dd><dt>Run stamp</dt><dd class="mono">local-cron-jobs/logs/.${c.name}.stamp</dd></dl>
       ${c.last_exit === 127 ? html`<p class="why">Exit 127: the shell could not find the command. A retry fails the same way until the path is fixed.</p>` : ''}${act}`;
     shell.suggest([`Why did ${c.name} exit ${c.last_exit ?? 0}?`, `What does ${c.name} do and who reads its output?`, 'Which schedules overlap tonight?']);
   } else if (kind === 'merge' || kind === 'asg') {

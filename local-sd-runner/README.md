@@ -353,6 +353,9 @@ Each refresh creates a separate verified generation and preserves the original a
 Process holders, restore uncertainty, any standing `journal_issues` entry, changing contents, and insufficient free space hold the refresh.
 The journal hold names each entry beside the verb that accepts it: a blocked entry needs recovery, an unblocked one quarantine, as under `recovery-plan` above.
 `runner.sh archive-plan` reports its schedule; `runner.sh archive-refresh` runs the same guarded backup operation.
+`runner.sh status` adds `archive_refresh_schedule` to its body: `last_completed_at`, `next_due_at`, `due` and `cadence_seconds`, or a `reason` (sd:2209).
+It never changes the exit code. An agent that is not loaded reads no retention folder, since nothing refreshes without it.
+The dashboard's Management page reads this body, because it does not know the runner's config.
 Restore selects the latest verified generation when no retained clone exists.
 An interrupted restore stays bound to its original inventory when that generation remains available.
 No archive or clone is deleted by this scheduler.

@@ -60,6 +60,12 @@ if [ -n "${ACTIONS_STUB_HANG:-}" ]; then sleep "$ACTIONS_STUB_HANG"; fi
 if [ "$1" = url ] && [ -n "${ACTIONS_STUB_SIGN_HANG:-}" ]; then
   sleep "$ACTIONS_STUB_SIGN_HANG"
 fi
+# Only the first `url` call is slow: mkdir succeeds once (sd:2536).
+if [ "$1" = url ] && [ -n "${ACTIONS_STUB_FIRST_SIGN_HANG:-}" ] &&
+   mkdir "${ACTIONS_STUB_STATE:?}/first-sign" 2>/dev/null; then
+  sleep "$ACTIONS_STUB_FIRST_SIGN_HANG"
+fi
+if [ "$1" = url ] && [ -n "${ACTIONS_STUB_SIGN_EXIT:-}" ]; then exit "$ACTIONS_STUB_SIGN_EXIT"; fi
 if [ -n "${ACTIONS_STUB_SIGNS:-}" ]; then
   case "$1" in
     base-url) printf '%s\\n' "$ACTIONS_STUB_SIGNS"; exit 0 ;;
@@ -153,8 +159,8 @@ def build_root(tmp: str, today: datetime.date = TODAY) -> pathlib.Path:
     return root
 
 
-def run(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
-    """Run `obsidian-tasks.sh run`; return (stdout, html, returncode)."""
+def run_proc(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
+    """Run `obsidian-tasks.sh run`; return (the finished process, html)."""
     env = dict(os.environ)
     env.update({
         "OBSIDIAN_VAULT": str(root / "vault"),
@@ -162,6 +168,7 @@ def run(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
         "NOTIFY_RECORD": str(root / "notify.args"),
         "OBSIDIAN_TASKS_TODAY": today.isoformat(),
     })
+    env.pop("OBSIDIAN_TASKS_SIGN_TIMEOUT", None)
     for key in ("JEV_OBSIDIAN_TASKS", "JEV_STUB_ENABLED_EXIT",
                 "JEV_STUB_ASK_FAIL", "JEV_STUB_RECORD"):
         env.pop(key, None)
@@ -171,6 +178,12 @@ def run(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
         capture_output=True, text=True, env=env, timeout=120)
     record = root / "notify.args"
     html = record.read_text().splitlines()[-1] if record.exists() else ""
+    return proc, html
+
+
+def run(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
+    """Run `obsidian-tasks.sh run`; return (stdout, html, returncode)."""
+    proc, html = run_proc(root, env_extra, today)
     return proc.stdout, html, proc.returncode
 
 
