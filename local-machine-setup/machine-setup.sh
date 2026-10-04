@@ -1081,6 +1081,30 @@ stage_tooling() {
   else
     echo "  SKIP    rtk not installed"
   fi
+  # The Claude Code HUD, on every profile: the claude-hud plugin, and a
+  # statusLine that runs local-statusline, which wraps the plugin. Each gap
+  # prints MISSING so --fail-on-drift sees it. HUD display options stay in
+  # ~/.claude/plugins/claude-hud/config.json, which this stage does not write.
+  if command -v claude >/dev/null 2>&1; then
+    if ls -d "$HOME"/.claude/plugins/cache/*/claude-hud/*/ >/dev/null 2>&1; then
+      echo "  ok      claude-hud plugin"
+    else
+      echo "  MISSING claude-hud plugin"
+      [ -d "$HOME/.claude/plugins/marketplaces/claude-hud" ] \
+        || run claude plugin marketplace add jarrodwatts/claude-hud
+      run claude plugin install claude-hud@claude-hud
+    fi
+    if [ ! -f "$HOME/.claude/settings.json" ]; then
+      echo "  SKIP    statusLine not set (no ~/.claude/settings.json; start claude once)"
+    elif grep -q 'local-statusline/statusline.sh render' "$HOME/.claude/settings.json" 2>/dev/null; then
+      echo "  ok      statusLine -> local-statusline"
+    else
+      echo "  MISSING statusLine -> local-statusline"
+      run sh "$ROOT/local-statusline/statusline.sh" install
+    fi
+  else
+    echo "  SKIP    claude not installed (HUD not set up)"
+  fi
   # task-actions' digest email buttons need a public URL; the tailscale
   # funnel provides it and --bg persists across reboots. Only on a machine
   # whose profile installs the task-actions agent — funnel on a machine with
