@@ -52,10 +52,7 @@
     const S = window.shell;
     if (!DOC) S.state({ kind: 'loading', text: 'Reading the lanes. Rows appear when /api/queue answers.', source: '/api/queue' });
     try {
-      const r = await fetch('/api/queue', { headers: { Accept: 'application/json' } });
-      const out = await r.json().catch(() => null);
-      if (!r.ok) throw new Error((out && out.error) || `HTTP ${r.status}`);
-      DOC = out;
+      DOC = await S.getJSON('/api/queue');
       S.state(DOC.problems.length ? { kind: 'partial', text: `${plural(DOC.problems.length, 'lane')} not read; the others are current.`, source: '/api/queue' } : null);
       put($('subhead'), html`${plural(DOC.lanes.length, 'lane')} of ${plural(DOC.registered, 'registered repository', 'registered repositories')} · read ${at(DOC.read)}`);
       const blocked = DOC.lanes.reduce((n, l) => n + l.rows.filter(x => x.state === 'blocked').length, 0);
@@ -68,22 +65,18 @@
     draw();
   }
 
-  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  // ponytail: a page-local post until builder-dash-v2's shell.post and shell.getJSON land; switch load() and this to them then.
-  async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => null);
-    return { ok: r.ok, status: r.status, out: out || {} };
-  }
   const DONE = { up: 'moved up', down: 'moved down', top: 'moved to the top', hold: 'held', release: 'released' };
   async function act(b) {
     const l = DOC && DOC.lanes.find(x => x.path === b.dataset.repo);
     if (!l || busy) return;
     busy = true; draw();
     const item = Number(b.dataset.item), action = b.dataset.act;
-    const r = await post('/api/queue/move', { repo: l.path, item, action, revision: l.revision });
-    said[l.path] = r.ok ? { ok: true, text: `sd:${item} ${DONE[action]}. ${r.out.edits || ''}` }
-      : { ok: false, text: `sd:${item} not ${DONE[action]}: ${r.out.error || `HTTP ${r.status}`}${r.status === 409 ? '' : ' The queue is unchanged.'}` };
+    try {
+      const out = await window.shell.post('/api/queue/move', { repo: l.path, item, action, revision: l.revision });
+      said[l.path] = { ok: true, text: `sd:${item} ${DONE[action]}. ${out.edits || ''}` };
+    } catch (err) {
+      said[l.path] = { ok: false, text: `sd:${item} not ${DONE[action]}: ${err.message}${err.stale ? '' : ' The queue is unchanged.'}` };
+    }
     busy = false;
     await load();
   }
