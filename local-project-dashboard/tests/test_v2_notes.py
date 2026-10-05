@@ -4,9 +4,14 @@ What this slice promises: `/notes` answers under the shared policy and loads
 its script before `shell.js`; `/api/notes` carries the last seven days, each a
 day in this machine's own zone, with its sd-ship merges, the items that
 reached done, the count opened, and the runner runs. A source that raises is
-named and adds no rows, so a failed read never looks like a quiet day. Mail,
-the daily note text and quick-note storage have no reader: the document names
-each with its reason, and the page draws them as unknown.
+named and adds no rows, so a failed read never looks like a quiet day. Mail and
+the daily note text have no reader: the document names each with its reason,
+and the page draws them as unknown.
+
+Quick notes (sd:2549) are `sdw.quick-note` store items: `/api/notes/quick`
+lists them through `sd store list`, and `/api/notes/quick/add` keeps one
+through `sd store add`, after the server enforces the kind's rules. `sd` is a
+stub on PATH here, which records its argv and answers as the test says.
 
 The zone is pinned per test (`TZ`), so a merge stamped 03:00 UTC falls on the
 day before under a zone six hours behind UTC, whatever the test machine's zone.
@@ -22,6 +27,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -128,7 +134,7 @@ class TheDocument(Fixture):
 
     def test_the_sources_no_reader_covers_are_named_with_their_reason(self):
         unknown = self.doc()["unknown"]
-        self.assertEqual(sorted(unknown), ["daily", "mail", "quick"])
+        self.assertEqual(sorted(unknown), ["daily", "mail"])
         self.assertTrue(all(unknown.values()))
 
 
@@ -165,6 +171,11 @@ class ThePage(BrowserSession):
         self.assertNotIn("Notes", v2.CLASSIC)
 
 
+#: Two stored quick notes, as `sd store list sdw.quick-note --json` gives them: oldest first, so the newest-first order is
+#: the server's; the page gets them reversed.
+QUICK = [{"text": "Ring the vet", "title": "2026-09-05 180000"}, {"text": "Buy stamps", "title": "2026-09-06 050000"}]
+UNKNOWN_KIND = "sd: plugin 'sdw' declares no kind 'quick-note' (it declares blog-idea, tip, topic)\n"
+
 NOTES_SHELL = r"""
 window.shell.row = () => null;
 window.shell.pages = { Tasks: '/tasks' };
@@ -174,11 +185,12 @@ window.shell.pages = { Tasks: '/tasks' };
 class TheScript(Fixture):
     """notes.js against the document `notes_screen` builds from the fixture database."""
 
-    def run_page(self, body, doc=None, status=200):
+    def run_page(self, body, doc=None, status=200, quick=(200, {"notes": QUICK[::-1]}), kept=(200, {"title": "2026-09-06 060000", "text": "Call the plumber"})):
         doc = doc if doc is not None else self.doc()
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + NOTES_SHELL + READ_SHELL
-                  + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
-                  + "ANSWER = (path, body) => path === '/api/notes' ? [STATUS, DOC] : [404, { error: 'no answer' }];\n"
+                  + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status}, QUICK = {json.dumps(list(quick))}, KEPT = {json.dumps(list(kept))};\n"
+                  + "ANSWER = (path, body) => path === '/api/notes' ? [STATUS, DOC] : path === '/api/notes/quick' ? QUICK"
+                  + " : path === '/api/notes/quick/add' ? KEPT : [404, { error: 'no answer' }];\n"
                   + NOTES_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
@@ -192,7 +204,7 @@ class TheScript(Fixture):
 
     def test_the_page_opens_on_today_with_its_tally_and_names_what_is_not_read(self):
         out = self.run_page("R.daily = ELS.daily.html; R.day = ELS['day-name'].textContent; R.next = ELS.next.disabled; R.prev = ELS.prev.disabled;")
-        self.assertEqual(out["gets"], ["/api/notes"])
+        self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes"])
         r = out["R"]
         self.assertEqual((r["day"], r["next"], r["prev"]), ("Sunday, September 6", True, False))
         self.assertRegex(r["daily"], r'href="#merges"><b>1</b><span>merges in 1 repo</span>')
@@ -207,7 +219,7 @@ class TheScript(Fixture):
 
     def test_read_again_reads_the_week_again(self):
         out = self.run_page("ELS.reload.listeners.click[0](); await flush();")
-        self.assertEqual(out["gets"], ["/api/notes", "/api/notes"])
+        self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes", "/api/notes"])
 
     def test_the_previous_day_shows_its_own_rows_and_details_names_the_source(self):
         out = self.run_page(f"""ELS.prev.listeners.click[0](); R.day = ELS['day-name'].textContent; R.daily = ELS.daily.html;
@@ -220,15 +232,46 @@ open('merge:{self.merges[1]}'); R.det = ELS.details.html;""")
         self.assertIn("Source: sd-ship delivery note (ship.note_merge)", r["det"])
         self.assertIn('href="https://github.com/example-org/system/pull/7"', r["det"])
 
-    def test_a_kept_quick_note_stays_on_the_page_and_says_it_is_not_saved(self):
-        out = self.run_page("""R.before = ELS['qn-list'].html; ELS['qn-in'].value = 'Call the plumber'; ELS['qn-keep'].listeners.click[0]();
-R.after = ELS['qn-list'].html; R.reg = REG.map(c => [c.id, c.on, c.risk, c.key]); R.posts = OUT.posts.length;""")
+    def test_the_kept_quick_notes_are_listed_newest_first(self):
+        out = self.run_page("R.list = ELS['qn-list'].html; R.keep = ELS['qn-keep'].disabled;")
+        self.assertIn("/api/notes/quick", out["gets"])
         r = out["R"]
-        self.assertIn("No quick notes. sd store has no kind for them yet", r["before"])
-        self.assertIn("Call the plumber<small>▲ Not saved: no loose-note kind in sd store", r["after"])
-        self.assertEqual(out["toasts"][-1], ["Kept on this page only: sd store has no loose-note kind.", False])
-        self.assertEqual(r["reg"], [["quicknote.discard", "quick note", "undo", "d"]])
-        self.assertEqual(r["posts"], 0)
+        self.assertLess(r["list"].index("Buy stamps"), r["list"].index("Ring the vet"))
+        self.assertIn('Buy stamps<small>2026-09-06 050000</small>', r["list"])
+        self.assertFalse(r["keep"])
+
+    def test_keep_posts_the_text_then_reads_the_list_again(self):
+        out = self.run_page("""ELS['qn-in'].value = 'Call the plumber'; ELS['qn-keep'].listeners.click[0](); await flush();
+R.value = ELS['qn-in'].value;""")
+        self.assertEqual(out["posts"], [["/api/notes/quick/add", {"text": "Call the plumber"}, 64]])
+        self.assertEqual(out["gets"].count("/api/notes/quick"), 2)
+        self.assertEqual(out["toasts"][-1], ["Kept in sdw.quick-note as 2026-09-06 060000.", False])
+        self.assertEqual(out["R"]["value"], "")
+
+    def test_a_second_keep_while_one_is_in_flight_posts_nothing(self):
+        out = self.run_page("""ELS['qn-in'].value = 'Call the plumber'; ELS['qn-keep'].listeners.click[0](); ELS['qn-in'].listeners.keydown[0]({ key: 'Enter', metaKey: true, preventDefault() {} });
+await flush();""")
+        self.assertEqual(len(out["posts"]), 1)
+
+    def test_an_empty_note_posts_nothing(self):
+        out = self.run_page("ELS['qn-in'].value = '  \\n '; ELS['qn-keep'].listeners.click[0](); await flush();")
+        self.assertEqual(out["posts"], [])
+
+    def test_a_refused_note_stays_in_the_field_and_the_toast_says_why(self):
+        out = self.run_page("""ELS['qn-in'].value = 'Say "hi"'; ELS['qn-keep'].listeners.click[0](); await flush();
+R.value = ELS['qn-in'].value;""", kept=(400, {"error": 'A quick note holds no double quote (").'}))
+        self.assertEqual(out["toasts"][-1], ['Not kept: A quick note holds no double quote (").', False])
+        self.assertEqual(out["R"]["value"], 'Say "hi"')
+
+    def test_a_kind_that_is_not_installed_is_said_plainly_and_keep_is_off(self):
+        why = "sdw.quick-note is not installed on this machine: sd: plugin 'sdw' declares no kind 'quick-note'"
+        out = self.run_page("R.list = ELS['qn-list'].html; R.keep = ELS['qn-keep'].disabled;", quick=(200, {"notes": [], "unknown": why}))
+        self.assertIn(f"<b>▨ Not kept here yet.</b> {why}".replace("'", "&#39;"), out["R"]["list"])
+        self.assertTrue(out["R"]["keep"])
+
+    def test_a_list_that_does_not_arrive_says_why(self):
+        out = self.run_page("R.list = ELS['qn-list'].html;", quick=(503, {"error": "sd: OBSIDIAN_VAULT is not set"}))
+        self.assertIn("<b>▨ Not read.</b> sd: OBSIDIAN_VAULT is not set", out["R"]["list"])
 
     def test_a_source_that_failed_is_a_partial_read_and_its_section_is_unknown(self):
         doc = self.doc()
@@ -253,8 +296,137 @@ R.after = ELS['qn-list'].html; R.reg = REG.map(c => [c.id, c.on, c.risk, c.key])
         self.assertIn("window.PAGE_LIST", NOTES_JS)
 
 
+STUB = """#!{python}
+import json, os, sys
+folder = os.environ["SD_STUB"]
+with open(os.path.join(folder, "calls.jsonl"), "a") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+with open(os.path.join(folder, "calls.jsonl")) as stream:
+    count = len(stream.readlines())
+with open(os.path.join(folder, "answers.json")) as stream:
+    answers = json.load(stream)
+answer = answers[min(count, len(answers)) - 1]
+sys.stdout.write(answer.get("out", ""))
+sys.stderr.write(answer.get("err", ""))
+sys.exit(answer.get("code", 0))
+"""
+
+
+class QuickNotes(BrowserSession):
+    """The quick-note routes against an `sd` stub first on PATH; each test says what the stub answers."""
+
+    def setUp(self):
+        super().setUp()
+        self.stub = Path(self.tmp.name) / "bin"
+        self.stub.mkdir()
+        sd = self.stub / "sd"
+        sd.write_text(STUB.format(python=sys.executable))
+        sd.chmod(0o755)
+        patch = mock.patch.dict(os.environ, {"PATH": f"{self.stub}{os.pathsep}{os.environ['PATH']}", "SD_STUB": str(self.stub)})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.answer({})
+
+    def answer(self, *answers):
+        (self.stub / "answers.json").write_text(json.dumps(answers))
+
+    def calls(self):
+        path = self.stub / "calls.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def keep(self, text, **headers):
+        return self.post("/api/notes/quick/add", {"text": text}, **headers)
+
+    def test_keep_runs_sd_store_add_with_a_timestamp_title_and_the_text_as_one_field(self):
+        status, _, out = self.keep("Call the plumber")
+        self.assertEqual(status, 200, out)
+        [argv] = self.calls()
+        self.assertEqual(argv[:3] + argv[4:], ["store", "add", "sdw.quick-note", "--field", "text=Call the plumber"])
+        self.assertRegex(argv[3], r"^20[0-9]{2}-[01][0-9]-[0-3][0-9] [0-2][0-9][0-5][0-9][0-5][0-9]$")
+        self.assertEqual(out, {"title": argv[3], "text": "Call the plumber"})
+
+    def test_newlines_are_flattened_to_spaces_and_the_ends_trimmed(self):
+        status, _, out = self.keep("  Call the\nplumber\r\ntoday\r ")
+        self.assertEqual(status, 200, out)
+        self.assertEqual(self.calls()[0][-1], "text=Call the plumber today")
+
+    def test_each_rule_refuses_before_sd_runs(self):
+        for text, said in (("", "empty"), (" \n\t", "empty"), (" \r\n ", "empty"), ('Say "hi"', "double quote"),
+                           ("tab\there", "control character"), ("bell\x07", "control character"), ("ne\x85l", "control character"),
+                           ("x" * (notes_screen.QUICK_MAX + 1), str(notes_screen.QUICK_MAX)), (5, "text")):
+            status, _, out = self.keep(text)
+            self.assertEqual(status, 400, text)
+            self.assertIn(said, out["error"], text)
+        for payload in ({}, {"text": "a", "title": "b"}):
+            self.assertEqual(self.post("/api/notes/quick/add", payload)[0], 400, payload)
+        self.assertEqual(self.calls(), [])
+
+    def test_the_longest_note_is_kept(self):
+        self.assertEqual(notes_screen.QUICK_MAX, 1000)
+        self.assertEqual(self.keep("x" * notes_screen.QUICK_MAX)[0], 200)
+
+    def test_a_taken_title_gets_the_next_suffix(self):
+        taken = {"code": 1, "err": "sd: title collision: 'a.md' already exists at Quick Notes/a.md; titles share one namespace across the vault\n"}
+        self.answer(taken, taken, {})
+        status, _, out = self.keep("Call the plumber")
+        self.assertEqual(status, 200, out)
+        titles = [argv[3] for argv in self.calls()]
+        self.assertEqual(titles[1:], [titles[0] + " 2", titles[0] + " 3"])
+        self.assertEqual(out["title"], titles[0] + " 3")
+
+    def test_a_kind_that_is_not_installed_refuses_the_write_plainly(self):
+        self.answer({"code": 1, "err": UNKNOWN_KIND})
+        status, _, out = self.keep("Call the plumber")
+        self.assertEqual(status, 400)
+        self.assertEqual(out["error"], "sdw.quick-note is not installed on this machine: " + UNKNOWN_KIND.strip())
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_another_sd_failure_is_its_own_sentence(self):
+        self.answer({"code": 1, "err": "sd: OBSIDIAN_VAULT is not set; it names the vault this plugin stores into\n"})
+        status, _, out = self.keep("Call the plumber")
+        self.assertEqual((status, out["error"]), (400, "sd: OBSIDIAN_VAULT is not set; it names the vault this plugin stores into"))
+
+    def test_a_cross_origin_or_tokenless_post_never_runs_sd(self):
+        self.assertEqual(self.keep("Call the plumber", Origin="https://example.invalid")[0], 403)
+        self.assertEqual(self.keep("Call the plumber", **{"X-SD-CSRF": ""})[0], 403)
+        self.assertEqual(self.request("/api/notes/quick/add", headers={"Cookie": self.cookie})[0], 404)
+        self.assertEqual(self.calls(), [])
+
+    def test_the_list_is_sd_store_list_newest_first(self):
+        self.answer({"out": json.dumps(QUICK)})
+        status, _, body = self.request("/api/notes/quick", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"notes": QUICK[::-1]})
+        self.assertEqual(self.calls(), [["store", "list", "sdw.quick-note", "--json"]])
+
+    def test_the_list_says_plainly_when_the_kind_is_not_installed(self):
+        self.answer({"code": 1, "err": UNKNOWN_KIND})
+        status, _, body = self.request("/api/notes/quick", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"notes": [], "unknown": "sdw.quick-note is not installed on this machine: " + UNKNOWN_KIND.strip()})
+
+    def test_no_folder_yet_is_no_quick_notes(self):
+        self.answer({"code": 1, "err": "sd: /vault/System/Databases/Quick Notes does not exist; the vault does not hold this kind\n"})
+        status, _, body = self.request("/api/notes/quick", headers={"Cookie": self.cookie})
+        self.assertEqual((status, json.loads(body)), (200, {"notes": []}))
+
+    def test_a_list_sd_cannot_give_is_a_503_with_its_reason(self):
+        for answer, said in (({"code": 1, "err": "sd: OBSIDIAN_VAULT is not set\n"}, "sd: OBSIDIAN_VAULT is not set"),
+                             ({"out": "{}"}, "did not return a list")):
+            self.answer(answer)
+            status, _, body = self.request("/api/notes/quick", headers={"Cookie": self.cookie})
+            self.assertEqual(status, 503, answer)
+            self.assertIn(said, json.loads(body)["error"])
+
+    def test_no_sd_on_path_is_said_plainly(self):
+        with mock.patch.dict(os.environ, {"PATH": str(Path(self.tmp.name) / "empty")}):
+            status, _, body = self.request("/api/notes/quick", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 503)
+        self.assertIn("sd is not on the dashboard's PATH", json.loads(body)["error"])
+
+
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "notes", "Notes", "/notes", ("/api/notes",)
+    page, section, route, api = "notes", "Notes", "/notes", ("/api/notes", "/api/notes/quick", "/api/notes/quick/add")
 
 
 if __name__ == "__main__":

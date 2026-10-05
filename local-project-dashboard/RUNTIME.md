@@ -59,7 +59,10 @@ replacement across launchd, files, and Tailscale.
 Local-only installation never invokes Tailscale. The browser URL is
 `http://127.0.0.1:8767` for the configuration above.
 The generated launch environment includes the standard system tool directories
-needed for listener inspection. Operations' service controls act only on
+needed for listener inspection. It also carries the
+installing shell's `sd` directory and `OBSIDIAN_VAULT`, which Notes' quick
+notes need (sd:2549); `install` prints one line for each it cannot find, and
+still installs. Operations' service controls act only on
 eligible user LaunchAgents; system daemons and dashboard/access services remain
 read-only. See [README.md](README.md) for the Operations tabs, one per entry of
 `operations_screen.AREAS`, and their scope. Today's Now section reads the fleet
