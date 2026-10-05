@@ -16,6 +16,7 @@ from sd_db import connect
 from sd_db.migrate import initialise
 from sd_db.repos import (
     CI_MODES,
+    SATELLITE_GATE_VALUES,
     ConfMissing,
     RepoRefusal,
     add,
@@ -24,10 +25,12 @@ from sd_db.repos import (
     read_conf,
     registered,
     repo_ci,
+    repo_satellite_gate,
     seed,
     set_ci,
     set_managed,
     set_runner_merge,
+    set_satellite_gate,
     worktrees_root,
 )
 
@@ -433,3 +436,59 @@ class TheCiWriter(RepoCase):
         checkout = support.repository(self.checkouts / "two")
         self.assertEqual(repo_ci(self.connection, checkout), "github")
         self.assertEqual(registered(self.connection), [])
+
+
+class TheSatelliteGateWriter(RepoCase):
+    """sd:2704, ruling Q1. `repo.satellite_gate` is the operator's grant for
+    the hub to merge on a satellite's gate pass.
+
+    The writer mirrors `set_ci`; the reader answers `off` for a row never set
+    and for a path the table does not hold, so nothing reads a grant the
+    operator did not give.
+    """
+
+    def _registered(self) -> str:
+        checkout = support.repository(self.checkouts / "one")
+        return add(self.connection, checkout, home=self.home)
+
+    def test_the_values_are_the_two_the_check_lists_default_first(self):
+        self.assertEqual(SATELLITE_GATE_VALUES, ("off", "accept"))
+
+    def test_an_unset_row_reads_off_and_a_set_row_reads_accept(self):
+        path = self._registered()
+        self.assertEqual(repo_satellite_gate(self.connection, path), "off")
+        self.assertEqual(set_satellite_gate(self.connection, path, "accept"), (path, "off"))
+        self.assertEqual(repo_satellite_gate(self.connection, path), "accept")
+        self.assertEqual(set_satellite_gate(self.connection, path, "off"), (path, "accept"))
+        self.assertEqual(repo_satellite_gate(self.connection, path), "off")
+
+    def test_the_reader_resolves_an_absolute_checkout_path_and_an_unregistered_one(self):
+        checkout = support.repository(self.checkouts / "one")
+        path = add(self.connection, checkout, home=self.home)
+        set_satellite_gate(self.connection, path, "accept")
+        self.assertEqual(repo_satellite_gate(self.connection, checkout), "accept")
+        absent = support.repository(self.checkouts / "two")
+        self.assertEqual(repo_satellite_gate(self.connection, absent), "off")
+
+    def test_it_changes_no_other_field_on_the_row(self):
+        path = self._registered()
+        before = dict(self.connection.execute(
+            "SELECT * FROM repo WHERE path = ?", (path,)).fetchone())
+        set_satellite_gate(self.connection, path, "accept")
+        after = dict(self.connection.execute(
+            "SELECT * FROM repo WHERE path = ?", (path,)).fetchone())
+        moved = {key for key in before if before[key] != after[key]}
+        self.assertEqual(moved - {"updated_at"}, {"satellite_gate"})
+
+    def test_a_bad_value_and_an_unregistered_path_are_refused(self):
+        path = self._registered()
+        for value in ("on", "Accept", ""):
+            with self.subTest(value=value), self.assertRaises(RepoRefusal) as caught:
+                set_satellite_gate(self.connection, path, value)
+            self.assertIn("off or accept", str(caught.exception))
+        self.assertEqual(repo_satellite_gate(self.connection, path), "off")
+        checkout = support.repository(self.checkouts / "two")
+        with self.assertRaises(RepoRefusal) as caught:
+            set_satellite_gate(self.connection, checkout, "accept")
+        self.assertIn("not a registered repository", str(caught.exception))
+

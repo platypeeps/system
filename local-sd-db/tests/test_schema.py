@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sd_db import database, paths
 from sd_db import schema as schema_module
@@ -886,12 +887,20 @@ class TheRequestOutcome(SchemaCase):
         finally:
             raw.close()
 
+    def _migrate_to_nineteen(self):
+        # 20 adds a `repo` column, so a migration to the latest version moves
+        # the `repo` table this class proves 19 leaves alone.
+        through = [m for m in schema_module.migrations() if m[0] <= 19]
+        with mock.patch("sd_db.migrate.migrations", return_value=through):
+            return migrate(self.path)
+
     def test_the_table_arrives_empty_and_nothing_else_moves(self):
         self._at_version_eighteen()
         before = self._dump()
-        result = migrate(self.path)
+        result = self._migrate_to_nineteen()
         self.assertEqual((result.before, result.applied), (18, [19]))
-        connection = connect(self.path, write=True)
+        # Raw: `connect` refuses a file below the library's version.
+        connection = sqlite3.connect(self.path)
         self.addCleanup(connection.close)
         self.assertEqual([(row[1], row[2], row[3], row[5]) for row in
                           connection.execute("PRAGMA table_info(request_outcome)")],
@@ -907,7 +916,7 @@ class TheRequestOutcome(SchemaCase):
     def test_the_reverse_returns_the_file_to_eighteen(self):
         self._at_version_eighteen()
         before = self._dump()
-        migrate(self.path)
+        self._migrate_to_nineteen()
         text = dict(schema_module.migrations())[19].read_text(encoding="utf-8")
         raw = sqlite3.connect(self.path, isolation_level=None)
         self.addCleanup(raw.close)
@@ -915,6 +924,71 @@ class TheRequestOutcome(SchemaCase):
         self.assertEqual(schema_version(raw), 18)
         self.assertNotIn("request_outcome", tables(raw))
         self.assertEqual(self._dump(), before)
+
+
+class TheSatelliteGateColumn(SchemaCase):
+    """Migration 20. `repo.satellite_gate`, the operator's per-repository
+    grant to merge on a satellite's gate pass (sd:2704, ruling Q1).
+
+    Added, not rebuilt, as 16 was: every existing row reads `off` and keeps
+    its other values, the CHECK holds the column to the two values, and the
+    reverse returns the file to 19.
+    """
+
+    def _at_version_nineteen(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                # 19 literally, for the reason `_at_version_nine` gives.
+                if version > 19:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.executemany(
+                "INSERT INTO repo (path, remote, runner_merge, managed, ci, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 't', 't')",
+                [("/one", "git@github.com:platypeeps/one.git", "auto", 1, "local"),
+                 ("/two", None, "manual", 0, "github")])
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_every_existing_row_arrives_at_off_and_keeps_its_values(self):
+        self._at_version_nineteen()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied),
+                         (19, list(range(20, SCHEMA_VERSION + 1))))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        rows = [tuple(row) for row in connection.execute(
+            "SELECT path, satellite_gate, ci, runner_merge, managed, remote FROM repo ORDER BY path")]
+        self.assertEqual(rows, [
+            ("/one", "off", "local", "auto", 1, "git@github.com:platypeeps/one.git"),
+            ("/two", "off", "github", "manual", 0, None)])
+
+    def test_the_check_holds_the_column_to_off_and_accept(self):
+        self._at_version_nineteen()
+        migrate(self.path)
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        connection.execute("UPDATE repo SET satellite_gate = 'accept' WHERE path = '/one'")
+        for value in ("on", "ACCEPT", "", None):
+            with self.subTest(value=value), self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("UPDATE repo SET satellite_gate = ? WHERE path = '/one'", (value,))
+        self.assertEqual(connection.execute(
+            "SELECT satellite_gate FROM repo WHERE path = '/one'").fetchone()[0], "accept")
+
+    def test_the_reverse_returns_the_file_to_nineteen(self):
+        self._at_version_nineteen()
+        migrate(self.path)
+        text = dict(schema_module.migrations())[20].read_text(encoding="utf-8")
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        self.assertEqual(schema_version(raw), 19)
+        self.assertNotIn("satellite_gate", [row[1] for row in raw.execute("PRAGMA table_info(repo)")])
 
 
 class TheConnection(SchemaCase):
