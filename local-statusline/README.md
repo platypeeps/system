@@ -23,6 +23,9 @@ HUD renders only one line.
 ./statusline.sh install    # point statusLine in ~/.claude/settings.json here
 ```
 
+`local-machine-setup`'s `tooling` stage installs the plugin and runs `install`
+on every profile, so a new machine needs neither step by hand.
+
 `install` backs up `settings.json` to `settings.json.bak` before rewriting it,
 and sets:
 

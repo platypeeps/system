@@ -1,0 +1,101 @@
+# Terms Vale.Spelling must not flag in this repository. One regular
+# expression per line, case-sensitive; `('s)?` admits the possessive. An
+# accepted term also becomes a casing rule (Vale.Terms), so a word the prose
+# writes both ways carries `(?i)`.
+# Built from the words the spelling rule flagged four or more times across
+# the tracked Markdown on 2026-10-04; add a term when it recurs, not once.
+
+# this repository's own names
+Jev('s)?
+Kev('s)?
+herdr('s)?
+graphiti('s)?
+(?i)falkordb
+google_workspace_mcp
+Archify
+noul
+
+# tools and products
+Tailscale
+tailscaled
+tailnet
+(?i)dependabot('s)?
+Jira
+Baseten
+Xcode('s)?
+iCloud
+OAuth
+(?i)opencode
+rsync
+ntfy
+uv
+
+# git and GitHub
+[Rr]epo(s|'s)?
+[Ww]orktrees?
+PRs?
+(?i)prd('s)?
+reflog
+rebased?
+[Uu]ntracked
+unmerged
+gitignored
+(?i)rulesets?
+commit's
+
+# shell, macOS and Python
+launchd('s)?
+plists?('s)?
+[Cc]rons?
+[Cc]onfigs?
+sudo
+stderr
+stdout
+stdin
+cwd
+env
+dirs
+dotfiles
+basename
+argv
+(?i)sha
+pid
+mtime
+inode
+subshell
+subcommands?
+subprocess(es)?
+stdlib
+virtualenvs?
+venv
+unittest
+docstring
+(?i)https
+CLIs?('s)?
+
+# words of this repository's prose
+[Ll]oopback
+cutover
+frontmatter
+unkeyed
+overridable
+vendored
+[Rr]ollout
+requeue[sd]?
+hardcoded
+cooldown
+unconfigured
+preimage
+bundler
+ungranted
+mockup
+validator
+unopenable
+enqueues
+backticked
+backoff
+unfiled
+repoint
+reinstalls
+ack
+dev

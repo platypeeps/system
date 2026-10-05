@@ -90,3 +90,7 @@ local-ai-apps/profiles/*.inv
 # and its suite reads them.
 !local-machine-setup/examples/launchagents/*.plist
 !local-machine-setup/tests/fixtures/config/machine-setup/launchagents/*.plist
+
+# Vale packages fetched by `vale sync`; the vocabulary under config/ is tracked
+.vale/styles/*
+!.vale/styles/config/
