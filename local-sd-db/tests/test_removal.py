@@ -373,10 +373,15 @@ class ItemRefusals(Store):
         self.assertEqual(plan["rows"], [])
 
     def claim(self, ident, item, active):
-        self.db.execute("PRAGMA ignore_check_constraints=ON")
-        self.db.execute("INSERT INTO publication_claim (id, item, active_item, payload, state, created_at,"
+        # Local: the row breaks the schema's CHECK, and the hub refuses
+        # `ignore_check_constraints` over the wire (step 7).
+        raw = sd_db.database.open_local(self.store / "sd.db", write=True, create=False)
+        try:
+            raw.execute("PRAGMA ignore_check_constraints=ON")
+            raw.execute("INSERT INTO publication_claim (id, item, active_item, payload, state, created_at,"
                         " updated_at) VALUES (?,?,?,'{}','{}',?,?)", (ident, item, active, STAMP, STAMP))
-        self.db.execute("PRAGMA ignore_check_constraints=OFF")
+        finally:
+            raw.close()
 
     def test_i2_a_publication_claim_as_item_and_as_active_item(self):
         item, other = self.item(), self.item(title="other")

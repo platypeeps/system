@@ -13,6 +13,8 @@ import ipaddress
 import re
 from urllib.parse import urlsplit
 
+from sd_db import tailnet
+
 
 @dataclass(frozen=True)
 class DirectAccess:
@@ -158,14 +160,8 @@ def direct_context(headers, peer, frontdoor, lookup):
     if any(name.lower().startswith(("tailscale-", "x-forwarded-", "x-auth-"))
            or name.lower() in ("forwarded", "x-real-ip", "remote-user") for name in headers):
         return None
-    try:
-        if (not isinstance(peer, tuple) or len(peer) != 2 or not isinstance(peer[0], str)
-                or type(peer[1]) is not int or not 1 <= peer[1] <= 65535):
-            return None
-        address = ipaddress.IPv4Address(peer[0])
-        if str(address) != peer[0] or address not in ipaddress.IPv4Network("100.64.0.0/10"):
-            return None
-    except ValueError:
+    # The socket peer rule `sd-db.sh serve` applies too, in one place.
+    if tailnet.peer_address(peer) is None:
         return None
     if lookup(peer) != frontdoor.operator_login:
         return None

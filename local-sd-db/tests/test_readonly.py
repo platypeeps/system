@@ -5,8 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sd_db.database import connect, schema_version
+from sd_db.database import connect, open_local, schema_version
 from sd_db.migrate import initialise
+from sd_db.remote import StatementRefused
 from sd_db.writes import create_item
 
 
@@ -20,18 +21,24 @@ class ReadOnlyConnection(unittest.TestCase):
     def test_read_connection_refuses_data_and_schema_writes(self):
         reader = connect(self.path, write=False)
         self.addCleanup(reader.close)
+        version = schema_version(reader)
         for statement in (
             "DELETE FROM item", "CREATE TABLE forbidden (value)",
             "PRAGMA user_version = 99",
         ):
-            with self.subTest(statement=statement), self.assertRaises(sqlite3.OperationalError):
+            # Over the wire the hub refuses the pragma before SQLite's
+            # read-only open does; either way nothing is written.
+            with self.subTest(statement=statement), \
+                    self.assertRaises((sqlite3.OperationalError, StatementRefused)):
                 reader.execute(statement)
         with self.assertRaises(sqlite3.OperationalError):
             create_item(reader, kind="task", title="Must not be written")
         self.assertEqual(reader.execute("SELECT count(*) FROM item").fetchone()[0], 0)
+        self.assertEqual(schema_version(reader), version)
 
     def test_reading_older_schema_does_not_bypass_write_refusal(self):
-        writer = connect(self.path)
+        # Local: setting the version is `migrate`'s, a hub verb.
+        writer = open_local(self.path, write=True, create=False)
         writer.execute("PRAGMA user_version = 0")
         writer.close()
         reader = connect(self.path, write=False)
@@ -54,7 +61,9 @@ class ReadOnlyConnection(unittest.TestCase):
         self.assertEqual(set(self.path.parent.iterdir()), listing)
 
     def test_reading_a_live_wal_sees_committed_rows_without_changing_it(self):
-        writer = connect(self.path)
+        # Local: the hub refuses `wal_autocheckpoint` over the wire, and this
+        # writer only holds the WAL open for the reader under test.
+        writer = open_local(self.path, write=True, create=False)
         self.addCleanup(writer.close)
         writer.execute("PRAGMA wal_autocheckpoint = 0")
         item = create_item(writer, kind="task", title="Still in the WAL")
