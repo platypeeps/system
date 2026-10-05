@@ -13,8 +13,8 @@ nowhere else:
   `localActions` in `dashboard.js` from `main [data-workflow-form][data-cli]`,
   so it posts the same route -- the registered-command palette
   (`commands.yaml`) carries no status command of its own;
-* the **board** is a view: `_board` in `screens.py` renders cards that link
-  to the item, with no drag handler in `dashboard.js` and no form;
+* the **board** was a view on the classic Backlog, deleted with it in
+  sd:2622; `dashboard.js` still carries no drag handler;
 * a **bulk action** is a `BulkAction` in `listing.py`, and no section
   constructs one, so no bulk status write exists.
 
