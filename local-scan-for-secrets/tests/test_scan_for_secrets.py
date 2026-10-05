@@ -177,6 +177,8 @@ class TheLocalJudgment(unittest.TestCase):
             JEV_COMPARE_ANTHROPIC_KEY="test-key", JEV_COMPARE_ANTHROPIC_URL=remote + "/v1/messages")
         self.env.pop("S4S_CONF", None)
         self.env.pop("JEV_SECRET_SCAN", None)
+        # An inherited endpoint would send this suite's spans to the operator's collector.
+        self.env.pop("JEV_TRACES_URL", None)
 
     def tearDown(self):
         self._tmp.cleanup()

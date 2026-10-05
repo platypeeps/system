@@ -615,6 +615,21 @@ class LivePaired(MeteringCase):
         self.run_main(["noul", "is it?", "--gate", "0.8", "--baseline", "0.6"])
         self.assertIsNone(self.rows()[-1]["answer"])
 
+    def test_a_baseline_under_unsure_below_is_no_position(self):
+        """A choice printed `unsure` is not the chosen key the report reads,
+        so a gated choice is counted and not compared, like a gated noul."""
+        Stub.choice_value, Stub.confidence = "desk", 0.1
+        # Live prints the gated judgment; shadow prints the caller's own key.
+        for flag, printed in (("--baseline", "unsure\n"), ("--shadow", "desk\n")):
+            with self.subTest(flag=flag):
+                code, out = self.run_main(["choice", "where?", "--criteria", "desk,phone",
+                                           "--unsure-below", "0.5", flag, "desk"])
+                self.assertEqual((code, out), (0, printed))
+                judged, baseline = self.rows()[-2:]
+                self.assertEqual(judged["changed"], "yes")
+                self.assertEqual(baseline["arm"], "baseline")
+                self.assertIsNone(baseline["answer"])
+
     def test_a_numeric_baseline_is_compared_as_a_number(self):
         """`score` prints `2.0`; a caller's own scale says `2`. They agree."""
         Stub.score_value = 2.0
