@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from . import paths as sdpaths
-from .database import transaction
+from .database import refuse_hub_only, transaction
 from .progress import _fields, _git
 from .sources.frontmatter import split as split_frontmatter
 from .workflow import StaleItem, WorkflowError, _checked_state, _text, item_state
@@ -816,6 +816,7 @@ def _journal_path(connection: sqlite3.Connection, repo: str) -> Path:
     """The journal is named by a hash of the repository, so it probes the hash
     of each stored form: a journal written before migration 014 is named by
     the absolute path (sd:1439). A new journal takes the key's name."""
+    refuse_hub_only(connection, "the writing cutover journal")
     database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
     names = [database.parent / f"writing-cutover-{_hash(form.encode())[:16]}.json"
              for form in sdpaths.keys(repo)]
@@ -896,6 +897,7 @@ def cutover_pieces(connection: sqlite3.Connection, repo: str, *, expected_finger
     outside the repository and returned to the caller. An ordinary exception
     restores exact files while SQLite rolls back the ownership and row writes.
     """
+    refuse_hub_only(connection, "the writing cutover")
     original, rewritten, touched = {}, {}, []
     journal = None
     repo = _canonical(connection, repo)

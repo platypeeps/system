@@ -66,6 +66,25 @@ DESCRIBED = {"protocol": "protocol version", "package": "sd_db package version",
              "schema": "SCHEMA_VERSION", "build": "build digest"}
 
 
+class HubOnly(RemoteError):
+    """An operation that runs on the hub only, reached from a satellite.
+
+    Step 6 of the plan. The file locks (`repository_lock`, `control_gate`)
+    and every directory beside the database live on the hub. A lock held
+    over a session that can drop would outlive nothing it guards, and a
+    directory resolved here would be one the hub never reads. So the verb
+    refuses by name before it locks or writes anything.
+    """
+
+    def __init__(self, verb: str, hub: str) -> None:
+        self.verb = verb
+        self.hub = hub
+        super().__init__(
+            f"{verb} runs on the sd hub only; this machine reaches the database on "
+            f"{hub}. Run it on the hub"
+        )
+
+
 class BuildMismatch(RemoteError):
     """The two sides run different `sd_db` builds; the hub opened nothing.
 

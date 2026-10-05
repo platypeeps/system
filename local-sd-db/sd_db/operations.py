@@ -22,7 +22,7 @@ from pathlib import Path
 from xml.parsers.expat import ExpatError
 
 from . import config, runner_journal
-from .database import transaction
+from .database import refuse_hub_only, transaction
 from .runner import RunnerRefused
 from .workflow import StaleItem, WorkflowError, _identifier, _text
 from .writes import add_note, now, record_state, resolve_state, update_assignment
@@ -70,6 +70,7 @@ def control_gate(database):
     read-only or unwritable state directory does not send the operator
     looking for a competing process that does not exist.
     """
+    refuse_hub_only(database, "service controls and restore")
     # A connection of any kind, not only `sqlite3.Connection`: a guarded or a
     # remote one reached `Path(database)` below and died with a TypeError.
     if not isinstance(database, (str, os.PathLike)):

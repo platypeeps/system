@@ -44,7 +44,7 @@ from pathlib import Path
 from . import operations, repos, reporting, runner_journal, workflow
 from . import paths as sdpaths
 from .contribution_sync import QUEUE
-from .database import transaction
+from .database import refuse_hub_only, transaction
 from .errors import SdDbError
 from .reporting import MAX_REPORT
 from .runner_retention import PRUNING
@@ -215,6 +215,7 @@ def _marks(values):
 
 def _store_directory(connection) -> Path | None:
     """The directory of the connection's `main` file, or `None` in memory."""
+    refuse_hub_only(connection, "repo and item remove")
     for row in connection.execute("PRAGMA database_list"):
         if row[1] == "main":
             return Path(row[2]).parent if row[2] else None
@@ -865,6 +866,7 @@ def _check(stop):
 
 
 def _main_file(connection) -> Path | None:
+    refuse_hub_only(connection, "repo and item remove")
     for row in connection.execute("PRAGMA database_list"):
         if row[1] == "main":
             return Path(row[2]) if row[2] else None

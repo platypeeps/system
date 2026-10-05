@@ -22,6 +22,7 @@ from sd_db.migrate import initialise
 from sd_db.repos import add
 from sd_db.sources import MigrationRefused, docs_work, retire, run
 from sd_db.sources.docs_work import MARKER, ROW, SOURCE, Reader, marker, retired
+from sd_db.testing.wire import hub_only
 
 from . import support
 
@@ -258,6 +259,7 @@ class TheRetireRefuses(RetireCase):
 # ------------------------------------------------------------- the sitting
 
 
+@hub_only
 class TheSitting(RetireCase):
     def setUp(self):
         super().setUp()
@@ -370,6 +372,7 @@ class TheSitting(RetireCase):
         self.assertIn(str(result.snapshot), report)
 
 
+@hub_only
 class TheSnapshotComesBeforeTheRemoval(RetireCase):
     def test_the_snapshot_holds_the_rows_as_they_were_before_the_switch(self):
         """Taken before the one irreversible step, which is what makes it
@@ -405,6 +408,7 @@ class KilledAndRerun(RetireCase):
     def identity(self, slug):
         return f"{self.registered}::docs/work/{slug}/prd.md"
 
+    @hub_only
     def test_killed_after_the_import_and_before_row_reruns_to_the_same_rows(self):
         sitting = run(self.connection, self.narrowed())
         self.assertTrue(sitting.clean)
@@ -422,6 +426,7 @@ class KilledAndRerun(RetireCase):
         self.assertEqual(marker(self.checkout), ROW)
         self.assertEqual(result.retired.removed, 3)
 
+    @hub_only
     def test_killed_after_row_and_before_the_commit_reruns_to_the_commit(self):
         reader = self.narrowed()
         run(self.connection, reader)
@@ -442,6 +447,7 @@ class KilledAndRerun(RetireCase):
         self.assertEqual(int(self.commits()), commits + 1)
         self.assertEqual(result.retired.removed, 3)
 
+    @hub_only
     def test_the_row_is_switched_before_the_commit_and_not_after(self):
         """The order the two kill points are the two sides of.
 
@@ -486,6 +492,7 @@ class ASecondSittingFindsNothingLeft(RetireCase):
         super().setUp()
         self.fleet()
 
+    @hub_only
     def test_a_rerun_reports_the_repository_as_already_retired_and_commits_nothing(self):
         self.retire()
         commits = int(self.commits())
@@ -496,12 +503,14 @@ class ASecondSittingFindsNothingLeft(RetireCase):
         self.assertIn(self.registered, result.retired.already)
         self.assertIn("was already retired", "\n".join(result.report()))
 
+    @hub_only
     def test_the_narrowed_reader_leaves_a_retired_repository_out(self):
         self.retire()
         narrowed = self.narrowed()
         self.assertEqual(narrowed.paths, [])
         self.assertEqual(narrowed.already, [self.registered])
 
+    @hub_only
     def test_an_import_of_a_retired_repository_names_the_retire(self):
         """The whole-tree reader has no line to read afterwards. It says the
         answer moved, rather than "'' is not one of planning, ready, ..."
@@ -517,6 +526,7 @@ class ASecondSittingFindsNothingLeft(RetireCase):
         self.assertIn(MARKER, str(caught.exception))
         self.assertIn("Read the row, not the file", str(caught.exception))
 
+    @hub_only
     def test_the_import_reader_leaves_a_retired_repository_out_and_its_rows_too(self):
         """What the `import` and `verify` verbs read after a retire.
 

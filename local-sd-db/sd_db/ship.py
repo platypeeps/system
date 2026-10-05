@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import paths, runner_journal
-from .database import transaction
+from .database import refuse_hub_only, transaction
 from .workflow import WorkflowError, item_state
 from .writes import add_note, now
 
@@ -368,6 +368,7 @@ def repository_lock(database: Path, repository: str, *, holder: dict | None = No
     """
     if wait < 0:
         raise WorkflowError("ship lock wait must be zero or more seconds")
+    refuse_hub_only(database, "the sd-ship repository lock")
     directory = database.parent / "ship-locks"  # LOCK_DIRECTORY
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / (hashlib.sha256(repository.encode()).hexdigest() + ".lock")
