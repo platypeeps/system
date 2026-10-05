@@ -130,6 +130,14 @@ class Sessions(unittest.TestCase):
         self.assertEqual(len(rows), 1, rows)
         self.assertEqual((rows[0]["call_id"], rows[0]["tokens_in"], rows[0]["tokens_out"], rows[0]["usd"]), (f"session:{result['id']}", None, None, None))
 
+    def test_a_session_commits_as_its_provider(self):
+        # sd:2544: the pack's commit-msg hook writes `Authored-with:` from
+        # SD_AUTHOR, and nothing the runner started carried it.
+        self.provider.write_text(self.provider.read_text() + "import os\n"
+            "open('.git/sd-author', 'w').write(os.environ.get('SD_AUTHOR', 'unset'))\n")
+        request, result = self.run_fixture()
+        self.assertEqual((Path(result["retained_path"]) / ".git/sd-author").read_text(), "fixture")
+
     def test_a_session_lost_after_it_ran_is_still_recorded(self):
         # sd:1221. `_response` raises on a cancellation, an expired deadline or
         # a lost supervisor, and the record below it never ran: the session had
