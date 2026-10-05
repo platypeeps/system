@@ -135,6 +135,21 @@ def scan_of(scan):
     return lambda connection, **_: scan
 
 
+class HeldClock:
+    """`time` whose `monotonic` stays at its first reading: a walk that spends no budget (sd:2667)."""
+
+    def __init__(self):
+        self.held = None
+
+    def monotonic(self):
+        if self.held is None:
+            self.held = time.monotonic()
+        return self.held
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class Collectors:
     """Disk and Branches read the fixtures above unless a test names its own reader: no test reads this machine."""
 
@@ -309,21 +324,15 @@ class TheDocument(Collectors, ScreenCase):
         self.assertNotIn("Borrowed from", rows["prot:/checkouts/widget"]["facts"])
 
     def test_a_slow_git_walk_is_stopped_at_its_budget_and_is_the_attribution_error(self):
-        stub = Path(self.tmp.name) / "bin"
-        stub.mkdir()
-        # exec: the process the budget kills is the one holding the pipes.
-        (stub / "git").write_text("#!/bin/sh\nexec sleep 5\n")
-        (stub / "git").chmod(0o755)
+        stub = self.stub("git", self.stalled())
         for name in ("one", "two"):
             self.repo(f"/checkouts/{name}")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
                 patch.object(health_screen, "TRAILER_SECONDS", 0.5, create=True):
-            started = time.monotonic()
             doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot,
                                          protection=protection_of([]))
-            elapsed = time.monotonic() - started
         attr = doc["areas"][2]
-        self.assertLess(elapsed, 3, "the page waited on the git walk instead of stopping it")
+        self.assertFalse(self.finished.exists(), "the page waited on the git walk instead of stopping it")
         self.assertEqual((attr["rows"], attr["error"]), ([], "the trailer count ran past its budget of 0.5 seconds "
                                                              "and was stopped rather than waited on"))
         self.assertEqual(doc["areas"][3]["rows"][0]["id"], "wt:ok")
@@ -424,21 +433,30 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual((scan["no_default"], scan["unread"]), ([str(beta)], [str(root / "gone")]))
 
     def test_a_slow_branch_walk_is_stopped_at_its_budget_and_is_the_branches_error(self):
-        stub = Path(self.tmp.name) / "bin"
-        stub.mkdir()
-        (stub / "git").write_text("#!/bin/sh\nexec sleep 5\n")
-        (stub / "git").chmod(0o755)
+        stub = self.stub("git", self.stalled())
         for name in ("one", "two"):
             self.repo(f"/checkouts/{name}")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
-            started = time.monotonic()
             doc = self.doc(branches=lambda connection: REAL_BRANCH_SCAN(
                 connection, within=0.5, repo_paths=["/checkouts/one", "/checkouts/two"]))
-            elapsed = time.monotonic() - started
         br = doc["areas"][4]
-        self.assertLess(elapsed, 3, "the page waited on the branch walk instead of stopping it")
+        self.assertFalse(self.finished.exists(), "the page waited on the branch walk instead of stopping it")
         self.assertEqual((br["rows"], br["error"]), ([], "the merged-branch walk ran past its budget of 0.5 seconds "
                                                          "and was stopped rather than waited on"))
+
+    @property
+    def finished(self):
+        return Path(self.tmp.name) / "stalled-finished"
+
+    def stalled(self):
+        """A stub body that answers after 5 s and leaves a marker only then (sd:2667).
+
+        The budget kills the shell, the one holding the pipes; its sleep holds
+        none, so the read ends at the kill. A caller that returns without the
+        marker stopped the command rather than waited it out, however long
+        the kill took on a loaded machine.
+        """
+        return f'sleep 5 >/dev/null 2>&1\ntouch "{self.finished}"\n'
 
     def stub(self, name, body):
         stub = Path(self.tmp.name) / "bin"
@@ -496,42 +514,54 @@ class TheDocument(Collectors, ScreenCase):
         config = Path(self.tmp.name) / "disk.conf"
         config.write_text(f"storage|{store}\n")
         stub = self.stub("df", f"cat <<'EOF'\n{self.DF}EOF\n")
-        self.stub("du", "exec sleep 5\n")
-        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
-            started = time.monotonic()
+        self.stub("du", self.stalled())
+        # The walk's clock holds still, so df spends none of the 1 s however
+        # long it takes to start, and du alone meets its timeout (sd:2667).
+        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
+                patch.object(health_collectors, "time", HeldClock()):
             doc = self.doc(disk=lambda connection: REAL_DISK_SCAN(connection, within=1, config=config, repo_paths=[]))
-            elapsed = time.monotonic() - started
         disk = doc["areas"][0]
-        self.assertLess(elapsed, 3, "the page waited on du instead of stopping it")
+        self.assertFalse(self.finished.exists(), "the page waited on du instead of stopping it")
         self.assertEqual(disk["error"], "")
         rows = {row["id"]: row for row in disk["rows"]}
         self.assertEqual(rows[f"rs:{store}"]["detail"], "du did not finish inside the Disk budget")
 
 
     def test_the_walkers_run_at_once_so_the_page_waits_for_the_slowest_not_the_sum(self):
-        # Five walkers of 0.8 s each: in series the page took 4 s, at once it takes one walker's time.
+        # Five walkers that each wait for all five: at once they meet and
+        # answer; in series the first waits alone until the page's budget
+        # leaves it. A meeting, not a stopwatch: 5 x 0.8 s against a 2 s
+        # bound failed under gate load with the walkers at once (sd:2667).
+        # The timeout only ends a walker that waits alone, as a page that ran
+        # them inline would leave it.
+        met = threading.Barrier(5, timeout=10)
+        self.addCleanup(met.abort)
+
         def slow(answer):
             def read(*args, **kwargs):
-                time.sleep(0.8)
+                met.wait()
                 return answer(*args, **kwargs)
             return read
-        started = time.monotonic()
         doc = self.doc(fleet=slow(fleet_of(TREES)), trailers=slow(trailers_of(3)), ports=slow(ports_snapshot),
                        disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
-        elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 2.0, f"the readers ran one after another: {elapsed:.1f} s")
         self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
                          [(key, "", True) for key in ("disk", "attr", "wt", "br", "ports", "prot")])
 
     def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
+        # The reader answers only once the page has returned, so a page that
+        # waited for it could not return before the reader's own 30 s: no
+        # elapsed bound to lose under load (sd:2667).
+        returned, answered = threading.Event(), threading.Event()
+        self.addCleanup(returned.set)
+
         def stuck(area):
-            time.sleep(3)
+            returned.wait(30)
+            answered.set()
             return fleet_of(TREES)(area)
         with patch.object(health_screen, "PAGE_SECONDS", 0.5):
-            started = time.monotonic()
             doc = self.doc(fleet=stuck)
-            elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 1.5, "the page waited on a reader past its budget")
+        self.assertFalse(answered.is_set(), "the page waited on a reader past its budget")
+        returned.set()
         wt = doc["areas"][3]
         self.assertEqual((wt["rows"], wt["error"]), ([], "the Worktrees reader was still running at the page's budget of "
                                                          "0.5 seconds and was left rather than waited on"))

@@ -7,12 +7,11 @@ of its own; the criterion 2 grep in `tests/test_markup.py` is the check.
 
 import os
 import re
-import sys
 from unittest.mock import patch
 
 from sd_dashboard import fleet, operations_screen, repos_screen
 
-from fleet_support import FleetCase
+from fleet_support import FleetCase, SlowStart
 
 
 class ReposArea(FleetCase):
@@ -102,18 +101,23 @@ class ReposArea(FleetCase):
         # an interpreter that took a second to start under load spent that
         # second of the margin, the page's kill arrived first, and the page
         # said "stopped at its budget" with no row at all (sd:2244).
+        #
+        # sd:2667. The slow start is charged to the page's clock instead of
+        # slept: a real 1.2 s start against a 2 s deadline left the child no
+        # time to start git on a loaded machine, or none to answer at all.
+        # Charged the whole budget, the child counting from the page's start
+        # finds its deadline spent and answers at once, whatever the load;
+        # one counting from its own start runs the hung git for 11 seconds.
         stuck = self.checkout("stuck")
         self.hanging("git", when=f"*{stuck}*")
-        slow = self.shim("slow-python", f'sleep 1.2; exec "{sys.executable}" "$@"')
-        with patch.object(fleet, "FLEET_SECONDS", 3.0), patch.object(fleet, "FLEET_MARGIN", 1.0), \
-                patch.object(sys, "executable", str(slow)):
+        with patch.object(fleet, "time", SlowStart(fleet.FLEET_SECONDS)):
             page = self.repos()
         self.assertNotIn("Repos could not be observed", page)
         self.assertEqual(self.cells(page, "repo-name"), ["stuck"])
-        # Started or refused depends on how long the start took; either way
-        # the row names the child's budget, not the page's.
-        self.assertRegex(self.cells(page, "repo-note")[0], r"^git .*the budget of 2 seconds")
-        self.assertGone("git")
+        # The row names the child's budget, not the page's.
+        self.assertEqual(self.cells(page, "repo-note"),
+                         [f"git was not started: the budget of {fleet.FLEET_SECONDS - fleet.FLEET_MARGIN:g} seconds was spent"])
+        self.assertFalse((self.root.parent / "git.pids").exists(), "the child started git past its deadline")
 
     def messy(self, name="messy", *, when="2026-09-02T10:00:00+00:00"):
         """A checkout whose `git status --porcelain` outgrows the 64 KB ceiling: 1500 untracked paths of 59 bytes a line."""
