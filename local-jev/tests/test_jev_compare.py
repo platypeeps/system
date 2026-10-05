@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -198,6 +199,17 @@ class TheKevArm(CompareCase):
         self.assertEqual(kev["changed"], "no")
         self.assertEqual(kev["outcome"], "ok")
         self.assertIsNotNone(kev["duration_ms"])
+
+    def test_under_the_shadow_switch_the_kev_row_joins_the_pair(self):
+        """sd:2761: the arm, the judgment and the caller's own answer are one pair."""
+        code, out = self.run_main(["score", "how urgent?", "--levels", "a,b,c",
+                                   "--fallback", "1", "--stage", "JEV_NOTIFY"],
+                                  JEV_SHADOW="1")
+        self.assertEqual((code, out), (0, "1\n"))
+        rows = self.by_arm(self.wait_rows(3))
+        self.assertEqual(set(rows), {"jev", "baseline", "kev"})
+        self.assertIsNotNone(rows["jev"]["pair"])
+        self.assertEqual({row["pair"] for row in rows.values()}, {rows["jev"]["pair"]})
 
     def test_kev_gets_the_same_redacted_request_under_its_own_model_name(self):
         secret = "ghp_" + "a" * 36
@@ -778,6 +790,121 @@ class TheHaikuBatchLimit(CompareCase):
         with self.assertRaises(jev_compare.Declined) as caught:
             self.ask(getattr(jev_compare, "MAX_HAIKU_QUESTIONS", 8) + 1)
         self.assertEqual(caught.exception.cause, "invalid")
+        self.assertEqual(Arm.seen, [])
+
+
+class LocalOnly(CompareCase):
+    """sd:2761: `--local-only` asks the local Kev and nothing else. Every arm
+    is switched on and Jev is keyed, so a request that went anywhere but Kev
+    would show in `Stub.seen` (Jev), `Arm.seen` (the Haiku path) or the
+    mocked `start_arms`."""
+
+    def env(self, **extra):
+        settings = {"JEV_COMPARE_HAIKU_VIA": "anthropic",
+                    "JEV_COMPARE_ANTHROPIC_KEY": "test-key"}
+        settings.update(extra)
+        return super().env(**settings)
+
+    def run_local(self, argv, **extra):
+        with unittest.mock.patch.object(jev, "start_arms") as arms:
+            result = self.run_verbose(argv + ["--local-only"], **extra)
+        self.assertEqual(arms.call_count, 0, "local-only started the arms")
+        return result
+
+    def kev_requests(self):
+        return [s for s in Arm.seen if s["path"].endswith("/v1/systemone")]
+
+    def test_it_asks_kev_alone_and_prints_its_answer(self):
+        code, out, _ = self.run_local(["noul", "is it?", "--stage", "JEV_DOCS"])
+        self.assertEqual((code, out), (0, "0.81\n"))
+        self.assertEqual(Stub.seen, [])
+        self.assertEqual([s["path"] for s in Arm.seen], ["/v1/systemone"])
+        row = self.only()
+        self.assertEqual((row["arm"], row["provider"], row["model"], row["stage"],
+                          row["answer"], row["outcome"]),
+                         ("kev", "local", "jaredpalmer/kev-4b@v1.0", "JEV_DOCS", "0.81", "ok"))
+
+    def test_kev_gets_the_text_unredacted_and_no_typesafe_key(self):
+        secret = "ghp_" + "a" * 36
+        self.run_local(["noul", "is it?"], stdin=f"token {secret} here")
+        sent, = self.kev_requests()
+        self.assertIn(secret, sent["body"]["state"])
+        self.assertEqual(sent["body"]["model"], "kev-latest")
+        self.assertNotIn("authorization", sent["headers"])
+
+    def test_a_rejected_kev_key_names_kev_api_key(self):
+        Arm.status = 401
+        code, _, err = self.run_local(["noul", "is it?"])
+        self.assertEqual(code, 1)
+        self.assertIn("KEV_API_KEY", err)
+        self.assertNotIn("TYPESAFE_API_KEY", err)
+
+    def test_no_typesafe_key_is_needed(self):
+        code, out, _ = self.run_local(["noul", "is it?"], TYPESAFE_API_KEY="")
+        self.assertEqual((code, out), (0, "0.81\n"))
+
+    def test_a_stage_named_local_only_is_local_without_the_flag(self):
+        with unittest.mock.patch.object(jev, "start_arms") as arms:
+            code, out = self.run_main(["noul", "is it?", "--stage", "JEV_SECRET_SCAN"])
+        self.assertEqual((code, out, arms.call_count, Stub.seen), (0, "0.81\n", 0, []))
+        self.assertEqual(len(self.kev_requests()), 1)
+
+    def test_a_kev_url_that_is_not_loopback_is_refused_before_sending(self):
+        for url in ("http://198.51.100.7:8009/v1/systemone",
+                    "http://localhost:8009/v1/systemone",
+                    "http://127.0.0.1@example.test/v1/systemone",
+                    "http://127.0.0.1:invalid/v1/systemone",
+                    "file:///etc/hosts"):
+            with self.subTest(url=url), \
+                    unittest.mock.patch.object(jev.LOCAL_OPENER, "open") as send:
+                code, out, err = self.run_local(["noul", "is it?", "--fallback", "keep"],
+                                                JEV_COMPARE_KEV_URL=url)
+                self.assertEqual((code, out), (0, "keep\n"))
+                self.assertIn("not a loopback address", err)
+                self.assertEqual((send.call_count, Stub.seen, Arm.seen), (0, [], []))
+                self.assertEqual(self.rows()[-1]["cause"], "unavailable")
+
+    def test_post_itself_refuses_a_remote_url(self):
+        """The second check, at the one place a request is sent."""
+        conf = dict(jev.settings({}), local=True, url="http://203.0.113.9/v1/systemone")
+        send = unittest.mock.Mock()
+        with self.assertRaises(jev.JevError):
+            jev.post(conf, {"state": "x", "questions": {}}, opener=send)
+        self.assertEqual(send.call_count, 0)
+
+    def test_kev_down_is_a_decline_with_the_fallback(self):
+        code, out, _ = self.run_local(["noul", "is it?", "--fallback", "keep"],
+                                      JEV_COMPARE_KEV_URL="http://127.0.0.1:9/v1/systemone",
+                                      JEV_RETRIES="0")
+        self.assertEqual((code, out, Stub.seen), (0, "keep\n", []))
+        row = self.only()
+        self.assertEqual((row["arm"], row["outcome"], row["cause"]),
+                         ("kev", "fallback", "unavailable"))
+
+    def test_the_kill_switch_still_stops_it(self):
+        self.write_switch("off")
+        code, out, _ = self.run_local(["noul", "is it?", "--fallback", "keep"])
+        self.assertEqual((code, out, Arm.seen), (0, "keep\n", []))
+
+    def test_a_shadow_pair_is_recorded_against_the_old_answer(self):
+        code, out, _ = self.run_local(["noul", "real?", "--gate", "0.5", "--shadow", "yes",
+                                       "--stage", "JEV_SECRET_SCAN"])
+        self.assertEqual((code, out), (0, "yes\n"))
+        kev, baseline = self.rows()
+        self.assertEqual((kev["arm"], kev["changed"], baseline["answer"]),
+                         ("kev", "no", "1"))
+        self.assertEqual(kev["pair"], baseline["pair"])
+
+    def test_enabled_answers_for_the_local_path(self):
+        def enabled(*extra, **env):
+            return self.run_main(["enabled", "JEV_SECRET_SCAN", *extra], **env)[0]
+        self.assertEqual(enabled("--local-only", TYPESAFE_API_KEY=""), 0)
+        self.assertEqual(enabled(TYPESAFE_API_KEY=""), 0)
+        self.assertEqual(enabled("--local-only", JEV_SECRET_SCAN="0"), 3)
+        self.assertEqual(enabled("--local-only",
+                                 JEV_COMPARE_KEV_URL="http://198.51.100.7/v1/systemone"), 3)
+        self.assertEqual(enabled("--local-only",
+                                 JEV_COMPARE_KEV_URL="http://127.0.0.1:invalid/v1/systemone"), 3)
         self.assertEqual(Arm.seen, [])
 
 
