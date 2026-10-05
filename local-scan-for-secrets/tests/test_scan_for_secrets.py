@@ -26,6 +26,14 @@ REPO = FOLDER.parent
 SCRIPT = FOLDER / "scan-for-secrets.sh"
 
 
+def isolate_jev(env: dict) -> None:
+    """Keep a `jev` on the inherited PATH out of the operator's ledger and
+    collector: `enabled --record` writes a row even with the stage off."""
+    env["JEV_METER"] = "0"
+    env.pop("JEV_METER_DB", None)
+    env.pop("JEV_TRACES_URL", None)
+
+
 class RelativeInvocation(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -36,6 +44,7 @@ class RelativeInvocation(unittest.TestCase):
         self.env["HOME"] = str(self.home)
         self.env["SYSTEM_TOOLS_CONFIG"] = str(self.tmp / "config")
         self.env.pop("S4S_CONF", None)
+        isolate_jev(self.env)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -86,6 +95,7 @@ class UrlCredentials(unittest.TestCase):
             env = dict(os.environ, HOME=str(root / "home"), SYSTEM_TOOLS_CONFIG=str(root / "config"), PATH=path,
                        JEV_SECRET_SCAN="0")
             env.pop("S4S_CONF", None)
+            isolate_jev(env)
             return subprocess.run(["sh", str(SCRIPT)], cwd=root / "tree", env=env,
                                   capture_output=True, text=True, timeout=120)
 
