@@ -235,8 +235,26 @@ class LeakGuardTest(unittest.TestCase):
         merge = self.git(self.repo, "rev-parse", "HEAD").strip()
         self.write_patterns()
         line = f"refs/heads/topic {merge} refs/heads/topic {topic}\n"
-        result = self.run_guard("hook", "origin", "url", stdin=line)
+        result = self.run_guard("hook", "origin", str(self.remote), stdin=line)
         self.assertEqual(result.returncode, 0, result.stderr)
+        # Unreadable destination: nothing is skipped beyond the ref's tip.
+        result = self.run_guard("hook", "origin", str(self.tmp / "gone.git"),
+                                stdin=line)
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_hook_does_not_trust_a_remote_tracking_ref(self) -> None:
+        # A tracking ref can be stale or come from another fetch URL; only
+        # what the push destination itself holds counts as published.
+        base = self.git(self.repo, "rev-parse", "HEAD").strip()
+        sha = self.commit("a.txt", "fine\n", f"deploy to {SECRET}")
+        self.git(self.repo, "update-ref", "refs/remotes/origin/stale", sha)
+        self.write_patterns()
+        line = f"refs/heads/main {sha} refs/heads/main {base}\n"
+        result = self.run_guard("hook", "origin", str(self.remote), stdin=line)
+        self.assertRefused(result, sha)
+        line = f"refs/heads/new {sha} refs/heads/new {'0' * 40}\n"
+        result = self.run_guard("hook", "origin", str(self.remote), stdin=line)
+        self.assertRefused(result, sha)
 
     # install and a real push
 
