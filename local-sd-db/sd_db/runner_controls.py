@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from . import paths, runner, workflow
-from .database import transaction
+from .database import refuse_hub_only, transaction
 from .operations import LABEL_PREFIX
 from .writes import add_note, set_item_fields
 
@@ -238,6 +238,7 @@ def invoke_service(installation, verb, assignment, *, revision, run, who, destin
 
 
 def control(connection, assignment, verb, *, expected_revision, destination=None, who, backend=None, home=None):
+    refuse_hub_only(connection, "runner controls")
     if verb not in {"cancel", "resume", "restore"}:
         raise workflow.WorkflowError("unknown runner control")
     current = runner.queue_state(connection, assignment)

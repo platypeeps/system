@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 from . import paths
+from .database import refuse_hub_only
 from .workflow import WorkflowError
 
 
@@ -19,6 +20,7 @@ def _hash(data):
 
 
 def root(connection):
+    refuse_hub_only(connection, "the publication journal")
     database = connection.execute("PRAGMA database_list").fetchone()[2]
     if not database:
         raise WorkflowError("publication needs a file-backed database and durable journal")

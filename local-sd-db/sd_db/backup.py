@@ -58,7 +58,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import paths
-from .database import connect, schema_version, tables
+from .database import connect, local_path, refuse_hub_only, schema_version, tables
 from .errors import BackupError, SchemaTooOld, SdDbError
 from .migrate import migrate as migrate_database
 from .schema import SCHEMA_VERSION, TABLES, migrations
@@ -997,6 +997,8 @@ def run(
     if keep is not None and keep_days is not None:
         raise BackupError("backup retention takes a count or an age, not both")
     home = Path(home)
+    # Before the mount check and the probe: a satellite writes nothing.
+    refuse_hub_only(database if database is not None else local_path(home), "the backup", home)
     when = when or datetime.now(UTC)
     root = (
         Path(destination).expanduser()
@@ -1354,6 +1356,7 @@ def restore(directory: Path | str, *, home: Path | str) -> Path:
 
     directory = Path(directory)
     home = Path(home)
+    refuse_hub_only(local_path(home), "the restore", home)
     snapshot = directory / "sd.db"
     if not snapshot.exists():
         raise BackupError(f"{directory} holds no sd.db")

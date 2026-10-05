@@ -55,9 +55,10 @@ STATE_FILE="$STATE_DIR/profile"
 
 # `sd` runs before `agents`: the runner and the dashboard both open the
 # database at startup, so an agent bootstrapped first restarts against a
-# file that does not exist yet.
-STAGES="brew shell appstore bin dotfiles envs prompts repos cron sd agents services macos tooling system obsidian iterm2"
-KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight"
+# file that does not exist yet. `satellite` sits beside it: a machine runs
+# one of the two, and neither loads an agent the other needs.
+STAGES="brew shell appstore bin dotfiles envs prompts repos cron sd satellite agents services macos tooling system obsidian iterm2"
+KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite"
 
 # Directories that hold credentials in the clear and are created world-readable
 # by the tools that own them. Codex snapshots the whole shell environment —
@@ -101,7 +102,7 @@ FORCE=0
 
 # Dotfiles safe to copy into the repo. ~/.bash_profile is deliberately absent:
 # it holds ~40 live API keys, and capturing it would commit them.
-DOTFILES=".zshrc .zshenv .zprofile .bash_aliases .gitconfig .gitignore_global .ssh/config .config/gh/config.yml .prism/.env .gito/.env .aws/config"
+DOTFILES=".zshrc .zshenv .zprofile .bash_aliases .gitconfig .gitignore_global .ssh/config .config/gh/config.yml .prism/.env .gito/.env .aws/config .vale.ini"
 # Dotfiles installed 0600 rather than with cp's default mode. Not because
 # they hold secrets — capture refuses those — but because they sit where a
 # secret would go, and a world-readable ~/.gito/.env is how the last one
@@ -939,6 +940,13 @@ stage_agents() {
   fi
   rendered=$(mktemp -d)
   echo "$agents" | while read -r label; do
+    # A guard: no satellite profile lists a hub-only agent today, and one
+    # that adds it later must not start a second runner or dashboard.
+    # Skipped, not removed: the satellite stage reports one already here.
+    if [ -e "$SD_HUB_CONFIG" ] && sd_hub_only "$label"; then
+      echo "  SKIP    $label — hub only, and $SD_HUB_CONFIG makes this machine a satellite"
+      continue
+    fi
     src="$AGENT_DIR/$label.plist"
     dst="$HOME/Library/LaunchAgents/$label.plist"
     if [ -f "$src" ]; then
@@ -1081,6 +1089,30 @@ stage_tooling() {
   else
     echo "  SKIP    rtk not installed"
   fi
+  # The Claude Code HUD, on every profile: the claude-hud plugin, and a
+  # statusLine that runs local-statusline, which wraps the plugin. Each gap
+  # prints MISSING so --fail-on-drift sees it. HUD display options stay in
+  # ~/.claude/plugins/claude-hud/config.json, which this stage does not write.
+  if command -v claude >/dev/null 2>&1; then
+    if ls -d "$HOME"/.claude/plugins/cache/*/claude-hud/*/ >/dev/null 2>&1; then
+      echo "  ok      claude-hud plugin"
+    else
+      echo "  MISSING claude-hud plugin"
+      [ -d "$HOME/.claude/plugins/marketplaces/claude-hud" ] \
+        || run claude plugin marketplace add jarrodwatts/claude-hud
+      run claude plugin install claude-hud@claude-hud
+    fi
+    if [ ! -f "$HOME/.claude/settings.json" ]; then
+      echo "  SKIP    statusLine not set (no ~/.claude/settings.json; start claude once)"
+    elif grep -q 'local-statusline/statusline.sh render' "$HOME/.claude/settings.json" 2>/dev/null; then
+      echo "  ok      statusLine -> local-statusline"
+    else
+      echo "  MISSING statusLine -> local-statusline"
+      run sh "$ROOT/local-statusline/statusline.sh" install
+    fi
+  else
+    echo "  SKIP    claude not installed (HUD not set up)"
+  fi
   # task-actions' digest email buttons need a public URL; the tailscale
   # funnel provides it and --bg persists across reboots. Only on a machine
   # whose profile installs the task-actions agent — funnel on a machine with
@@ -1145,6 +1177,21 @@ SD_DASHBOARD_HTTPS_PORT="${SD_DASHBOARD_HTTPS_PORT:-8443}"
 SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 
 sd_in_profile() { manifest agent | grep -qxF -e "$LABEL_PREFIX.sd-dashboard" -e "$LABEL_PREFIX.sd-runner"; }
+# The satellite's selector (`sd_db.hub`); on the hub its presence is drift.
+SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
+# The hub's own launchd jobs, by label suffix: the one list of what a
+# satellite never runs (prd R5 of the second-machine plan). The cron jobs
+# are the backups, installed by the cron stage under `<prefix>.cron.`.
+# The satellite stage reports each one present as EXTRA; the agents stage
+# skips each one while hub.json exists.
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-runner sd-serve task-actions cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly"
+sd_hub_only() { # label
+  for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
+  return 1
+}
+# The interpreter whose installed sd_db the satellite stage checks: the
+# pack's, as sd-db.sh picks it.
+SD_DB_PYTHON="${SD_DB_PYTHON:-$SD_PACK_ROOT/.venv/bin/python}"
 
 # One read of `tailscale serve status` for the dashboard's port. The route
 # is the line `https://<node>.<tailnet domain>:8443 (tailnet only)` followed
@@ -1204,6 +1251,23 @@ stage_sd() {
   sd_database_elsewhere | while IFS= read -r elsewhere; do
     echo "  DIFFERS database: $elsewhere, not $SD_DB — this stage builds and doctor checks only $SD_DB; remove the key or point it there"
   done
+  # The hub's server for satellites (step 8 of the second-machine plan). The
+  # agents stage installs and loads it like any agent; this stage says when
+  # the profile or the config folder lacks it, a gap the agents stage
+  # reports with no drift word. A removed installed plist is the agents
+  # stage's MISSING, counted once.
+  if ! manifest agent | grep -qxF "$LABEL_PREFIX.sd-serve"; then
+    echo "  MISSING $LABEL_PREFIX.sd-serve in $PROFILE.agent — the hub serves no satellite; add the label, then: $(basename "$SELF") update agents --apply"
+  elif [ ! -f "$AGENT_DIR/$LABEL_PREFIX.sd-serve.plist" ]; then
+    echo "  MISSING $AGENT_DIR/$LABEL_PREFIX.sd-serve.plist — copy it from $DIR/examples/launchagents/"
+  else
+    echo "  ok      $LABEL_PREFIX.sd-serve in $PROFILE.agent"
+  fi
+  # Removed by hand, never here: on the hub it refuses every sd verb beside
+  # the database (HubConflict), and the operator decides which role is wrong.
+  if [ -e "$SD_HUB_CONFIG" ]; then
+    echo "  EXTRA   $SD_HUB_CONFIG — this machine is the sd hub, and that file makes it a satellite too; remove it"
+  fi
   if manifest agent | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
     if ! command -v tailscale >/dev/null 2>&1; then
       echo "  SKIP    tailscale not installed (brew stage provides it) — no private route to the dashboard"
@@ -1226,6 +1290,59 @@ stage_sd() {
         run tailscale serve --bg "--https=$SD_DASHBOARD_HTTPS_PORT" --set-path=/ "http://127.0.0.1:$SD_DASHBOARD_PORT"
       fi
     fi
+  fi
+}
+
+# A satellite of the sd hub (step 9 of the second-machine plan): the
+# profile's `.satellite` names the hub as `host` or `host:port`. The checks
+# run in the installed library (`sd_db.satellite`, under `-I`), because the
+# build that must match the hub's is the one the pack runs, not this
+# checkout. The stage installs no LaunchAgent and no sd cron job.
+stage_satellite() {
+  echo "== satellite"
+  hubs=$(manifest satellite)
+  # A satellite runs no hub service (prd R5). Detect only: the operator
+  # decides which role is wrong. On a hub profile the sd stage's one EXTRA
+  # for hub.json names the conflict instead (criterion 7).
+  if ! sd_in_profile && { [ -n "$hubs" ] || [ -e "$SD_HUB_CONFIG" ]; }; then
+    for sho in $SD_HUB_ONLY_AGENTS; do
+      sho_label="$LABEL_PREFIX.$sho"
+      sho_plist="$HOME/Library/LaunchAgents/$sho_label.plist"
+      if [ -e "$sho_plist" ]; then
+        echo "  EXTRA   $sho_plist — hub only, and this machine is a satellite; remove it by hand"
+      elif launchctl print "gui/$(id -u)/$sho_label" >/dev/null 2>&1; then
+        echo "  EXTRA   $sho_label loaded with no plist — hub only, and this machine is a satellite; boot it out by hand"
+      fi
+    done
+  fi
+  if [ -z "$hubs" ]; then
+    echo "  SKIP    no sd hub in this profile ($PROFILE.satellite)"
+    return 0
+  fi
+  if [ "$(printf '%s\n' "$hubs" | wc -l | tr -d ' ')" -gt 1 ]; then
+    echo "  DIFFERS $PROFILE.satellite names more than one hub: $(printf '%s' "$hubs" | tr '\n' ' ')"
+    return 0
+  fi
+  if sd_in_profile; then
+    echo "  DIFFERS $PROFILE.satellite names the hub $hubs, and $PROFILE.agent runs the hub's agents; the hub cannot be its own satellite — remove $PROFILE.satellite"
+    return 0
+  fi
+  host=${hubs%%:*}
+  port=
+  case "$hubs" in *:*) port=${hubs##*:} ;; esac
+  if [ ! -x "$SD_DB_PYTHON" ]; then
+    echo "  MISSING sd_db: no interpreter at $SD_DB_PYTHON — install the pack (python3 bin/sd_install.py --user), then rerun"
+    return 0
+  fi
+  set -- --hub "$host"
+  [ -z "$port" ] || set -- "$@" --port "$port"
+  if [ "$APPLY" -eq 1 ]; then set -- "$@" --apply; fi
+  if out=$("$SD_DB_PYTHON" -I -m sd_db.satellite "$@" 2>&1 </dev/null); then
+    printf '%s\n' "$out"
+  else
+    rc=$?
+    printf '%s\n' "$out" | sed 's/^/          /'
+    echo "  DIFFERS sd_db satellite check failed under $SD_DB_PYTHON (exit $rc)"
   fi
 }
 
@@ -1807,11 +1924,17 @@ cmd_capture() {
   # A profile file holds only what common does not already provide, so capture
   # subtracts the common manifest instead of dumping the whole machine.
   brew tap 2>/dev/null | sort > "$tmp/have.tap"
-  brew leaves 2>/dev/null | sort > "$tmp/have.brew"
+  brew leaves 2>/dev/null | sort -u > "$tmp/have.brew"
   common_manifest tap  > "$tmp/common.tap"
-  common_manifest brew > "$tmp/common.brew"
+  common_manifest brew | sed 's|.*/||' | sort -u > "$tmp/common.brew"
   comm -23 "$tmp/have.tap"  "$tmp/common.tap"  > "$tmp/out.tap"
-  comm -23 "$tmp/have.brew" "$tmp/common.brew" > "$tmp/out.brew"
+  # Compare bare names, but write the spelling brew printed: `leaves`
+  # tap-qualifies a third-party formula, and a bare name in the profile could
+  # install a core formula of the same name instead. FILENAME, not NR == FNR:
+  # an empty common manifest would make every machine line look like common.
+  awk 'FILENAME == ARGV[1] { common[$0] = 1; next }
+       { n = $0; sub(/.*\//, "", n); if (!(n in common)) print }' \
+    "$tmp/common.brew" "$tmp/have.brew" > "$tmp/out.brew"
   brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
   common_manifest cask > "$tmp/common.cask"
   comm -23 "$tmp/have.cask" "$tmp/common.cask" > "$tmp/out.cask"
@@ -4003,11 +4126,14 @@ cmd_status() {
     # Both sides normalized to bare names: brew list usually prints bare
     # names but tap-qualifies a formula whose name is ambiguous, and
     # manifests carry tap-qualified entries.
-    brew list --formula 2>/dev/null | sed 's|.*/||' | sort > "$tmp/have.brew"
-    manifest brew | sed 's|.*/||' | sort > "$tmp/want.brew"
+    # `sort -u`, not `sort`: manifest dedupes before this strips the tap, so a
+    # profile naming one formula both ways left the same bare name twice and
+    # comm reported the duplicate as missing for a formula that was installed.
+    brew list --formula 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/have.brew"
+    manifest brew | sed 's|.*/||' | sort -u > "$tmp/want.brew"
     echo "brew formulae"
     mb=$(comm -13 "$tmp/have.brew" "$tmp/want.brew")
-    brew leaves 2>/dev/null | sed 's|.*/||' | sort > "$tmp/leaves.brew"
+    brew leaves 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/leaves.brew"
     xb=$(comm -23 "$tmp/leaves.brew" "$tmp/want.brew")
     status_line missing "$mb"
     status_line extra "$xb"
@@ -4045,7 +4171,7 @@ cmd_status() {
   # drift items (docs/work/2026-09-05-one-database-one-front-door); the other
   # two are the agents stage's rows for <prefix>.sd-dashboard and
   # <prefix>.sd-runner.
-  for st in shell bin dotfiles envs prompts repos appstore cron sd agents services tooling system macos obsidian iterm2; do
+  for st in shell bin dotfiles envs prompts repos appstore cron sd satellite agents services tooling system macos obsidian iterm2; do
     status_stage "$st"
     echo
   done

@@ -178,8 +178,6 @@ KNOWN_LINE_INTO_CODE = frozenset({
     ("local-project-dashboard/sd_dashboard/markup.py", 81, "charts.py", 150, 150),
     ("local-sd-db/sd-db.sh", 9, "sd_db/backup.py", 45, 45),
     ("local-sd-db/sd-db.sh", 15, "local-sd-plan/sd-plan.sh", 15, 15),
-    ("local-sd-db/sd_db/runner_exec.py",
-     314, "local-project-dashboard/sd_dashboard/server.py", 548, 548),
     ("local-sd-db/tests/support.py", 110, "sd_lib.py", 254, 254),
     ("local-sd-db/tests/test_brief.py",
      98, "local-project-dashboard/sd_dashboard/screens.py", 163, 163),

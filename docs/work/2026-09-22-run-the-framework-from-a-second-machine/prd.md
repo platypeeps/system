@@ -120,9 +120,13 @@ Two shapes are ruled out by the measured facts, and the design records why:
   verb fails with one named error naming the hub, and exits non-zero. It
   never creates, opens or writes a local file. The satellite's
   `~/.local/share/sd/sd.db` must not exist.
-- **R5 — hub services stay on the hub.** Runner, dashboard, backups,
-  `task-actions`, cron intake and digests keep running on this machine and
-  keep opening the local file. Nothing about them changes in this item.
+- **R5 — hub services stay on the hub, and a satellite runs none.** A
+  satellite is a machine with `~/.config/sd/hub.json`. It runs no hub
+  service: no dashboard (8443 or 8768), no runner, no backups, no
+  `task-actions`, no cron intake and no digests. It also holds no local sd
+  database: `~/.local/share/sd/sd.db` must not exist (R4). The hub keeps
+  running these services, and they keep opening the local file. Nothing
+  about them changes in this item. Operator ruling, 2026-10-04.
 - **R6 — receipts land in the hub database.** `sd-ship`'s delivery receipt
   (`ship.save`), `sd-review`'s judgments and meter samples written from the
   satellite are rows on the hub the next morning's digest reads. Ledger
@@ -158,19 +162,20 @@ Two shapes are ruled out by the measured facts, and the design records why:
 - **R12 — a lost response is an unknown outcome, never a silent failure.**
   When the transport fails after a statement was sent and before its
   response arrived, and that statement could have committed, the verb
-  raises `UnknownOutcome` naming the request id R. R is a ULID: unique
-  across satellites by its randomness, aged by its time prefix. The hub
+  raises `UnknownOutcome` naming the request id R. R is a ULID, unique
+  across satellites by its randomness. The hub
   owns R from `BEGIN IMMEDIATE`, not from `COMMIT`, and answers
-  `outcome(R)` under one lock per id with `recorded` (acknowledge, return
+  `outcome(R)` under one lock per id with `recorded` (return
   it, run nothing), `in_flight` (an owner is live; wait with a bound, then
-  refuse by name), `absent` (no owner, no row, inside the lifetime: it did
+  refuse by name) or `absent` (no owner, no row: it did
   not commit; `TransactionLost(R)`, and the verb is run again under a new
-  id) or `expired` (older than the 7-day
-  retry lifetime, or already acknowledged; never `absent`). The outcome
+  id). The outcome
   record commits **inside the same SQLite transaction** as the application
   writes; a `COMMIT` from a connection that does not own R is refused; rows
-  are retained for the lifetime, acknowledged or not. No verb duplicates a
-  row by retrying, whatever the hub crash, the frame delay or the prune.
+  are never deleted, so `absent` never stands for a pruned row. No verb
+  duplicates a row by retrying, whatever the hub crash or the frame delay.
+  The retry lifetime, `expired`, `ack(R)` and the prune are deferred to a
+  later row (operator ruling 2026-10-04, design Q1).
 
 ## Acceptance criteria
 
@@ -217,8 +222,8 @@ Each one names its check. A partial pass is not a pass.
     upgrade. Check: the test runs both directions (client newer, hub newer)
     against a loopback server, and after a simulated hub upgrade the
     satellite's next verb is refused rather than admitted.
-11. **A lost COMMIT is an unknown outcome, through crashes, delays and
-    pruning.** Runs against a loopback server, each counting rows before
+11. **A lost COMMIT is an unknown outcome, through crashes and
+    delays.** Runs against a loopback server, each counting rows before
     and after; the count moves by exactly one where a commit is promised
     and by zero everywhere else. (a) Response dropped after `COMMIT`:
     `UnknownOutcome`, then `recorded`, one. (b) `kill -9` between the
@@ -228,13 +233,20 @@ Each one names its check. A partial pass is not a pass.
     run again: one. (d) The
     `COMMIT` frame held in transit, the client reconnects and asks:
     `in_flight`; frame released: `recorded`, one. (e) A `COMMIT` for R from
-    a connection that does not own R: refused, zero. (f) Prune, then retry
-    a young id: `absent` or `recorded` as before. (g) Retry an id older
-    than the lifetime: `expired`, zero. (h) `ack(R)`, then retry: `expired`,
-    zero. (i) An R whose embedded time is six minutes from the hub's clock:
-    `ClockSkew`, zero. (j) The hub answers `absent` for R: `TransactionLost(R)` leaves the
+    a connection that does not own R: refused, zero. (f) to (i), the
+    prune, expiry, acknowledgement and clock-skew cases, were dropped with
+    the prune on 2026-10-04 (design Q1). (j) The hub answers `absent` for R: `TransactionLost(R)` leaves the
     `with` block, zero; the verb run again under a new id: one, and the
     note's owner is the item that run created.
+12. **A satellite runs no hub service.** On the satellite, a hub-only
+    LaunchAgent or backup job that is installed or loaded makes
+    `machine-setup.sh status` count one `EXTRA` each, and the stage
+    removes nothing. With `hub.json` present, `update agents --apply`
+    prints `SKIP` for each hub-only label and installs none. Check:
+    `local-machine-setup/tests/test_hub_and_satellite.py`; on the second
+    laptop, `status` counts zero drift, `launchctl list` names no hub-only
+    label, nothing listens on 8443 or 8768, and
+    `test ! -e ~/.local/share/sd/sd.db` passes.
 
 ## Deliberately out of scope
 

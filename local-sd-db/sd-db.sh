@@ -361,6 +361,9 @@ Usage: sd-db.sh <command>
               The same suite with every in-process `connect` going over the
               wire to a `serve --loopback` at HOST:PORT, which wrote its
               token to TOKEN_FILE. Its summary line must equal the local one.
+              A test marked `hub_only` keeps its connections local, since
+              the wire refuses hub-only paths by design; the run prints how
+              many ran local.
   test --surface [ARGS]
               The same suite with every `connect` returning a connection
               that raises on any attribute outside the surface the remote

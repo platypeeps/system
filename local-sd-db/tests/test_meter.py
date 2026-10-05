@@ -15,6 +15,7 @@ from sd_db.meter import MeterRefused, latest, sample
 from sd_db.migrate import initialise
 from sd_db.reads import item_assignments, usage_month
 from sd_db.registry import parse
+from sd_db.testing.wire import hub_only
 
 #: The ledger tests' registry, verbatim: a capped bill and an open one, a
 #: `url` author on each, and `claude` as a `start` entry on the open bill,
@@ -170,6 +171,7 @@ class OneRowPerProviderPerWindow(MeterCase):
         self.assertEqual((row["id"], row["bill"]), (row_id, "open"))
 
 
+@hub_only
 class TheMeterRowIsNobodysCost(MeterCase):
     def test_per_item_cost_is_each_items_own_and_the_meter_row_is_in_neither(self):
         """Clause 15's cross-check: one `meter` row and two `run` rows against

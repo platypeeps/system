@@ -12,11 +12,13 @@ from sd_db.backup import restore, run
 from sd_db.errors import BackupError
 from sd_db.operations import job_state, retry_job
 from sd_db.services import restart_service, stop_service
+from sd_db.testing.wire import hub_only
 from sd_db.workflow import WorkflowError
 
 from tests import test_backup, test_operations, test_services
 
 
+@hub_only
 class ControlContention(unittest.TestCase):
     def service(self):
         fixture = test_services.Services()

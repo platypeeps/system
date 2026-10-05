@@ -319,13 +319,21 @@ class TheConfinement(ServedCase):
                 self.assertIsInstance(caught.exception, sqlite3.DatabaseError)
                 self.assertServing(wire)
 
-    def test_attach_and_detach_are_refused_and_open_no_file(self):
+    def test_attach_is_refused_and_opens_no_file(self):
         wire = self.wire()
         other = self.root / "other.db"
         self.assertRefusedEveryWay(wire, f"ATTACH DATABASE '{other}' AS other", f"ATTACH or VACUUM would open {other}")
         self.assertFalse(other.exists())
-        self.assertRefusedEveryWay(wire, "DETACH DATABASE main", "DETACH is not served")
         self.assertIn(f"refused: ATTACH or VACUUM would open {other}", self.served.stop())
+
+    def test_detach_meets_sqlites_own_refusal_as_nothing_is_attached(self):
+        wire = self.wire()
+        for sql in ("DETACH DATABASE main", "DETACH DATABASE absent"):
+            with self.subTest(sql=sql):
+                with self.assertRaises(sqlite3.OperationalError) as caught:
+                    wire.execute(sql)
+                self.assertNotIsInstance(caught.exception, remote.StatementRefused)
+                self.assertServing(wire)
 
     def test_vacuum_into_goes_through_attach_and_creates_no_file(self):
         actions = []
@@ -347,24 +355,38 @@ class TheConfinement(ServedCase):
         for sql, named in (
             ("PRAGMA writable_schema = ON", "PRAGMA writable_schema(ON)"),
             ("PRAGMA main.writable_schema = ON", "PRAGMA writable_schema(ON)"),
-            ("PRAGMA writable_schema", "PRAGMA writable_schema"),
             ("PRAGMA user_version = 99", "PRAGMA user_version(99)"),
+            ("PRAGMA application_id = 123", "PRAGMA application_id(123)"),
             ("PRAGMA journal_mode = DELETE", "PRAGMA journal_mode(DELETE)"),
-            # The hub's own open ran this exact text, so it sits in the
-            # statement cache; the authorizer still sees it.
+            # The hub's own open ran this exact text; the authorizer still sees it.
             ("PRAGMA journal_mode = WAL", "PRAGMA journal_mode(WAL)"),
+            ("PRAGMA ignore_check_constraints = ON", "PRAGMA ignore_check_constraints(ON)"),
+            ("PRAGMA wal_autocheckpoint = 0", "PRAGMA wal_autocheckpoint(0)"),
             ("PRAGMA mmap_size", "PRAGMA mmap_size"),
-            # A read transaction runs under `query_only`; a session never
-            # switches it, either way.
-            ("PRAGMA query_only = OFF", "PRAGMA query_only(OFF)"),
-            ("PRAGMA query_only = 0", "PRAGMA query_only(0)"),
-            ("PRAGMA query_only = ON", "PRAGMA query_only(ON)"),
+            ("PRAGMA wal_checkpoint", "PRAGMA wal_checkpoint"),
+            ("PRAGMA optimize", "PRAGMA optimize"),
             # A table-valued pragma, inside DML so `executemany` runs it too.
             ("INSERT INTO probe (name) SELECT name FROM pragma_function_list", "PRAGMA function_list"),
         ):
             self.assertRefusedEveryWay(wire, sql, named + " is not served")
         self.assertEqual(wire.execute("PRAGMA user_version").fetchone()[0], schema.SCHEMA_VERSION)
         self.assertEqual(wire.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        self.assertEqual(wire.execute("PRAGMA writable_schema").fetchone()[0], 0)
+        raw = sqlite3.connect(self.served.database)
+        self.addCleanup(raw.close)
+        self.assertEqual(raw.execute("PRAGMA application_id").fetchone()[0], 0)
+
+    def test_query_only_is_the_sessions_outside_a_transaction(self):
+        # Step 5's rule, kept: `query_only` is allowlisted with a value, and
+        # refused only inside a transaction the hub holds.
+        wire = self.wire()
+        wire.execute("PRAGMA query_only = ON")
+        self.assertEqual(wire.execute("PRAGMA query_only").fetchone()[0], 1)
+        wire.execute("PRAGMA query_only = OFF")
+        wire.execute("BEGIN")
+        with self.assertRaisesRegex(remote.StatementRefused, "query_only is the hub's inside a transaction"):
+            wire.execute("PRAGMA query_only = OFF")
+        wire.execute("ROLLBACK")
         self.assertEqual(wire.execute("PRAGMA query_only").fetchone()[0], 0)
 
     def test_load_extension_is_refused(self):
@@ -581,7 +603,7 @@ class TheServer(ServedCase):
             capture_output=True, text=True, env=environment(self.root), timeout=60,
         )
         self.assertEqual(missing.returncode, 1)
-        self.assertIn(f"no database at {absent}", missing.stderr)
+        self.assertIn(f"no database at {absent.resolve()}", missing.stderr)
         self.assertFalse(absent.exists())
 
     def test_the_suite_runs_over_the_wire(self):

@@ -37,6 +37,7 @@ from sd_db.migrate import initialise
 from sd_db.reads import item_by_id, status_changes
 from sd_db.workflow import change_status, item_state
 from sd_db.writes import STATUSES, TransitionRefused
+from sd_db.testing.wire import hub_only
 
 #: A cancel that needs no runner is a cancel that returns at once. Two
 #: transactions on an empty database take milliseconds; a heartbeat
@@ -208,12 +209,14 @@ class Criterion7(unittest.TestCase):
         current = runner.queue_state(self.db, assignment)
         return runner.request_cancel(self.db, assignment, expected_revision=current["revision"], who="operator")
 
+    @hub_only
     def test_7_19_the_runner_control_cancel_ends_a_running_row_with_no_run(self):
         self.ended_running_row_frees_the_item(self.control_cancel)
 
     def test_7_19_the_library_cancel_ends_a_running_row_with_no_run(self):
         self.ended_running_row_frees_the_item(self.request_cancel)
 
+    @hub_only
     def test_7_19_the_runner_control_cancel_ends_a_running_row_whose_only_attempt_was_released(self):
         self.ended_running_row_frees_the_item(self.control_cancel, released=True)
 
@@ -260,6 +263,7 @@ class Criterion7(unittest.TestCase):
         self.assertEqual(freed["item"]["status"], "ready")
         self.assertIn("in_progress -> ready by operator", self.history()[-1])
 
+    @hub_only
     def test_7_20_the_runner_control_cancel_needs_no_runner(self):
         def cancel(assignment):
             current = runner.queue_state(self.db, assignment)

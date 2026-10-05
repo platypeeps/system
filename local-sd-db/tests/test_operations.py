@@ -18,6 +18,7 @@ from sd_db.operations import (
     LaunchdBackend, assignment_state, cancel_assignment, cancel_job,
     inventory, job_state, retry_job,
 )
+from sd_db.testing.wire import hub_only
 
 
 class Operations(unittest.TestCase):
@@ -129,6 +130,7 @@ class Operations(unittest.TestCase):
                 job_state(self.db, name, backend=self.backend)
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_loaded_program_must_match_installed_program_and_unknown_output_blocks(self):
         original = self.run_launchctl
         def changed(argv):
@@ -170,6 +172,7 @@ class Operations(unittest.TestCase):
         self.assertEqual(inventory(self.db, backend=self.backend)["jobs"], [])
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_retry_records_request_without_claiming_running_and_prevents_replay(self):
         before = self.snapshot()
         result = retry_job(self.db, self.job, expected_revision=before["revision"], backend=self.backend, who="operator")
@@ -184,6 +187,7 @@ class Operations(unittest.TestCase):
         self.runs += 1
         self.assertTrue(self.snapshot()["capabilities"]["retry"]["allowed"])
 
+    @hub_only
     def test_cancel_running_service_uses_sigterm_never_pid_and_keeps_observation_honest(self):
         self.state, self.pid = "running", 333
         before = self.snapshot()
@@ -192,6 +196,7 @@ class Operations(unittest.TestCase):
         self.assertEqual((result["request"]["status"], result["job"]["state"]),
                          ("accepted", "running"))
 
+    @hub_only
     def test_changed_revision_rejects_same_second_runtime_and_job_file_changes(self):
         before = self.snapshot()
         self.runs += 1
@@ -203,6 +208,7 @@ class Operations(unittest.TestCase):
             retry_job(self.db, self.job, expected_revision=before["revision"], backend=self.backend, who="operator")
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_fresh_recheck_prevents_dispatch_after_durable_request(self):
         before = self.snapshot()
         count = 0
@@ -216,6 +222,7 @@ class Operations(unittest.TestCase):
         self.assertEqual(result["request"]["status"], "failed")
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_process_exit_at_dispatch_leaves_durable_unknown_request(self):
         before = self.snapshot()
         with patch.object(self.backend, "perform", side_effect=SystemExit(86)):
@@ -227,6 +234,7 @@ class Operations(unittest.TestCase):
         self.assertFalse(observed["capabilities"]["retry"]["allowed"])
         self.assertEqual(observed["state"], "failed")
 
+    @hub_only
     def test_restore_appearing_at_final_check_prevents_dispatch(self):
         before = self.snapshot()
         count = 0
@@ -241,6 +249,7 @@ class Operations(unittest.TestCase):
         self.assertIn("restore", result["request"]["message"])
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_failed_and_timed_out_commands_record_failure_or_unknown_without_secret(self):
         for error, expected in ((5, "failed"), (subprocess.TimeoutExpired("launchctl", 5), "unknown")):
             self.action_error = error
@@ -250,6 +259,7 @@ class Operations(unittest.TestCase):
             self.assertEqual(result["request"]["status"], expected)
             self.assertNotIn("SECRET", json.dumps(result))
 
+    @hub_only
     def test_restore_blocks_retry_but_allows_cancel_and_read(self):
         record_state(self.db, "restore", key="test", body={})
         before = self.snapshot()
@@ -261,6 +271,7 @@ class Operations(unittest.TestCase):
         result = cancel_job(self.db, self.job, expected_revision=before["revision"], backend=self.backend, who="operator")
         self.assertEqual(result["request"]["status"], "accepted")
 
+    @hub_only
     def test_idle_unloaded_unknown_and_missing_revision_refuse_actions(self):
         for loaded, code in ((True, 0), (False, 1)):
             self.loaded, self.last_exit = loaded, code
@@ -293,6 +304,7 @@ class Operations(unittest.TestCase):
         self.assertTrue(state["capabilities"]["cancel"]["allowed"])
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_sigkill_without_cancel_evidence_stays_interrupted_and_retryable(self):
         """Vacuity: on 11d96185 this read idle and left the attention list. No
         signal number establishes a meant stop: `launchctl kill SIGTERM` is
@@ -311,6 +323,7 @@ class Operations(unittest.TestCase):
         self.state, self.pid = "not running", None
         self.assertEqual(self.snapshot()["state"], "interrupted")
 
+    @hub_only
     def test_own_accepted_cancel_reads_the_sigterm_it_sent_as_idle(self):
         """The one stop with evidence it was meant: a cancel this module sent,
         launchctl accepted, and launchd then recorded as SIGTERM on that same
@@ -341,6 +354,7 @@ class Operations(unittest.TestCase):
         self.state, self.pid = "not running", None
         self.assertEqual(self.snapshot()["state"], "interrupted")
 
+    @hub_only
     def test_crash_signal_reads_failed_with_its_name_and_opens_retry(self):
         """A job whose last run died of SIGSEGV is failed and retryable. The
         observed reason names the signal, and that reason is a description,
@@ -403,6 +417,7 @@ class Operations(unittest.TestCase):
                 self.assertEqual((state["state"], state["last_exit"], state["last_signal"]), expected)
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_cancel_evidence_needs_the_lifetime_and_boot_the_counter_was_counted_in(self):
         """Review of 10076749: `runs` restarts at 1 whenever the label is
         bootstrapped again, so cancel run 1, reload, then an external SIGTERM

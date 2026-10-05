@@ -352,7 +352,9 @@ class TheRowsOverTheFile(unittest.TestCase):
 
     def test_merge_does_not_commit_pending_caller_writes(self):
         source = parse(SHIPPED)
-        self.connection.execute("BEGIN")
+        # A write transaction begins IMMEDIATE: over the wire a plain BEGIN
+        # is a read transaction, under `query_only` (sd:1335, gap C2).
+        self.connection.execute("BEGIN IMMEDIATE")
         self.connection.execute("UPDATE provider SET reason='Pending caller change' WHERE name='minimax'")
         observed = merge(source, self.connection)
         self.assertEqual(observed.providers["minimax"].reason, "Pending caller change")

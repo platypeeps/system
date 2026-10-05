@@ -10,6 +10,7 @@ import json
 import unittest
 
 from sd_db import runner, runner_exec
+from sd_db.testing.wire import hub_only
 from sd_db.writes import add_note
 
 from .test_runner_exec import PaletteFixture
@@ -32,6 +33,7 @@ class Journal(PaletteFixture):
         note = self.db.execute("SELECT id FROM note WHERE kind='exec' AND session='runner' ORDER BY id DESC").fetchone()
         return queued["id"], note["id"]
 
+    @hub_only
     def test_a_palette_row_is_listed_exactly_as_before(self):
         prepared = self.prepare()["execution"]
         journal = runner_exec.execution_journal(self.db)
@@ -77,12 +79,14 @@ class Journal(PaletteFixture):
         self.assertEqual([(row["id"], row["command"], row["assignment"]) for row in rows],
                          [(second, "runner", None), (first, "runner", None)])
 
+    @hub_only
     def test_both_writers_list_newest_first(self):
         prepared = self.prepare()["execution"]
         _, released = self.released()
         rows = runner_exec.executions(self.db)
         self.assertEqual([row["id"] for row in rows], [released, prepared["note"]])
 
+    @hub_only
     def test_notes_no_writer_leaves_are_counted_and_skipped(self):
         prepared = self.prepare()["execution"]
         other = json.dumps({"version": 1, "note": prepared["note"], "command": "inspect"})
