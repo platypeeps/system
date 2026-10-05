@@ -673,19 +673,6 @@ class TheTransactionBoundary(OutcomeCase):
         client.execute("INSERT INTO probe (name) VALUES ('o')")
         self.assertEqual(count(self.path), 1)
 
-    def test_a_vacuum_runs_and_one_behind_a_comment_is_refused(self):
-        # A backup's `VACUUM INTO` runs its own BEGIN and COMMIT.
-        client = self.connect()
-        copy = self.path.with_name("copy.db")
-        client.execute("VACUUM INTO ?", (str(copy),))
-        self.assertTrue(copy.exists())
-        with self.assertRaisesRegex(remote.RemoteError, "outside the hub's transaction handling"):
-            client.execute("/* x */ VACUUM")
-        client.execute("BEGIN IMMEDIATE")
-        with self.assertRaisesRegex(sqlite3.OperationalError, "within a transaction"):
-            client.execute("VACUUM")
-        client.execute("ROLLBACK")
-
     def test_a_script_ends_what_it_opens(self):
         # A script carries no R, like an autocommit write: the restore path
         # replays a migration as `BEGIN; ...; COMMIT;`. One that leaves a

@@ -69,12 +69,12 @@ without the prune, so no row is ever deleted:
   or a trailing statement cannot end a write transaction without its row
   (the review of 2026-10-04). A transaction a `SAVEPOINT` opens is a read
   under `query_only`. A script runs outside any transaction the hub
-  holds, carries no R, and must end the transaction it opens. A client cannot set
-  `query_only` inside a transaction the hub holds (the second review of
-  2026-10-04). A VACUUM's own BEGIN and COMMIT pass: SQLite refuses a
-  VACUUM inside a transaction. The client does
-  not check this itself: a text `remote.statement` misses goes as a plain
-  statement, and this refusal answers it.
+  holds, carries no R, and must end the transaction it opens. A client
+  cannot set `query_only` inside a transaction the hub holds (the second
+  review of 2026-10-04); outside one it is the session's, which a read
+  saves and restores. The client does not check any of this itself: a
+  text `remote.statement` misses goes as a plain statement, and the
+  refusal answers it.
 - A session silent for `IDLE_TIMEOUT` inside an open transaction is closed,
   which rolls it back: below `database.BUSY_TIMEOUT`, so a hub writer
   waiting behind an abandoned satellite gets the lock (gap (g)).
@@ -85,7 +85,6 @@ from __future__ import annotations
 import argparse
 import hmac
 import os
-import re
 import secrets
 import signal
 import socket
@@ -122,8 +121,6 @@ READS = frozenset({sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FU
 #: or the REPLACE half of an upsert changes rows it does not count, but the
 #: first is `SQLITE_DROP_TABLE` and the second comes with its counted insert.
 ROWS = frozenset({sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE})
-#: A statement that is a VACUUM: Python runs one statement per `execute`.
-VACUUM = re.compile(r"\s*VACUUM\b", re.IGNORECASE)
 
 #: A test seam, `None` everywhere else: called as `_fault(point, session)` at
 #: `before-commit` (the `COMMIT` frame received, nothing recorded yet) and at
@@ -331,12 +328,8 @@ class Session(socketserver.BaseRequestHandler):
             return self._begin_read(connection, frame.get("rid"), sql, params)
         if kind == "commit":
             return self._commit(connection, frame.get("rid"), lambda: connection.execute(sql, params))
-        if kind is not None or VACUUM.match(sql) and not connection.in_transaction:
+        if kind is not None:
             # ROLLBACK, or a BEGIN inside a transaction, which SQLite refuses.
-            # A VACUUM (a backup's `VACUUM INTO`) runs its own BEGIN and
-            # COMMIT, which the authorizer sees; SQLite refuses it inside a
-            # transaction, so they commit nothing of the session's. One
-            # behind a comment is refused.
             with self._routed():
                 return _answer(connection, connection.execute(sql, params))
         return _answer(connection, connection.execute(sql, params))
