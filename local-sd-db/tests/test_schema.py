@@ -57,7 +57,8 @@ class TheTables(SchemaCase):
              "INSERT (OR IGNORE )?INTO [a-z_]+", "--", "local-sd-db/sd_db"],
             cwd=PACKAGE_ROOT.parent, capture_output=True, text=True,
         ).stdout
-        written = set(re.findall(r"INSERT (?:OR IGNORE )?INTO ([a-z_]+)", source))
+        # `main.`: the hub names its outcome table's schema (`sd_db.serve`).
+        written = set(re.findall(r"INSERT (?:OR IGNORE )?INTO (?:main\.)?([a-z_]+)", source))
         self.assertTrue(written, "the grep found no inserts at all")
         self.assertEqual(written - set(TABLES), set())
 
