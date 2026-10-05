@@ -796,15 +796,14 @@ def one_migration_back(database):
     """
     raw = sqlite3.connect(database, isolation_level=None)
     try:
-        # The reverse of 018_runner_run_repo_nullable.sql, which its header
-        # carries as `--   ` lines: `runner_run.repo` is NOT NULL again and
-        # the version goes to 17. The helper is rewritten with every
-        # migration: a migration that adds a column would be refused if left
-        # in place.
-        text = (SCHEMA_DIR / "018_runner_run_repo_nullable.sql").read_text()
+        # The reverse of 019_request_outcome.sql, which its header carries as
+        # `--   ` lines: `request_outcome` is dropped and the version goes to
+        # 18. The helper is rewritten with every migration: a migration that
+        # adds a table or a column would be refused if left in place.
+        text = (SCHEMA_DIR / "019_request_outcome.sql").read_text()
         script = "\n".join(line[4:] for line in text.splitlines() if line.startswith("--   "))
-        assert "PRAGMA user_version = 17" in script, \
-            "018's reverse is not where this helper expects it"
+        assert "PRAGMA user_version = 18" in script, \
+            "019's reverse is not where this helper expects it"
         raw.executescript(script)
         assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION - 1
     finally:

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sd_db import paths
+from sd_db import database, paths
 from sd_db import schema as schema_module
 from sd_db.database import connect, schema_version, set_schema_version, tables
 from sd_db.errors import SchemaTooNew, SchemaTooOld
@@ -32,7 +32,7 @@ class TheTables(SchemaCase):
         connection = connect(self.path)
         self.addCleanup(connection.close)
         self.assertEqual(sorted(tables(connection)), sorted(TABLES))
-        self.assertEqual(len(TABLES), 16)
+        self.assertEqual(len(TABLES), 17)
 
     def test_report_and_dep_are_item_kinds_not_tables(self):
         initialise(self.path)
@@ -57,7 +57,8 @@ class TheTables(SchemaCase):
              "INSERT (OR IGNORE )?INTO [a-z_]+", "--", "local-sd-db/sd_db"],
             cwd=PACKAGE_ROOT.parent, capture_output=True, text=True,
         ).stdout
-        written = set(re.findall(r"INSERT (?:OR IGNORE )?INTO ([a-z_]+)", source))
+        # `main.`: the hub names its outcome table's schema (`sd_db.serve`).
+        written = set(re.findall(r"INSERT (?:OR IGNORE )?INTO (?:main\.)?([a-z_]+)", source))
         self.assertTrue(written, "the grep found no inserts at all")
         self.assertEqual(written - set(TABLES), set())
 
@@ -431,7 +432,9 @@ class TheKindsForPersonalAndFollowupWork(SchemaCase):
         be a no-op, not a refusal."""
         self._at_version_eight()
         migrate(self.path)
-        connection = connect(self.path, write=True)
+        # Local, as the restore replays on the hub: over the wire a script's
+        # BEGIN and COMMIT are refused.
+        connection = database.open_local(self.path, write=True, create=False)
         self.addCleanup(connection.close)
         before = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'item'").fetchone()[0]
@@ -854,6 +857,64 @@ class TheNullableRunRepo(SchemaCase):
             pass
         self.assertEqual(self._run_sql(raw), mangled)
         self.assertEqual(raw.execute("PRAGMA writable_schema").fetchone()[0], 0)
+
+
+class TheRequestOutcome(SchemaCase):
+    """Migration 19. `request_outcome`, one row per write transaction a
+    remote session committed (sd:1335, step 5). A new table, empty, and no
+    other table touched; its reverse returns the file to 18."""
+
+    def _at_version_eighteen(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                if version > 18:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.execute("INSERT INTO item (kind, title, status, created_at, updated_at) "
+                               "VALUES ('work', 'kept', 'planning', 't', 't')")
+        finally:
+            connection.close()
+
+    def _dump(self):
+        raw = sqlite3.connect(self.path)
+        try:
+            return [line for line in raw.iterdump() if "request_outcome" not in line]
+        finally:
+            raw.close()
+
+    def test_the_table_arrives_empty_and_nothing_else_moves(self):
+        self._at_version_eighteen()
+        before = self._dump()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (18, [19]))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        self.assertEqual([(row[1], row[2], row[3], row[5]) for row in
+                          connection.execute("PRAGMA table_info(request_outcome)")],
+                         [("id", "TEXT", 1, 1), ("committed_at", "TEXT", 1, 0)])
+        self.assertEqual(connection.execute("SELECT count(*) FROM request_outcome").fetchone()[0], 0)
+        self.assertEqual(sorted(tables(connection)), sorted(TABLES))
+        self.assertEqual(self._dump(), before)
+        connection.execute("INSERT INTO request_outcome VALUES ('01J0000000000000000000000A', 't')")
+        for row in (("01J0000000000000000000000A", "t"), (None, "t"), ("01J0000000000000000000000B", None)):
+            with self.subTest(row=row), self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("INSERT INTO request_outcome VALUES (?, ?)", row)
+
+    def test_the_reverse_returns_the_file_to_eighteen(self):
+        self._at_version_eighteen()
+        before = self._dump()
+        migrate(self.path)
+        text = dict(schema_module.migrations())[19].read_text(encoding="utf-8")
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        self.assertEqual(schema_version(raw), 18)
+        self.assertNotIn("request_outcome", tables(raw))
+        self.assertEqual(self._dump(), before)
 
 
 class TheConnection(SchemaCase):

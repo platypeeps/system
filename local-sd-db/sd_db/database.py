@@ -196,12 +196,15 @@ _opener = None
 
 
 def open_local(
-    target: Path, *, write: bool, create: bool, busy_timeout: int = BUSY_TIMEOUT
+    target: Path, *, write: bool, create: bool, busy_timeout: int = BUSY_TIMEOUT,
+    cached_statements: int = 128,
 ) -> sqlite3.Connection:
     """The local open behind `connect`, for a resolved path.
 
     `sd_db.serve` calls it on the hub, so a remote session gets exactly the
     connection a local caller gets: same pragmas, same version refusals.
+    It passes `cached_statements=0`, so its authorizer sees every statement;
+    128 is Python's own default.
     """
     if not create and not target.exists():
         raise FileNotFoundError(
@@ -211,7 +214,7 @@ def open_local(
         target.parent.mkdir(parents=True, exist_ok=True)
     mode = "rwc" if create else "rw" if write else "ro"
     connection = sqlite3.connect(target.resolve().as_uri() + f"?mode={mode}",
-                                 uri=True, isolation_level=None)
+                                 uri=True, isolation_level=None, cached_statements=cached_statements)
     try:
         # First, before the version read and the journal-mode pragma: both
         # take a lock, so a timeout set after them is a timeout that was not
