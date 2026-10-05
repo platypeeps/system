@@ -369,6 +369,7 @@ The machine-setup `satellite` stage writes it.
 - The file and no answer from the hub: `HubUnreachable`, which names the hub. Nothing is created.
 - The file beside a local `sd.db`: `HubConflict`. A machine is a hub or a satellite, not both.
 - A file that names no usable hub: `HubConfigError`, never a fall back to a local file.
+- An explicit path equal to the default is the default: `sd-review --database ~/.local/share/sd/sd.db` opens the hub, though no file exists.
 - An explicit path other than the default opens locally, such as a backup target.
 - `init` and `migrate` refuse with `HubOnly`.
 - `token_file` is for a loopback hub only; a satellite's file names none.
