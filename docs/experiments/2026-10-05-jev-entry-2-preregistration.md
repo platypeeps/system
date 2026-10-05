@@ -45,7 +45,7 @@ Recorded on sd:2764. Times are the notes' recorded timestamps in MDT; each note'
 | #10061 | 11:07 MDT | O1 to O4 below |
 | #10070 | 11:53 MDT | the question above; the contamination ruling; Haiku through the `anthropic` transport; experiment rows to a separate database |
 | #10075 | 12:11 MDT | rulings R1 to R3; the planner drafts the prediction blanks from the operator's answers |
-| #10168 | 17:35 MDT | the remaining predictions: H1 and H2 confirmed, H3 to H8, and the decision line |
+| #10168 | 17:32 MDT | the remaining predictions: H1 and H2 confirmed, H3 to H8, and the decision line |
 
 - **O1, prediction**: under 10% of the 28 `skip` readings are wrong.
 - **O2, switch rule**: switch to local Kev if Kev's labelled accuracy is within 5 points of Jev's, and its too-low errors are not more frequent.
