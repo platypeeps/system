@@ -225,6 +225,43 @@ class HardLinkAliases(FakeLsof):
         self.refused(stderr="", stdout=f"p4242\nf6\ntREG\nD0x{found.st_dev:x}\nk2\nn{self.root}/outside\n")
 
 
+class Entry:
+    """A directory entry; a directory is removed between the listing and its stat."""
+
+    def __init__(self, path: str, inode: int, *, directory: bool):
+        self.path, self._inode, self.directory = path, inode, directory
+
+    def is_dir(self, follow_symlinks=True):
+        return self.directory
+
+    def is_file(self, follow_symlinks=True):
+        return not self.directory
+
+    def inode(self):
+        return self._inode
+
+    def stat(self, follow_symlinks=True):
+        raise FileNotFoundError(2, "No such file or directory", self.path)
+
+
+class Listing(list):
+    def __enter__(self):
+        return iter(self)
+
+    def __exit__(self, *exc):
+        return False
+
+
+class LinkedInsideWalk(unittest.TestCase):
+    def test_a_directory_that_vanishes_mid_walk_skips_only_itself(self):
+        """A child removed between the listing and its stat used to end the
+        listing of its parent, so a later sibling's inode went unmatched
+        (sd:1775 review 4)."""
+        listing = Listing([Entry("/clone/gone", 7, directory=True), Entry("/clone/held", 42, directory=False)])
+        with patch.object(processes.os, "scandir", lambda path: listing):
+            self.assertEqual(processes._linked_inside(Path("/clone"), 1, {42}), {42})
+
+
 class EscapedNames(FakeLsof):
     """lsof escapes a name it prints: a control character as `\\n` or `^A`, a
     backslash as `\\\\`, and a non-ASCII byte as `\\xNN` outside a UTF-8 locale.

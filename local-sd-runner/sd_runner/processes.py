@@ -185,7 +185,13 @@ def _linked_inside(path: Path, device: int, inodes: set[int]) -> set[int]:
             with os.scandir(pending.pop()) as entries:
                 for entry in entries:
                     if entry.is_dir(follow_symlinks=False):
-                        if entry.stat(follow_symlinks=False).st_dev != device:
+                        # A child removed since the listing skips itself, not
+                        # its later siblings (sd:1775 review 4).
+                        try:
+                            child = entry.stat(follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        if child.st_dev != device:
                             raise RunnerRefused(f"cannot verify clone holders: a file system is mounted at {entry.path}")
                         pending.append(entry.path)
                     elif entry.inode() in inodes and entry.is_file(follow_symlinks=False):
