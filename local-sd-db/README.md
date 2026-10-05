@@ -60,6 +60,11 @@ backup, and the fixture harness both repositories test against.
                     COMMIT answer was lost can ask whether it landed. No
                     row is pruned. Carries its reverse in its header, run
                     before 018's (sd:1335)
+      schema/020_repo_satellite_gate.sql  `repo.satellite_gate`, `off` or
+                    `accept`: whether the hub may merge on a satellite's
+                    gate pass. The column only, every row starts at `off`,
+                    set with `repo satellite-gate`. Carries its reverse in
+                    its header, run before 019's (sd:2704)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -141,8 +146,9 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh repo runner-merge PATH manual|auto   # may the runner merge it
     ./sd-db.sh repo managed PATH yes|no   # does the operator manage it
     ./sd-db.sh repo ci PATH github|local  # where its checks run
+    ./sd-db.sh repo satellite-gate PATH off|accept  # may the hub merge on a satellite's pass
 
-A `repo list` row reads `path remote status_source managed ci runner_merge`.
+A `repo list` row reads `path remote status_source managed ci satellite_gate runner_merge`.
 `remote` is the checkout's origin URL as written, ssh or https: the runner clones over it, so it is not respelled.
 Rows are compared by repository identity, so the two spellings of one GitHub repository match.
 `repo add` on a registered path rereads the checkout, so it refreshes a row whose repository moved to a new owner.
