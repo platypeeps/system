@@ -194,8 +194,8 @@ def document(connection, *, now: str = "") -> dict:
         if root is not None and not (root / Path(path).resolve().name / "lane").is_dir():
             continue
         answer = lane_list(path)
-        if not answer.get("ok"):
-            problems.append({"repo": path, "error": answer.get("error") or "lane list failed"})
+        if not answer.get("ok") or not isinstance(answer.get("queue"), str):
+            problems.append({"repo": path, "error": answer.get("error") or "lane list named no queue"})
             continue
         lane = Path(answer["queue"]).parent.parent
         root = root or lane.parent.parent
