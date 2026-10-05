@@ -263,6 +263,9 @@ SameSite=Strict session cookie and matching CSRF token, plus an exact same
 Origin. Invalid input, stale revisions, unknown actions and untrusted hosts
 are refused. No command or arbitrary file path is accepted by these routes.
 `/api/queue/move` accepts a repository only when it is registered, and an action from a fixed list of five.
+`POST /api/notes/quick/add` writes outside the database: it runs `sd store add
+sdw.quick-note` from the service's PATH as an argv list, once the text passes
+the Notes rules in `notes_screen.quick_text` (sd:2549).
 `GET /api/items/ID/capture-context` returns only the selected parent's identity,
 status and current revision through the same authenticated boundary. Selection
 loads that revision; submitting does not silently refresh it. A stale or deleted

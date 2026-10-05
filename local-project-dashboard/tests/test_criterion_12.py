@@ -328,11 +328,23 @@ class OnTheWire(ScreenCase):
         Found by this test: `Item` was a nav entry pointing at `/item`, which
         is not a screen -- the Item screen is one item and is reached from a
         row. A section is not the same thing as a destination.
+
+        sd:2718: Repos and Sessions start the fleet collector, which waits up
+        to its 12 s on a child; under a loaded gate that outlasted `fetch`'s
+        10 s. The route is the subject here, so their reads fail at once, and
+        a panel that cannot observe still answers 200.
         """
-        _, _, body = self.fetch("/classic/today")
-        for href in set(re.findall(r'href="(/[^"]*)"', body)):
-            status, _, _ = self.fetch(href)
-            self.assertEqual(status, 200, href)
+        from unittest.mock import patch
+
+        from sd_dashboard import repos_screen, sessions_screen
+
+        unread = OSError("not read by this test")
+        with patch.object(repos_screen, "collect", side_effect=unread), \
+                patch.object(sessions_screen, "collect", side_effect=unread):
+            _, _, body = self.fetch("/classic/today")
+            for href in set(re.findall(r'href="(/[^"]*)"', body)):
+                status, _, _ = self.fetch(href)
+                self.assertEqual(status, 200, href)
 
     def test_the_navigation_reads_the_fixture_fleet_and_not_this_machines(self):
         # Repos is one of the links above. Read against `~/repos` it ran git

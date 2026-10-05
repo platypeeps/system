@@ -381,17 +381,28 @@ def _plist(config_path, config, home):
 
 #: Carried into the LaunchAgent when the installing shell sets them, so the
 #: server reads the same vault, checkout root, labels, config directory and
-#: extra job directories as `dashboard.sh`.
+#: extra job directories as `dashboard.sh`. `OBSIDIAN_VAULT` is the vault
+#: `sd store` writes Notes' quick notes into (sd:2549).
 PASSED_THROUGH = ("VAULT", "REPO_ROOT", "SYSTEM_TOOLS_LABEL_PREFIX", "SYSTEM_TOOLS_CONFIG",
-                  "CRON_JOBS_EXTRA_DIRS")
+                  "CRON_JOBS_EXTRA_DIRS", "OBSIDIAN_VAULT")
 
 
 def _launch_environment():
     environment = {"PATH": LAUNCH_PATH, "SD_DASHBOARD_PYTHON": sys.executable}
+    # Notes runs `sd store` (sd:2549): the installing shell's `sd` directory joins the agent's PATH.
+    sd = shutil.which("sd")
+    if sd and str(Path(sd).parent) not in LAUNCH_PATH.split(":"):
+        environment["PATH"] = f"{LAUNCH_PATH}:{Path(sd).parent}"
     for name in PASSED_THROUGH:
         if os.environ.get(name):
             environment[name] = os.environ[name]
     return environment
+
+
+def launch_gaps(environment):
+    """What Notes' quick notes need from the agent's environment and the installing shell did not give."""
+    return ([] if shutil.which("sd", path=environment["PATH"]) else ["sd is not on the installing shell's PATH"]) + (
+        [] if environment.get("OBSIDIAN_VAULT") else ["OBSIDIAN_VAULT is not set"])
 
 
 def preflight(config_path, *, home=None):
@@ -519,6 +530,8 @@ def install(config_path, *, expected_fingerprint, home=None):
     target = Path(report["plist"])
     old = _plist_bytes(target)
     replacement = _plist(Path(report["config_path"]), config, home)
+    for gap in launch_gaps(plistlib.loads(replacement)["EnvironmentVariables"]):
+        print(f"dashboard: {gap}; Notes cannot list or keep quick notes", file=sys.stderr)
     backup_root = home / ".local/share/sd/runtime-backups"
     backup_root.mkdir(parents=True, exist_ok=True)
     backup = Path(tempfile.mkdtemp(prefix="dashboard-", dir=backup_root))

@@ -51,8 +51,8 @@ details.repo > summary .n { margin-left: auto; font: 500 var(--text-xs)/1 var(--
 .quick textarea:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .quick .row-btns { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); }
 .quick ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-xs); }
-.quick li.qn { padding: var(--space-xs) var(--space-sm); border: var(--rule-hair) dashed var(--color-caution); border-radius: var(--radius-sm); font-size: var(--text-sm); overflow-wrap: anywhere; }
-.quick li.qn small { display: block; font: 400 var(--text-2xs)/1.4 var(--font-data); color: var(--color-caution); }
+.quick li.qn { padding: var(--space-xs) var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.quick li.qn small { display: block; font: 400 var(--text-2xs)/1.4 var(--font-data); color: var(--color-muted); }
 .quick .empty { margin: 0; font-size: var(--text-sm); color: var(--color-ink-2); }
 
 @media (pointer: coarse) {
