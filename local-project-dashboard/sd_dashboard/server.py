@@ -611,8 +611,8 @@ class Dashboard(BaseHTTPRequestHandler):
                     "revision": state["revision"],
                 })
             if path == "/backlog":
-                # sd:2356: Tasks took over /backlog; an old address opens Tasks with the same query. v1's screen stays
-                # at /classic/backlog until its run selection is deleted.
+                # sd:2356: Tasks took over /backlog; an old address opens Tasks with the same query. v1's screen
+                # was deleted in sd:2622.
                 from .tasks_screen import from_backlog
 
                 location = from_backlog(connection, parameters, now=self.clock())
