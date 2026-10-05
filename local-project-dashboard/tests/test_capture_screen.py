@@ -56,37 +56,36 @@ class CaptureScreen(ScreenCase):
         page = self.render(path)
         return re.search(r'<section[^>]*id="capture"[^>]*>.*?</section>', page).group(0)
 
-    def test_today_and_backlog_start_with_a_task_and_inactive_note_fields(self):
-        for path in ("/classic/today", "/classic/backlog"):
-            panel = self.panel(path)
-            parsed = Fields(panel)
-            self.assertIn("<h2>Capture</h2>", panel)
-            self.assertNotIn("<h2>Capture a task</h2>", panel)
-            self.assertIn("Get it out of your head. Add the details when you need them. CLI: ", panel)
-            self.assertIn('sd task add "Title"', html.unescape(panel))
-            self.assertNotIn("CLI equivalents", panel)
-            options = parsed.options["capture_type"]
-            # sd:719 step 6a: the word means one thing per control. "Followup
-            # item" files an item, the kind `sd task add --kind followup`
-            # creates; "Followup note" attaches a note, as before.
-            self.assertEqual([entry["text"] for entry in options],
-                             ["Task", "Followup item", "Followup note", "Comment", "Question", "Decision", "Proposal"])
-            self.assertEqual([entry["attributes"]["value"] for entry in options],
-                             ["task", "followup_item", "followup", "comment", "question", "decision", "proposal"])
-            self.assertIn("A task or a followup item stands alone.", panel)
-            self.assertEqual([entry["attributes"]["value"] for entry in options if "selected" in entry["attributes"]], ["task"])
-            self.assertEqual(parsed.labels["capture-type"], "Type")
-            self.assertEqual(parsed.labels["capture-related"], "Related item")
-            self.assertEqual(parsed.fields["title"]["maxlength"], "500")
-            self.assertIn("required", parsed.fields["title"])
-            self.assertNotIn("disabled", parsed.fields["title"])
-            self.assertEqual(parsed.fields["body"]["maxlength"], "50000")
-            for name in ("body", "related_item", "revision"):
-                self.assertIn("disabled", parsed.fields[name])
-                self.assertNotIn("required", parsed.fields[name])
-            self.assertIn("No related items yet. Capture a task first.", panel)
-            self.assertRegex(panel, r'<div[^>]*hidden[^>]*data-capture-note')
-            self.assertRegex(panel, r'<button[^>]*data-capture-refresh[^>]*hidden')
+    def test_today_starts_with_a_task_and_inactive_note_fields(self):
+        panel = self.panel("/classic/today")
+        parsed = Fields(panel)
+        self.assertIn("<h2>Capture</h2>", panel)
+        self.assertNotIn("<h2>Capture a task</h2>", panel)
+        self.assertIn("Get it out of your head. Add the details when you need them. CLI: ", panel)
+        self.assertIn('sd task add "Title"', html.unescape(panel))
+        self.assertNotIn("CLI equivalents", panel)
+        options = parsed.options["capture_type"]
+        # sd:719 step 6a: the word means one thing per control. "Followup
+        # item" files an item, the kind `sd task add --kind followup`
+        # creates; "Followup note" attaches a note, as before.
+        self.assertEqual([entry["text"] for entry in options],
+                         ["Task", "Followup item", "Followup note", "Comment", "Question", "Decision", "Proposal"])
+        self.assertEqual([entry["attributes"]["value"] for entry in options],
+                         ["task", "followup_item", "followup", "comment", "question", "decision", "proposal"])
+        self.assertIn("A task or a followup item stands alone.", panel)
+        self.assertEqual([entry["attributes"]["value"] for entry in options if "selected" in entry["attributes"]], ["task"])
+        self.assertEqual(parsed.labels["capture-type"], "Type")
+        self.assertEqual(parsed.labels["capture-related"], "Related item")
+        self.assertEqual(parsed.fields["title"]["maxlength"], "500")
+        self.assertIn("required", parsed.fields["title"])
+        self.assertNotIn("disabled", parsed.fields["title"])
+        self.assertEqual(parsed.fields["body"]["maxlength"], "50000")
+        for name in ("body", "related_item", "revision"):
+            self.assertIn("disabled", parsed.fields[name])
+            self.assertNotIn("required", parsed.fields[name])
+        self.assertIn("No related items yet. Capture a task first.", panel)
+        self.assertRegex(panel, r'<div[^>]*hidden[^>]*data-capture-note')
+        self.assertRegex(panel, r'<button[^>]*data-capture-refresh[^>]*hidden')
 
     def test_all_parents_are_disambiguated_and_completed_parked_are_explicit(self):
         first_repo, second_repo = self.repo("/repos/first/research"), self.repo("/repos/second/research")

@@ -4,10 +4,10 @@ This directory contains the workflow dashboard and the six legacy collector
 commands. They are separate surfaces.
 
 **The workflow dashboard** (`sd_dashboard/`) opens on the new design's Today, and keeps
-the classic Today, Backlog, Contributions, Writing,
+the classic Today, Contributions, Writing,
 Operations, Protection, Skills, Documents, Designs, and individual Item pages.
 A `/backlog` address opens Tasks with the same filters (sd:2356); the classic
-Backlog is at `/classic/backlog`. Its production launcher uses the
+Backlog was deleted in sd:2622. Its production launcher uses the
 command pack's provisioned Python interpreter and installed `sd_db` package;
 it refuses an adjacent source import or a mismatched database schema.
 `./dashboard.sh serve` starts it on loopback;
@@ -76,7 +76,9 @@ old screen an unported section opens (tagged "classic" on the rail), and
 `SCREENS` for old screens without a section, which the palette lists under
 Classic screens. `./dashboard.sh pages` prints that map, one line per section
 or screen; a section in none of the three, such as Notes or HOA, has no old
-screen, and the rail says it is not built yet.
+screen, and the rail says it is not built yet. The classic screens' own nav links
+each ported section to its new page, read from the same registry (sd:2473); the
+palette still opens the classic screen.
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup

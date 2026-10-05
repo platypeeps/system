@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from sd_dashboard import server
+from sd_dashboard import server, v2
 from sd_dashboard.pages import SECTIONS
 
 from support import ScreenCase
@@ -46,7 +46,7 @@ STATIC = HERE / "sd_dashboard" / "static"
 class TheSections(ScreenCase):
     def test_the_three_sections_this_pull_request_lands_exist(self):
         self.item("an item")
-        for path in ("/classic/today", "/classic/backlog", "/item/1"):
+        for path in ("/classic/today", "/item/1"):
             page = self.render(path)
             self.assertIn("<!doctype html>", page)
             self.assertIn("/static/dashboard.css", page)
@@ -77,6 +77,18 @@ class TheSections(ScreenCase):
             if not section.built:
                 self.assertNotIn(f'href="{section.path}"', page)
 
+    def test_a_ported_section_links_its_new_page_from_the_registry(self):
+        """sd:2473: the classic nav opens the page the v2 registry ports; the palette keeps the classic screen."""
+        nav = re.search(r'<nav class="nav".*?</nav>', self.render("/classic/today"), re.S)[0]
+        links = {label: re.search(r'href="([^"]*)"', attributes)[1]
+                 for attributes, label in re.findall(r"<a\b([^>]*)>([^<]*)</a>", nav)}
+        ported = [section.label for section in SECTIONS if section.in_nav and section.label in v2.SECTIONS]
+        self.assertIn("Contributions", ported, "the fixture ports nothing")
+        for label in ported:
+            self.assertEqual(links[label], v2.SECTIONS[label], label)
+        self.assertEqual(len(links), sum(section.in_nav for section in SECTIONS))
+        self.assertTrue(all(links.values()), links)
+
 
 class DeliberateWriteControls(ScreenCase):
     """Writes are explicit forms; filters remain GET and unsafe controls stay absent."""
@@ -91,9 +103,6 @@ class DeliberateWriteControls(ScreenCase):
     def pages(self):
         return {
             "/classic/today": self.render("/classic/today"),
-            "/classic/backlog": self.render("/classic/backlog"),
-            "/classic/backlog?view=board": self.render("/classic/backlog", {"view": ["board"]}),
-            "/classic/backlog?view=matrix": self.render("/classic/backlog", {"view": ["matrix"]}),
             f"/item/{self.id}": self.render(f"/item/{self.id}"),
         }
 
@@ -115,13 +124,12 @@ class DeliberateWriteControls(ScreenCase):
                 self.assertIn("Add the details when you need them. CLI: <code data-capture-cli>", page)
                 self.assertIn('sd task add &quot;Title&quot;</code>', page)
 
-    def test_run_selection_is_bound_to_current_revisions_and_a_real_api(self):
+    def test_a_run_form_is_bound_to_current_revisions_and_a_real_api(self):
         for path, page in self.pages().items():
             for form in re.findall(r"<form\b.*?</form>", page):
-                if 'type="checkbox"' in form:
+                if 'name="items"' in form:
                     self.assertIn('action="/api/run"', form, path)
                     self.assertIn('data-item-revision="', form, path)
-                    self.assertIn('Run selected', form, path)
             self.assertNotIn('onclick=', page)
 
     def test_no_inline_handler_anywhere(self):
@@ -299,7 +307,7 @@ class OnTheWire(ScreenCase):
 
     def test_every_response_carries_the_policy_and_the_frame_refusal(self):
         for path, expected in (
-            ("/", 200), ("/classic/today", 200), ("/classic/backlog", 200), (f"/item/{self.id}", 200),
+            ("/", 200), ("/classic/today", 200), ("/classic/backlog", 404), (f"/item/{self.id}", 200),
             ("/static/dashboard.js", 200), ("/static/dashboard.css", 200),
             ("/item/999999", 404), ("/nowhere", 404),
         ):

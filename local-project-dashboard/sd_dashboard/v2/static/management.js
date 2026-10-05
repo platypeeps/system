@@ -13,13 +13,6 @@ const SDDB = '~/repos/system/local-sd-db/sd-db.sh';
 // ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
 let DOC = null, READ = '';
 let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, SERVICES = [], CRON = [];
-const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-async function post(path, body) {
-  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-  const out = await r.json().catch(() => ({}));
-  if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; throw e; }
-  return out;
-}
 const tilde = p => { const h = GIT?.root ? GIT.root.replace(/\/repos\/?$/, '') : ''; return h && p.startsWith(h + '/') ? '~' + p.slice(h.length) : p; };
 const nameOf = p => p.replace(/^~\/(repos\/)?/, '');
 const hhmm = iso => iso ? iso.slice(11, 16) : '';
@@ -442,7 +435,7 @@ function landing(promise, msg, inverse) {
 // The command's undo: the shell passes what the run answered.
 const undoOf = (o, r) => r && r.undo ? r.undo() : false;
 async function setRepo(field, r, value, before) {
-  await post(`/api/repos/${field}`, { path: r.path, value, before });
+  await window.shell.post(`/api/repos/${field}`, { path: r.path, value, before });
   await reread();
 }
 const wordOf = (f, r) => f === 'runner-merge' ? r.merge : r.managed;
@@ -457,7 +450,7 @@ const colOf = field => field === 'runner-merge' ? 'runner_merge' : 'managed';
 const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.latest || [])].find(a => a.id === n);
 async function runner(o, verb) {
   const a = asgOf(o.n); if (!a) throw new Error(`assignment #${o.n} was not read`);
-  const answer = await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision });
+  const answer = await window.shell.post(`/api/runner/${o.n}/${verb}`, { revision: a.revision });
   await reread();
   return answer;
 }
@@ -469,7 +462,7 @@ async function unrequeue(o, answer) {
   const now = asgOf(o.n);
   if (!now || now.status !== 'queued' || now.revision !== answer.revision)
     throw new Error(`assignment #${o.n} is ${now ? now.status : 'not read'} now; Undo cancels only the queued attempt the requeue made, so use Cancel`);
-  await post(`/api/runner/${o.n}/cancel`, { revision: answer.revision });
+  await window.shell.post(`/api/runner/${o.n}/cancel`, { revision: answer.revision });
   await reread();
 }
 
@@ -548,8 +541,8 @@ function registerCommands() {
       run: () => 'Copy it into a terminal: the dashboard shows the launchd record in Operations › Jobs' },
   );
 }
-async function service(o, action) { await post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
-async function job(o, action) { await post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await reread(); }
+async function service(o, action) { await window.shell.post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
+async function job(o, action) { await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await reread(); }
 document.addEventListener('shell:open', e => {
   const id = e.detail;
   if (id.startsWith('repo:') && repoParam) shell.openPane('tab-details');
