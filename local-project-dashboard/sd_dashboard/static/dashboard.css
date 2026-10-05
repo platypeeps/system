@@ -289,12 +289,12 @@ code, .command {
 .tile-inputs dt { color: var(--ink-quiet); }
 .tile-inputs dd { margin: 0; }
 
-.board, .matrix {
+.board {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
   gap: 0.75rem;
 }
-.lane, .quadrant {
+.lane {
   background: var(--card);
   border: 1px solid var(--rule);
   border-radius: 12px;
@@ -310,7 +310,7 @@ code, .command {
   background: var(--paper);
 }
 .card h3, .card h4 { margin: 0 0 0.25rem; }
-.card-repo, .card-role, .card-age { margin: 0; color: var(--ink-quiet); font-size: 0.9rem; }
+.card-repo, .card-role { margin: 0; color: var(--ink-quiet); font-size: 0.9rem; }
 .card-wait { margin: 0.25rem 0 0; color: var(--warn); font-size: 0.9rem; }
 
 .view-toggle { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; }
@@ -457,7 +457,6 @@ code, .command {
   min-height: 24px;
 }
 .selection-option:has(input:disabled) { color: var(--ink-quiet); }
-.run-selection { margin-block: 1rem; }
 .skill-card .operation-actions { align-items: start; }
 
 #command-palette { width:min(48rem,calc(100vw - 2rem)); max-height:85dvh; overflow:auto; padding:1.25rem; border:1px solid var(--rule); border-radius:.8rem; background:var(--card); color:var(--ink); }

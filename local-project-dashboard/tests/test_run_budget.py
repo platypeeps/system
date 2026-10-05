@@ -1,4 +1,4 @@
-"""The run dialogs take a `budget_usd` beside `budget_minutes`, and a refusal
+"""The run dialog takes a `budget_usd` beside `budget_minutes`, and a refusal
 reaches the page. sd:235 criterion 4's creation clause, the dashboard half.
 
 The fixture is `WorkflowControls`', whose registry has `claude`, a `start`
@@ -15,18 +15,16 @@ from .test_controls_actions import WorkflowControls
 
 
 class RunBudget(WorkflowControls):
-    def test_both_run_dialogs_offer_a_budget_usd_and_the_refusal_reaches_the_page(self):
+    def test_the_run_dialog_offers_a_budget_usd_and_the_refusal_reaches_the_page(self):
         self.repo()
         item = self.item("Budgeted", kind="task", repo="/repos/system", branch="task/budget", status="ready")
-        # The field renders on the item page and on the Backlog's selection dialog, optional and empty.
-        for path in (f"/item/{item}", "/classic/backlog"):
-            with self.subTest(path=path):
-                page = self.request(path)[2]
-                found = re.search(r'<input[^>]*name="budget_usd"[^>]*>', page)
-                self.assertIsNotNone(found, path)
-                self.assertNotIn(" required", found.group(0))
-                self.assertIn('type="number"', found.group(0))
-                self.assertIn('name="budget_minutes"', page)
+        # The field renders on the item page, optional and empty; Tasks draws its own (sd:2622 deleted the Backlog's).
+        page = self.request(f"/item/{item}")[2]
+        found = re.search(r'<input[^>]*name="budget_usd"[^>]*>', page)
+        self.assertIsNotNone(found)
+        self.assertNotIn(" required", found.group(0))
+        self.assertIn('type="number"', found.group(0))
+        self.assertIn('name="budget_minutes"', page)
         revision = workflow.item_state(self.connection, item)["revision"]
         payload = {"items": [item], "revisions": {str(item): revision}, "budget_usd": 5.0}
         before = self.snapshot()
