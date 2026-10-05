@@ -245,26 +245,6 @@
     });
   });
 
-  document.querySelectorAll('.run-selection input[name="items"]').forEach(function (input) {
-    input.addEventListener("change", function () {
-      var selected = Array.from(document.querySelectorAll('.run-selection input[name="items"]:checked')).map(function (node) { return node.value; });
-      var here = new URL(window.location.href);
-      here.searchParams.delete("sel");
-      selected.forEach(function (value) { here.searchParams.append("sel", value); });
-      window.history.replaceState(null, "", here);
-      document.querySelectorAll('.view-toggle a').forEach(function (link) {
-        var address = new URL(link.href);
-        if (address.pathname !== here.pathname) { return; }
-        address.searchParams.delete("sel");
-        selected.forEach(function (value) { address.searchParams.append("sel", value); });
-        link.href = address;
-      });
-    });
-  });
-
-  var skillRun = document.querySelector('.run-selection[data-skill] summary');
-  if (skillRun) { skillRun.tabIndex = -1; skillRun.focus(); }
-
   var KEYS = [
     ["j", "next row"],
     ["k", "previous row"],
@@ -359,16 +339,11 @@
       values.event_ids = Array.from(form.querySelectorAll('[name="event_ids"]')).map(function (input) { return input.value; });
     }
     if (action === "/api/run") {
-      var selectedItems = [], revisions = {};
-      form.querySelectorAll('[name="items"]').forEach(function (input) {
-        if (input.disabled || (input.type === "checkbox" && !input.checked)) { return; }
-        selectedItems.push(Number(input.value));
-        revisions[input.value] = input.dataset.itemRevision;
-      });
-      values = { items: selectedItems, revisions: revisions, parallel: values.mode === "parallel",
+      // The item page's Queue assignment: one item at its revision (Tasks posts its own runs).
+      var item = form.querySelector('[name="items"]');
+      values = { items: [Number(item.value)], revisions: { [item.value]: item.dataset.itemRevision }, parallel: false,
         budget_minutes: Number(values.budget_minutes),
-        ...(values.budget_usd !== undefined && values.budget_usd !== "" ? { budget_usd: Number(values.budget_usd) } : {}),
-        ...(values.skill ? { skill: values.skill, skill_revision: values.skill_revision } : {}) };
+        ...(values.budget_usd !== undefined && values.budget_usd !== "" ? { budget_usd: Number(values.budget_usd) } : {}) };
     }
     if (/^\/api\/skill-reviews\/[0-9]+\/apply$/.test(action)) {
       values.notes = Array.from(form.querySelectorAll('[name="notes"]:checked')).map(function (input) { return Number(input.value); });

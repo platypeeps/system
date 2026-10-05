@@ -416,6 +416,15 @@ class TheScript(PageScript):
         self.assertIn("nightly-sync", out["R"]["sched"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "scheduled jobs failed"})
 
+    def test_only_the_sorted_header_carries_aria_sort_and_a_click_moves_it(self):
+        """sd:2527: each column with an order sorts through its button; aria-sort is on the sorted th alone."""
+        click = "ELS['view-repos'].listeners.click[0]({ target: { closest: s => s === '[data-sort]' ? { dataset: { sort: 'managed' } } : null } });"
+        sorted_ = r'aria-sort="(\w+)"><button type="button" data-sort="(\w+)"'
+        out = self.run_page(f"R.a = ELS['view-repos'].html; {click} R.b = ELS['view-repos'].html; {click} R.c = ELS['view-repos'].html;")
+        for key, want in (("a", [("ascending", "name")]), ("b", [("ascending", "managed")]), ("c", [("descending", "managed")])):
+            self.assertEqual(re.findall(sorted_, out["R"][key]), want, key)
+            self.assertEqual(out["R"][key].count("aria-sort"), 1, key)
+
     def test_a_source_that_failed_renders_unknown_with_its_reason(self):
         doc = dict(self.doc, git=None, sessions=None, sources=dict(self.doc["sources"], git="stopped at its budget", sessions="stopped at its budget"))
         out = self.run_page("R.repos = ELS['view-repos'].html; R.sess = ELS['view-sessions'].html;", doc=doc)

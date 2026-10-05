@@ -269,13 +269,21 @@ class WorkflowControls(BrowserSession):
     def test_a_followup_with_a_repository_and_a_branch_is_not_offered_a_run(self):
         prepared = self.prepared_followup()
         runnable = self.item("Still a task", kind="task", repo="/repos/system", branch="task/runnable", status="planning")
-        backlog = self.request("/classic/backlog")[2]
-        boxes = {item: re.search(rf'<input[^>]*id="run-item-{item}"[^>]*>', backlog) for item in (prepared, runnable)}
-        self.assertIsNotNone(boxes[prepared])
-        self.assertIn(" disabled", boxes[prepared].group(0))
-        self.assertIsNotNone(boxes[runnable])
-        self.assertNotIn(" disabled", boxes[runnable].group(0))
-        self.assertIn(f"item {prepared} is a followup item; an agent runs only work, task, report and skill-review items", backlog)
+        self.assertIn('action="/api/run"', self.request(f"/item/{runnable}")[2])
+        # A followup's page has no run panel; the route's refusal is the next test's.
+        self.assertNotIn('action="/api/run"', self.request(f"/item/{prepared}")[2])
+
+    def test_the_tasks_run_post_still_queues_with_the_classic_backlog_gone(self):
+        """sd:2622 deleted v1's run selection and kept /api/run: Tasks posts it, in tasks.js's shape."""
+        self.repo()
+        items = [self.item(str(n), kind="task", repo="/repos/system", branch=f"task/{n}", status="ready") for n in range(2)]
+        self.assertEqual(self.request("/classic/backlog")[0], 404)
+        status, _, result = self.post("/api/run", {
+            "items": items, "revisions": {str(item): workflow.item_state(self.connection, item)["revision"] for item in items},
+            "parallel": True, "budget_minutes": 45})
+        self.assertEqual(status, 200, result)
+        self.assertEqual([runner.queue_state(self.connection, one["id"])["status"] for one in result["assignments"]],
+                         ["queued", "queued"])
 
     def test_the_run_route_refuses_a_followup_with_a_repository_and_a_branch(self):
         prepared = self.prepared_followup()

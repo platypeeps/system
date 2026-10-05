@@ -14,7 +14,6 @@
 section + section { margin-top: var(--space-2xl); }
 
 /* Board */
-.ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
 .ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
 .ledger tbody tr { cursor: pointer; }

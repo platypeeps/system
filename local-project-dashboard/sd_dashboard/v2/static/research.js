@@ -91,16 +91,10 @@ document.getElementById('tally').addEventListener('click', e => {
 
 // ---------- Data (build) ----------
 // The board reads through shell.read (the Start block); the ledger is read here, per project.
-async function getJSON(path) {
-  const r = await fetch(path, { headers: { Accept: 'application/json' } });
-  const out = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-  return out;
-}
 // build: the ledger is read per project, when it is selected, and kept for the page's life.
 const sourcesPath = key => `/api/research/${key.split('/').map(encodeURIComponent).join('/')}`;
 function loadSources(key) {
-  if (!SOURCES.has(key)) SOURCES.set(key, getJSON(sourcesPath(key)).then(s => (SOURCES.set(key, s), s), err => { const s = { error: err.message, files: [], rows: [], total: 0 }; SOURCES.set(key, s); return s; }));
+  if (!SOURCES.has(key)) SOURCES.set(key, window.shell.getJSON(sourcesPath(key)).then(s => (SOURCES.set(key, s), s), err => { const s = { error: err.message, files: [], rows: [], total: 0 }; SOURCES.set(key, s); return s; }));
   return Promise.resolve(SOURCES.get(key));
 }
 

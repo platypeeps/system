@@ -13,6 +13,24 @@
 (() => {
   const { html, put } = window.markup;
   const ICON = (n, cls = '') => html`<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+  // fetch:start
+  // build (sd:2588): the page's reads and writes, once for every page. post sends the page's CSRF token and rejects with the
+  // server's error text; a 409 marks the error stale, so a page can reread before it says why. A page script runs before
+  // shell.js, so it calls window.shell.post / shell.getJSON when it acts, not while it loads.
+  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
+  async function post(path, body) {
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; throw e; }
+    return out;
+  }
+  async function getJSON(path) {
+    const r = await fetch(path, { headers: { Accept: 'application/json' } });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
+    return out;
+  }
+  // fetch:end
   const GROUPS = [
     ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i']]],
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
@@ -715,6 +733,82 @@
   }
   let viewHref = v => { const u = new URLSearchParams(); Object.entries(v.params).forEach(([k, val]) => u.set(k, val)); return `?${u}`; };
 
+  // ---------- List grammar: sort, pages, filter chips (foundation patterns.md, Lists) ----------
+  // list:start
+  // build (sd:2527, sd:2528, sd:2529): one sort header, one pager and one chip row for every list page. A page keeps its list
+  // state as st = { sort, dir, page, size } (dir 1 ascending, -1 descending; page from 1), draws with these and keeps st in
+  // the URL with listParams / listQuery. Each returns html`…` for the page to put, and the click helpers answer whether st changed.
+  const SIZES = [25, 50, 100, 200];
+  const num = n => Number(n).toLocaleString('en-US');
+  // cols: [[key, label, cls]]; a column without a key has no order. The sorted <th> alone carries aria-sort (W3C APG
+  // sortable table); its button names the order a click gives, since the arrow is drawn, not read.
+  function sortHead(cols, st) {
+    return html`<tr>${cols.map(([key, label, cls = '']) => {
+      if (!key) return html`<th scope="col" class="${cls}">${label}</th>`;
+      const on = st.sort === key, next = on && st.dir > 0 ? 'descending' : 'ascending';
+      return html`<th scope="col" class="${cls}"${on ? html` aria-sort="${st.dir > 0 ? 'ascending' : 'descending'}"` : ''}><button class="sorter" type="button" data-sort="${key}" title="Sort ${next}">${label}${ICON(on ? (st.dir > 0 ? 'arrow-up' : 'arrow-down') : 'arrow-up-down')}</button></th>`;
+    })}</tr>`;
+  }
+  // A header click: the sorted key flips its direction, another key starts ascending. Back to page 1 either way.
+  function sortBy(e, st) {
+    const b = e.target.closest?.('button[data-sort]'); if (!b) return false;
+    if (st.sort === b.dataset.sort) st.dir = -st.dir; else { st.sort = b.dataset.sort; st.dir = 1; }
+    st.page = 1; return true;
+  }
+  // Rows of the page st points at; st.page is clamped first, so a filter that shrinks the list never shows an empty page.
+  function pageOf(rows, st) {
+    const pages = Math.max(1, Math.ceil(rows.length / st.size));
+    st.page = Math.min(Math.max(1, st.page), pages);
+    return rows.slice((st.page - 1) * st.size, st.page * st.size);
+  }
+  const rangeText = (total, st) => total ? `${num((st.page - 1) * st.size + 1)}–${num(Math.min(total, st.page * st.size))} of ${num(total)}` : `0 of ${num(total)}`;
+  // The first and last page, and two either side of the current one; a skipped run is one "…".
+  function pageList(pages, cur) {
+    const out = [];
+    for (let n = 1; n <= pages; n++) {
+      if (n === 1 || n === pages || Math.abs(n - cur) <= 2) out.push(n);
+      else if (out[out.length - 1] !== '…') out.push('…');
+    }
+    return out;
+  }
+  // The range line always shows; numbered pages when there is more than one; sizes once the list is longer than the smallest.
+  function pager(total, st, label = 'rows') {
+    const pages = Math.max(1, Math.ceil(total / st.size));
+    return html`<nav class="list-pager" aria-label="Pages of ${label}"><span class="range">${rangeText(total, st)}</span>${pages > 1 ? html`<span class="pages">${pageList(pages, st.page).map(n => n === '…'
+      ? html`<span class="gap" aria-hidden="true">…</span>`
+      : html`<button class="chip" type="button" data-page="${n}" aria-label="Page ${n}"${n === st.page ? html` aria-current="page"` : ''}>${n}</button>`)}</span>` : ''}${total > SIZES[0] ? html`<span class="sizes" role="group" aria-label="Rows per page"><span class="label">Per page</span>${SIZES.map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === st.size)}">${n}</button>`)}</span>` : ''}</nav>`;
+  }
+  // A pager click: a page number moves there; a size starts again at page 1.
+  function paging(e, st) {
+    const p = e.target.closest?.('.list-pager [data-page]'), s = e.target.closest?.('.list-pager [data-size]');
+    if (p) { st.page = +p.dataset.page; return true; }
+    if (s) { st.size = +s.dataset.size; st.page = 1; return true; }
+    return false;
+  }
+  // Active filters above the list: one removable chip each, how many rows they leave, and one Clear all.
+  // list: [{ key, label }]; a click on a chip names its key in data-unfilter, Clear all carries data-unfilter-all.
+  function chips(list, shown, total) {
+    if (!list.length) return html``;
+    return html`<div class="list-chips" role="group" aria-label="Active filters"><span class="n">${plural(list.length, 'filter')} · ${num(shown)} of ${num(total)}</span>${list.map(f => html`<button class="chip" type="button" data-unfilter="${f.key}" aria-label="Remove filter: ${f.label}">${f.label}${ICON('x')}</button>`)}<button class="linkbtn" type="button" data-unfilter-all>Clear all</button></div>`;
+  }
+  // The URL: page and size as the pager sets them, sort and dir as the header does. A value the page does not offer is ignored,
+  // and a page is decimal digits only (?page=1.5 or 0x2 is not a page, sd:2427). Defaults stay out of the URL.
+  function listParams(p, st, { sorts = [], size = 50 } = {}) {
+    if (/^[1-9]\d*$/.test(p.get('page') || '')) st.page = +p.get('page');
+    if (SIZES.includes(+p.get('size'))) st.size = +p.get('size');
+    if (sorts.includes(p.get('sort'))) { st.sort = p.get('sort'); st.dir = p.get('dir') === 'desc' ? -1 : 1; }
+    st.size ||= size;
+    return st;
+  }
+  function listQuery(p, st, { sort = '', dir = 1, size = 50 } = {}) {
+    if (st.page > 1) p.set('page', st.page);
+    if (st.size !== size) p.set('size', st.size);
+    if (st.sort && (st.sort !== sort || st.dir !== dir)) { p.set('sort', st.sort); p.set('dir', st.dir > 0 ? 'asc' : 'desc'); }
+    return p;
+  }
+  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, rangeText, pageList, chips, listParams, listQuery };
+  // list:end
+
   // ---------- The page's list: j / k, Esc and ?row= ----------
   // A page declares its list once, window.PAGE_LIST = { rows, select, id, current, clear, when }, and binds none of these keys.
   //   rows()          the row elements in reading order; j / k walk those with a box (getClientRects), so hidden rows are skipped.
@@ -957,7 +1051,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API.
-  window.shell = { ready, ICON, plural, state, read, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
   if (location.hash === '#chat') openChat(); // screenshot hook
   if (location.hash === '#sheet') openPane('tab-details');
   if (location.hash === '#menu') setMenu(true);
