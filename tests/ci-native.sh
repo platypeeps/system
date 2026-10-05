@@ -14,8 +14,8 @@ usage() {
 Usage: ci-native.sh preflight
        ci-native.sh leg shared|dashboard|runner|tools
 
-  preflight  the fixture digest, sd-docs-lint, the citation, Jev contract
-             and product-name gates, the unwired-suite guard, and the venv at
+  preflight  the fixture digest, sd-docs-lint, the citation, Jev contract,
+             product-name and entrypoint-mode gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with local-sd-db installed
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
@@ -115,6 +115,12 @@ python3 tests/test_gap_vocabulary.py
 # reason. Stdlib and git only, so it runs here before the venv, and
 # the guard below demands this line.
 python3 tests/test_product_name.py
+
+# Every folder's convention-1 entrypoint is tracked 100755 (sd:2648),
+# read from `git ls-files -s`, so `./<name>.sh` runs. Stdlib and git
+# only, so it runs here before the venv, and the guard below demands
+# this line.
+python3 tests/test_entrypoint_mode.py
 
 # The run_suite lines at the bottom are a hand-maintained list, and
 # a folder that grows a suite without a line here is never run --
