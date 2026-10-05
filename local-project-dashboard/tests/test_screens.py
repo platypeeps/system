@@ -251,38 +251,13 @@ class OperationsUsage(ScreenCase):
             self.assertIn(expected, page)
         self.assertNotIn("Age in status", page)
         self.assertNotIn("Jobs needing attention", page)
-        for path in ("/classic/today", "/classic/backlog"):
-            relocated = self.render(path)
-            self.assertNotIn("Week, cost and provider details", relocated)
-            self.assertNotIn("fixture-plan:", relocated)
+        relocated = self.render("/classic/today")
+        self.assertNotIn("Week, cost and provider details", relocated)
+        self.assertNotIn("fixture-plan:", relocated)
         self.assertEqual(tuple(self.connection.iterdump()), before)
 
 
 class Backlog(ScreenCase):
-    def test_compact_repositories_disambiguate_and_full_paths_stay_searchable(self):
-        from sd_db import upsert_repo
-
-        for repo in ("/repos/team-a/shared", "/repos/team-b/shared"):
-            upsert_repo(self.connection, repo)
-            self.item("A long descriptive item title for the compact layout", repo=repo)
-        page = self.render("/classic/backlog")
-        self.assertIn("team-a/shared", page)
-        self.assertIn("team-b/shared", page)
-        self.assertNotIn(">/repos/team-a/shared<", page)
-        filtered = self.render("/classic/backlog", {"q": ["/repos/team-a/shared"]})
-        self.assertIn("A long descriptive item title", filtered)
-        self.assertNotIn("team-b/shared", listing_content(filtered, "backlog"))
-
-    def test_empty_due_column_hides_only_when_its_displayed_rows_are_empty(self):
-        empty = self.render("/classic/backlog")
-        self.assertNotRegex(empty, r'<th[^>]*>Due</th>')
-        dated = self.item("Dated layout fixture", due="2026-09-20")
-        page = self.render("/classic/backlog")
-        self.assertRegex(page, r'<th[^>]*>Due</th>')
-        self.assertIn('datetime="2026-09-20" aria-label="2026-09-20"', page)
-        self.assertNotRegex(self.render("/classic/backlog", {"q": ["backlog"]}), r'<th[^>]*>Due</th>')
-        self.assertIn(f'href="/item/{dated}"', self.render("/classic/backlog", {"q": ["2026-09-20"]}))
-
     def setUp(self):
         super().setUp()
         self.repo()
@@ -294,39 +269,6 @@ class Backlog(ScreenCase):
         transition(self.connection, self.ids[2], "blocked", who="a test")
         transition(self.connection, self.ids[3], "in_progress", who="a test")
 
-    def test_three_views_of_one_row_set(self):
-        rows = reads.backlog_items(self.connection, now=self.now)
-        ids = {row["id"] for row in rows}
-        for view in ("list", "board", "matrix"):
-            page = self.render("/classic/backlog", {"view": [view]})
-            shown = {item for item in ids if f'href="/item/{item}"' in page}
-            self.assertEqual(shown, ids, f"{view} shows a different row set")
-
-    def test_the_view_toggle_is_carried_by_the_url(self):
-        page = self.render("/classic/backlog", {"view": ["board"]})
-        self.assertIn("view=board", page)
-        self.assertIn('aria-current="page"', page)
-
-    def test_an_unknown_view_is_the_list(self):
-        page = self.render("/classic/backlog", {"view": ["../../etc"]})
-        self.assertIn("listing-table", page)
-
-    def test_the_board_has_a_column_per_status_word(self):
-        page = self.render("/classic/backlog", {"view": ["board"]})
-        for status in reads.BOARD_COLUMNS:
-            self.assertIn(f"{status.replace('_', ' ')} (", page)
-
-    def test_blocked_and_ready_to_send_are_places_not_words(self):
-        page = self.render("/classic/backlog", {"view": ["board"]})
-        self.assertIn("lane-blocked", page)
-        self.assertIn("lane-ready_to_send", page)
-
-    def test_the_matrix_has_four_quadrants_and_priority_is_importance(self):
-        page = self.render("/classic/backlog", {"view": ["matrix"]})
-        for label in ("important, urgent", "important, not urgent",
-                      "not important, urgent", "not important, not urgent"):
-            self.assertIn(label, page)
-
     def test_urgency_is_derived_exactly_as_the_prd_says(self):
         rows = {row["id"]: row for row in reads.backlog_items(self.connection, now=self.now)}
         soon = self.item("due in three days", due="2026-09-08")
@@ -334,35 +276,9 @@ class Backlog(ScreenCase):
         self.assertTrue(reads.is_urgent(rows[soon], now=self.now))
         self.assertFalse(reads.is_urgent(rows[self.ids[0]], now=self.now))
 
-    def test_the_age_histogram_is_absent_from_every_backlog_view(self):
-        for view in ("list", "board", "matrix"):
-            page = self.render("/classic/backlog", {"view": [view]})
-            self.assertNotIn("chart-histogram", page)
-            self.assertNotIn("Age in status</h2>", page)
-            self.assertIn("view-toggle", page)
-
     def test_ready_to_send_is_its_own_series_in_the_histogram(self):
         page = self.render("/operations", {"area": ["progress"]})
         self.assertIn("chart-bar-ready-to-send", page)
-
-    def test_the_filter_and_the_paging_are_the_one_component(self):
-        page = listing_content(self.render("/classic/backlog", {"q": ["backlog 4"]}), "backlog")
-        self.assertIn("backlog 4", page)
-        self.assertNotIn("backlog 5", page)
-
-    def test_the_filter_is_the_same_in_all_three_views(self):
-        for view in ("list", "board", "matrix"):
-            page = self.render("/classic/backlog", {"view": [view], "q": ["backlog 4"]})
-            self.assertIn(f'href="/item/{self.ids[4]}"', page)
-            self.assertNotIn(f'href="/item/{self.ids[5]}"', page)
-
-    def test_paging_past_fifty(self):
-        for index in range(60):
-            self.item(f"filler {index}", repo="/repos/system")
-        page = self.render("/classic/backlog")
-        self.assertIn(" of 66", page)
-        self.assertIn("listing-pager", page)
-        self.assertEqual(page.count('<td class="listing-select">'), 0)
 
 
 class Item(ScreenCase):
@@ -470,7 +386,8 @@ class TheHistogramBarIsAFilter(ScreenCase):
     The bar used to carry its own *label* into the list's text filter --
     `q=3-6d`, matched against the rendered cells, where `In status` renders
     `5d` and never `3-6d`. Every bar filtered to an empty page, and no test
-    noticed because no test followed a bar. This one follows every bar.
+    noticed because no test followed a bar. `test_v2_tasks.TheOperationsBars`
+    follows every bar into Tasks; this class checks what each bar carries.
     """
 
     #: One row per bucket, plus two that make the `ready_to_send` series real.
@@ -478,16 +395,12 @@ class TheHistogramBarIsAFilter(ScreenCase):
 
     def setUp(self):
         super().setUp()
-        self.ages: dict[int, int] = {}
         for days in self.DAYS:
-            row = self.item(f"aged {days} days", status="planning")
-            self.age(row, days)
-            self.ages[row] = days
+            self.age(self.item(f"aged {days} days", status="planning"), days)
         for days in (5, 20):
             row = self.item(f"unsent for {days} days", status="planning")
             transition(self.connection, row, "ready_to_send", who="sd-ship")
             self.age(row, days)
-            self.ages[row] = days
 
     # -- reading the page --------------------------------------------------
 
@@ -505,29 +418,6 @@ class TheHistogramBarIsAFilter(ScreenCase):
                 found.append((html.unescape(href.group(1)), age.group(1), series.group(1)))
         return found
 
-    def follow(self, href: str) -> str:
-        """A bar opens Tasks (sd:2589), which draws its rows in the browser; `test_v2_tasks.TheOperationsBars` follows
-        each bar there. v1's screen, at /classic/backlog since sd:2356, reads the same query, so the server-side checks
-        here render it with the bar's query."""
-        parts = urlsplit(href)
-        self.assertEqual(parts.path, "/tasks")
-        return self.render("/classic/backlog", parse_qs(parts.query))
-
-    def listed(self, page: str) -> set[int]:
-        """The item ids the list shows, off the row links the listing writes."""
-        return {int(found) for found in re.findall(r'href="/item/(\d+)"', page)}
-
-    def expected(self, key: str, series: str) -> set[int]:
-        rows = reads.backlog_items(self.connection, now=self.now)
-        keep = set()
-        for row in rows:
-            if reads.age_bucket(row, now=self.now) != key:
-                continue
-            if series == "ready_to_send" and row["status"] != "ready_to_send":
-                continue
-            keep.add(row["id"])
-        return keep
-
     # -- the assertions ----------------------------------------------------
 
     def test_the_fixture_actually_spans_buckets(self):
@@ -537,24 +427,6 @@ class TheHistogramBarIsAFilter(ScreenCase):
         rows = reads.backlog_items(self.connection, now=self.now)
         buckets = {reads.age_bucket(row, now=self.now) for row in rows}
         self.assertGreaterEqual(len(buckets), 5, sorted(buckets))
-
-    def test_every_bar_filters_to_exactly_its_own_bucket(self):
-        page = self.progress()
-        bars = self.bars(page)
-        self.assertGreaterEqual(len(bars), 5, "the histogram drew almost no bars")
-
-        for href, key, series in bars:
-            with self.subTest(bucket=key, series=series):
-                expected = self.expected(key, series)
-                self.assertTrue(
-                    expected,
-                    "a bar was drawn for a bucket holding no rows",
-                )
-                landed = self.follow(href)
-                self.assertEqual(
-                    self.listed(landed), expected,
-                    f"the bar for bucket {key} does not list its own rows",
-                )
 
     def test_a_bar_carries_a_facet_and_not_a_search_term(self):
         """The regression in the form it was found in.
@@ -570,30 +442,6 @@ class TheHistogramBarIsAFilter(ScreenCase):
             self.assertEqual(query.get("age"), [key])
             self.assertEqual(query.get("active"), ["1"])
             self.assertIn(key, keys)
-
-    def test_a_bar_lands_on_a_page_that_is_not_empty(self):
-        """The single assertion the old behaviour failed on every bar."""
-        for href, key, _ in self.bars(self.progress()):
-            with self.subTest(bucket=key):
-                landed = self.follow(href)
-                self.assertNotIn("Nothing open matches.", landed)
-                self.assertTrue(self.listed(landed))
-
-    def test_chart_stays_in_progress_and_the_age_drilldown_can_be_cleared(self):
-        first = self.progress()
-        href, key, _ = self.bars(first)[0]
-        landed = self.follow(href)
-        self.assertEqual(self.bars(landed), [])
-        self.assertEqual(self.bars(self.progress()), self.bars(first))
-        self.assertIn('data-clear="age"', landed)
-
-    def test_the_way_back_shows_every_age_again(self):
-        landed = self.follow(self.bars(self.progress())[0][0])
-        back = re.search(r'data-clear="age"[^>]*>\s*<a href="([^"]*)"', landed)
-        self.assertIsNotNone(back, landed[landed.index("data-clear") - 200:][:400])
-        way_back = urlsplit(html.unescape(back.group(1)))
-        everything = self.render(way_back.path, parse_qs(way_back.query))
-        self.assertEqual(self.listed(everything), set(self.ages))
 
     def test_progress_scope_ignores_backlog_filters_and_excludes_done_and_parked(self):
         done = self.item("recently completed", status="done")
@@ -611,9 +459,6 @@ class TheHistogramBarIsAFilter(ScreenCase):
         self.assertEqual(self.bars(page), self.bars(self.progress()))
         for href, _, _ in self.bars(page):
             self.assertNotIn("q=", href)
-            landed = self.listed(self.follow(href))
-            self.assertNotIn(done, landed)
-            self.assertNotIn(parked, landed)
 
 
 if __name__ == "__main__":  # pragma: no cover

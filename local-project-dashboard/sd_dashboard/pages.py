@@ -22,6 +22,7 @@ from html import unescape
 
 from .caching import STATIC_VERSIONS
 from .markup import Markup, join, tag
+from .v2 import SECTIONS as PORTED
 
 __all__ = ["SECTIONS", "Section", "page", "tile", "command_hint"]
 
@@ -30,7 +31,9 @@ __all__ = ["SECTIONS", "Section", "page", "tile", "command_hint"]
 class Section:
     key: str
     label: str
-    path: str
+    #: A section the v2 page registry ports links that page instead (sd:2473),
+    #: so only an unported section names its path here.
+    path: str = ""
     #: Only working destinations appear in navigation.
     built: bool = True
     #: Item is a section and not a destination: it is one item, reached from a
@@ -40,16 +43,16 @@ class Section:
 
 
 SECTIONS = (
-    Section("today", "Today", "/"),
-    Section("backlog", "Tasks", "/tasks"),
-    Section("contributions", "Contributions", "/classic/contributions"),
-    Section("writing", "Writing", "/writing"),
+    Section("today", "Today"),
+    Section("backlog", "Tasks"),
+    Section("contributions", "Contributions"),
+    Section("writing", "Writing"),
     Section("operations", "Operations", "/operations"),
     Section("protection", "Protection", "/protection"),
     Section("item", "Item", "/item/<id>", in_nav=False),
-    Section("skills", "Skills", "/skills"),
-    Section("documents", "Documents", "/documents"),
-    Section("designs", "Designs", "/designs"),
+    Section("skills", "Skills"),
+    Section("documents", "Documents"),
+    Section("designs", "Designs"),
 )
 
 
@@ -99,7 +102,7 @@ def navigation(current: str) -> Markup:
             tag(
                 "a",
                 section.label,
-                href=section.path,
+                href=PORTED.get(section.label, section.path),
                 class_="nav-current" if section.key == current else None,
                 aria_current="page" if section.key == current else None,
             )
