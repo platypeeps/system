@@ -407,6 +407,33 @@ class ChargedClock:
         return getattr(time, name)
 
 
+class StubClock:
+    """`time` for the collectors module, whose `monotonic` a stub moves (sd:2667).
+
+    The clock holds still at its first reading until a stub moves `path` into
+    place, and then reads that many seconds later, for good. A stub stands
+    for a scan that took that long by writing the seconds there; neither the
+    real time the scan took nor what follows costs the budget anything,
+    however loaded the machine is.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.origin = None
+        self.charged = False
+
+    def monotonic(self):
+        if self.origin is None:
+            self.origin = time.monotonic()
+        if self.path.exists():
+            self.charged = True
+            return self.origin + float(self.path.read_text())
+        return self.origin
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class CollectionBudget(unittest.TestCase):
     """sd:722. The budget belongs to the collector, so both callers inherit it.
 
@@ -422,6 +449,7 @@ class CollectionBudget(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.pids = self.root / "pids"
+        self.finished = self.root / "scan-finished"
         spec = importlib.util.spec_from_file_location("ports_budget_collectors", HERE / "collectors.py")
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
@@ -441,9 +469,20 @@ class CollectionBudget(unittest.TestCase):
         self.module.MACHINE_SETUP = script
 
     def slow(self):
-        # A grandchild holds stdout open too: killing only the direct child
-        # would leave the read waiting on the sleep.
-        self.machine_setup(f'echo $$ >> "{self.pids}"\nsleep 20 &\necho $! >> "{self.pids}"\nwait\n')
+        """A scan that outlives the budget, and the collectors' clock it spends (sd:2667).
+
+        A grandchild holds stdout open too: killing only the direct child
+        would leave the read waiting on the sleep. It leaves a marker only
+        when its 20 seconds end, so a caller that returns without the marker
+        refused the scan rather than waited it out. The scan spends the
+        budget through the clock once both pids are recorded: a 1 s budget
+        spent on starting the shell under load left no pids to check.
+        """
+        clock = self.root / "scan-seconds"
+        self.machine_setup(f'echo $$ >> "{self.pids}"\n(sleep 20; touch "{self.finished}") &\n'
+                           f'echo $! >> "{self.pids}"\n'
+                           f'printf 2 > "{clock}.new"\nmv "{clock}.new" "{clock}"\nwait\n')
+        return patch.object(self.module, "time", StubClock(clock))
 
     def chatty(self):
         row = "  + local-alpha                      9000                                     stopped\n"
@@ -506,9 +545,9 @@ class CollectionBudget(unittest.TestCase):
 
     def test_page_refuses_a_slow_scan_promptly_and_visibly(self):
         self.module.collect_ports.budget_seconds = 1.0
-        self.slow()
-        html, elapsed = self.page()
-        self.assertLess(elapsed, 1.0 + 3.0, "the page waited on the scan instead of refusing it")
+        with self.slow():
+            html, _ = self.page()
+        self.assertFalse(self.finished.exists(), "the page waited on the scan instead of refusing it")
         self.assertIn("exceeded its collection budget", html)
         self.assertIn("1 second", html)
         self.assertNotIn("configured ports", html)
@@ -532,33 +571,36 @@ class CollectionBudget(unittest.TestCase):
 
     def test_tile_refuses_a_slow_scan_as_a_failed_tab(self):
         self.module.collect_ports.budget_seconds = 1.0
-        self.slow()
-        code, out, err, elapsed = self.tile()
-        self.assertLess(elapsed, 1.0 + 3.0)
+        with self.slow():
+            code, out, err, _ = self.tile()
+        self.assertFalse(self.finished.exists(), "the tile waited on the scan instead of refusing it")
         self.assertEqual((code, out), (1, ""))
         self.assertIn("budget", err)
         self.assert_stopped()
 
     def test_scan_between_the_tile_and_ports_ceilings(self):
         # The window the tile's margin opens: a scan longer than the tile's
-        # effective 4s and shorter than Ports' 5s. Scaled to keep the suite
-        # fast -- Ports 5s -> 3s, the tile's effective 4s -> 1s (`TILE_SECONDS`
-        # 2s less the real 1s margin), scan 4.5s -> 2s. The tile is refused at its
+        # effective 4s and shorter than Ports' 5s. The tile is refused at its
         # own ceiling; the page waits the scan out and renders.
-        import sd_tile
-        self.module.collect_ports.budget_seconds = 3.0
-        self.machine_setup("sleep 2\n"
+        #
+        # sd:2667. The scan's 4.5 s is the collector's clock, not a sleep:
+        # scaled to a real 2 s scan against 1 s and 3 s budgets, it left the
+        # page's read too little spare time on a loaded machine.
+        clock = self.root / "scan-seconds"
+        self.machine_setup(f'printf 4.5 > "{clock}.new"\nmv "{clock}.new" "{clock}"\n'
                            "echo '== service'\n"
                            "echo '  + local-alpha                      9000                                     stopped'\n"
                            "echo '  ---     1 startable, 1 in this profile'\n"
                            "echo '  add by hand: profiles/common.service'\n")
-        with patch.object(sd_tile, "TILE_SECONDS", 2.0):
-            code, out, err, elapsed = self.tile()
-        self.assertLess(elapsed, 2.0, "the tile read past its 5s outer contract")
+        with patch.object(self.module, "time", StubClock(clock)):
+            code, out, err, _ = self.tile()
         self.assertEqual((code, out), (1, ""))
-        self.assertIn("budget of 1 second", err)
-        html, elapsed = self.page()
-        self.assertGreaterEqual(elapsed, 2.0)
+        self.assertIn("machine-setup.sh ran past its budget of 4 seconds", err)
+        clock.unlink()
+        reader = StubClock(clock)
+        with patch.object(self.module, "time", reader):
+            html, _ = self.page()
+        self.assertTrue(reader.charged, "the page did not read the scan through its clock")
         self.assertNotIn("exceeded", html)
         self.assertIn("local-alpha", html)
 
@@ -651,8 +693,9 @@ class CollectionBudget(unittest.TestCase):
         # arrive refuses it promptly. Checked afterwards, it waits the whole
         # time ceiling out and then reports time rather than size.
         self.machine_setup("exec yes '  + local-alpha                      9000                                     stopped'\n")
-        html, elapsed = self.page()
-        self.assertLess(elapsed, 3.0, "the size ceiling waited for the scan to finish")
+        # The scan never ends, so only one of the two ceilings can stop it,
+        # and the refusal names which: no elapsed bound to lose under load.
+        html, _ = self.page()
         self.assertIn("wrote more than its budget of 64 KB", html)
 
     def test_tile_refuses_a_chatty_scan_as_a_failed_tab(self):
@@ -705,23 +748,44 @@ class TileUnderTheLoader(unittest.TestCase):
                     pass
 
     def test_refusal_arrives_before_the_loaders_kill_and_leaves_no_scan(self):
+        # A tile that reached `main` late lost the margin to the machine, not
+        # to the code; it is tried again under the rule the loader's test in
+        # `test_tile_deadline` keeps (sd:2333, sd:2667).
         import sd_tile
+        from test_tile_deadline import RECORDING_PYTHON, say_retry, tried_again
+        python = self.root / "python"
+        python.write_text(RECORDING_PYTHON)
+        python.chmod(0o755)
+        reached = self.root / "main"
         environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(self.root),
-                       "DASHBOARD_PYTHON": sys.executable}
-        process = subprocess.Popen(["./local-project-dashboard/dashboard.sh", "tile", "ports"],
-            cwd=self.root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            start_new_session=True)
-        stop = time.monotonic() + sd_tile.TILE_SECONDS
-        try:
-            out, err = process.communicate(timeout=stop - time.monotonic())
-            killed = False
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            out, err = process.communicate()
-            killed = True
-        self.assertFalse(killed, "the loader's kill arrived before the tile's refusal")
-        self.assertEqual((process.returncode, out), (1, b""))
-        self.assertIn(b"ran past its budget", err)
+                       "DASHBOARD_PYTHON": str(python), "DEADLINE_MAIN": str(reached)}
+        for attempt in (1, 2, 3):
+            self.reap()
+            self.pids.unlink(missing_ok=True)
+            reached.unlink(missing_ok=True)
+            process = subprocess.Popen(["./local-project-dashboard/dashboard.sh", "tile", "ports"],
+                cwd=self.root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True)
+            started = time.monotonic()
+            stop = started + sd_tile.TILE_SECONDS
+            try:
+                out, err = process.communicate(timeout=stop - time.monotonic())
+                killed = False
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                out, err = process.communicate()
+                killed = True
+            late = float(reached.read_text()) - started if reached.exists() else None
+            when = "never" if late is None else f"{late:.2f}s after the loader started"
+            try:
+                self.assertFalse(killed, f"the loader's kill arrived before the tile's refusal; the tile reached main {when}")
+                self.assertEqual((process.returncode, out), (1, b""))
+                self.assertIn(b"ran past its budget", err)
+                break
+            except self.failureException as failure:
+                if not tried_again(attempt, late):
+                    raise
+                say_retry(sys.stderr, self.id(), "ports", attempt, failure, when, err)
         pids = [int(line) for line in self.pids.read_text().split()]
         self.assertEqual(len(pids), 2)
         deadline = time.monotonic() + 3
@@ -729,7 +793,6 @@ class TileUnderTheLoader(unittest.TestCase):
             pids = [pid for pid in pids if CollectionBudget.running(pid)]
             time.sleep(0.05)
         self.assertEqual(pids, [], "the scan outlived the tile")
-
 
 if __name__ == "__main__":
     unittest.main()
