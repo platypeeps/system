@@ -20,6 +20,26 @@ from support import ScreenCase
 GIT = "/usr/bin/git"
 
 
+class SlowStart:
+    """`time` for the page side of `fleet`, its clock read `spent` seconds late (sd:2667).
+
+    The page hands the child its start as a `CLOCK_MONOTONIC` reading; this
+    stands in for a page that spent `spent` seconds before the child started.
+    A negative `spent` is a reading from the future, which the child counts
+    as its own start: its deadline then owes nothing to how long it took to
+    start.
+    """
+
+    def __init__(self, spent):
+        self.spent = spent
+
+    def clock_gettime(self, clock):
+        return time.clock_gettime(clock) - self.spent
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class FleetCase(ScreenCase):
     """`ScreenCase`, plus a checkout root and the environment that names it."""
 
