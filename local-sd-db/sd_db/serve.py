@@ -222,6 +222,19 @@ class Session(socketserver.BaseRequestHandler):
                         if offset + len(piece) >= len(image):
                             image = b""
                         answer = {**_answer(connection, None), "value": remote.encode_value(piece)}
+                    elif op == "registry":
+                        # Seam 7: the one file beside the database a remote
+                        # session reads, staged like an image so `chunk`
+                        # serves it. The satellite stage installs it (step 9).
+                        from .errors import RegistryError
+                        from .registry import REGISTRY_NAME
+
+                        beside = target.parent / REGISTRY_NAME
+                        try:
+                            image = beside.read_bytes()
+                        except FileNotFoundError:
+                            raise RegistryError(f"no provider registry at {beside} on the hub") from None
+                        answer = {**_answer(connection, None), "value": len(image)}
                     elif op == "iterdump":
                         answer = {**_answer(connection, None), "value": list(connection.iterdump())}
                     elif op == "close":
@@ -297,7 +310,8 @@ def read_token(path: Path) -> str:
 
 def serve(port: int, database_path: Path, stream=sys.stderr) -> int:
     log = Log(stream)
-    target = database_path.expanduser()
+    # Resolved, so the log names the file itself and not a link to it (gap (h)).
+    target = database_path.expanduser().resolve()
     if not target.exists():
         # Never create: a server under the wrong home must fail closed rather
         # than serve a second, empty database (gap (h)).
