@@ -614,6 +614,70 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         self.assertEqual(out["R"]["off"], idle["capabilities"]["retry"]["reason"])
         self.assertIn("can retry", out["R"]["off"])
 
+    # The list grammar from shell.list (sd:2527, sd:2528, sd:2529). Each click goes to the listener the page put on its holder.
+    CLICK = "ELS['%s'].listeners.click[0]({ target: { closest: s => s === %s ? { dataset: %s } : null } });"
+
+    def many(self, n):
+        """The seeded document with n reports, a day apart, newest first."""
+        doc = json.loads(json.dumps(self.doc))
+        base = doc["reports"][0]
+        doc["reports"] = [dict(base, id=10000 + i, title=f"report {i:03d}", at=f"2026-0{1 + i // 28 % 9}-{1 + i % 28:02d}T06:00:00+00:00")
+                          for i in range(n)]
+        return doc
+
+    def test_every_column_with_an_order_sorts_and_only_the_sorted_header_carries_aria_sort(self):
+        click = self.CLICK % ("rows-head", "'button[data-sort]'", "{ sort: 'what' }")
+        out = self.run_page(f"R.head = ELS['rows-head'].html; R.days = ELS.rows.html.includes('class=\"day\"');"
+                            f" {click} R.head2 = ELS['rows-head'].html; R.order = shown.map(r => r.what); R.days2 = ELS.rows.html.includes('class=\"day\"');"
+                            f" {click} R.order2 = shown.map(r => r.what); R.url = String(OUT.urls[OUT.urls.length - 1]);")
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["head"]), ["s", "what", "detail", "at", "st"])
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head"]), [("descending", "at")])
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head2"]), [("ascending", "what")])
+        self.assertEqual(out["R"]["order"], sorted(out["R"]["order"], key=str.lower))
+        self.assertEqual(out["R"]["order2"], out["R"]["order"][::-1])
+        # Day bands read only in time order.
+        self.assertEqual((out["R"]["days"], out["R"]["days2"]), (True, False))
+        self.assertIn("sort=what", out["R"]["url"])
+        self.assertIn("dir=desc", out["R"]["url"])
+
+    def test_the_pager_numbers_pages_and_keeps_page_size_and_sort_in_the_url(self):
+        doc = self.many(130)
+        out = self.run_page("R.pager = ELS.pager.html; R.url = String(OUT.urls[OUT.urls.length - 1]); R.first = shown.slice((L.page - 1) * L.size)[0].what;"
+                            + self.CLICK % ("pager", "'.list-pager [data-page]'", "{ page: '4' }")
+                            + " R.url2 = String(OUT.urls[OUT.urls.length - 1]); R.pager2 = ELS.pager.html;"
+                            + self.CLICK % ("pager", "'.list-pager [data-size]'", "{ size: '100' }")
+                            + " R.url3 = String(OUT.urls[OUT.urls.length - 1]); R.pager3 = ELS.pager.html;",
+                            doc=doc, prelude="location.search = '?page=2&size=25&sort=what&dir=desc';")
+        self.assertIn('<span class="range">26–50 of 130</span>', out["R"]["pager"])
+        self.assertEqual(out["R"]["first"], "report 104")
+        self.assertEqual(out["R"]["url"], "page=2&size=25&sort=what&dir=desc")
+        self.assertEqual(re.findall(r'data-page="(\d+)"', out["R"]["pager"]), ["1", "2", "3", "4", "6"])
+        self.assertIn('<span class="range">76–100 of 130</span>', out["R"]["pager2"])
+        self.assertIn("page=4", out["R"]["url2"])
+        self.assertIn('<span class="range">1–100 of 130</span>', out["R"]["pager3"])
+        self.assertEqual(out["R"]["url3"], "size=100&sort=what&dir=desc")
+        self.assertNotIn("Newer", (V2 / "reports.html").read_text(encoding="utf-8"))
+
+    def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
+        opts = "document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: 'nightly-sync' }];"
+        out = self.run_page("R.chips = ELS.chips.html; R.url = String(OUT.urls[OUT.urls.length - 1]);"
+                            + self.CLICK % ("chips", "'[data-unfilter]'", "{ unfilter: 'act' }")
+                            + " R.chips2 = ELS.chips.html; R.url2 = String(OUT.urls[OUT.urls.length - 1]); R.act = [F.act, ELS['f-act'].checked];"
+                            + "ELS.chips.listeners.click[0]({ target: { closest: s => s === '[data-unfilter-all]' ? {} : null } });"
+                            + " R.chips3 = ELS.chips.html; R.url3 = String(OUT.urls[OUT.urls.length - 1]);"
+                            + " R.F = [F.job, F.act, F.q, ELS['f-job'].value, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
+                            prelude="location.search = '?job=nightly-sync&act=1&q=sync';\n" + opts)
+        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips"]), ["job", "act", "q"])
+        self.assertIn("3 filters · ", out["R"]["chips"])
+        self.assertEqual(out["R"]["url"], "job=nightly-sync&act=1&q=sync")
+        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips2"]), ["job", "q"])
+        self.assertEqual(out["R"]["url2"], "job=nightly-sync&q=sync")
+        self.assertEqual(out["R"]["act"], [False, False])
+        self.assertEqual(out["R"]["chips3"], "")
+        self.assertEqual(out["R"]["url3"], "")
+        self.assertEqual(out["R"]["F"], ["", False, "", "", ""])
+        self.assertEqual(out["R"]["n"], out["R"]["all"])
+
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", REPORTS_JS)
         self.assertNotIn("setAttribute('style'", REPORTS_JS)

@@ -44,6 +44,10 @@ SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 SETTLE_JS = re.search(r"^  // bulk:start\n(.*?)^  // bulk:end$", SHELL_JS, re.S | re.M).group(1)
 # The confirm dialog with its fields, as shell.js has it (sd:2200).
 CONFIRM = re.search(r"^  // confirm:start\n(.*?)^  // confirm:end$", SHELL_JS, re.S | re.M)
+# The page's reads and writes, as shell.js has them (sd:2588): every page posts through shell.post and reads through shell.getJSON.
+FETCH_JS = re.search(r"^  // fetch:start\n(.*?)^  // fetch:end$", SHELL_JS, re.S | re.M).group(1)
+# The list grammar, as shell.js has it (sd:2527, sd:2528, sd:2529): sort header, pager and filter chips.
+LIST_JS = re.search(r"^  // list:start\n(.*?)^  // list:end$", SHELL_JS, re.S | re.M).group(1)
 
 
 def seed(case):
@@ -318,7 +322,7 @@ function fetch(path, o) {
   return Promise.resolve(ANSWER(path, body)).then(a => ({ ok: a[0] < 300, status: a[0], json: () => Promise.resolve(a[1]) }));
 }
 """
-SHELL = SETTLE_JS + r"""
+SHELL = SETTLE_JS + FETCH_JS + r"""
 var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
   rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
@@ -348,9 +352,12 @@ function shellBulk(c, objs) {
 }
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
-window.shell = { commands: C, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
+window.shell = { commands: C, post, getJSON, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
-  state: s => OUT.states.push(s), attention: a => OUT.attention.push(a) };
+  state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
+  list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+""" + LIST_JS + r"""
+    return list; })() };
 const cmd = id => REG.find(c => c.id === id);
 const flush = async () => { for (let i = 0; i < 400; i++) await null; };
 const open = key => document.dispatchEvent(new CustomEvent('shell:open', { detail: String(key) }));
@@ -1382,6 +1389,18 @@ class TheFilterAddress(ScreenCase):
         out = self.run_page(body + "\nR.list = ELS['view-list'].html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;",
                             search=search)
         return keys(out["R"]["list"]) | keys(out["R"]["board"]), out
+
+    def test_only_the_sorted_header_carries_aria_sort_and_a_click_moves_it(self):
+        """sd:2527: each column with an order sorts through its button; aria-sort is on the sorted th alone."""
+        click = "ELS['view-list'].listeners.click[0]({ target: { closest: s => s === '[data-sort]' ? { dataset: { sort: 'due' } } : null } });"
+        sorted_ = r'<th scope="col" aria-sort="(\w+)"><button type="button" data-sort="(\w+)"'
+        out = self.run_page(f"R.a = ELS['view-list'].html; {click} R.b = ELS['view-list'].html; {click} R.c = ELS['view-list'].html;"
+                            " R.url = OUT.urls[OUT.urls.length - 1];", search="?view=list")
+        for key, want in (("a", [("ascending", "p")]), ("b", [("ascending", "due")]), ("c", [("descending", "due")])):
+            self.assertEqual(re.findall(sorted_, out["R"][key]), want, key)
+            self.assertEqual(out["R"][key].count("aria-sort"), 1, key)
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["a"]), ["p", "due"])
+        self.assertIn("sort=due&dir=desc", out["R"]["url"])
 
     def test_status_age_and_active_narrow_as_v1_did(self):
         for search, expected in (("?view=list&status=ready_to_send", {901}), ("?view=list&age=7", {902}),
