@@ -432,6 +432,19 @@ class RuntimeSafety(unittest.TestCase):
         self.assertEqual(self.status, PUBLIC)
         self.assertFalse(any(call[0] == "tailscale" for call in self.calls))
 
+    def test_an_install_without_sd_or_the_vault_says_so_and_succeeds(self):
+        import contextlib
+        import io
+
+        said = io.StringIO()
+        with QuickNoteEnvironment.which(self, None), patch.dict(os.environ, {}), contextlib.redirect_stderr(said):
+            os.environ.pop("OBSIDIAN_VAULT", None)
+            result = self.install(self.plan())
+        self.assertEqual(result["origin"], ORIGIN)
+        self.assertEqual(said.getvalue().splitlines(), [
+            "dashboard: sd is not on the installing shell's PATH; Notes cannot list or keep quick notes",
+            "dashboard: OBSIDIAN_VAULT is not set; Notes cannot list or keep quick notes"])
+
     def test_production_path_resolves_the_platform_listener_inspector(self):
         self.assertIsNotNone(shutil.which("lsof", path=runtime.LAUNCH_PATH),
                              "the production LaunchAgent must find the installed lsof")
@@ -790,6 +803,28 @@ class LaunchEnvironment(unittest.TestCase):
         self.assertEqual(environment["SYSTEM_TOOLS_CONFIG"], "/config/system")
         self.assertEqual(environment["CRON_JOBS_EXTRA_DIRS"], "/more/jobs")
 
+
+class QuickNoteEnvironment(unittest.TestCase):
+    """sd:2549: Notes runs `sd store`, so the LaunchAgent gets sd's directory and OBSIDIAN_VAULT from the installing shell."""
+
+    def which(self, found):
+        real = shutil.which
+        return patch.object(runtime.shutil, "which", side_effect=lambda name, path=None: found if name == "sd" else real(name, path=path))
+
+    def test_sd_s_directory_joins_the_path_and_the_vault_passes_through(self):
+        with self.which("/opt/example/bin/sd"), patch.dict(os.environ, {"OBSIDIAN_VAULT": "/vaults/Example"}):
+            environment = runtime._launch_environment()
+        self.assertEqual(environment["PATH"], runtime.LAUNCH_PATH + ":/opt/example/bin")
+        self.assertEqual(environment["OBSIDIAN_VAULT"], "/vaults/Example")
+
+    def test_without_them_the_path_is_unchanged_and_each_gap_is_named(self):
+        with self.which(None), patch.dict(os.environ, {}):
+            os.environ.pop("OBSIDIAN_VAULT", None)
+            environment = runtime._launch_environment()
+            gaps = runtime.launch_gaps(environment)
+        self.assertEqual(environment["PATH"], runtime.LAUNCH_PATH)
+        self.assertNotIn("OBSIDIAN_VAULT", environment)
+        self.assertEqual(gaps, ["sd is not on the installing shell's PATH", "OBSIDIAN_VAULT is not set"])
 
 if __name__ == "__main__":
     unittest.main()

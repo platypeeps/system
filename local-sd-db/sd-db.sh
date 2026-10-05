@@ -450,6 +450,12 @@ case "${1:-}" in
         echo "$output"
         ;;
     init|migrate|status|restore|repo|item|work|import|verify|retire|usage|judgments)
+        # Convention 1 for every verb here: `-h` or `--help` anywhere prints
+        # the usage and acts on nothing. `init --help` ran init on the live
+        # database (sd:2716): `sd_db.jobs.cli` reads no flags of its own.
+        for word in "$@"; do
+            case "$word" in -h|--help) usage; exit 0 ;; esac
+        done
         choose_library
         exec_library -m sd_db.jobs.cli "$@"
         ;;
