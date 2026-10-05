@@ -102,6 +102,17 @@ def registry_module(pack: Path):
     return importlib.import_module("sd_registry")
 
 
+def run_environment(ident: str, author: str | None) -> dict:
+    """The variables every process the runner starts for a run carries.
+
+    `SD_ASSIGNMENT` names the run, and the process probes find its children
+    by it. `SD_AUTHOR` is the provider's registry entry, which the pack's
+    commit-msg hook writes as `Authored-with:` on a message that states none
+    (sd:2544). None, before a provider is chosen, leaves it unset.
+    """
+    return {"SD_ASSIGNMENT": ident, **({"SD_AUTHOR": author} if author else {})}
+
+
 def provider_command(config: Config, request: dict, parent: dict) -> tuple[list[str], dict, dict]:
     registry_api = registry_module(config.pack)
     with closing(connect(config.database, write=False)) as connection:
@@ -146,7 +157,7 @@ def provider_command(config: Config, request: dict, parent: dict) -> tuple[list[
         environment["HOME"] = str(config.home)
         environment["TMPDIR"] = str(Path(request["run"]["work_path"]) / ".git/sd-tmp")
         environment["XDG_CACHE_HOME"] = str(Path(request["run"]["work_path"]) / ".git/sd-cache")
-        environment["SD_ASSIGNMENT"] = request["run"]["id"]
+        environment.update(run_environment(request["run"]["id"], provider.name))
         try:
             argv = provider_protocol.argv(argv, reviewer=role == "reviewer", clone=Path(request["run"]["work_path"]))
         except store.RunnerRefused as error:
@@ -478,7 +489,7 @@ class Runner:
         child.stdin.flush()
         return self._response(connection, child, request, deadline=deadline)
 
-    def tool_environment(self, ident: str, *, remote=False) -> dict:
+    def tool_environment(self, run: dict, *, remote=False) -> dict:
         """What a runner-owned tool in the clone sees: the base, and the remote's keys only when it needs them."""
         names = ("PATH", "HOME", "LANG", "TERM")
         if remote:
@@ -486,7 +497,7 @@ class Runner:
         environment = {key: os.environ[key] for key in names if key in os.environ}
         environment["PATH"] = self.search_path
         environment["HOME"] = str(self.config.home)
-        environment["SD_ASSIGNMENT"] = ident
+        environment.update(run_environment(run["id"], run.get("provider")))
         return environment
 
     def ship(self, connection, child, request, verb, deadline):
@@ -496,7 +507,7 @@ class Runner:
         argv = [sys.executable, str(executable), verb, "--database", str(self.config.database), "--item", str(request["item"]), "--json"]
         if verb == "merge":
             argv += ["--run", request["run"]["id"], "--expected-head", request["run"]["authored_head"], "--watch"]
-        environment = self.tool_environment(request["run"]["id"], remote=True)
+        environment = self.tool_environment(request["run"], remote=True)
         try:
             result = self.action(connection, child, request, "ship", deadline, argv=argv, environment=environment)["ship"]
             if not result.get("ok"):
@@ -696,7 +707,8 @@ class Runner:
                 from sd_db import runner_exec
                 runner_exec.resolve_assignment(connection, request["id"])
             env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "TERM", "SSH_AUTH_SOCK") if key in os.environ}
-            env["SD_ASSIGNMENT"] = ident
+            # The supervisor starts every child with an environment of its own.
+            env.update(run_environment(ident, None))
             import sd_db
             env["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).resolve().parents[1]), str(Path(sd_db.__file__).resolve().parent.parent)])
             child = subprocess.Popen([sys.executable, "-m", "sd_runner.supervisor"], stdin=subprocess.PIPE,
@@ -755,7 +767,7 @@ class Runner:
                 else:
                     argv, provider_env = command, environment or {}
                     provider = provider or {"provider": "fixture", "vendor": "fixture"}
-                    provider_env = {**provider_env, "SD_ASSIGNMENT": ident}
+                    provider_env = {**provider_env, **run_environment(ident, provider["provider"])}
                 # Directory creation is setup, under the acknowledged supervisor.
                 request["run"] = self.persist(connection, ident, provider=provider["provider"], vendor=provider["vendor"], start_step="started")
                 if provider.get("entry") is not None:
@@ -810,13 +822,13 @@ class Runner:
                             # environment, never the failing test (sd:1762).
                             if install := toolchain.installer(clone, self.search_path):
                                 installed = self.action(connection, child, request, "install", deadline, argv=install,
-                                                        environment=self.tool_environment(ident))["install"]
+                                                        environment=self.tool_environment(request["run"]))["install"]
                                 if block := toolchain.from_install(install, installed):
                                     raise block
                             # The failing test is decided here, in the clone,
                             # before anything is pushed or shipped.
                             verified = self.action(connection, child, request, "check", deadline, argv=check,
-                                                   environment=self.tool_environment(ident))["check"]
+                                                   environment=self.tool_environment(request["run"]))["check"]
                             if stop := hard_stops.from_check(verified):
                                 raise stop
                             cargo_seed.refresh(clone, seed)

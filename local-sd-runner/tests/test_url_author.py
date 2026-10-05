@@ -87,6 +87,8 @@ class UrlAuthor(unittest.TestCase):
         argv, environment, provider = runtime.provider_command(config, request, {"PATH": str(self.root / "bin")})
         self.assertEqual((argv[:2], provider["provider"], provider["start"], "entry" in provider),
                          ([str(self.root / "bin/claude"), "-p"], "claude", True, False))
+        # The session's commits name it; the pack's hook reads the entry (sd:2544).
+        self.assertEqual((environment["SD_ASSIGNMENT"], environment["SD_AUTHOR"]), (request["run"]["id"], "claude"))
 
     def test_a_url_author_run_ends_done_with_the_response_in_the_retained_log(self):
         with patch.object(runtime, "provider_command", return_value=self.resolved), patch.dict(os.environ, {"MINIMAX_API_KEY": "k"}):
