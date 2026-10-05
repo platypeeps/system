@@ -12,10 +12,12 @@ import pathlib
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
+RUNTIME = FOLDER.parent / "local-project-dashboard" / "sd_dashboard" / "runtime.py"
 
 # `print` fails for a label named in DEPLOY_TEST_UNLOADED; `kickstart` marks
 # the restart so the lsof stub can answer with a new listener.
@@ -202,6 +204,38 @@ class DeployTest(unittest.TestCase):
         calls = self.calls.read_text()
         self.assertNotIn("kickstart", calls)
         self.assertNotIn("runner.sh", calls)
+
+    def real_consumer(self, edit_installed=None):
+        """A real interpreter whose installed sd_db is a copy of the checkout's,
+        with no dist-info at all: no provenance, so only content can tell."""
+        self.change({"local-project-dashboard/sd_dashboard/__init__.py": "",
+                     "local-project-dashboard/sd_dashboard/runtime.py": RUNTIME.read_text(),
+                     "local-sd-db/sd_db/__init__.py": ""})
+        venv = self.tmp / "consumer"
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+        python = venv / "bin" / "python"
+        purelib = subprocess.run([str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                                 check=True, capture_output=True, text=True).stdout.strip()
+        installed = pathlib.Path(purelib) / "sd_db"
+        shutil.copytree(self.repo / "local-sd-db" / "sd_db", installed)
+        if edit_installed:
+            (installed / edit_installed).write_text("SCHEMA_VERSION = 0\n")
+        return venv
+
+    def test_apply_restarts_consumers_whose_installed_library_matches(self):
+        venv = self.real_consumer()
+        result = self.run_deploy("apply", DEPLOY_TEST_PYTHON=str(venv / "bin" / "python"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("restarted dashboard", result.stdout)
+        self.assertIn("restarted runner", result.stdout)
+
+    def test_apply_refuses_an_installed_library_without_provenance_that_differs(self):
+        venv = self.real_consumer(edit_installed="schema.py")
+        result = self.run_deploy("apply", DEPLOY_TEST_PYTHON=str(venv / "bin" / "python"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("deploy: refused before any restart: sd-dashboard: installed sd_db differs from this checkout"
+                      f" in 1 file(s): schema.py; provision: local-sd-db/sd-db.sh install {venv}", result.stderr)
+        self.assertNotIn("kickstart", self.calls.read_text())
 
     def test_apply_refuses_when_lsof_cannot_answer(self):
         self.change({"local-sd-db/sd-db.sh": "x\n"})

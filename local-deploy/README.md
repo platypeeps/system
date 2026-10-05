@@ -34,8 +34,9 @@ A library change reaches them only after `local-sd-db/sd-db.sh install <venv>` f
 `apply` prints the reports, then refuses with exit 1 before any restart in two cases:
 
 - `lsof` cannot answer for port 8769: it is missing, or exits other than 1 with no output (its "no match").
-- The dashboard's or the runner's installed `sd_db` lacks the checkout's last library commit.
-  The check is the dashboard's own startup check, `source:local-project-dashboard/sd_dashboard/runtime.py::_library_lag`.
+- The dashboard's or the runner's installed `sd_db` differs in content from the checkout's `local-sd-db/sd_db`.
+  The check runs `source:local-project-dashboard/sd_dashboard/runtime.py::_build_manifest` on both and compares them file by file.
+  It does not use `_library_lag`: that compares commits, and a wheel from `sd-db.sh install` records none.
   It runs under the interpreter the agent's plist names (`SD_DASHBOARD_PYTHON`, `SD_RUNNER_PYTHON`).
   The refusal names the `sd-db.sh install <venv>` that provisions it.
 

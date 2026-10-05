@@ -28,9 +28,9 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> | test | h
           Changes under tests/ and to *.md files restart nothing.
   apply   print the reports, then refuse with exit 1 before any restart when
           `lsof` cannot answer for port 8769, or when the dashboard's or the
-          runner's installed sd_db lacks this checkout's last library commit
-          (sd_dashboard.runtime._library_lag, run under the interpreter its
-          plist names). Then restart. sd-serve: skip with a report while a
+          runner's installed sd_db differs in content from this checkout's
+          local-sd-db/sd_db (sd_dashboard.runtime._build_manifest on both,
+          run under the interpreter its plist names). Then restart. sd-serve: skip with a report while a
           session is open on port 8769, else `launchctl kickstart -k` and
           wait for a new listener. dashboard: kickstart -k, then
           `dashboard.sh health`. runner: `runner.sh restart` (drains), never
@@ -109,13 +109,19 @@ serve_pids() {
   return 1
 }
 
-# The dashboard's own startup check, _library_lag, run under the consumer's
-# interpreter before its agent is killed rather than after.
+# The consumer's installed sd_db against this checkout's, file by file, with
+# the dashboard's own build manifest. Not _library_lag: it compares commits,
+# and a `sd-db.sh install` wheel records none, so it passes every such build.
 LAG='import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1] + "/local-project-dashboard")
-from sd_dashboard.runtime import _library_lag
-_library_lag(Path(sys.argv[1]))'
+import sd_db
+from sd_dashboard.runtime import _build_manifest
+installed = dict(_build_manifest(Path(sd_db.__file__).resolve().parent))
+checkout = dict(_build_manifest(Path(sys.argv[1]) / "local-sd-db/sd_db"))
+differ = sorted(n for n in installed.keys() | checkout.keys() if installed.get(n) != checkout.get(n))
+if differ:
+    sys.exit("installed sd_db differs from this checkout in " + str(len(differ)) + " file(s): " + " ".join(differ[:5]))'
 
 library_current() { # agent, plist variable naming its interpreter
   plist="$HOME/Library/LaunchAgents/$PREFIX.$1.plist"
