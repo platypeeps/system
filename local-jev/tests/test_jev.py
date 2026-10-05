@@ -628,6 +628,22 @@ class TestSwitch(StubServer):
         self.run_main(["on"])
         self.assertEqual(self.run_main(["enabled"])[0], 0)
 
+    def test_shadow_on_and_off_write_a_file_beside_the_switch(self):
+        """sd:2761. Off until switched on, and `enabled --why` says so."""
+        self.assertNotIn("shadow", self.run_main(["enabled", "--why"])[1])
+        self.assertEqual(self.run_main(["shadow", "on"])[0], 0)
+        beside = Path(self.switch).with_name("shadow")
+        self.assertEqual(beside.read_text().strip(), "on")
+        self.assertFalse(Path(self.switch).exists())
+        self.assertIn("shadow on", self.run_main(["enabled", "--why"])[1])
+        self.assertEqual(self.run_main(["enabled"])[0], 0)
+        self.run_main(["shadow", "off"])
+        self.assertNotIn("shadow", self.run_main(["enabled", "--why"])[1])
+
+    def test_status_names_the_shadow_switch(self):
+        self.assertIn("shadow=off", self.run_main(["status"])[1])
+        self.assertIn("shadow=on", self.run_main(["status"], JEV_SHADOW="1")[1])
+
     def test_off_stops_a_verb_before_the_network(self):
         self.write_switch("off")
         code, _out, err = self.run_verbose(["noul", "q"])
@@ -708,7 +724,7 @@ class TestFallback(StubServer):
         thing it reports, and `record` because the whole verb is one row about
         work that already happened somewhere else.
         """
-        local = {"status", "enabled", "on", "off", "record"}
+        local = {"status", "enabled", "on", "off", "shadow", "record"}
         parser = jev.build_parser()
         subs = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         for verb, sub in subs.choices.items():

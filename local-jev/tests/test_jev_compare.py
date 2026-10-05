@@ -199,6 +199,17 @@ class TheKevArm(CompareCase):
         self.assertEqual(kev["outcome"], "ok")
         self.assertIsNotNone(kev["duration_ms"])
 
+    def test_under_the_shadow_switch_the_kev_row_joins_the_pair(self):
+        """sd:2761: the arm, the judgment and the caller's own answer are one pair."""
+        code, out = self.run_main(["score", "how urgent?", "--levels", "a,b,c",
+                                   "--fallback", "1", "--stage", "JEV_NOTIFY"],
+                                  JEV_SHADOW="1")
+        self.assertEqual((code, out), (0, "1\n"))
+        rows = self.by_arm(self.wait_rows(3))
+        self.assertEqual(set(rows), {"jev", "baseline", "kev"})
+        self.assertIsNotNone(rows["jev"]["pair"])
+        self.assertEqual({row["pair"] for row in rows.values()}, {rows["jev"]["pair"]})
+
     def test_kev_gets_the_same_redacted_request_under_its_own_model_name(self):
         secret = "ghp_" + "a" * 36
         self.run_main(["noul", "is it?"], stdin=f"token {secret} here")

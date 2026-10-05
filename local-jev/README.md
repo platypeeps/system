@@ -324,6 +324,34 @@ produces a paired sample -- which is the only thing a delta can be computed
 from. It costs a real call, so it is off unless the flag is given, and the
 report counts it separately.
 
+### The shadow switch
+
+    jev shadow on        # every call on this machine runs in shadow mode
+    jev shadow off       # back to normal
+    JEV_SHADOW=1 jev ... # one call, against the file's setting
+
+The switch is a file beside the kill switch (`~/.config/jev/shadow`). **Absent
+means off**, unlike `enabled`: it costs a real call per decision and changes
+what callers see. On, every call is still sent and recorded, and the caller
+is answered as if Jev were down:
+
+- a call given `--fallback X` behaves as `--shadow X`: it prints `X` and
+  records both answers under one pair id;
+- a call with no `--fallback` prints nothing and exits 3, which every caller
+  already reads as "take the old path";
+- a call given `--shadow` is unchanged.
+
+So every caller runs its old mechanism with no edit, and the comparison arms
+still get the request. `jev status` prints `shadow=on`, and `jev enabled --why`
+says so too. The row's `changed` is `unknown`: the caller does not know the
+switch is on, so it cannot say what it would have done.
+
+**The agreement needs the old answer, and a fallback is a marker.**
+`tests/test_jev_contract.py` keeps every `--fallback` distinct from a real
+answer, so the baseline row of a switched call records no answer. Agreement
+with the old mechanism appears for a caller that passes its real answer.
+`judgments compare` counts the other pairs and names them.
+
 ### Reading it back
 
     local-sd-db/sd-db.sh judgments [--since 2026-09] [--json]
@@ -393,8 +421,8 @@ batch gives. A batch of more than 8 questions (`MAX_HAIKU_QUESTIONS`) is
 declined as `invalid` before any request, so one call never fans out into a
 pile of paid ones. So is a question with more than 255 options, the most the
 ledger records. An exported empty switch (`JEV_COMPARE_HAIKU_VIA=`) is off,
-and it beats an on-value in `<config>/jev/.env`. `--fallback`, `enabled`, a meter that is off, and a call Jev
-never gets start no arm.
+and it beats an on-value in `<config>/jev/.env`. A fallback answer, `enabled`, a meter that is off, and a call
+Jev never gets start no arm.
 
 Switch the Kev arm on with an on-word (`JEV_COMPARE_KEV=1`) and the Haiku arm
 by naming a transport (`JEV_COMPARE_HAIKU_VIA=anthropic`). Unset or an

@@ -22,3 +22,4 @@ paths:
 - `sd-docs-lint` is a Jev caller outside this repo, opt-in per repo through a tracked `.github/sd-docs-lint.json`.
 - Do not make `local-scan-for-secrets` a caller; its hits are sensitive.
 - `jev.py` redacts credentials and `privacy-patterns` matches before sending; that is a backstop, never a reason to send.
+- Keep `jev shadow` off when its file is absent; it sends a real call per decision and changes what callers see.

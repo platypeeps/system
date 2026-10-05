@@ -551,6 +551,69 @@ class ShadowMode(MeteringCase):
         self.assertEqual(self.rows(), [])
 
 
+class TheShadowSwitch(MeteringCase):
+    """sd:2761: with `jev shadow on`, every caller runs its old mechanism and
+    the ledger still gets the judgment, paired with the caller's own answer."""
+
+    def switch_on(self):
+        Path(self.switch).with_name("shadow").write_text("on\n")
+
+    def test_a_fallback_is_printed_and_both_answers_are_paired(self):
+        self.switch_on()
+        code, out = self.run_main(["score", "how urgent?", "--levels", "a,b,c",
+                                   "--fallback", "1", "--stage", "JEV_NOTIFY"])
+        self.assertEqual((code, out), (0, "1\n"))
+        self.assertTrue(Stub.seen, "the switch must still ask Jev")
+        judged, baseline = self.rows()
+        self.assertEqual((judged["arm"], judged["answer"], judged["shadow"]),
+                         ("jev", "2.0", 1))
+        self.assertEqual((baseline["arm"], baseline["answer"], baseline["shadow"]),
+                         ("baseline", "1", 1))
+        self.assertIsNotNone(judged["pair"])
+        self.assertEqual(judged["pair"], baseline["pair"])
+        # The caller does not know the switch is on, so the row cannot say
+        # whether the judgment would have changed what it did.
+        self.assertEqual(judged["changed"], "unknown")
+
+    def test_off_a_fallback_call_is_unchanged(self):
+        code, out = self.run_main(["score", "how urgent?", "--levels", "a,b,c",
+                                   "--fallback", "1"])
+        self.assertEqual((code, out), (0, "2.0\n"))
+        row = self.only()
+        self.assertEqual((row["shadow"], row["pair"]), (0, None))
+
+    def test_the_variable_beats_the_file_both_ways(self):
+        self.switch_on()
+        self.assertEqual(self.run_main(["noul", "q", "--fallback", "keep"],
+                                       JEV_SHADOW="0")[1], "0.97\n")
+        Path(self.switch).with_name("shadow").unlink()
+        self.assertEqual(self.run_main(["noul", "q", "--fallback", "keep"],
+                                       JEV_SHADOW="1")[1], "keep\n")
+
+    def test_a_call_with_no_fallback_is_answered_as_if_jev_were_down(self):
+        self.switch_on()
+        code, out, err = self.run_verbose(["noul", "q", "--gate", "0.5"])
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("shadow on", err)
+        self.assertTrue(Stub.seen)
+        row = self.only()
+        self.assertEqual((row["answer"], row["shadow"], row["outcome"]),
+                         ("0.97", 1, "ok"))
+        self.assertIsNotNone(row["pair"])
+
+    def test_a_fallback_with_json_still_prints_the_fallback(self):
+        self.switch_on()
+        self.assertEqual(self.run_main(["noul", "q", "--json", "--fallback", "keep"]),
+                         (0, "keep\n"))
+
+    def test_an_explicit_shadow_is_unchanged(self):
+        self.switch_on()
+        code, out = self.run_main(["noul", "q", "--gate", "0.5", "--shadow", "yes",
+                                   "--fallback", "keep"])
+        self.assertEqual((code, out), (0, "yes\n"))
+        self.assertEqual(self.rows()[0]["changed"], "no")
+
+
 class WhoAsked(MeteringCase):
     def test_the_flags_name_the_caller_and_the_stage(self):
         self.run_main(["noul", "is it?", "--caller", "local-sd-plan",

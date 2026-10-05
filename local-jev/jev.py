@@ -158,6 +158,30 @@ def switched_on(conf: dict, env) -> bool:
     return read_flag(env)
 
 
+# The shadow switch (sd:2761). On, every call is still made and recorded, and
+# the caller is answered as if Jev were down: its `--fallback`, or exit 3. So
+# every caller runs its old mechanism and the ledger still gets the pair.
+# Absent means OFF, unlike the switch above: shadow costs a real call per
+# decision and changes what a caller sees, so the operator turns it on.
+def shadow_file(env) -> str:
+    """Beside the kill switch, so `JEV_FLAG_FILE` moves both."""
+    return os.path.join(os.path.dirname(flag_file(env)), "shadow")
+
+
+def shadow_on(env) -> bool:
+    """`JEV_SHADOW` wins over the file; any word but an on-word is off."""
+    override = (env.get("JEV_SHADOW") or "").strip().lower()
+    if override in FLAG_OFF:
+        return False
+    if override in FLAG_ON:
+        return True
+    try:
+        with open(shadow_file(env), "r", encoding="utf-8") as fh:
+            return fh.read().strip().lower() in FLAG_ON
+    except OSError:
+        return False
+
+
 #: What `.env.example` ships. Convention 3 in CLAUDE.md is a committed
 #: `.env.example` holding `change-me`, so a machine where someone copied it and
 #: stopped is a machine that will exist, and its key is a string that is not
@@ -232,7 +256,11 @@ def cmd_enabled(args, conf, out, env=None, **kw) -> int:
         word = "switched-off"
         reason = "%s switched this stage off here" % args.stage
     if args.why:
-        out.write("jev: %s\n" % (reason or "enabled"))
+        if not reason and shadow_on(env):
+            out.write("jev: enabled; shadow on (Jev is asked and recorded, "
+                      "the caller gets its fallback)\n")
+        else:
+            out.write("jev: %s\n" % (reason or "enabled"))
     if reason and args.record and args.stage:
         # The decline is the control arm's first fact. Most callers decline
         # here and never reach a judgment verb, so without this their old path
@@ -313,11 +341,12 @@ def cmd_record(args, conf, out, env=None, **kw) -> int:
 
 
 def set_flag(args, conf, out, env=None, **kw) -> int:
-    path = flag_file(env)
+    path = shadow_file(env) if args.verb == "shadow" else flag_file(env)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(args.word + "\n")
-    out.write("jev: %s (%s)\n" % (args.word, path))
+    out.write("jev: %s%s (%s)\n" % ("shadow " if args.verb == "shadow" else "",
+                                     args.word, path))
     return EXIT_OK
 
 
@@ -1211,7 +1240,8 @@ def cmd_status(args, conf, out, env=None, **kw) -> int:
     # tells the reader the opposite of what happened.
     marker, detail = path_state(env)
     endpoint = (f"model={response.get('model', '?')}  url={conf['url']}  "
-                f"probe={answer.get('noul')}  switch={flag_file(env)}")
+                f"probe={answer.get('noul')}  switch={flag_file(env)}  "
+                f"shadow={'on' if shadow_on(env) else 'off'}")
     if marker:
         out.write(f"jev: PATH {marker} -- {detail}\n")
         out.write(f"jev: the endpoint itself answered  {endpoint}\n")
@@ -1383,6 +1413,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     subs.add_parser("on", add_help=False).set_defaults(run=set_flag, word="on")
     subs.add_parser("off", add_help=False).set_defaults(run=set_flag, word="off")
+    shadow = subs.add_parser("shadow", add_help=False)
+    shadow.add_argument("word", choices=("on", "off"))
+    shadow.set_defaults(run=set_flag)
     return parser
 
 
@@ -1422,16 +1455,25 @@ def main(argv=None, out=None, env=None, **kw) -> int:
         sys.stderr.write("jev: --shadow prints your one answer, so it cannot "
                          "be combined with --json\n")
         return EXIT_ERROR
+    # The shadow switch: `--fallback X` becomes `--shadow X`, and a call with
+    # no fallback gets what it gets when Jev is down. Neither caller knows the
+    # switch is on, so neither can say whether the judgment changed anything.
+    switched = shadow is None and shadow_on(env)
+    if switched:
+        shadow = fallback
+        sys.stderr.write("jev: shadow on; Jev is asked and recorded, and its "
+                         "answer is not used\n")
+    shadowed = shadow is not None or switched
     # Measured here and flushed below, always after the answer has been
     # written. A row is bookkeeping and an answer is the job, so the job goes
     # first and the bookkeeping never delays it.
     measure(args, env)
-    pair = os.urandom(8).hex() if shadow is not None else None
-    note(_declared=getattr(args, "changed", None), pair=pair,
-         shadow=shadow is not None)
+    pair = os.urandom(8).hex() if shadowed else None
+    note(_declared="unknown" if switched else getattr(args, "changed", None),
+         pair=pair, shadow=shadowed)
     # In shadow mode the judgment is measured and not used, so it is written
     # to a sink and the caller is handed back its own answer instead.
-    sink = io.StringIO() if shadow is not None else out
+    sink = io.StringIO() if shadowed else out
     word, reason = why_unusable(conf, env)
     if reason:
         # Nothing was sent: switched off here, unkeyed, or configured with a
@@ -1455,6 +1497,10 @@ def main(argv=None, out=None, env=None, **kw) -> int:
         # it also made failed, or shadow mode is a new way to break a caller.
         out.write(f"{shadow}\n")
         code = EXIT_OK
+    elif switched:
+        # No answer of the caller's own to hand back: its old path runs on
+        # this exit, as it does on any machine where Jev cannot answer.
+        code = EXIT_UNCONFIGURED
     flush(outcome, cause=cause, fallback=fallback, baseline=shadow, env=env)
     if shadow is not None:
         # The control arm of the pair, from this process, because a pair whose

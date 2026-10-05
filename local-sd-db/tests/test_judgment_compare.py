@@ -356,6 +356,69 @@ class TheComparison(CompareCase):
         self.assertIn("no calls", compare_text([]))
 
 
+class AgainstTheOldMechanism(CompareCase):
+    """sd:2761: each arm against the caller's own answer of the same pair, the
+    baseline row a shadow call writes beside the judgment."""
+
+    decision = TheComparison.decision
+    arm = TheComparison.arm
+
+    def old(self, pair, answer):
+        return self.write(arm="baseline", provider="local", primitive="baseline",
+                          pair=pair, answer=answer, shadow=True)
+
+    def test_agreement_and_the_disagreement_split(self):
+        self.decision("a", "0.9", "0.8", "0.3")
+        self.old("a", "0.1")                     # jev and kev say yes, old said no
+        self.decision("b", "0.2", "0.7", "0.4")
+        self.old("b", "0.3")                     # jev agrees, kev does not
+        self.decision("c", "0.6", "0.1", "0.7")
+        self.old("c", "0.9")                     # jev agrees, kev does not
+        report = compare(self.connection)
+        jev, kev = self.arm(report, "jev"), self.arm(report, "kev")
+        self.assertEqual((jev["old_pairs"], jev["old_compared"], jev["old_agree"]),
+                         (3, 3, 2))
+        self.assertAlmostEqual(jev["old_agreement"], 2 / 3)
+        self.assertEqual(jev["old_disagreements"], [{"old": 0, "arm": 1, "n": 1}])
+        self.assertEqual((kev["old_compared"], kev["old_agree"]), (3, 0))
+        self.assertEqual(kev["old_disagreements"],
+                         [{"old": 0, "arm": 1, "n": 2}, {"old": 1, "arm": 0, "n": 1}])
+        printed = compare_text(report)
+        self.assertIn("vs old 2/3 agree (67%), old→arm 0→1 ×1", printed)
+        self.assertIn("vs old 0/3 agree (0%), old→arm 0→1 ×2 1→0 ×1", printed)
+        parsed = json.loads(compare_json(report))
+        self.assertEqual(parsed["stages"][0]["arms"][0]["old_agree"], 2)
+
+    def test_a_choice_compares_positions_and_lists_the_top_five(self):
+        for n, (said, was) in enumerate([(2, 1), (3, 1), (4, 1), (5, 1), (6, 1),
+                                         (7, 1), (2, 1), (1, 1)]):
+            self.decision(f"p{n}", str(said), str(said), str(said), primitive="choice")
+            self.old(f"p{n}", str(was))
+        jev = self.arm(compare(self.connection), "jev")
+        self.assertEqual((jev["old_compared"], jev["old_agree"]), (8, 1))
+        self.assertEqual(len(jev["old_disagreements"]), 5)
+        self.assertEqual(jev["old_disagreements"][0], {"old": 1, "arm": 2, "n": 2})
+
+    def test_an_old_answer_that_is_not_a_number_is_counted_but_not_compared(self):
+        """A `--fallback` marker under the shadow switch records no answer."""
+        self.decision("a", "0.9", "0.8", "0.3")
+        self.old("a", None)
+        report = compare(self.connection)
+        jev = self.arm(report, "jev")
+        self.assertEqual((jev["old_pairs"], jev["old_compared"]), (1, 0))
+        self.assertIsNone(jev["old_agreement"])
+        self.assertIn("vs old: no comparable old answer in 1 pair(s)",
+                      compare_text(report))
+
+    def test_a_stage_with_no_paired_sample_says_so(self):
+        self.decision("a", "0.9", "0.8", "0.3")
+        report = compare(self.connection)
+        self.assertEqual(self.arm(report, "kev")["old_pairs"], 0)
+        printed = compare_text(report)
+        self.assertIn("JEV_NOTIFY: no paired samples with the old mechanism", printed)
+        self.assertNotIn("vs old", printed)
+
+
 class TheCompareVerb(CompareCase):
     """`sd-db.sh judgments compare`, through the same CLI entry the shell uses."""
 

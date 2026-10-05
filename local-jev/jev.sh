@@ -109,12 +109,12 @@ case "$1" in
     shift
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
     ;;
-  ask|noul|choice|score|status|enabled|on|off|record)
+  ask|noul|choice|score|status|enabled|on|off|shadow|record)
     exec "${PYTHON:-python3}" "$DIR/jev.py" "$@"
     ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: jev.sh ask|noul|choice|score|status|enabled|on|off|record|test
+usage: jev.sh ask|noul|choice|score|status|enabled|on|off|shadow|record|test
 
 Jev is TypeSafe's System One model. It answers a narrow question about some
 state with a type and a probability, in about the time a shell pipeline takes
@@ -141,6 +141,9 @@ to do with the number.
                           the stage off. Unset means on, so one call answers
                           both halves and the vocabulary lives in one place.
   on | off                set the switch, fleet-wide for this machine
+  shadow on|off           every call is still made and recorded, and the
+                          caller gets its --fallback, or exit 3 without one,
+                          so its old mechanism runs. Off unless switched on
   record                  write one event for a decision this tool did not
                           make: what your own mechanism answered, how long it
                           took, and why Jev was not used. Sends nothing, needs
@@ -222,6 +225,8 @@ environment:
   JEV_RETRIES        retries for 429/529/5xx, doubling backoff (default 3)
   JEV_ENABLED        1/0 for one call or one session; beats the switch file
   JEV_FLAG_FILE      switch file (default ~/.config/jev/enabled)
+  JEV_SHADOW         1/0 for one call or one session; beats the shadow file,
+                     which sits beside the switch file
   JEV_TRACES_URL     OTLP/HTTP traces endpoint; one metadata-only span per call
                      (off when unset; local-genai-traces takes
                      http://127.0.0.1:4338/v1/traces)
@@ -238,7 +243,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") ask|noul|choice|score|status|enabled|on|off|record|test" >&2
+    echo "usage: $(basename "$0") ask|noul|choice|score|status|enabled|on|off|shadow|record|test" >&2
     exit 1
     ;;
 esac
