@@ -11,6 +11,7 @@ uncapped.
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -188,6 +189,22 @@ class Sessions(unittest.TestCase):
         intent = self.config.database.parent / "runner-restore-intent.json"
         result = self.interrupt_provider(lambda connection, request: intent.write_text("{}"))
         intent.unlink()
+        self.assertEqual(self.runner.recover(self.db), [])
+        self.assertEqual(store.run_state(self.db, result["id"])["end_step"], "released")
+        self.assert_read_back()
+
+    def test_a_failed_read_back_keeps_the_held_record_for_the_retry(self):
+        # sd:2503 review: `record_session` drops a database error, so the
+        # marker went with a recording that never landed.
+        intent = self.config.database.parent / "runner-restore-intent.json"
+        result = self.interrupt_provider(lambda connection, request: intent.write_text("{}"))
+        intent.unlink()
+        with patch.object(session_record.store, "record_session_notes", side_effect=sqlite3.OperationalError("disk I/O error")):
+            self.assertEqual(self.runner.recover(self.db), [])
+        held = store.run_state(self.db, result["id"])
+        self.assertIsNone(held["released_at"], held)
+        self.assertIn("held session record not written", held["detail"])
+        self.assertTrue(session_record.held(self.config.database, result["id"]).is_file())
         self.assertEqual(self.runner.recover(self.db), [])
         self.assertEqual(store.run_state(self.db, result["id"])["end_step"], "released")
         self.assert_read_back()

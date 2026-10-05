@@ -680,7 +680,11 @@ class Runner:
         """Record the session a recovery hold kept from the store, from the retained clone (sd:2503).
 
         The ending runs only once no hold applies, and a run is released once,
-        so this reads the files back at most once per run.
+        so this reads the files back at most once per run. A write that fails
+        keeps the held file and holds the ending, whose retry records it; a
+        refusal, of the notes file or the cost row, reads the same on every
+        retry, so it drops the file. The cost is filed before the notes are
+        refused, and the retained clone keeps both files either way.
         """
         path = session_record.held(self.config.database, run["id"])
         if not path.is_file():
@@ -693,7 +697,12 @@ class Runner:
             # ponytail: a crash between this commit and the unlink below files
             # the notes twice; the cost row is idempotent. Dedupe on the note
             # body if that window ever bites.
-            self.record_session(connection, {"run": run}, provider, retained)
+            try:
+                session_record.record(connection, database_write, {"run": run}, provider, retained)
+            except store.RunnerRefused:
+                pass
+            except (OSError, ValueError, SdDbError, sqlite3.Error) as error:
+                raise store.RunnerRefused(f"held session record not written: {error}") from error
         path.unlink(missing_ok=True)
 
     def _execute(self, connection, request: dict, *, command=None, environment=None, provider=None, check=None) -> dict:
