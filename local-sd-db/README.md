@@ -66,6 +66,13 @@ backup, and the fixture harness both repositories test against.
                     next occurrence after a date; `workflow.change_status`
                     creates that occurrence when it completes the row
       database.py   opening it: WAL, foreign keys, and the two version refusals
+      remote.py     the satellite's connection: the same surface over one
+                    TCP session to a hub, and the errors the hub sends back
+      serve.py      the hub's server (`sd-db.sh serve`), its authorizer and
+                    the `request_outcome` record
+      hub.py        `~/.config/sd/hub.json`, which makes a machine a satellite
+      tailnet.py    this Tailscale node and its peers, by `tailscale whois`
+      satellite.py  the checks the machine-setup `satellite` stage runs
       migrate.py    applying migrations, by command and never on open
       writes.py     every write, as a named function
       registry.py   providers.yaml merged with the provider and bill rows;
@@ -240,6 +247,125 @@ The library reads these from the environment; each has a default.
 | `OBSIDIAN_VAULT` | `~/Documents/Obsidian Vault` | vault the `vault` source reads |
 | `SD_REGISTER` | `$SD_REPO_ROOT/research/register/open-questions.md`, or `SD_REGISTER` in `<config>/sd-db/.env` | register the `register` source reads |
 | `SD_WRITING_DESTINATIONS` | none | extra hand-recorded publication targets beside `blog` and `substack`, comma-separated |
+
+## One hub, many satellites: `serve` and `hub.json`
+
+The hub is the one machine that holds `~/.local/share/sd/sd.db`.
+A satellite holds no database.
+It sends every open of the default database to the hub, one TCP session per connection.
+The plan is `docs/work/2026-09-22-run-the-framework-from-a-second-machine/`.
+
+### `serve` on the hub
+
+    ./sd-db.sh serve              # the tailnet listener, port 8769
+    ./sd-db.sh serve --loopback   # 127.0.0.1 behind a token: the suite over the wire
+
+- `serve` opens the database on the hub's own disk, never through `hub.json`.
+- It never creates a database. A missing file exits 1 and names the path it looked for.
+- One server per file: it takes `<database>.serve.lock` beside the file, and a second server exits non-zero naming the lock.
+- It loads its build at start. After you install `sd_db` again, restart it: until then it refuses each session with `HubRestartNeeded`.
+- The first frame carries the client's protocol, package version, schema and build digest.
+  The hub refuses any difference with `BuildMismatch`, which names the side to upgrade, and opens nothing.
+- On the hub, `local.system-tools.sd-serve` runs the tailnet listener; `local-machine-setup/README.md` installs it.
+
+| | `--loopback` | Tailnet (no flag) |
+| --- | --- | --- |
+| Binds | `127.0.0.1` | this node's Tailscale IPv4 address |
+| Admits | a session that sends the token from `<database>.serve.token` (mode 0600) | an untagged node of this node's owner |
+| Token | fresh at each start, removed at exit | none |
+| Opens | the file the session names, or the served one | the served database only |
+| Used by | `sd-db.sh test --remote` | satellites |
+
+Loopback is not a user boundary: every local account reaches `127.0.0.1`, so the token checks the account.
+
+### Peer identity on the tailnet
+
+The listener takes the peer from the TCP socket, never from a frame.
+`sd_db.tailnet` asks `tailscale whois --json --proto=tcp` for the node and its owner.
+The dashboard's direct listener on 8768 reads the same rules.
+Before anything opens, the listener refuses:
+
+- a tagged node, an expired node, or a node that does not own the address;
+- a login other than this node's owner;
+- this node's own Tailscale addresses;
+- a session that names a database path.
+
+Each refusal goes to the log before any SQL runs.
+`serve` does not start on a tagged node or while Tailscale is not running.
+
+`whois` names a node's owner, not the local account that dialed.
+So every process on an admitted satellite is trusted, service accounts included.
+The refusal of the hub's own addresses keeps a second account on the hub out.
+The design records this trust boundary under Q3.
+
+### What a session may not run
+
+SQLite's authorizer on each session's connection refuses these statements:
+
+- `ATTACH`, and every `VACUUM`, which SQLite authorizes as an `ATTACH`;
+- `load_extension`;
+- a `PRAGMA` not in `PRAGMAS` of `sd_db/serve.py`, and one that sets a value not in `PRAGMAS_WITH_ARGUMENT`;
+- `BEGIN`, `COMMIT` and `ROLLBACK` that the hub does not route, whatever the text;
+- a `query_only` setting inside a transaction the hub holds.
+
+The client gets `StatementRefused`, which is also a `sqlite3.DatabaseError`.
+The refused statement does not run, and the session continues.
+
+### Hub-only verbs
+
+A file lock or a directory beside the database exists on the hub only.
+So off the hub each verb that needs one raises `HubOnly` before it locks or writes.
+The message names the verb and the hub.
+
+- the `sd-ship` repository lock, and the control gate of service controls and restore;
+- `backup`, `restore`, `init` and `migrate`;
+- runner controls and the runner's executions directory;
+- `repo remove` and `item remove`;
+- the retention and executions prunes;
+- the publication journal and the `sd writing` cutover.
+
+`ledger.reserve` raises `LedgerRefused` with scope `hub`: provider calls are charged on the hub.
+`ledger.release_orphans` sweeps nothing off the hub, because it asks the local kernel about owner pids.
+
+### A lost `COMMIT`: `request_outcome`
+
+A write transaction over the wire carries a request id R, a ULID the client makes at `BEGIN IMMEDIATE`.
+The session owns R before any statement runs, and the hub refuses an R it has seen.
+At `COMMIT` the hub inserts the `request_outcome` row on the same connection, then commits.
+The row and the writes land together or not at all.
+A transaction that wrote nothing gets no row.
+
+When the answer to `COMMIT` is lost, the client asks the hub `outcome(R)`:
+
+| Answer | Meaning | The client |
+| --- | --- | --- |
+| `recorded` | the transaction committed | returns, and runs nothing again |
+| `in_flight` | a session still owns R | asks again, with a backoff |
+| `absent` | the transaction did not commit | raises `TransactionLost(R)`; run the verb again, under a new id |
+
+When the outcome is still unknown after 60 seconds (`OUTCOME_BOUND`), the client raises `UnknownOutcome(R)`.
+Do not run the verb again until the hub answers for R.
+
+- A plain `BEGIN` opens a read transaction under `query_only`: no R and no row.
+- A session silent for 4 seconds inside an open transaction is closed, which rolls it back.
+  That is below the 5-second `BUSY_TIMEOUT`, so a hub writer behind an abandoned satellite gets the lock.
+- No `request_outcome` row is ever deleted (the operator's ruling of 2026-10-04).
+- A local connection ignores R, so the local suite is unchanged.
+
+### `hub.json` on a satellite
+
+`~/.config/sd/hub.json` makes a machine a satellite.
+The machine-setup `satellite` stage writes it.
+
+    {"hub": "hub.example.test", "port": 8769}
+
+- No file: `connect` opens the local database.
+- The file and no answer from the hub: `HubUnreachable`, which names the hub. Nothing is created.
+- The file beside a local `sd.db`: `HubConflict`. A machine is a hub or a satellite, not both.
+- A file that names no usable hub: `HubConfigError`, never a fall back to a local file.
+- An explicit path other than the default opens locally, such as a backup target.
+- `init` and `migrate` refuse with `HubOnly`.
+- `token_file` is for a loopback hub only; a satellite's file names none.
 
 ## `judgments`: what the judgment models cost, by stage
 

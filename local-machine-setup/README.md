@@ -286,6 +286,29 @@ a narrower glob, so `candidates agent` reported `0 on this machine` while two
 were running. One `owned_agent_plists` helper now answers for both `capture`
 and `candidates`, so they cannot drift apart.
 
+### The sd hub and its satellites
+
+One machine runs each profile.
+`personal` is the sd hub: it holds the workflow database and serves it.
+A profile with a `.satellite` file is a satellite of that hub.
+`local-sd-db/README.md` describes the server, its refusals and `hub.json`.
+
+On the hub, `local.system-tools.sd-serve` runs `local-sd-db/sd-db.sh serve`, the tailnet listener on port 8769.
+It admits only the untagged nodes of the node's owner, by `tailscale whois`, and carries no token.
+
+1. Copy `examples/launchagents/local.system-tools.sd-serve.plist` to the config folder's `launchagents/`.
+2. List `local.system-tools.sd-serve` in `personal.agent`.
+3. Run `machine-setup.sh update agents --apply`. The agent loads in the operator's `gui/<uid>` domain.
+
+- The plist names an absolute path to `local-sd-db/sd-db.sh`; rename that folder or file, and reload the plist.
+- The plist sets `PATH`, because launchd's own `PATH` does not find `tailscale`.
+- The server never creates a database. Under the wrong home it exits and names the path; `KeepAlive` retries every 30 seconds.
+- The `sd` stage reports the label or the template `MISSING`, and a `~/.config/sd/hub.json` on the hub `EXTRA`.
+
+On a satellite, put the hub's name in `<profile>.satellite`, then run `machine-setup.sh update satellite --apply`.
+The stage writes `~/.config/sd/hub.json`, checks the pack's `sd_db` build against the hub's, and installs the hub's `providers.yaml`.
+The satellite runs none of the hub's agents and jobs; `SD_HUB_ONLY_AGENTS` in `machine-setup.sh` lists them.
+
 ### Drift alerts
 
 `status` runs every reporting stage — bin, dotfiles, envs, prompts, repos,

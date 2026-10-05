@@ -36,6 +36,7 @@ paths:
 - Renaming a script or folder a plist references requires reinstalling the plist.
 - The pack's registry holds this repo's root, and `sd-plugin.json` points at the dashboard entrypoint.
 - Renaming `local-project-dashboard` requires both a LaunchAgent and a plugin update.
+- `local.system-tools.sd-serve` names `local-sd-db/sd-db.sh`; renaming either means editing and reloading that plist.
 
 ## Wrappers and vendored code
 

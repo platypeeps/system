@@ -45,6 +45,9 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 - `local-sd-db` is a Python package (`sd_db`); its test entrypoint is `sd-db.sh test`.
 - `sd-db.sh` database verbs run an installed copy when it is built for a newer schema than the checkout; `SD_DB_LIBRARY` forces a side.
 - `local-sd-db` keeps its build backend in `_build.py`, so nothing is fetched to build it.
+- One hub holds the workflow database; a satellite reaches it over the tailnet; setup and refusals: `local-sd-db/README.md`.
+  - A satellite runs no hub-only agent: `SD_HUB_ONLY_AGENTS` in `local-machine-setup/machine-setup.sh` is the one list.
+  - A verb that needs a lock or a directory beside the database refuses with `HubOnly` off the hub; do not add a remote path for it.
 - `local-project-dashboard` runs the workflow dashboard; `dashboard.sh test` runs its suite, and `preflight`, `install`, `health` manage the server.
 - Read `local-project-dashboard/RUNTIME.md` before changing the service.
 - `local-*` folders run local services or tools; `network-testing` is iperf3/ping tooling.
