@@ -15,14 +15,7 @@ addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
   const C = window.shell.commands;
   const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
-  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-    return out;
-  }
-  const utc = t => t ? String(t).slice(0, 16).replace('T', ' ') + ' UTC' : 'not recorded';
+    const utc = t => t ? String(t).slice(0, 16).replace('T', ' ') + ' UTC' : 'not recorded';
   const ago = s => { const n = Math.round(((Date.parse(D?.read) || Date.now()) - new Date(s)) / 86400000); return n <= 0 ? 'today' : `${n}d ago`; };
 
   // Stages: sd_db.writing.STAGES minus inbox and declined (no piece holds them); the vault inbox leads as "Ideas".
@@ -202,11 +195,11 @@ addEventListener('DOMContentLoaded', () => {
   let target = null, reading = null;
   const P_ = o => byId(o.id);
   const nextOf = p => target && p.next.includes(target) ? target : p.next[0];
-  const write = (p, suffix, body) => post(`/api/items/${p.id}/${suffix}`, { ...body, revision: p.revision })
+  const write = (p, suffix, body) => window.shell.post(`/api/items/${p.id}/${suffix}`, { ...body, revision: p.revision })
     .then(out => { reading?.reread(); return out; }, e => { reading?.load(); throw e; });
   const parkWrite = (o, parked) => { const p = P_(o); return write(p, parked ? 'park' : 'revive', {})
     .then(out => ({ text: parked ? `#${p.id} parked` : `#${p.id} revived at ${SL[p.stage] || p.stage}`, revision: out.revision })); };
-  const parkUndo = parked => (o, v) => post(`/api/items/${o.id}/${parked ? 'revive' : 'park'}`, { revision: v.revision })
+  const parkUndo = parked => (o, v) => window.shell.post(`/api/items/${o.id}/${parked ? 'revive' : 'park'}`, { revision: v.revision })
     .then(() => reading?.reread(), e => { reading?.load(); throw e; });
   const CMDS = [
     { id: 'piece.stage', on: 'piece', label: 'Stage', key: 's', icon: 'arrow-up-right', risk: 'confirm',

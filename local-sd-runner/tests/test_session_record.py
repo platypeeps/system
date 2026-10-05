@@ -11,6 +11,7 @@ uncapped.
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -184,6 +185,49 @@ class Sessions(unittest.TestCase):
         clone = Path(result["work_path"])
         self.assertIn("stopped at step 2", (clone / session_record.NOTES_FILE).read_text())
         self.assertIn("total_cost_usd", (clone / ".git/sd-provider.log").read_text())
+        return result
+
+    def assert_read_back(self):
+        """The held session reached the store once the ending ran, and nothing is left held (sd:2503)."""
+        self.assertEqual([(r["usd"], r["tokens_in"]) for r in self.costs()], [(0.5, 10)])
+        self.assertEqual([(n["kind"], n["body"]) for n in self.notes()], [("followup", "stopped at step 2")])
+        self.assertEqual(list((self.config.database.parent / session_record.HELD_DIR).iterdir()), [])
+
+    def test_a_resolved_restore_reads_the_held_record_back(self):
+        intent = self.config.database.parent / "runner-restore-intent.json"
+        result = self.interrupt_provider(lambda connection, request: intent.write_text("{}"))
+        intent.unlink()
+        self.assertEqual(self.runner.recover(self.db), [])
+        self.assertEqual(store.run_state(self.db, result["id"])["end_step"], "released")
+        self.assert_read_back()
+
+    def test_a_failed_read_back_keeps_the_held_record_for_the_retry(self):
+        # sd:2503 review: `record_session` drops a database error, so the
+        # marker went with a recording that never landed.
+        intent = self.config.database.parent / "runner-restore-intent.json"
+        result = self.interrupt_provider(lambda connection, request: intent.write_text("{}"))
+        intent.unlink()
+        with patch.object(session_record.store, "record_session_notes", side_effect=sqlite3.OperationalError("disk I/O error")):
+            self.assertEqual(self.runner.recover(self.db), [])
+        held = store.run_state(self.db, result["id"])
+        self.assertIsNone(held["released_at"], held)
+        self.assertIn("held session record not written", held["detail"])
+        self.assertTrue(session_record.held(self.config.database, result["id"]).is_file())
+        self.assertEqual(self.runner.recover(self.db), [])
+        self.assertEqual(store.run_state(self.db, result["id"])["end_step"], "released")
+        self.assert_read_back()
+
+    def test_a_resolved_takeover_reads_the_held_record_back(self):
+        def takeover(connection, request):
+            connection.execute("UPDATE runner_run SET owner = 'another-owner' WHERE id = ?", (request["run"]["id"],))
+            connection.commit()
+        result = self.interrupt_provider(takeover)
+        successor = runtime.Runner(self.config, freezer=lambda path: None)
+        successor.owner = "another-owner"
+        store.begin_ending(self.db, result["id"], outcome="blocked", detail="taken over")
+        done = successor.finish(self.db, result["id"])
+        self.assertEqual(done["end_step"], "released", done)
+        self.assert_read_back()
 
     def test_a_restore_holds_the_interrupted_sessions_record(self):
         # sd:1270. The handler sd:1221 added wrote notes and cost while a

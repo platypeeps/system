@@ -27,5 +27,5 @@ off and says why.
 
 A v1 `/backlog` address answers 301 to `/tasks` with the query v1 read
 (`tasks_screen.from_backlog`, sd:2356); a repository path becomes the label
-Tasks filters on. v1's screen stays at `/classic/backlog`, in the palette,
-until its run selection is deleted.
+Tasks filters on. v1's screen and its run selection were deleted in sd:2622;
+`/classic/backlog` is a 404.

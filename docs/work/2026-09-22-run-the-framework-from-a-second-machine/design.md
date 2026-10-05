@@ -389,7 +389,7 @@ is unaddressed; the subsections give the reasons.
 | (a) | `$HOME` is assumed equal on both machines; 62 of 62 `repo` rows start `/Users/<login>/` | **Closed 2026-09-24.** Repository paths are home-relative (sd:1439, #554); no `HomeMismatch` refusal is built | `prd.md` Open decisions; seam 6; implement step 10 |
 | (b) | Directories beside the database have no satellite answer | **Decided.** Hub-only, refused by connection kind; the registry bytes are the one exception | Seam 2; hub table; implement steps 1, 6 |
 | (c) | TCC under launchd is moot by construction, and unstated | **Decided.** Stated below; one launchd run measures the serve agent | Implement step 8 |
-| (d) | The SSH agent is not involved, and that is unstated | **Decided.** Stated below; the deploy key covers the `common.cron` pushes | Implement step 10 |
+| (d) | The SSH agent is not involved, and that is unstated | **Decided.** Stated below; no `common.cron` job pushes since `0fa622c` | Implement step 10 |
 | (e) | The nightly prune of `request_outcome` names no job and no slot | **Moot 2026-10-04.** Q1 = B builds no prune; rows stay | Seam 5; Q1 |
 | (f) | `local.system-tools.sd-serve` carries an absolute path into this repository | **Decided.** Named as a gotcha with its three readers | Implement steps 8, 12 |
 | (g) | A satellite's held `BEGIN IMMEDIATE` blocks the runner and the dashboard | **Decided.** Open-transaction idle timeout of 4 s, below `BUSY_TIMEOUT`, with two measurements | A2 recovery; implement steps 2, 5, 10 |
@@ -557,14 +557,11 @@ The transport is TCP over Tailscale, not SSH. No verb this item adds runs
 git under launchd on either machine. A satellite `sd-ship` runs in the
 operator's shell, with the operator's `SSH_AUTH_SOCK`.
 
-The unattended git a satellite does run comes from `common.cron`, which
-every machine carries. `repo-sync-nightly` and `ai-apps-nightly` push
-generated commits to this repository with the per-machine deploy key. They
-set `GIT_SSH_COMMAND` to that key with the agent off
-(`local-autocommit/README.md`), and the key has no passphrase. So those
-pushes do not depend on the launchd `SSH_AUTH_SOCK` either. They do need
-the key registered, which is why step 10 makes it a prerequisite. The rest
-of the 02:45 slot on a laptop is covered by `CLAUDE.md`, "The 02:xx cron
+The unattended jobs a satellite runs come from `common.cron`, which every
+machine carries. Since `0fa622c` (2026-09-27), `repo-sync-nightly` and
+`ai-apps-nightly` write their files to the config folder and push nothing.
+`local-autocommit` and its per-machine deploy key are gone, so step 10
+needs no key. The rest of the 02:45 slot on a laptop is covered by `CLAUDE.md`, "The 02:xx cron
 slot needs a scheduled wake", satellite or not.
 
 ### (e) — the prune runs in `sd-db-backup`

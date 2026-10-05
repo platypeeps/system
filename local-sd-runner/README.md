@@ -119,7 +119,9 @@ reads both before judging its exit code. `.git/sd-notes.jsonl` holds one JSON
 object per line, `{"kind": "followup", "body": "..."}` with a kind of
 `followup`, `decision`, `proposal` or `question`; each becomes a `note` row on
 the item with the run as its session, and a malformed line blocks the run
-naming the line rather than dropping it. `.git/sd-stop.json`, `{"kind": ...,
+naming the line rather than dropping it. A restore or an ownership change that
+interrupts the session holds its notes and cost in the clone, and the ending
+records them once the hold resolves. `.git/sd-stop.json`, `{"kind": ...,
 "detail": ...}`, is the session's own hard stop. The three hard stops are the
 ones `prd.md` names -- a failing test, a blocking review finding open past the
 cap, a write outside the repository -- and the runner decides the first two

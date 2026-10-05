@@ -358,10 +358,14 @@ def configure(connection, item, changes, *, who, expected_revision=None) -> dict
         return item_state(connection, item)
 
 
-def snapshot(connection, key) -> dict:
+def snapshot(connection, key, latest=None) -> dict:
+    """`latest` is `_latest`'s checkpoints, read once for many keys; else this key is read."""
     key = _key(key)
-    row = connection.execute("SELECT id,body FROM state WHERE kind='checkpoint' AND key=? ORDER BY id DESC LIMIT 1",
-                             ("contribution:" + key,)).fetchone()
+    if latest is not None:
+        row = latest.get("contribution:" + key)
+    else:
+        row = connection.execute("SELECT id,body FROM state WHERE kind='checkpoint' AND key=? ORDER BY id DESC LIMIT 1",
+                                 ("contribution:" + key,)).fetchone()
     body = {"observation": None, "attention": [], "notifications": {}, "acknowledged": [], "ci_baseline": None}
     if row:
         try:
@@ -751,13 +755,25 @@ def observe_dependencies(connection, item, observations, *, observed_at, expecte
         return result
 
 
-def _freshness(connection, sources) -> dict:
+def _latest(connection, kind, prefix) -> dict:
+    """The newest state row of each key under `prefix`, in one statement (sd:2678).
+
+    A projection read each row's checkpoint and heartbeat on its own, one
+    round trip apiece over the wire. The range is the exact prefix, so the
+    (kind, key, id) index serves it.
+    """
+    end = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+    return {row["key"]: row for row in connection.execute(
+        "SELECT key,id,body FROM state WHERE id IN (SELECT max(id) FROM state WHERE kind=? AND key>=? AND key<? GROUP BY key)",
+        (kind, prefix, end))}
+
+
+def _freshness(heartbeats, sources) -> dict:
     times = [(source["observation"] or {}).get("observed_at") for source in sources]
     times = [value for value in times if value]
     result = {"status": "current" if times else "unknown", "reason": "" if times else "Not yet observed", "observed_at": max(times) if times else None}
     for source in sources:
-        row = connection.execute("SELECT body FROM state WHERE kind='heartbeat' AND key=? ORDER BY id DESC LIMIT 1",
-                                 ("contribution-observe:" + source["key"],)).fetchone()
+        row = heartbeats.get("contribution-observe:" + source["key"])
         if row:
             body = json.loads(row["body"])
             if body.get("ok") is False:
@@ -767,7 +783,7 @@ def _freshness(connection, sources) -> dict:
     return result
 
 
-def _projection_row(connection, row, metadata, sources) -> dict:
+def _projection_row(heartbeats, row, metadata, sources) -> dict:
     source = next((s for s in sources if _observed_url(s["key"])), sources[0])
     observation = source["observation"] or {}
     url = metadata.get("pull_url") or metadata.get("issue_url") or _observed_url(source["key"])
@@ -803,7 +819,7 @@ def _projection_row(connection, row, metadata, sources) -> dict:
         reasons.append("Local contribution has not been filed" if verified else "Local contribution has not been filed; test evidence is unverified")
     if waiting and not active:
         reasons.append(metadata.get("blocked_on") or "Waiting for contribution dependencies")
-    freshness = _freshness(connection, sources)
+    freshness = _freshness(heartbeats, sources)
     target = metadata.get("target_repo")
     return {**primary, "item_id": row.get("id"), "url": url,
             "repo": observation.get("repo") or row.get("repo") or ("/".join(url.split("/")[3:5]) if url
@@ -833,13 +849,15 @@ def projection(connection, *, repo=None) -> list[dict]:
     try:
         result = []
         registered_urls = set()
+        checkpoints = _latest(connection, "checkpoint", "contribution:")
+        heartbeats = _latest(connection, "heartbeat", "contribution-observe:")
         for row, metadata in _registered(connection):
-            sources = [snapshot(connection, f"item:{row['id']}")]
+            sources = [snapshot(connection, f"item:{row['id']}", checkpoints)]
             for prefix, name in OBSERVED.items():
                 if metadata.get(name):
                     registered_urls.add(metadata[name])
-                    sources.append(snapshot(connection, prefix + metadata[name]))
-            value = _projection_row(connection, row, metadata, sources)
+                    sources.append(snapshot(connection, prefix + metadata[name], checkpoints))
+            value = _projection_row(heartbeats, row, metadata, sources)
             if filters is None or filters.intersection({value["repo"], row.get("repo"), metadata.get("local_clone")}):
                 result.append(value)
         keys = connection.execute("SELECT DISTINCT key FROM state WHERE kind='checkpoint' AND ("
@@ -849,7 +867,7 @@ def projection(connection, *, repo=None) -> list[dict]:
             key = entry["key"][len("contribution:"):]
             if _observed_url(key) in registered_urls:
                 continue
-            value = _projection_row(connection, {}, {}, [snapshot(connection, key)])
+            value = _projection_row(heartbeats, {}, {}, [snapshot(connection, key, checkpoints)])
             if filters is None or value["repo"] in filters:
                 result.append(value)
         return sorted(result, key=lambda value: (LANES[value["lane"]], value["key"]))

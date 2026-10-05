@@ -242,6 +242,19 @@ class TheScript(ScreenCase):
         self.assertIsNone(out["error"])
         return out
 
+    # Stand-in header cells that keep their attributes; each starts with a stale aria-sort, so a draw must clear the others.
+    THS = """var THS = ['title', 'repo', 'mod', 'size'].map(k => { const a = { 'aria-sort': 'ascending' }; return { dataset: { sort: k }, a, setAttribute(n, v) { a[n] = v; },
+  removeAttribute(n) { delete a[n]; }, querySelector: () => ({ setAttribute() {} }) }; });
+var QSA = document.querySelectorAll; document.querySelectorAll = sel => sel === '.ledger th[data-sort]' ? THS : QSA.call(document, sel);
+const sortedThs = () => THS.filter(t => t.a['aria-sort']).map(t => [t.dataset.sort, t.a['aria-sort']]);
+const clickTh = k => ELS.thead.listeners.click[0]({ target: { closest: s => s === 'th[data-sort]' ? THS.find(t => t.dataset.sort === k) : null } });
+"""
+
+    def test_only_the_sorted_header_carries_aria_sort_and_a_click_moves_it(self):
+        """sd:2527: each column with an order sorts through its button; aria-sort is on the sorted th alone."""
+        out = self.run_page(self.THS + "clickTh('title'); R.a = sortedThs(); clickTh('title'); R.b = sortedThs(); clickTh('mod'); R.c = sortedThs();")
+        self.assertEqual([out["R"]["a"], out["R"]["b"], out["R"]["c"]], [[["title", "ascending"]], [["title", "descending"]], [["mod", "descending"]]])
+
     def test_the_design_commands_are_registered_with_their_ids_labels_keys_and_risks(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]);")
         self.assertEqual(out["R"]["reg"], COMMANDS)

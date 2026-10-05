@@ -687,6 +687,35 @@ class Runner:
         except (OSError, ValueError, subprocess.SubprocessError, SdDbError, sqlite3.Error):
             pass
 
+    def record_held(self, connection, run: dict, retained: Path) -> None:
+        """Record the session a recovery hold kept from the store, from the retained clone (sd:2503).
+
+        The ending runs only once no hold applies, and a run is released once,
+        so this reads the files back at most once per run. A write that fails
+        keeps the held file and holds the ending, whose retry records it; a
+        refusal, of the notes file or the cost row, reads the same on every
+        retry, so it drops the file. The cost is filed before the notes are
+        refused, and the retained clone keeps both files either way.
+        """
+        path = session_record.held(self.config.database, run["id"])
+        if not path.is_file():
+            return
+        try:
+            provider = json.loads(path.read_text())
+        except (OSError, ValueError):
+            provider = None
+        if isinstance(provider, dict):
+            # ponytail: a crash between this commit and the unlink below files
+            # the notes twice; the cost row is idempotent. Dedupe on the note
+            # body if that window ever bites.
+            try:
+                session_record.record(connection, database_write, {"run": run}, provider, retained)
+            except store.RunnerRefused:
+                pass
+            except (OSError, ValueError, SdDbError, sqlite3.Error) as error:
+                raise store.RunnerRefused(f"held session record not written: {error}") from error
+        path.unlink(missing_ok=True)
+
     def _execute(self, connection, request: dict, *, command=None, environment=None, provider=None, check=None) -> dict:
         ident = request["run"]["id"]
         self.persist(connection, ident)
@@ -881,9 +910,14 @@ class Runner:
             except store.RunnerRefused:
                 recovery_hold = True
             if interrupted and not recovery_hold:
-                # On a hold the notes and usage files stay in the clone, which
-                # the ending retains once the hold is resolved.
                 self.record_session(connection, *interrupted)
+            elif interrupted:
+                # On a hold the notes and usage files stay in the clone, which
+                # the ending retains and reads back once the hold is resolved.
+                try:
+                    session_record.hold(self.config.database, ident, interrupted[1])
+                except OSError:
+                    pass  # The hold's own failure stands; the clone keeps both files.
             if joined and not recovery_hold:
                 self.pending_endings[ident] = {"run": dict(request["run"]), "outcome": outcome,
                                                "detail": detail, "exit_code": exit_code}
@@ -953,6 +987,7 @@ class Runner:
                 run = self.persist(connection, ident, ignored_manifest=json.dumps(manifest, sort_keys=True))
             storage.preserve_ignored(retained, manifest, progress=beat, floor_gb=self.config.floor_gb)
             self.persist(connection, ident, end_step="retained")
+            self.record_held(connection, run, retained)
             log = retained / ".git/sd-provider.log"
             result = database_write(connection, store.release, ident, output_path=str(log) if log.exists() else None, exit_code=exit_code)
             journal.persist(self.config.database, result)
