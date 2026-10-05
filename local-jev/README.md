@@ -326,7 +326,9 @@ report counts it separately.
 
 A shadow `choice` records the caller's answer as its position in the
 criteria, the same shape as the judgment's. A `noul` records `yes` as 1 and
-`no` as 0, the words `--gate` prints.
+`no` as 0, the words `--gate` prints. Under a `--gate` other than 0.5 it
+records no number: the report reads every noul at 0.5 and no row keeps the
+gate, so that pair is counted and not compared.
 
 ### Live paired mode
 

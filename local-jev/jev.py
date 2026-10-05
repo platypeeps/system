@@ -717,6 +717,12 @@ def baseline_answer(args, own) -> str | None:
     A key that is not one of the criteria, or text that is not a number, is
     dropped and the row is kept, as `cmd_record` does.
 
+    A `noul` under a `--gate` other than 0.5 is dropped the same way. The
+    report reads every noul at 0.5 and no row says which gate the caller
+    used, so a `no` against 0.8 would be compared on the wrong side of a 0.7
+    judgment. `changed` on the judgment's row still compares the printed
+    words.
+
     The criteria are the ones the verb parsed when it ran. When it never ran
     -- switched off, unkeyed -- they are parsed here, and a parse that fails
     (a file gone, JSON that is not an object) is no answer, never an error:
@@ -726,9 +732,14 @@ def baseline_answer(args, own) -> str | None:
     """
     try:
         word = str(own).strip().lower()
-        if getattr(args, "verb", None) == "noul" and word in ("yes", "no"):
-            # The words `--gate` prints, as the probability's side of 0.5.
-            return "1" if word == "yes" else "0"
+        if getattr(args, "verb", None) == "noul":
+            # ponytail: counted, not compared. Store the gate on the row when
+            # a caller with a real yes/no answer gates away from 0.5.
+            if getattr(args, "gate", None) not in (None, 0.5):
+                return None
+            if word in ("yes", "no"):
+                # The words `--gate` prints, as the probability's side of 0.5.
+                return "1" if word == "yes" else "0"
         if getattr(args, "verb", None) != "choice":
             return judged(own)
         criteria = _EVENT.get("_criteria") if _EVENT is not None else None

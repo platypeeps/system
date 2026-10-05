@@ -593,6 +593,28 @@ class LivePaired(MeteringCase):
                        "--fallback", "SENTINEL-NOT-A-TIER", "--baseline", "yes"])
         self.assertEqual(self.rows()[0]["changed"], "no")
 
+    def test_a_baseline_under_a_gate_other_than_a_half_is_no_number(self):
+        """`judgments compare` reads every noul at 0.5. Under `--gate 0.8` a
+        0.7 prints `no`; the caller's `no` stored as 0 would then read as a
+        disagreement the caller never saw. The row is kept without a number,
+        so the pair is counted and not compared, and `changed` still says
+        what the printed words did."""
+        Stub.noul_value = 0.7
+        for flag, printed in (("--baseline", "no\n"), ("--shadow", "no\n")):
+            with self.subTest(flag=flag):
+                code, out = self.run_main(["noul", "is it?", "--gate", "0.8",
+                                           flag, "no"])
+                self.assertEqual((code, out), (0, printed))
+                judged, baseline = self.rows()[-2:]
+                self.assertEqual((judged["answer"], judged["changed"]),
+                                 ("0.7", "no"))
+                self.assertEqual(baseline["arm"], "baseline")
+                self.assertIsNone(baseline["answer"])
+        # A number of the caller's own has the same problem: 0.6 is `no` at
+        # 0.8 and would be read as yes.
+        self.run_main(["noul", "is it?", "--gate", "0.8", "--baseline", "0.6"])
+        self.assertIsNone(self.rows()[-1]["answer"])
+
     def test_a_numeric_baseline_is_compared_as_a_number(self):
         """`score` prints `2.0`; a caller's own scale says `2`. They agree."""
         Stub.score_value = 2.0

@@ -462,7 +462,8 @@ row a shadow call writes under the same pair id (sd:2761). The line gives
 agreements over comparable pairs, the percent, and the five most common
 disagreements as `old→arm` values: 1 or 0 for a noul (yes or no), a position
 for a choice, a rounded level for a score. A pair whose old answer is not a
-number, such as a `--fallback` marker, is counted and not compared. A stage
+number, such as a `--fallback` marker or a noul asked under a `--gate` other
+than 0.5, is counted and not compared. A stage
 with no such pair says `no paired samples with the old mechanism`.
 
 ## Automatic provider selection

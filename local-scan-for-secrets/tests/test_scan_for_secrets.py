@@ -169,6 +169,8 @@ class TheLocalJudgment(unittest.TestCase):
             os.environ, HOME=str(self.root / "home"), SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
             PATH=f"{self.root / 'bin'}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             JEV_COMPARE_KEV_URL="http://127.0.0.1:%d/v1/systemone" % self.kev.server_address[1],
+            # Pinned on: an operator's own JEV_ENABLED=0 would switch every call here off.
+            JEV_ENABLED="1",
             JEV_FLAG_FILE=str(self.root / "config" / "enabled"), JEV_SHADOW="0", JEV_METER="0",
             TYPESAFE_API_KEY="test-key", JEV_URL=remote + "/v1/systemone",
             JEV_COMPARE_KEV="1", JEV_COMPARE_HAIKU_VIA="anthropic",
@@ -187,7 +189,10 @@ class TheLocalJudgment(unittest.TestCase):
         return (result.returncode, result.stdout, result.stderr)
 
     def test_the_scan_is_the_same_with_the_stage_on_off_and_kev_down(self):
-        without = self.seen(self.scan(PATH=self.env["PATH"].split(":", 1)[1]))
+        # Without this case's `jev`. The inherited PATH may hold an installed
+        # one, so the stage is switched off as well.
+        without = self.seen(self.scan(PATH=self.env["PATH"].split(":", 1)[1],
+                                      JEV_SECRET_SCAN="0"))
         self.assertEqual(without[0], 2, without)
         self.assertEqual(self.kev.seen, [])
         cases = {"on": {}, "off": {"JEV_SECRET_SCAN": "0"},
