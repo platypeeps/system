@@ -1,5 +1,5 @@
 ---
-title: Jev experiment, journal entry 2 — keep, swap or drop the review-tier model
+title: Jev experiment, journal entry 2 — is the review tier worth having?
 created: 2026-10-05
 item: sd:2764
 ---
@@ -28,9 +28,22 @@ A pass's `report` carries `subject` (base, head, paths, lines), `route` (tier, r
 A checkpoint body that is not valid JSON is skipped and counted; 266 since 2026-09-09 at plan time.
 
 **Replay scope.** Every distinct reviewed head since 2026-09-09, keyed `coalesce($.reviewed_head, $.head)`: 2,222 at plan time.
-Heads from 2026-09-09 to 2026-09-20 predate the Jev reading but carry review findings, so they add labelled cases.
-The replay rebuilds a state for every head and runs every arm on it.
-Hosted arms beyond the paper subset wait for the operator's confirmation of the wider re-send (see the pre-registration's stopping rule).
+The replay rebuilds a state for every head and runs every local arm on it; hosted arms follow the pre-registration's ruling R2.
+
+**Confirmatory and exploratory** (ruling #10070). The pre-registration defines three populations:
+
+| Population | Heads | Role |
+|---|---|---|
+| C1: first checkpoint 2026-09-09 to 2026-09-20 | about 750, before any Jev reading | confirmatory |
+| C2: 14 days of live shadow under sd:2761 | as many as the window holds | confirmatory |
+| E: 2026-09-21 to 2026-10-05 | about 1,472, holding entry 1's 779 | exploratory |
+
+Nobody reads a C1 or C2 outcome before that population's answers are sealed (their hashes on sd:2764).
+E is exploratory because the planner saw outcome counts for it before registration; the pre-registration's disclosure lists them.
+
+**C2 needs its own states.** The live shadow records each arm's answer in the live ledger with the subject as join key, and no state.
+The checkpoint of the same head supplies the state for the heuristic and the label, joined on the subject's 12-character SHA prefix.
+A C2 head whose Jev row carries no subject is dropped and counted.
 
 **Two extractions disagree.** Read-only queries on 2026-10-05 gave:
 
@@ -47,7 +60,7 @@ Over 2026-09-21 to 2026-10-05, extraction B gives 1,472 heads and 20 disagreemen
 Step 0 of `implement.md` settles which extraction entry 1 used, before any label is read and before anything is published.
 The pre-registered prediction about "the 28" depends on it.
 
-**Paper subset.** The heads step 0 finds behind entry 1's numbers, reported apart.
+**Paper subset.** The heads step 0 finds behind entry 1's numbers, inside E, reported apart.
 
 **Selection bias.** In the 2026-09-21 to 2026-09-29 window, about 185 reviewed heads carry no reading.
 There Jev declined, fell below `--unsure-below 0.6`, or was off.
@@ -109,7 +122,7 @@ All five arms answer the same question over the same state. None sees another's 
 | Heuristic | the function below, offline | 0 | no |
 | Jev | `jev.post` with the payload `jev.build_payload` makes | list price | TypeSafe |
 | Kev-4B | `source:local-jev/jev_compare.py::kev_arm` | 0 marginal | no |
-| Haiku 4.5 | `source:local-jev/jev_compare.py::haiku_arm`, transport `anthropic` or `openrouter` | list price | Anthropic, or OpenRouter and Anthropic |
+| Haiku 4.5 | `source:local-jev/jev_compare.py::haiku_arm`, transport `anthropic` (ruling #10070), keyed by `JEV_COMPARE_ANTHROPIC_KEY` | list price | Anthropic |
 
 The replay calls Jev with both comparison switches unset, so `jev.post` starts no child arm.
 It then runs the Kev and Haiku arms in-process on the same redacted payload.
@@ -150,8 +163,9 @@ Analysis reports each arm raw and floored; the decision reads the raw answer, be
 
 **Ledger isolation.** Replay rows must not land under the live stage `JEV_SD_REVIEW`.
 They would distort `judgments compare` for the live stage and sd:2761's shadow agreement.
-The replay writes to an experiment ledger through `JEV_METER_DB`, a database file in the raw data folder.
-If no supported way creates that file at the library schema, the replay uses caller `jev-experiment` and stage `JEV_EXPERIMENT_TIER` in the live ledger.
+The replay writes to a separate experiment database through `JEV_METER_DB`: `/Volumes/local/repo-storage/system/jev-experiment/experiment.db` (ruling #10070).
+The file is created at the `sd_db` library's schema before the first call; `jev_meter.ready` refusing it stops the replay, because an arm with no ledger does not run.
+Nothing from the replay goes to the live ledger.
 
 ## Labels
 
@@ -161,16 +175,16 @@ The review that ran at each head is the label source.
 Its findings sit in the same checkpoint: `report.findings`, each with `disposition` (`blocking` or `advisory`) and `severity`.
 
 - **blocking@head**: the first pass at that head with `completed_reviews` > 0 has at least one `blocking` finding.
-- **Too low**: an arm answers `skip` and blocking@head holds; or it answers `cheap` and a `high` blocking finding exists.
+- **Unsafe skip**: an arm answers `skip` where the rules route a reviewing tier, and blocking@head holds or the hand label is a reviewing tier.
+  This is the confirmatory error. The four-tier "too low" for `cheap` (a `high` blocking finding) is reported on E only, as exploratory.
 - **Not shown wrong**: an arm answers lower than the rules and the review found nothing blocking.
   This is not "right"; a clean review is weak evidence.
 - A finding at a later head of the same branch is never used. A later fix in a shared file is not evidence of the right tier (sd:2107).
 
 The label measures "a reviewer found something it would block on", not a verified defect.
 At plan time the blocking rate among first readings was about 37%: 296 of 798.
-Across the replay scope, 1,335 of the 2,222 heads have at least one finding of any disposition in their first pass.
 
-Plan-time cross-tab of entry 1's readings (extraction A) against blocking@head:
+Plan-time cross-tab of entry 1's readings (extraction A, population E) against blocking@head, as disclosed in the pre-registration:
 
 | Rules | Jev | Heads | blocking@head |
 |---|---|---|---|
@@ -185,7 +199,7 @@ The label is written to the experiment ledger only with `label`, source `review-
 
 ### Blinded hand labels second
 
-**Sample.** Every head where at least two of the five arms give different raw tiers.
+**Sample.** Every C1 and C2 head where the five arms disagree on review or `skip`: at least one answers `skip` and at least one does not.
 Above 150, a seeded random draw stratified by disagreement pattern keeps 150; the seed is in the pre-registration (`docs/experiments/2026-10-05-jev-entry-2-preregistration.md`).
 Order is shuffled with the same seed.
 
@@ -211,8 +225,9 @@ The sheet shows no review finding, so the two label sources stay independent.
 **Known leaks of the blind.** The operator read the 28 `skip` commits for entry 1.
 The commit SHA lets anyone find the checkpoint. The results note says both.
 
-## Disagreement as a signal
+## Disagreement as a signal (exploratory)
 
+A raised tier changes no reviewer count, so this section is exploratory and runs on E.
 An escalation rule is a set of heads flagged for more attention.
 Three rules are tested, each against blocking@head:
 
@@ -231,7 +246,7 @@ For each rule:
 Only Jev, Kev and Haiku report distributions.
 Two curves per arm, binned in tenths with the ledger's `band_of`:
 
-1. **Need for care**: the probability mass on `standard` and `deep` against blocking@head.
+1. **Skip safety**: the probability mass on `skip` against the review-or-not label being `skip`.
    Reported with the Brier score and the expected calibration error.
 2. **Top-choice confidence** against agreement with the hand label, on the labelled sample.
 
@@ -314,7 +329,7 @@ Expected hosted spend for the replay of 2,222 heads is under $5, nearly all of i
 | `manifest.json` | pre-registration commit, population hash, heuristic hash, pack and system SHAs, models, start and end |
 | `population.jsonl` | one state per head, with alias, base, head, routed tier, blocking@head |
 | `replay/<arm>.jsonl` | one answer per head: tier, distribution, tokens, cost, wait |
-| `experiment.db` | the experiment ledger, if `JEV_METER_DB` works (see Ledger isolation) |
+| `experiment.db` | the experiment ledger, through `JEV_METER_DB` (see Ledger isolation) |
 | `labels/` | `sheet.csv`, `sheet.md`, `key.csv`, the filled sheet |
 | `injection/`, `scanner/` | inputs, answers |
 | `results.md` | each hypothesis, its number, its query |
