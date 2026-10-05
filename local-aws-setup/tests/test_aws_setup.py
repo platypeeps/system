@@ -331,6 +331,19 @@ class DocumentationCase(unittest.TestCase):
             self.assertIn("--region", command, command)
 
 
+    def test_a_per_account_policy_name_is_documented(self):
+        # An account file may name its own policy, for an account whose
+        # agent-base belongs to someone else; the help, README and example
+        # used to show POLICY_NAME as a shared setting only.
+        help_text = subprocess.run(
+            ["/bin/sh", str(SCRIPT), "--help"], capture_output=True, text=True,
+        ).stdout
+        account_block = help_text.split("Account file", 1)[1].split("Shared settings", 1)[0]
+        self.assertIn("POLICY_NAME", account_block)
+        self.assertIn("| `POLICY_NAME` |", README.read_text())
+        example = HERE.parent / "accounts" / "example.env.example"
+        self.assertIn("#POLICY_NAME=", example.read_text())
+
 class CommandCase(unittest.TestCase):
     """What the commands do, watched call by call."""
 
@@ -382,6 +395,17 @@ class CommandCase(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("--region eu-west-1", done.stderr)
         self.assertIn("DRY_RUN: aws --profile admin-x --region eu-west-1", done.stderr)
+
+    def test_an_account_policy_name_overrides_the_shared_one(self):
+        box = self.ready(POLICY_NAME="account-policy")
+        (box.config / "aws-setup" / ".env").write_text("POLICY_NAME=shared-policy\n")
+        box.rule("iam", "get-policy", exit=255)
+        done = box.run("apply", "x", DRY_RUN="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        named = " ".join(" ".join(c["rest"]) for c in box.calls()) + done.stderr
+        self.assertIn("policy/account-policy", named)
+        self.assertIn("--policy-name account-policy", done.stderr)
+        self.assertNotIn("shared-policy", named)
 
     def test_a_dry_run_previews_the_branch_it_would_really_take(self):
         # get-policy is read-only, so a dry run asks it. Skipping it printed a

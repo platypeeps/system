@@ -88,9 +88,12 @@ names another folder. Start from local-aws-setup/accounts/example.env.example:
   AGENT_PROFILE  CLI profile holding its key                 (default: agent-<name>)
   AGENT_REGION   region written to AGENT_PROFILE             (default: us-east-1)
   S3_BUCKETS     space-separated bucket names                (default: none)
+  POLICY_NAME    managed policy name in this account; overrides the shared
+                 setting below, e.g. where another agent-base already exists
 
 Shared settings (environment, or <config>/aws-setup/.env — see .env.example):
-  POLICY_NAME       managed policy name            (default: agent-base)
+  POLICY_NAME       managed policy name            (default: agent-base;
+                    an account file may set its own)
   MANAGED_TAG_KEY   tag marking agent-managed EC2  (default: claude-managed)
   SIMULATE_PROFILE  profile used by simulate       (default: default)
 HELPEOF
