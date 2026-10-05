@@ -128,16 +128,19 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(self.plan({path: '"EnvironmentVariables": {}\n'}),
                          [f"report needs local-project-dashboard install ({path})", "restart dashboard"])
 
-    def test_plan_reports_a_schema_change_and_does_not_restart_sd_serve(self):
+    def test_plan_reports_a_schema_change_and_holds_every_restart(self):
         self.assertEqual(self.plan({"local-sd-db/sd_db/schema/002_x.sql": "x\n",
-                                    "local-sd-db/sd_db/remote.py": "x\n"}),
-                         ["report needs migration (local-sd-db/sd_db/schema/002_x.sql)"])
+                                    "local-sd-db/sd_db/remote.py": "x\n",
+                                    "local-project-dashboard/sd_dashboard/app.py": "x\n",
+                                    "local-sd-runner/sd_runner/cli.py": "x\n"}),
+                         ["report needs migration (local-sd-db/sd_db/schema/002_x.sql); restart after migrate"])
 
     def test_apply_of_reports_only_calls_nothing(self):
-        self.change({"local-sd-db/sd_db/schema.py": "SCHEMA_VERSION = 2\n"})
+        self.change({"local-sd-db/sd_db/schema.py": "SCHEMA_VERSION = 2\n",
+                     "local-project-dashboard/sd_dashboard/app.py": "x\n"})
         result = self.run_deploy("apply")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("report needs migration (local-sd-db/sd_db/schema.py)", result.stdout)
+        self.assertIn("report needs migration (local-sd-db/sd_db/schema.py); restart after migrate", result.stdout)
         self.assertEqual(self.calls.read_text(), "")
 
     def test_apply_restarts_each_service_in_its_safe_form(self):

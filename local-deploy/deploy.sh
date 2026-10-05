@@ -18,8 +18,8 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> | test | h
           action per line; an empty plan prints nothing and exits 0:
             report needs <folder> install (<path>)  a LaunchAgent plist, or the
                     code that writes one, changed; never applied
-            report needs migration (<paths>)  local-sd-db's schema changed;
-                    sd-serve is then not restarted
+            report needs migration (<paths>); restart after migrate
+                    local-sd-db's schema changed; nothing restarts
             restart sd-serve    local-sd-db/ changed
             restart dashboard   local-project-dashboard/ changed
             restart runner      local-sd-runner/ changed
@@ -58,12 +58,14 @@ plan() {
   } | sort -u | while read -r path; do
     echo "report needs ${path%%/*} install ($path)"
   done
+  # New dashboard or runner code may read a schema that does not exist yet,
+  # and migrate.py wants both stopped: a schema change holds every restart.
   schema=$(changed 'local-sd-db/sd_db/schema*' | tr '\n' ' ')
   if [ -n "$schema" ]; then
-    echo "report needs migration (${schema% })"
-  elif [ -n "$(changed local-sd-db/)" ]; then
-    echo "restart sd-serve"
+    echo "report needs migration (${schema% }); restart after migrate"
+    return 0
   fi
+  [ -z "$(changed local-sd-db/)" ] || echo "restart sd-serve"
   [ -z "$(changed local-project-dashboard/)" ] || echo "restart dashboard"
   [ -z "$(changed local-sd-runner/)" ] || echo "restart runner"
 }

@@ -20,7 +20,7 @@ Changes under a `tests/` folder and to `*.md` files restart nothing.
 | `local-project-dashboard/` | restart dashboard |
 | `local-sd-runner/` | restart runner |
 | a `*.plist` or `*.plist.template`, or `.py`/`.sh` lines that name launchd keys or the plist environment | report `needs <folder> install`; the service still restarts |
-| `local-sd-db/sd_db/schema.py` or `local-sd-db/sd_db/schema/` | report `needs migration`; sd-serve does not restart |
+| `local-sd-db/sd_db/schema.py` or `local-sd-db/sd_db/schema/` | report `needs migration; restart after migrate`; nothing restarts, since new code may read a schema not yet there |
 
 The install check greps changed lines, because the dashboard and the runner write their plists in code.
 A plist value computed outside those lines goes unseen.
