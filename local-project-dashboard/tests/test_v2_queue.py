@@ -1,0 +1,322 @@
+"""The v2 Queue page (sd:2585).
+
+What this slice promises: `/api/queue` draws each registered repository's lane from `sd-ship lane list`, one row per
+item in one of five states (merging, next, building, blocked, landed), with load5 and the gate slots in the header.
+The only write is `/api/queue/move`: it runs `sd-ship lane move|hold|release` with exactly the page's item and place,
+under the session cookie, CSRF and Origin checks, and refuses a revision the queue has moved past.
+
+`sd-ship` and `sd` are stubs on PATH that answer from a fixture and log their arguments; no test reaches a real lane.
+One test runs the pinned pack's own `sd-ship` on a queue under a temporary `SD_LANE_ROOT`, so the order the page asks
+for is the order `lane list` then reports. `queue.js` runs under JavaScriptCore (osascript) against the stand-in shell
+`test_v2_tasks` defines. The look at 375 px is a manual check recorded on the pull request.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from sd_dashboard import queue_screen, v2
+
+from support import NOW, ScreenCase
+from test_v2_read import READ_SHELL
+from test_v2_registry import Registers
+from test_v2_tasks import SHELL, STAND_IN
+from test_v2_today import OSASCRIPT
+from test_workflow_actions import BrowserSession
+
+V2 = Path(v2.__file__).resolve().parent
+QUEUE_JS = (V2 / "static" / "queue.js").read_text(encoding="utf-8")
+MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+CLOCK = queue_screen._when(NOW)
+
+STUB = """#!/bin/sh
+# A stand-in for sd-ship and sd: log the arguments, answer from the fixture.
+printf '%s\\n' "$*" >> "$QUEUE_LOG"
+case "$*" in
+  *"lane list") cat "$QUEUE_FIXTURE" ;;
+  "gate status --json") printf '{"slots": 4, "holders": [{"slot": 1}], "waiters": [], "load": [1, 2, 3]}\\n' ;;
+  *) if [ -n "$QUEUE_REFUSE" ]; then printf '{"ok": false, "error": "%s"}\\n' "$QUEUE_REFUSE"; exit 3; fi
+     printf '{"ok": true}\\n' ;;
+esac
+"""
+
+
+def git(path, *args):
+    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+class Lane:
+    """A registered git checkout, its lane folder and a stubbed `sd-ship` on PATH that lists `entries`."""
+
+    def setUp(self):
+        super().setUp()
+        work = Path(self.tmp.name)
+        self.checkout = work / "system"
+        self.checkout.mkdir()
+        git(self.checkout, "init", "-q", "-b", "main")
+        git(self.checkout, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty",
+            "-m", "Dashboard: a page (#161)")
+        self.merged = git(self.checkout, "rev-parse", "HEAD")
+        self.repo(str(self.checkout))
+        self.lane = work / "lanes" / "system" / "lane"
+        (self.lane / "logs").mkdir(parents=True)
+        bin_dir = work / "bin"
+        bin_dir.mkdir()
+        for name in ("sd-ship", "sd"):
+            (bin_dir / name).write_text(STUB)
+            (bin_dir / name).chmod(0o755)
+        self.log, self.fixture = work / "calls.log", work / "list.json"
+        self.log.write_text("")
+        patch = mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}", "QUEUE_LOG": str(self.log),
+                                             "QUEUE_FIXTURE": str(self.fixture), "TZ": "UTC"})
+        patch.start()
+        self.addCleanup(time.tzset)
+        self.addCleanup(patch.stop)
+        time.tzset()
+        self.list(self.entries())
+        prepared = self.lane / "logs" / "prepare-3-20260906T115500.log"
+        prepared.write_text("prepare output")
+        os.utime(prepared, (CLOCK - 300, CLOCK - 300))
+        for name, text, age in (("gate-queue-notes-1.log", "", 120), ("gate-sd1775-2.log", json.dumps(
+                {"status": "success", "summary": "sd-check pass (check pass)", "head": "d" * 40}), 600),
+                ("gate-stale.log", "", 7 * 3600)):
+            (self.lane / name).write_text(text)
+            os.utime(self.lane / name, (CLOCK - age, CLOCK - age))
+
+    def list(self, entries):
+        self.fixture.write_text(json.dumps({"ok": True, "queue": str(self.lane / "queue" / "queue.json"), "entries": entries}))
+
+    def entries(self):
+        """One entry per state, plus history the page must leave out."""
+        return [
+            {"item": 9, "title": "Old failure, since retried", "status": "failed", "step": "prepare", "reason": "gate failed",
+             "finished_at": "2026-09-06T08:00:00Z"},
+            {"item": 7, "title": "Land the hub docs", "status": "merged", "merge_commit": self.merged,
+             "finished_at": "2026-09-06T10:00:00Z"},
+            {"item": 6, "title": "Landed yesterday", "status": "merged", "merge_commit": self.merged,
+             "finished_at": "2026-09-05T10:00:00Z"},
+            {"item": 5, "title": "Prepared only", "status": "prepared", "reason": "queued without --manual; merge by hand",
+             "finished_at": "2026-09-06T09:00:00Z"},
+            {"item": 4, "title": "Moved head", "status": "skipped", "reason": "the worktree's HEAD moved from the queued head",
+             "finished_at": "2026-09-06T09:30:00Z"},
+            {"item": 3, "title": "Merge the slice", "status": "running", "expected_head": "a" * 40,
+             "started_at": "2026-09-06T11:50:00Z"},
+            {"item": 9, "title": "Old failure, since retried", "status": "pending", "expected_head": "b" * 40,
+             "speculation": {"status": "success", "summary": "sd-check pass"}},
+            {"item": 12, "title": "Queue page", "status": "pending", "expected_head": "c" * 40, "held": True},
+            {"item": 1, "title": "Cancelled", "status": "cancelled", "finished_at": "2026-09-06T07:00:00Z"},
+        ]
+
+    def calls(self):
+        return [line.split() for line in self.log.read_text().splitlines()]
+
+
+class TheRows(Lane, ScreenCase):
+    """`queue_screen.document` from the fixture `lane list`, the gate log and `sd gate status`."""
+
+    def doc(self):
+        return queue_screen.document(self.connection, now=NOW)
+
+    def test_each_of_the_five_states_has_its_row(self):
+        rows = self.doc()["lanes"][0]["rows"]
+        self.assertEqual([(row["state"], row.get("item") or row.get("builder")) for row in rows], [
+            ("merging", 3), ("next", 9), ("next", 12), ("building", "queue-notes-1"), ("building", "sd1775-2"),
+            ("blocked", 5), ("blocked", 4), ("landed", 7)])
+
+    def test_merging_names_its_phase_and_elapsed_time(self):
+        merging = self.doc()["lanes"][0]["rows"][0]
+        self.assertEqual((merging["phase"], merging["elapsed"], merging["head"]), ("merge", 600, "a" * 12))
+
+    def test_next_rows_carry_order_gate_head_and_hold(self):
+        first, second = self.doc()["lanes"][0]["rows"][1:3]
+        self.assertEqual((first["position"], first["gate"], first["gate_summary"], first["head"], first["held"]),
+                         (1, "success", "sd-check pass", "b" * 12, False))
+        self.assertEqual((second["position"], second["gate"], second["held"]), (2, "not gated", True))
+
+    def test_building_reads_the_builder_gate_logs(self):
+        running, done = self.doc()["lanes"][0]["rows"][3:5]
+        self.assertEqual((running["gate"], running["summary"]), ("running", None))
+        self.assertEqual((done["gate"], done["summary"], done["head"]), ("pass", "sd-check pass (check pass)", "d" * 12))
+
+    def test_blocked_names_who_acts_and_why(self):
+        prepared, skipped = self.doc()["lanes"][0]["rows"][5:7]
+        self.assertEqual((prepared["who"], prepared["reason"]), ("operator", "queued without --manual; merge by hand"))
+        self.assertEqual((skipped["who"], skipped["status"]), ("builder", "skipped"))
+
+    def test_landed_today_carries_the_pull_request_and_merge_commit(self):
+        landed = self.doc()["lanes"][0]["rows"][-1]
+        self.assertEqual((landed["pr"], landed["commit"]), ("161", self.merged[:12]))
+
+    def test_the_header_reads_load_and_gate_slots(self):
+        doc = self.doc()
+        self.assertEqual(doc["gates"], {"running": 1, "cap": 4, "waiting": 0})
+        self.assertEqual(set(doc["load"]), {"load1", "load5", "load15", "trend"})
+        self.assertIn("next item boundary", doc["edits"])
+
+    def test_a_lane_that_cannot_be_listed_is_named_not_dropped(self):
+        self.fixture.write_text("not json")
+        doc = self.doc()
+        self.assertEqual((doc["lanes"], [p["repo"] for p in doc["problems"]]), ([], [str(self.checkout)]))
+
+
+class TheMove(Lane, BrowserSession):
+    """`/api/queue/move` runs one lane verb, and only under the page's session, CSRF and Origin."""
+
+    def move(self, action="up", item=12, **headers):
+        revision = queue_screen.revision(json.loads(self.fixture.read_text())["entries"])
+        payload = {"repo": str(self.checkout), "item": item, "action": action, "revision": revision}
+        return self.post("/api/queue/move", payload, **headers)
+
+    def test_a_reorder_calls_exactly_lane_move_with_the_item_and_place(self):
+        status, _, answer = self.move("up")
+        self.assertEqual((status, answer["ok"]), (200, True))
+        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"],
+                                        ["-C", str(self.checkout), "lane", "move", "12", "up"]])
+
+    def test_top_hold_and_release_call_their_verbs(self):
+        for action, verb in (("top", ["move", "12", "top"]), ("hold", ["hold", "12"]), ("release", ["release", "12"])):
+            self.log.write_text("")
+            status, _, _ = self.move(action)
+            self.assertEqual((status, self.calls()[-1]), (200, ["-C", str(self.checkout), "lane", *verb]))
+
+    def test_a_post_without_the_csrf_token_runs_nothing(self):
+        status, _, _ = self.move(**{"X-SD-CSRF": "0" * 64})
+        self.assertEqual((status, self.calls()), (403, []))
+
+    def test_a_post_from_another_origin_runs_nothing(self):
+        status, _, _ = self.move(Origin="https://example.test")
+        self.assertEqual((status, self.calls()), (403, []))
+
+    def test_a_stale_revision_is_refused_before_any_verb(self):
+        revision = queue_screen.revision(json.loads(self.fixture.read_text())["entries"])
+        self.list(self.entries()[::-1])  # the queue moved after the page read it
+        status, _, answer = self.post("/api/queue/move", {"repo": str(self.checkout), "item": 12, "action": "up", "revision": revision})
+        self.assertEqual((status, answer.get("reload")), (409, True))
+        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"]])
+
+    def test_an_unregistered_repository_or_unknown_action_runs_nothing(self):
+        status, _, _ = self.post("/api/queue/move", {"repo": self.tmp.name, "item": 12, "action": "up", "revision": "x"})
+        self.assertEqual((status, self.calls()), (400, []))
+        status, _, _ = self.move("cancel")
+        self.assertEqual((status, self.calls()), (400, []))
+
+    def test_a_lane_refusal_is_the_answer(self):
+        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:12 is running; the queue changes only between items"}):
+            status, _, answer = self.move("up")
+        self.assertEqual((status, answer["error"]), (400, "sd:12 is running; the queue changes only between items"))
+
+    def test_the_page_and_its_document_answer(self):
+        status, _, body = self.request("/queue", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        self.assertIn('<script src="/ui/queue.js?v=', body)
+        status, _, body = self.request("/api/queue", headers={"Cookie": self.cookie})
+        self.assertEqual((status, len(json.loads(body)["lanes"])), (200, 1))
+
+
+def pinned_pack() -> Path:
+    """The pack the gate pins (`SD_ACCEPTANCE_PACK`), else the `sd-ship` this machine runs."""
+    named = os.environ.get("SD_ACCEPTANCE_PACK")
+    return Path(named) if named else Path(os.path.realpath(queue_screen.command("sd-ship"))).parent.parent
+
+
+class TheRealLane(BrowserSession):
+    """The pinned pack's `sd-ship lane` on a temporary lane root: the page's reorder is what `lane list` shows."""
+
+    def setUp(self):
+        super().setUp()
+        self.checkout = Path(self.tmp.name) / "system"
+        self.checkout.mkdir()
+        git(self.checkout, "init", "-q", "-b", "main")
+        self.repo(str(self.checkout))
+        root = Path(self.tmp.name) / "lanes"
+        queue = root / "system" / "lane" / "queue"
+        queue.mkdir(parents=True)
+        entries = [{"item": n, "title": f"item {n}", "status": "pending", "expected_head": "e" * 40} for n in (1, 2, 3)]
+        (queue / "queue.json").write_text(json.dumps({"entries": entries}))
+        ship = pinned_pack() / "bin" / "sd-ship"
+        self.assertTrue(ship.is_file(), f"no pinned sd-ship at {ship}")
+        bin_dir = Path(self.tmp.name) / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "sd-ship").write_text(f'#!/bin/sh\nexec "{sys.executable}" "{ship}" "$@"\n')
+        (bin_dir / "sd-ship").chmod(0o755)
+        patch = mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}", "SD_LANE_ROOT": str(root)})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def order(self):
+        listed = queue_screen.lane_list(str(self.checkout))
+        return [entry["item"] for entry in listed["entries"] if entry["status"] == "pending"]
+
+    def test_a_reorder_from_the_page_is_the_order_lane_list_shows(self):
+        lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
+        status, _, answer = self.post("/api/queue/move", {"repo": str(self.checkout), "item": 3, "action": "top",
+                                                          "revision": lane["revision"]})
+        self.assertEqual((status, answer.get("ok")), (200, True), answer)
+        self.assertEqual(self.order(), [3, 1, 2])
+        status, _, _ = self.post("/api/queue/move", {"repo": str(self.checkout), "item": 1, "action": "down",
+                                                     "revision": lane["revision"]})
+        self.assertEqual((status, self.order()), (409, [3, 1, 2]))
+
+
+class TheScript(Lane, ScreenCase):
+    """queue.js against the document `queue_screen` builds from the fixture."""
+
+    def run_page(self, body, move=(200, {"ok": True, "edits": "Edits take effect at the next item boundary."})):
+        doc = queue_screen.document(self.connection, now=NOW)
+        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + READ_SHELL
+                  + f"\nvar DOC = {json.dumps(doc)}, MOVE = {json.dumps(list(move))};\n"
+                  + "ANSWER = (path, body) => path === '/api/queue' ? [200, DOC] : path === '/api/queue/move' ? MOVE : [404, { error: 'no answer' }];\n"
+                  + QUEUE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+                  + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
+                  + "function run() { OUT.R = R; OUT.toasts = []; return JSON.stringify(OUT); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out
+
+    def test_each_state_renders_its_glyph_and_label(self):
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        found = re.findall(r'data-state="(\w+)".*?<span class="g g-(\w+)" aria-hidden="true">(.)</span><span class="st">([A-Z]+)', lanes)
+        self.assertEqual([tuple(f) for f in found], [
+            ("merging", "live", "●", "MERGING"), ("next", "queued", "◌", "NEXT"), ("next", "caution", "▲", "HELD"),
+            ("building", "live", "●", "BUILDING"), ("building", "ok", "●", "BUILDING"),
+            ("blocked", "caution", "▲", "BLOCKED"), ("blocked", "caution", "▲", "BLOCKED"), ("landed", "ok", "●", "LANDED")])
+        self.assertIn("<b>operator acts</b>", lanes)
+        self.assertIn("PR #161", lanes)
+
+    def test_only_next_rows_carry_controls_and_the_ends_are_off(self):
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertEqual(lanes.count('data-act="up"'), 2)
+        self.assertRegex(lanes, r'data-act="up" data-item="9"[^>]*disabled')
+        self.assertRegex(lanes, r'data-act="down" data-item="12"[^>]*disabled')
+        self.assertIn('data-act="release" data-item="12"', lanes)
+
+    def test_a_click_posts_the_lane_revision_and_reads_again(self):
+        revision = queue_screen.document(self.connection, now=NOW)["lanes"][0]["revision"]
+        out = self.run_page(f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'down' }} }}); R.lanes = ELS.lanes.html;")
+        self.assertEqual(out["posts"], [["/api/queue/move", {"repo": str(self.checkout), "item": 9, "action": "down", "revision": revision}, 64]])
+        self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
+        self.assertIn("sd:9 moved down. Edits take effect", out["R"]["lanes"])
+
+    def test_a_refused_move_says_why_in_its_lane(self):
+        out = self.run_page(f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'up' }} }}); R.lanes = ELS.lanes.html;",
+                            move=(409, {"error": "The queue changed since the page read it.", "reload": True}))
+        self.assertIn('<p class="fail" role="alert">sd:9 not moved up: The queue changed since the page read it.</p>', out["R"]["lanes"])
+
+
+class TheRegistration(Registers, unittest.TestCase):
+    page, section, route, api = "queue", "Queue", "/queue", ("/api/queue", "/api/queue/move")
+
+
+if __name__ == "__main__":
+    unittest.main()
