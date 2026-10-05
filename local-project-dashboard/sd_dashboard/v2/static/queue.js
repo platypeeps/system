@@ -73,7 +73,8 @@
     const item = Number(b.dataset.item), action = b.dataset.act;
     try {
       const out = await window.shell.post('/api/queue/move', { repo: l.path, item, action, revision: l.revision });
-      said[l.path] = { ok: true, text: `sd:${item} ${DONE[action]}. ${out.edits || ''}` };
+      const order = out.pending ? ` Order now: ${out.pending.map(n => `sd:${n}`).join(', ')}.` : '';
+      said[l.path] = { ok: true, text: `sd:${item} ${DONE[action]}.${order} ${out.edits || ''}` };
     } catch (err) {
       said[l.path] = { ok: false, text: `sd:${item} not ${DONE[action]}: ${err.message}${err.stale ? '' : ' The queue is unchanged.'}` };
     }

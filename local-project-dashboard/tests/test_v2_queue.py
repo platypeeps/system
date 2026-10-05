@@ -266,6 +266,22 @@ class TheRealLane(BrowserSession):
                                                      "revision": lane["revision"]})
         self.assertEqual((status, self.order()), (409, [3, 1, 2]))
 
+    def test_a_write_between_the_check_and_the_verb_is_not_caught_and_the_answer_names_the_order(self):
+        # Best effort: the verbs take no revision and hold the queue lock only inside themselves, so another
+        # writer can land after the check. The answer carries the order the verb left, so the page shows it.
+        lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
+        listed = queue_screen.lane_list
+
+        def then_another_writer(path):
+            answer = listed(path)
+            queue_screen._run([queue_screen.command("sd-ship"), "-C", path, "lane", "move", "2", "top"], 30)
+            return answer
+        with mock.patch.object(queue_screen, "lane_list", then_another_writer):
+            status, _, answer = self.post("/api/queue/move", {"repo": str(self.checkout), "item": 3, "action": "top",
+                                                              "revision": lane["revision"]})
+        self.assertEqual((status, answer.get("pending")), (200, [3, 2, 1]), answer)
+        self.assertEqual(self.order(), [3, 2, 1])
+
 
 class TheScript(Lane, ScreenCase):
     """queue.js against the document `queue_screen` builds from the fixture."""

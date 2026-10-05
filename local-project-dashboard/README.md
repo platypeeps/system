@@ -128,6 +128,7 @@ Each item is one row: merging (phase, elapsed), next (order, gate, head), buildi
 Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names; set `sd.lane_root` where builders write them.
 Up, down, top, hold and release run `sd-ship lane move|hold|release` and nothing else.
 The page sends the lane's revision; a queue that changed since the read is refused, and the page reads it again.
+That check is best effort: a write that lands between the check and the verb is not caught, so a reorder answers with the order it left.
 The runner reads the queue at each item boundary, so an edit never changes a merge in progress.
 
 **Protection** at `/protection` is one table, one row per registered repository:

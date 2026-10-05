@@ -15,7 +15,9 @@ The five states, from each entry's `status`:
 
 Writes: `move` runs `sd-ship -C <repo> lane move|hold|release`, the queue's only writers. The verbs take no
 revision, so this compares the page's revision (a digest of the pending order and holds) with a fresh `lane list`
-first and refuses a stale one. The runner reads the queue again at each item boundary, so an edit takes effect there.
+first and refuses a stale one. That check is best effort: each verb holds the queue lock only inside itself, so a
+write that lands between the check and the verb is not caught. The answer names the order the verb left instead.
+The runner reads the queue again at each item boundary, so an edit takes effect there.
 """
 
 from __future__ import annotations
@@ -210,7 +212,7 @@ def document(connection, *, now: str = "") -> dict:
 
 
 def move(payload: dict):
-    """Check the page's request, then return the write: a fresh revision check and one lane verb."""
+    """Check the page's request, then return the write: a best-effort revision check, then one lane verb."""
     values = dict(payload)
     if (set(values) != {"repo", "item", "action", "revision"} or not isinstance(values["repo"], str)
             or type(values["item"]) is not int or not 1 <= values["item"] <= 9223372036854775807
@@ -234,5 +236,5 @@ def move(payload: dict):
         answer = _run([command("sd-ship"), "-C", path, "lane", *verb], WRITE_SECONDS)
         if not answer.get("ok"):
             raise ValueError(answer.get("error") or "sd-ship lane refused the change.")
-        return {"ok": True, "action": action, "item": values["item"], "edits": EDITS}
+        return {"ok": True, "action": action, "item": values["item"], "pending": answer.get("pending"), "edits": EDITS}
     return write
