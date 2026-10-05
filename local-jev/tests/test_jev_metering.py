@@ -623,6 +623,17 @@ class LivePaired(MeteringCase):
         judged, baseline = self.rows()
         self.assertEqual((judged["changed"], baseline["answer"]), ("no", "2"))
 
+    def test_a_choice_key_that_looks_like_a_number_is_compared_as_text(self):
+        """Criteria keys are text the caller wrote: `2` and `2.0` are two
+        routes, so a judgment of one against a baseline of the other changed
+        what the caller did. Only `score` and `noul` compare as numbers."""
+        Stub.choice_value = "2"
+        self.run_main(["choice", "which?", "--criteria", "2,2.0",
+                       "--baseline", "2.0"])
+        judged, baseline = self.rows()
+        self.assertEqual((judged["answer"], baseline["answer"], judged["changed"]),
+                         ("1", "2", "yes"))
+
     def test_a_choice_baseline_is_stored_as_its_position(self):
         Stub.choice_value = "desk"
         code, out = self.run_main(["choice", "which route?",
@@ -767,13 +778,30 @@ class TheShadowSwitch(MeteringCase):
         judged, baseline = self.rows()
         self.assertEqual((judged["arm"], judged["answer"], judged["shadow"]),
                          ("jev", "2.0", 1))
+        # The fallback is a marker, not the caller's old answer: the row is
+        # paired and carries no number, so `judgments compare` counts the
+        # pair and does not compare it.
         self.assertEqual((baseline["arm"], baseline["answer"], baseline["shadow"]),
-                         ("baseline", "1", 1))
+                         ("baseline", None, 1))
         self.assertIsNotNone(judged["pair"])
         self.assertEqual(judged["pair"], baseline["pair"])
         # The caller does not know the switch is on, so the row cannot say
         # whether the judgment would have changed what it did.
         self.assertEqual(judged["changed"], "unknown")
+
+    def test_a_switched_fallback_is_never_an_old_answer(self):
+        """A fallback that happens to read as a number, a yes or no, or one
+        of the criteria is still a marker (`tests/test_jev_contract.py`), and
+        only `--baseline` is the pair's old answer."""
+        self.switch_on()
+        for argv in (["noul", "q", "--gate", "0.5", "--fallback", "yes"],
+                     ["choice", "which?", "--criteria", "desk,phone",
+                      "--fallback", "desk"]):
+            with self.subTest(verb=argv[0]):
+                self.assertEqual(self.run_main(argv)[0], 0)
+                judged, baseline = self.rows()[-2:]
+                self.assertEqual((judged["changed"], baseline["answer"]),
+                                 ("unknown", None))
 
     def test_off_a_fallback_call_is_unchanged(self):
         code, out = self.run_main(["score", "how urgent?", "--levels", "a,b,c",

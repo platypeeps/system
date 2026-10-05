@@ -638,7 +638,7 @@ def position_of(key, criteria) -> str | None:
     return str(keys.index(key) + 1) if key in keys else None
 
 
-def _changed(outcome: str, declared, printed, fallback) -> str:
+def _changed(outcome: str, declared, printed, fallback, numeric=True) -> str:
     """Did the judgment change what the caller did?
 
     Three answers and one default. A caller that knows says so with
@@ -655,7 +655,8 @@ def _changed(outcome: str, declared, printed, fallback) -> str:
     answer the caller would really have used, and wins over it.
 
     Two numbers are compared as numbers: `score` prints `2.0`, a caller's
-    own scale says `2`, and those agree.
+    own scale says `2`, and those agree. Not a choice: its keys are text the
+    caller wrote, and `2` and `2.0` are two criteria.
     """
     if declared:
         return declared
@@ -666,7 +667,7 @@ def _changed(outcome: str, declared, printed, fallback) -> str:
     if outcome != "ok" or printed is None or fallback is None:
         return "unknown"
     left, right = printed.strip(), fallback.strip()
-    if NUMBER.match(left) and NUMBER.match(right):
+    if numeric and NUMBER.match(left) and NUMBER.match(right):
         return "yes" if Decimal(left) != Decimal(right) else "no"
     return "yes" if left != right else "no"
 
@@ -702,7 +703,8 @@ def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
     # whether or not the call failed, so it, and not the fallback, is what
     # the judgment is compared against.
     against = fallback if baseline is None else baseline
-    event["changed"] = _changed(outcome, declared, printed, against)
+    event["changed"] = _changed(outcome, declared, printed, against,
+                                numeric=event.get("primitive") != "choice")
     return write_event(event, env)
 
 
@@ -1705,8 +1707,10 @@ def main(argv=None, out=None, env=None, **kw) -> int:
         code = EXIT_UNCONFIGURED
     if own is not None:
         # Read before `flush` clears the call: a choice's criteria are noted
-        # on it.
-        answered = baseline_answer(args, own)
+        # on it. Under the switch a fallback is a marker, whatever it looks
+        # like, so only `--baseline` gives the pair an old answer to compare.
+        answered = (None if switched and baseline is None
+                    else baseline_answer(args, own))
     flush(outcome, cause=cause, fallback=fallback, baseline=own, env=env)
     if own is not None:
         write_baseline(args, env, pair=pair, own=answered, shadow=shadowed,
