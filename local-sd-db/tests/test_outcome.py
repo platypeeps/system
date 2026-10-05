@@ -654,14 +654,17 @@ class TheTransactionBoundary(OutcomeCase):
                     client.close()
         self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
 
-    def test_query_only_stays_the_clients_outside_a_read(self):
-        # The library reads it to tell a writable connection, and a `mode=ro`
-        # open may switch it off; neither holds a transaction for the hub.
+    def test_query_only_is_set_by_the_hub_alone(self):
+        # Outside a transaction too, so no path to probe is left; reading it
+        # stays allowed, since the library reads it to tell a writable
+        # connection.
         client = self.connect()
-        client.execute("PRAGMA query_only = ON")
-        with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
-            client.execute("INSERT INTO probe (name) VALUES ('o')")
-        client.execute("PRAGMA query_only = OFF")
+        for pragma in ("PRAGMA query_only = ON", "PRAGMA query_only=OFF"):
+            with self.subTest(pragma=pragma):
+                with self.assertRaisesRegex(remote.RemoteError, "query_only is the hub's"):
+                    client.execute(pragma)
+                self.assertFalse(client.in_transaction)
+        self.assertEqual(client.execute("PRAGMA query_only").fetchone()[0], 0)
         client.execute("INSERT INTO probe (name) VALUES ('o')")
         self.assertEqual(count(self.path), 1)
 
