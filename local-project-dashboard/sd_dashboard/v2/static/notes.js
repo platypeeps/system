@@ -155,24 +155,33 @@
       if (e.key === 'ArrowRight') { e.preventDefault(); window.notesDay(1); }
     });
 
-    // Quick notes: no sd store kind holds a loose note, and adding one is a pack change (sd:2120 records the decision), so a
-    // kept note stays on this page and says so. No verb is mocked: sd store add needs a registered kind.
-    const qn = [], qIn = $('qn-in'), qList = $('qn-list');
-    C.register({ id: 'quicknote.discard', on: 'quick note', label: 'Discard', key: 'd', risk: 'undo', cli: () => 'no CLI: sd store has no loose-note kind',
-      run: o => { const i = qn.indexOf(o.n); if (i >= 0) qn.splice(i, 1); o.at = i; paintQ(); return 'Quick note discarded'; },
-      undo: o => { qn.splice(o.at, 0, o.n); paintQ(); } });
+    // Quick notes (sd:2549): sdw.quick-note items, read from /api/notes/quick and kept through /api/notes/quick/add (sd store
+    // list and add). The server enforces the kind's rules; this side only skips an empty note. Shown: the newest QN_SHOWN.
+    const QN_SHOWN = 20, qIn = $('qn-in'), qList = $('qn-list'), qKeep = $('qn-keep');
+    let qn = null;
     function paintQ() {
-      put(qList, html`${qn.length ? qn.map(n => { const id = `q-${n.t}`; C.put({ id, type: 'quick note', label: n.text.slice(0, 40), n }); return html`<li class="qn">${n.text}<small>▲ Not saved: no loose-note kind in sd store · ${local(n.t)}</small>${C.rowActions(id)}</li>`; })
-        : html`<li><p class="empty">No quick notes. sd store has no kind for them yet, so this list starts empty on every visit.</p></li>`}`);
+      const notes = qn?.notes || [];
+      qKeep.disabled = !!qn?.unknown;
+      put(qList, qn === null ? html`<li><p class="empty">Reading quick notes…</p></li>`
+        : qn.error ? html`<li class="unknown"><b>▨ Not read.</b> ${qn.error}</li>`
+        : qn.unknown ? html`<li class="unknown"><b>▨ Not kept here yet.</b> ${qn.unknown}</li>`
+        : notes.length ? html`${notes.slice(0, QN_SHOWN).map(n => html`<li class="qn">${n.text}<small>${n.title}</small></li>`)}${notes.length > QN_SHOWN ? html`<li><p class="empty">${plural(notes.length - QN_SHOWN, 'older note')} in the vault, not shown.</p></li>` : ''}`
+        : html`<li><p class="empty">No quick notes yet.</p></li>`);
     }
-    function keep() {
-      const t = qIn.value.trim(); if (!t) { qIn.focus(); return; }
-      qn.unshift({ text: t, t: new Date().toISOString() }); qIn.value = ''; paintQ();
-      S.toast('Kept on this page only: sd store has no loose-note kind.');
+    const readQ = () => S.getJSON('/api/notes/quick').then(doc => { qn = doc; }, e => { qn = { error: e.message }; }).then(paintQ);
+    async function keep() {
+      if (!qIn.value.trim()) { qIn.focus(); return; }
+      qKeep.disabled = true;
+      try {
+        const out = await S.post('/api/notes/quick/add', { text: qIn.value });
+        qIn.value = '';
+        S.toast(`Kept in sdw.quick-note as ${out.title}.`);
+      } catch (e) { S.toast(`Not kept: ${e.message}`); }
+      await readQ();
     }
-    $('qn-keep').addEventListener('click', keep);
+    qKeep.addEventListener('click', keep);
     qIn.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); keep(); } });
-    paintQ();
+    paintQ(); readQ();
     S.suggest(['What did I merge today in system?', 'Which runs were blocked this week?', 'Draft this day\'s summary from its activity']);
     reader.load();
   });
