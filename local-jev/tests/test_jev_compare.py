@@ -832,6 +832,13 @@ class LocalOnly(CompareCase):
         self.assertEqual(sent["body"]["model"], "kev-latest")
         self.assertNotIn("authorization", sent["headers"])
 
+    def test_a_rejected_kev_key_names_kev_api_key(self):
+        Arm.status = 401
+        code, _, err = self.run_local(["noul", "is it?"])
+        self.assertEqual(code, 1)
+        self.assertIn("KEV_API_KEY", err)
+        self.assertNotIn("TYPESAFE_API_KEY", err)
+
     def test_no_typesafe_key_is_needed(self):
         code, out, _ = self.run_local(["noul", "is it?"], TYPESAFE_API_KEY="")
         self.assertEqual((code, out), (0, "0.81\n"))

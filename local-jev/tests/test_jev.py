@@ -495,7 +495,8 @@ class TestEnvFile(StubServer):
     def run_link(self, link, args, env):
         environ = dict(os.environ)
         # `jev.sh test` sources the operator's own .env, so drop what it set.
-        for name in ("TYPESAFE_API_KEY", "JEV_MODEL", "JEV_TRACES_URL", "JEV_TRACES_TIMEOUT"):
+        for name in ("TYPESAFE_API_KEY", "JEV_MODEL", "JEV_TRACES_URL", "JEV_TRACES_TIMEOUT",
+                     "JEV_SHADOW"):
             environ.pop(name, None)
         environ["JEV_URL"] = self.url
         environ["JEV_FLAG_FILE"] = self.switch
@@ -518,6 +519,15 @@ class TestEnvFile(StubServer):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(Stub.seen[-1]["auth"], "Bearer exported")
         self.assertEqual(Stub.seen[-1]["payload"]["model"], "exported")
+
+    def test_an_exported_shadow_switch_beats_the_env_file_both_ways(self):
+        link = self.copy("TYPESAFE_API_KEY=k\nJEV_SHADOW=1\n")
+        self.assertIn("shadow=on", self.run_link(link, ["status"], {}).stdout)
+        self.assertIn("shadow=off",
+                      self.run_link(link, ["status"], {"JEV_SHADOW": "0"}).stdout)
+        link = self.copy("TYPESAFE_API_KEY=k\nJEV_SHADOW=0\n")
+        self.assertIn("shadow=on",
+                      self.run_link(link, ["status"], {"JEV_SHADOW": "1"}).stdout)
 
     def test_without_a_key_anywhere_the_link_exits_three(self):
         link = self.copy("#JEV_MODEL=unset\n")

@@ -1147,6 +1147,12 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                 exc.close()   # an HTTPError is an open response, not just an exception
                 last = f"HTTP {exc.code}: {detail}" if detail else f"HTTP {exc.code}"
                 note(_cause="unavailable")
+                if exc.code == 401 and conf.get("local"):
+                    raise JevError(
+                        "HTTP 401: Kev rejected the key (set KEV_API_KEY to the "
+                        "key `kev.sh serve` uses, in "
+                        f"{system_tools_config.config_dir('kev') / '.env'})"
+                    ) from exc
                 if exc.code == 401:
                     raise JevError(
                         "HTTP 401: the API key was rejected "
