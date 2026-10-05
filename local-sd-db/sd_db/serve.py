@@ -68,8 +68,11 @@ without the prune, so no row is ever deleted:
   and ROLLBACK unless the hub routes them, whatever the text: a comment
   or a trailing statement cannot end a write transaction without its row
   (the review of 2026-10-04). A transaction a `SAVEPOINT` opens is a read
-  under `query_only`, and a script opens none. A client cannot set
-  `query_only` at all (the second review of 2026-10-04). The client does
+  under `query_only`. A script runs outside any transaction the hub
+  holds, carries no R, and must end the transaction it opens. A client cannot set
+  `query_only` inside a transaction the hub holds (the second review of
+  2026-10-04). A VACUUM's own BEGIN and COMMIT pass: SQLite refuses a
+  VACUUM inside a transaction. The client does
   not check this itself: a text `remote.statement` misses goes as a plain
   statement, and this refusal answers it.
 - A session silent for `IDLE_TIMEOUT` inside an open transaction is closed,
@@ -82,6 +85,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import os
+import re
 import secrets
 import signal
 import socket
@@ -118,6 +122,8 @@ READS = frozenset({sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FU
 #: or the REPLACE half of an upsert changes rows it does not count, but the
 #: first is `SQLITE_DROP_TABLE` and the second comes with its counted insert.
 ROWS = frozenset({sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE})
+#: A statement that is a VACUUM: Python runs one statement per `execute`.
+VACUUM = re.compile(r"\s*VACUUM\b", re.IGNORECASE)
 
 #: A test seam, `None` everywhere else: called as `_fault(point, session)` at
 #: `before-commit` (the `COMMIT` frame received, nothing recorded yet) and at
@@ -246,8 +252,6 @@ class Session(socketserver.BaseRequestHandler):
         self.traced: list[str] = []
         #: The hub runs or routes the statement now, so `_authorize` passes it.
         self.routing = False
-        #: An `executescript` runs now.
-        self.script = False
         #: Why `_authorize` refused the statement, for the error frame.
         self.denied: str | None = None
 
@@ -276,22 +280,20 @@ class Session(socketserver.BaseRequestHandler):
                 return sqlite3.SQLITE_OK
             return self._deny(f"{arg1} outside the hub's transaction handling; send BEGIN IMMEDIATE, "
                               f"BEGIN, COMMIT or ROLLBACK as the whole statement, with no comment")
-        if action == sqlite3.SQLITE_SAVEPOINT and self.script:
-            # A script's SAVEPOINT would open a transaction no frame holds,
-            # and its RELEASE would commit it. In `execute`, `_adopt` holds
-            # such a transaction as a read.
-            return self._deny(f"SAVEPOINT {arg2} outside the hub's transaction handling; "
-                              f"a script opens no transaction")
         if action == sqlite3.SQLITE_PRAGMA:
             # SQLite passes the pragma's name as `arg1` and its value as
             # `arg2`, whatever the case, spacing or schema prefix. Inside a
             # read the hub holds, `query_only` keeps the read's COMMIT or
-            # RELEASE from committing writes no id owns, so only the hub
-            # sets it: its own statements run in `_quiet`, under `routing`.
-            # Reading it stays allowed: the library reads it to tell a
-            # writable connection.
-            if (arg1 or "").lower() == "query_only" and arg2 is not None and not self.routing:
-                return self._deny("query_only is the hub's to set; a session reads it only")
+            # RELEASE from committing writes no id owns, so inside any
+            # transaction the hub holds, only the hub sets it: its own
+            # statements run in `_quiet`, under `routing`. Outside one it is
+            # the session's, which a read saves and restores: a backup of a
+            # database waiting for `migrate` switches it off on a `mode=ro`
+            # open. Reading it is always allowed.
+            if (arg1 or "").lower() == "query_only" and arg2 is not None \
+                    and self.kind is not None and not self.routing:
+                return self._deny("query_only is the hub's inside a transaction; "
+                                  "set it before BEGIN")
         return sqlite3.SQLITE_OK
 
     def _deny(self, reason: str) -> int:
@@ -329,8 +331,12 @@ class Session(socketserver.BaseRequestHandler):
             return self._begin_read(connection, frame.get("rid"), sql, params)
         if kind == "commit":
             return self._commit(connection, frame.get("rid"), lambda: connection.execute(sql, params))
-        if kind is not None:
+        if kind is not None or VACUUM.match(sql) and not connection.in_transaction:
             # ROLLBACK, or a BEGIN inside a transaction, which SQLite refuses.
+            # A VACUUM (a backup's `VACUUM INTO`) runs its own BEGIN and
+            # COMMIT, which the authorizer sees; SQLite refuses it inside a
+            # transaction, so they commit nothing of the session's. One
+            # behind a comment is refused.
             with self._routed():
                 return _answer(connection, connection.execute(sql, params))
         return _answer(connection, connection.execute(sql, params))
@@ -557,11 +563,21 @@ class Session(socketserver.BaseRequestHandler):
                                 f"refused: executescript would commit the open {self.kind} "
                                 f"transaction without its COMMIT; end it first"
                             )
-                        self.script = True
+                        # A script carries no R, like an autocommit write, so
+                        # its own BEGIN and COMMIT are routed (the restore
+                        # path replays a migration that way). It must end
+                        # what it opens: a transaction it left open would be
+                        # one no frame holds.
                         try:
-                            connection.executescript(frame["sql"])
+                            with self._routed():
+                                connection.executescript(frame["sql"])
                         finally:
-                            self.script = False
+                            left = connection.in_transaction
+                            if left:
+                                self._quiet(connection, "ROLLBACK")
+                        if left:
+                            raise remote.RemoteError("refused: the script left a transaction open; "
+                                                     "it was rolled back, so nothing in it was written")
                         answer = _answer(connection, None)
                     elif op == "commit":
                         answer = self._commit(connection, frame.get("rid"), connection.commit)

@@ -654,29 +654,55 @@ class TheTransactionBoundary(OutcomeCase):
                     client.close()
         self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
 
-    def test_query_only_is_set_by_the_hub_alone(self):
-        # Outside a transaction too, so no path to probe is left; reading it
-        # stays allowed, since the library reads it to tell a writable
-        # connection.
+    def test_query_only_is_the_hubs_inside_a_write_and_the_sessions_outside(self):
+        # Outside a transaction a read saves and restores it, and a backup of
+        # a database waiting for `migrate` switches it off on a `mode=ro`
+        # open, so it stays the session's there.
         client = self.connect()
-        for pragma in ("PRAGMA query_only = ON", "PRAGMA query_only=OFF"):
-            with self.subTest(pragma=pragma):
-                with self.assertRaisesRegex(remote.RemoteError, "query_only is the hub's"):
-                    client.execute(pragma)
-                self.assertFalse(client.in_transaction)
-        self.assertEqual(client.execute("PRAGMA query_only").fetchone()[0], 0)
+        client.execute("BEGIN IMMEDIATE")
+        with self.assertRaisesRegex(remote.RemoteError, "query_only is the hub's"):
+            client.execute("PRAGMA query_only = ON")
+        client.execute("ROLLBACK")
+        client.execute("PRAGMA query_only = ON")
+        with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+            client.execute("INSERT INTO probe (name) VALUES ('o')")
+        client.execute("BEGIN")
+        client.execute("COMMIT")
+        self.assertEqual(client.execute("PRAGMA query_only").fetchone()[0], 1)
+        client.execute("PRAGMA query_only = OFF")
         client.execute("INSERT INTO probe (name) VALUES ('o')")
         self.assertEqual(count(self.path), 1)
 
-    def test_a_script_cannot_open_a_transaction(self):
+    def test_a_vacuum_runs_and_one_behind_a_comment_is_refused(self):
+        # A backup's `VACUUM INTO` runs its own BEGIN and COMMIT.
+        client = self.connect()
+        copy = self.path.with_name("copy.db")
+        client.execute("VACUUM INTO ?", (str(copy),))
+        self.assertTrue(copy.exists())
+        with self.assertRaisesRegex(remote.RemoteError, "outside the hub's transaction handling"):
+            client.execute("/* x */ VACUUM")
+        client.execute("BEGIN IMMEDIATE")
+        with self.assertRaisesRegex(sqlite3.OperationalError, "within a transaction"):
+            client.execute("VACUUM")
+        client.execute("ROLLBACK")
+
+    def test_a_script_ends_what_it_opens(self):
+        # A script carries no R, like an autocommit write: the restore path
+        # replays a migration as `BEGIN; ...; COMMIT;`. One that leaves a
+        # transaction open is rolled back.
         client = self.connect()
         for script in ("BEGIN IMMEDIATE; INSERT INTO probe (name) VALUES ('s'); COMMIT;",
                        "SAVEPOINT s; INSERT INTO probe (name) VALUES ('s'); RELEASE s;"):
             with self.subTest(script=script):
-                with self.assertRaisesRegex(remote.RemoteError, "outside the hub's transaction handling"):
+                client.executescript(script)
+                self.assertFalse(client.in_transaction)
+        for script in ("BEGIN IMMEDIATE; INSERT INTO probe (name) VALUES ('o');",
+                       "SAVEPOINT s; INSERT INTO probe (name) VALUES ('o');"):
+            with self.subTest(script=script):
+                with self.assertRaisesRegex(remote.RemoteError, "left a transaction open"):
                     client.executescript(script)
                 self.assertFalse(client.in_transaction)
-        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (2, 0))
 
     def test_rollback_to_a_savepoint_after_a_failed_commit_keeps_the_row(self):
         # The failed COMMIT inserted the outcome row; ROLLBACK TO removes it,
