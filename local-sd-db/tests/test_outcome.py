@@ -674,22 +674,22 @@ class TheTransactionBoundary(OutcomeCase):
         self.assertEqual(count(self.path), 1)
 
     def test_a_script_ends_what_it_opens(self):
-        # A script carries no R, like an autocommit write: the restore path
-        # replays a migration as `BEGIN; ...; COMMIT;`. One that leaves a
-        # transaction open is rolled back.
+        # A script carries no R, like an autocommit write, and the hub does
+        # not route it: its BEGIN and COMMIT are refused (the seventh finding
+        # of 2026-10-04). One that leaves a SAVEPOINT open is rolled back.
         client = self.connect()
-        for script in ("BEGIN IMMEDIATE; INSERT INTO probe (name) VALUES ('s'); COMMIT;",
-                       "SAVEPOINT s; INSERT INTO probe (name) VALUES ('s'); RELEASE s;"):
+        for script in ("BEGIN IMMEDIATE; INSERT INTO probe (name) VALUES ('b'); COMMIT;",
+                       "BEGIN; INSERT INTO probe (name) VALUES ('b');"):
             with self.subTest(script=script):
-                client.executescript(script)
-                self.assertFalse(client.in_transaction)
-        for script in ("BEGIN IMMEDIATE; INSERT INTO probe (name) VALUES ('o');",
-                       "SAVEPOINT s; INSERT INTO probe (name) VALUES ('o');"):
-            with self.subTest(script=script):
-                with self.assertRaisesRegex(remote.RemoteError, "left a transaction open"):
+                with self.assertRaisesRegex(remote.RemoteError, "BEGIN outside the hub's transaction handling"):
                     client.executescript(script)
                 self.assertFalse(client.in_transaction)
-        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (2, 0))
+        client.executescript("SAVEPOINT s; INSERT INTO probe (name) VALUES ('s'); RELEASE s;")
+        self.assertFalse(client.in_transaction)
+        with self.assertRaisesRegex(remote.RemoteError, "left a transaction open"):
+            client.executescript("SAVEPOINT s; INSERT INTO probe (name) VALUES ('o');")
+        self.assertFalse(client.in_transaction)
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (1, 0))
 
     def test_rollback_to_a_savepoint_after_a_failed_commit_keeps_the_row(self):
         # The failed COMMIT inserted the outcome row; ROLLBACK TO removes it,
@@ -802,42 +802,43 @@ class TheWrite(OutcomeCase):
                 self.assertEqual(client.outcome(rid), remote.RECORDED)
                 client.close()
 
-    def test_a_write_to_an_attached_database_is_refused(self):
-        # The sixth finding of 2026-10-04: under WAL a COMMIT that spans an
-        # attached database is not crash-atomic with `main`'s outcome row.
-        # A read of it stays allowed, and so does a write to `temp`.
+    def test_attach_is_refused_over_the_wire(self):
+        # The sixth and seventh findings of 2026-10-04: a COMMIT that spans
+        # an attached database is not crash-atomic with `main`'s outcome
+        # row, and a TEMP trigger on the outcome table writes under the
+        # hub's own insert. With nothing attached, no path writes elsewhere.
         aux = self.root / "aux.db"
         raw = sqlite3.connect(aux)
         raw.execute("CREATE TABLE t (x)")
-        raw.execute("INSERT INTO t VALUES (1)")
         raw.commit()
         raw.close()
-        for sql in ("INSERT INTO aux.t VALUES (2)", "UPDATE aux.t SET x = 3",
-                    "CREATE TABLE aux.added (x)", "PRAGMA aux.user_version = 7"):
-            for op in ("execute", "commit"):
-                with self.subTest(sql=sql, op=op):
-                    client = self.connect()
-                    client.execute("ATTACH DATABASE ? AS aux", (str(aux),))
-                    with self.assertRaisesRegex(remote.RemoteError, "write to attached database aux"):
-                        client.execute(sql)
-                    client.execute("BEGIN IMMEDIATE")
-                    rid = client._rid
-                    with self.assertRaisesRegex(remote.RemoteError, "write to attached database aux"):
-                        client.execute(sql)
-                    self.assertEqual([tuple(row) for row in client.execute("SELECT x FROM aux.t")], [(1,)])
-                    client.execute("CREATE TABLE temp.kept (x)")
-                    TheTransactionBoundary.commit(client, op)
-                    self.assertTrue(recorded(self.path, rid))
-                    client.close()
-        raw = sqlite3.connect(aux)
-        try:
-            self.assertEqual((raw.execute("SELECT x FROM t").fetchall(),
-                              raw.execute("PRAGMA user_version").fetchone()[0],
-                              raw.execute("SELECT name FROM sqlite_master").fetchall()),
-                             ([(1,)], 0, [("t",)]))
-        finally:
-            raw.close()
-
+        attach = ("ATTACH DATABASE ? AS aux", (str(aux),))
+        client = self.connect()
+        with self.assertRaisesRegex(remote.RemoteError, "refused: ATTACH"):
+            client.execute(*attach)
+        with self.assertRaisesRegex(remote.RemoteError, "refused: ATTACH"):
+            client.executescript(f"ATTACH DATABASE '{aux}' AS aux;")
+        for begin in ("BEGIN IMMEDIATE", "BEGIN"):
+            with self.subTest(begin=begin):
+                client.execute(begin)
+                with self.assertRaisesRegex(remote.RemoteError, "refused: ATTACH"):
+                    client.execute(*attach)
+                client.execute("ROLLBACK")
+        # The hub's own statements, as `_commit` runs its insert.
+        session = object.__new__(serve.Session)
+        session.routing, session.denied, session.wrote, session.kind = True, None, False, "write"
+        self.assertEqual(session._authorize(sqlite3.SQLITE_ATTACH, str(aux), None, None, None),
+                         sqlite3.SQLITE_DENY)
+        # The reviewer's case: the trigger's `t` names no table, attached or
+        # not, so the COMMIT fails and writes nothing anywhere.
+        client.execute("CREATE TEMP TRIGGER leak AFTER INSERT ON main.request_outcome "
+                       "BEGIN INSERT INTO t VALUES (1); END")
+        client.execute("BEGIN IMMEDIATE")
+        client.execute("INSERT INTO probe (name) VALUES ('t')")
+        with self.assertRaisesRegex(sqlite3.OperationalError, "no such table: t"):
+            client.execute("COMMIT")
+        client.close()
+        self.assertEqual((count(aux, "t"), count(self.path), count(self.path, "request_outcome")), (0, 0, 0))
 
 CHILD = """
 import os, signal, sys, time
