@@ -19,13 +19,27 @@ Changes under a `tests/` folder and to `*.md` files restart nothing.
 | `local-sd-db/` | restart sd-serve |
 | `local-project-dashboard/` | restart dashboard |
 | `local-sd-runner/` | restart runner |
+| `local-sd-db/sd_db/` | report `needs sd_db install`, then restart sd-serve, dashboard and runner |
 | a `*.plist` or `*.plist.template`, or `.py`/`.sh` lines that name launchd keys or the plist environment | report `needs <folder> install`; the service still restarts |
 | `local-sd-db/sd_db/schema.py` or `local-sd-db/sd_db/schema/` | report `needs migration; restart after migrate`; nothing restarts, since new code may read a schema not yet there |
 
 The install check greps changed lines, because the dashboard and the runner write their plists in code.
 A plist value computed outside those lines goes unseen.
 
+The dashboard and the runner import an installed `sd_db`, not this checkout's.
+A library change reaches them only after `local-sd-db/sd-db.sh install <venv>` for each one's interpreter.
+
 ## How `apply` restarts each service
+
+`apply` prints the reports, then refuses with exit 1 before any restart in two cases:
+
+- `lsof` cannot answer for port 8769: it is missing, or exits other than 1 with no output (its "no match").
+- The dashboard's or the runner's installed `sd_db` lacks the checkout's last library commit.
+  The check is the dashboard's own startup check, `source:local-project-dashboard/sd_dashboard/runtime.py::_library_lag`.
+  It runs under the interpreter the agent's plist names (`SD_DASHBOARD_PYTHON`, `SD_RUNNER_PYTHON`).
+  The refusal names the `sd-db.sh install <venv>` that provisions it.
+
+Then it restarts each service:
 
 | Service | Restart | Check |
 | --- | --- | --- |

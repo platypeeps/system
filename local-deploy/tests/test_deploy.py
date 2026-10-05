@@ -2,8 +2,10 @@
 
 Each case builds a throwaway git checkout with deploy.sh in `local-deploy/`
 and stub `dashboard.sh` and `runner.sh` entrypoints beside it, commits a
-change, and runs `plan` or `apply` over that commit. `launchctl` and `lsof`
-are stubs on PATH, so no case asks the real launchd or the real network.
+change, and runs `plan` or `apply` over that commit. `launchctl`, `lsof` and
+`plutil` are stubs on PATH, and the interpreter the plist names is a stub
+that answers the library check, so no case asks the real launchd, the real
+network or a real virtualenv.
 """
 
 import pathlib
@@ -27,19 +29,40 @@ exit 0
 """
 
 # ESTABLISHED answers DEPLOY_TEST_SESSIONS; LISTEN answers pid 100 before a
-# kickstart and 200 after it, unless DEPLOY_TEST_NO_LISTENER is set.
+# kickstart and 200 after it, unless DEPLOY_TEST_NO_LISTENER is set. Like
+# `lsof -t`, it prints nothing and exits 1 for no match. DEPLOY_TEST_LSOF_FAIL
+# makes it fail with that code and a message, as a missing or broken lsof does.
 LSOF = """#!/bin/sh
+if [ -n "$DEPLOY_TEST_LSOF_FAIL" ]; then
+  echo "lsof: cannot answer" >&2
+  exit "$DEPLOY_TEST_LSOF_FAIL"
+fi
 case "$*" in
-  *ESTABLISHED*) [ -z "$DEPLOY_TEST_SESSIONS" ] || echo "$DEPLOY_TEST_SESSIONS" ;;
+  *ESTABLISHED*) pids="$DEPLOY_TEST_SESSIONS" ;;
   *LISTEN*)
     if [ -e "$DEPLOY_TEST_KICKED" ]; then
-      [ -n "$DEPLOY_TEST_NO_LISTENER" ] || echo 200
+      [ -n "$DEPLOY_TEST_NO_LISTENER" ] || pids=200
     else
-      echo 100
+      pids=100
     fi ;;
 esac
-exit 0
+[ -n "$pids" ] || exit 1
+echo "$pids"
 """
+
+# Answers every plist variable with the stub interpreter.
+PLUTIL = """#!/bin/sh
+echo "$DEPLOY_TEST_PYTHON"
+"""
+
+# The consumer's interpreter: DEPLOY_TEST_LAG makes the library check refuse.
+PYTHON = """#!/bin/sh
+echo "lag-check" >> "$DEPLOY_TEST_CALLS"
+[ -z "$DEPLOY_TEST_LAG" ] || { echo "$DEPLOY_TEST_LAG" >&2; exit 1; }
+"""
+
+LIBRARY_REPORT = ("report needs sd_db install: local-sd-db/sd-db.sh install <venv> for the dashboard's"
+                  " and the runner's interpreters, before apply")
 
 ENTRYPOINT = """#!/bin/sh
 echo "{name} $*" >> "$DEPLOY_TEST_CALLS"
@@ -63,8 +86,10 @@ class DeployTest(unittest.TestCase):
         self.base = self.head()
         stubs = self.tmp / "stub-bin"
         stubs.mkdir()
-        for name, body in (("launchctl", LAUNCHCTL), ("lsof", LSOF)):
-            path = stubs / name
+        self.python = self.tmp / "venv" / "bin" / "python"
+        self.python.parent.mkdir(parents=True)
+        for path, body in ((stubs / "launchctl", LAUNCHCTL), (stubs / "lsof", LSOF),
+                           (stubs / "plutil", PLUTIL), (self.python, PYTHON)):
             path.write_text(body)
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
         self.calls = self.tmp / "calls.txt"
@@ -73,6 +98,7 @@ class DeployTest(unittest.TestCase):
                     "SYSTEM_TOOLS_LABEL_PREFIX": "test.example",
                     "DEPLOY_TEST_CALLS": str(self.calls),
                     "DEPLOY_TEST_KICKED": str(self.tmp / "kicked"),
+                    "DEPLOY_TEST_PYTHON": str(self.python),
                     "DEPLOY_WAIT": "1"}
 
     def write(self, relative, text):
@@ -108,10 +134,14 @@ class DeployTest(unittest.TestCase):
         return result.stdout.splitlines()
 
     def test_plan_restarts_each_changed_service(self):
-        self.assertEqual(self.plan({"local-sd-db/sd_db/remote.py": "x\n",
+        self.assertEqual(self.plan({"local-sd-db/sd-db.sh": "x\n",
                                     "local-project-dashboard/sd_dashboard/app.py": "x\n",
                                     "local-sd-runner/sd_runner/cli.py": "x\n"}),
                          ["restart sd-serve", "restart dashboard", "restart runner"])
+
+    def test_plan_maps_a_library_change_to_every_consumer_after_its_install(self):
+        self.assertEqual(self.plan({"local-sd-db/sd_db/remote.py": "x\n"}),
+                         [LIBRARY_REPORT, "restart sd-serve", "restart dashboard", "restart runner"])
 
     def test_plan_is_empty_for_tests_docs_and_other_folders(self):
         self.assertEqual(self.plan({"local-sd-db/tests/test_x.py": "x\n",
@@ -133,7 +163,8 @@ class DeployTest(unittest.TestCase):
                                     "local-sd-db/sd_db/remote.py": "x\n",
                                     "local-project-dashboard/sd_dashboard/app.py": "x\n",
                                     "local-sd-runner/sd_runner/cli.py": "x\n"}),
-                         ["report needs migration (local-sd-db/sd_db/schema/002_x.sql); restart after migrate"])
+                         ["report needs migration (local-sd-db/sd_db/schema/002_x.sql); restart after migrate",
+                          LIBRARY_REPORT])
 
     def test_apply_of_reports_only_calls_nothing(self):
         self.change({"local-sd-db/sd_db/schema.py": "SCHEMA_VERSION = 2\n",
@@ -158,16 +189,40 @@ class DeployTest(unittest.TestCase):
         self.assertTrue(kicks[1].endswith("/test.example.sd-dashboard"), kicks)
         self.assertIn("dashboard.sh health", calls)
         self.assertIn("runner.sh restart", calls)
+        self.assertEqual(calls.count("lag-check"), 2, calls)
+        self.assertLess(calls.index("lag-check"), calls.index(kicks[0]))
+
+    def test_apply_refuses_a_consumer_whose_installed_library_lags(self):
+        self.change({"local-sd-db/sd_db/remote.py": "x\n"})
+        result = self.run_deploy("apply", DEPLOY_TEST_LAG="RuntimeRefused: installed sd_db abc lacks def")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("deploy: refused before any restart: sd-dashboard: RuntimeRefused: installed sd_db abc lacks def;"
+                      f" provision: local-sd-db/sd-db.sh install {self.tmp / 'venv'}", result.stderr)
+        self.assertTrue(result.stdout.startswith(LIBRARY_REPORT), result.stdout)
+        calls = self.calls.read_text()
+        self.assertNotIn("kickstart", calls)
+        self.assertNotIn("runner.sh", calls)
+
+    def test_apply_refuses_when_lsof_cannot_answer(self):
+        self.change({"local-sd-db/sd-db.sh": "x\n"})
+        for code in ("127", "1", "2"):
+            with self.subTest(code=code):
+                self.calls.write_text("")
+                result = self.run_deploy("apply", DEPLOY_TEST_LSOF_FAIL=code)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"lsof exited {code}: lsof: cannot answer", result.stderr)
+                self.assertIn("deploy: refused before any restart: sd-serve: lsof cannot tell", result.stderr)
+                self.assertNotIn("kickstart", self.calls.read_text())
 
     def test_apply_skips_sd_serve_while_a_satellite_session_is_open(self):
-        self.change({"local-sd-db/sd_db/remote.py": "x\n"})
+        self.change({"local-sd-db/sd-db.sh": "x\n"})
         result = self.run_deploy("apply", DEPLOY_TEST_SESSIONS="4242")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("report sd-serve not restarted: a session is open on port 8769", result.stdout)
         self.assertNotIn("kickstart", self.calls.read_text())
 
     def test_apply_fails_when_sd_serve_listener_does_not_return(self):
-        self.change({"local-sd-db/sd_db/remote.py": "x\n",
+        self.change({"local-sd-db/sd-db.sh": "x\n",
                      "local-sd-runner/sd_runner/cli.py": "x\n"})
         result = self.run_deploy("apply", DEPLOY_TEST_NO_LISTENER="1")
         self.assertEqual(result.returncode, 1)
@@ -190,7 +245,7 @@ class DeployTest(unittest.TestCase):
         self.assertNotIn("kickstart", self.calls.read_text())
 
     def test_apply_skips_an_agent_that_is_not_loaded(self):
-        self.change({"local-sd-db/sd_db/remote.py": "x\n"})
+        self.change({"local-sd-db/sd-db.sh": "x\n"})
         result = self.run_deploy("apply", DEPLOY_TEST_UNLOADED="test.example.sd-serve")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("skip sd-serve: test.example.sd-serve is not loaded", result.stdout)
