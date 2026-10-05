@@ -100,12 +100,28 @@ def _elsewhere(block: list[str], path: Path) -> bool:
         return False
 
 
-def holders(path: Path) -> set[int]:
-    if not path.exists():
-        return set()
-    done = subprocess.run(["lsof", "-n", "-P", "-F", "p", "+D", str(path)], capture_output=True, text=True, timeout=LSOF_SECONDS, check=False)
+def _verbatim(name: str) -> bool:
+    """Whether lsof prints `name` as itself in an `n` field.
+
+    lsof escapes a control character (`\\n`, `^A`), a backslash (`\\\\`) and,
+    outside a UTF-8 locale, a non-ASCII byte (`\\xNN`); a literal `^A` prints as
+    control-A does. A name of printable ASCII with neither `\\` nor `^` holds no
+    escape introducer, so any printed name starts with it exactly when the
+    real name does.
+    """
+    return all(" " <= char <= "~" and char not in "\\^" for char in name)
+
+
+def _lsof(path: Path, fields: str, *selection: str) -> bytes:
+    """`lsof -n -P -F <fields> [selection]`'s stdout; `RunnerRefused` when it cannot vouch for `path`."""
+    try:
+        done = subprocess.run(["lsof", "-n", "-P", "-F", fields, *selection], capture_output=True,
+                              timeout=LSOF_SECONDS, check=False)
+    except subprocess.TimeoutExpired:
+        raise RunnerRefused(f"cannot verify clone holders: lsof did not answer in {LSOF_SECONDS} s") from None
+    stderr = done.stderr.decode(errors="replace")
     blocks: list[list[str]] = []
-    for line in done.stderr.splitlines():
+    for line in stderr.splitlines():
         # No line is dropped. A blank or whitespace-only line used to be
         # discarded here, so a warning the parser does not recognise passed
         # the fail-close check below by being empty (sd:1221). A line that
@@ -115,8 +131,131 @@ def holders(path: Path) -> set[int]:
         else:
             blocks.append([line])
     if done.returncode not in {0, 1} or not all(_elsewhere(block, path) for block in blocks):
-        raise RunnerRefused(f"cannot verify clone holders: {done.stderr.strip()}")
-    return {int(line[1:]) for line in done.stdout.splitlines() if line.startswith("p") and line[1:].isdigit()}
+        raise RunnerRefused(f"cannot verify clone holders: {stderr.strip()}")
+    return done.stdout
+
+
+def _mounted_inside(roots: set[str]) -> bool:
+    """Whether a file system is mounted inside the clone; True when the table cannot be read.
+
+    A hard link stays on its own device, so `holders` matches aliases on the
+    clone's device alone, and a mount inside the clone sends it to `+D`.
+    """
+    try:
+        done = subprocess.run(["mount"], capture_output=True, timeout=PS_SECONDS, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    if done.returncode:
+        return True
+    # Linux escapes a space in a mount point as `\040`.
+    return any(f" on {form}/".encode() in done.stdout
+               for root in roots for form in {root, root.replace(" ", "\\040")})
+
+
+def _files(table: bytes):
+    """`(pid, fields)` for each open file in `lsof -F` output, fields keyed by letter."""
+    pid, fields = None, None
+    for line in table.split(b"\n"):
+        tag, value = line[:1], line[1:]
+        if tag in {b"p", b"f"} and fields is not None:
+            yield pid, fields
+            fields = None
+        if tag == b"p":
+            pid = int(value) if value.isdigit() else None
+        elif tag == b"f":
+            fields = {}
+        elif fields is not None and tag:
+            fields[tag] = value
+    if fields is not None:
+        yield pid, fields
+
+
+def _linked_inside(path: Path, device: int, inodes: set[int]) -> set[int]:
+    """Which of `inodes` have a name under `path`, which is on `device`.
+
+    One walk of the directory entries, which carry the inode without a stat
+    of each file; only directories are stat'ed, to stay on the device.
+    """
+    deadline = time.monotonic() + LSOF_SECONDS
+    found, pending = set(), [path]
+    while pending:
+        if time.monotonic() > deadline:
+            raise RunnerRefused(f"cannot verify clone holders: the hard-link walk took over {LSOF_SECONDS} s")
+        try:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        # A child removed since the listing skips itself, not
+                        # its later siblings (sd:1775 review 4).
+                        try:
+                            child = entry.stat(follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        if child.st_dev != device:
+                            raise RunnerRefused(f"cannot verify clone holders: a file system is mounted at {entry.path}")
+                        pending.append(entry.path)
+                    elif entry.inode() in inodes and entry.is_file(follow_symlinks=False):
+                        found.add(entry.inode())
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise RunnerRefused(f"cannot verify clone holders: {error}") from None
+    return found
+
+
+def holders(path: Path) -> set[int]:
+    """The processes with an open file or a working directory under `path`.
+
+    One read of the whole open-file table, filtered by name here. `+D <path>`
+    stats every file under the clone before it answers: at load 71 it took
+    28 s over a checkout of 105,000 files, past `LSOF_SECONDS`, so each tick
+    held the ending as `cleanup held` (sd:1775). The table took a third of a
+    second on the same machine, and its cost does not grow with the clone.
+    The kernel names an open file, a working directory and a mapped binary
+    by its resolved path, so the clone is matched as named and as resolved.
+
+    A process can open a clone file through a hard link outside the clone,
+    and the table then names the outside link. `+D` matched by device and
+    inode, so that process held the clone; it still does. Every regular file
+    on the clone's device named outside the clone is looked up by inode in
+    one walk of the clone's entries (`_linked_inside`), whatever its link
+    count: an outside link unlinked after the open leaves one link, the
+    clone's, while the table still names the outside path (sd:1775 review 3).
+    So the walk runs whenever such a file is open, which on the system disk
+    is nearly always; it reads directory entries, not a stat of each file.
+    A mount inside the clone sends the whole question to `+D`.
+
+    lsof escapes the names it prints (`_verbatim`). A clone whose path holds a
+    character it escapes is selected by filesystem with `+D` instead, since
+    its names cannot be matched as text; that walk is slow over a large
+    clone, and a walk that does not finish refuses, so the clone stays held.
+    The table is read as bytes: a name that is not UTF-8 is not a reason to fail.
+    """
+    if not path.exists():
+        return set()
+    roots = {str(path), str(path.resolve())}
+    if not all(_verbatim(root) for root in roots) or _mounted_inside(roots):
+        # Selected by filesystem: every process the walk lists holds the clone.
+        walk = _lsof(path, "pn", "+D", str(path))
+        return {int(line[1:]) for line in walk.split(b"\n") if line.startswith(b"p") and line[1:].isdigit()}
+    device = path.stat().st_dev
+    prefixes = {os.fsencode(root) for root in roots}
+    held, aliases = set(), {}
+    for pid, fields in _files(_lsof(path, "ptDin")):
+        name = fields.get(b"n", b"")
+        if pid is None:
+            continue
+        if any(name == root or name.startswith(root + b"/") for root in prefixes):
+            held.add(pid)
+        elif fields.get(b"t") == b"REG" and fields.get(b"D", b"").lower() in {b"", f"0x{device:x}".encode()}:
+            inode = fields.get(b"i", b"")
+            if not inode.isdigit():
+                raise RunnerRefused(f"cannot verify clone holders: lsof gave no inode for {os.fsdecode(name)}")
+            aliases.setdefault(int(inode), set()).add(pid)
+    if aliases:
+        for inode in _linked_inside(path, device, set(aliases)):
+            held |= aliases[inode]
+    return held
 
 
 def _started_before(pid: int, run: dict) -> bool:

@@ -414,6 +414,13 @@ retention (`chflags uchg`), clonefile cargo seeds (`cp -c`), `retained-remove`,
 The native process checks need host permission to run `ps`/`lsof` and inspect or
 signal those fixture groups. A denied inventory holds cleanup; it is not treated
 as evidence that no process exists.
+The holder check reads the whole open-file table once and keeps the names under
+the clone. `lsof +D` stats every file under the clone first, and on a loaded
+machine it outran its bound and held each ending (sd:1775).
+A file the clone shares with an outside hard link is matched by inode, as
+`+D` matched it, also after the outside link is removed and only the clone's
+name is left; a clone with a mount inside it, or a path lsof escapes,
+still uses `+D`.
 
 `runner.sh prune` produces an exact read-only plan for released clones retained at least 30 days.
 The plan binds database ownership, content, age, process holders, and independently preserved ignored output.
