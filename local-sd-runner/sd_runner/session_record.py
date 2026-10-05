@@ -36,6 +36,8 @@ from sd_db import runner as store
 from sd_db.database import transaction
 
 NOTES_FILE = ".git/sd-notes.jsonl"
+#: Beside the database, outside the clone the session can write (sd:2503).
+HELD_DIR = "runner-session-held"
 NOTES_LIMIT = 256 * 1024
 NOTE_BODY_LIMIT = 8000
 NOTE_COUNT_LIMIT = 200
@@ -157,3 +159,15 @@ def record(connection, write, request: dict, provider: dict, clone: Path) -> dic
     if usage is not None:
         result["usage"] = usage
     return result
+
+
+def held(database: Path, ident: str) -> Path:
+    """Where a session a recovery hold kept from the store waits for its ending (sd:2503)."""
+    return Path(database).parent / HELD_DIR / f"{ident}.json"
+
+
+def hold(database: Path, ident: str, provider: dict) -> None:
+    """Remember the session's provider; its notes and usage stay in the clone."""
+    path = held(database, ident)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({key: provider.get(key) for key in ("provider", "bill", "reader", "start")}))
