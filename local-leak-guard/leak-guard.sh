@@ -169,19 +169,29 @@ cmd_check() {
 # ref on stdin: <local ref> <local sha> <remote ref> <remote sha>.
 cmd_hook() {
   [ $# -ge 1 ] || die "hook needs the remote name"
-  remote="$1"
+  url="${2:-$1}"
+  # What the push destination itself holds, asked of the destination: a
+  # remote-tracking ref may come from another fetch URL or be stale, so it
+  # proves nothing about this destination. A branch that merges main pushes
+  # main's commits here first; they are already published there, so skip them.
+  # If the destination cannot be asked, skip nothing beyond the ref's own tip.
+  published="$(git ls-remote "$url" 2>/dev/null | while read -r sha _ref; do
+    git cat-file -e "$sha^{commit}" 2>/dev/null && echo "$sha"
+  done | sort -u)" || published=""
   status=0
   while read -r _lref lsha _rref rsha; do
     [ -n "${lsha:-}" ] || continue
     # A deleted ref pushes no commit.
     [ "$lsha" = "$ZERO" ] && continue
+    tip=""
     if [ "$rsha" != "$ZERO" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
-      ( check_revs "$lsha" --not "$rsha" ) || status=1
-    else
-      # A new ref, or a remote tip this clone has never seen: check what no
-      # ref of that remote already holds. On a first push that is everything.
-      ( check_revs "$lsha" --not --remotes="$remote" ) || status=1
+      tip="$rsha"
     fi
+    # Unquoted on purpose: $tip and $published are lists of shas, or empty.
+    # With neither, this checks everything: a first push to an unreadable
+    # destination.
+    # shellcheck disable=SC2086
+    ( check_revs "$lsha" --not $tip $published ) || status=1
   done
   return "$status"
 }
