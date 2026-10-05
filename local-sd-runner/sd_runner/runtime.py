@@ -102,6 +102,17 @@ def registry_module(pack: Path):
     return importlib.import_module("sd_registry")
 
 
+def run_environment(ident: str, author: str | None) -> dict:
+    """The variables every process the runner starts for a run carries.
+
+    `SD_ASSIGNMENT` names the run, and the process probes find its children
+    by it. `SD_AUTHOR` is the provider's registry entry, which the pack's
+    commit-msg hook writes as `Authored-with:` on a message that states none
+    (sd:2544). None, before a provider is chosen, leaves it unset.
+    """
+    return {"SD_ASSIGNMENT": ident, **({"SD_AUTHOR": author} if author else {})}
+
+
 def provider_command(config: Config, request: dict, parent: dict) -> tuple[list[str], dict, dict]:
     registry_api = registry_module(config.pack)
     with closing(connect(config.database, write=False)) as connection:
@@ -146,7 +157,7 @@ def provider_command(config: Config, request: dict, parent: dict) -> tuple[list[
         environment["HOME"] = str(config.home)
         environment["TMPDIR"] = str(Path(request["run"]["work_path"]) / ".git/sd-tmp")
         environment["XDG_CACHE_HOME"] = str(Path(request["run"]["work_path"]) / ".git/sd-cache")
-        environment["SD_ASSIGNMENT"] = request["run"]["id"]
+        environment.update(run_environment(request["run"]["id"], provider.name))
         try:
             argv = provider_protocol.argv(argv, reviewer=role == "reviewer", clone=Path(request["run"]["work_path"]))
         except store.RunnerRefused as error:
@@ -478,7 +489,7 @@ class Runner:
         child.stdin.flush()
         return self._response(connection, child, request, deadline=deadline)
 
-    def tool_environment(self, ident: str, *, remote=False) -> dict:
+    def tool_environment(self, run: dict, *, remote=False) -> dict:
         """What a runner-owned tool in the clone sees: the base, and the remote's keys only when it needs them."""
         names = ("PATH", "HOME", "LANG", "TERM")
         if remote:
@@ -486,7 +497,7 @@ class Runner:
         environment = {key: os.environ[key] for key in names if key in os.environ}
         environment["PATH"] = self.search_path
         environment["HOME"] = str(self.config.home)
-        environment["SD_ASSIGNMENT"] = ident
+        environment.update(run_environment(run["id"], run.get("provider")))
         return environment
 
     def ship(self, connection, child, request, verb, deadline):
@@ -496,7 +507,7 @@ class Runner:
         argv = [sys.executable, str(executable), verb, "--database", str(self.config.database), "--item", str(request["item"]), "--json"]
         if verb == "merge":
             argv += ["--run", request["run"]["id"], "--expected-head", request["run"]["authored_head"], "--watch"]
-        environment = self.tool_environment(request["run"]["id"], remote=True)
+        environment = self.tool_environment(request["run"], remote=True)
         try:
             result = self.action(connection, child, request, "ship", deadline, argv=argv, environment=environment)["ship"]
             if not result.get("ok"):
@@ -676,6 +687,35 @@ class Runner:
         except (OSError, ValueError, subprocess.SubprocessError, SdDbError, sqlite3.Error):
             pass
 
+    def record_held(self, connection, run: dict, retained: Path) -> None:
+        """Record the session a recovery hold kept from the store, from the retained clone (sd:2503).
+
+        The ending runs only once no hold applies, and a run is released once,
+        so this reads the files back at most once per run. A write that fails
+        keeps the held file and holds the ending, whose retry records it; a
+        refusal, of the notes file or the cost row, reads the same on every
+        retry, so it drops the file. The cost is filed before the notes are
+        refused, and the retained clone keeps both files either way.
+        """
+        path = session_record.held(self.config.database, run["id"])
+        if not path.is_file():
+            return
+        try:
+            provider = json.loads(path.read_text())
+        except (OSError, ValueError):
+            provider = None
+        if isinstance(provider, dict):
+            # ponytail: a crash between this commit and the unlink below files
+            # the notes twice; the cost row is idempotent. Dedupe on the note
+            # body if that window ever bites.
+            try:
+                session_record.record(connection, database_write, {"run": run}, provider, retained)
+            except store.RunnerRefused:
+                pass
+            except (OSError, ValueError, SdDbError, sqlite3.Error) as error:
+                raise store.RunnerRefused(f"held session record not written: {error}") from error
+        path.unlink(missing_ok=True)
+
     def _execute(self, connection, request: dict, *, command=None, environment=None, provider=None, check=None) -> dict:
         ident = request["run"]["id"]
         self.persist(connection, ident)
@@ -696,7 +736,8 @@ class Runner:
                 from sd_db import runner_exec
                 runner_exec.resolve_assignment(connection, request["id"])
             env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "TERM", "SSH_AUTH_SOCK") if key in os.environ}
-            env["SD_ASSIGNMENT"] = ident
+            # The supervisor starts every child with an environment of its own.
+            env.update(run_environment(ident, None))
             import sd_db
             env["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).resolve().parents[1]), str(Path(sd_db.__file__).resolve().parent.parent)])
             child = subprocess.Popen([sys.executable, "-m", "sd_runner.supervisor"], stdin=subprocess.PIPE,
@@ -755,7 +796,7 @@ class Runner:
                 else:
                     argv, provider_env = command, environment or {}
                     provider = provider or {"provider": "fixture", "vendor": "fixture"}
-                    provider_env = {**provider_env, "SD_ASSIGNMENT": ident}
+                    provider_env = {**provider_env, **run_environment(ident, provider["provider"])}
                 # Directory creation is setup, under the acknowledged supervisor.
                 request["run"] = self.persist(connection, ident, provider=provider["provider"], vendor=provider["vendor"], start_step="started")
                 if provider.get("entry") is not None:
@@ -810,13 +851,13 @@ class Runner:
                             # environment, never the failing test (sd:1762).
                             if install := toolchain.installer(clone, self.search_path):
                                 installed = self.action(connection, child, request, "install", deadline, argv=install,
-                                                        environment=self.tool_environment(ident))["install"]
+                                                        environment=self.tool_environment(request["run"]))["install"]
                                 if block := toolchain.from_install(install, installed):
                                     raise block
                             # The failing test is decided here, in the clone,
                             # before anything is pushed or shipped.
                             verified = self.action(connection, child, request, "check", deadline, argv=check,
-                                                   environment=self.tool_environment(ident))["check"]
+                                                   environment=self.tool_environment(request["run"]))["check"]
                             if stop := hard_stops.from_check(verified):
                                 raise stop
                             cargo_seed.refresh(clone, seed)
@@ -869,9 +910,14 @@ class Runner:
             except store.RunnerRefused:
                 recovery_hold = True
             if interrupted and not recovery_hold:
-                # On a hold the notes and usage files stay in the clone, which
-                # the ending retains once the hold is resolved.
                 self.record_session(connection, *interrupted)
+            elif interrupted:
+                # On a hold the notes and usage files stay in the clone, which
+                # the ending retains and reads back once the hold is resolved.
+                try:
+                    session_record.hold(self.config.database, ident, interrupted[1])
+                except OSError:
+                    pass  # The hold's own failure stands; the clone keeps both files.
             if joined and not recovery_hold:
                 self.pending_endings[ident] = {"run": dict(request["run"]), "outcome": outcome,
                                                "detail": detail, "exit_code": exit_code}
@@ -941,6 +987,7 @@ class Runner:
                 run = self.persist(connection, ident, ignored_manifest=json.dumps(manifest, sort_keys=True))
             storage.preserve_ignored(retained, manifest, progress=beat, floor_gb=self.config.floor_gb)
             self.persist(connection, ident, end_step="retained")
+            self.record_held(connection, run, retained)
             log = retained / ".git/sd-provider.log"
             result = database_write(connection, store.release, ident, output_path=str(log) if log.exists() else None, exit_code=exit_code)
             journal.persist(self.config.database, result)
