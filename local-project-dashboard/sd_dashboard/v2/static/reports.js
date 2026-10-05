@@ -13,20 +13,7 @@ const byId = id => document.getElementById(id);
 
 // ---------- Data (build): /api/reports, read through shell.read on load and after each write ----------
 let DOC = null, READ = '', DAYS = [], ROWS = [], JOBS = {}, CAD = {}, FAMILIES = [], FAM_OF = {}, byJob = {};
-const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-async function post(path, body) {
-  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-  const out = await r.json().catch(() => ({}));
-  if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; throw e; }
-  return out;
-}
 // Select clean's preview only; the page's document comes through the reader.
-async function getJSON(path) {
-  const r = await fetch(path, { headers: { Accept: 'application/json' } });
-  const out = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-  return out;
-}
 // build: the document's sources say which reads failed; a failed one renders as unknown with its reason, never as empty.
 const why = s => DOC?.sources?.[s] || '';
 const dayName = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
@@ -172,20 +159,54 @@ function fillFilters() {
   put(byId('f-day'), html`<option value="">Any day</option>${days.map(d => html`<option value="${d}">${new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</option>`)}`);
   byId('f-job').value = F.job; byId('f-day').value = F.day;
 }
-function setJob(j) { jobFilter = j; F.job = j; byId('f-job').value = j; page = 0; renderCad(); renderRows(); }
+function setJob(j) { jobFilter = j; F.job = j; byId('f-job').value = j; L.page = 1; renderCad(); renderRows(); }
 byId('f-job').addEventListener('change', e => setJob(e.target.value));
-[['f-kind', 'kind'], ['f-status', 'status'], ['f-day', 'day']].forEach(([id, k]) => byId(id).addEventListener('change', e => { F[k] = e.target.value; page = 0; renderRows(); }));
-byId('f-act').addEventListener('change', e => { F.act = e.target.checked; page = 0; renderRows(); });
+[['f-kind', 'kind'], ['f-status', 'status'], ['f-day', 'day']].forEach(([id, k]) => byId(id).addEventListener('change', e => { F[k] = e.target.value; L.page = 1; renderRows(); }));
+byId('f-act').addEventListener('change', e => { F.act = e.target.checked; L.page = 1; renderRows(); });
 byId('annunciator').addEventListener('click', e => {
   const c = e.target.closest('button.cell'); if (!c) return;
   if (c.id === 'refresh') return load(); // build: refresh reads /api/reports again, not the whole page
   F.fam = F.fam === c.dataset.fam ? '' : c.dataset.fam;
   document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fam === F.fam)));
-  page = 0; renderRows();
+  L.page = 1; renderRows();
 });
 
-const PAGE = 50; let page = 0, shown = [];
+// Active filters as chips above the list (sd:2529): each one removes itself, and Clear all removes every one.
+const KIND = { db: 'Database report', mail: 'Status mail' }, STATUS = { open: 'Open', done: 'Acknowledged' };
+const shortDay = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+function activeFilters() {
+  return [F.job && { key: 'job', label: `Job: ${F.job}` }, F.kind && { key: 'kind', label: `Kind: ${KIND[F.kind]}` },
+    F.status && { key: 'status', label: `Status: ${STATUS[F.status]}` }, F.day && { key: 'day', label: `Day: ${shortDay(F.day)}` },
+    F.act && { key: 'act', label: 'Needs action' }, F.fam && { key: 'fam', label: `Family: ${FAMILIES.find(f => f[0] === F.fam)?.[1] || F.fam}` },
+    F.q && { key: 'q', label: `Text: ${F.q}` }, F.clean && { key: 'clean', label: `Clean before ${byId('ack-date').value}` }].filter(Boolean);
+}
+// Each remover leaves the list to draw once, after it.
+const UNFILTER = {
+  job: () => { jobFilter = ''; F.job = ''; byId('f-job').value = ''; renderCad(); },
+  kind: () => { F.kind = ''; byId('f-kind').value = ''; }, status: () => { F.status = ''; byId('f-status').value = ''; },
+  day: () => { F.day = ''; byId('f-day').value = ''; }, act: () => { F.act = false; byId('f-act').checked = false; },
+  fam: () => { F.fam = ''; document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', 'false')); },
+  q: () => { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; },
+  clean: () => clearClean(),
+};
+function unfilter(keys) { keys.forEach(k => UNFILTER[k]()); L.page = 1; renderRows(); }
+const clearAll = () => unfilter(activeFilters().map(f => f.key));
+byId('chips').addEventListener('click', e => {
+  const b = e.target.closest('[data-unfilter]'); if (b) return unfilter([b.dataset.unfilter]);
+  if (e.target.closest('[data-unfilter-all]')) clearAll();
+});
+
+// The list (sd:2527, sd:2528): newest first by default; every column with an order sorts; 50 a page, numbered pages.
+const RANK = { warning: 0, caution: 1, queued: 2, ok: 3, unknown: 4 };
+const SORTS = { s: r => RANK[r.s], what: r => (r.what || '').toLowerCase(), detail: r => r.detail.toLowerCase(), at: r => Date.parse(r.at), st: r => r.open ? 0 : 1 };
+const LIST = { sort: 'at', dir: -1, size: 50 }, L = { ...LIST, page: 1 };
+const COLS = [['s', html`<span class="sr">State</span>`, 'g'], ['what', 'Report'], ['detail', 'Detail'], ['at', 'Recorded'], ['st', 'Status'], [null, html`<span class="sr">Actions</span>`, 'act']];
+// Ties keep the newest first, so a sort on status still reads down the days.
+const order = (a, b) => { const x = SORTS[L.sort](a), y = SORTS[L.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * L.dir || Date.parse(b.at) - Date.parse(a.at); };
+let shown = [];
 const tbody = byId('rows');
+byId('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) renderRows(); });
+byId('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) renderRows(); });
 function matches(r) {
   if (F.job && r.job !== F.job) return false;
   if (F.kind && r.kind !== F.kind) return false;
@@ -207,18 +228,21 @@ const pageAttention = (xs, what) => { const w = xs.filter(s => s === 'warning').
 function renderRows(read) {
   if (!DOC.reports) { window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'reports not read' }; window.shell?.attention?.(); }
   else pageAttention(ROWS.map(r => r.s), { warning: 'reports want you', caution: 'status mails flagged' });
-  shown = ROWS.filter(matches);
-  const pages = Math.max(1, Math.ceil(shown.length / PAGE)); page = Math.min(page, pages - 1);
+  const list = window.shell.list;
+  shown = ROWS.filter(matches).sort(order);
+  const slice = list.pageOf(shown, L);
   if (started) writeURL();
-  const slice = shown.slice(page * PAGE, page * PAGE + PAGE);
+  put(byId('rows-head'), list.sortHead(COLS, L));
+  put(byId('chips'), list.chips(activeFilters(), shown.length, ROWS.length));
+  // Day bands read only in time order; another sort draws the rows without them.
+  const byDay = L.sort === 'at';
   let lastDay = '';
   put(tbody, html`${slice.length ? slice.map(r => {
-    const d = r.at.slice(0, 10), head = d !== lastDay; lastDay = d;
+    const d = r.at.slice(0, 10), head = byDay && d !== lastDay; lastDay = d;
     return [head ? html`<tr class="day" aria-hidden="true"><td colspan="6">${new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' })} · UTC</td></tr>` : '',
     html`<tr data-id="${r.id}" data-changed="${r.at}" aria-selected="${String(r.id === sel)}"${picks.has(r.id) ? html` data-picked` : ''}><td class="g g-${r.s}">${G[r.s]}<span class="sr">${r.s}</span></td><td class="what"><button type="button">${r.what}</button></td><td class="detail">${r.detail}</td><td class="when"><time class="rel" datetime="${r.at}"></time></td>${stCell(r)}<td class="act">${window.shell.commands.rowActions(r.id)}</td></tr>`];
   }) : html`<tr class="day"><td colspan="6">${DOC.reports ? 'Nothing matches. Clear a filter, or press → in the bar to capture it as a task.' : `The reports were not read: ${why('reports')}.`}</td></tr>`}`);
-  byId('range').textContent = shown.length ? `${page * PAGE + 1}–${Math.min(shown.length, page * PAGE + PAGE)} of ${shown.length}${shown.length !== ROWS.length ? ` (filtered from ${ROWS.length})` : ''}` : `0 of ${ROWS.length}`;
-  byId('prev').disabled = page === 0; byId('next').disabled = page >= pages - 1;
+  put(byId('pager'), list.pager(shown.length, L, 'reports'));
   // A filter or a page change that drops the selected report from the slice moves the selection to a row on screen (sd:2306).
   // With no row on screen, Details clears too, so its buttons never act on a report the list does not show.
   // A filter that clears it leaves cleared set, so the next render with rows selects the first one again.
@@ -228,8 +252,6 @@ function renderRows(read) {
   // build: no flagged-mail count; status mail is not read.
   put(byId('tally'), html`<span class="g-warning">■ ${dbOpen.filter(r => r.attn).length} need attention</span><span class="g-queued">◌ ${dbOpen.filter(r => !r.attn).length} open run reports</span>`);
 }
-byId('prev').addEventListener('click', () => { page--; renderRows(); });
-byId('next').addEventListener('click', () => { page++; renderRows(); });
 
 // Line diff against the previous report of the same job (LCS on lines).
 function diff(a, b) {
@@ -301,7 +323,8 @@ function readURL() {
   if (F.job) jobFilter = F.job;
   if (FAMILIES.some(([k]) => k === p.get('fam'))) { F.fam = p.get('fam'); document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fam === F.fam))); }
   if (p.get('q')) { F.q = p.get('q').toLowerCase(); byId('shift').value = p.get('q'); }
-  page = Math.max(0, (+(p.get('page') || p.get('p')) || 1) - 1); // ?page= is the shared pager key that views reset; ?p= is an old link
+  window.shell.list.listParams(p, L, { sorts: Object.keys(SORTS), size: LIST.size });
+  if (!p.get('page') && /^[1-9]\d*$/.test(p.get('p') || '')) L.page = +p.get('p'); // ?page= is the shared pager key that views reset; ?p= is an old link
 }
 function writeURL() {
   const p = new URLSearchParams();
@@ -309,7 +332,7 @@ function writeURL() {
   if (F.act) p.set('act', '1');
   if (F.fam) p.set('fam', F.fam);
   if (F.q) p.set('q', F.q);
-  if (page) p.set('page', page + 1);
+  window.shell.list.listQuery(p, L, LIST);
   window.shell.url(p); // the shell keeps ?row=
   window.shell.views(views());
 }
@@ -322,7 +345,7 @@ tbody.addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'
 async function selectClean() {
   const before = byId('ack-date').value;
   let preview;
-  try { preview = await getJSON(`/api/reports/clean?before=${encodeURIComponent(before)}`); }
+  try { preview = await window.shell.getJSON(`/api/reports/clean?before=${encodeURIComponent(before)}`); }
   catch (err) { byId('ack-out').hidden = false; byId('ack-sum').textContent = `No preview: ${err.message}`; put(byId('ack-sel'), html``); put(byId('ack-dec'), html``); return; }
   const byN = Object.fromEntries(ROWS.map(r => [r.n, r]));
   const selected = preview.selected.filter(n => byN[n]), away = preview.selected.length - selected.length;
@@ -333,13 +356,14 @@ async function selectClean() {
   byId('ack-sum').textContent = selected.length
     ? `${plural(selected.length, 'clean report')} picked and listed under Reports. The bar at the bottom acknowledges them.${away ? ` ${away} more are older than the newest ${DOC.limit || 200}; the classic Reports screen acknowledges those.` : ''}`
     : preview.count ? `${preview.count} clean reports, none in the newest ${DOC.limit || 200}; the classic Reports screen acknowledges them.` : 'No clean open report before that date.';
-  F.clean = new Set(selected); page = 0; byId('ack-out').hidden = false; byId('ack-clear').hidden = false;
+  F.clean = new Set(selected); L.page = 1; byId('ack-out').hidden = false; byId('ack-clear').hidden = false;
   [...picks].forEach(id => window.shell.commands.pick(id));
   selected.forEach(n => window.shell.commands.pick('r' + n));
   renderRows(); byId('led-h').scrollIntoView?.({ block: 'start' });
 }
 byId('ack-preview').addEventListener('submit', e => { e.preventDefault(); selectClean(); });
-byId('ack-clear').addEventListener('click', () => { F.clean = ''; [...picks].forEach(id => window.shell.commands.pick(id)); byId('ack-out').hidden = true; byId('ack-clear').hidden = true; renderRows(); });
+function clearClean() { F.clean = ''; [...picks].forEach(id => window.shell.commands.pick(id)); byId('ack-out').hidden = true; byId('ack-clear').hidden = true; }
+byId('ack-clear').addEventListener('click', () => { clearClean(); renderRows(); });
 
 // Shapeshift bar: filter / new task / ask, previewed before commit.
 const input = byId('shift'), prev = byId('shift-preview'), as = byId('shift-as'), ghost = byId('ghost');
@@ -351,7 +375,7 @@ function render() {
   prev.hidden = !v;
   ghost.textContent = v ? `→ ${mode}` : '';
   put(as, html`${mode === 'task' ? html`${I('list-todo')} task “${v}”` : mode === 'ask' ? html`${I('message-square')} ask chat about reports` : html`${I('filter')} filter reports, bodies included`}`);
-  F.q = mode === 'filter' ? v.toLowerCase() : ''; page = 0; renderRows();
+  F.q = mode === 'filter' ? v.toLowerCase() : ''; L.page = 1; renderRows();
 }
 input.addEventListener('input', () => { mode = guess(input.value.trim()); setMode(mode); });
 input.addEventListener('keydown', e => {
@@ -370,12 +394,12 @@ document.addEventListener('keydown', e => {
 });
 // The shell walks these rows on j / k.
 window.PAGE_KEYS = [['/', 'Filter reports, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
-window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: id => select(id, false) };
+window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: id => select(id, false), clear: () => !!activeFilters().length && (clearAll(), true) };
 
 window.PAGE_COMMANDS = [
   { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => input.focus() },
   { label: 'Select clean reports', icon: 'check', run: () => selectClean() },
-  { label: 'Show reports that need action', icon: 'filter', run: () => { byId('f-act').checked = true; F.act = true; page = 0; renderRows(); } },
+  { label: 'Show reports that need action', icon: 'filter', run: () => { byId('f-act').checked = true; F.act = true; L.page = 1; renderRows(); } },
 ];
 
 // ---------- Commands (products/system/commands.md) ----------
@@ -397,7 +421,7 @@ let reader = null;
 const load = () => reader.load(), reload = () => reader.reread();
 async function write(path, body) {
   let out;
-  try { out = await post(path, body); } catch (err) { if (err.stale) load(); throw err; }
+  try { out = await window.shell.post(path, body); } catch (err) { if (err.stale) load(); throw err; }
   await reload();
   return out;
 }
@@ -443,7 +467,7 @@ document.addEventListener('shell:picked', e => { picks = new Set(e.detail); tbod
 // ---------- Start (build: read /api/reports through shell.read, then draw; again after each write) ----------
 let started = false;
 // The reports this page drew: the reader's settle selects among them, never a report a filter hides.
-const onPage = () => shown.slice(page * PAGE, page * PAGE + PAGE).map(r => r.id);
+const onPage = () => shown.slice((L.page - 1) * L.size, L.page * L.size).map(r => r.id);
 const firstOnPage = () => { const ids = onPage(); return ids.find(id => ROWS.find(r => r.id === id)?.act) || ids[0]; };
 function draw() {
   CAD_JOBS = cadJobs();

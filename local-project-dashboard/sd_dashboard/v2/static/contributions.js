@@ -26,14 +26,7 @@ addEventListener('DOMContentLoaded', () => {
   const n = x => Number(x || 0).toLocaleString('en-US');
   // build: a POSIX single-quoted word, so a title with $ or a quote copies as itself.
   const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
-  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-    return out;
-  }
-  // build: only an https github.com URL becomes a link, as v1's _link allows.
+    // build: only an https github.com URL becomes a link, as v1's _link allows.
   const github = u => /^https:\/\/github\.com\/[^/@\s]+\/[^/@\s]+\//.test(String(u || ''));
   const isIssue = r => /\/issues\/\d+$/.test(String(r.url || ''));
   const filed = r => r.url ? (isIssue(r) ? 'Issue' : 'Pull request') : r.has_draft ? 'Unfiled issue draft' : 'Unfiled local work';
@@ -94,7 +87,7 @@ addEventListener('DOMContentLoaded', () => {
         when: o => o.event_ids.length ? true : 'no attention event on this row',
         consequence: o => `This clears ${plural(o.event_ids.length, 'attention event')} on ${o.title}. No verb restores them; it completes no task and sends nothing.`,
         cli: ackCli,
-        run: o => post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
+        run: o => window.shell.post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
           .then(() => { landed(o, { event_ids: [] }); reread(); return `Acknowledged · ${o.label}`; }, e => { load(); throw e; }) },
       { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', key: 'd', risk: 'safe', executes: false, primary: () => true,
         when: o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true,
@@ -104,7 +97,7 @@ addEventListener('DOMContentLoaded', () => {
         when: o => o.item_id ? `already tracked as item #${o.item_id}` : linkOf(o) ? true : 'not filed on GitHub',
         consequence: o => `This files a task, "${o.title}", that tracks ${o.url || o.key} as this contribution. No verb deletes it; cancel it from Tasks.`,
         cli: o => `printf '%s\\n' ${shq(taskJson(o))} > contribution.json && sd task contribution add ${shq(o.title)} --file contribution.json`,
-        run: o => post('/api/contributions/task', { key: o.key, title: o.title })
+        run: o => window.shell.post('/api/contributions/task', { key: o.key, title: o.title })
           .then(out => { landed(o, { item_id: out.item?.id }); reread(); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { load(); throw e; }) },
       // Copy only, as ruled: the shell still calls run, so run opens nothing. The Details link opens the page.
       { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', key: 'o', risk: 'safe', executes: false,
