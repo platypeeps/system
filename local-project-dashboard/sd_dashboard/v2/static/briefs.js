@@ -12,14 +12,11 @@ addEventListener('DOMContentLoaded', () => {
   const shell = window.shell, C = shell.commands;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
-  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
   // build: capture files through the route and library call Today and Tasks use (POST /api/items, sd task add).
   window.SHELL_CAPTURE = async ({ kind, title, item }) => {
     if (kind === 'note') throw new Error('Not filed: a brief has no item to note. File a task or a followup.');
     const body = { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) };
-    const r = await fetch('/api/items', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(`Not filed: ${out.error || r.status}`);
+    const out = await window.shell.post('/api/items', body).catch(e => { throw new Error(`Not filed: ${e.message}`); });
     return `Captured #${out.item?.id}: ${out.item?.title || title}`;
   };
 

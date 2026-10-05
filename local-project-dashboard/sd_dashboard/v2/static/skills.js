@@ -17,14 +17,7 @@ window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'skills not read' };
 addEventListener('DOMContentLoaded', () => {
   const C = window.shell.commands;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
-  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-    return out;
-  }
-  const md = d => String(d || '').slice(5, 10);
+    const md = d => String(d || '').slice(5, 10);
   const utc = t => t ? String(t).slice(0, 16).replace('T', ' ') + ' UTC' : '—';
 
   // ---------- Data (build: /api/skills) ----------
@@ -315,7 +308,7 @@ addEventListener('DOMContentLoaded', () => {
   // as "not changed". Until the reread lands, the row says what was queued. A refused write reads again with load().
   const sk = o => byName[o.id] || o, queued = (o, l) => sk(o).q.includes(l) ? `${l} already` : true;
   const pend = (o, label) => { const s = byName[o.id]; if (!s) return; s.q = [...s.q.filter(x => x !== label), label]; drawRows(); if (selected === s.name) show(s.name); };
-  const write = (o, action, label, done, body = {}) => post(`/api/skills/${encodeURIComponent(o.id)}/${action}`, { revision: sk(o).revision, ...body })
+  const write = (o, action, label, done, body = {}) => window.shell.post(`/api/skills/${encodeURIComponent(o.id)}/${action}`, { revision: sk(o).revision, ...body })
     .then(out => { pend(o, label); reread(); return done(out); }, e => { load(); throw e; });
   const itemOf = out => out?.item?.id ? ` as item #${out.item.id}` : '';
   const PROMOTE = { id: 'skill.promote.queue', on: 'skill form', label: 'Promote', risk: 'confirm',

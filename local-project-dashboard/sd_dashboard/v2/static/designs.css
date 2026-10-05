@@ -3,14 +3,10 @@
  * Route: custom, locked to foundation/ and the v2 shell.css. From the design source's designs.css at 2729265. */
 
 /* Annunciator: 2–8 cells, ranked; each cell is a button that filters the ledger to the rows behind its number. */
-.annunciator { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl); padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); list-style: none; }
-.annunciator li { display: contents; }
 .cell { font: inherit; border: 0; text-align: left; cursor: pointer; width: 100%; display: grid; grid-template-rows: auto 1fr; gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel); color: var(--color-muted); }
 .cell:hover { background: var(--color-well); }
 .cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 .cell .lbl { font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; display: flex; align-items: center; gap: var(--space-2xs); }
-.cell .val { font: 400 var(--text-sm)/1.3 var(--font-data); align-self: end; color: var(--color-ink-2); }
-.cell .val b { font-weight: 500; font-size: var(--text-md); color: var(--color-ink); }
 .cell[data-state="ok"] .lbl .i { color: var(--color-ok); }
 .cell[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
 .cell[data-state="caution"] .val, .cell[data-state="caution"] .val b { color: var(--color-caution-lamp-ink); }
@@ -36,7 +32,6 @@
 .ledger tbody tr[data-picked] .g::after { content: " ✓"; color: var(--color-accent); }
 .ledger tr.prod td { height: auto; padding: var(--space-md) var(--space-xs) var(--space-2xs); font: 600 var(--text-2xs)/1.3 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); border-bottom: var(--rule-hair) solid var(--color-rule); }
 .ledger tr.prod .n { margin-left: var(--space-xs); font: 400 var(--text-xs)/1 var(--font-data); letter-spacing: 0; text-transform: none; color: var(--color-ink-2); }
-.ledger .g { text-align: center; font-family: var(--font-data); }
 .ledger .what button { all: unset; cursor: pointer; display: block; overflow-wrap: anywhere; font-family: var(--font-data); }
 .ledger .what button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .ledger .what .dir { color: var(--color-muted); }
