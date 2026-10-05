@@ -171,7 +171,16 @@ Your own mechanism is the control arm and is measured too. `jev enabled STAGE
 --record` writes the decline when the answer is no, and `jev record` writes
 what your path then did. `--shadow ANSWER` asks anyway, records both answers
 and prints yours, so a stage produces a paired sample without changing what it
-does. It costs a real call, so it is off unless you pass it.
+does. It costs a real call, so it is off unless you pass it. `--baseline
+ANSWER` is the live form: the judgment is printed and used as before, your
+answer is recorded beside it as one pair, and `changed` compares the two.
+--baseline-ms N times your own path. Not with --shadow.
+
+--local-only sends the call to the local Kev alone (JEV_COMPARE_KEV_URL,
+default http://127.0.0.1:8009/v1/systemone), never to Jev or a comparison arm.
+A Kev URL that is not a loopback address is refused before anything is sent;
+Kev down is a decline, like Jev down. `enabled STAGE --local-only` answers for
+that path. The stages in LOCAL_ONLY_STAGES (jev.py) are local-only always.
 
 Each caller also has a variable of its own -- JEV_HEALTH_CHECK,
 JEV_ADVERSARIAL_GATE and the like -- and it only switches that one stage off:

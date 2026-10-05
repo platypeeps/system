@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import ipaddress
 import json
 import math
 import os
@@ -39,7 +40,9 @@ import shutil
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -182,6 +185,60 @@ def shadow_on(env) -> bool:
         return False
 
 
+
+# Local-only mode (sd:2761): the request goes to the local Kev and nowhere
+# else -- never Jev, never a comparison arm -- whatever the switches say. It is
+# for text that may not leave the machine, such as a secret scanner's hits.
+# A stage named here is local-only even when its caller forgets the flag.
+LOCAL_ONLY_STAGES = ("JEV_SECRET_SCAN",)
+
+#: Kev's System One endpoint, the name a request asks it for, and the model a
+#: row records; `jev_compare`'s Kev arm reads the same three.
+KEV_URL = "http://127.0.0.1:8009/v1/systemone"
+KEV_REQUEST_MODEL = "kev-latest"
+KEV_MODEL = "jaredpalmer/kev-4b@v1.0"
+
+
+def local_only(args, env) -> bool:
+    return bool(getattr(args, "local_only", False)) or \
+        whose(args, env, "stage") in LOCAL_ONLY_STAGES
+
+
+def loopback(url: str) -> bool:
+    """Whether `url` is http(s) to a literal loopback address. A host name is
+    refused, `localhost` too: a name goes through the resolver, and an
+    address cannot."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        return parts.scheme in ("http", "https") and \
+            ipaddress.ip_address(parts.hostname or "").is_loopback
+    except ValueError:
+        return False
+
+
+def local_settings(conf: dict, env) -> dict:
+    """`conf` pointed at Kev. A URL that is not loopback is a `problem`, so
+    the call declines before anything is sent."""
+    url = (env.get("JEV_COMPARE_KEV_URL") or KEV_URL).strip()
+    return dict(
+        conf, local=True, url=url, key=(env.get("KEV_API_KEY") or "").strip(),
+        model=KEV_REQUEST_MODEL, privacy=(),
+        row_model=(env.get("JEV_COMPARE_KEV_MODEL") or env.get("KEV_MODEL") or
+                   KEV_MODEL).strip(),
+        problem=conf["problem"] or ("" if loopback(url) else
+                                    f"--local-only refuses {url}: its host is "
+                                    "not a loopback address"))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+#: No proxy and no redirect: either would carry a loopback request elsewhere.
+LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                           _NoRedirect())
+
 #: What `.env.example` ships. Convention 3 in CLAUDE.md is a committed
 #: `.env.example` holding `change-me`, so a machine where someone copied it and
 #: stopped is a machine that will exist, and its key is a string that is not
@@ -210,6 +267,8 @@ def why_unusable(conf: dict, env) -> tuple:
     """
     if not switched_on(conf, env):
         return "switched-off", "switched off (jev on, or JEV_ENABLED=1, to use it)"
+    if conf.get("local"):
+        return ("unavailable", conf["problem"]) if conf["problem"] else ("", "")
     key = conf["key"].strip()
     if not key:
         return "unkeyed", "no TYPESAFE_API_KEY on this machine"
@@ -251,6 +310,8 @@ def cmd_enabled(args, conf, out, env=None, **kw) -> int:
     the vocabulary lives here and not in a copy per caller.
     """
     env = os.environ if env is None else env
+    if local_only(args, env):
+        conf = local_settings(conf, env)
     word, reason = why_unusable(conf, env)
     if not reason and args.stage and stage_off(args.stage, env):
         word = "switched-off"
@@ -581,13 +642,20 @@ def _changed(outcome: str, declared, printed, fallback) -> str:
     """Did the judgment change what the caller did?
 
     Three answers and one default. A caller that knows says so with
-    `--changed`. A caller that handed over its own answer in `--fallback` has
-    already said what it would have done, so the two are compared and no flag
-    is needed -- which is why the callers that pass a fallback are measured
-    for free. Everyone else is `unknown`, which is most of them: a caller that
-    reorders a list and prints it has no baseline in hand at the moment of the
-    call, and guessing one would put a number in the report that nothing
-    checked.
+    `--changed`. A caller that handed over its own answer -- `--baseline`,
+    `--shadow`, or failing those `--fallback` -- has already said what it
+    would have done, so the two are compared and no flag is needed. Everyone
+    else is `unknown`, which is most of them: a caller that reorders a list
+    and prints it has no baseline in hand at the moment of the call, and
+    guessing one would put a number in the report that nothing checked.
+
+    A fallback is only a baseline when the caller made it one. sd-review
+    passes a sentinel no tier can be, so every one of its rows compared a
+    tier with the sentinel and said `yes` (sd:2357); `--baseline` is the
+    answer the caller would really have used, and wins over it.
+
+    Two numbers are compared as numbers: `score` prints `2.0`, a caller's
+    own scale says `2`, and those agree.
     """
     if declared:
         return declared
@@ -597,7 +665,10 @@ def _changed(outcome: str, declared, printed, fallback) -> str:
         return "no"
     if outcome != "ok" or printed is None or fallback is None:
         return "unknown"
-    return "yes" if printed.strip() != fallback.strip() else "no"
+    left, right = printed.strip(), fallback.strip()
+    if NUMBER.match(left) and NUMBER.match(right):
+        return "yes" if Decimal(left) != Decimal(right) else "no"
+    return "yes" if left != right else "no"
 
 
 def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
@@ -617,6 +688,7 @@ def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
     printed = event.pop("_printed", None)
     declared = event.pop("_declared", None)
     event.pop("_cause", None)
+    event.pop("_criteria", None)
     if fallback is not None and outcome != "ok":
         outcome = "fallback"
         cause = cause or "unavailable"
@@ -626,12 +698,80 @@ def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
     # for an outage on a machine where somebody had simply run `jev off`, and
     # in shadow mode there is no fallback to hang the reason on at all.
     event["cause"] = None if outcome == "ok" else cause
-    # In shadow mode the caller's own answer is in hand whether or not the
-    # call failed, so it, and not the fallback, is what the judgment is
-    # compared against.
+    # With `--shadow` or `--baseline` the caller's own answer is in hand
+    # whether or not the call failed, so it, and not the fallback, is what
+    # the judgment is compared against.
     against = fallback if baseline is None else baseline
     event["changed"] = _changed(outcome, declared, printed, against)
     return write_event(event, env)
+
+
+def baseline_answer(args, own) -> str | None:
+    """The caller's own answer as the ledger stores it, or nothing.
+
+    The same shape as the judgment's answer on the other arm, or the two
+    cannot be compared: a number for `noul` (`yes` is 1 and `no` is 0, the
+    words `--gate` prints), `score` and `ask`, and for
+    `choice` the position of the caller's key in its own criteria -- the key
+    is text the caller wrote, so `position_of` turns it into which one won.
+    A key that is not one of the criteria, or text that is not a number, is
+    dropped and the row is kept, as `cmd_record` does.
+
+    The criteria are the ones the verb parsed when it ran. When it never ran
+    -- switched off, unkeyed -- they are parsed here, and a parse that fails
+    (a file gone, JSON that is not an object) is no answer, never an error:
+    this runs after the caller's answer has been printed. Criteria on stdin
+    (`@-`) are never read here. Nothing read them on a declined call, and a
+    read after the answer is printed blocks a caller whose stdin is open.
+    """
+    try:
+        word = str(own).strip().lower()
+        if getattr(args, "verb", None) == "noul" and word in ("yes", "no"):
+            # The words `--gate` prints, as the probability's side of 0.5.
+            return "1" if word == "yes" else "0"
+        if getattr(args, "verb", None) != "choice":
+            return judged(own)
+        criteria = _EVENT.get("_criteria") if _EVENT is not None else None
+        if criteria is None:
+            if args.criteria == "@-":
+                return None
+            criteria = list(parse_mapping(args.criteria))
+        return position_of(own, criteria)
+    except Exception:
+        return None
+
+
+def write_baseline(args, env, *, pair, own, shadow: bool, duration_ms) -> str:
+    """Write the control arm of one paired decision. Never raises.
+
+    One writer for both modes, so a shadow pair and a live pair are the same
+    shape: `arm=baseline`, `primitive=baseline`, `provider=BASELINE_PROVIDER`,
+    under the pair id the judgment's row carries. `shadow` says which mode
+    produced it, and is the one field in which the two differ.
+
+    Written from this process in both, because a pair whose other half is
+    written by somebody else is a pair that goes missing.
+    """
+    return write_event({
+        "caller": whose(args, env, "caller"),
+        "stage": whose(args, env, "stage"),
+        "arm": "baseline",
+        "pair": named(pair),
+        "question_id": named(getattr(args, "subject", None)),
+        "shadow": shadow,
+        "provider": BASELINE_PROVIDER,
+        "primitive": "baseline",
+        "outcome": "ok",
+        # The caller's own answer is the caller's own text -- `no`, a folder
+        # name, a subject line -- so only a number or a position reaches the
+        # ledger. What the comparison needs is already on the judgment's row:
+        # `changed` was computed in this process, where both were in hand.
+        "answer": own,
+        "duration_ms": duration_ms,
+        # The baseline is what happened, so relative to itself it changed
+        # nothing. The delta is on the judgment's row.
+        "changed": "no",
+    }, env)
 
 
 def cause_of(exc) -> str:
@@ -940,23 +1080,27 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
     `opener` and `sleep` are injected so the suite can drive a throttled
     server and a doubling backoff without waiting for either.
     """
-    payload, taken = redacted_payload(payload, conf.get("privacy", ()))
-    if taken:
-        sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
-    # After redaction and refusal, before the first attempt: the arms see the
-    # bytes Jev sees, once per call however many retries follow.
-    start_arms(payload)
+    if conf.get("local"):
+        # Checked again here, at the one place a request is sent, so no path
+        # into `post` can reach a remote host in local-only mode.
+        if not loopback(conf["url"]):
+            raise JevError(f"--local-only refuses {conf['url']}: its host is "
+                           "not a loopback address")
+    else:
+        payload, taken = redacted_payload(payload, conf.get("privacy", ()))
+        if taken:
+            sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
+        # After redaction and refusal, before the first attempt: the arms see
+        # the bytes Jev sees, once per call however many retries follow.
+        start_arms(payload)
     body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        conf["url"],
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {conf['key']}",
-            "Content-Type": "application/json",
-        },
-    )
-    send = opener or urllib.request.urlopen
+    headers = {"Content-Type": "application/json"}
+    if conf["key"]:
+        headers["Authorization"] = f"Bearer {conf['key']}"
+    request = urllib.request.Request(conf["url"], data=body, method="POST",
+                                     headers=headers)
+    send = opener or (LOCAL_OPENER.open if conf.get("local")
+                      else urllib.request.urlopen)
     last = ""
     # The clock the ledger records: from the first send to the final outcome,
     # retries and their backoff included. That is what the caller waited for,
@@ -977,7 +1121,10 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                         # column exists to keep.
                         note(_cause="invalid")
                         raise
-                    note(model=parsed.get("model"), **usage_of(parsed))
+                    if not conf.get("local"):
+                        # Kev answers `kev-latest`; its row keeps the checkpoint.
+                        note(model=parsed.get("model"))
+                    note(**usage_of(parsed))
                     server = parsed.get("latency_ms")
                     if type(server) is int and server >= 0:
                         note(server_ms=server)
@@ -1132,6 +1279,9 @@ def cmd_choice(args, conf, out, **kw) -> int:
         "instructions": args.instructions,
         "criteria": parse_mapping(args.criteria),
     }
+    # Kept for the baseline row, which is a position into these same
+    # criteria; parsing them twice could read `@-` twice.
+    note(_criteria=list(definition["criteria"]))
     answer = one_question(args, conf, definition, **kw)
     # The position, never the key: see `position_of`.
     note(answer=position_of(answer.get("choice"), definition["criteria"]),
@@ -1261,6 +1411,13 @@ def cmd_status(args, conf, out, env=None, **kw) -> int:
 #: `--caller` and `--stage` also read `JEV_CALLER` and `JEV_STAGE`, because
 #: half the callers on this machine are shell and reach this script through a
 #: wrapper that already exports its own variables.
+def add_local_only(parser) -> None:
+    parser.add_argument("--local-only", action="store_true", dest="local_only",
+                        help="ask the local Kev alone, never Jev or a "
+                             "comparison arm; a Kev URL that is not loopback "
+                             "is refused")
+
+
 def add_measurement(parser) -> None:
     parser.add_argument("--caller", default=None, metavar="NAME",
                         help="which tool is asking, for the judgment ledger "
@@ -1281,6 +1438,16 @@ def add_measurement(parser) -> None:
     parser.add_argument("--shadow-ms", type=int, default=None, dest="shadow_ms",
                         metavar="N",
                         help="how long your own path took, for the paired row")
+    parser.add_argument("--baseline", default=None, metavar="ANSWER",
+                        help="live paired mode: your own answer for this "
+                             "decision. The judgment is printed and used "
+                             "exactly as without it; both answers are "
+                             "recorded as one pair, and `changed` compares "
+                             "the two. Not with --shadow")
+    parser.add_argument("--baseline-ms", type=int, default=None,
+                        dest="baseline_ms", metavar="N",
+                        help="how long your own path took, for the baseline row")
+    add_local_only(parser)
     add_subject(parser)
 
 
@@ -1364,6 +1531,7 @@ def build_parser() -> argparse.ArgumentParser:
     enabled = subs.add_parser("enabled", add_help=False)
     enabled.add_argument("stage", nargs="?", default="",
                          help="a caller's own variable, e.g. JEV_ADVERSARIAL_GATE")
+    add_local_only(enabled)
     enabled.add_argument("--why", action="store_true",
                          help="say which way it went, instead of only exiting")
     enabled.add_argument("--record", action="store_true",
@@ -1451,30 +1619,53 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     if args.run in LOCAL_VERBS:
         return args.run(args, conf, out, env=env, **kw)
     shadow = getattr(args, "shadow", None)
+    baseline = getattr(args, "baseline", None)
     if shadow is not None and getattr(args, "json", False):
         sys.stderr.write("jev: --shadow prints your one answer, so it cannot "
                          "be combined with --json\n")
         return EXIT_ERROR
+    if shadow is not None and baseline is not None:
+        # Two answers to which one is printed: `--shadow` prints the caller's
+        # and `--baseline` the judgment. Refused before anything is sent, so
+        # a caller that passed both finds out on its first run, not from a
+        # report that silently picked one.
+        sys.stderr.write("jev: --shadow prints your answer and --baseline "
+                         "prints the judgment; give one of them\n")
+        return EXIT_ERROR
+    local = local_only(args, env)
+    if local:
+        conf = local_settings(conf, env)
     # The shadow switch: `--fallback X` becomes `--shadow X`, and a call with
-    # no fallback gets what it gets when Jev is down. Neither caller knows the
-    # switch is on, so neither can say whether the judgment changed anything.
+    # no fallback gets what it gets when Jev is down. A `--baseline` stays the
+    # pair's old answer; without one the caller's fallback is a marker, so
+    # nothing can say whether the judgment would have changed anything.
     switched = shadow is None and shadow_on(env)
     if switched:
         shadow = fallback
-        sys.stderr.write("jev: shadow on; Jev is asked and recorded, and its "
-                         "answer is not used\n")
     shadowed = shadow is not None or switched
     # Measured here and flushed below, always after the answer has been
     # written. A row is bookkeeping and an answer is the job, so the job goes
     # first and the bookkeeping never delays it.
     measure(args, env)
-    pair = os.urandom(8).hex() if shadowed else None
-    note(_declared="unknown" if switched else getattr(args, "changed", None),
-         pair=pair, shadow=shadowed)
+    if local:
+        note(arm="kev", provider=BASELINE_PROVIDER, model=conf["row_model"],
+             usd=0.0)
+    # The caller's own answer: `--baseline` when given, else the one shadow
+    # mode prints. Live paired mode (sd:2357) prints the judgment and only
+    # records it.
+    own = baseline if baseline is not None else shadow
+    pair = os.urandom(8).hex() if shadowed or own is not None else None
+    declared = getattr(args, "changed", None)
+    if switched:
+        declared = None if baseline is not None else "unknown"
+    note(_declared=declared, pair=pair, shadow=shadowed)
     # In shadow mode the judgment is measured and not used, so it is written
     # to a sink and the caller is handed back its own answer instead.
     sink = io.StringIO() if shadowed else out
     word, reason = why_unusable(conf, env)
+    if switched and not reason:
+        sys.stderr.write("jev: shadow on; Jev is asked and recorded, and its "
+                         "answer is not used\n")
     if reason:
         # Nothing was sent: switched off here, unkeyed, or configured with a
         # number that does not parse. The row says which, and says it as a
@@ -1501,31 +1692,15 @@ def main(argv=None, out=None, env=None, **kw) -> int:
         # No answer of the caller's own to hand back: its old path runs on
         # this exit, as it does on any machine where Jev cannot answer.
         code = EXIT_UNCONFIGURED
-    flush(outcome, cause=cause, fallback=fallback, baseline=shadow, env=env)
-    if shadow is not None:
-        # The control arm of the pair, from this process, because a pair whose
-        # other half is written by somebody else is a pair that goes missing.
-        write_event({
-            "caller": whose(args, env, "caller"),
-            "stage": whose(args, env, "stage"),
-            "arm": "baseline",
-            "pair": named(pair),
-            "question_id": named(getattr(args, "subject", None)),
-            "shadow": True,
-            "provider": BASELINE_PROVIDER,
-            "primitive": "baseline",
-            "outcome": "ok",
-            # The caller's own answer is the caller's own text -- `no`, a
-            # folder name, a subject line -- so it is not stored, and
-            # `judged` drops it if it is not a number. What the comparison
-            # needs is already here: `changed` says whether the two arms
-            # differed, computed in this process where both were in hand.
-            "answer": judged(shadow),
-            "duration_ms": getattr(args, "shadow_ms", None),
-            # The baseline is what happened, so relative to itself it changed
-            # nothing. The delta is on the judgment's row.
-            "changed": "no",
-        }, env)
+    if own is not None:
+        # Read before `flush` clears the call: a choice's criteria are noted
+        # on it.
+        answered = baseline_answer(args, own)
+    flush(outcome, cause=cause, fallback=fallback, baseline=own, env=env)
+    if own is not None:
+        write_baseline(args, env, pair=pair, own=answered, shadow=shadowed,
+                       duration_ms=getattr(args, "baseline_ms" if baseline is not None
+                                           else "shadow_ms", None))
     return code
 
 

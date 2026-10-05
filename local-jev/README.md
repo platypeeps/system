@@ -324,6 +324,41 @@ produces a paired sample -- which is the only thing a delta can be computed
 from. It costs a real call, so it is off unless the flag is given, and the
 report counts it separately.
 
+A shadow `choice` records the caller's answer as its position in the
+criteria, the same shape as the judgment's. A `noul` records `yes` as 1 and
+`no` as 0, the words `--gate` prints.
+
+### Live paired mode
+
+    jev choice 'which route?' --criteria desk,phone \
+        --fallback "$(old_way)" --baseline "$(old_way)" --baseline-ms 4
+
+`--baseline ANSWER` is the caller's own answer for this decision, and
+`--baseline-ms N` is how long the caller's own path took. Every judgment verb
+takes both: `noul`, `choice`, `score` and `ask`.
+
+The call behaves exactly as without the flags. The judgment is printed, the
+exit codes are the same, and `--fallback` works as before. Two rows go into
+the ledger under one pair id:
+
+- the judgment's row, with `changed` comparing the printed answer with the
+  baseline, not with the fallback;
+- a baseline row: `arm=baseline`, `shadow=0`, `primitive=baseline`,
+  `provider=local`, with `--baseline-ms` as its duration.
+
+The baseline is stored in the judgment's shape. For `choice` that is its
+position in the criteria, counting from 1. A baseline that is not a number,
+or not one of the criteria, is dropped from the row and the row is kept.
+Two numbers are compared as numbers, so `2` and `2.0` agree.
+
+Use `--baseline` when the fallback is not the answer the caller would have
+used. `sd-review` passes a sentinel as `--fallback`, and every one of its
+rows compared against that sentinel said `changed=yes`.
+
+`--baseline` and `--shadow` together are refused with exit 1, before anything
+is sent. One prints the judgment and the other prints the caller's answer.
+With `--json`, `changed` is `unknown`, because no single answer is printed.
+
 ### The shadow switch
 
     jev shadow on        # every call on this machine runs in shadow mode
@@ -343,14 +378,39 @@ is answered as if Jev were down:
 
 So every caller runs its old mechanism with no edit, and the comparison arms
 still get the request. `jev status` prints `shadow=on`, and `jev enabled --why`
-says so too. The row's `changed` is `unknown`: the caller does not know the
-switch is on, so it cannot say what it would have done.
+says so too.
 
 **The agreement needs the old answer, and a fallback is a marker.**
 `tests/test_jev_contract.py` keeps every `--fallback` distinct from a real
-answer, so the baseline row of a switched call records no answer. Agreement
-with the old mechanism appears for a caller that passes its real answer.
-`judgments compare` counts the other pairs and names them.
+answer. A switched call given `--baseline B` records `B` as the pair's old
+answer, and `changed` compares the judgment with it. A switched call without
+one records no old answer, and its `changed` is `unknown`.
+`judgments compare` reports agreement for the first kind and counts the second.
+
+### Local-only mode
+
+    jev noul 'Is this a real credential?' --local-only --stage JEV_SECRET_SCAN \
+        --gate 0.5 --shadow yes --state-format text < hit.txt
+
+`--local-only` is for text that may not leave this machine. The contract:
+
+- The request goes to the local Kev alone, at `JEV_COMPARE_KEV_URL`
+  (default `http://127.0.0.1:8009/v1/systemone`). It never goes to Jev or to
+  a comparison arm, whatever `JEV_COMPARE_KEV` and `JEV_COMPARE_HAIKU_VIA` say.
+- A Kev URL whose host is not a literal loopback address is refused before
+  anything is sent; `localhost` is refused too, since a name is resolved. The
+  request uses no proxy and follows no redirect.
+- No `TYPESAFE_API_KEY` is needed and none is sent; `KEV_API_KEY` is sent when
+  set. Privacy redaction is skipped, because the text stays here.
+- The row is written under the stage with `arm=kev`, `provider=local`.
+- Kev down, slow, or the URL refused is a decline: the `--fallback` or
+  `--shadow` answer is printed, or exit 3, exactly as when Jev is down.
+- The kill switch (`jev off`, `JEV_ENABLED=0`) and the shadow switch apply.
+- `jev enabled STAGE --local-only` answers for this path: no key check, and
+  exit 3 for a refused URL.
+
+A stage in `LOCAL_ONLY_STAGES` in `jev.py` is local-only without the flag.
+`JEV_SECRET_SCAN` is one.
 
 ### Reading it back
 
@@ -438,10 +498,11 @@ the settings are in `.env.example`. Read the comparison with:
 
 It never prints the key, never logs it, and never puts it in an error message.
 
-**Nothing sensitive should be piped into it.** Every call leaves the machine.
-That is why `local-scan-for-secrets` is not a caller: triaging its hits is a
-textbook Noul, and it would mean posting candidate credentials to a third
-party, which is the one thing that scanner exists to prevent.
+**Nothing sensitive should be piped into it.** Every call leaves the machine,
+except a `--local-only` one. That is why `local-scan-for-secrets` calls only
+through `--local-only`: triaging its hits is a textbook Noul, and sending
+candidate credentials to a hosted model is the one thing that scanner exists
+to prevent. Its hits go to the local Kev, or nowhere.
 
 **Redaction is the backstop, not the permission.** Before a request leaves,
 every string in its state and questions passes credential shapes (GitHub,

@@ -20,6 +20,6 @@ paths:
 - An absent switch file means enabled; a default-off switch makes every later integration silently never run.
 - A stage variable cannot switch a stage on against a machine with no key or with `jev off`.
 - `sd-docs-lint` is a Jev caller outside this repo, opt-in per repo through a tracked `.github/sd-docs-lint.json`.
-- Do not make `local-scan-for-secrets` a caller; its hits are sensitive.
+- `local-scan-for-secrets` calls only through `--local-only` (local Kev); its hits are candidate credentials, so never a hosted model.
 - `jev.py` redacts credentials and `privacy-patterns` matches before sending; that is a backstop, never a reason to send.
 - Keep `jev shadow` off when its file is absent; it sends a real call per decision and changes what callers see.

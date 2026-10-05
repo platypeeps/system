@@ -48,12 +48,13 @@ except ImportError:                          # pragma: no cover - a copy alone
 #: Seconds each arm may take before it is recorded as a timeout.
 DEFAULT_TIMEOUT = 60.0
 
-DEFAULT_KEV_URL = "http://127.0.0.1:8009/v1/systemone"
+# Kept in `jev.py`, whose local-only mode asks the same Kev.
+DEFAULT_KEV_URL = jev.KEV_URL
 #: The checkpoint `local-kev` serves by default, as its row names it.
-DEFAULT_KEV_MODEL = "jaredpalmer/kev-4b@v1.0"
+DEFAULT_KEV_MODEL = jev.KEV_MODEL
 #: Kev's server answers to `kev-latest` and `jev-latest` only, so a pinned
 #: `JEV_MODEL` such as `jev-1.13.0` is replaced rather than refused there.
-KEV_REQUEST_MODEL = "kev-latest"
+KEV_REQUEST_MODEL = jev.KEV_REQUEST_MODEL
 
 #: Haiku 4.5's list price, US dollars per million tokens, for a transport
 #: that does not report its own cost. A transport whose model is not Haiku

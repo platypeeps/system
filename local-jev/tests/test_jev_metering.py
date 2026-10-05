@@ -512,13 +512,12 @@ class ShadowMode(MeteringCase):
         judged, baseline = self.rows()
         self.assertEqual((judged["arm"], judged["answer"], judged["shadow"]),
                          ("jev", "0.97", 1))
-        # The caller's own answer is the caller's own text, so it is not
-        # stored. `changed` carries what the comparison needs, and it is
-        # computed in the process that held both answers.
+        # `no` is the word `--gate` prints, so it is stored as its side of
+        # 0.5; other text of the caller's own is not stored (below).
         self.assertEqual(
             (baseline["arm"], baseline["answer"], baseline["shadow"],
              baseline["duration_ms"], baseline["provider"]),
-            ("baseline", None, 1, 4, "local"),
+            ("baseline", "0", 1, 4, "local"),
         )
         self.assertEqual(judged["changed"], "yes")
         self.assertEqual(judged["pair"], baseline["pair"])
@@ -549,6 +548,185 @@ class ShadowMode(MeteringCase):
         code, out = self.run_main(["noul", "is it?", "--shadow", "no", "--json"])
         self.assertEqual((code, out), (1, ""))
         self.assertEqual(self.rows(), [])
+
+    def test_a_shadow_choice_records_the_old_answer_as_a_position(self):
+        """The baseline row writer is shared with live mode, so shadow mode
+        gains the same shape: which criterion won, never its name."""
+        self.run_main(["choice", "which route?", "--criteria", "desk,phone",
+                       "--shadow", "phone"])
+        judged, baseline = self.rows()
+        self.assertEqual((judged["answer"], baseline["answer"]), ("1", "2"))
+
+
+class LivePaired(MeteringCase):
+    """sd:2357. `--baseline` hands over the caller's own answer on a live
+    call: the judgment is printed and used as before, and the pair is
+    written. Shadow mode measures a judgment nobody uses; this measures the
+    one the caller does."""
+
+    def test_it_prints_the_judgment_and_records_both_arms(self):
+        Stub.noul_value = 0.97
+        code, out = self.run_main(["noul", "is it?", "--gate", "0.5",
+                                   "--baseline", "no", "--baseline-ms", "6",
+                                   "--caller", "local-notify",
+                                   "--stage", "JEV_NOTIFY"])
+        self.assertEqual((code, out), (0, "yes\n"))
+        judged, baseline = self.rows()
+        self.assertEqual((judged["arm"], judged["shadow"], judged["answer"],
+                          judged["changed"]), ("jev", 0, "0.97", "yes"))
+        self.assertEqual(
+            (baseline["arm"], baseline["shadow"], baseline["primitive"],
+             baseline["provider"], baseline["outcome"], baseline["duration_ms"],
+             baseline["stage"], baseline["changed"]),
+            ("baseline", 0, "baseline", jev.BASELINE_PROVIDER, "ok", 6,
+             "JEV_NOTIFY", "no"),
+        )
+        self.assertIsNotNone(judged["pair"])
+        self.assertEqual(judged["pair"], baseline["pair"])
+
+    def test_changed_compares_with_the_baseline_and_not_the_fallback(self):
+        """sd-review passes a sentinel token as `--fallback` that no tier can
+        be, so a fallback comparison said `yes` on every row. The baseline is
+        the caller's real answer and is what the judgment is compared with."""
+        Stub.noul_value = 0.97
+        self.run_main(["noul", "is it?", "--gate", "0.5",
+                       "--fallback", "SENTINEL-NOT-A-TIER", "--baseline", "yes"])
+        self.assertEqual(self.rows()[0]["changed"], "no")
+
+    def test_a_numeric_baseline_is_compared_as_a_number(self):
+        """`score` prints `2.0`; a caller's own scale says `2`. They agree."""
+        Stub.score_value = 2.0
+        self.run_main(["score", "how urgent?", "--levels", "low,mid,high",
+                       "--baseline", "2"])
+        judged, baseline = self.rows()
+        self.assertEqual((judged["changed"], baseline["answer"]), ("no", "2"))
+
+    def test_a_choice_baseline_is_stored_as_its_position(self):
+        Stub.choice_value = "desk"
+        code, out = self.run_main(["choice", "which route?",
+                                   "--criteria", "desk,phone",
+                                   "--baseline", "phone"])
+        self.assertEqual((code, out), (0, "desk\n"))
+        judged, baseline = self.rows()
+        self.assertEqual((judged["answer"], baseline["answer"]), ("1", "2"))
+        self.assertEqual(judged["changed"], "yes")
+
+    def test_a_choice_baseline_is_positioned_when_jev_never_ran(self):
+        """Switched off, the criteria were never parsed by the verb; the
+        baseline is still a position into them, not a dropped answer."""
+        self.write_switch("off")
+        self.run_main(["choice", "which route?", "--criteria", "desk,phone",
+                       "--fallback", "phone", "--baseline", "phone"])
+        judged, baseline = self.rows()
+        self.assertEqual((judged["outcome"], baseline["answer"]), ("fallback", "2"))
+
+    def test_a_declined_choice_never_reads_stdin_for_its_baseline(self):
+        """Criteria on stdin were never read when the call was declined, and
+        reading them after the answer is printed can block a caller whose
+        stdin is still open. The baseline answer is dropped instead."""
+        self.write_switch("off")
+        with unittest.mock.patch.object(jev, "read_source",
+                                        return_value='{"a": null}') as read:
+            code, out = self.run_main(["choice", "which?", "--criteria", "@-",
+                                       "--fallback", "a", "--baseline", "a"])
+        self.assertEqual((code, out), (0, "a\n"))
+        self.assertEqual(read.call_count, 0)
+        judged, baseline = self.rows()
+        self.assertIsNone(baseline["answer"])
+
+    def test_a_baseline_that_is_not_a_number_keeps_the_row(self):
+        Stub.choice_value = "desk"
+        self.run_main(["choice", "which route?", "--criteria", "desk,phone",
+                       "--baseline", "somewhere-else"])
+        judged, baseline = self.rows()
+        self.assertEqual(baseline["arm"], "baseline")
+        self.assertIsNone(baseline["answer"])
+        self.assertEqual(judged["changed"], "yes")
+
+    def test_the_text_of_a_baseline_reaches_no_byte_of_the_file(self):
+        self.run_main(["noul", "is it?", "--gate", "0.5", "--baseline", SENTINEL])
+        self.assertEqual(len(self.rows()), 2)
+        self.assertNotIn(SENTINEL.encode(), self.store.read_bytes())
+
+    def test_a_batch_takes_a_baseline_too(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            fh.write('{"a": {"type": "noul", "instructions": "x"}}')
+        self.addCleanup(os.unlink, fh.name)
+        self.run_main(["ask", "--questions", fh.name, "--state", fh.name,
+                       "--baseline", "1"])
+        judged, baseline = self.rows()
+        self.assertEqual((judged["arm"], baseline["arm"]), ("jev", "baseline"))
+        self.assertEqual(judged["pair"], baseline["pair"])
+
+    def test_the_stage_report_counts_it_as_a_paired_sample(self):
+        self.run_main(["noul", "is it?", "--baseline", "0.4",
+                       "--stage", "JEV_NOTIFY"])
+        connection = connect(self.store, write=False)
+        try:
+            stage, = by_stage(connection)
+        finally:
+            connection.close()
+        self.assertEqual((stage["stage"], stage["paired"]), ("JEV_NOTIFY", 1))
+        self.assertEqual(stage["arms"]["jev"]["shadow"], 0)
+
+    def test_a_failed_call_still_writes_both_arms(self):
+        Stub.status = 500
+        self.run_main(["noul", "is it?", "--baseline", "0.4"], JEV_RETRIES="0")
+        judged, baseline = self.rows()
+        self.assertEqual((judged["cause"], judged["changed"]),
+                         ("unavailable", "unknown"))
+        self.assertEqual(baseline["answer"], "0.4")
+
+    def test_baseline_is_off_unless_asked(self):
+        self.run_main(["noul", "is it?"])
+        self.assertIsNone(self.only()["pair"])
+
+    def test_baseline_and_shadow_together_are_refused(self):
+        """Two answers to which one is printed. Refused before anything is
+        sent, written or printed, the way `--shadow --json` is."""
+        code, out, err = self.run_verbose(["noul", "is it?", "--shadow", "no",
+                                           "--baseline", "no"])
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("--baseline", err)
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(Stub.seen, [])
+
+
+class TheBaselineChangesNothingACallerSees(MeteringCase):
+    """The contract: `--baseline` adds two rows and nothing else. Every
+    path a caller can take prints the same bytes, on both streams, and exits
+    with the same code, with the flag and without it."""
+
+    def same(self, argv, **extra):
+        without = self.run_verbose(argv, **extra)
+        with_it = self.run_verbose(argv + ["--baseline", "0.4",
+                                           "--baseline-ms", "3"], **extra)
+        self.assertEqual(with_it, without, argv)
+
+    def test_an_answered_call(self):
+        self.same(["noul", "is it?"])
+        self.same(["noul", "is it?", "--gate", "0.5"])
+        self.same(["choice", "which?", "--criteria", "a,b"])
+        self.same(["choice", "which?", "--criteria", "a,b", "--unsure-below", "2"])
+        self.same(["score", "how?", "--levels", "low,high", "--json"])
+
+    def test_a_failing_call_with_and_without_a_fallback(self):
+        Stub.status = 500
+        self.same(["noul", "is it?"], JEV_RETRIES="0")
+        self.same(["noul", "is it?", "--fallback", "keep"], JEV_RETRIES="0")
+
+    def test_a_switched_off_machine_with_and_without_a_fallback(self):
+        self.write_switch("off")
+        self.same(["noul", "is it?"])
+        self.same(["noul", "is it?", "--fallback", "keep"])
+
+    def test_an_unkeyed_machine(self):
+        self.same(["noul", "is it?", "--fallback", "keep"], TYPESAFE_API_KEY="")
+
+    def test_a_meter_that_is_off_or_has_no_store(self):
+        self.same(["noul", "is it?"], JEV_METER="0")
+        missing = Path(tempfile.mkdtemp()) / "not-here" / "sd.db"
+        self.same(["noul", "is it?"], JEV_METER_DB=str(missing))
 
 
 class TheShadowSwitch(MeteringCase):
@@ -612,6 +790,33 @@ class TheShadowSwitch(MeteringCase):
                                    "--fallback", "keep"])
         self.assertEqual((code, out), (0, "yes\n"))
         self.assertEqual(self.rows()[0]["changed"], "no")
+
+    def test_a_baseline_is_the_old_answer_of_the_pair(self):
+        """sd:2357 under the switch: the fallback is printed, and `--baseline`
+        is what the judgment is compared with and the pair's old answer."""
+        self.switch_on()
+        code, out = self.run_main(["noul", "q", "--gate", "0.5", "--fallback", "keep",
+                                   "--baseline", "no", "--stage", "JEV_NOTIFY"])
+        self.assertEqual((code, out), (0, "keep\n"))
+        judged, baseline = self.rows()
+        self.assertEqual((judged["changed"], baseline["answer"], baseline["shadow"]),
+                         ("yes", "0", 1))
+        self.assertEqual(judged["pair"], baseline["pair"])
+
+    def test_a_baseline_with_no_fallback_exits_3_and_is_recorded(self):
+        self.switch_on()
+        code, out = self.run_main(["noul", "q", "--gate", "0.5", "--baseline", "yes"])
+        self.assertEqual((code, out), (3, ""))
+        judged, baseline = self.rows()
+        self.assertEqual((judged["changed"], baseline["answer"]), ("no", "1"))
+
+    def test_no_shadow_notice_when_nothing_is_sent(self):
+        self.switch_on()
+        self.write_switch("off")
+        code, out, err = self.run_verbose(["noul", "q", "--fallback", "keep"])
+        self.assertEqual((code, out), (0, "keep\n"))
+        self.assertNotIn("shadow on", err)
+        self.assertEqual(Stub.seen, [])
 
 
 class WhoAsked(MeteringCase):

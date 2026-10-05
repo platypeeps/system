@@ -286,6 +286,25 @@ vendored/derived trees too, but keeps the data/log dirs in scope — see
 `MASK_EXCLUDE_DIRS` above. Gitignored files and dotfiles ARE scanned —
 that's where secrets live. Whole `~/repos/system` scans in ~0.3s.
 
+## The local judgment of each hit (sd:2761)
+
+When `jev` is on PATH, each durable pattern hit is asked of the local Kev:
+is this a real credential, not a test value or placeholder? The call uses
+`jev --local-only`, so a hit reaches Kev on loopback or nothing; it never
+goes to Jev or another hosted model. The hit reaches `jev` on stdin, never
+in argv.
+
+The answer is recorded and not used. The scanner's own verdict is the shadow
+answer, so the output and the exit code stay exactly as without `jev`.
+`sd-db.sh judgments compare --stage JEV_SECRET_SCAN` reports how often Kev
+agrees.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `JEV_SECRET_SCAN` | on | `0` switches the stage off |
+| `S4S_JEV_MAX_HITS` | 10 | hits asked per run |
+| `S4S_JEV_TIMEOUT` | 5 | seconds per call, no retry |
+
 ## Accepted exposure (2026-09-21, sd:1254)
 
 The weekly `critical` run has exited 2 every Monday since 2026-08-24 on real
