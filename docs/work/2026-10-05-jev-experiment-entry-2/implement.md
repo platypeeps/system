@@ -35,6 +35,7 @@ Step 15 needs sd:2761 merged and its shadow switch on for 14 days.
 | 13 | Privacy review of the post's numbers | 1 | after 12 |
 | 14 | Gate and close | 0.5 | after 12 |
 | 15 | C2: 14 days of live shadow, sealed and labelled | 1.5 + 14 days wall | after sd:2761 |
+| 16 | Inconclusive extension, only if needed | 1 + 28 days wall | after 12 |
 
 Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: about 4 hours of runs, plus the 14-day shadow window.
 
@@ -58,9 +59,10 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
    Tests: a duplicate head, an invalid JSON body, a declined reading, a head with no stored subject, a head whose objects are gone.
    Check: about 750 C1 and 1,472 E heads, each with a state or a counted reason why not; the paper subset from step 0 is marked.
 
-3. **Rules and heuristic arms** (`offline`). The rules arm reads the recorded routed tier, or the recomputed one; the heuristic is the function in `design.md`, unchanged.
+3. **Rules and heuristic arms** (`offline`). The rules arm reads the recorded routed tier, or the recomputed one.
+   The heuristic is `local-jev/jev_experiment_heuristic.py`, byte for byte the pre-registration's block.
    Tests: the zero-line shape, the asset shape, a risky path, a docs-and-tests change under 20 lines.
-   Check: the heuristic's file hash is in the manifest; on the paper subset, it answers `skip` for every zero-line head.
+   Check: `shasum -a 256 local-jev/jev_experiment_heuristic.py` prints the registered SHA-256; on the paper subset, it answers `skip` for every zero-line head.
 
 4. **Objective labels** (`labels objective --population E|C1|C2`). blocking@head and unsafe skips from the checkpoints, written to `labels/<population>.jsonl`.
    It refuses C1 until the C1 answer files' hashes are on sd:2764, and C2 until step 15 seals C2.
@@ -70,14 +72,15 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
 
 5. **Replay harness** (`replay --arm jev|kev|haiku`). Step 1's call path, extended to Kev and Haiku in-process on the same redacted payload.
    Ledger isolation, traces, cost cap, privacy halt and the one-retry rule are in this step.
-   It refuses to start while a `PREDICTION (operator):` or `RULING (operator):` line in the pre-registration is blank, records the registration SHA, and skips heads step 1 already asked.
-   Hosted arms run on the paper subset; on C1 and the 185 only with `--hosted-scope` naming them, as ruling R2 allows. The `anthropic` transport only.
+   It refuses to start while a `PREDICTION (operator` line in the pre-registration is blank or any line carries `UNCONFIRMED`, records the registration SHA, and skips heads step 1 already asked.
+   Every arm runs on all 2,222 heads, hosted ones included, as ruling R2 allows. The `anthropic` transport only.
+   It hashes `local-jev/jev_experiment_heuristic.py` and refuses unless the SHA-256 equals the one registered in the pre-registration.
    It writes through `JEV_METER_DB` to `experiment.db` and refuses to start if `jev_meter.ready` refuses that database.
    Tests against loopback stubs: one row per head per arm; a second run without `--rerun` refuses; the cap halts at the configured spend; no live-stage row is written.
    Check: `jev.sh test` green; a 5-head dry run against the stubs writes 15 answers and 15 spans.
 
-6. **Registration** (operator). Fill the remaining predictions and rulings R1 to R3 in the pre-registration and commit. R3 freezes the heuristic.
-   Check: `grep -cE '^(PREDICTION|RULING) \(operator\): _*$' docs/experiments/2026-10-05-jev-entry-2-preregistration.md` prints 0; the SHA is on sd:2764.
+6. **Registration** (operator). Confirm or rewrite the drafted predictions, fill the blank ones, and commit, in one pass.
+   Check: `grep -cE '^PREDICTION \(operator\): _*$|UNCONFIRMED' docs/experiments/2026-10-05-jev-entry-2-preregistration.md` prints 0; the SHA is on sd:2764.
 
 7. **Replay run.** `genai-traces.sh status` and `kev.sh status` exit 0 first. Local arms run on every head; Kev first, then Jev, then Haiku.
    Run in the foreground or watch the log with Monitor.
@@ -113,12 +116,15 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
     Only then run step 4 on C2.
     Check: the window, the head count and the dropped heads (no subject, no checkpoint) are in the manifest; the replay's agreement rates on C1 and the shadow's on C2 are both in the note.
 
+16. **Inconclusive extension** (only if line 2 of the decision rule applies; ruling R1). Keep sd:2761's shadow on for one fixed 4-week window, C3, from the day after C2 ends.
+    Seal C3 as step 15 sealed C2, rerun step 12 once on C1, C2 and C3, then apply the rule; still inconclusive means drop the model.
+    Check: the window's dates and the second results note are on sd:2764; there is no second extension.
+
 ## Open questions for the operator
 
-Resolved by ruling #10070: the Haiku transport (`anthropic`) and ledger isolation (`JEV_METER_DB`).
-The rest are blanks in the pre-registration, filled at step 6:
+Rulings #10070 and #10075 answer the earlier questions; the pre-registration records them.
+Left for the operator's one confirming pass before the replay (step 6):
 
-- R1: an inconclusive result, drop the model or keep collecting in shadow?
-- R2: hosted sends to C1 and to the 185 E heads with no reading.
-- R3: keep or strike the heuristic's binary-asset `skip`.
-- The planner's added switch condition, Kev's p95 wait at most 5 s (H5): keep or strike, on sd:2764.
+- Confirm or rewrite the two drafted predictions (H1, H2).
+- Fill the seven blank predictions: H3 to H8 and the decision.
+- Keep or strike the planner's added switch condition, Kev's p95 wait at most 5 s (H5), on sd:2764.

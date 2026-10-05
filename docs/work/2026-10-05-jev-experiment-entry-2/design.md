@@ -28,7 +28,7 @@ A pass's `report` carries `subject` (base, head, paths, lines), `route` (tier, r
 A checkpoint body that is not valid JSON is skipped and counted; 266 since 2026-09-09 at plan time.
 
 **Replay scope.** Every distinct reviewed head since 2026-09-09, keyed `coalesce($.reviewed_head, $.head)`: 2,222 at plan time.
-The replay rebuilds a state for every head and runs every local arm on it; hosted arms follow the pre-registration's ruling R2.
+The replay rebuilds a state for every head and runs every arm on it, hosted ones included, once (ruling R2).
 
 **Confirmatory and exploratory** (ruling #10070). The pre-registration defines three populations:
 
@@ -37,6 +37,8 @@ The replay rebuilds a state for every head and runs every local arm on it; hoste
 | C1: first checkpoint 2026-09-09 to 2026-09-20 | about 750, before any Jev reading | confirmatory |
 | C2: 14 days of live shadow under sd:2761 | as many as the window holds | confirmatory |
 | E: 2026-09-21 to 2026-10-05 | about 1,472, holding entry 1's 779 | exploratory |
+| E0: E heads with no Jev reading | roughly 185 | exploratory, its own group (R2) |
+| C3: one 4-week shadow window after C2, only if the result is inconclusive | as many as the window holds | confirmatory rerun (R1) |
 
 Nobody reads a C1 or C2 outcome before that population's answers are sealed (their hashes on sd:2764).
 E is exploratory because the planner saw outcome counts for it before registration; the pre-registration's disclosure lists them.
@@ -130,6 +132,7 @@ It omits `--unsure-below`, so each arm returns its full distribution; analysis a
 Haiku does not use the `claude-cli` transport: its latency and tokens include Claude Code's own start-up.
 
 **The heuristic, frozen before the replay.** It reads only the state and the routed tier the reason states.
+The pre-registration's copy is binding: the file `local-jev/jev_experiment_heuristic.py` and its SHA-256 are registered there (R3).
 
 ```python
 ASSET = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".pdf")
@@ -156,7 +159,7 @@ def heuristic(state: dict, routed: str) -> str:
 
 Each rule answers one shape from entry 1 or from the rules' own gaps.
 The rules have no category for zero lines; Jev's 28 skips were all zero-line.
-Its file hash goes into the run manifest; a change after the freeze is a new arm, reported as exploratory.
+The replay refuses a file whose hash differs from the registered one; a change after the freeze is a new arm, reported as exploratory.
 
 **The floor.** Production clamps every model answer at the routed tier.
 Analysis reports each arm raw and floored; the decision reads the raw answer, because the floor hides what a model believes.

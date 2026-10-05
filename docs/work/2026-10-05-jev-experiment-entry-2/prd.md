@@ -19,7 +19,8 @@ The experiment asks whether any model can **safely allow `skip`**, and whether t
 
 The answer decides the review tier's model:
 
-1. **Drop the model**: rules only. Taken when no model can safely allow `skip`, or when the 20-line heuristic matches the best model.
+1. **Drop the model**: rules only. Taken when no model can safely allow `skip`, when the 20-line heuristic matches the best model,
+   or when the result is still inconclusive after one extra 4-week shadow window (ruling R1).
 2. **Switch to local Kev**: Kev-4B on this machine reads the tier, and no path leaves the machine.
 3. **Keep Jev**: the hosted model keeps reading the tier.
 
@@ -61,8 +62,7 @@ The operator fills the pre-registration's open predictions and rulings before th
 
 ## Constraints
 
-- Hosted sends: the replay sends the 779's old paths to TypeSafe and to Anthropic **once** (approved).
-  Sends beyond them wait for the operator's ruling R2 in the pre-registration. Local arms run on every head.
+- Hosted sends: the replay sends the paths of all 2,222 heads to TypeSafe and to Anthropic **once**, with the same redaction (approved, ruling R2).
 - The scanner benchmark never sends a hit to Jev or Haiku, and never uses a real credential.
 - Experiment rows go to a separate database through `JEV_METER_DB`, under `/Volumes/local/repo-storage/system/jev-experiment/`, never to the live ledger.
 - Raw data lives in that folder, never in git.
