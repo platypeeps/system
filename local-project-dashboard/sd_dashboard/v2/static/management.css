@@ -18,7 +18,9 @@
 .sv[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
 .sv[data-state="warning"] .val, .sv[data-state="warning"] .val b { color: var(--color-warning-ink); }
 .sv[data-state="unknown"] { background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
-.sv[data-state="caution"]:hover, .sv[data-state="warning"]:hover { filter: brightness(0.96); }
+/* A lit lamp keeps its state colour under the pointer (sd:2530): a ring in its own ink token, not a brightness shift. */
+.sv[data-state="caution"]:not([aria-selected="true"]):hover { box-shadow: inset 0 0 0 1px var(--color-caution-lamp-ink); }
+.sv[data-state="warning"]:not([aria-selected="true"]):hover { box-shadow: inset 0 0 0 1px var(--color-warning-ink); }
 .sv[aria-selected="true"] { box-shadow: inset 0 calc(-1 * var(--rule-lamp)) 0 var(--color-accent), inset 0 0 0 1px var(--color-accent); }
 .sv[aria-selected="true"] .lbl { color: inherit; }
 
@@ -31,7 +33,6 @@
 .empty { margin: 0; padding: var(--space-sm) var(--space-xs); font-size: var(--text-sm); color: var(--color-ink-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); }
 
 /* Ledger (Today's grammar, page-owned). */
-.ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
 .ledger th button { display: inline-flex; align-items: center; gap: var(--space-2xs); min-height: 1.75rem; padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
 .ledger th button .i { opacity: 0.6; }

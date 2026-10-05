@@ -3,22 +3,17 @@
  * Route: custom, locked to foundation/. Real data only: sd-db 23:52 UTC, Gmail 23:54 UTC, job logs 23:54 UTC. */
 
 /* Annunciator (today.html grammar) */
-.annunciator { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl); padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); list-style: none; }
-.annunciator li { display: contents; }
 .cell { font: inherit; border: 0; text-align: left; cursor: pointer; width: 100%; display: grid; grid-template-rows: auto 1fr; gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel); color: var(--color-muted); text-decoration: none; }
 .cell:hover { background: var(--color-well); }
 .cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 .cell .lbl { font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; display: flex; align-items: center; gap: var(--space-2xs); }
 .cell .lbl .i { margin-left: auto; }
-.cell .val { font: 400 var(--text-sm)/1.3 var(--font-data); align-self: end; color: var(--color-ink-2); }
-.cell .val b { font-weight: 500; font-size: var(--text-md); color: var(--color-ink); }
 .cell .ph { white-space: nowrap; }
 .cell[data-state="ok"] .lbl .i { color: var(--color-ok); }
 .cell[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
 .cell[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
 .cell[data-state="caution"] .val, .cell[data-state="caution"] .val b { color: var(--color-caution-lamp-ink); }
 .cell[data-state="warning"] .val, .cell[data-state="warning"] .val b { color: var(--color-warning-ink); }
-.cell[data-state="caution"]:hover, .cell[data-state="warning"]:hover { filter: brightness(0.96); }
 .cell[data-state="unknown"] { background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
 .cell[data-state="unknown"] .lbl { color: var(--color-ink-2); } /* muted on the hatch measured 3.83:1 in light */
 .cell[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--color-accent); }
@@ -59,7 +54,6 @@ section + section { margin-top: var(--space-2xl); }
 .toggle input { width: 1.1rem; height: 1.1rem; accent-color: var(--color-accent); margin: 0; }
 
 /* Ledger */
-.ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); }
 .ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
 .ledger tbody tr { cursor: pointer; }
@@ -79,8 +73,6 @@ section + section { margin-top: var(--space-2xl); }
 .ledger tbody tr[data-picked] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .ledger tbody tr[data-picked] .g::after { content: " ✓"; color: var(--color-accent); }
 .ledger .day td { height: auto; padding: var(--space-sm) var(--space-xs) var(--space-2xs); font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); background: transparent; cursor: default; border-bottom: var(--rule-hair) solid var(--color-rule); }
-.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-xs); margin-top: var(--space-sm); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
-.pager div { display: flex; gap: var(--space-xs); }
 
 /* Acknowledge clean reports */
 .ack { border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); padding: var(--space-md); }

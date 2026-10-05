@@ -35,24 +35,11 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Data (build) ----------
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
-  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  let tasks = [], READ = null, AGES = [];
+    let tasks = [], READ = null, AGES = [];
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
     status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   const label = t => t.id ? `#${t.id}` : (t.kind === 'ops' ? 'ops' : 'no id');
-  async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; throw e; }
-    return out;
-  }
-  async function getJSON(path) {
-    const r = await fetch(path, { headers: { Accept: 'application/json' } });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-    return out;
-  }
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
   function absorb(key, state) {
     const t = byKey(key); if (!t || !state?.item) return;
@@ -169,7 +156,7 @@ addEventListener('DOMContentLoaded', () => {
     const p = (pending.get(key) || Promise.resolve()).then(() => { const t = byKey(key); if (!t) throw new Error('the task is no longer listed');
       if (rev !== undefined && t.revision !== rev) throw new Error(CHANGED);
       const on = check ? check(t) : true; if (on !== true) throw new Error(on);
-      sent?.(t); return post(path(t), { ...body, revision: t.revision }); })
+      sent?.(t); return window.shell.post(path(t), { ...body, revision: t.revision }); })
       .then(out => { absorb(key, out); render(); const again = reread(); return wait ? again.then(() => out) : out; });
     pending.set(key, p.catch(() => {}));
     return p;
@@ -262,7 +249,7 @@ addEventListener('DOMContentLoaded', () => {
     const gen = DET.gen[id] || 0;
     DET.reading[id] = gen; delete DET.failed[id];
     let got, err;
-    try { got = await getJSON(`/api/tasks/${id}`); } catch (e) { err = e; }
+    try { got = await window.shell.getJSON(`/api/tasks/${id}`); } catch (e) { err = e; }
     if ((DET.gen[id] || 0) !== gen) return; // a write landed meanwhile; the read it started is the one that counts
     delete DET.reading[id];
     if (err) DET.failed[id] = err.message; else DET.items[id] = got;
@@ -372,7 +359,7 @@ addEventListener('DOMContentLoaded', () => {
       cli: o => idOr(o, t => `sd run --sequential ${t.id}`),
       run: o => { const t = T(o);
         // The Details hold the item's assignments and its run readiness: read them again after the run and after its Undo.
-        const p = post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision }, ...withSkill() }).then(out => { redrawDet(t.id); return reread().then(() => out.assignments?.[0]); });
+        const p = window.shell.post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision }, ...withSkill() }).then(out => { redrawDet(t.id); return reread().then(() => out.assignments?.[0]); });
         return landing(p, () => `${label(t)} queued for the runner · sd run --sequential ${t.id}`, a => unqueue(a, t.id)); },
       undo: undoOf },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
@@ -437,7 +424,7 @@ addEventListener('DOMContentLoaded', () => {
   // A refused write reads the Details again too: they hold the assignment revision a retry sends (review, PR #46).
   async function runner(o, verb) {
     const a = asgOf(o); if (!a) throw new Error(`assignment #${o.n} was not read`);
-    try { await post(`/api/runner/${o.n}/${verb}`, { revision: a.revision }); } catch (err) { if (err.stale) redrawDet(o.item); throw err; }
+    try { await window.shell.post(`/api/runner/${o.n}/${verb}`, { revision: a.revision }); } catch (err) { if (err.stale) redrawDet(o.item); throw err; }
     redrawDet(o.item); await reread();
   }
   // ---------- Run picked (build, sd:2590) ----------
@@ -477,7 +464,7 @@ addEventListener('DOMContentLoaded', () => {
     const ids = ts.map(t => t.id), cli = runCli(ids, v.parallel, v.minutes);
     const body = { items: ids, revisions: Object.fromEntries(ts.map(t => [t.id, t.revision])), parallel: v.parallel, budget_minutes: v.minutes,
       ...(v.usd !== '' ? { budget_usd: Number(v.usd) } : {}), ...withSkill() };
-    return post('/api/run', body).then(out => { ids.forEach(staleDet); const open = byKey(selected)?.id; if (ids.includes(open)) readDet(open, true);
+    return window.shell.post('/api/run', body).then(out => { ids.forEach(staleDet); const open = byKey(selected)?.id; if (ids.includes(open)) readDet(open, true);
       return reread().then(() => { const made = out.assignments || [];
         toast(`Queued ${plural(ids.length, 'task')} for the runner · ${cli}`, made.length ? () => unqueueAll(made, ids) : undefined); }); },
     err => { if (err.stale) refused(); toast(`Nothing queued: ${err.message}`); });
@@ -485,7 +472,7 @@ addEventListener('DOMContentLoaded', () => {
   // The batch's Undo cancels what it queued, the last first, so no assignment is left waiting on one already cancelled.
   function unqueueAll(made, ids) {
     let done = 0, why = null;
-    return made.map((a, i) => [a, ids[i]]).reverse().reduce((p, [a, id]) => p.then(() => post(`/api/runner/${a.id}/cancel`, { revision: a.revision })
+    return made.map((a, i) => [a, ids[i]]).reverse().reduce((p, [a, id]) => p.then(() => window.shell.post(`/api/runner/${a.id}/cancel`, { revision: a.revision })
       .then(() => { done++; staleDet(id); }, err => { why = why || err.message; })), Promise.resolve())
       .then(() => reread()).then(() => toast(why ? `Undo cancelled ${done} of ${made.length} · not cancelled: ${why}` : `Run undone · ${plural(done, 'assignment')} cancelled`));
   }
@@ -496,7 +483,7 @@ addEventListener('DOMContentLoaded', () => {
   function readSkill() {
     const name = SKILL; if (!name) return;
     SKILLREV = null; SKILLWHY = `the skill catalog is being read for ${name}`;
-    getJSON('/api/skills').then(doc => { if (SKILL !== name) return; const k = (doc.skills || []).find(x => x.name === name);
+    window.shell.getJSON('/api/skills').then(doc => { if (SKILL !== name) return; const k = (doc.skills || []).find(x => x.name === name);
       SKILLREV = k ? k.revision : null; SKILLWHY = k ? null : `no catalog skill ${name}`; render(); },
     err => { if (SKILL !== name) return; SKILLWHY = `the skill catalog was not read: ${err.message}`; render(); });
   }
@@ -504,7 +491,7 @@ addEventListener('DOMContentLoaded', () => {
   // cancels the assignment that run queued.
   function unqueue(a, item) {
     if (!a) return Promise.reject(new Error('the runner named no queued assignment'));
-    return post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => { redrawDet(item); return reread(); },
+    return window.shell.post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => { redrawDet(item); return reread(); },
       err => { if (err.stale) redrawDet(item); throw err; });
   }
 
@@ -988,7 +975,7 @@ addEventListener('DOMContentLoaded', () => {
     const body = { title: P.title, ...(P.p ? { priority: P.p } : {}), ...(P.due ? { due: P.due } : {}), ...(P.repo ? { repo: repoFor(P.repo) } : {}) };
     inp.value = ''; showPreview();
     // The new task is selected only where it shows: a filter that hides it keeps the selection on a visible one (review, PR #46).
-    post('/api/items', body).then(out => reread().then(() => { const key = String(out.item.id), t = byKey(key);
+    window.shell.post('/api/items', body).then(out => reread().then(() => { const key = String(out.item.id), t = byKey(key);
       if (!t || !passes(t)) { toast(`Added #${out.item.id} to Planning · the filters hide it; Clear all shows it`); return; }
       select(key, false); landed(key); toast(`Added #${out.item.id} to Planning`); }),
       err => { inp.value = [P.title, P.p && `p${P.p}`, P.due && `due ${P.due}`, P.repo && `#${P.repo}`].filter(Boolean).join(' '); toast(`Not added: ${err.message}`); });
@@ -1004,7 +991,7 @@ addEventListener('DOMContentLoaded', () => {
       await write(t.key, x => `/api/items/${x.id}/notes`, { body: title, kind: 'comment' }); redrawDet(t.id);
       return `Note added to ${label(t)}`;
     }
-    const out = await post('/api/items', { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
+    const out = await window.shell.post('/api/items', { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
     await reread();
     return `Captured #${out.item?.id}: ${out.item?.title || title}`;
   };
