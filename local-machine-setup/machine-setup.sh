@@ -1900,11 +1900,17 @@ cmd_capture() {
   # A profile file holds only what common does not already provide, so capture
   # subtracts the common manifest instead of dumping the whole machine.
   brew tap 2>/dev/null | sort > "$tmp/have.tap"
-  brew leaves 2>/dev/null | sort > "$tmp/have.brew"
+  brew leaves 2>/dev/null | sort -u > "$tmp/have.brew"
   common_manifest tap  > "$tmp/common.tap"
-  common_manifest brew > "$tmp/common.brew"
+  common_manifest brew | sed 's|.*/||' | sort -u > "$tmp/common.brew"
   comm -23 "$tmp/have.tap"  "$tmp/common.tap"  > "$tmp/out.tap"
-  comm -23 "$tmp/have.brew" "$tmp/common.brew" > "$tmp/out.brew"
+  # Compare bare names, but write the spelling brew printed: `leaves`
+  # tap-qualifies a third-party formula, and a bare name in the profile could
+  # install a core formula of the same name instead. FILENAME, not NR == FNR:
+  # an empty common manifest would make every machine line look like common.
+  awk 'FILENAME == ARGV[1] { common[$0] = 1; next }
+       { n = $0; sub(/.*\//, "", n); if (!(n in common)) print }' \
+    "$tmp/common.brew" "$tmp/have.brew" > "$tmp/out.brew"
   brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
   common_manifest cask > "$tmp/common.cask"
   comm -23 "$tmp/have.cask" "$tmp/common.cask" > "$tmp/out.cask"
@@ -4096,11 +4102,14 @@ cmd_status() {
     # Both sides normalized to bare names: brew list usually prints bare
     # names but tap-qualifies a formula whose name is ambiguous, and
     # manifests carry tap-qualified entries.
-    brew list --formula 2>/dev/null | sed 's|.*/||' | sort > "$tmp/have.brew"
-    manifest brew | sed 's|.*/||' | sort > "$tmp/want.brew"
+    # `sort -u`, not `sort`: manifest dedupes before this strips the tap, so a
+    # profile naming one formula both ways left the same bare name twice and
+    # comm reported the duplicate as missing for a formula that was installed.
+    brew list --formula 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/have.brew"
+    manifest brew | sed 's|.*/||' | sort -u > "$tmp/want.brew"
     echo "brew formulae"
     mb=$(comm -13 "$tmp/have.brew" "$tmp/want.brew")
-    brew leaves 2>/dev/null | sed 's|.*/||' | sort > "$tmp/leaves.brew"
+    brew leaves 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/leaves.brew"
     xb=$(comm -23 "$tmp/leaves.brew" "$tmp/want.brew")
     status_line missing "$mb"
     status_line extra "$xb"
