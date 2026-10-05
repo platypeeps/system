@@ -21,6 +21,8 @@ import sys
 import unittest
 from pathlib import Path
 
+from test_product_name import PREFIX as VENDOR
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -45,7 +47,7 @@ def entrypoints(entries):
             roots.setdefault(parts[0], {})[parts[1]] = mode
     found = {}
     for folder, scripts in roots.items():
-        stem = folder.removeprefix("local-").removeprefix("mezmo-")
+        stem = folder.removeprefix("local-").removeprefix(VENDOR)
         name = f"{stem}.sh" if f"{stem}.sh" in scripts else None
         if name is None and len(scripts) == 1:
             name = next(iter(scripts))
@@ -74,14 +76,14 @@ class TheRule(unittest.TestCase):
     def test_the_stem_wins_and_a_lone_script_stands_in(self):
         found = entrypoints({
             "local-x/x.sh": "100755", "local-x/helper.sh": "100644",
-            "mezmo-y/y.sh": "100644",
+            "mezmo-pipeline/pipeline.sh": "100644",
             "plain/plain.sh": "100755",
             "local-runner/runner.sh": "100644",
             "lib/a.sh": "100644", "lib/b.sh": "100644",
             "local-x/tests/deep.sh": "100644", "top.sh": "100644",
         })
         self.assertEqual({
-            "local-x/x.sh": "100755", "mezmo-y/y.sh": "100644",
+            "local-x/x.sh": "100755", "mezmo-pipeline/pipeline.sh": "100644",
             "plain/plain.sh": "100755", "local-runner/runner.sh": "100644",
         }, found)
 
