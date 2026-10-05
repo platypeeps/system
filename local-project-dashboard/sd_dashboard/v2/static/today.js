@@ -4,16 +4,13 @@
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   // The rail's map (built sections, and the old screen each unported one opens) is /ui/sections.js, loaded before this.
-  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
   // Capture files through the same route and library call as v1 Today's capture form (POST /api/items).
   window.SHELL_CAPTURE = async ({ kind, title, item }) => {
     if (kind === 'note') throw new Error('Not filed: v2 files tasks and followups only. Add the note from the item page.');
     const body = { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) };
     const p = title.match(/\bp([1-4])\b/i);
     if (p) { body.priority = +p[1]; body.title = title.replace(/\bp[1-4]\b/gi, '').replace(/\s+/g, ' ').trim(); }
-    const r = await fetch('/api/items', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(`Not filed: ${out.error || r.status}`);
+    const out = await window.shell.post('/api/items', body).catch(e => { throw new Error(`Not filed: ${e.message}`); });
     return `Captured #${out.item?.id}: ${out.item?.title || body.title}`;
   };
 

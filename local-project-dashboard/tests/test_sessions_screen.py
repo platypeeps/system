@@ -13,7 +13,7 @@ from unittest.mock import patch
 from sd_dashboard import fleet, operations_screen
 from sd_dashboard.sessions_screen import sessions_panel
 
-from fleet_support import FleetCase
+from fleet_support import FleetCase, SlowStart
 
 PS = ("  4242 01:02:03 /Users/pat/repos/pack/bin/sd-review --json\n"
       "  4243    00:07 sd store item 719 --json\n"
@@ -125,11 +125,16 @@ class SessionsArea(FleetCase):
         pack = self.checkout("pack")
         self.worktree(pack, "lane-a", "fix/sd-1-lane-a")
         self.hanging("ps")
-        with patch.object(fleet, "FLEET_SECONDS", 3.0), patch.object(fleet, "FLEET_MARGIN", 1.0):
+        # sd:2667. The child gets 4 s, under ps's own 5, so its deadline is
+        # what cuts ps, and counts them from its own start: the page's start
+        # is read as a moment in the future. A 3 s page with a 2 s child
+        # counted from the page's start left a loaded machine no time to
+        # start ps at all; here the child has the page's other 8 s to start.
+        with patch.object(fleet, "FLEET_MARGIN", 8.0), patch.object(fleet, "time", SlowStart(-60)):
             page = self.sessions()
         # The half that answered is on the page; the half that did not says so.
         self.assertEqual(self.cells(page, "worktree-name"), ["lane-a"])
-        self.assertIn("The process table could not be read: ps ran past the budget of 2 seconds and was stopped", page)
+        self.assertIn("The process table could not be read: ps ran past the budget of 4 seconds and was stopped", page)
         self.assertNotIn('<td class="process-pid">', page)
         # Cut by the child at its own deadline, so the hung ps is gone with
         # it rather than left holding a pipe (the `collectors.run` docstring).

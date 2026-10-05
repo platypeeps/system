@@ -4,10 +4,10 @@ This directory contains the workflow dashboard and the six legacy collector
 commands. They are separate surfaces.
 
 **The workflow dashboard** (`sd_dashboard/`) opens on the new design's Today, and keeps
-the classic Today, Backlog, Contributions, Writing,
+the classic Today, Contributions, Writing,
 Operations, Protection, Skills, Documents, Designs, and individual Item pages.
 A `/backlog` address opens Tasks with the same filters (sd:2356); the classic
-Backlog is at `/classic/backlog`. Its production launcher uses the
+Backlog was deleted in sd:2622. Its production launcher uses the
 command pack's provisioned Python interpreter and installed `sd_db` package;
 it refuses an adjacent source import or a mismatched database schema.
 `./dashboard.sh serve` starts it on loopback;
@@ -76,7 +76,9 @@ old screen an unported section opens (tagged "classic" on the rail), and
 `SCREENS` for old screens without a section, which the palette lists under
 Classic screens. `./dashboard.sh pages` prints that map, one line per section
 or screen; a section in none of the three, such as Notes or HOA, has no old
-screen, and the rail says it is not built yet.
+screen, and the rail says it is not built yet. The classic screens' own nav links
+each ported section to its new page, read from the same registry (sd:2473); the
+palette still opens the classic screen.
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 Today and Backlog default to Task. The Type selector also offers Followup
@@ -119,6 +121,15 @@ Newly unblocked work comes first, then work awaiting you, work awaiting others, 
 The shared library supplies this order to both the dashboard and `sd-status`.
 Each acknowledgement binds exact event IDs and the displayed revision; stale submissions refuse.
 Acknowledgement leaves notification delivery history and local task status separate.
+
+**Queue** at `/queue` shows each registered repository's `sd-ship lane` queue (sd:2585).
+The header shows load5 with its 1- and 15-minute neighbours, and the gate slots in use against `sd gate status`'s cap.
+Each item is one row: merging (phase, elapsed), next (order, gate, head), building, blocked (reason, who acts), or landed today (pull request, merge commit).
+Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names; set `sd.lane_root` where builders write them.
+Up, down, top, hold and release run `sd-ship lane move|hold|release` and nothing else.
+The page sends the lane's revision; a queue that changed since the read is refused, and the page reads it again.
+That check is best effort: a write that lands between the check and the verb is not caught, so a reorder answers with the order it left.
+The runner reads the queue at each item boundary, so an edit never changes a merge in progress.
 
 **Protection** at `/protection` is one table, one row per registered repository:
 what its default branch enforces, gap by gap, with the ids and sentences
@@ -251,6 +262,7 @@ change workflow rows. The browser supplies its signed, expiring HttpOnly
 SameSite=Strict session cookie and matching CSRF token, plus an exact same
 Origin. Invalid input, stale revisions, unknown actions and untrusted hosts
 are refused. No command or arbitrary file path is accepted by these routes.
+`/api/queue/move` accepts a repository only when it is registered, and an action from a fixed list of five.
 `GET /api/items/ID/capture-context` returns only the selected parent's identity,
 status and current revision through the same authenticated boundary. Selection
 loads that revision; submitting does not silently refresh it. A stale or deleted

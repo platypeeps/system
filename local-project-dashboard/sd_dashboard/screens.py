@@ -1,9 +1,9 @@
-"""Today, Backlog and Item, with all reads and writes owned by sd_db.
+"""Today and Item, with all reads and writes owned by sd_db.
 
 Every row comes from `sd_db.reads`, including the Today query shared with
 `sd today`. Controls render the shared workflow's allowed transitions and
-current revision; they contain no independent status rules or SQL. The
-Backlog's board, matrix and histogram remain views of the same filtered rows.
+current revision; they contain no independent status rules or SQL. Tasks
+took the Backlog, and its run selection, in sd:2622.
 """
 
 from __future__ import annotations
@@ -24,9 +24,7 @@ from .listing import Column, Listing
 from .markup import Markup, join, markdown, tag
 from .pages import command_reference, page
 
-__all__ = ["backlog", "item", "today"]
-
-VIEWS = ("list", "board", "matrix")
+__all__ = ["item", "today"]
 
 
 def _cell(key: str):
@@ -152,7 +150,7 @@ def today(connection, *, now: str, parameters) -> str:
             Column("kind", "Kind", _cell("kind"), hidden=True),
         ],
         empty="Nothing is due and nothing is in progress.",
-        empty_next="Choose the next task from Backlog, or capture something new.",
+        empty_next="Choose the next task from Tasks, or capture something new.",
     )
 
     followups = reads.open_followups(connection)
@@ -192,7 +190,7 @@ def today(connection, *, now: str, parameters) -> str:
 
     from .contribution_screen import preview
     from .now_screen import now_panel
-    from .runner_screen import jobs_panel, selection
+    from .runner_screen import jobs_panel
 
     return page(
         "Today",
@@ -208,221 +206,11 @@ def today(connection, *, now: str, parameters) -> str:
         tag("p", "Due and in-progress items. Active assignments appear in the runner board below.", class_="hint"),
         command_reference("sd today"),
         listing.render(),
-        selection(connection, listing.page()[0], selected=listing.selected),
         tag("h2", "Open followups"),
         followup_list.render(),
         tag("p", tag("a", "Choose the next task from Tasks", href="/tasks", class_="button-link")),
         jobs_panel(connection),
         join(board_section),
-        cli_equivalents=False,
-    )
-
-
-# --------------------------------------------------------------------------
-# Backlog
-# --------------------------------------------------------------------------
-
-
-def _matrix(rows, now: str) -> Markup:
-    quadrants = {
-        ("urgent", "important"): [],
-        ("not urgent", "important"): [],
-        ("urgent", "not important"): [],
-        ("not urgent", "not important"): [],
-    }
-    for row in rows:
-        urgent = "urgent" if reads.is_urgent(row, now=now) else "not urgent"
-        important = "important" if (row["priority"] or 99) <= 2 else "not important"
-        quadrants[(urgent, important)].append(row)
-    cells = []
-    for key, held in quadrants.items():
-        cells.append(
-            tag(
-                "section",
-                tag("h3", f"{key[1]}, {key[0]} ({len(held)})", class_="lane-heading"),
-                join(
-                    tag(
-                        "article",
-                        tag("h4", tag("a", row["title"], href=f"/item/{row['id']}")),
-                        tag("p", row["repo"] or "—", class_="card-repo"),
-                        _status(row),
-                        class_="card",
-                    )
-                    for row in held
-                )
-                or tag("p", "—", class_="lane-empty"),
-                class_="quadrant",
-            )
-        )
-    return tag("div", join(cells), class_="matrix")
-
-
-def _board(rows, now: str) -> Markup:
-    columns = []
-    for status in reads.BOARD_COLUMNS:
-        held = [row for row in rows if row["status"] == status]
-        columns.append(
-            tag(
-                "section",
-                tag("h3", f"{status.replace('_', ' ')} ({len(held)})", class_="lane-heading"),
-                join(
-                    tag(
-                        "article",
-                        tag("h4", tag("a", row["title"], href=f"/item/{row['id']}")),
-                        tag("p", row["repo"] or "—", class_="card-repo"),
-                        tag("p", _days(row, now), class_="card-age"),
-                        class_="card",
-                    )
-                    for row in held
-                )
-                or tag("p", "—", class_="lane-empty"),
-                class_=f"lane lane-{status}",
-            )
-        )
-    return tag("div", join(columns), class_="board board-status")
-
-
-def backlog(connection, *, now: str, parameters) -> str:
-    """Every open item, in one of three views of the same rows.
-
-    The view is a toggle the URL carries, so a view is a link. All three views
-    render the *same* rows.
-
-    Operations' Progress view links to an age bucket here. Its active scope
-    travels with the link; this page keeps its own text filter and view.
-    """
-    view = (parameters.get("view") or ["list"])[0]
-    if view not in VIEWS:
-        view = "list"
-    kind = (parameters.get("kind") or [""])[0] or None
-    repo = (parameters.get("repo") or [""])[0] or None
-    if repo == reads.NO_REPO_TOKEN:
-        # The one place the word becomes the selector. A query string carries
-        # text, so the token is translated here rather than compared deeper in.
-        repo = reads.NO_REPO
-    status = (parameters.get("status") or [""])[0] or None
-    age = (parameters.get("age") or [""])[0] or None
-    active_only = (parameters.get("active") or [""])[0] == "1"
-    if age is not None and age not in {str(lower) for lower, _ in reads.age_bounds()}:
-        age = None
-    query, page_number, selected = Listing.read_query(parameters)
-
-    faceted = reads.backlog_items(
-        connection, kind=kind, repo=repo, status=status, now=now
-    )
-    if active_only:
-        faceted = [row for row in faceted if row["status"] != "done"]
-    extra = {
-        key: value
-        for key, value in (("view", view), ("kind", kind or ""),
-                           ("repo", reads.NO_REPO_TOKEN if repo is reads.NO_REPO else (repo or "")),
-                           ("status", status or ""), ("age", age or ""), ("active", "1" if active_only else ""))
-        if value
-    }
-    repo_label = _repo_labels(row["repo"] for row in faceted)
-    columns = [
-        Column("title", "Item", _cell("title"), css="column-item"),
-        Column("status", "Status", _status, text=_cell("status"), css="column-meta column-status"),
-        Column("kind", "Kind", _cell("kind"), css="column-meta"),
-        Column("repo", "Repository", lambda row: repo_label(row["repo"]), text=_cell("repo"), css="column-meta column-repo"),
-        Column("priority", "Priority",
-               lambda row: ("—" if row["priority"] is None else row["priority"]), css="column-meta", short_label="Pri."),
-        Column("days", "In status", lambda row: _days(row, now), css="column-meta", short_label="Age"),
-        Column("due", "Due", lambda row: _due(row, now), text=_cell("due"), css="column-meta", hide_empty=True),
-        Column("stage", "Stage", _cell("stage"), hidden=True),
-    ]
-    rows = (
-        [row for row in faceted if reads.age_bucket(row, now=now) == age]
-        if age
-        else faceted
-    )
-    listing = Listing(
-        name="backlog",
-        path="/classic/backlog",
-        query=query,
-        page_number=page_number,
-        selected=selected,
-        rows=rows,
-        extra=extra,
-        row_id=lambda row: str(row["id"]),
-        row_href=lambda row: f"/item/{row['id']}",
-        columns=columns,
-        empty="Nothing open matches.",
-        empty_next="File one with `sd capture`.",
-    )
-
-    # The filter and the paging are the listing's, whichever view is showing:
-    # `Run sequential` from a column must mean the same rows it means from the
-    # list, so the three views take the *paged* window, not the whole set.
-    window, paged = listing.page()
-
-    toggle = tag(
-        "nav",
-        join(
-            tag(
-                "a",
-                name,
-                href=listing.link(**{**extra, "view": name}),
-                class_="toggle-current" if name == view else None,
-                aria_current="page" if name == view else None,
-            )
-            for name in VIEWS
-        ),
-        class_="view-toggle",
-        aria_label="Backlog view",
-    )
-
-    if view == "board":
-        body: object = _board(window, now)
-    elif view == "matrix":
-        body = tag(
-            "div",
-            tag(
-                "p",
-                "Past thirty cards the filter comes first.",
-                class_="hint",
-            ) if paged.total > 30 else Markup(""),
-            _matrix(window, now),
-            class_="matrix-wrap",
-        )
-    else:
-        body = listing.table(window)
-
-    # A bar that narrows the list needs the way back rendered beside it. The
-    # nav's own Backlog link would do it by dropping every facet at once,
-    # which is not the same offer.
-    cleared = {key: value for key, value in extra.items() if key != "age"}
-    clear = (
-        tag(
-            "p",
-            tag("a", "Showing one age bucket — show every age",
-                href=listing.link(page=1, **{**cleared, "age": ""})),
-            class_="hint",
-            data_clear="age",
-        )
-        if age
-        else Markup("")
-    )
-
-    from .runner_screen import selection
-
-    return page(
-        "Backlog",
-        "backlog",
-        controls.capture(connection),
-        command_reference("sd store items --open"),
-        tag("p", "Active items only · opened from Operations.", class_="hint") if active_only else Markup(""),
-        clear,
-        toggle,
-        selection(connection, window, selected=listing.selected, skill=(parameters.get("skill") or [None])[0]),
-        tag(
-            "section",
-            listing.controls(paged),
-            body,
-            listing.pager(paged),
-            class_="listing",
-            data_listing="backlog",
-        ),
         cli_equivalents=False,
     )
 

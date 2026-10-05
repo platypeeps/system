@@ -87,11 +87,12 @@
         <label class="sel">Day<select id="f-day"><option value="">Any day</option></select></label>
         <label class="toggle"><input type="checkbox" id="f-act"> Needs action</label>
       </div>
+      <div id="chips"></div>
       <table class="ledger" aria-labelledby="led-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Report</th><th scope="col">Detail</th><th scope="col">Recorded</th><th scope="col">Status</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <thead id="rows-head"><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Report</th><th scope="col">Detail</th><th scope="col">Recorded</th><th scope="col">Status</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
-      <div class="pager"><span id="range"></span><div><button class="btn quiet sm" type="button" id="prev">Newer</button><button class="btn quiet sm" type="button" id="next">Older</button></div></div>
+      <div id="pager"></div>
     </section>
 
     <section aria-labelledby="ack-h">

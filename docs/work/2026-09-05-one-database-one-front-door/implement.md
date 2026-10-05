@@ -1938,8 +1938,9 @@ person and a line on this item, and none of them closable by a test:
   of `server.py`. The item screen posts it from its `Change status` form;
   the palette's status entry is that form re-listed by `localActions` in
   `dashboard.js` (`commands.yaml` registers no status command); the board
-  is `_board` in `screens.py`, cards linking to the item with no drag
-  handler in `dashboard.js`; and no section constructs a `BulkAction`. So
+  was the classic Backlog's, cards linking to the item with no drag
+  handler in `dashboard.js` (deleted with that screen in sd:2622); and no
+  section constructs a `BulkAction`. So
   7.17 is one refusal, "work completion requires verified delivery or
   cancellation evidence", proven from the route, from the library, and by
   the two read-only surfaces carrying no write; the grep for a second

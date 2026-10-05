@@ -24,7 +24,6 @@
 .linkish { font: inherit; color: var(--color-ink-2); background: none; border: 0; padding: 0 var(--space-2xs); text-decoration: underline; cursor: pointer; min-height: 1.75rem; }
 
 /* Ledger */
-.ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-2xs) var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
 .ledger th .sort { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-3xs); min-height: 1.75rem; }
 .ledger th .sort:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }

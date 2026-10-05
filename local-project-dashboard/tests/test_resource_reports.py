@@ -160,20 +160,22 @@ class Resources(unittest.TestCase):
     def test_overlong_tile_is_cut_at_the_limit_without_waiting_for_exit(self):
         tile, directory = self.tile(self.SPAWN +
             "while True:\n    sys.stdout.write('x' * 8192); sys.stdout.flush()\n")
-        started = time.monotonic()
+        # Cut at the byte ceiling while reading. The tile never exits, so a
+        # check made after exit would meet the time ceiling first, and the
+        # refusal would name time, not bytes: no elapsed bound to lose under
+        # load (sd:2667).
         with tile, self.assertRaisesRegex(ValueError, "stopped at its budget: .*more than its budget of 64 KB"):
             reports_screen.collect("toolbox")
-        # Cut at the byte ceiling while reading: well inside the time ceiling,
-        # which a check made after exit could not beat.
-        self.assertLess(time.monotonic() - started, reports_screen.VIEW_SECONDS["toolbox"] / 2)
         self.assertGone(directory / "tile.py.pids")
 
     def test_slow_tile_is_killed_within_its_budget(self):
-        tile, directory = self.tile(self.SPAWN + "import time\ntime.sleep(60)\n")
-        started = time.monotonic()
+        # The tile leaves a marker only if its minute runs out, so a view that
+        # returns without it killed the tile rather than waited (sd:2667).
+        tile, directory = self.tile(self.SPAWN + "import time\ntime.sleep(60)\n"
+                                    "open(sys.argv[0] + '.finished', 'w').close()\n")
         with tile, self.assertRaisesRegex(ValueError, "stopped at its budget: .*ran past its budget of 5 seconds") as refused:
             reports_screen.collect("vault")
-        self.assertLess(time.monotonic() - started, reports_screen.VIEW_SECONDS["vault"] + 1)
+        self.assertFalse((directory / "tile.py.finished").exists(), "the view waited for the tile instead of killing it")
         self.assertGone(directory / "tile.py.pids")
         # The page shows the refusal and its reason rather than an empty view.
         html = str(reports_screen.resources({"resource": ["vault"]}, backend=Mock(side_effect=refused.exception)))

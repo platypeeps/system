@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  Queue (sd:2585), at /queue. No design source page: built on the v2 shell from the 2026-10-03 sketch (QUEUE header,
+  MERGING/NEXT/BUILDING/BLOCKED/LANDED rows) and ui-design foundation/.
+  Data: /api/queue (queue_screen.document: sd-ship lane list per repository lane, its builder gate logs, sd gate status,
+  the load average), read when the page opens, on Read again and every 30 s while the page is visible.
+  Writes: /api/queue/move, which runs sd-ship lane move|hold|release and nothing else. Nothing here is sample data.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Queue · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/queue.css">
+</head>
+<body data-page="Queue" data-scope="fleet">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+<main id="main">
+  <header class="head">
+    <div>
+      <h1>Queue</h1>
+      <p id="subhead">Reading the lanes…</p>
+    </div>
+    <button class="btn quiet sm" type="button" id="reload">Read again</button>
+  </header>
+  <div id="state" hidden></div>
+  <dl class="readings" id="readings" aria-label="Machine readings"></dl>
+  <p class="edits" id="edits">Edits take effect at the next item boundary.</p>
+  <div id="lanes"></div>
+</main>
+<div class="details" id="details"><p class="note">Up, down, top, hold and release run sd-ship lane on the lane you pick. Nothing else writes here.</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/read.js"></script>
+<script src="/ui/queue.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>
