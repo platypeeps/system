@@ -306,6 +306,24 @@ class TheConventions(CliCase):
             if verb not in ("*", "-h", "--help", "help")
         )
 
+    def test_a_help_flag_after_a_database_verb_prints_usage_and_acts_on_nothing(self):
+        """sd:2716: `init --help` ran `init` on the live database.
+
+        The verbs come from the arm that hands them to `sd_db.jobs.cli`, so a
+        verb added to that line is covered here without a list to update.
+        """
+        body = ENTRYPOINT.read_text(encoding="utf-8")
+        line = re.search(r"^    ([a-z|]+)\)\n(?:.*\n){0,8}?.*-m sd_db\.jobs\.cli ", body, re.MULTILINE)
+        self.assertIsNotNone(line, "found no arm that runs sd_db.jobs.cli")
+        verbs = line.group(1).split("|")
+        self.assertIn("init", verbs)
+        database = self.home / ".local/share/sd/sd.db"
+        for argv in [(verb, flag) for verb in verbs for flag in ("-h", "--help")] + [("repo", "add", "--help")]:
+            with self.subTest(argv=argv):
+                completed = self.sd_db(*argv)
+                self.assertIn("Usage: sd-db.sh", completed.stderr)
+                self.assertFalse(database.exists(), f"{' '.join(argv)} made a database")
+
 
 class TheVerbs(CliCase):
     def test_init_creates_the_database_and_seeds_the_registry(self):

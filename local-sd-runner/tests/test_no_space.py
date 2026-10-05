@@ -25,7 +25,7 @@ from sd_db import runner as store
 from sd_db import runner_journal as journal
 from sd_db import runner_retention as retention
 from sd_db.writes import create_item
-from sd_runner import maintenance, storage
+from sd_runner import maintenance, processes, storage
 
 from . import test_runtime as fixtures
 
@@ -149,6 +149,12 @@ class NoSpace(unittest.TestCase):
         self.enterContext(patch.object(storage, "preflight", return_value=self.report))
         self.enterContext(patch.object(fixtures.Runner, "watch_deliveries"))
         self.enterContext(patch.object(fixtures.Runner, "refresh_archives"))
+        # sd:2718: and the process-table read, the ending's through the
+        # runner's `observer` seam and the prune's through `processes`. A
+        # `ps eww` past even the fixture's 120 s under a loaded gate held the
+        # ending `pending`.
+        self.runner.observer = lambda run: []
+        self.enterContext(patch.object(processes, "survivors", return_value=[]))
 
     def full_volume(self):
         self.enterContext(patch.object(storage.shutil, "copyfileobj", side_effect=self.volume.copyfileobj))

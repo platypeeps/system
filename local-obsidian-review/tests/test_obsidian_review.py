@@ -234,7 +234,10 @@ class DigestTest(unittest.TestCase):
 
     def test_a_signing_timeout_is_tried_once_more(self):
         _, _, links = self.signing()
-        err, html, calls = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="3", OBSIDIAN_REVIEW_SIGN_TIMEOUT="1")
+        # sd:2683: every link's call shares the bound. At 1 s a call with no
+        # hang ran out under a loaded gate and was retried too (57 != 56); at
+        # 10 s only the hung first call runs out.
+        err, html, calls = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="11", OBSIDIAN_REVIEW_SIGN_TIMEOUT="10")
         self.assertNotIn("action links unsigned", err)
         self.assertIn("https://mac.example.test/task?stub=1", html)
         self.assertEqual(calls, links + 1)

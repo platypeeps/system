@@ -17,8 +17,13 @@ from sd_db import runner_journal as journal
 from sd_db.database import connect
 from sd_db.migrate import initialise
 from sd_db.writes import create_item, upsert_repo
-from sd_runner import archive_refresh, reconciliation, storage
+from sd_runner import archive_refresh, processes, reconciliation, storage
 from sd_runner.runtime import Config
+
+from .test_runtime import PROBE_SECONDS
+
+#: The real read, for the one test whose subject it is.
+SURVIVORS = processes.survivors
 
 
 class ArchiveRefresh(unittest.TestCase):
@@ -57,6 +62,10 @@ class ArchiveRefresh(unittest.TestCase):
         storage.archive(self.clone, self.original)
         self.original_hash = self.digest(self.original)
         self.now = datetime(2026, 9, 8, tzinfo=UTC)
+        # sd:2718: the process table is read for real only by the holder test,
+        # which sets this back to the real read. Elsewhere a `ps` past its 10 s
+        # under a loaded gate held the refresh, and no other test is about holders.
+        self.survivors = self.enterContext(patch.object(processes, "survivors", return_value=[]))
 
     @staticmethod
     def digest(path):
@@ -131,6 +140,10 @@ class ArchiveRefresh(unittest.TestCase):
         self.assertEqual(sorted(str(path) for path in self.root.rglob("*")), before)
 
     def test_real_holder_is_skipped_without_signalling(self):
+        # The real `ps` and `lsof`, under the bound the runtime fixture gives them.
+        self.survivors.side_effect = SURVIVORS
+        for name in ("PS_SECONDS", "LSOF_SECONDS"):
+            self.enterContext(patch.object(processes, name, PROBE_SECONDS))
         child = subprocess.Popen([sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"],
                                  cwd=self.clone, stdout=subprocess.PIPE, text=True, start_new_session=True)
         try:
