@@ -170,6 +170,7 @@
     }
     const readQ = () => S.getJSON('/api/notes/quick').then(doc => { qn = doc; }, e => { qn = { error: e.message }; }).then(paintQ);
     async function keep() {
+      if (qKeep.disabled) return; // a keep in flight, or no kind to keep into: ⌘↵ must not post a second note
       if (!qIn.value.trim()) { qIn.focus(); return; }
       qKeep.disabled = true;
       try {

@@ -248,6 +248,11 @@ R.value = ELS['qn-in'].value;""")
         self.assertEqual(out["toasts"][-1], ["Kept in sdw.quick-note as 2026-09-06 060000.", False])
         self.assertEqual(out["R"]["value"], "")
 
+    def test_a_second_keep_while_one_is_in_flight_posts_nothing(self):
+        out = self.run_page("""ELS['qn-in'].value = 'Call the plumber'; ELS['qn-keep'].listeners.click[0](); ELS['qn-in'].listeners.keydown[0]({ key: 'Enter', metaKey: true, preventDefault() {} });
+await flush();""")
+        self.assertEqual(len(out["posts"]), 1)
+
     def test_an_empty_note_posts_nothing(self):
         out = self.run_page("ELS['qn-in'].value = '  \\n '; ELS['qn-keep'].listeners.click[0](); await flush();")
         self.assertEqual(out["posts"], [])
