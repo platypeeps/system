@@ -3,7 +3,8 @@
   Notes (sd:2120), at /notes. Built from the design source's products/system/designs/pages/notes.{html,css,js}.
   Data: /api/notes (notes_screen.document: the last seven days in this machine's zone, each with its sd-ship merges, items
   done and opened, and runner runs), read when the page opens. Mail and the daily note text have no reader and show as
-  unknown with the reason. Quick notes have no store kind, so a kept note stays on the page for the visit. Writes: none.
+  unknown with the reason. Quick notes: /api/notes/quick lists the sdw.quick-note items (sd store list), and Keep note posts
+  /api/notes/quick/add (sd store add, sd:2549). That is the page's one write.
   Nothing here is sample data.
 -->
 <html lang="en">
@@ -44,7 +45,7 @@
       <textarea id="qn-in" placeholder="A thought, a link, a name. ⌘↵ keeps it."></textarea>
       <div class="row-btns">
         <button class="btn sm" type="button" id="qn-keep">Keep note</button>
-        <button class="help" type="button" aria-label="Help: quick notes" data-help="<b>No loose-note kind yet.</b> sd store holds plugin kinds only, and none is a loose note. A new kind is a pack change; until it lands, a kept note lives on this page until you leave it. sd task note attaches a note to an item instead."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+        <button class="help" type="button" aria-label="Help: quick notes" data-help="<b>Kept in the vault.</b> Keep note writes an sdw.quick-note item with sd store add, titled with the time. One line, at most 1000 characters, no double quote; newlines become spaces. sd task note attaches a note to an item instead."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
       </div>
       <ul id="qn-list" aria-live="polite"></ul>
     </aside>
