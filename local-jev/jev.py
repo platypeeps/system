@@ -210,6 +210,7 @@ def loopback(url: str) -> bool:
     address cannot."""
     try:
         parts = urllib.parse.urlsplit(url)
+        parts.port   # a port that is not a number raises here, not at send time
         return parts.scheme in ("http", "https") and \
             ipaddress.ip_address(parts.hostname or "").is_loopback
     except ValueError:

@@ -853,6 +853,7 @@ class LocalOnly(CompareCase):
         for url in ("http://198.51.100.7:8009/v1/systemone",
                     "http://localhost:8009/v1/systemone",
                     "http://127.0.0.1@example.test/v1/systemone",
+                    "http://127.0.0.1:invalid/v1/systemone",
                     "file:///etc/hosts"):
             with self.subTest(url=url), \
                     unittest.mock.patch.object(jev.LOCAL_OPENER, "open") as send:
@@ -902,6 +903,8 @@ class LocalOnly(CompareCase):
         self.assertEqual(enabled("--local-only", JEV_SECRET_SCAN="0"), 3)
         self.assertEqual(enabled("--local-only",
                                  JEV_COMPARE_KEV_URL="http://198.51.100.7/v1/systemone"), 3)
+        self.assertEqual(enabled("--local-only",
+                                 JEV_COMPARE_KEV_URL="http://127.0.0.1:invalid/v1/systemone"), 3)
         self.assertEqual(Arm.seen, [])
 
 
