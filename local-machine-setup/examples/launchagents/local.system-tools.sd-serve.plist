@@ -5,8 +5,11 @@
      The sd hub's server for satellites, on the hub only. It serves
      ~/.local/share/sd/sd.db and never creates it: under the wrong home it
      exits naming the path it looked for, and KeepAlive retries on the
-     throttle. Loopback until the tailnet listener lands; that change drops
-     the flag (step 7 of docs/work/2026-09-22-run-the-framework-from-a-second-machine). -->
+     throttle, as it does while Tailscale is not running. It listens on this
+     node's Tailscale address, port 8769, and admits only the untagged nodes
+     of this node's owner, by `tailscale whois`; it carries no token (step 7
+     of docs/work/2026-09-22-run-the-framework-from-a-second-machine). PATH
+     finds `tailscale`: launchd gives the agent only what this file names. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -15,8 +18,12 @@
 	<array>
 		<string>@ROOT@/local-sd-db/sd-db.sh</string>
 		<string>serve</string>
-		<string>--loopback</string>
 	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>

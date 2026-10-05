@@ -53,15 +53,17 @@ class TheServeAgent(unittest.TestCase):
     def test_personal_agent_names_the_serve_agent(self):
         self.assertIn(LABEL, manifest("personal.agent"))
 
-    def test_the_template_execs_this_checkouts_serve_on_loopback(self):
+    def test_the_template_execs_this_checkouts_serve_on_the_tailnet(self):
         for template in (fixture_config.AGENTS / f"{LABEL}.plist",
                          FOLDER / f"examples/launchagents/{LABEL}.plist"):
             with self.subTest(template=template.relative_to(ROOT)):
                 plist = plistlib.loads(fixture_config.render(template, LABEL, "/home/someone", ROOT).encode())
                 self.assertEqual(plist["Label"], LABEL)
-                # An absolute path into this repository (gap (f)); step 7
-                # drops `--loopback` when the tailnet listener lands.
-                self.assertEqual(plist["ProgramArguments"], [f"{ROOT}/local-sd-db/sd-db.sh", "serve", "--loopback"])
+                # An absolute path into this repository (gap (f)), and no
+                # `--loopback`: the tailnet listener of step 7.
+                self.assertEqual(plist["ProgramArguments"], [f"{ROOT}/local-sd-db/sd-db.sh", "serve"])
+                # launchd's own PATH holds no `tailscale`, which the listener runs.
+                self.assertIn("/opt/homebrew/bin", plist["EnvironmentVariables"]["PATH"].split(":"))
                 self.assertTrue(plist["KeepAlive"])
                 self.assertEqual(plist["ThrottleInterval"], 30)
                 self.assertEqual(plist["StandardErrorPath"], f"/home/someone/Library/Logs/{LABEL}.err")

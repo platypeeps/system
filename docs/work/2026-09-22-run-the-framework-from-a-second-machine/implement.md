@@ -639,3 +639,24 @@ checkout, not a directory beside the database. It refuses nothing, so the
 is wrong. Not built: the pack-level checks (`sd-ship` and `sd-review` over
 loopback, the serve log with no lock); the library refusals they reach are
 tested.
+
+2026-10-04 — steps 5 to 9 are on `main`; this page tracks status here,
+not in the step list. Step 5, #157; step 6, #154; step 7, #158; steps 8
+and 9, #152. Steps 10 and 11 stay open: they need the second laptop and the
+operator's deploy key.
+
+Step 12, docs. `local-sd-db/README.md` gains "One hub, many satellites":
+`serve`, loopback against the tailnet, peer identity, the authorizer's
+refusals, the hub-only verbs and `request_outcome`.
+`local-machine-setup/README.md` gains the `sd-serve` agent and the
+satellite stage. `CLAUDE.md` gains the hub and satellite rules. The list of
+plists that hold absolute paths is in `.claude/rules/services.md`, not in
+`CLAUDE.md`, so `local.system-tools.sd-serve` joins it there (gap (f)).
+
+Template fix, found by the step 12 brief. Step 7 left the `sd-serve`
+template and its fixture passing `--loopback`, with a comment that step 7
+drops the flag. Both now run `serve` with no flag: the tailnet listener,
+the owner's untagged nodes only, no token. The template also gains
+`PATH`. Without it the listener could not run `tailscale` under launchd:
+launchd's default `PATH` holds no Homebrew or `/usr/local` folder. That
+claim is from launchd's documented default, not from a launchd run.
