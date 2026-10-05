@@ -25,32 +25,48 @@ It reuses `jev` and `jev_compare` and adds no transport of its own.
 
 **Source.** Each `ship:` checkpoint in the `state` table holds its passes.
 A pass's `report` carries `subject` (base, head, paths, lines), `route` (tier, reason), `jev` (the reading), `challenge`, `completed_reviews` and `findings`.
-A checkpoint body that is not valid JSON is skipped and counted.
+A checkpoint body that is not valid JSON is skipped and counted; 266 since 2026-09-09 at plan time.
 
-**Rule.** First pass with a `jev` reading per reviewed head, 2026-09-21 to 2026-09-29.
-"First" orders by checkpoint timestamp, then row id, then pass index.
+**Replay scope.** Every distinct reviewed head since 2026-09-09, keyed `coalesce($.reviewed_head, $.head)`: 2,222 at plan time.
+Heads from 2026-09-09 to 2026-09-20 predate the Jev reading but carry review findings, so they add labelled cases.
+The replay rebuilds a state for every head and runs every arm on it.
+Hosted arms beyond the paper subset wait for the operator's confirmation of the wider re-send (see the pre-registration's stopping rule).
 
-**Plan-time counts** (one read-only query on 2026-10-05, not reconciled):
+**Two extractions disagree.** Read-only queries on 2026-10-05 gave:
 
-| Selection | Heads | Disagree with rules | `standard` to `skip` |
+| Extraction, 2026-09-21 to 2026-09-29 | Heads | Disagree with rules | `standard` to `skip` |
 |---|---|---|---|
-| First reading, window in UTC | 798 | 47 | 28 |
-| ... and `completed_reviews` > 0 | 781 | 47 | 28 |
+| A: every pass, keyed by `report.subject.head`, first reading per head | 798 | 47 | 28 |
+| A, and `completed_reviews` > 0 | 781 | 47 | 28 |
+| B: `passes[0]` only, keyed by `coalesce(reviewed_head, head)` | 787 | 17 | 8 |
 | Entry 1 | 779 | 47 | 28 |
 
-The disagreements match entry 1 exactly; the total is off by 2 to 19.
-Step 1 of `implement.md` pins the query that gives 779, or records the delta and its cause.
-The population file and its SHA-256 go into the run manifest.
+Extraction A reproduces entry 1's moves but not its total; extraction B reproduces neither.
+They differ in which pass counts and which head keys it: a later pass in a checkpoint reviews a later head.
+Over 2026-09-21 to 2026-10-05, extraction B gives 1,472 heads and 20 disagreements (8 to `skip`, 7 to `deep`, 5 to `cheap`).
+Step 0 of `implement.md` settles which extraction entry 1 used, before any label is read and before anything is published.
+The pre-registered prediction about "the 28" depends on it.
 
-**Second population.** The same window holds about 185 reviewed heads with no reading.
-Jev declined there, was below `--unsure-below 0.6`, or was off.
-They are replayed too and reported apart, because the 779 are the heads where Jev was sure enough to answer.
-That selection is a bias of the primary population; the paper names it.
+**Paper subset.** The heads step 0 finds behind entry 1's numbers, reported apart.
+
+**Selection bias.** In the 2026-09-21 to 2026-09-29 window, about 185 reviewed heads carry no reading.
+There Jev declined, fell below `--unsure-below 0.6`, or was off.
+So entry 1's population is the heads where Jev was sure enough to answer; the paper names that.
+
+**After the floor.** Since 2026-09-30 a checkpoint's `jev.tier` is the floored tier.
+Jev's raw lower answer survives only as `below_routed`, present in 216 checkpoints at plan time.
+The judgment ledger holds the raw answer for stage `JEV_SD_REVIEW`: 2,289 `ok` rows since 2026-09-30, as an option index.
+It holds no state. Its join key is the subject `sd-review-tier:<owner>.<repo>:<sha12>`, which 2,129 of 2,395 Jev rows carry.
+The other 266 carry only `sd-review-tier` and cannot be joined.
+At plan time 888 of 1,060 distinct subjects matched a checkpoint head on the 12-character prefix.
+The replay asks every arm afresh, so this gap limits the drift comparison, not the replay.
+
+The population file and its SHA-256 go into the run manifest.
 
 ## Rebuilding each state
 
 The pack's `_jev_state` builds what Jev saw from four inputs.
-The checkpoint stores all four, so the state is rebuilt from the checkpoint, not from git:
+Where the checkpoint stores all four, the state is rebuilt from the checkpoint:
 
 | Field sent | Source in the pass |
 |---|---|
@@ -58,19 +74,26 @@ The checkpoint stores all four, so the state is rebuilt from the checkpoint, not
 | `lines_moved` | `report.subject.lines` |
 | `deterministic_routing_said` | `report.route.reason`, less the suffix `; Jev read the diff and chose tier ...` |
 
-The question text, the four tier descriptions and `MAX_PATHS` did not change in the pack between 2026-09-20 and 2026-10-05.
-The replay therefore sends the same request bytes, except the model name.
+At plan time 2,010 of the 2,222 heads had a stored subject in some checkpoint.
+Before 2026-09-21 only 261 of 1,171 checkpoints stored one in their first pass.
 
-**Git is the check, not the source.** For each head, `git diff --numstat <base>..<head>` in the local clone verifies paths and lines.
-A head whose objects are gone (a squash-merged branch, deleted and collected) is marked `unverified` and kept.
+**From git, where the checkpoint has no subject.** `git diff --numstat <base>..<head>` in the local clone gives paths and lines.
+The pack's router, at the pinned pack SHA, recomputes the tier and reason from the repository's `.github/sd-review.json` at that head, or the pack's default policy.
+These states are flagged `rebuilt-from-git`. A head whose objects are gone is dropped and counted.
+
+**Git also checks the stored states.** Where objects exist, numstat verifies the stored paths and lines; a mismatch is flagged.
+
+The question text, the four tier descriptions and `MAX_PATHS` did not change in the pack between 2026-09-20 and 2026-10-05.
+The replay therefore sends the same request bytes as the live reading, except the model name.
 
 **What cannot be rebuilt:**
 
-- Jev's model version on the day. The checkpoint records none, and the ledger's tier rows start on 2026-09-29.
-  The replay asks today's Jev; step 5 measures drift against the recorded reading (H6).
+- Jev's model version on the day. The checkpoint records none.
+  The faithfulness gate (O4) measures how far today's Jev and the rebuild together match the record.
 - Jev's probabilities for the original reading. The checkpoint stores the tier only.
   Calibration uses replay answers only.
-- Readings that declined. They left no `jev` key, so the second population has no historic Jev answer at all.
+- Readings that declined. They left no `jev` key, so those heads have no historic Jev answer.
+- The routing reason on the day, for a `rebuilt-from-git` head: the router and the policy may have changed since.
 - The privacy patterns in force on the day. Redaction uses today's file; a pattern added since can change a state.
   The replay logs the redaction count per state.
 - The counterfactual review. Each head got one review at the tier actually used, with `challenge` set.
@@ -82,7 +105,7 @@ All five arms answer the same question over the same state. None sees another's 
 
 | Arm | How it answers | Cost | Leaves the machine |
 |---|---|---|---|
-| Rules | the recorded `report.jev.routed_tier` | 0 | no |
+| Rules | the recorded routed tier (`report.jev.routed_tier`, else `report.route.tier`), or the recomputed one for a `rebuilt-from-git` head | 0 | no |
 | Heuristic | the function below, offline | 0 | no |
 | Jev | `jev.post` with the payload `jev.build_payload` makes | list price | TypeSafe |
 | Kev-4B | `source:local-jev/jev_compare.py::kev_arm` | 0 marginal | no |
@@ -145,8 +168,9 @@ Its findings sit in the same checkpoint: `report.findings`, each with `dispositi
 
 The label measures "a reviewer found something it would block on", not a verified defect.
 At plan time the blocking rate among first readings was about 37%: 296 of 798.
+Across the replay scope, 1,335 of the 2,222 heads have at least one finding of any disposition in their first pass.
 
-Plan-time cross-tab of entry 1's readings against blocking@head:
+Plan-time cross-tab of entry 1's readings (extraction A) against blocking@head:
 
 | Rules | Jev | Heads | blocking@head |
 |---|---|---|---|
@@ -279,7 +303,7 @@ Per arm and per decision: tokens in and out, US dollars, client wait p50 and p95
 - Haiku 4.5: $1 per million input tokens and $5 per million output.
 - Kev: $0 marginal. Power and machine time are not measured; the note says so.
 
-Expected hosted spend for the replay is under $2. The stopping rule halts at $10.
+Expected hosted spend for the replay of 2,222 heads is under $5, nearly all of it Haiku. The stopping rule halts at $10.
 
 ## Where the data lives
 

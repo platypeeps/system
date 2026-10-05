@@ -41,7 +41,8 @@ The operator reads the plan and fills in the predictions before any run.
 
 ## Requirements
 
-1. Replay the review-tier question over the frozen population, once per arm.
+0. Reconcile entry 1's extraction of the 779 readings with a second extraction that does not reproduce it, before anything is published.
+1. Replay the review-tier question once per arm over every reviewed head since 2026-09-09 (about 2,222), after a 50-state faithfulness check.
    The arms are rules, a heuristic of about 20 lines, Jev, Kev-4B and Claude Haiku 4.5.
 2. Label each commit from the review that ran at that head (objective label) before any hand label.
 3. Hand-label a blinded sample of the disagreements: all of them, capped at 150, shuffled, arm names hidden.
@@ -54,7 +55,8 @@ The operator reads the plan and fills in the predictions before any run.
 
 ## Constraints
 
-- Hosted re-sends: the replay sends the old paths to TypeSafe and to Anthropic **once** (operator approval, 2026-10-05).
+- Hosted re-sends: the replay sends the old paths to TypeSafe and to Anthropic **once** (operator approval, 2026-10-05, given for the 779).
+  Hosted arms on the other heads wait for the operator to confirm the wider re-send; local arms run on all of them.
   The injection test uses public-repository states only, so it re-sends no private path.
 - The scanner benchmark never sends a hit to Jev or Haiku, and never uses a real credential.
 - Raw data lives in `/Volumes/local/repo-storage/system/jev-experiment/`, never in git.
@@ -63,6 +65,7 @@ The operator reads the plan and fills in the predictions before any run.
 
 ## Done when
 
+- Step 0 has named the extraction behind entry 1, and the faithfulness check has passed.
 - The pre-registration is committed with every operator blank filled, and its commit SHA is recorded on sd:2764.
 - The replay, both label passes, the injection test and the scanner benchmark have run, each under its stopping rule.
 - A results note in the raw data folder states each hypothesis as held, failed or not decidable, with its query.
