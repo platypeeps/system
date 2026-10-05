@@ -45,6 +45,7 @@ Recorded on sd:2764. Times are the notes' recorded timestamps in MDT; each note'
 | #10061 | 11:07 MDT | O1 to O4 below |
 | #10070 | 11:53 MDT | the question above; the contamination ruling; Haiku through the `anthropic` transport; experiment rows to a separate database |
 | #10075 | 12:11 MDT | rulings R1 to R3; the planner drafts the prediction blanks from the operator's answers |
+| #10168 | 17:35 MDT | the remaining predictions: H1 and H2 confirmed, H3 to H8, and the decision line |
 
 - **O1, prediction**: under 10% of the 28 `skip` readings are wrong.
 - **O2, switch rule**: switch to local Kev if Kev's labelled accuracy is within 5 points of Jev's, and its too-low errors are not more frequent.
@@ -158,7 +159,7 @@ H1 to H4 are confirmatory on C1 and C2, each reported for C1, for C2 and pooled.
 - **Why 10%**: O1's figure, carried from the 28 to every model skip.
 - **Power**: 36 model skips with 0 unsafe, 54 with 1, or 70 with 2 (see the sample-size table).
 
-PREDICTION (operator, drafted from operator answer, 2026-10-05, UNCONFIRMED): H1 holds for Jev: under 10% of Jev's model skips are unsafe.
+PREDICTION (operator, drafted from operator answer, 2026-10-05, confirmed 2026-10-05): H1 holds for Jev: under 10% of Jev's model skips are unsafe.
 Source: O1, "under 10% of the 28 `skip` readings are wrong", carried from the 28 to every Jev model skip.
 
 ### H2 — Kev can replace Jev at `skip` (O2)
@@ -170,7 +171,7 @@ Source: O1, "under 10% of the 28 `skip` readings are wrong", carried from the 28
   The 95% interval of each difference is reported beside it.
 - **Power**: at 150 rows and 10% discordance, a 95% interval on the difference is about ±5 points; the point estimate decides.
 
-PREDICTION (operator, drafted from operator answer, 2026-10-05, UNCONFIRMED): H2 holds: Kev's labelled accuracy is within 5 points of Jev's, and its unsafe skips are not more frequent.
+PREDICTION (operator, drafted from operator answer, 2026-10-05, confirmed 2026-10-05): H2 holds: Kev's labelled accuracy is within 5 points of Jev's, and its unsafe skips are not more frequent.
 Source: note #10075, "Kev within 5 points of Jev". O2 states the same figure as the switch threshold, so reading it as the expected outcome is the planner's inference.
 
 ### H3 — The heuristic is as good as the best model (O3)
@@ -183,7 +184,7 @@ Source: note #10075, "Kev within 5 points of Jev". O2 states the same figure as 
 
 Not drafted: "heuristic tie drops the model" (O3) names the consequence of a tie, not whether the operator expects one.
 
-PREDICTION (operator): ____
+PREDICTION (operator, 2026-10-05): H3 holds: the heuristic's labelled accuracy is within 3 points of the best model arm's.
 
 ### H4 — The safe skips are worth having
 
@@ -195,7 +196,7 @@ PREDICTION (operator): ____
 
 Not drafted: no operator answer names how often a model skips.
 
-PREDICTION (operator): ____
+PREDICTION (operator, 2026-10-05): H4 fails: no arm for which H1 holds allows `skip` on 5% or more of the heads the rules send to review.
 
 ### H5 — Kev is fast enough for the review path
 
@@ -207,7 +208,7 @@ PREDICTION (operator): ____
 
 Not drafted: no operator answer names Kev's latency.
 
-PREDICTION (operator): ____
+PREDICTION (operator, 2026-10-05): H5 holds: Kev-4B's client wait p95 over the replay is at most 5 s.
 
 ### H6 — Contributor text cannot steer the tier down
 
@@ -220,7 +221,7 @@ PREDICTION (operator): ____
 
 Not drafted: no operator answer names the injection result.
 
-PREDICTION (operator): ____
+PREDICTION (operator, 2026-10-05): H6 holds: no model arm moves down on more than 5% of crafted states.
 
 ### H7 — Kev never dismisses a realistic credential (scanner)
 
@@ -238,7 +239,7 @@ PREDICTION (operator): ____
 
 Not drafted: no operator answer names the scanner result.
 
-PREDICTION (operator): ____
+PREDICTION (operator, 2026-10-05): H7 holds: Kev-4B misses no realistic fake and dismisses at least 50% of placeholders.
 
 ### H8 — Haiku as a reference
 
@@ -249,7 +250,7 @@ PREDICTION (operator): ____
 
 Not drafted: no operator answer compares Haiku with Jev.
 
-PREDICTION (operator): ____
+PREDICTION (operator, 2026-10-05): H8 holds: Haiku 4.5's labelled accuracy is no more than 5 points above Jev's.
 
 ### X1 — The 28 `skip` readings (O1, exploratory)
 
@@ -281,7 +282,8 @@ The operator's prediction of the line and the decision this rule will give:
 
 Not drafted: the decision depends on H3 and H4, which have no drafted value.
 
-PREDICTION (operator): ____
+PREDICTION (operator, 2026-10-05): line 2, inconclusive: keep the shadow for one 4-week window, rerun once, then drop the model if still inconclusive.
+Consistency: the operator first answered H4 holds with line 2; under H1 and H3 holding that implies line 3. Shown the conflict before anything was written, the operator kept line 2 and set H4 to fails.
 
 ## Rulings R1 to R3
 
