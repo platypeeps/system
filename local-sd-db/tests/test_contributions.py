@@ -542,6 +542,36 @@ class NotificationTests(ContributionCase):
 
 
 class ProjectionTests(ContributionCase):
+    def test_projection_reads_in_a_fixed_number_of_statements(self):
+        # Each row read its own checkpoint and heartbeat, so a satellite paid
+        # one round trip per source: ~9,300 per sd-status (sd:2678).
+        added = []
+
+        def add(n):
+            for _ in range(n):
+                for registered in (True, False):
+                    url = URL.replace("12", str(100 + len(added)))
+                    added.append(url)
+                    if registered:
+                        c.capture(self.db, title="Filed", changes={"pull_url": url}, who="operator")
+                    c.observe_pull(self.db, url, self.observation(),
+                                   expected_revision=c.snapshot(self.db, "github:" + url)["revision"])
+
+        def counted():
+            statements = []
+            self.db.set_trace_callback(statements.append)
+            try:
+                rows = c.projection(self.db)
+            finally:
+                self.db.set_trace_callback(None)
+            return len(rows), len(statements)
+
+        add(1)
+        rows, few = counted()
+        add(5)
+        self.assertEqual(counted(), (rows + 10, few))
+        self.assertLessEqual(few, 10)
+
     def test_projection_repo_identities_keep_local_work_in_shared_order(self):
         metadata = self.metadata()
         metadata.pop("blocked_on")

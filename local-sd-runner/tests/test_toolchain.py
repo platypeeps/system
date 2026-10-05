@@ -167,11 +167,13 @@ class SearchPath(unittest.TestCase):
         module = SimpleNamespace(read_or_report=lambda **kwargs: (registry, ""))
         with patch.object(runtime, "registry_module", return_value=module), patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
             runner.resolve_tools(probe=lambda: [str(login)])
-            environment = runner.tool_environment("run-1", remote=True)
+            environment = runner.tool_environment({"id": "run-1", "provider": "claude"}, remote=True)
             self.assertEqual(runner.search_path, os.pathsep.join(["/opt/configured", str(login), "/usr/bin", "/bin"]))
         self.assertEqual(environment["PATH"], os.pathsep.join(["/opt/configured", str(login), "/usr/bin", "/bin"]),
                          "sd-ship's readiness searches what the runner resolved")
         self.assertEqual(runner.executables, {"claude": str(login / "claude"), "gone": None})
+        # The install, the check and sd-ship commit as the run's provider (sd:2544).
+        self.assertEqual((environment["SD_ASSIGNMENT"], environment["SD_AUTHOR"]), ("run-1", "claude"))
 
     def test_login_path_reads_between_the_markers_and_ignores_profile_noise(self):
         marker = toolchain.MARKER
