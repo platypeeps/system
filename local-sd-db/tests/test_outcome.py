@@ -95,12 +95,14 @@ class Relay:
     in every case, as a broken link would. Every other frame, and every
     later session, passes through, unless `refusing` is set: then a new
     session is closed as soon as it arrives. `refuse_after` sets it when
-    the fault fires: a hub that cannot be asked.
+    the fault fires: a hub that cannot be asked. `match` spoils the first
+    frame it accepts instead of the first COMMIT.
     """
 
-    def __init__(self, port: int, fault: str, *, refuse_after: bool = False) -> None:
+    def __init__(self, port: int, fault: str, *, refuse_after: bool = False, match=None) -> None:
         self.target = port
         self.fault = fault
+        self.match = match
         self.armed = True
         self.refusing = False
         self.refuse_after = refuse_after
@@ -124,6 +126,8 @@ class Relay:
             threading.Thread(target=self._pump, args=(client,), daemon=True).start()
 
     def _spoils(self, frame: dict) -> bool:
+        if self.match is not None:
+            return self.armed and self.match(frame)
         committing = (frame.get("op") == "commit"
                       or (frame.get("op") == "execute" and remote.statement(frame.get("sql", "")) == "commit"))
         return self.armed and committing and frame.get("rid") is not None
@@ -376,6 +380,93 @@ class TheLostCommit(OutcomeCase):
         self.assertNotEqual(rid, lost)
 
 
+def inserting(frame: dict) -> bool:
+    return frame.get("op") == "execute" and frame.get("sql", "").startswith("INSERT")
+
+
+class TheAutocommitWrite(OutcomeCase):
+    """sd:2671: a write outside a transaction is settled as a COMMIT is."""
+
+    def test_a_dropped_answer_settles_as_the_write_it_was(self):
+        """The hub wrote and its answer was lost: `recorded`, one row, and
+        the caller does not run the write again."""
+        relay = self.relay("drop-answer", match=inserting)
+        client = self.connect(relay.port)
+        client.execute("INSERT INTO probe (name) VALUES ('a')")
+        self.assertTrue(relay.fired.is_set())
+        [(rid, answer)] = client.outcomes
+        self.assertEqual(answer, remote.RECORDED)
+        self.assertEqual(count(self.path), 1)
+        self.assertTrue(recorded(self.path, rid))
+
+    def test_a_dropped_frame_is_absent_and_the_write_runs_again(self):
+        relay = self.relay("drop-frame", match=inserting)
+        client = self.connect(relay.port)
+        with self.assertRaises(remote.TransactionLost) as raised:
+            client.execute("INSERT INTO probe (name) VALUES ('a')")
+        self.assertEqual(client.outcomes, [(raised.exception.rid, remote.ABSENT)])
+        self.assertEqual(count(self.path), 0)
+        self.connect().execute("INSERT INTO probe (name) VALUES ('a')")
+        self.assertEqual(count(self.path), 1)
+
+    def test_a_frame_that_lands_after_absent_is_refused(self):
+        """`absent` is final: the write frame held in transit lands after the
+        hub said so, and the hub refuses it, so the write run again is the
+        only one."""
+        relay = self.relay("hold", match=inserting)
+        client = self.connect(relay.port)
+        with self.assertRaises(remote.TransactionLost) as raised:
+            client.execute("INSERT INTO probe (name) VALUES ('a')")
+        late = relay.release()
+        self.assertFalse(late["ok"])
+        self.assertIn(f"request id {raised.exception.rid} was used before", late["error"]["text"])
+        self.assertEqual(count(self.path), 0)
+
+    def test_the_write_answers_as_a_local_one_and_records_its_row(self):
+        client = self.connect()
+        before = client.total_changes
+        cursor = client.execute("INSERT INTO probe (name) VALUES ('a') RETURNING id")
+        self.assertEqual(([tuple(row) for row in cursor], cursor.lastrowid), ([(1,)], 1))
+        self.assertFalse(client.in_transaction)
+        self.assertEqual((count(self.path, "request_outcome"), client.total_changes), (1, before + 1))
+        client.execute("UPDATE probe SET name = 'none' WHERE name = 'missing'")
+        client.execute("SELECT * FROM probe")
+        self.assertEqual(count(self.path, "request_outcome"), 1)
+
+    def test_the_write_waits_for_a_hub_writer_as_an_autocommit_one_does(self):
+        """No read before the statement: a stale snapshot would fail the
+        write with SQLITE_BUSY_SNAPSHOT once the hub writer commits."""
+        client = self.connect()
+        local = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(local.close)
+        local.execute("BEGIN IMMEDIATE")
+        local.execute("INSERT INTO probe (name) VALUES ('hub')")
+        failures: list[BaseException] = []
+
+        def write():
+            try:
+                client.execute("INSERT INTO probe (name) VALUES ('wire')")
+            except BaseException as error:  # reported by the main thread
+                failures.append(error)
+
+        writer = threading.Thread(target=write)
+        writer.start()
+        time.sleep(0.3)
+        local.execute("COMMIT")
+        writer.join(10)
+        self.assertEqual(failures, [])
+        self.assertEqual(count(self.path), 2)
+
+    def test_a_failed_write_writes_nothing_and_leaves_no_transaction(self):
+        client = self.connect()
+        with self.assertRaises(sqlite3.IntegrityError):
+            client.execute("INSERT INTO probe (name) VALUES (NULL)")
+        self.assertFalse(client.in_transaction)
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
+        client.execute("INSERT INTO probe (name) VALUES ('b')")
+        self.assertEqual(count(self.path), 1)
+
+
 class TheOwnership(OutcomeCase):
     """The rules behind the answers: ids, settlement and the idle timeout."""
 
@@ -535,7 +626,8 @@ class TheReadTransaction(OutcomeCase):
             wire.execute("INSERT INTO probe (name) VALUES ('read')")
         wire.execute("COMMIT")
         wire.execute("INSERT INTO probe (name) VALUES ('after')")
-        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (1, 0))
+        # The one row is the autocommit write's own (sd:2671), not the read's.
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (1, 1))
 
     def test_commit_without_the_id_ends_no_write_transaction(self):
         sock = self.raw()
@@ -827,9 +919,10 @@ class TheWrite(OutcomeCase):
         self.assertEqual(session._authorize(sqlite3.SQLITE_ATTACH, str(aux), None, None, None),
                          sqlite3.SQLITE_DENY)
         # The reviewer's case: the trigger's `t` names no table, attached or
-        # not, so the COMMIT fails and writes nothing anywhere.
-        client.execute("CREATE TEMP TRIGGER leak AFTER INSERT ON main.request_outcome "
-                       "BEGIN INSERT INTO t VALUES (1); END")
+        # not, so the COMMIT fails and writes nothing anywhere. A script,
+        # since a write sent alone records a row (sd:2671), which fires it.
+        client.executescript("CREATE TEMP TRIGGER leak AFTER INSERT ON main.request_outcome "
+                             "BEGIN INSERT INTO t VALUES (1); END;")
         client.execute("BEGIN IMMEDIATE")
         client.execute("INSERT INTO probe (name) VALUES ('t')")
         with self.assertRaisesRegex(sqlite3.OperationalError, "no such table: t"):

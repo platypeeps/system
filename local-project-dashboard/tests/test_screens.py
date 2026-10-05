@@ -15,7 +15,6 @@ import shutil
 import subprocess
 import tempfile
 import threading
-import time
 import unittest
 import urllib.error
 import urllib.request
@@ -144,18 +143,20 @@ class Today(ScreenCase):
         stub = Path(self.tmp.name) / "bin"
         stub.mkdir()
         # Only the trailer walk's first call stalls; the page's other git reads go to the real git.
-        # exec: the process the budget kills is the one holding the pipes.
-        (stub / "git").write_text('#!/bin/sh\ncase "$*" in *"rev-parse --verify -q origin/HEAD"*) exec sleep 5;; esac\n'
+        # The budget kills the shell, the one holding the pipes; its sleep
+        # holds none, and the marker is written only if the 5 s run out
+        # (sd:2667): no elapsed bound to lose under load.
+        finished = Path(self.tmp.name) / "stalled-finished"
+        (stub / "git").write_text('#!/bin/sh\ncase "$*" in *"rev-parse --verify -q origin/HEAD"*) '
+                                  f'sleep 5 >/dev/null 2>&1; touch "{finished}"; exit 0;; esac\n'
                                   f'exec {shutil.which("git")} "$@"\n')
         (stub / "git").chmod(0o755)
         for name in ("one", "two"):
             self.repo(f"/checkouts/{name}")
         with mock.patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
                 mock.patch.object(operations_screen, "TRAILER_SECONDS", 0.5):
-            started = time.monotonic()
             page = self.render("/operations", {"area": ["usage"]})
-            elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 3, "Progress waited on the git walk instead of stopping it")
+        self.assertFalse(finished.exists(), "Progress waited on the git walk instead of stopping it")
         self.assertIn('class="tile-value">not read', page)
         self.assertIn("the trailer count ran past its budget of 0.5 seconds and was stopped rather than waited on", page)
 

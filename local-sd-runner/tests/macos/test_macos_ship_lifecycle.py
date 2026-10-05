@@ -90,7 +90,7 @@ class ShipLifecycle(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
         test_runtime.git(self.checkout, "remote", "set-url", "origin", self.remote_url)
-        upsert_repo(self.db, str(self.checkout), remote=self.remote_url, runner_merge="auto")
+        upsert_repo(self.db, str(self.checkout), remote=self.remote_url, runner_merge="auto", managed=1)
         (self.checkout / "Makefile").write_text("check:\n\t@echo fixture-check-pass\n")
         (self.checkout / "CLAUDE.local.md").write_text(
             "<!-- SD-AI-COMMAND-PACK:LOCAL:START -->\nmode: full\n"
