@@ -42,13 +42,19 @@ without the prune, so no row is ever deleted:
   connection, then commits: the row and the writes land together or not
   at all. Each attempt checks for the row inside the transaction: a COMMIT
   a deferred foreign key failed leaves the transaction open, and a
-  `ROLLBACK TO` can remove the row it inserted. A transaction that changed
-  nothing (no row, no schema, no `user_version`) gets no row: it wrote
-  nothing either way, and the table, which is never pruned, does not grow
-  on quiet ticks. The server's row
-  stays out of the session's `total_changes`. A `COMMIT` naming an R the
-  session does not own is refused and not applied, and a write
-  transaction's `COMMIT` without its R too.
+  `ROLLBACK TO` can remove the row it inserted. A transaction that wrote
+  nothing gets no row: committed or not, it wrote nothing, and the table,
+  which is never pruned, does not grow on quiet ticks. "Wrote" is
+  measured two ways. `total_changes` counts every row an INSERT, UPDATE
+  or DELETE changed, in any database, so a replay whose UPDATE matches
+  nothing stays empty. Every other action that is not a read, in any
+  database, counts as a write the moment the authorizer sees it
+  prepared: DDL, a pragma that sets a value, ATTACH (the third review of
+  2026-10-04). A row too many says only that the transaction committed,
+  which it did. The server's row stays out of the session's
+  `total_changes`. A `COMMIT` naming an R the session does not own is
+  refused and not applied, and a write transaction's `COMMIT` without its
+  R too.
 - `ROLLBACK`, a transaction SQLite ends itself, and the socket closing
   settle ownership.
 - `outcome(R)` answers `in_flight` while a session owns R, else `recorded`
@@ -62,10 +68,10 @@ without the prune, so no row is ever deleted:
   and ROLLBACK unless the hub routes them, whatever the text: a comment
   or a trailing statement cannot end a write transaction without its row
   (the review of 2026-10-04). A transaction a `SAVEPOINT` opens is a read
-  under `query_only`, and a script opens none. Inside a read, a client
-  cannot set `query_only` at all (the second review of 2026-10-04). The client does not check
-  this itself: a text `remote.statement` misses goes as a plain statement,
-  and this refusal answers it.
+  under `query_only`, and a script opens none. A client cannot set
+  `query_only` at all (the second review of 2026-10-04). The client does
+  not check this itself: a text `remote.statement` misses goes as a plain
+  statement, and this refusal answers it.
 - A session silent for `IDLE_TIMEOUT` inside an open transaction is closed,
   which rolls it back: below `database.BUSY_TIMEOUT`, so a hub writer
   waiting behind an abandoned satellite gets the lock (gap (g)).
@@ -102,6 +108,16 @@ TOKEN_SUFFIX = ".serve.token"
 #: (5 s): a hub writer that starts waiting when a satellite goes silent gets
 #: the lock before its own wait ends (gap (g) of the design).
 IDLE_TIMEOUT = 4.0
+#: What `Session._authorize` counts as a read, with `load_extension` left
+#: out of `SQLITE_FUNCTION` and a `PRAGMA` read only with no argument.
+#: SAVEPOINT, RELEASE and ROLLBACK TO move no data: the library's nested
+#: `transaction()` uses them in a write that may change nothing.
+READS = frozenset({sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
+                   sqlite3.SQLITE_RECURSIVE, sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT})
+#: Row writes, which `total_changes` counts in every database. A DROP TABLE
+#: or the REPLACE half of an upsert changes rows it does not count, but the
+#: first is `SQLITE_DROP_TABLE` and the second comes with its counted insert.
+ROWS = frozenset({sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE})
 
 #: A test seam, `None` everywhere else: called as `_fault(point, session)` at
 #: `before-commit` (the `COMMIT` frame received, nothing recorded yet) and at
@@ -219,8 +235,10 @@ class Session(socketserver.BaseRequestHandler):
         #: or `None` for none, or one opened some other way.
         self.kind: str | None = None
         self.rid: str | None = None
-        #: What the open write transaction had changed when it began.
-        self.mark: tuple = ()
+        #: `total_changes` when the open write transaction began.
+        self.mark = 0
+        #: The open write transaction prepared a write that moves no row.
+        self.wrote = False
         #: Rows the server inserted, kept out of `total_changes`.
         self.hidden = 0
         #: The connection's own `query_only`, restored when a read ends.
@@ -237,12 +255,20 @@ class Session(socketserver.BaseRequestHandler):
         """SQLite's authorizer on the session's connection.
 
         SQLite calls it for each statement it prepares, with what the
-        statement does, so a transaction boundary is seen whatever its text
-        looks like: a comment, a trailing statement, any case. One case per
-        action code; later rules add theirs here. Python caches a prepared
-        statement by its text and does not authorize it again, so a case
-        gives one answer per text in `execute`.
+        statement does, so a transaction boundary or a write is seen
+        whatever its text looks like: a comment, a trailing statement, any
+        case, any database. One case per action code; later rules add
+        theirs here. The session caches no statement (`open_local`'s
+        `cached_statements=0`): Python does not authorize a cached one
+        again, and a write it reused would leave `wrote` unset.
         """
+        if not self.routing and action not in ROWS and not (
+                action in READS and (arg2 or "").lower() != "load_extension"
+                or action == sqlite3.SQLITE_PRAGMA and arg2 is None):
+            # Anything not a read may write, in any database; `_commit`
+            # counts row writes itself. The hub's own statements run under
+            # `routing` and do not count.
+            self.wrote = True
         if action == sqlite3.SQLITE_TRANSACTION:
             # BEGIN, COMMIT and ROLLBACK run only as `_statement` routes
             # them, so a write transaction owns its id and records its row.
@@ -290,13 +316,6 @@ class Session(socketserver.BaseRequestHandler):
         finally:
             del self.traced[mark:]
 
-    def _changes(self, connection: sqlite3.Connection) -> tuple:
-        """Rows changed, and the schema and user versions: DDL and
-        `PRAGMA user_version` move no row but are writes all the same."""
-        return (connection.total_changes,
-                self._quiet(connection, "PRAGMA schema_version").fetchone()[0],
-                self._quiet(connection, "PRAGMA user_version").fetchone()[0])
-
     def _recorded(self, connection: sqlite3.Connection, rid: str) -> bool:
         return self._quiet(connection, "SELECT 1 FROM request_outcome WHERE id = ?", (rid,)).fetchone() is not None
 
@@ -329,6 +348,7 @@ class Session(socketserver.BaseRequestHandler):
             if not owners.admit(rid, self.number):
                 raise remote.RemoteError(f"refused: request id {rid} was used before; "
                                          f"a write transaction takes a new id")
+            self.wrote = False
             try:
                 with self._routed():
                     answer = _answer(connection, connection.execute(sql, params))
@@ -340,8 +360,7 @@ class Session(socketserver.BaseRequestHandler):
                     self._quiet(connection, "ROLLBACK")
                 owners.settle(rid)
                 raise
-            self.kind, self.rid = "write", rid
-            self.mark = self._changes(connection)
+            self.kind, self.rid, self.mark = "write", rid, connection.total_changes
         return answer
 
     def _begin_read(self, connection: sqlite3.Connection, rid, sql: str, params) -> dict:
@@ -384,7 +403,7 @@ class Session(socketserver.BaseRequestHandler):
                 # The row is looked for at each attempt, never remembered: a
                 # failed COMMIT leaves the transaction open, and a ROLLBACK TO
                 # may since have removed the row it inserted.
-                if self._changes(connection) != self.mark and not self._recorded(connection, rid):
+                if (self.wrote or connection.total_changes != self.mark) and not self._recorded(connection, rid):
                     self._quiet(connection, "INSERT INTO request_outcome (id, committed_at) VALUES (?, ?)",
                                 (rid, now()))
                     self.hidden += 1
@@ -414,7 +433,7 @@ class Session(socketserver.BaseRequestHandler):
                 owners.settle(self.rid)
         elif connection is not None:
             self._quiet(connection, f"PRAGMA query_only = {self.query_only}")
-        self.kind, self.rid, self.mark = None, None, ()
+        self.kind, self.rid = None, None
 
     def _adopt(self, connection: sqlite3.Connection) -> None:
         """Hold a transaction the hub did not open as a read.
@@ -516,6 +535,7 @@ class Session(socketserver.BaseRequestHandler):
                             target, write=bool(frame.get("write", True)),
                             create=bool(frame.get("create", False)),
                             busy_timeout=int(frame.get("busy_timeout", database.BUSY_TIMEOUT)),
+                            cached_statements=0,
                         )
                         connection.set_authorizer(self._authorize)
                         answer = _answer(connection, None)

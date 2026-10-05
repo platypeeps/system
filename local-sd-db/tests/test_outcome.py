@@ -714,6 +714,65 @@ class TheTransactionBoundary(OutcomeCase):
         self.assertEqual((count(self.path, "child"), count(self.path, "request_outcome")), (2, 2))
 
 
+class TheWrite(OutcomeCase):
+    """The third review of 2026-10-04: a write that moves no row and neither
+    of `main`'s versions still commits, so it needs its row. SQLite's
+    authorizer names every statement's action, for any database."""
+
+    def run_write(self, sql: str, op: str) -> str:
+        client = self.connect()
+        client.execute("BEGIN IMMEDIATE")
+        rid = client._rid
+        client.execute(sql)
+        TheTransactionBoundary.commit(client, op)
+        client.close()
+        return rid
+
+    def test_a_write_outside_the_row_count_and_mains_versions_records_its_row(self):
+        # `temp` stands in for an attached database: the session reaches it
+        # without ATTACH.
+        for sql in ("PRAGMA application_id = 123", "PRAGMA temp.user_version = 123",
+                    "CREATE TABLE temp.added (x)"):
+            for op in ("execute", "commit"):
+                with self.subTest(sql=sql, op=op):
+                    self.assertTrue(recorded(self.path, self.run_write(sql, op)))
+        raw = sqlite3.connect(self.path)
+        try:
+            self.assertEqual(raw.execute("PRAGMA application_id").fetchone()[0], 123)
+        finally:
+            raw.close()
+
+    def test_the_same_write_text_twice_records_two_rows(self):
+        # Python does not authorize a statement it reuses from its cache, and
+        # REINDEX moves no row, so only the authorizer sees it: the hub's
+        # session caches no statement.
+        raw = sqlite3.connect(self.path)
+        raw.execute("CREATE INDEX probe_name ON probe (name)")
+        raw.close()
+        client = self.connect()
+        rids = []
+        for _ in range(2):
+            client.execute("BEGIN IMMEDIATE")
+            rids.append(client._rid)
+            client.execute("REINDEX probe_name")
+            client.execute("COMMIT")
+        self.assertEqual([recorded(self.path, rid) for rid in rids], [True, True])
+
+    def test_a_transaction_that_only_reads_records_no_row(self):
+        for op in ("execute", "commit"):
+            with self.subTest(op=op):
+                client = self.connect()
+                client.execute("BEGIN IMMEDIATE")
+                rid = client._rid
+                client.execute("SELECT count(*) FROM probe").fetchall()
+                client.execute("PRAGMA user_version").fetchall()
+                client.execute("SAVEPOINT inner")
+                client.execute("RELEASE inner")
+                TheTransactionBoundary.commit(client, op)
+                self.assertFalse(recorded(self.path, rid))
+        self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
+
+
 CHILD = """
 import os, signal, sys, time
 from pathlib import Path
