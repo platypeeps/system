@@ -50,7 +50,8 @@ without the prune, so no row is ever deleted:
   nothing stays empty. Every other action that is not a read, in any
   database, counts as a write the moment the authorizer sees it
   prepared: DDL, a pragma that sets a value, ATTACH (the third review of
-  2026-10-04). A row too many says only that the transaction committed,
+  2026-10-04). A write to an attached database is refused: its COMMIT
+  would not be crash-atomic with the row in `main`. A row too many says only that the transaction committed,
   which it did. The server's row stays out of the session's
   `total_changes`. A `COMMIT` naming an R the session does not own is
   refused and not applied, and a write transaction's `COMMIT` without its
@@ -263,9 +264,15 @@ class Session(socketserver.BaseRequestHandler):
         `cached_statements=0`): Python does not authorize a cached one
         again, and a write it reused would leave `wrote` unset.
         """
-        if not self.routing and action not in ROWS and not (
-                action in READS and (arg2 or "").lower() != "load_extension"
-                or action == sqlite3.SQLITE_PRAGMA and arg2 is None):
+        read = (action in READS and (arg2 or "").lower() != "load_extension"
+                or action == sqlite3.SQLITE_PRAGMA and arg2 is None)
+        if not self.routing and not read and database_name not in (None, "main", "temp"):
+            # Under WAL a COMMIT that spans an attached database is not
+            # crash-atomic with `main`'s outcome row (the sixth finding of
+            # 2026-10-04), so a write reaches `main` or `temp` only. A read
+            # of an attached database stays allowed.
+            return self._deny(f"a write to attached database {database_name}; write to main only")
+        if not self.routing and action not in ROWS and not read:
             # Anything not a read may write, in any database; `_commit`
             # counts row writes itself. The hub's own statements run under
             # `routing` and do not count.
@@ -316,7 +323,9 @@ class Session(socketserver.BaseRequestHandler):
             del self.traced[mark:]
 
     def _recorded(self, connection: sqlite3.Connection, rid: str) -> bool:
-        return self._quiet(connection, "SELECT 1 FROM request_outcome WHERE id = ?", (rid,)).fetchone() is not None
+        # `main.`: a TEMP table of the same name would take the row (the
+        # fifth finding of 2026-10-04).
+        return self._quiet(connection, "SELECT 1 FROM main.request_outcome WHERE id = ?", (rid,)).fetchone() is not None
 
     def _statement(self, connection: sqlite3.Connection, frame: dict) -> dict:
         sql = frame["sql"]
@@ -403,7 +412,7 @@ class Session(socketserver.BaseRequestHandler):
                 # failed COMMIT leaves the transaction open, and a ROLLBACK TO
                 # may since have removed the row it inserted.
                 if (self.wrote or connection.total_changes != self.mark) and not self._recorded(connection, rid):
-                    self._quiet(connection, "INSERT INTO request_outcome (id, committed_at) VALUES (?, ?)",
+                    self._quiet(connection, "INSERT INTO main.request_outcome (id, committed_at) VALUES (?, ?)",
                                 (rid, now()))
                     self.hidden += 1
                 with self._routed():

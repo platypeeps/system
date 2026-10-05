@@ -742,8 +742,7 @@ class TheWrite(OutcomeCase):
         return rid
 
     def test_a_write_outside_the_row_count_and_mains_versions_records_its_row(self):
-        # `temp` stands in for an attached database: the session reaches it
-        # without ATTACH.
+        # `temp` is the one database besides `main` a write may reach.
         for sql in ("PRAGMA application_id = 123", "PRAGMA temp.user_version = 123",
                     "CREATE TABLE temp.added (x)"):
             for op in ("execute", "commit"):
@@ -784,6 +783,60 @@ class TheWrite(OutcomeCase):
                 TheTransactionBoundary.commit(client, op)
                 self.assertFalse(recorded(self.path, rid))
         self.assertEqual((count(self.path), count(self.path, "request_outcome")), (0, 0))
+
+    def test_a_temp_table_named_request_outcome_does_not_take_the_row(self):
+        # The fifth finding of 2026-10-04: an unqualified name finds a TEMP
+        # table first, so the row went there and `outcome(R)` read `absent`.
+        for op in ("execute", "commit"):
+            with self.subTest(op=op):
+                client = self.connect()
+                client.execute("CREATE TEMP TABLE request_outcome (id TEXT PRIMARY KEY, committed_at TEXT)")
+                client.execute("BEGIN IMMEDIATE")
+                rid = client._rid
+                # R in the TEMP table too: the commit's own lookup must not
+                # take it for the row.
+                client.execute("INSERT INTO temp.request_outcome VALUES (?, 'x')", (rid,))
+                client.execute("INSERT INTO probe (name) VALUES ('t')")
+                TheTransactionBoundary.commit(client, op)
+                client.execute("DROP TABLE temp.request_outcome")
+                self.assertEqual(client.outcome(rid), remote.RECORDED)
+                client.close()
+
+    def test_a_write_to_an_attached_database_is_refused(self):
+        # The sixth finding of 2026-10-04: under WAL a COMMIT that spans an
+        # attached database is not crash-atomic with `main`'s outcome row.
+        # A read of it stays allowed, and so does a write to `temp`.
+        aux = self.root / "aux.db"
+        raw = sqlite3.connect(aux)
+        raw.execute("CREATE TABLE t (x)")
+        raw.execute("INSERT INTO t VALUES (1)")
+        raw.commit()
+        raw.close()
+        for sql in ("INSERT INTO aux.t VALUES (2)", "UPDATE aux.t SET x = 3",
+                    "CREATE TABLE aux.added (x)", "PRAGMA aux.user_version = 7"):
+            for op in ("execute", "commit"):
+                with self.subTest(sql=sql, op=op):
+                    client = self.connect()
+                    client.execute("ATTACH DATABASE ? AS aux", (str(aux),))
+                    with self.assertRaisesRegex(remote.RemoteError, "write to attached database aux"):
+                        client.execute(sql)
+                    client.execute("BEGIN IMMEDIATE")
+                    rid = client._rid
+                    with self.assertRaisesRegex(remote.RemoteError, "write to attached database aux"):
+                        client.execute(sql)
+                    self.assertEqual([tuple(row) for row in client.execute("SELECT x FROM aux.t")], [(1,)])
+                    client.execute("CREATE TABLE temp.kept (x)")
+                    TheTransactionBoundary.commit(client, op)
+                    self.assertTrue(recorded(self.path, rid))
+                    client.close()
+        raw = sqlite3.connect(aux)
+        try:
+            self.assertEqual((raw.execute("SELECT x FROM t").fetchall(),
+                              raw.execute("PRAGMA user_version").fetchone()[0],
+                              raw.execute("SELECT name FROM sqlite_master").fetchall()),
+                             ([(1,)], 0, [("t",)]))
+        finally:
+            raw.close()
 
 
 CHILD = """
