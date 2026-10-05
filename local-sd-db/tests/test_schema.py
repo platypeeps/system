@@ -7,13 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sd_db import paths
+from sd_db import database, paths
 from sd_db import schema as schema_module
 from sd_db.database import connect, schema_version, set_schema_version, tables
 from sd_db.errors import SchemaTooNew, SchemaTooOld
 from sd_db.migrate import initialise, migrate
 from sd_db.schema import SCHEMA_VERSION, TABLES
-from sd_db.testing.wire import hub_only
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
@@ -426,9 +425,6 @@ class TheKindsForPersonalAndFollowupWork(SchemaCase):
     def _body(self):
         return dict(schema_module.migrations())[9].read_text(encoding="utf-8")
 
-    # The restore path, which runs on the hub: over the wire a script's BEGIN
-    # and COMMIT are refused.
-    @hub_only
     def test_a_replay_onto_the_shape_it_produces_changes_nothing(self):
         """`migrate` never replays a file, but the restore path does: a
         snapshot can carry the new shape while claiming the older version, and
@@ -436,7 +432,9 @@ class TheKindsForPersonalAndFollowupWork(SchemaCase):
         be a no-op, not a refusal."""
         self._at_version_eight()
         migrate(self.path)
-        connection = connect(self.path, write=True)
+        # Local, as the restore replays on the hub: over the wire a script's
+        # BEGIN and COMMIT are refused.
+        connection = database.open_local(self.path, write=True, create=False)
         self.addCleanup(connection.close)
         before = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'item'").fetchone()[0]
