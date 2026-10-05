@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sd_dashboard.ports_screen import port_rows, ports_panel
+from stubs import executable
 
 HERE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("ports_test_collectors", HERE / "collectors.py")
@@ -111,13 +112,12 @@ class PortInventory(unittest.TestCase):
         # prints what it printed for exactly these fixtures, per failure mode.
         self.machine = self.root / "local-machine-setup/machine-setup.sh"
         self.machine.parent.mkdir()
-        self.machine.write_text(f"#!{sys.executable}\n" +
+        executable(self.machine, f"#!{sys.executable}\n" +
             "import json, os, sys\n"
             "assert sys.argv[1:] == ['candidates', 'service'], sys.argv\n"
             f"recorded = json.loads({json.dumps(RECORDED_CANDIDATES)!r})\n"
             "mode = next((name for name in recorded if name and os.environ.get(name) == '1'), '')\n"
             "sys.stdout.write(recorded[mode])\n")
-        self.machine.chmod(0o755)
         (self.machine.parent / "profiles").mkdir()
         (self.machine.parent / "profiles/common.service").write_text("local-alpha\n")
         for name, ports in (("alpha", [9101, 9103]), ("beta", [9101, 9102]), ("empty", [])):
@@ -130,31 +130,28 @@ class PortInventory(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         docker = self.bin / "docker"
-        docker.write_text('#!/bin/sh\n[ "$1" = "ps" ] || exit 91\n'
+        executable(docker, '#!/bin/sh\n[ "$1" = "ps" ] || exit 91\n'
                           '[ "${PORT_TEST_DOCKER_FAIL:-}" != "1" ] || { echo "SECRET token" >&2; exit 1; }\n'
                           'printf "alpha\\n"\n')
-        docker.chmod(0o755)
         lsof = self.bin / "lsof"
         # One scan for the whole table (sd:756), as lsof prints it: 9101 is
         # held, the others are not. With PORT_TEST_LSOF_ERROR lsof also
         # reports an error, which keeps the listener and clears no port.
-        lsof.write_text(f"#!{sys.executable}\n" +
+        executable(lsof, f"#!{sys.executable}\n" +
             "import os, sys\n"
             "assert sys.argv[1:]==['-w','-nP','-iTCP','-sTCP:LISTEN']\n"
             "print('COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME')\n"
             "print('fixture-server 321 user 3u IPv4 1 0t0 TCP *:9101 (LISTEN)')\n"
             "if os.environ.get('PORT_TEST_LSOF_ERROR')=='1':\n"
             "    print('lsof error SECRET token',file=sys.stderr)\n")
-        lsof.chmod(0o755)
         # netstat agrees about 9101. With PORT_TEST_NETSTAT_HIDDEN it also
         # lists 9102, a listener lsof cannot see (another user's socket).
         netstat = self.bin / "netstat"
-        netstat.write_text('#!/bin/sh\n[ "$*" = "-an -p tcp" ] || exit 91\n'
+        executable(netstat, '#!/bin/sh\n[ "$*" = "-an -p tcp" ] || exit 91\n'
                            'echo "Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)"\n'
                            'echo "tcp4       0      0  *.9101                 *.*                    LISTEN"\n'
                            '[ "${PORT_TEST_NETSTAT_HIDDEN:-}" != "1" ] || '
                            'echo "tcp4       0      0  *.9102                 *.*                    LISTEN"\n')
-        netstat.chmod(0o755)
         self.environment = {"PATH": f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin",
                             "HOME": str(self.root), "MACHINE_SETUP_STATE": str(self.root / "state")}
 
@@ -428,16 +425,14 @@ class CollectionBudget(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         # An empty match, so a scan that stays inside the budget completes.
-        (self.bin / "lsof").write_text("#!/bin/sh\nexit 1\n")
-        (self.bin / "lsof").chmod(0o755)
+        executable(self.bin / "lsof", "#!/bin/sh\nexit 1\n")
         path = patch.dict(os.environ, {"PATH": f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin"})
         path.start()
         self.addCleanup(path.stop)
 
     def machine_setup(self, body):
         script = self.root / "machine-setup.sh"
-        script.write_text("#!/bin/sh\n" + body)
-        script.chmod(0o755)
+        executable(script, "#!/bin/sh\n" + body)
         self.module.MACHINE_SETUP = script
 
     def slow(self):
@@ -578,7 +573,7 @@ class CollectionBudget(unittest.TestCase):
                            "echo '  ---     1 startable, 1 in this profile'\n"
                            "echo '  add by hand: profiles/common.service'\n")
         finished = self.root / "lsof-finished"
-        (self.bin / "lsof").write_text(f'#!/bin/sh\nsleep 1\ntouch "{finished}"\nexit 1\n')
+        executable(self.bin / "lsof", f'#!/bin/sh\nsleep 1\ntouch "{finished}"\nexit 1\n')
         clock = ChargedClock()
         run = self.module.Budget.run
 
@@ -606,8 +601,7 @@ class CollectionBudget(unittest.TestCase):
         lines += [f"tcp4       0      0  *.{port}                 *.*                    LISTEN" for port in listen]
         table.write_text("\n".join(lines) + "\n")
         self.assertGreater(table.stat().st_size, 64 * 1024)
-        (self.bin / "netstat").write_text(f'#!/bin/sh\ncat "{table}"\n')
-        (self.bin / "netstat").chmod(0o755)
+        executable(self.bin / "netstat", f'#!/bin/sh\ncat "{table}"\n')
         self.machine_setup("echo '== service'\n"
                            "echo '  + local-alpha                      9000                                     stopped'\n"
                            "echo '  ---     1 startable, 1 in this profile'\n"
@@ -691,8 +685,7 @@ class TileUnderTheLoader(unittest.TestCase):
         self.pids = self.root / "pids"
         machine = self.root / "local-machine-setup/machine-setup.sh"
         machine.parent.mkdir()
-        machine.write_text(f'#!/bin/sh\necho $$ >> "{self.pids}"\nsleep 20 &\necho $! >> "{self.pids}"\nwait\n')
-        machine.chmod(0o755)
+        executable(machine, f'#!/bin/sh\necho $$ >> "{self.pids}"\nsleep 20 &\necho $! >> "{self.pids}"\nwait\n')
         self.addCleanup(self.reap)
 
     def reap(self):

@@ -38,6 +38,7 @@ from sd_db import reads, upsert_repo
 from sd_dashboard import health_collectors, health_screen, server, v2
 
 from support import NOW, ScreenCase
+from stubs import executable
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
@@ -312,8 +313,7 @@ class TheDocument(Collectors, ScreenCase):
         stub = Path(self.tmp.name) / "bin"
         stub.mkdir()
         # exec: the process the budget kills is the one holding the pipes.
-        (stub / "git").write_text("#!/bin/sh\nexec sleep 5\n")
-        (stub / "git").chmod(0o755)
+        executable(stub / "git", "#!/bin/sh\nexec sleep 5\n")
         for name in ("one", "two"):
             self.repo(f"/checkouts/{name}")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
@@ -426,8 +426,7 @@ class TheDocument(Collectors, ScreenCase):
     def test_a_slow_branch_walk_is_stopped_at_its_budget_and_is_the_branches_error(self):
         stub = Path(self.tmp.name) / "bin"
         stub.mkdir()
-        (stub / "git").write_text("#!/bin/sh\nexec sleep 5\n")
-        (stub / "git").chmod(0o755)
+        executable(stub / "git", "#!/bin/sh\nexec sleep 5\n")
         for name in ("one", "two"):
             self.repo(f"/checkouts/{name}")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
@@ -443,8 +442,7 @@ class TheDocument(Collectors, ScreenCase):
     def stub(self, name, body):
         stub = Path(self.tmp.name) / "bin"
         stub.mkdir(exist_ok=True)
-        (stub / name).write_text("#!/bin/sh\n" + body)
-        (stub / name).chmod(0o755)
+        executable(stub / name, "#!/bin/sh\n" + body)
         return stub
 
     DF = ("Filesystem 1024-blocks Used Available Capacity Mounted on\n"

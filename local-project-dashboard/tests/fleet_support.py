@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from support import ScreenCase
+from stubs import executable
 
 GIT = "/usr/bin/git"
 
@@ -92,8 +93,7 @@ class FleetCase(ScreenCase):
     def shim(self, name: str, body: str) -> Path:
         """A `name` on `PATH` ahead of the real one. `body` is the shell after `#!/bin/sh`."""
         script = self.bin / name
-        script.write_text(f"#!/bin/sh\n{body}\n")
-        script.chmod(0o755)
+        executable(script, f"#!/bin/sh\n{body}\n")
         return script
 
     def hanging(self, name: str, *, when: str = "", quiet: bool = False) -> Path:

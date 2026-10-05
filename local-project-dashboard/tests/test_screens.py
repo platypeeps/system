@@ -31,6 +31,7 @@ from sd_dashboard import server
 from sd_dashboard.server import NotFound, route
 
 from support import ScreenCase
+from stubs import executable
 
 
 def listing_content(page, name):
@@ -145,9 +146,8 @@ class Today(ScreenCase):
         stub.mkdir()
         # Only the trailer walk's first call stalls; the page's other git reads go to the real git.
         # exec: the process the budget kills is the one holding the pipes.
-        (stub / "git").write_text('#!/bin/sh\ncase "$*" in *"rev-parse --verify -q origin/HEAD"*) exec sleep 5;; esac\n'
+        executable(stub / "git", '#!/bin/sh\ncase "$*" in *"rev-parse --verify -q origin/HEAD"*) exec sleep 5;; esac\n'
                                   f'exec {shutil.which("git")} "$@"\n')
-        (stub / "git").chmod(0o755)
         for name in ("one", "two"):
             self.repo(f"/checkouts/{name}")
         with mock.patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \

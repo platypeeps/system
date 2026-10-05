@@ -28,6 +28,7 @@ from unittest.mock import patch
 
 import sd_tile
 from sd_dashboard import reports_screen
+from stubs import executable
 
 HERE = Path(__file__).resolve().parents[1]
 
@@ -92,8 +93,7 @@ class Nested(unittest.TestCase):
         self.pids = self.root / "pids"
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        (self.bin / "launchctl").write_text(LAUNCHCTL)
-        (self.bin / "launchctl").chmod(0o755)
+        executable(self.bin / "launchctl", LAUNCHCTL)
         self.addCleanup(self.reap)
 
     def reap(self):
@@ -145,8 +145,7 @@ class Nested(unittest.TestCase):
         # dashboard.sh and collectors.py read the checkout's shared config helpers.
         shutil.copytree(HERE.parent / "lib", dashboard.parent / "lib")
         python = self.root / "python"
-        python.write_text(RECORDING_PYTHON)
-        python.chmod(0o755)
+        executable(python, RECORDING_PYTHON)
         reached = self.root / "main"
         environment = {**self.environment(), "HOME": str(self.root), "DASHBOARD_PYTHON": str(python),
                        "DEADLINE_MAIN": str(reached)}

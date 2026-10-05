@@ -33,6 +33,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import sd_tile
+from stubs import executable
 
 HERE = Path(__file__).resolve().parents[1]
 
@@ -49,6 +50,8 @@ def collectors(environment):
 def answering(root, name, answer):
     """An 'interpreter' that answers the vault probe with `answer`, whatever it is asked."""
     script = root / name
+    # A file of its own, not `stubs.executable`: the report tells two
+    # interpreters apart by what their paths resolve to.
     script.write_text(f"#!/bin/sh\necho {answer}\n")
     script.chmod(0o755)
     return script
@@ -284,8 +287,7 @@ class Control(unittest.TestCase):
         # failure a broken control gives, and no evidence anyone was kept out.
         (self.root / "vault").mkdir()
         loud = self.root / "loud"
-        loud.write_text("#!/bin/sh\necho 'ls: something else entirely' >&2\nexit 1\n")
-        loud.chmod(0o755)
+        executable(loud, "#!/bin/sh\necho 'ls: something else entirely' >&2\nexit 1\n")
         with patch.object(self.module, "VAULT_CONTROL", str(loud)):
             self.assertEqual(self.module.control_listing(), "")
 
@@ -298,11 +300,10 @@ class Control(unittest.TestCase):
         # classifier called it '' -- inconclusive, exit 3, on a real refusal.
         (self.root / "vault").mkdir()
         speaks = self.root / "speaks"
-        speaks.write_text('#!/bin/sh\ncase "$LC_ALL" in\n'
+        executable(speaks, '#!/bin/sh\ncase "$LC_ALL" in\n'
                           'C) echo "ls: vault: Permission denied" >&2 ;;\n'
                           '*) echo "ls: vault: Permission non accordee" >&2 ;;\n'
                           'esac\nexit 1\n')
-        speaks.chmod(0o755)
         with patch.dict(os.environ, {"LC_ALL": "fr_FR.UTF-8"}), \
                 patch.object(self.module, "VAULT_CONTROL", str(speaks)):
             self.assertEqual(self.module.control_listing(), "refused")
@@ -329,8 +330,7 @@ class Control(unittest.TestCase):
         (self.root / "vault").mkdir()
         pids = self.root / "pids"
         slow = self.root / "slow"
-        slow.write_text(f'#!/bin/sh\nsleep 60 &\necho $! > "{pids}"\nwait\n')
-        slow.chmod(0o755)
+        executable(slow, f'#!/bin/sh\nsleep 60 &\necho $! > "{pids}"\nwait\n')
         started = time.monotonic()
         with patch.object(self.module, "VAULT_CONTROL", str(slow)):
             self.assertEqual(self.module.control_listing(timeout=1), "waited")
@@ -416,8 +416,7 @@ class ThroughTheScript(unittest.TestCase):
         exit -- is the shipped path.
         """
         wedged = self.root / "wedged-control"
-        wedged.write_text("#!/bin/sh\nsleep 600\n")
-        wedged.chmod(0o755)
+        executable(wedged, "#!/bin/sh\nsleep 600\n")
         source = self.dashboard / "collectors.py"
         text = source.read_text()
         for was, now in (('VAULT_CONTROL = "/bin/ls"', f'VAULT_CONTROL = "{wedged}"'),
