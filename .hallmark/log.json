@@ -1,0 +1,15 @@
+[
+  {
+    "date": "2026-10-05",
+    "artifact": "local-project-dashboard/sd_dashboard/v2/reports.html (static/reports.js, reports.css; shared shell.css, shell.js)",
+    "scope": "page",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "operations list: annunciator strip, cadence grid, filter row, sortable ledger with numbered pages",
+    "nav": "shell rail (shared by every v2 page)",
+    "footer": "none (shell status line)",
+    "changes": "sd:2530 lamp hover is an inset ring in the lamp's ink token, not filter: brightness; sd:2527 sortable headers; sd:2528 numbered pager; sd:2529 active filter chips",
+    "constraints": "no build step; CSP default-src 'self', so no inline style or script",
+    "critique": "P4 H4 E4 S4 R5 V3"
+  }
+]

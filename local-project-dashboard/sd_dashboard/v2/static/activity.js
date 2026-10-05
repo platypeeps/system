@@ -39,20 +39,7 @@ addEventListener('DOMContentLoaded', () => {
     const src = SOURCES[k] || [];
     return src.length && src.every(s => DOC.sources[s]) ? src.map(s => DOC.sources[s]).join('; ') : '';
   };
-  const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; throw e; }
-    return out;
-  }
-  async function getJSON(path) {
-    const r = await fetch(path, { headers: { Accept: 'application/json' } });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
-    return out;
-  }
-  // build: the reader (read.js, sd:2418; adopted by sd:2489) holds the guards. Of overlapping reads only the newest draws;
+    // build: the reader (read.js, sd:2418; adopted by sd:2489) holds the guards. Of overlapping reads only the newest draws;
   // an event the read no longer lists loses its pick and runs no command; a failed load leaves no row, object or observed
   // time from the last one; and a failed reread after a write keeps the rows and says the write landed.
   const activity = window.shell.read({
@@ -353,7 +340,7 @@ addEventListener('DOMContentLoaded', () => {
   // build: "Open item" goes to the item on Tasks, by the shell's section map (no page names another page's address).
   const openItem = item => { const to = window.shell.pages?.Tasks; if (!to) return 'Tasks is not built yet'; location.href = `${to}?row=${item}`; return `sd:${item} opens in Tasks`; };
   const open = u => { window.open(u, '_blank', 'noopener'); return 'Opens in a new tab'; };
-  const requeue = o => post(`/api/runner/${o.n}/requeue`, { revision: ev(o).revision }).then(out => reread().then(() => out));
+  const requeue = o => window.shell.post(`/api/runner/${o.n}/requeue`, { revision: ev(o).revision }).then(out => reread().then(() => out));
   C.register(
     { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
     { id: 'pr.item', on: 'pull request', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
@@ -376,7 +363,7 @@ addEventListener('DOMContentLoaded', () => {
       when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).exit === 127 ? 'exit 127: command not found; fix the path first'
         : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: o => landing(post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => reread()), () => `Retry started · ${o.job}`) },
+      run: o => landing(window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => reread()), () => `Retry started · ${o.job}`) },
     // build: Management is not built, so the log is a line to copy.
     { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => `Copy the line to read the log of ${o.job}` },
     // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
@@ -387,7 +374,7 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'command.item', on: 'command', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
   );
   // Undo cancels the queued run with the revision the requeue answered, then reads the document again.
-  const undoRequeue = (o, out) => post(`/api/runner/${o.n}/cancel`, { revision: out.revision }).then(() => reread());
+  const undoRequeue = (o, out) => window.shell.post(`/api/runner/${o.n}/cancel`, { revision: out.revision }).then(() => reread());
   // read_execution answers at most 64 KiB a read (sd:2416): a full page means more follows at next_offset, up to the
   // 2 MiB it keeps of an output.
   const OUTPUT_PAGE = 65536, OUTPUT_MAX = 2 * 1024 * 1024;
@@ -395,7 +382,7 @@ addEventListener('DOMContentLoaded', () => {
     try {
       let offset = 0, text = '', out;
       for (;;) {
-        out = await getJSON(`/api/executions/${o.note}?offset=${offset}`);
+        out = await window.shell.getJSON(`/api/executions/${o.note}?offset=${offset}`);
         text += out.output || '';
         const full = out.next_offset - offset === OUTPUT_PAGE;
         offset = out.next_offset;

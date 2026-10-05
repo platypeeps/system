@@ -1,39 +1,9 @@
 """Assignment controls rendered from shared runner readiness and ownership."""
 
-from sd_db import runner, runner_controls, skills_catalog, workflow
+from sd_db import runner, runner_controls
 
 from .controls import field, form, select
 from .markup import join, tag
-
-
-def selection(connection, rows, *, skill=None, selected=frozenset()):
-    choices = []
-    for row in rows:
-        ready = runner_controls.readiness(connection, row["id"])
-        identifier = f"run-item-{row['id']}"
-        choices.append(tag("label", tag("input", type="checkbox", name="items", value=str(row["id"]),
-            checked=str(row["id"]) in selected, data_item_revision=ready["revision"], disabled=not ready["allowed"], id=identifier),
-            f" #{row['id']} · {row['title']}",
-            tag("span", " · " + ready["reason"], class_="hint") if ready["reason"] else "",
-            for_=identifier, class_="selection-option"))
-    if not choices:
-        return ""
-    extra = []
-    if skill:
-        try:
-            _, selected, _ = skills_catalog._selected(connection, skill)
-            extra = [tag("p", "Use " + skill + " for this selection."),
-                     tag("input", type="hidden", name="skill", value=skill),
-                     tag("input", type="hidden", name="skill_revision", value=selected["revision"])]
-        except (workflow.WorkflowError, OSError, ValueError) as error:
-            return tag("p", str(error), class_="notice")
-    return tag("details", tag("summary", "Run selected items"),
-        tag("p", "Select from the items on this page. Each needs a registered repository and an item branch. Save a new name on its item page to create it from the verified remote default branch in an isolated checkout.", class_="hint"),
-        form("/api/run", join(extra), join(choices),
-            select("Run mode", "mode", [("sequential", "Sequential — wait for each delivery"), ("parallel", "Parallel — independent branches")]),
-            field("Time limit per assignment (minutes)", "budget_minutes", "90", type="number", min="1", max="1440"),
-            field("Budget per assignment (USD, optional)", "budget_usd", "", type="number", min="0", step="0.01"),
-            label="Run selected", command="sd run --sequential ITEM_IDS"), class_="run-selection control-panel", open=bool(skill), data_skill=skill)
 
 
 def assignment_controls(assignment):
@@ -82,7 +52,6 @@ def item_controls(connection, row):
                 label="Save run setup", command=f"sd runner prepare {row['id']} --branch BRANCH", revision=ready["revision"])))
     if ready["allowed"]:
         body.append(form("/api/run", tag("input", type="hidden", name="items", value=str(row["id"]), data_item_revision=ready["revision"]),
-            tag("input", type="hidden", name="mode", value="sequential"),
             field("Time limit (minutes)", "budget_minutes", "90", type="number", id="item-budget", min="1", max="1440"),
             field("Budget (USD, optional)", "budget_usd", "", type="number", id="item-budget-usd", min="0", step="0.01"),
             label="Queue assignment", command=f"sd run --sequential {row['id']}"))

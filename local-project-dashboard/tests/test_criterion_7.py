@@ -13,8 +13,8 @@ nowhere else:
   `localActions` in `dashboard.js` from `main [data-workflow-form][data-cli]`,
   so it posts the same route -- the registered-command palette
   (`commands.yaml`) carries no status command of its own;
-* the **board** is a view: `_board` in `screens.py` renders cards that link
-  to the item, with no drag handler in `dashboard.js` and no form;
+* the **board** was a view on the classic Backlog, deleted with it in
+  sd:2622; `dashboard.js` still carries no drag handler;
 * a **bulk action** is a `BulkAction` in `listing.py`, and no section
   constructs one, so no bulk status write exists.
 
@@ -120,12 +120,8 @@ class Criterion7(BrowserSession):
         self.assertEqual(len(calls), 1, "one route writes a status, and the palette's entry reaches it")
         self.assertRegex(self.refused("done"), r"delivery|merge")
 
-    def test_7_17_the_board_and_the_bulk_actions_have_no_status_write(self):
-        status, _, board = self.request("/classic/backlog?view=board")
-        self.assertEqual(status, 200)
-        self.assertIn(f'href="/item/{self.work}"', board, "the card is on the board")
-        self.assertEqual(self.status_forms(board), [])
-        self.assertNotIn("draggable", board)
+    def test_7_17_no_drag_and_no_bulk_action_writes_a_status(self):
+        # v1's board went with the classic Backlog (sd:2622); the script it loaded still has no drag.
         script = (STATIC / "dashboard.js").read_text(encoding="utf-8")
         self.assertNotRegex(script, r"dragstart|dragend|ondrop|\.drop\b|draggable")
         # A bulk action exists only where a section constructs one, and none does.
