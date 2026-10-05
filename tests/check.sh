@@ -14,6 +14,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 PIN_FILE="$ROOT/.sd-pack-rev"
 PACK_URL="${CI_PACK_URL:-https://github.com/platypeeps/sd-ai-command-pack.git}"
+PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 LEGS="shared dashboard runner tools"
 TOOLS_SHARDS=3
 
@@ -27,11 +28,14 @@ Usage: check.sh run
   legs  print the leg names
 
 Environment:
-  CI_PACK_URL  where to fetch the pinned command pack from
-               (default: https://github.com/platypeeps/sd-ai-command-pack.git)
+  SD_PACK_ROOT       the machine's clone of the command pack; the pinned
+                     commit is fetched from it when it holds that commit
+                     (default: ~/repos/platypeeps/sd-ai-command-pack)
+  CI_PACK_URL        where to fetch the pinned command pack from otherwise
+                     (default: https://github.com/platypeeps/sd-ai-command-pack.git)
 
 `make check` runs `check.sh run`. It needs python3.14, git, sqlite3, lsof,
-ps and rsync on PATH, and network access the first time it fetches the pack.
+ps and rsync on PATH, and network access when no local clone holds the pin.
 USAGE
 }
 
@@ -84,9 +88,16 @@ chmod +x "$env_dir/bin/launchctl"
 
 pack="$env_dir/pack"
 if [ "$(git -C "$pack" rev-parse -q --verify HEAD 2>/dev/null)" != "$pin" ]; then
+  # sd:2720: a gate runs in a fresh worktree, so this fetch ran in every
+  # gate. The machine's own clone answers it when it holds the pin.
+  source="$PACK_URL"
+  if git -C "$PACK_CLONE" cat-file -e "$pin^{commit}" 2>/dev/null; then
+    source="$PACK_CLONE"
+  fi
+  echo "check.sh: fetching the pack from $source"
   rm -rf "$pack"
   git init -q "$pack"
-  git -C "$pack" fetch -q --depth 1 "$PACK_URL" "$pin"
+  git -C "$pack" fetch -q --depth 1 "$source" "$pin"
   git -C "$pack" -c advice.detachedHead=false checkout -q FETCH_HEAD
 fi
 echo "check.sh: pack $pin, $("$python" --version)"
