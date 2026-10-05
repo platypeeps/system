@@ -1,12 +1,11 @@
 """The hub half: serve one database to `sd_db.remote` connections.
 
-    python -m sd_db.serve --loopback [--port N] [--database PATH]
+    python -m sd_db.serve [--loopback] [--port N] [--database PATH]
 
-Step 2 of `docs/work/2026-09-22-run-the-framework-from-a-second-machine/`:
-bound to 127.0.0.1 only. Each session is one TCP
-connection and one hub-side connection from the library's own local open,
-so a remote statement meets the same pragmas, the same version refusals and
-the same SQLite write lock as a local one.
+Steps 2 and 7 of `docs/work/2026-09-22-run-the-framework-from-a-second-machine/`.
+Each session is one TCP connection and one hub-side connection from the
+library's own local open, so a remote statement meets the same pragmas, the
+same version refusals and the same SQLite write lock as a local one.
 
 One server per file. The server takes `<database>.serve.lock` beside it
 through `runner_journal.lock` before it listens, and a second server over the
@@ -14,21 +13,30 @@ same file exits non-zero naming the lock. Ownership of a request id (step 5)
 lives in the server's memory, so two servers over one file would be two
 registries.
 
-Loopback is not a user boundary: every local account reaches 127.0.0.1.
-The server writes a fresh token to `<database>.serve.token` beside it, mode
-0600, and refuses an `open` frame without it. A client that sends it could
-read the owner's file, so it runs as the owner or as root.
+Two listeners, one per run:
+
+* `--loopback` binds 127.0.0.1. Loopback is not a user boundary: every
+  local account reaches it. The server writes a fresh token to
+  `<database>.serve.token` beside it, mode 0600, and refuses an `open` frame
+  without it. A client that sends it could read the owner's file, so it
+  runs as the owner or as root.
+* Without it, the server binds this node's Tailscale IPv4 address and
+  carries no token (R7). It admits a session by its TCP peer, through
+  `sd_db.tailnet`: the rules the dashboard's direct listener uses. A tagged
+  or expired node, a login other than this node's owner, and this node's
+  own addresses are refused before anything opens (R8, criterion 6). The
+  last one closes the hub's second-account path: `whois` names a node's
+  owner, not the account that dialed (design, Q3 = A).
 
 The `open` frame carries the client's build (step 3): its protocol version,
 its package version and its `SCHEMA_VERSION`. The server refuses any
 difference from its own with `sd_db.remote.BuildMismatch`, naming the side
 to upgrade, before it opens the file.
 
-A session may name the file it opens. That is what lets the library's
-suite, which builds a database per test, run over the wire; behind the
-token it grants nothing the owner's own processes lack. Step 7, which binds
-the tailnet address, serves the hub's own database and nothing else to a
-peer.
+A loopback session may name the file it opens. That is what lets the
+library's suite, which builds a database per test, run over the wire;
+behind the token it grants nothing the owner's own processes lack. A
+tailnet session opens the served database and nothing else.
 
 The server logs, per write transaction, the longest gap between two frames
 inside it, and on exit the longest across the run (gap (g) of the design).
@@ -80,6 +88,12 @@ without the prune, so no row is ever deleted:
 - A session silent for `IDLE_TIMEOUT` inside an open transaction is closed,
   which rolls it back: below `database.BUSY_TIMEOUT`, so a hub writer
   waiting behind an abandoned satellite gets the lock (gap (g)).
+
+Step 7 keeps a session's SQL inside the served file, in the same
+authorizer. Besides ATTACH it refuses every VACUUM (SQLite authorizes one as
+the ATTACH it runs), `load_extension`, and any PRAGMA off `PRAGMAS`, or off
+`PRAGMAS_WITH_ARGUMENT` when it gives a value. A refusal goes back as
+`remote.StatementRefused`, is logged, and the session keeps serving.
 """
 
 from __future__ import annotations
@@ -98,7 +112,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import database, remote
+from . import database, remote, tailnet
 from .runner import RunnerRefused
 from .runner_journal import lock
 from .writes import now
@@ -108,6 +122,37 @@ LOOPBACK = "127.0.0.1"
 #: database, so two files in one folder are served side by side.
 LOCK_SUFFIX = ".serve.lock"
 TOKEN_SUFFIX = ".serve.token"
+#: The largest first frame a session may send. An `open` frame is a few
+#: hundred bytes, and a peer not yet admitted gets no larger allocation.
+OPEN_LIMIT = 64 * 1024
+
+
+class PeerRefused(remote.RemoteError):
+    """The session's TCP peer is not one this listener admits. Nothing opened."""
+
+
+#: The PRAGMAs a session may run, from a grep for `PRAGMA` across
+#: `local-sd-db/sd_db`, `local-sd-runner` and `local-project-dashboard`
+#: (2026-10-04, step 7's review); the command pack's `bin/` names none.
+#: `foreign_key_list` is the table-valued `pragma_foreign_key_list` in
+#: `removal`. `page_count` is the one the `serialize` op runs inside
+#: SQLite. `writable_schema` is read only, to see a migration left it off.
+#: Every other PRAGMA is refused, its setting form above all.
+PRAGMAS = frozenset({
+    "busy_timeout", "data_version", "database_list", "foreign_key_check", "foreign_key_list",
+    "foreign_keys", "index_info", "index_list", "integrity_check", "journal_mode", "page_count",
+    "query_only", "table_info", "user_version", "writable_schema",
+})
+#: Those a session may give an argument: a table to describe, or a setting
+#: of its own connection. Setting `journal_mode` or `user_version` changes
+#: the file for every reader, so a session reads them only. `query_only`
+#: is the session's outside a transaction the hub holds (`Session._authorize`).
+PRAGMAS_WITH_ARGUMENT = frozenset({
+    "busy_timeout", "foreign_key_check", "foreign_key_list", "foreign_keys", "index_info",
+    "index_list", "integrity_check", "query_only", "table_info",
+})
+
+
 #: Seconds a session may stay silent inside an open transaction before the
 #: server closes it, which rolls it back. Below `database.BUSY_TIMEOUT`
 #: (5 s): a hub writer that starts waiting when a satellite goes silent gets
@@ -270,8 +315,20 @@ class Session(socketserver.BaseRequestHandler):
             # crash-atomic with `main`'s outcome row, and a TEMP trigger can
             # write one under the hub's own statements (the sixth and seventh
             # findings of 2026-10-04). Refused whoever runs it: with nothing
-            # attached, no path writes outside `main` and `temp`.
-            return self._deny("ATTACH over the wire; the hub serves its own database only")
+            # attached, no path writes outside `main` and `temp`. SQLite
+            # authorizes every VACUUM as the ATTACH it runs first, so
+            # `VACUUM INTO` a file, and a bare VACUUM, end here too (step 7).
+            return self._deny(f"ATTACH or VACUUM would open {arg1 or 'a temporary file'} as the hub; "
+                              f"the hub serves its own database only")
+        if action == sqlite3.SQLITE_PRAGMA and (arg1 or "").lower() not in (
+                PRAGMAS if arg2 is None else PRAGMAS_WITH_ARGUMENT):
+            # A pragma off the allowlist could rewrite the schema, the
+            # file's header or its journal for every reader (step 7).
+            shown = f"PRAGMA {(arg1 or '').lower()}" + ("" if arg2 is None else f"({arg2})")
+            return self._deny(f"{shown} is not served over the wire")
+        if action == sqlite3.SQLITE_FUNCTION and (arg2 or "").lower() == "load_extension":
+            # Off on the connection already; refused by name all the same.
+            return self._deny("load_extension is not served over the wire")
         if not self.routing and action not in ROWS and not (
                 action in READS and (arg2 or "").lower() != "load_extension"
                 or action == sqlite3.SQLITE_PRAGMA and arg2 is None):
@@ -489,12 +546,15 @@ class Session(socketserver.BaseRequestHandler):
                 idle = connection is not None and connection.in_transaction
                 sock.settimeout(server.idle_timeout if idle else None)
                 try:
-                    frame = remote.read_frame(sock)
+                    frame = remote.read_frame(sock, limit=OPEN_LIMIT if connection is None else remote.MAX_FRAME)
                 except TimeoutError:
                     server.log.line(f"session {self.number} silent {server.idle_timeout:g} s inside a "
                                     f"transaction; closed and rolled back")
                     return
                 except (EOFError, OSError):
+                    return
+                except remote.RemoteError as error:
+                    server.log.line(f"session {self.number} dropped: {error}")
                     return
                 sock.settimeout(None)
                 received = time.monotonic()
@@ -505,6 +565,7 @@ class Session(socketserver.BaseRequestHandler):
                     if received - last_answer >= gap:
                         gap = received - last_answer
                         gap_before = _brief(frame)
+                hang_up = False
                 try:
                     op = frame.get("op")
                     opening = connection is None and op == "open"
@@ -520,14 +581,7 @@ class Session(socketserver.BaseRequestHandler):
                     if connection is None:
                         if op != "open":
                             raise remote.RemoteError(f"the first frame must be open, not {op!r}")
-                        # Loopback is not a user boundary: another local
-                        # account reaches 127.0.0.1 too. The token file is
-                        # owner-only, so a client that read it is the owner.
-                        if not server.token or not hmac.compare_digest(str(frame.get("token") or ""), server.token):
-                            raise remote.RemoteError(
-                                f"refused: the open frame lacks this server's token; read it from "
-                                f"{server.token_file}"
-                            )
+                        server.admit(self.client_address, frame, self.number)
                         # Step 3: the same build on both sides, or nothing
                         # opens. The file's schema is still checked against
                         # this library by `open_local` below; this checks the
@@ -636,12 +690,14 @@ class Session(socketserver.BaseRequestHandler):
                 except Exception as error:  # every failure goes back as a frame
                     if self.denied is not None:
                         # SQLite says only "not authorized"; `_authorize` said why.
-                        error = remote.RemoteError(self.denied)
+                        error = remote.StatementRefused(self.denied)
+                        server.log.line(f"session {self.number} {error}")
                     answer = {"ok": False, "error": remote.describe_error(error)}
                     if connection is not None:
                         answer["in_transaction"] = connection.in_transaction
-                    elif isinstance(error, (remote.BuildMismatch, remote.HubRestartNeeded)):
+                    elif isinstance(error, (remote.BuildMismatch, remote.HubRestartNeeded, PeerRefused)):
                         server.log.line(f"session {self.number} refused before open: {error}")
+                        hang_up = isinstance(error, PeerRefused)
                 if connection is not None:
                     # A ROLLBACK, or a transaction SQLite ended on an error.
                     self._settle(connection)
@@ -669,6 +725,9 @@ class Session(socketserver.BaseRequestHandler):
                         return
                 except OSError:
                     return
+                if hang_up:
+                    # A refused peer gets one answer, not a second try.
+                    return
                 last_answer = time.monotonic()
         finally:
             if connection is not None:
@@ -681,18 +740,63 @@ class Session(socketserver.BaseRequestHandler):
 
 
 class Server(socketserver.ThreadingTCPServer):
+    """One listener. `node` is `None` on loopback, where the token admits a
+    session; on the tailnet it is this node, and the peer admits it."""
+
     daemon_threads = True
     allow_reuse_address = True
 
     def __init__(self, port: int, database_path: Path, log: Log, token: str, token_file: Path,
-                 idle_timeout: float = IDLE_TIMEOUT) -> None:
+                 node: tailnet.Node | None = None, idle_timeout: float = IDLE_TIMEOUT) -> None:
         self.database = database_path
         self.log = log
         self.token = token
         self.token_file = token_file
+        self.node = node
         self.idle_timeout = idle_timeout
         self.owners = Owners()
-        super().__init__((LOOPBACK, port), Session)
+        super().__init__((LOOPBACK if node is None else str(node.address), port), Session)
+
+    def admit(self, peer, frame: dict, session: int = 0) -> None:
+        """Refuse a session before anything opens, and before any SQL runs."""
+        if self.node is None:
+            # Loopback is not a user boundary: another local account reaches
+            # 127.0.0.1 too. The token file is owner-only, so a client that
+            # read it is the owner.
+            if not self.token or not hmac.compare_digest(str(frame.get("token") or ""), self.token):
+                raise remote.RemoteError(
+                    f"refused: the open frame lacks this server's token; read it from "
+                    f"{self.token_file}"
+                )
+            return
+        refusal = self.refusal(peer, frame)
+        shown = f"{peer[0]}:{peer[1]}" if isinstance(peer, tuple) and len(peer) == 2 else repr(peer)
+        if refusal is not None:
+            raise PeerRefused(f"refused the peer {shown}: {refusal}; this hub admits only "
+                              f"{self.node.login}'s untagged nodes")
+        self.log.line(f"session {session} admitted {self.node.login} from {shown}")
+
+    def refusal(self, peer, frame: dict) -> str | None:
+        """Why the tailnet listener refuses this peer, or `None`. Order matters:
+        the hub's own address is refused before `whois`, which would name the
+        operator for any account on this machine."""
+        found = tailnet.peer_address(peer)
+        if found is None:
+            return "not a Tailscale IPv4 address"
+        if found[0] in self.node.addresses:
+            return ("it is this hub's own Tailscale address, which any account on the hub can dial; "
+                    "a process on the hub opens the database directly")
+        try:
+            identity = tailnet.whois(peer)
+        except tailnet.TailnetError as error:
+            return str(error)
+        if identity.refusal is not None:
+            return identity.refusal
+        if identity.login != self.node.login:
+            return f"the login {identity.login} is not this hub's operator"
+        if frame.get("path") is not None:
+            return "a tailnet session opens the hub's own database, and names no path"
+        return None
 
 
 def _write_token(path: Path) -> str:
@@ -710,7 +814,7 @@ def read_token(path: Path) -> str:
     return Path(path).read_text().strip()
 
 
-def serve(port: int, database_path: Path, stream=sys.stderr) -> int:
+def serve(port: int, database_path: Path, stream=sys.stderr, *, loopback: bool = True) -> int:
     log = Log(stream)
     # Resolved, so the log names the file itself and not a link to it (gap (h)).
     target = database_path.expanduser().resolve()
@@ -719,6 +823,13 @@ def serve(port: int, database_path: Path, stream=sys.stderr) -> int:
         # than serve a second, empty database (gap (h)).
         log.line(f"no database at {target}; run `local-sd-db/sd-db.sh init`")
         return 1
+    node = None
+    if not loopback:
+        try:
+            node = tailnet.this_node()
+        except tailnet.TailnetError as error:
+            log.line(f"cannot serve on the tailnet: {error}")
+            return 1
     resolved = target.resolve()
     guard = resolved.with_name(resolved.name + LOCK_SUFFIX)
     token_file = resolved.with_name(resolved.name + TOKEN_SUFFIX)
@@ -726,18 +837,25 @@ def serve(port: int, database_path: Path, stream=sys.stderr) -> int:
         with lock(guard, blocking=False, noun="serve",
                   held=f"another server owns this database: {guard}"):
             # Bind before the token exists, so a refused port leaves no token.
+            address = LOOPBACK if node is None else str(node.address)
             try:
-                server = Server(port, target, log, "", token_file)
+                server = Server(port, target, log, "", token_file, node)
             except OSError as error:
-                log.line(f"cannot listen on {LOOPBACK}:{port}: {error.strerror or error}")
+                log.line(f"cannot listen on {address}:{port}: {error.strerror or error}")
                 return 1
             try:
                 # The build this process loaded, taken before any session
                 # can ask for it (sd:1480).
                 remote.build_digest()
-                server.token = _write_token(token_file)
                 host, bound = server.server_address[:2]
-                log.line(f"serving {target} on {host}:{bound}; token in {token_file}")
+                if node is None:
+                    server.token = _write_token(token_file)
+                    log.line(f"serving {target} on {host}:{bound}; token in {token_file}")
+                else:
+                    # No token on the tailnet (R7): the peer is the credential.
+                    own = ", ".join(sorted(str(value) for value in node.addresses))
+                    log.line(f"serving {target} on {host}:{bound} to {node.login}'s untagged nodes; "
+                             f"refusing this node's own addresses ({own})")
 
                 def stop(signum, _frame):
                     threading.Thread(target=server.shutdown, daemon=True).start()
@@ -747,7 +865,8 @@ def serve(port: int, database_path: Path, stream=sys.stderr) -> int:
                 server.serve_forever(poll_interval=0.2)
             finally:
                 server.server_close()
-                token_file.unlink(missing_ok=True)
+                if node is None:
+                    token_file.unlink(missing_ok=True)
                 log.line(log.summary())
     except RunnerRefused as refused:
         log.line(str(refused))
@@ -758,17 +877,14 @@ def serve(port: int, database_path: Path, stream=sys.stderr) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sd-db.sh serve")
     parser.add_argument("--loopback", action="store_true",
-                        help="bind 127.0.0.1; the only binding until peer identity lands")
+                        help="bind 127.0.0.1 and admit by the owner-only token; without it, bind "
+                             "this node's Tailscale IPv4 address and admit by `tailscale whois`")
     parser.add_argument("--port", type=int, default=8769)
     parser.add_argument("--database", type=Path, default=None)
     arguments = parser.parse_args(argv)
-    if not arguments.loopback:
-        print("sd-db serve: pass --loopback; serving another address waits for peer identity "
-              "(step 7 of the second-machine plan)", file=sys.stderr)
-        return 1
     # The file on this machine, never the hub-aware default: a server does
     # not serve what it would reach through `hub.json`.
-    return serve(arguments.port, arguments.database or database.local_path())
+    return serve(arguments.port, arguments.database or database.local_path(), loopback=arguments.loopback)
 
 
 if __name__ == "__main__":

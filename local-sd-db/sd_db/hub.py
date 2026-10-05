@@ -24,9 +24,10 @@ An explicit path other than the default is opened locally, as before: the
 Jev meter's own file, a backup target and a test's fixture are not the
 record, and the hub does not hold them.
 
-`token_file` is for loopback only, until step 7 authenticates the peer by
-its tailnet identity: `sd-db.sh serve --loopback` refuses a session without
-the token it wrote beside its database.
+`token_file` is for loopback only: `sd-db.sh serve --loopback` refuses a
+session without the token it wrote beside its database. A hub on the
+tailnet carries no token; it admits the session by its peer's Tailscale
+identity (step 7), so a satellite's `hub.json` names no `token_file`.
 """
 
 from __future__ import annotations

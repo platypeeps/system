@@ -484,12 +484,13 @@ class TheOwnership(OutcomeCase):
         self.assertEqual((count(self.path, "request_outcome"), client.total_changes), (1, before + 1))
 
     def test_a_write_that_moves_no_row_is_still_recorded(self):
-        # DDL and `user_version` change no row; they are writes all the same.
+        # DDL changes no row; it is a write all the same. Setting
+        # `user_version` is refused over the wire (step 7), so DROP stands in.
         client = self.connect()
         with transaction(client):
             client.execute("CREATE TABLE extra (x)")
         with transaction(client):
-            client.execute("PRAGMA user_version = 99")
+            client.execute("DROP TABLE extra")
         self.assertEqual(count(self.path, "request_outcome"), 2)
 
     def test_request_ids_are_ulids_that_order_by_time(self):
@@ -742,17 +743,13 @@ class TheWrite(OutcomeCase):
         return rid
 
     def test_a_write_outside_the_row_count_and_mains_versions_records_its_row(self):
-        # `temp` is the one database besides `main` a write may reach.
-        for sql in ("PRAGMA application_id = 123", "PRAGMA temp.user_version = 123",
-                    "CREATE TABLE temp.added (x)"):
+        # `temp` is the one database besides `main` a write may reach. A
+        # pragma that sets a header field is refused over the wire (step 7),
+        # so DDL in `temp` stands for it.
+        for sql in ("CREATE TABLE temp.added (x)", "CREATE VIEW temp.seen AS SELECT 1"):
             for op in ("execute", "commit"):
                 with self.subTest(sql=sql, op=op):
                     self.assertTrue(recorded(self.path, self.run_write(sql, op)))
-        raw = sqlite3.connect(self.path)
-        try:
-            self.assertEqual(raw.execute("PRAGMA application_id").fetchone()[0], 123)
-        finally:
-            raw.close()
 
     def test_the_same_write_text_twice_records_two_rows(self):
         # Python does not authorize a statement it reuses from its cache, and
