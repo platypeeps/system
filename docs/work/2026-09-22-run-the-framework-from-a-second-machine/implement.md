@@ -148,21 +148,8 @@ Each step ships alone. Steps 1–7 change nothing the hub runs.
     - **Home-relative paths.** Check: a satellite session under
       `/Users/<second-login>` reads `sd today` and resolves every registered
       checkout.
-    - **The autocommit deploy key.** `repo-sync-nightly` and
-      `ai-apps-nightly` are in `local-machine-setup/profiles/common.cron`,
-      so they run on every machine. They push to `main` with a per-machine
-      deploy key (`local-autocommit/README.md`). On the laptop, run
-      `sh local-autocommit/autocommit.sh key create`. It makes
-      `~/.ssh/system_autocommit` and prints the `gh api` command that
-      registers it.
-    - **Registration, by the operator.** Register that key as a deploy key
-      with write access on `platypeeps/system`. No session does this.
-    - **Confirmation.** `sh local-autocommit/autocommit.sh status` exits 0
-      on the laptop. It exits 1 when a pushing job is installed and the key
-      is missing or readable by others. It also exits 1 when the org
-      disallows deploy keys, which refuses every key at once. Only the
-      enterprise can change that setting, so it is an operator escalation,
-      not a retry.
+
+    No deploy key is a prerequisite: no nightly job pushes since `0fa622c`.
 
     Then run the stage, then criteria 2, 3, 4 and 8. Record the two latency
     numbers here. Record also the longest gap between frames inside one
@@ -660,3 +647,13 @@ the owner's untagged nodes only, no token. The template also gains
 `PATH`. Without it the listener could not run `tailscale` under launchd:
 launchd's default `PATH` holds no Homebrew or `/usr/local` folder. That
 claim is from launchd's documented default, not from a launchd run.
+
+2026-10-05 — step 10 drops the autocommit deploy key; docs only. The
+operator ran `sh local-autocommit/autocommit.sh key create` and got "No
+such file or directory". `0fa622c` (2026-09-27) removed `local-autocommit`
+four days after the key became a prerequisite: the nightly jobs write the
+config folder and push nothing. The key, its registration and its
+confirmation go from step 10. Gap (d) in `design.md` now says no
+`common.cron` job pushes. The 2026-09-23 entry above stays as history.
+This also supersedes "the operator's deploy key" in the 2026-10-04
+entry above: steps 10 and 11 need only the second laptop.
