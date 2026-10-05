@@ -30,6 +30,7 @@ from sd_db.ledger import (
 )
 from sd_db.migrate import initialise
 from sd_db.registry import parse
+from sd_db.testing.wire import hub_only
 
 #: Two bills: one with a cap the ledger enforces, one without. Every author
 #: the tests need: a `url` entry on each bill, and a `start` entry, which is
@@ -92,6 +93,7 @@ class LedgerCase(unittest.TestCase):
         return self.db.execute("SELECT call_id, source, usd FROM cost ORDER BY id").fetchall()
 
 
+@hub_only
 class TheCapReserves(LedgerCase):
     def test_two_concurrent_reservations_with_room_for_one_dispatch_exactly_one(self):
         """Two callers, one bill with room for one bound, and the check runs
@@ -178,6 +180,7 @@ class TheCapReserves(LedgerCase):
         self.assertEqual(self.rows(), [])
 
 
+@hub_only
 class SettlingHappensOnce(LedgerCase):
     def test_settling_twice_changes_nothing(self):
         reserve(self.db, bill="capped", bound=4.0, call_id="call", owner_pid=ME,
@@ -217,6 +220,7 @@ class SettlingHappensOnce(LedgerCase):
         self.assertEqual(self.row("held")["source"], "reserved")
 
 
+@hub_only
 class TheClaimIsTheOnlyRoad(LedgerCase):
     def test_a_claim_refuses_a_row_that_is_not_reserved(self):
         reserve(self.db, bill="open", bound=1.0, call_id="call", owner_pid=ME)
@@ -250,6 +254,7 @@ class TheClaimIsTheOnlyRoad(LedgerCase):
                 now="2026-10-01T00:02:00+00:00")
 
 
+@hub_only
 class DeadOwners(LedgerCase):
     def test_a_dead_owner_reservation_is_released_by_the_next_reservation(self):
         gone = dead_pid()
@@ -306,6 +311,7 @@ class DeadOwners(LedgerCase):
 
 
 class TheBudget(LedgerCase):
+    @hub_only
     def test_sending_at_eight_of_a_budget_of_ten_refuses_a_second_eight(self):
         """Against the assignment and against a cap-ten bill alike, through
         the one exposure function: a call on the wire counts."""
@@ -341,6 +347,7 @@ class TheBudget(LedgerCase):
         source = Path(ledger.__file__).read_text(encoding="utf-8")
         self.assertEqual(len(re.findall(r"\bsum\(", source, re.IGNORECASE)), 1)
 
+    @hub_only
     def test_a_budget_bounds_the_assignment_on_an_uncapped_bill_across_months(self):
         budgeted = self.assignment(provider="mini", budget_usd=5.0)
         reserve(self.db, bill="open", bound=3.0, call_id="a", owner_pid=ME,
@@ -404,6 +411,7 @@ class Exposure(LedgerCase):
         with self.assertRaises(ValueError):
             exposure(self.db, bill="open", assignment=1)
 
+    @hub_only
     def test_open_rows_count_in_every_month_and_settled_rows_in_theirs(self):
         reserve(self.db, bill="capped", bound=1.0, call_id="a", owner_pid=ME,
                 now="2026-08-15T10:00:00+00:00")
@@ -429,6 +437,7 @@ class WhatTheReviewFound(LedgerCase):
     """#406's first review: three inline findings and two suppressed ones
     that held, each pinned here."""
 
+    @hub_only
     def test_a_bound_or_a_budget_that_is_not_a_finite_number_is_refused(self):
         """SQLite stores `nan` as NULL and a NULL `usd` sums to nothing, so
         a `nan` bound would pass every limit; `inf`, a string and a bool
@@ -447,6 +456,7 @@ class WhatTheReviewFound(LedgerCase):
         reserve(self.db, bill="capped", bound=8, call_id="int", owner_pid=ME)
         self.assertEqual(self.row("int")["usd"], 8.0)
 
+    @hub_only
     def test_a_settlement_cost_is_finite_and_non_negative_and_tokens_are_counts(self):
         """A negative `run` cost would reopen room the call already spent."""
         reserve(self.db, bill="capped", bound=4.0, call_id="call", owner_pid=ME)
@@ -461,6 +471,7 @@ class WhatTheReviewFound(LedgerCase):
         self.assertTrue(settle(self.db, "call", usd=0, tokens_in=0, tokens_out=None))
         self.assertEqual(self.row("call")["usd"], 0.0)
 
+    @hub_only
     def test_a_reservation_inside_an_open_transaction_is_refused(self):
         """`transaction` nests as a savepoint inside an open one and takes
         no lock, so the cap check would read under the caller's lock or
@@ -491,12 +502,14 @@ class WhatTheReviewFound(LedgerCase):
         self.assertEqual(seen, [True])
         self.assertFalse(self.db.in_transaction)
 
+    @hub_only
     def test_the_pid_refusal_says_what_it_checks(self):
         with self.assertRaises(LedgerRefused) as raised:
             reserve(self.db, bill="open", bound=1.0, call_id="pid", owner_pid=-4)
         self.assertIn("positive process id", str(raised.exception))
         self.assertNotIn("live", str(raised.exception))
 
+    @hub_only
     def test_a_call_id_that_is_not_a_non_empty_string_is_refused_before_any_row(self):
         """`cost.call_id` is nullable, and NULL never equals NULL: a row with
         no call id could never be claimed, settled or refused as a repeat."""
@@ -507,6 +520,7 @@ class WhatTheReviewFound(LedgerCase):
                 self.assertIn("non-empty string", str(raised.exception))
         self.assertEqual(self.rows(), [])
 
+    @hub_only
     def test_the_moment_is_taken_under_the_write_lock(self):
         """A reservation or a claim that waits for the lock across month end
         belongs to the month it lands in; the clock is read after the lock."""
@@ -524,6 +538,7 @@ class WhatTheReviewFound(LedgerCase):
         self.assertFalse(self.db.in_transaction)
 
 
+@hub_only
 class MoneyCompares(LedgerCase):
     """sd:965 (a), #406's R4/R5: `0.1 + 0.2 > 0.3` is True on binary floats,
     so a reservation that exactly fills the cap or the budget was refused.
@@ -595,6 +610,7 @@ class MoneyCompares(LedgerCase):
         self.assertEqual([r["source"] for r in self.rows()], ["run", "run"])
 
 
+@hub_only
 class WhatTheThirdReviewFound(LedgerCase):
     """#406's third Copilot pass, carried on sd:965 (note 2574) and taken
     here with slice 8b: R2 the overshoot, R8 the nested transaction, R9 the
@@ -681,6 +697,7 @@ class WhatTheThirdReviewFound(LedgerCase):
         self.assertEqual([tuple(row) for row in self.rows()], [("live", "reserved", 1.0), (None, "bound", 2.0)])
 
 
+@hub_only
 class WhatSliceEightBsReviewFound(LedgerCase):
     """#426's Copilot pass on R2: the overshoot report's run id is the call
     id, and `reporting.ingest` takes at most 160 characters of it."""
@@ -705,6 +722,7 @@ class WhatSliceEightBsReviewFound(LedgerCase):
         self.assertEqual(ledger.MAX_CALL_ID, 160)
 
 
+@hub_only
 class AFreshStoreSeedsOnTheFirstReservation(unittest.TestCase):
     """R10: a store `init` made has no `bill` rows until something reads the
     registry through a writable connection; the first `reserve` must not say

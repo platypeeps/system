@@ -34,6 +34,7 @@ from sd_db.migrate import initialise
 from sd_db.retention import (CLEAN_REPORT_AGE, EXEC_OUTPUT_AGE, JOB, OUTPUT_EXPIRED, RETENTION,
                              RetentionRefused, prune, settle_clean_reports)
 from sd_db.testing import Stubs
+from sd_db.testing.wire import hub_only
 from sd_db.writes import (add_note, create_assignment, create_item, record_cost, record_state, resolve_note,
                           upsert_repo)
 
@@ -134,6 +135,7 @@ class PruneCase(unittest.TestCase):
         return self.db.execute("SELECT key, body FROM state WHERE kind='heartbeat' ORDER BY key, id").fetchall()
 
 
+@hub_only
 class TheSeededExcess(PruneCase):
     def test_the_counts_removed_match_the_excess_and_the_report_row_carries_them(self):
         self.heartbeats("tracker-sync:github", 6)
@@ -182,6 +184,7 @@ class TheSeededExcess(PruneCase):
                          {"exec_outputs": 0, "heartbeats": 0, "clean_reports": 0})
 
 
+@hub_only
 class TheRefusal(PruneCase):
     def seed(self):
         self.heartbeats("tracker-sync:github", 4)
@@ -297,6 +300,7 @@ class TheJob(PruneCase):
 
 
 class TheExecNote(PruneCase):
+    @hub_only
     def test_it_survives_marked_output_expired_and_the_palette_says_so(self):
         note, log = self.exec_note(days=91)
         before = dict(self.db.execute("SELECT * FROM note WHERE id=?", (note,)).fetchone())
@@ -333,6 +337,7 @@ class TheExecNote(PruneCase):
         with self.assertRaisesRegex(workflow.WorkflowError, "already ended"):
             runner_exec.execute_immediate(self.db, note, home=self.home)
 
+    @hub_only
     def test_a_note_one_day_inside_ninety_keeps_its_output(self):
         note, log = self.exec_note(days=89)
         self.assertEqual(prune(self.db, self.backup(), now=NOW).exec_outputs, 0)
@@ -340,6 +345,7 @@ class TheExecNote(PruneCase):
         self.assertEqual(runner_exec.read_execution(self.db, note)["output"], "fixture output\n")
         self.assertIsNone(runner_exec.read_execution(self.db, note)["output_expired"])
 
+    @hub_only
     def test_an_unfinished_note_is_never_aged(self):
         """`reconcile` needs the file to decide what happened; retention is not the judge."""
         note, log = self.exec_note(days=200)
@@ -427,6 +433,7 @@ class TheCleanReport(PruneCase):
             self.assertEqual(settle_clean_reports(self.db, now=NOW), 0)
         self.assertEqual(self.status_of(item), "planning")
 
+    @hub_only
     def test_the_prune_settles_them_and_its_report_row_counts_them(self):
         old = self.report(days=9, job="job-a")
         young = self.report(days=2, job="job-b")
@@ -486,6 +493,7 @@ class AnUnreadableReport(PruneCase):
         self.assertEqual(settle_clean_reports(self.db, now=NOW), 1)
         self.assertEqual((self.status_of(broken), self.status_of(clean)), ("planning", "done"))
 
+    @hub_only
     def test_the_prune_names_it_and_asks_for_a_person(self):
         broken, = self.unreadable()
         clean = self.report(days=8)
@@ -500,6 +508,7 @@ class AnUnreadableReport(PruneCase):
         self.assertIn(line + "\n", text)
         self.assertEqual(fields["report"]["attention_basis"], line)
 
+    @hub_only
     def test_absent_empty_and_malformed_fields_are_one_case_named_for_a_person(self):
         """sd:873. One meaning for a `fields` that cannot say the report is
         clean, whatever shape the column holds: NULL, the empty string, or
@@ -523,6 +532,7 @@ class AnUnreadableReport(PruneCase):
                 line = f"1 report(s) in planning have unreadable fields: #{broken}"
                 self.assertIn(line + "\n", text)
 
+    @hub_only
     def test_with_none_the_prune_report_is_the_one_it_always_was(self):
         """The values the base commit's prune writes for this fixture, spelled out."""
         clean = self.report(days=8)
@@ -542,6 +552,7 @@ class AnUnreadableReport(PruneCase):
         self.assertEqual(row["title"], f"{JOB}: run report")
         self.assertEqual(self.status_of(clean), "done")
 
+    @hub_only
     def test_three_hundred_are_all_named_in_the_text_and_twenty_in_the_basis(self):
         broken = self.unreadable(300, first_id=10000)
         _, fields, text, _ = self.prune_report()
@@ -554,6 +565,7 @@ class AnUnreadableReport(PruneCase):
         self.assertEqual([int(item) for item in re.findall(r"#(\d+)", line)], broken)
         self.assertNotIn("more", line)
 
+    @hub_only
     def test_the_basis_says_more_only_past_twenty(self):
         self.unreadable(20)
         _, fields, _, _ = self.prune_report()
@@ -568,6 +580,7 @@ class AnUnreadableReport(PruneCase):
         self.assertEqual(len(re.findall(r"#\d+", basis)), 20)
         self.assertTrue(basis.endswith(" and 1 more"), basis)
 
+    @hub_only
     def test_the_text_names_a_thousand_and_says_how_many_more(self):
         broken = self.unreadable(1001, first_id=10000)
         _, _, text, _ = self.prune_report()
@@ -577,6 +590,7 @@ class AnUnreadableReport(PruneCase):
         self.assertTrue(line.endswith(" and 1 more"), line)
 
 
+@hub_only
 class TheCostRow(PruneCase):
     def test_a_fourteen_month_row_on_a_spent_blocked_assignment_survives(self):
         assignment, cost = self.old_cost()

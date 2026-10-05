@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from sd_db.jobs import backup as job_backup
 from sd_db.migrate import initialise
 from sd_db.schema import SCHEMA_DIR, SCHEMA_VERSION, migrations
 from sd_db.testing import Stubs, add_unknown_table, break_foreign_keys, make_store
+from sd_db.testing.wire import hub_only
 from sd_db.writes import record_state, unresolved_state
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +63,7 @@ class BackupCase(unittest.TestCase):
         (self.state / "commands.yaml").write_text("commands: {}\n", encoding="utf-8")
 
 
+@hub_only
 class TheSnapshot(BackupCase):
     def test_it_writes_a_dated_directory_with_the_database_and_the_configuration(self):
         self.configuration()
@@ -108,6 +111,62 @@ class TheSnapshot(BackupCase):
         self.assertEqual(sorted(backup_root(self.home).iterdir()), [earlier.directory])
 
 
+class TheDestinationProbe(BackupCase):
+    """A destination that does not answer fails the run in seconds (sd:2660).
+
+    On some nights macOS stops answering permission checks for launchd jobs.
+    Each open then fails with EINTR, Python retries it, and the backup ran
+    until the job's two-hour limit killed it. A child that sleeps stands in
+    for the blocked open: no test can make macOS stall on purpose.
+    """
+
+    def hang(self):
+        # `create=True`: the attributes are this change's, and without it a
+        # run against the code before it errors out instead of failing.
+        return mock.patch.multiple(backup_module, create=True,
+                                   _PROBE="import time; time.sleep(60)", PROBE_SECONDS=0.5)
+
+    def checkpoints(self):
+        connection = self.open(write=False)
+        return connection.execute(
+            "SELECT count(*) FROM state WHERE kind = 'checkpoint'").fetchone()[0]
+
+    @hub_only
+    def test_a_destination_that_does_not_answer_fails_within_the_bound(self):
+        root = backup_root(self.home)
+        root.mkdir(parents=True)
+        started = time.monotonic()
+
+        with self.hang(), self.assertRaises(BackupError) as raised:
+            run(home=self.home)
+
+        self.assertEqual(str(raised.exception),
+                         f"backup destination {root} did not answer within 0.5 s")
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(list(root.iterdir()), [])
+        self.assertEqual(self.checkpoints(), 0)
+
+    @hub_only
+    def test_the_job_exits_1_naming_the_destination(self):
+        stderr = io.StringIO()
+        with self.hang(), mock.patch.dict(os.environ, {"HOME": str(self.home)}), \
+                contextlib.redirect_stderr(stderr):
+            status = job_backup.main([])
+
+        self.assertEqual(status, 1)
+        self.assertEqual(stderr.getvalue(), f"sd-db backup: backup destination "
+                         f"{backup_root(self.home)} did not answer within 0.5 s\n")
+
+    def test_the_bound_is_thirty_seconds(self):
+        self.assertEqual(backup_module.PROBE_SECONDS, 30)
+
+    @hub_only
+    def test_the_probe_leaves_no_file_behind(self):
+        snapshot = run(home=self.home)
+        self.assertEqual(list(backup_root(self.home).iterdir()), [snapshot.directory])
+
+
+@hub_only
 class TheRestoreAndCompare(BackupCase):
     def test_an_empty_database_backs_up_and_restores(self):
         snapshot = run(home=self.home)
@@ -173,6 +232,7 @@ class TheRestoreAndCompare(BackupCase):
         self.assertIn("some other moment", str(raised.exception))
 
 
+@hub_only
 class PaletteEvidence(BackupCase):
     def execution(self):
         from sd_db import runner_exec, workflow
@@ -280,6 +340,7 @@ restore(sys.argv[1], home=sys.argv[2])
 
 
 
+@hub_only
 class TheRestore(BackupCase):
     def test_a_restored_database_lands_as_an_unresolved_record(self):
         connection = self.open()
@@ -315,6 +376,7 @@ class TheRestore(BackupCase):
             restore(empty, home=self.home)
 
 
+@hub_only
 class PublicationEvidence(BackupCase):
     def claim(self, name="a" * 32):
         from sd_db import publication_journal as journal
@@ -475,6 +537,7 @@ backup.restore(sys.argv[1], home=sys.argv[2])
         self.assertEqual(journal.validate_path(state / "publications")[claim]["state"]["pending"], "already-sent")
 
 
+@hub_only
 class RunnerEvidence(BackupCase):
     def run_record(self, name="c" * 32):
         from sd_db import runner_journal as journal
@@ -733,15 +796,14 @@ def one_migration_back(database):
     """
     raw = sqlite3.connect(database, isolation_level=None)
     try:
-        # The reverse of 017_judgment_compare_arms.sql, which its header
-        # carries as `--   ` lines: `judgment` is rebuilt in its 016 shape and
-        # the version goes to 16. The helper is rewritten with every
-        # migration: a migration that adds a column would be refused if left
-        # in place.
-        text = (SCHEMA_DIR / "017_judgment_compare_arms.sql").read_text()
+        # The reverse of 019_request_outcome.sql, which its header carries as
+        # `--   ` lines: `request_outcome` is dropped and the version goes to
+        # 18. The helper is rewritten with every migration: a migration that
+        # adds a table or a column would be refused if left in place.
+        text = (SCHEMA_DIR / "019_request_outcome.sql").read_text()
         script = "\n".join(line[4:] for line in text.splitlines() if line.startswith("--   "))
-        assert "PRAGMA user_version = 16" in script, \
-            "017's reverse is not where this helper expects it"
+        assert "PRAGMA user_version = 18" in script, \
+            "019's reverse is not where this helper expects it"
         raw.executescript(script)
         assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION - 1
     finally:
@@ -768,6 +830,7 @@ class TheDatabaseWaitingForMigrate(BackupCase):
         finally:
             raw.close()
 
+    @hub_only
     def test_the_copy_is_taken_read_only_and_proved_by_counts(self):
         connection = self.open()
         create_item(connection, kind="work", title="Before the migration")
@@ -789,6 +852,7 @@ class TheDatabaseWaitingForMigrate(BackupCase):
         self.addCleanup(raw.close)
         self.assertEqual(raw.execute("SELECT count(*) FROM state WHERE kind = 'checkpoint'").fetchone()[0], 0)
 
+    @hub_only
     def test_the_snapshot_is_never_owned_by_retention_and_never_passes_a_prune(self):
         self.older()
         snapshot = run(home=self.home)
@@ -801,6 +865,7 @@ class TheDatabaseWaitingForMigrate(BackupCase):
         connection = self.open(write=False)
         self.assertFalse(passed(connection, snapshot))
 
+    @hub_only
     def test_a_current_database_still_writes_its_checkpoint_row(self):
         snapshot = run(home=self.home)
         self.assertTrue(snapshot.checkpointed)
@@ -808,6 +873,7 @@ class TheDatabaseWaitingForMigrate(BackupCase):
         self.assertIs(manifest["checkpoint"], True)
         self.assertEqual(prune(backup_root(self.home), 0), [snapshot.directory])
 
+    @hub_only
     def test_the_snapshot_restores_after_the_library_moved_on(self):
         connection = self.open()
         create_item(connection, kind="work", title="Survives")
@@ -821,6 +887,7 @@ class TheDatabaseWaitingForMigrate(BackupCase):
         self.addCleanup(restored.close)
         self.assertEqual(restored.execute("SELECT count(*) FROM item").fetchone()[0], 1)
 
+    @hub_only
     def test_a_database_older_than_the_auxiliary_tables_still_backs_up(self):
         """The read-only fallback is taken for *every* older schema, and the
         evidence checks after it queried `publication_claim` (migration 004)
@@ -850,6 +917,7 @@ class TheDatabaseWaitingForMigrate(BackupCase):
         self.assertNotIn("runner_run", snapshot.counts)
         self.assertEqual(self.version(snapshot.directory / "sd.db"), 3)
 
+    @hub_only
     def test_a_current_database_missing_an_evidence_table_is_refused_not_passed(self):
         """Codex on sd:1207: the guard above must read the version, not the
         table list. A version 11 database without `publication_claim` is
@@ -883,6 +951,7 @@ class TheDatabaseWaitingForMigrate(BackupCase):
         self.assertIn("prune skipped", completed.stdout)
         self.assertNotIn("did not open", completed.stderr)
 
+    @hub_only
     def test_the_job_reports_the_snapshots_its_count_removed(self):
         # The read-only copy skips the row prune, but `--keep` still applies
         # file retention to the owned backups, and the summary must say so.
@@ -1031,6 +1100,7 @@ class TheJobsFailures(JobRun):
         self.assertIn("the failure mail did not leave", completed.stderr)
 
 
+@hub_only
 class TheCheckpointOrder(BackupCase):
     def test_a_checkpoint_written_after_the_snapshot_would_prove_nothing(self):
         """The reason step 1 comes before step 2, stated as a test.
@@ -1047,6 +1117,7 @@ class TheCheckpointOrder(BackupCase):
             verify(snapshot.directory / "sd.db", run_id=late, expected=snapshot.counts)
         self.assertIn("some other moment", str(raised.exception))
 
+@hub_only
 class TheReferentialCheckOnTheSnapshot(BackupCase):
     """sd:744. `integrity_check` and `foreign_key_check` are not the same
     question, and the backup was only ever asking the first one.
@@ -1331,6 +1402,7 @@ class TheJobOnABrokenSourceWaitingForMigrate(JobRun):
         self.assertIn("the source is referentially broken", " ".join(sent[0].argv))
 
 
+@hub_only
 class TheJobsPruneFailureBesideABrokenSource(BackupCase):
     """Two things wrong on one night, and the mail has to say both.
 
@@ -1378,6 +1450,7 @@ class TheHourlyRetention(BackupCase):
     def root(self):
         return backup_root(self.home)
 
+    @hub_only
     def test_a_day_wholly_past_the_window_goes_and_the_seventh_day_stays(self):
         # 7 days 12.5 hours old, but its day (09-16) ends 7.5 days ago: gone.
         gone = run(home=self.home, when=datetime(2026, 9, 16, 23, 30, tzinfo=UTC))
@@ -1393,10 +1466,12 @@ class TheHourlyRetention(BackupCase):
         for survivor in (kept, young, latest):
             self.assertTrue(survivor.directory.exists(), survivor.directory)
 
+    @hub_only
     def test_nothing_younger_than_the_window_is_removed(self):
         run(home=self.home, when=self.NOW - timedelta(days=7))
         self.assertEqual(prune_older(self.root(), 7, now=self.NOW), [])
 
+    @hub_only
     def test_a_whole_old_day_goes_in_run_order_across_nine_and_ten(self):
         old = datetime(2026, 9, 10, 9, 0, tzinfo=UTC)
         taken = [run(home=self.home, when=old) for _ in range(11)]
@@ -1409,6 +1484,7 @@ class TheHourlyRetention(BackupCase):
         self.assertEqual([path.name for path in removed], names)
         self.assertTrue(young.directory.exists())
 
+    @hub_only
     def test_only_owned_backups_are_deleted(self):
         root = self.root()
         run(home=self.home, when=self.NOW)
@@ -1433,6 +1509,7 @@ class TheHourlyRetention(BackupCase):
         self.assertFalse(self.root().exists())
 
 
+@hub_only
 class TheCountAcrossNineAndTen(BackupCase):
     def test_keep_counts_runs_by_number_not_by_name(self):
         when = datetime(2026, 9, 6, 9, 0, tzinfo=UTC)
@@ -1446,6 +1523,7 @@ class TheCountAcrossNineAndTen(BackupCase):
         self.assertEqual(left, ["2026-09-06.10", "2026-09-06.8", "2026-09-06.9"])
 
 
+@hub_only
 class TheMountRequirement(BackupCase):
     """`mount`: a detached drive's mount point is a plain local directory."""
 
@@ -1525,6 +1603,7 @@ class TheDefaultRoot(BackupCase):
         self.assertEqual(backup_root(self.home), Path("/Volumes/local/Backup/sd-backups"))
         self.assertEqual(backup_module.DEFAULT_MOUNT, Path("/Volumes/local"))
 
+    @hub_only
     def test_a_detached_disk_refuses_the_default_and_writes_nothing(self):
         with self.default_moved(), self.assertRaises(BackupError) as caught:
             run(home=self.home)
@@ -1535,6 +1614,7 @@ class TheDefaultRoot(BackupCase):
         self.assertFalse((self.volume / "Backup").exists())
         self.assertFalse((self.home / "Documents").exists())
 
+    @hub_only
     def test_the_job_reports_the_detached_disk_and_exits_1(self):
         stderr = io.StringIO()
         with self.default_moved(), mock.patch.dict(os.environ, {"HOME": str(self.home)}), \
@@ -1543,12 +1623,14 @@ class TheDefaultRoot(BackupCase):
         self.assertIn("mount the disk or pass --destination", stderr.getvalue())
         self.assertFalse((self.volume / "Backup").exists())
 
+    @hub_only
     def test_an_explicit_destination_is_not_asked_about_the_disk(self):
         destination = Path(self.tmp.name) / "elsewhere"
         with self.default_moved():
             snapshot = run(home=self.home, destination=destination)
         self.assertEqual(snapshot.directory.parent, destination)
 
+    @hub_only
     def test_the_root_variable_names_the_root_and_is_not_asked_about_the_disk(self):
         named = Path(self.tmp.name) / "named"
         os.environ["SD_DB_BACKUP_ROOT"] = str(named)

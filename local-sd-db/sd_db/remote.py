@@ -13,9 +13,19 @@ owner-only token the server wrote beside the database; peer identity for
 another machine waits for step 7. It also carries the handshake of step 3:
 this build's package version and `SCHEMA_VERSION`, beside the protocol
 version every frame carries. The hub refuses any difference with
-`BuildMismatch` before it opens anything. The frame already carries the
-request id field (`rid`, `None` until step 5 gives write transactions an
-id), so later steps add checks and not fields.
+`BuildMismatch` before it opens anything.
+
+Step 5, the unknown outcome. Over the wire the hub can commit and its answer
+can still be lost. So every write transaction carries a request id R, a
+ULID this class makes when it sends `BEGIN IMMEDIATE` and sends again with
+`COMMIT`; the frame's `rid` field. The hub owns R from `BEGIN` and records
+it inside the transaction it commits. When the answer to `COMMIT` is lost,
+this class asks the hub for R on a fresh session (`outcome`), with a
+bounded backoff: `recorded` returns as a commit would, `absent` raises
+`TransactionLost(R)`, and an owner still live at the bound raises
+`UnknownOutcome(R)`. It keeps no copy of the statements and re-sends
+nothing: the verb is run again, under a new id, by whoever chooses to. A
+plain `BEGIN` carries no R; the hub runs it as a read transaction.
 
 The frame is a 4-byte big-endian length and that many bytes of UTF-8 JSON.
 JSON and not pickle: the hub will read frames from another machine, and a
@@ -26,11 +36,13 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import socket
 import sqlite3
 import struct
 import tempfile
+import time
 from pathlib import Path
 
 from . import errors as _errors
@@ -61,9 +73,119 @@ class HubUnreachable(RemoteError):
         super().__init__(f"the sd hub at {host}:{port} is unreachable: {reason}")
 
 
+class UnknownOutcome(RemoteError):
+    """The answer to `COMMIT` was lost, and the hub has not said what happened.
+
+    Raised when the outcome is still unknown at `OUTCOME_BOUND`: the hub
+    stayed unreachable, or a live session still owned R. The transaction
+    may have committed. Run the verb again only after the hub answers for R.
+    """
+
+    def __init__(self, rid: str, reason: str) -> None:
+        self.rid = rid
+        self.reason = reason
+        super().__init__(
+            f"the outcome of write transaction {rid} is unknown: {reason}. It may have "
+            f"committed on the hub; do not run the verb again until the hub answers for {rid}"
+        )
+
+
+class TransactionLost(RemoteError):
+    """The hub answered `absent` for R: the transaction did not commit.
+
+    No session owns R and no `request_outcome` row names it, so nothing was
+    written. It leaves the `with transaction(...)` block the way a busy
+    `BEGIN IMMEDIATE` does; the verb is run again under a new id, and its
+    body computes every value afresh.
+    """
+
+    def __init__(self, rid: str) -> None:
+        self.rid = rid
+        super().__init__(
+            f"write transaction {rid} did not commit: the hub holds no record of it and no "
+            f"session owns it, so nothing was written; run the verb again"
+        )
+
+
+#: How long a client asks `outcome(R)` before it raises `UnknownOutcome`.
+#: Longer than the hub's open-transaction idle timeout (`serve.IDLE_TIMEOUT`),
+#: so an abandoned owner is always settled inside it.
+OUTCOME_BOUND = 60.0
+#: The first wait between two asks, doubled up to `OUTCOME_LONGEST_WAIT`.
+OUTCOME_FIRST_WAIT = 0.1
+OUTCOME_LONGEST_WAIT = 5.0
+#: Seconds one ask may take to connect or to be answered: a hub that
+#: accepts and never answers must not hold the client past the bound.
+OUTCOME_ASK_TIMEOUT = 5.0
+
+#: The hub's three answers to `outcome(R)`.
+RECORDED, IN_FLIGHT, ABSENT = "recorded", "in_flight", "absent"
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+#: A ULID: 26 characters of Crockford base32.
+REQUEST_ID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+
+
+def new_request_id(now: float | None = None) -> str:
+    """A ULID: 48 bits of milliseconds and 80 random bits.
+
+    The random bits make two satellites' ids distinct with no coordination;
+    the time prefix orders them.
+    """
+    millis = int((time.time() if now is None else now) * 1000) & ((1 << 48) - 1)
+    value = (millis << 80) | int.from_bytes(os.urandom(10), "big")
+    return "".join(_CROCKFORD[(value >> shift) & 31] for shift in range(125, -1, -5))
+
+
+_BEGIN = re.compile(r"BEGIN(?:\s+(DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?")
+_COMMIT = re.compile(r"(?:COMMIT|END)(?:\s+TRANSACTION)?")
+_ROLLBACK = re.compile(r"ROLLBACK(?:\s+TRANSACTION)?")
+
+
+def statement(sql: str) -> str | None:
+    """What a statement does to the transaction: `write`, `read`, `commit`,
+    `rollback`, or `None` for anything else.
+
+    `write` opens a write transaction (`BEGIN IMMEDIATE` or `EXCLUSIVE`) and
+    carries a request id; `read` is a plain or deferred `BEGIN`, which
+    carries none. `ROLLBACK TO` a savepoint is not a rollback of the
+    transaction. Both sides classify with this one function. A text it
+    misses, such as `COMMIT; -- done`, goes as a plain statement, and the
+    hub's authorizer refuses the transaction statement in it.
+    """
+    text = " ".join(sql.strip().rstrip(";").split()).upper()
+    begun = _BEGIN.fullmatch(text)
+    if begun:
+        return "write" if begun.group(1) in ("IMMEDIATE", "EXCLUSIVE") else "read"
+    if _COMMIT.fullmatch(text):
+        return "commit"
+    if _ROLLBACK.fullmatch(text):
+        return "rollback"
+    return None
+
+
 #: How the refusal names each of the three handshake fields.
 DESCRIBED = {"protocol": "protocol version", "package": "sd_db package version",
              "schema": "SCHEMA_VERSION", "build": "build digest"}
+
+
+class HubOnly(RemoteError):
+    """An operation that runs on the hub only, reached from a satellite.
+
+    Step 6 of the plan. The file locks (`repository_lock`, `control_gate`)
+    and every directory beside the database live on the hub. A lock held
+    over a session that can drop would outlive nothing it guards, and a
+    directory resolved here would be one the hub never reads. So the verb
+    refuses by name before it locks or writes anything.
+    """
+
+    def __init__(self, verb: str, hub: str) -> None:
+        self.verb = verb
+        self.hub = hub
+        super().__init__(
+            f"{verb} runs on the sd hub only; this machine reaches the database on "
+            f"{hub}. Run it on the hub"
+        )
 
 
 class BuildMismatch(RemoteError):
@@ -376,7 +498,7 @@ class Cursor:
         return self
 
     def execute(self, sql: str, parameters=()) -> Cursor:
-        return self._load(self.connection._call("execute", sql=sql, params=encode_params(parameters)))
+        return self._load(self.connection._execute(sql, encode_params(parameters)))
 
     def executemany(self, sql: str, seq_of_parameters) -> Cursor:
         return self._load(self.connection._call(
@@ -421,22 +543,38 @@ class Connection:
     One session is one hub connection: `in_transaction` is the hub's, sent
     back with every answer, and closing the socket makes SQLite roll back
     whatever the session left open.
+
+    `outcomes` lists, per lost `COMMIT` answer, each `(R, answer)` the hub
+    gave while this connection asked for R; `unreachable` stands for an ask
+    that reached no hub.
     """
 
     def __init__(self, host: str, port: int, *, path: Path | str | None, write: bool,
                  create: bool, busy_timeout: int, token,
-                 timeout: float | None = None) -> None:
+                 timeout: float | None = None, answer_timeout: float | None = None) -> None:
         self.host = host
         self.port = port
         self.row_factory = sqlite3.Row
         self.in_transaction = False
+        self.outcomes: list[tuple[str, str]] = []
         self._socket = None
         self._trace = None
+        # What a session that asks for an outcome opens: the same file, as
+        # the same user, with the token read afresh (a restarted hub writes
+        # a new one).
+        self._path = None if path is None else str(path)
+        self._busy_timeout = busy_timeout
+        self._token = token
+        self._timeout = timeout
+        #: The request id of the write transaction open on this session.
+        self._rid: str | None = None
+        #: The session ended under a request, not by `close`.
+        self._lost = False
         try:
             self._socket = socket.create_connection((host, port), timeout=timeout)
         except OSError as error:
             raise HubUnreachable(host, port, error.strerror or str(error)) from error
-        self._socket.settimeout(None)
+        self._socket.settimeout(answer_timeout)
         # The token proves the client can read the server's owner-only token
         # file, so a loopback session stays inside the owner's account. A
         # callable is read only once the socket is up: the server deletes
@@ -459,6 +597,7 @@ class Connection:
             answer = read_frame(self._socket)
         except (OSError, EOFError) as error:
             self._abandon()
+            self._lost = True
             raise HubUnreachable(self.host, self.port, str(error)) from error
         if "in_transaction" in answer:
             self.in_transaction = answer["in_transaction"]
@@ -470,6 +609,98 @@ class Connection:
                 self._abandon()
             raise rebuild_error(answer["error"])
         return answer
+
+    def _execute(self, sql: str, params) -> dict:
+        """One statement, with the request id a transaction statement needs."""
+        kind = statement(sql)
+        if kind == "write":
+            # A fresh id per `BEGIN IMMEDIATE`, never reused: the hub refuses
+            # an id it has seen.
+            rid = new_request_id()
+            answer = self._call("execute", rid=rid, sql=sql, params=params)
+            self._rid = rid
+            return answer
+        if kind == "commit" and self._rid is not None:
+            return self._commit("execute", sql=sql, params=params)
+        if kind == "rollback":
+            return self._rollback("execute", sql=sql, params=params)
+        return self._call("execute", sql=sql, params=params)
+
+    def _commit(self, op: str, **fields) -> dict:
+        """`COMMIT` with R; a lost answer is settled by asking the hub for R."""
+        rid = self._rid
+        try:
+            answer = self._call(op, rid=rid, **fields)
+        except HubUnreachable as lost:
+            self._rid = None
+            self.in_transaction = False
+            self._settle(rid, lost)
+            return {"ok": True, "in_transaction": False}
+        except Exception:
+            # Refused or failed on the hub: the transaction is still open
+            # unless SQLite ended it, and then R is settled there too.
+            if not self.in_transaction:
+                self._rid = None
+            raise
+        if not self.in_transaction:
+            self._rid = None
+        return answer
+
+    def _rollback(self, op: str, **fields) -> dict:
+        self._rid = None
+        if self._socket is None and self._lost:
+            # The session ended under a request: the hub rolled back
+            # whatever it held, and nothing unowned can commit. The error
+            # that ended it is the one the caller sees.
+            self.in_transaction = False
+            return {"ok": True, "in_transaction": False}
+        return self._call(op, **fields)
+
+    def _settle(self, rid: str, lost: HubUnreachable) -> None:
+        """Ask the hub for R until it says `recorded` or `absent`, or the bound.
+
+        Each ask opens its own session: this one is gone. `recorded` returns,
+        as the `COMMIT` would have. `absent` raises `TransactionLost`. A live
+        owner (`in_flight`) or no hub at all is asked again, waiting longer
+        each time, until `OUTCOME_BOUND`; then `UnknownOutcome`.
+        """
+        deadline = time.monotonic() + OUTCOME_BOUND
+        wait = OUTCOME_FIRST_WAIT
+        reason = f"the answer to COMMIT was lost ({lost.reason})"
+        while True:
+            try:
+                answer = self.outcome(rid)
+            except Exception as error:  # no hub, or a hub that cannot answer yet
+                answer = "unreachable"
+                reason = f"the answer to COMMIT was lost ({lost.reason}), and the hub " \
+                         f"could not be asked for it ({error})"
+            self.outcomes.append((rid, answer))
+            if answer == RECORDED:
+                return
+            if answer == ABSENT:
+                raise TransactionLost(rid) from UnknownOutcome(rid, reason)
+            if answer == IN_FLIGHT:
+                reason = (f"the answer to COMMIT was lost ({lost.reason}), and a session on "
+                          f"the hub still owns {rid}")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise UnknownOutcome(rid, f"{reason}; asked for {OUTCOME_BOUND:g} s") from lost
+            time.sleep(min(wait, remaining))
+            wait = min(wait * 2, OUTCOME_LONGEST_WAIT)
+
+    def outcome(self, rid: str) -> str:
+        """The hub's answer for request id R: `recorded`, `in_flight` or `absent`.
+
+        Asked on a fresh read session of the same file, so it works after
+        this session is gone.
+        """
+        asking = Connection(self.host, self.port, path=self._path, write=False, create=False,
+                            busy_timeout=self._busy_timeout, token=self._token,
+                            timeout=OUTCOME_ASK_TIMEOUT, answer_timeout=OUTCOME_ASK_TIMEOUT)
+        try:
+            return asking._call("outcome", rid=rid)["value"]
+        finally:
+            asking.close()
 
     def _abandon(self) -> None:
         if self._socket is not None:
@@ -501,6 +732,27 @@ class Connection:
     def iterdump(self):
         return iter(self._call("iterdump")["value"])
 
+    def registry_bytes(self) -> bytes:
+        """The hub's `providers.yaml`, beside the database this session opened.
+
+        Seam 7 of the design: the registry is the one file beside the
+        database a satellite reads. `RegistryError` when the hub has none.
+        """
+        import io
+
+        size = self._call("registry")["value"]
+        sink = io.BytesIO()
+        self._fetch(size, sink)
+        return sink.getvalue()
+
+    def _fetch(self, size: int, sink) -> None:
+        """Read the `size` bytes the hub staged into `sink`, one `chunk` at a time."""
+        while sink.tell() < size:
+            chunk = decode_value(self._call("chunk", offset=sink.tell(), length=CHUNK)["value"])
+            if not chunk:
+                raise RemoteError(f"the hub's image ended at {sink.tell()} of {size} bytes")
+            sink.write(chunk)
+
     def set_trace_callback(self, callback) -> None:
         """Traced on the hub, where the statements run, and replayed here.
 
@@ -526,11 +778,7 @@ class Connection:
             # The image comes in chunks, so its size is not bounded by one
             # frame (`MAX_FRAME`).
             with open(staged, "wb") as image:
-                while image.tell() < size:
-                    chunk = decode_value(self._call("chunk", offset=image.tell(), length=CHUNK)["value"])
-                    if not chunk:
-                        raise RemoteError(f"the hub's image ended at {image.tell()} of {size} bytes")
-                    image.write(chunk)
+                self._fetch(size, image)
             staging = sqlite3.connect(staged)
             try:
                 staging.backup(target, pages=pages, progress=progress, sleep=sleep)
@@ -538,10 +786,13 @@ class Connection:
                 staging.close()
 
     def commit(self) -> None:
-        self._call("commit")
+        if self._rid is not None:
+            self._commit("commit")
+        else:
+            self._call("commit")
 
     def rollback(self) -> None:
-        self._call("rollback")
+        self._rollback("rollback")
 
     def close(self) -> None:
         if self._socket is None:
@@ -557,7 +808,10 @@ class Connection:
         return self
 
     def __exit__(self, kind, value, traceback) -> bool:
-        self._call("commit" if kind is None else "rollback")
+        if kind is None:
+            self.commit()
+        else:
+            self.rollback()
         return False
 
     def __del__(self) -> None:

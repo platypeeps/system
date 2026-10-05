@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from sd_db.schema import SCHEMA_VERSION
+from sd_db.testing.wire import hub_only
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 ENTRYPOINT = PACKAGE_ROOT / "sd-db.sh"
@@ -993,6 +994,7 @@ class TheRemoveVerbs(RemoveCase):
                 self.assertNotIn("Traceback", completed.stderr)
         self.assertEqual(self.database.stat().st_mtime_ns, before)
 
+    @hub_only
     def test_the_preview_opens_the_store_read_only_and_the_apply_for_write(self):
         """Copilot on #414: a writable open sets the journal mode; a preview changes nothing."""
         from sd_db.jobs import cli
@@ -1210,6 +1212,7 @@ class TheSignalHandlers(RemoveCase):
         self.assertEqual(self.counts()["runner_run"], 2)
 
 
+@hub_only
 class InterruptAsCommitReturns(RemoveCase):
     """C-57: `main` in this process, with the step 5 wrapper raising `KeyboardInterrupt` after the commit."""
 

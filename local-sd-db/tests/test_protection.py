@@ -1373,6 +1373,40 @@ class Rows(SyncCase):
         self.assertEqual(row["requests"], 3)
         self.assertIsNone(row["reason"])
 
+    def observed(self, path, status, observed_at, *, branch="main", gaps=()):
+        self.db.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (path, observed_at, status, branch, json.dumps({"gaps": [{"id": gap} for gap in gaps]})))
+        self.db.commit()
+
+    def test_a_checkout_with_no_row_borrows_a_sibling_checkouts_row_and_says_so(self):
+        """sd:1607. A second checkout of one GitHub repository read `not yet observed`."""
+        first = self.register("widget", "git@github.com:example/widget.git", ci="local")
+        second = self.register("widget-copy", "https://github.com/Example/Widget", ci="github")
+        self.observed(first, "protected", "2026-10-04T01:00:00Z", gaps=("enforce_admins",))
+        rows = {row["repo"]: row for row in protection.rows(self.db)}
+        self.assertEqual((rows[second]["status"], rows[second]["observed_at"], rows[second]["default_branch"]),
+                         ("protected", "2026-10-04T01:00:00Z", "main"))
+        self.assertEqual([gap["id"] for gap in rows[second]["gaps"]], ["enforce_admins"])
+        self.assertEqual(rows[second]["borrowed_from"], first)
+        # Its flags were judged against the lender's `ci`, so the label names that one.
+        self.assertEqual(rows[second]["ci"], "local")
+        self.assertIsNone(rows[first]["borrowed_from"])
+
+    def test_the_latest_sibling_lends_and_an_own_row_is_never_replaced(self):
+        old = self.register("old", "git@github.com:example/widget.git")
+        new = self.register("new", "git@github.com:example/widget.git")
+        bare = self.register("bare", "git@github.com:example/widget.git")
+        alone = self.register("alone", "git@github.com:example/other.git")
+        self.observed(old, "unprotected", "2026-10-03T01:00:00Z")
+        self.observed(new, "protected", "2026-10-04T01:00:00Z")
+        rows = {row["repo"]: row for row in protection.rows(self.db)}
+        self.assertEqual(rows[bare]["status"], "protected")
+        self.assertEqual(rows[bare]["borrowed_from"], new)
+        self.assertEqual((rows[old]["status"], rows[old]["borrowed_from"]), ("unprotected", None))
+        self.assertEqual((rows[alone]["status"], rows[alone]["reason"], rows[alone]["borrowed_from"]),
+                         ("unknown", protection.NOT_OBSERVED, None))
+
 
 class Slugs(unittest.TestCase):
     def test_the_github_spellings_and_the_others(self):

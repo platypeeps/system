@@ -316,7 +316,7 @@ function renderRepoPage(el) {
     </section>
 
     <section class="set" aria-labelledby="set-gh"><header><h3 id="set-gh">GitHub · <code>${pr?.default_branch || 'default branch'}</code> <button class="help" type="button" aria-label="Help: GitHub protection" data-help="<b>Protection on the default branch,</b> as the nightly collector last read it into repo_protection. Nothing here calls GitHub. The gap sentences are the ones sd-status prints.">${I('circle-help')}</button></h3><span class="route">${I('shield-check')}GitHub · API</span>
-      <p class="src">${pr?.observed_at ? html`repo_protection · observed <time class="rel" datetime="${pr.observed_at}"></time>` : 'not observed'}</p></header>
+      <p class="src">${pr?.observed_at ? html`repo_protection · observed <time class="rel" datetime="${pr.observed_at}"></time>${pr.borrowed_from ? html` · borrowed from <code>${pr.borrowed_from}</code>` : ''}` : 'not observed'}</p></header>
       ${!pr || pr.status === 'unknown' ? unknown(pr ? 'Protection unknown' : 'Not read', pr?.reason || why('repos') || 'no protection reading for this repo', r.slug ? `gh api repos/${r.slug}/rulesets` : '')
         : html`${setRow('status', pr.status)}
            ${pr.gaps.length ? pr.gaps.map(g => setRow(html`<code>${g.id}</code>`, html`<span class="g-caution" aria-hidden="true">▲</span> gap<p class="why">${g.gap || ''}</p>`)) : setRow('gaps', 'none found')}

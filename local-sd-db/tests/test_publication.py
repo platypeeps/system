@@ -12,6 +12,7 @@ from sd_db import paths
 from sd_db import publication as pub
 from sd_db.publication_render import md_to_html
 from sd_db.schema import SCHEMA_DIR
+from sd_db.testing.wire import hub_only
 from sd_db.workflow import WorkflowError
 from sd_db.writes import record_state, resolve_state
 from sd_db.writing import change_stage, piece_state, update_piece_metadata
@@ -42,6 +43,7 @@ class MarkdownFences(unittest.TestCase):
             md_to_html("````\nalpha\n```", ".")
 
 
+@hub_only
 class Publication(WritingCase):
     def setUp(self):
         super().setUp()

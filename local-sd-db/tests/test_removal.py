@@ -31,6 +31,7 @@ from sd_db.contribution_sync import QUEUE
 from sd_db.migrate import initialise
 from sd_db.writes import (add_note, create_assignment, create_item, record_state, resolve_note, resolve_state,
                           upsert_repo)
+from sd_db.testing.wire import hub_only
 
 backup = removal.backups
 
@@ -114,9 +115,13 @@ class Store(unittest.TestCase):
         return self.store / "runner-journal"
 
     def counts(self, connection=None):
+        # `request_outcome` is the hub's own row per remote write transaction
+        # (sd:1335): over the wire the `state` writes the tests set aside add
+        # one each, and a local run writes none.
         connection = connection or self.db
         return {name: connection.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
-                for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                if name != "request_outcome"}
 
     def apply(self, kind, target, fingerprint, **changes):
         return removal.apply(self.db, kind, target, fingerprint=fingerprint, home=self.home, with_items=True,
@@ -173,6 +178,7 @@ class ActorIsChecked(Store):
                     removal.check_actor(**{**WHO, name: text})
         removal.check_actor(**{**WHO, "who": "Alex Morgan", "reason": "done — the probe is retired"})
 
+    @hub_only
     def test_the_apply_refuses_a_line_break_before_it_reads_anything(self):
         item = self.item()
         self.newer()
@@ -185,6 +191,7 @@ class ActorIsChecked(Store):
 
 class ItemRows(Store):
 
+    @hub_only
     def test_an_item_lists_exactly_its_rows(self):
         item = self.item()
         opening = self.db.execute("SELECT id FROM note WHERE item=?", (item,)).fetchone()[0]
@@ -200,6 +207,7 @@ class ItemRows(Store):
         row = plan["rows"][0]["row"]
         self.assertEqual(set(row), {r[1] for r in self.db.execute("PRAGMA table_info(item)")})
 
+    @hub_only
     def test_the_plan_writes_nothing(self):
         item = self.item()
         self.assignment(item)
@@ -207,6 +215,7 @@ class ItemRows(Store):
         self.plan(item)
         self.assertEqual(before, tuple(self.db.iterdump()))
 
+    @hub_only
     def test_a_note_added_after_a_plan_changes_the_fingerprint(self):
         item = self.item()
         first = self.plan(item)["fingerprint"]
@@ -233,6 +242,7 @@ class ItemRows(Store):
         self.assertEqual(children() - set(removal.REFERENCES), {("fixture_child", "item"), ("fixture_upper", "run")})
 
 
+@hub_only
 class GuardsOnEitherVerb(Store):
 
     def test_g1_a_store_with_an_orphan_is_refused(self):
@@ -262,6 +272,7 @@ class GuardsOnEitherVerb(Store):
         self.assertIn("put back", self.refused(self.plan(item), "G6")[0]["message"])
 
 
+@hub_only
 class APlanReadsOneSnapshot(Store):
     """The #350 review: every read of one plan sees the store as it stood at one moment.
 
@@ -320,6 +331,7 @@ class APlanReadsOneSnapshot(Store):
         self.assertFalse(read_only.in_transaction)
 
 
+@hub_only
 class AssignmentIdsAreNotReused(Store):
     """A1: a removed assignment id must stay below a surviving one (C-2, C-23)."""
 
@@ -352,6 +364,7 @@ class AssignmentIdsAreNotReused(Store):
         self.assertEqual(self.refused(self.plan(self.item()), "A1"), [])
 
 
+@hub_only
 class ItemRefusals(Store):
 
     def test_i1_no_such_item(self):
@@ -536,6 +549,7 @@ class ItemRefusals(Store):
         self.assertRegex(plan["fingerprint"], r"^[0-9a-f]{64}$")
 
 
+@hub_only
 class RunsAndClones(Store):
     """I6: runs, leases and retained clones (D4, option a)."""
 
@@ -678,6 +692,7 @@ class RunsAndClones(Store):
         self.assertEqual(self.i6(), [])
 
 
+@hub_only
 class RepoRefusals(Store):
 
     def setUp(self):
@@ -805,6 +820,130 @@ class RepoRefusals(Store):
         self.assertEqual(len(self.refused(self.plan_repo(self.source), "I7")), 1)
 
 
+@hub_only
+class MovedItemRuns(Store):
+    """sd:2581: a run of an item moved to another repo no longer holds the old repo's remove.
+
+    `sd task edit N --belongs-to` moves the item and leaves its finished runs
+    naming the old repo. The remove detaches each one (migration 018): the row
+    stays with its item and `repo` goes NULL. Its journal is left as it was,
+    naming the repo, and the record names it too.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.source = self.repo()
+        self.target = self.repo("target")
+        self.moved = self.item(repo=self.target, title="moved away")
+        self.work = self.assignment(self.moved)
+        self.newer()
+        self.run = self.attempt(self.work, self.source)
+        self.lease(self.run, self.source)
+
+    def test_the_preview_detaches_the_run_instead_of_refusing(self):
+        plan = self.plan_repo(self.source)
+        self.assertEqual(plan["refusals"], [])
+        self.assertEqual(plan["detach"], [{"run": self.run, "repo": self.source, "item": self.moved,
+                                           "item_repo": self.target}])
+        self.assertNotIn(("runner_run", self.run), self.keys(plan))
+        # Its released lease names the repo, so it goes with it, as P4 has it.
+        self.assertIn(("runner_lease", self.run), self.keys(plan))
+
+    def test_a_detached_run_is_still_held_to_p4(self):
+        self.db.execute("UPDATE runner_run SET released_at=NULL WHERE id=?", (self.run,))
+        self.assertEqual([r["key"] for r in self.refused(self.plan_repo(self.source), "P4")],
+                         [self.run])
+
+    def test_the_apply_keeps_the_run_with_its_item_and_leaves_its_journal(self):
+        journal = self.journal([self.run])
+        before = (journal / f"{self.run}.json").read_bytes()
+        version = self.db.execute("SELECT journal_version FROM runner_run WHERE id=?", (self.run,)).fetchone()[0]
+        fingerprint = self.plan_repo(self.source)["fingerprint"]
+        result = self.apply("repo", self.source, fingerprint)
+        self.assertEqual(result["detached"], [self.run])
+        row = self.db.execute("SELECT * FROM runner_run WHERE id=?", (self.run,)).fetchone()
+        self.assertEqual((row["repo"], row["detached_from"], row["assignment"], row["journal_version"]),
+                         (None, self.source, self.work, version))
+        self.assertIsNone(self.db.execute("SELECT 1 FROM repo WHERE path=?", (self.source,)).fetchone())
+        self.assertEqual(list(self.db.execute("PRAGMA foreign_key_check")), [])
+        # The journal keeps the repository as provenance; the remove never writes it.
+        self.assertEqual((journal / f"{self.run}.json").read_bytes(), before)
+        _, _, text = self.record(result["record"])
+        self.assertIn(f"detached:\nrunner_run {self.run} repo {self.source}\n", text)
+        # The nightly backup checks every row against its journal: it must pass.
+        removal.backups.run(home=self.home, database=self.store / "sd.db", keep=None)
+
+    def two_detached(self):
+        """A second released run of the moved item, and both runs' journals as bytes."""
+        second = self.attempt(self.work, self.source, number=2)
+        self.lease(second, self.source)
+        journal = self.journal([self.run, second])
+        return [self.run, second], {run: (journal / f"{run}.json").read_bytes() for run in (self.run, second)}
+
+    def test_a_journal_write_that_fails_on_the_second_run_leaves_every_journal_as_it_was(self):
+        """Review on sd:2581: a file write cannot roll back with the transaction, so the remove makes none."""
+        runs, before = self.two_detached()
+        fingerprint = self.plan_repo(self.source)["fingerprint"]
+        real = runner_journal.persist
+        calls = []
+
+        def second_fails(database, record):
+            calls.append(record["id"])
+            if len(calls) == 2:
+                raise OSError("disk full on the second journal")
+            return real(database, record)
+        with mock.patch.object(runner_journal, "persist", side_effect=second_fails):
+            try:
+                self.apply("repo", self.source, fingerprint)
+            except (OSError, removal.RemovalRefused):
+                pass
+        after = {run: (self.store / "runner-journal" / f"{run}.json").read_bytes() for run in runs}
+        self.assertEqual(after, before)
+        repos = {row["repo"] for row in self.db.execute("SELECT repo FROM runner_run WHERE id IN (?, ?)", runs)}
+        self.assertEqual(len(repos), 1)  # the rows moved together, or not at all
+
+    def test_a_removal_that_rolls_back_leaves_the_rows_and_the_journals(self):
+        runs, before = self.two_detached()
+        fingerprint = self.plan_repo(self.source)["fingerprint"]
+        with mock.patch.object(removal, "_delete", side_effect=removal.RemovalRefused("stopped after the detach")), \
+                self.assertRaisesRegex(removal.RemovalRefused, "stopped after the detach"):
+            self.apply("repo", self.source, fingerprint)
+        self.assertEqual([row["repo"] for row in self.db.execute("SELECT repo FROM runner_run WHERE id IN (?, ?)", runs)],
+                         [self.source, self.source])
+        self.assertEqual({run: (self.store / "runner-journal" / f"{run}.json").read_bytes() for run in runs}, before)
+
+    def test_the_removals_backup_restores_against_the_live_journal(self):
+        """Review on sd:2581: restoring the pre-removal backup must not meet a journal that says NULL."""
+        journal = self.journal([self.run])
+        fingerprint = self.plan_repo(self.source)["fingerprint"]
+        result = self.apply("repo", self.source, fingerprint)
+        other = self.root / "other-home"
+        state = other / ".local/share/sd"
+        state.mkdir(parents=True)
+        shutil.copytree(journal, state / "runner-journal")  # the live journal after the removal
+        restored = backup.restore(Path(result["backup"]), home=other)
+        connection = sd_db.connect(restored); self.addCleanup(connection.close)
+        row = connection.execute("SELECT repo FROM runner_run WHERE id=?", (self.run,)).fetchone()
+        self.assertEqual(row["repo"], self.source)
+        backup._check_runner_records(connection, state)
+
+    def test_a_backup_taken_after_the_removal_restores_against_the_live_journal(self):
+        """Review on sd:2581: the restored row has no repo, and its `detached_from` is what the journal names."""
+        journal = self.journal([self.run])
+        self.apply("repo", self.source, self.plan_repo(self.source)["fingerprint"])
+        directory = Path(removal.backups.run(home=self.home, database=self.store / "sd.db", keep=None).directory)
+        other = self.root / "other-home"
+        state = other / ".local/share/sd"
+        state.mkdir(parents=True)
+        shutil.copytree(journal, state / "runner-journal")
+        restored = backup.restore(directory, home=other)
+        connection = sd_db.connect(restored); self.addCleanup(connection.close)
+        row = connection.execute("SELECT repo, detached_from FROM runner_run WHERE id=?", (self.run,)).fetchone()
+        self.assertEqual(tuple(row), (None, self.source))
+        backup._check_runner_records(connection, state)
+
+
+@hub_only
 class TheProbe(Store):
     """sd:744's rows, rebuilt from `design.md` section 7, and the files beside them."""
 
@@ -940,6 +1079,7 @@ class ImportedSources(Store):
         self.assertEqual(set(removal.IMPORTED), declared | {filed["source"]})
         self.assertEqual(len(set(removal.IMPORTED)), len(removal.IMPORTED))
 
+    @hub_only
     def test_an_item_from_each_importer_is_reported_and_one_from_drafts_is_not(self):
         for source in ("docs/work", "vault", "register", "github-issues", "index.sqlite", "cron-report"):
             with self.subTest(source=source):
@@ -952,6 +1092,7 @@ class ImportedSources(Store):
                 self.assertEqual(self.plan(self.item(source=source, external_id=external))["warnings"], [])
 
 
+@hub_only
 class UnknownChildTables(Store):
     """G7: a foreign key into one of the four parents the plan has no rule for (the #350 review, N-4)."""
 
@@ -1032,6 +1173,7 @@ class QuotedTextIsCapped(Store):
         self.assertEqual(removal._quoted(Path("/y")), "/y")
         self.assertEqual(removal.QUOTED, 200)
 
+    @hub_only
     def test_a_100_001_character_retained_path_gives_a_short_refusal_that_names_the_run(self):
         tail = f"/{self.work}/2/clone"
         # One path of no shape at all, and one of the right shape under a root
@@ -1047,6 +1189,7 @@ class QuotedTextIsCapped(Store):
                 self.assertLess(len(refusal["message"]), 1_000)
                 self.assertIn(retained_path[:200] + "...", refusal["message"])
 
+    @hub_only
     def test_a_100_001_character_repo_path_gives_short_p1_p2_and_p3_refusals(self):
         # `repo.path` is unconstrained TEXT (sd:956, 3). `key` keeps the full
         # path, as `key` does for every refusal; the message quotes 200.
@@ -1067,6 +1210,7 @@ class QuotedTextIsCapped(Store):
         self.assertEqual([r["message"] for r in self.refused(plans["P2"], "P2")],
                          [f"repo {path[:200]}... has status_source retiring"])
 
+    @hub_only
     def test_a_repo_row_too_large_for_a_note_gives_a_short_r1_refusal(self):
         # The #407 review: R1 named the row by its whole key, so a long
         # `repo.path` landed whole in the message. `key` keeps it whole.
@@ -1079,6 +1223,7 @@ class QuotedTextIsCapped(Store):
         self.assertLess(len(refusal["message"]), 1_000)
         self.assertIn(f"repo row {path[:200]}... is ", refusal["message"])
 
+    @hub_only
     def test_other_stored_text_in_refusals_is_capped_too(self):
         long = "/".join(["p" * 100] * 5)
         item = self.item(repo=self.source, path=f"docs/work/{long}/prd.md")
@@ -1100,6 +1245,7 @@ class QuotedTextIsCapped(Store):
 
 
 
+@hub_only
 class TheRecord(Store):
     """`_record`: the manifest, the chunks and R1-R3 (`design.md` sections 4.1 and 4.2; step 4)."""
 
@@ -1235,6 +1381,7 @@ class TheRecord(Store):
         self.assertEqual(lines[-1], "")
 
 
+@hub_only
 class TheApply(Store):
     """`apply` on the probe fixture (step 5), with real backups of the fixture store."""
 

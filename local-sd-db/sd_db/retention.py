@@ -72,7 +72,7 @@ from pathlib import Path
 
 from . import reporting
 from .backup import Snapshot, passed
-from .database import transaction
+from .database import refuse_hub_only, transaction
 from .errors import SdDbError
 from .writes import transition
 
@@ -149,6 +149,7 @@ def _output_files(connection, row) -> list[Path]:
     is the operator's choice of where the store lives, not a redirection of
     what the prune may delete.
     """
+    refuse_hub_only(connection, "the executions prune")
     database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
     executions = database.parent / "executions"
     path = Path(row["output_path"] or "")
@@ -252,6 +253,7 @@ def _unreadable(ids: list[int], limit: int) -> str:
 
 def prune(connection, backup: Snapshot, *, now: datetime | None = None) -> Pruned:
     """Run the retention table against this database, after `backup` passed."""
+    refuse_hub_only(connection, "the retention prune")
     now = now or datetime.now(UTC)
     if now.tzinfo is None:
         raise RetentionRefused("the prune needs an aware time; a naive one read as UTC is wrong by the offset")

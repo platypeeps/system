@@ -36,6 +36,7 @@ from sd_db.calls import (
 from sd_db.ledger import OVERSHOOT_JOB, LedgerRefused
 from sd_db.migrate import initialise
 from sd_db.registry import parse
+from sd_db.testing.wire import hub_only
 
 #: The ledger tests' registry with one more entry: `bare`, a `url` entry on
 #: the open bill with no price and no `max_tokens`, which an uncapped bill
@@ -146,6 +147,7 @@ class TheBound(CallCase):
         self.assertAlmostEqual(bound_for(self.entry("mini"), PROMPT), 0.003)
         self.assertAlmostEqual(bound_for(self.entry("kimi"), PROMPT), (1000 * 3.0 + 16384 * 15.0) / 1e6)
 
+    @hub_only
     def test_prices_multiply_as_the_decimals_the_registry_wrote(self):
         """sd:1176's review: three tokens at $0.10/M is 3e-7, and float
         arithmetic made it 3.0000000000000004e-7, which the exact ledger
@@ -161,6 +163,7 @@ class TheBound(CallCase):
 
 
 class ReserveClaimWireSettle(CallCase):
+    @hub_only
     def test_a_call_reserves_before_the_wire_claims_and_settles_at_the_usage_the_response_carries(self):
         """The order the prd names. The reservation is in the ledger before
         the request leaves, the request carries the claimed row's id's
@@ -183,6 +186,7 @@ class ReserveClaimWireSettle(CallCase):
         self.assertEqual(self.rows(), [("c1", "run", result.usd, 1100, 300, "mini", "open", row)])
         self.assertEqual(self.reports(), [])
 
+    @hub_only
     def test_the_request_is_the_packs_shape(self):
         wire = Wire((200, answer(1, 1)))
         self.call(wire=wire, name="kimi")
@@ -198,6 +202,7 @@ class ReserveClaimWireSettle(CallCase):
         self.assertEqual(self.call(wire=Wire((200, answer(1, 1))), call_id="c2", timeout=7).call_id, "c2")
         self.assertEqual(self.rows()[1][:2], ("c2", "run"))
 
+    @hub_only
     def test_a_lost_response_binds_the_row_and_the_wire_saw_exactly_one_request(self):
         """A timeout, a dropped connection: `OSError` from the transport, the
         row `bound` at its full bound, and no second attempt."""
@@ -210,6 +215,7 @@ class ReserveClaimWireSettle(CallCase):
                 self.assertEqual(len(wire.calls), 1)
                 self.assertEqual(self.rows()[-1][1:3], ("bound", 0.003))
 
+    @hub_only
     def test_an_answer_without_usage_binds_the_row(self):
         """A non-JSON body, an HTTP error with no usage (429 among them), a
         redirect the client refused: none can cost the call, and the
@@ -229,6 +235,7 @@ class ReserveClaimWireSettle(CallCase):
                 self.assertEqual(len(wire.calls), 1)
         self.assertEqual([row[1:3] for row in self.rows()], [("bound", 0.003)] * len(cases))
 
+    @hub_only
     def test_an_http_error_whose_body_carries_usage_settles_at_it(self):
         result = self.call(wire=Wire((500, answer(10, 0, error={"message": "late"}))))
         self.assertEqual((result.outcome, result.http_status, result.tokens_in), ("run", 500, 10))
@@ -269,6 +276,7 @@ class WhatIsRefusedBeforeTheWire(CallCase):
         self.assertIn("mini has no value for MINIMAX_API_KEY", str(raised.exception))
         self.assertEqual(wire.calls, [])
 
+    @hub_only
     def test_an_entry_without_price_or_max_tokens_is_refused_on_a_capped_bill_and_a_budget(self):
         """sd:788's refusal: a bound the library cannot compute is a limit it
         cannot hold. On an open bill with no budget the same entry is
@@ -292,6 +300,7 @@ class WhatIsRefusedBeforeTheWire(CallCase):
         self.assertEqual((result.outcome, result.bound, result.usd), ("run", 0.0, 0.0))
 
 
+@hub_only
 class TheBudgetEndsTheRow(CallCase):
     def test_criterion_4s_two_rows_the_budget_admits_one_call_and_refuses_the_second_with_budget_spent(self):
         """sd:235, criterion 4 of `the-runner-works-the-queue/prd.md`, moved
@@ -334,6 +343,7 @@ class TheBudgetEndsTheRow(CallCase):
         self.assertEqual(self.rows(), [])
 
 
+@hub_only
 class TheOvershoot(CallCase):
     def test_usage_above_the_bound_settles_at_the_actual_cost_and_files_the_cap_overshot_report(self):
         """C-59: the row is `run` at the actual cost, and one attention row
@@ -359,6 +369,7 @@ class WhatTheReviewFound(CallCase):
     """#426's Copilot pass: what a caller could hand `call` that reached the
     wire, the row, or the body wrong."""
 
+    @hub_only
     def test_a_timeout_that_is_not_a_positive_finite_number_is_refused_before_any_row(self):
         """`0` and `-1` reached urllib after the claim and raised there,
         leaving the row `sending` for a live owner that would never settle
@@ -374,6 +385,7 @@ class WhatTheReviewFound(CallCase):
         self.assertEqual(self.rows(), [])
         self.assertEqual(self.call(wire=Wire((200, answer(1, 1))), timeout=0.5).outcome, "run")
 
+    @hub_only
     def test_a_transport_fault_after_the_claim_binds_the_row_and_reaches_the_caller(self):
         """The request may have gone; the row is `bound`, not `sending`,
         and the fault itself is not swallowed."""
@@ -383,6 +395,7 @@ class WhatTheReviewFound(CallCase):
         self.assertEqual([row[:2] for row in self.rows()], [("broke", "bound")])
         self.assertEqual(len(wire.calls), 1)
 
+    @hub_only
     def test_a_price_too_large_for_a_float_is_no_price(self):
         """`registry.parse` does not validate prices; `float(10 ** 1000)`
         raised `OverflowError` out of `bound_for`. Now it is a missing
@@ -417,6 +430,7 @@ class WhatTheReviewFound(CallCase):
         self.parsed = parse(REGISTRY.replace("model: kimi-k3,", "model: kimi-k3, response_format: json_schema,"),
                             "providers.yaml")
 
+    @hub_only
     def test_an_opted_in_entry_sends_the_schema_strict(self):
         self.strict()
         wire = Wire((200, answer(1, 1)))
@@ -442,6 +456,7 @@ class WhatTheReviewFound(CallCase):
                          {"name": "response", "strict": True, "schema": named})
         self.assertEqual(self.SCHEMA["properties"]["findings"]["items"]["properties"]["title"]["minLength"], 1)
 
+    @hub_only
     def test_an_entry_that_does_not_opt_in_sends_todays_body(self):
         # MiniMax accepts response_format and ignores it, so it is never sent
         # unasked: the same body as before, no key added, schema or not.
@@ -465,6 +480,7 @@ class WhatTheReviewFound(CallCase):
                 self.assertEqual(wire.calls, [])
         self.assertEqual(self.rows(), [])
 
+    @hub_only
     def test_an_entry_without_max_tokens_sends_no_max_tokens_key(self):
         """A JSON `null` is not "no limit" to every endpoint; the key is
         left out."""
@@ -478,6 +494,7 @@ class WhatTheReviewFound(CallCase):
         self.call(wire=wire, name="mini", call_id="c2")
         self.assertEqual(json.loads(wire.calls[0][0].data)["max_tokens"], 1000)
 
+    @hub_only
     def test_a_max_tokens_the_bound_treats_as_missing_is_not_sent_either(self):
         """The verification round: `-1` or `"lots"` is missing to `bound_for`
         and to the refusal, so it is missing to the request body too."""
@@ -493,6 +510,7 @@ class WhatTheReviewFound(CallCase):
                 ((request, _),) = wire.calls
                 self.assertNotIn("max_tokens", json.loads(request.data))
 
+    @hub_only
     def test_a_max_tokens_too_large_for_a_float_is_no_max_tokens(self):
         """`registry.parse` validates no `max_tokens`, so `10 ** 1000` is a
         positive int that reached `bound_for`'s multiplication by a float and
@@ -541,6 +559,7 @@ class WhatTheReviewFound(CallCase):
         self.assertEqual(wire.calls, [])
         self.assertEqual(self.rows(), [])
 
+    @hub_only
     def test_a_redirect_carrying_usage_is_bound_and_is_not_billed(self):
         """A 3xx is refused and never followed, so no model ran and the
         `usage` in its body is a number from a host nobody named. The
@@ -553,6 +572,7 @@ class WhatTheReviewFound(CallCase):
         self.assertIn("HTTP 302, a redirect the client does not follow", result.reason)
         self.assertEqual([row[:3] for row in self.rows()], [("moved", "bound", 0.003)])
 
+    @hub_only
     def test_a_cost_the_ledger_cannot_hold_binds_the_row_instead_of_raising(self):
         """Two finite prices and two counts inside `MAX_TOKENS_FIELD` still
         multiply to `inf` near the float ceiling. `ledger._money` refuses a
@@ -617,6 +637,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+@hub_only
 class TheUrllibPath(CallCase):
     """The default transport against a real socket: no redirect followed,
     no retry made, the usage read from the body, and a timeout bound."""
@@ -719,6 +740,7 @@ class ALoopbackEntryNeedsNoKey(CallCase):
                     environ={} if environ is None else environ, registry=self.parsed,
                     transport=wire, owner_pid=ME, **kw)
 
+    @hub_only
     def test_a_loopback_entry_with_no_variable_is_called_and_sends_no_authorization(self):
         wire = Wire((200, answer(1, 1)))
         result = self.call("home", wire=wire)
@@ -740,6 +762,7 @@ class ALoopbackEntryNeedsNoKey(CallCase):
         self.assertEqual(wire.calls, [])
         self.assertEqual(self.rows(), [])
 
+    @hub_only
     def test_a_loopback_entry_that_declares_a_variable_still_needs_its_value(self):
         wire = Wire((200, answer(1, 1)))
         with self.assertRaises(CallRefused) as raised:
@@ -812,6 +835,7 @@ class AProxyNeverSeesALoopbackCall(CallCase):
         patch.start()
         self.addCleanup(patch.stop)
 
+    @hub_only
     def test_a_loopback_call_reaches_the_vendor_and_not_the_proxy(self):
         entry = sd_db.registry.Provider(
             name="local", vendor="v", bill="open", model="m", max_tokens=1000,

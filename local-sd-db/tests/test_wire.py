@@ -483,7 +483,7 @@ class TheServer(ServedCase):
             capture_output=True, text=True, env=environment(self.root), timeout=60,
         )
         self.assertEqual(missing.returncode, 1)
-        self.assertIn(f"no database at {absent}", missing.stderr)
+        self.assertIn(f"no database at {absent.resolve()}", missing.stderr)
         self.assertFalse(absent.exists())
 
     def test_the_suite_runs_over_the_wire(self):

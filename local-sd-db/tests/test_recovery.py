@@ -19,6 +19,7 @@ from sd_db import (
 from sd_db.backup import restore, run
 from sd_db.errors import SdDbError
 from sd_db.recovery import RecoveryRefused, reimport
+from sd_db.testing.wire import hub_only
 from sd_db.writes import add_note
 from sd_db.writing import import_piece
 
@@ -143,6 +144,7 @@ class Recovery(unittest.TestCase):
             reimport(self.db, str(self.repo))
         self.assertEqual(self.db.execute("SELECT status FROM item").fetchone()[0], "in_progress")
 
+    @hub_only
     def test_restore_blocks_old_assignments_and_marks_unproven_cutover(self):
         self.work()
         self.retire_work()

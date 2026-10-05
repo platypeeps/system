@@ -13,6 +13,7 @@ not open, and counts that do not match the manifest.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -1834,6 +1835,54 @@ class SnapshotOrder(unittest.TestCase):
 
         assert newest is not None
         self.assertEqual(newest.name, "2026-09-22")
+
+
+class SnapshotListing(unittest.TestCase):
+    """A listing that fails is named; it is not "no dated snapshot" (sd:2660).
+
+    On some nights macOS stops answering permission checks for launchd jobs,
+    and the open under `os.scandir` fails with EINTR. Reported as an empty
+    directory, that sends the operator looking for a backup that is there.
+    """
+
+    def setUp(self) -> None:
+        self.verifier = _load_verifier()
+        self.work = Path(tempfile.mkdtemp(prefix="snapshot-listing-test-"))
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
+        self.backups = self.work / "sd-backups"
+        self.backups.mkdir()
+
+    def verify(self, error: OSError | None = None) -> list[str]:
+        """The failures of one run, with the listing of sd-backups raising `error`."""
+        listing = os.scandir
+
+        def scandir(path):
+            if error is not None and Path(path) == self.backups:
+                raise error
+            return listing(path)
+
+        report = self.verifier.Report()
+        with unittest.mock.patch.object(self.verifier.os, "scandir", scandir):
+            self.verifier.verify_database(
+                self.work, report, max_age_hours=48,
+                now=self.verifier.datetime.now(self.verifier.UTC),
+            )
+        return report.failures
+
+    def test_an_interrupted_listing_names_the_directory_and_the_errno(self) -> None:
+        failures = self.verify(InterruptedError(errno.EINTR, os.strerror(errno.EINTR)))
+
+        self.assertEqual(failures, [
+            f"cannot list {self.backups}: {os.strerror(errno.EINTR)} (errno {errno.EINTR})",
+        ])
+
+    def test_an_empty_directory_keeps_its_message(self) -> None:
+        self.assertEqual(self.verify(), [f"a dated snapshot exists under {self.backups}"])
+
+    def test_a_directory_gone_before_the_listing_keeps_the_empty_message(self) -> None:
+        failures = self.verify(FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT)))
+
+        self.assertEqual(failures, [f"a dated snapshot exists under {self.backups}"])
 
 
 class ConfigDirTest(Fixture):

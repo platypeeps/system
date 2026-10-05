@@ -1,3 +1,4 @@
-# Fixture profile: the two sd agents.
+# Fixture profile: the sd hub's three agents.
 local.system-tools.sd-dashboard
 local.system-tools.sd-runner
+local.system-tools.sd-serve

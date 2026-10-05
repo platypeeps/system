@@ -38,6 +38,9 @@ change I made on this machine back into its profile*.
 ./machine-setup.sh doctor sd           # those sd checks alone
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
 ./machine-setup.sh upgrade --apply     # brew update/upgrade/cleanup + mas upgrade
+                                       # each step is logged as it starts and
+                                       # stopped at its bound (300-1800 s, or
+                                       # MACHINE_SETUP_STEP_TIMEOUT seconds)
 ./machine-setup.sh upgrade-report      # upgrade + email summary (cron: Sundays 04:00)
 ./machine-setup.sh checklist           # manual new-machine steps
 ./machine-setup.sh decommission        # retire machine: dirty-repo scan, job/agent
@@ -113,6 +116,7 @@ to it. A profile with only one file is therefore almost exactly `common`.
 | `.service` | `local-*` folders whose docker service should be running |
 | `.cron` | `local-cron-jobs` job names to install; this host's own jobs need no entry |
 | `.spotlight` | Spotlight privacy exclusions: absolute paths, a leading `~` is the account's home |
+| `.satellite` | the sd hub this machine reaches, as `host` or `host:port` (default 8769); one line, on a satellite only. One machine runs each profile: `personal` is the hub, and a profile with this file (`work.satellite`, `terra.satellite`) is a satellite; the hub's own is refused |
 
 Plain lists, one per line, `#` comments and blank lines ignored — the same
 format as `local-repo-sync`.
@@ -129,16 +133,17 @@ Run in order. Pass one as the second argument to run it alone.
 | `brew` | taps, formulae, casks | — |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
-| `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
+| `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
 | `envs` | install the `.env` of each folder listed in `ENVS` into `$SYSTEM_TOOLS_CONFIG/<tool>/.env` from `envs/<profile>/<folder>.env`, falling back to `envs/common/`, always 0600. Templates hold non-secret defaults only | — |
 | `prompts` | shared agent system prompt into each tool's global instructions | `local-agent-prompt` |
 | `repos` | clone/pull the repo fleet | `local-repo-sync` |
 | `cron` | install launch agents: the profile's `.cron` jobs plus every job in this host's own folder (`cron-jobs/jobs/<host>/`). A `CRON_JOBS_EXTRA_DIRS` job runs only when the profile names it. Any other job that `local-cron-jobs` installed is `EXTRA` and is uninstalled. An agent under `<prefix>.cron.` that `local-cron-jobs` did not install is `FOREIGN` and stays in place, even when the profile names it; one whose plist cannot be read is `UNKNOWN` and stays too. The stage knows its own plists by their label and their `cron-jobs.sh exec <job>` command, which every installed job carries. When the host folder cannot be read, the stage prints `MISSING host job list` and uninstalls nothing | `local-cron-jobs` |
-| `sd` | the workflow database (`sd-db.sh init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard` or `<prefix>.sd-runner`. Runs before `agents`, because both agents open the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/runner.json` or `dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db` | `local-sd-db`, `tailscale` |
-| `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@` | — |
+| `sd` | the workflow database (`sd-db.sh init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard` or `<prefix>.sd-runner`. Runs before `agents`, because both agents open the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/runner.json` or `dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db`. On the hub, a profile without `<prefix>.sd-serve` or a config folder without its template is `MISSING`, and a `~/.config/sd/hub.json` is `EXTRA` and stays | `local-sd-db`, `tailscale` |
+| `satellite` | on a profile with a `.satellite`: writes `~/.config/sd/hub.json`, checks that the pack's installed `sd_db` is the hub's build (`DIFFERS` names both values), and installs the hub's `providers.yaml`. A local `sd.db` is `EXTRA` and stops the stage; a hub that does not answer is `SKIP`. On a satellite (a `.satellite` or a `hub.json`, and no hub agent in the profile), each hub-only job in `SD_HUB_ONLY_AGENTS` that is installed or loaded is `EXTRA` and stays. Installs no LaunchAgent | `sd_db.satellite` under `SD_DB_PYTHON` (default: the pack's virtualenv) |
+| `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
 | `macos` | apply `defaults` settings | — |
-| `tooling` | fnm node versions, rtk hooks, Chrome as mailto handler | `fnm`, `rtk`, `duti` |
+| `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin plus `local-statusline` as `statusLine`), Chrome as mailto handler | `fnm`, `rtk`, `claude`, `duti` |
 | `system` | useLS, sudo grace period, firewall + stealth (needs sudo once), 700 on the credential dirs, Spotlight privacy exclusions from `<profile>.spotlight` | `plutil`, `PlistBuddy`, `launchctl` |
 | `obsidian` | report vault plugins vs `<profile>.obsidian` (report-only) | `python3` |
 | `iterm2` | point iTerm2 at the synced prefs folder in `<profile>.iterm2` | — |

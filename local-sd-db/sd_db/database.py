@@ -62,6 +62,40 @@ def default_path(home: Path | str | None = None) -> Path:
     return base / DEFAULT_RELATIVE
 
 
+def served_by(target, home: Path | str | None = None) -> str | None:
+    """The hub that serves `target`, as `host:port`, or `None` when it is local.
+
+    `target` is a connection or a path. A remote connection names its hub.
+    A path is served when `connect` would send it to a hub: the default
+    path on a satellite, or any path a test opener serves. Step 6 decides
+    by this, never by `PRAGMA database_list`, which answers the hub's path
+    over the wire (seam 2 of the second-machine design).
+    """
+    from . import hub, remote
+
+    if isinstance(target, remote.Connection):
+        return f"{target.host}:{target.port}"
+    if not isinstance(target, (str, os.PathLike)):
+        return None
+    if home is None and isinstance(target, hub.HubPath):
+        home = target.sd_home
+    if _same_file(Path(target), local_path(home)) and hub.configured(home):
+        satellite = hub.read(home)
+        if satellite is not None:
+            return f"{satellite.host}:{satellite.port}"
+    served = getattr(_opener, "served_by", None)
+    return served(Path(target)) if served is not None else None
+
+
+def refuse_hub_only(target, verb: str, home: Path | str | None = None) -> None:
+    """Raise `HubOnly` naming `verb` when a hub serves `target`."""
+    hub = served_by(target, home)
+    if hub is not None:
+        from .remote import HubOnly
+
+        raise HubOnly(verb, hub)
+
+
 def _same_file(one: Path, other: Path) -> bool:
     """Lexical first, then canonical: the pack passes `default_path()` or
     its string back, which compares equal with no filesystem access, and an
@@ -162,12 +196,15 @@ _opener = None
 
 
 def open_local(
-    target: Path, *, write: bool, create: bool, busy_timeout: int = BUSY_TIMEOUT
+    target: Path, *, write: bool, create: bool, busy_timeout: int = BUSY_TIMEOUT,
+    cached_statements: int = 128,
 ) -> sqlite3.Connection:
     """The local open behind `connect`, for a resolved path.
 
     `sd_db.serve` calls it on the hub, so a remote session gets exactly the
     connection a local caller gets: same pragmas, same version refusals.
+    It passes `cached_statements=0`, so its authorizer sees every statement;
+    128 is Python's own default.
     """
     if not create and not target.exists():
         raise FileNotFoundError(
@@ -177,7 +214,7 @@ def open_local(
         target.parent.mkdir(parents=True, exist_ok=True)
     mode = "rwc" if create else "rw" if write else "ro"
     connection = sqlite3.connect(target.resolve().as_uri() + f"?mode={mode}",
-                                 uri=True, isolation_level=None)
+                                 uri=True, isolation_level=None, cached_statements=cached_statements)
     try:
         # First, before the version read and the journal-mode pragma: both
         # take a lock, so a timeout set after them is a timeout that was not

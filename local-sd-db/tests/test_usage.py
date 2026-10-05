@@ -14,6 +14,7 @@ from pathlib import Path
 from sd_db import connect, provider_controls, reads, usage, writes
 from sd_db.errors import SdDbError
 from sd_db.ledger import claim, lose, reserve, settle
+from sd_db.testing.wire import hub_only
 
 from .test_ledger import ME, REGISTRY, LedgerCase, dead_pid
 
@@ -50,6 +51,7 @@ class UsageCase(LedgerCase):
 
 
 class TheVerb(UsageCase):
+    @hub_only
     def test_it_prints_the_four_numbers_lists_the_bound_row_and_binds_the_orphan(self):
         row = self.month()
         before = reads.usage_month(self.db, month="2026-09")
@@ -74,6 +76,7 @@ class TheVerb(UsageCase):
         assignments = reads.item_assignments(self.db, self.item)
         self.assertEqual((assignments[0]["usd"], assignments[0]["estimated"]), (2.0, 1))
 
+    @hub_only
     def test_json_is_the_read_byte_for_byte(self):
         self.month()
         completed = self.sd_db("usage", "--month", "2026-09", "--json")
@@ -110,6 +113,7 @@ class TheVerb(UsageCase):
         self.assertIn("a month is YYYY-MM, not '9999-12'", completed.stderr)
         self.assertNotIn("OverflowError", completed.stderr)
 
+    @hub_only
     def test_a_month_that_is_not_one_sweeps_nothing(self):
         """The month is checked before the sweep: a refused invocation
         leaves the dead owner's `sending` row as it found it."""
@@ -121,6 +125,7 @@ class TheVerb(UsageCase):
         self.assertEqual(self.row("orphan")["source"], "sending")
 
 
+@hub_only
 class TheRead(UsageCase):
     def test_the_month_boundary(self):
         """A row settled at 23:59 on the last day and one at 00:00 the next
@@ -218,6 +223,7 @@ class TheMergedCaps(UsageCase):
         self.assertIn("provider 'claude' is a 'start' entry on the capped bill 'open'", state["warnings"][0])
         return state
 
+    @hub_only
     def test_a_warned_bill_has_no_cap_on_the_tile_or_the_month_and_the_url_bill_keeps_its_own(self):
         self.month()
         state = self.legacy_cap()
@@ -238,6 +244,7 @@ class TheMergedCaps(UsageCase):
         self.assertEqual([row["cap_usd_month"] for row in reads.cost_by_bill(self.db)], [10.0, 5.0])
         self.assertEqual(reads.usage_month(self.db, month="2026-09").bills[1].cap, 5.0)
 
+    @hub_only
     def test_the_verb_prints_the_merged_caps_and_its_json_is_the_merged_read(self):
         self.month()
         self.legacy_cap()
@@ -249,6 +256,7 @@ class TheMergedCaps(UsageCase):
         self.assertEqual(printed, usage.json_text(usage.read(self.db, month="2026-09")))
         self.assertNotEqual(printed, usage.json_text(reads.usage_month(self.db, month="2026-09")))
 
+    @hub_only
     def test_the_clear_leaves_the_row_as_the_cap_and_a_cap_set_on_the_url_bill_prints(self):
         self.month()
         state = self.legacy_cap()
@@ -345,6 +353,7 @@ class TheMergedCaps(UsageCase):
 
         return Interleaved()
 
+    @hub_only
     def test_the_caps_and_the_spend_are_one_snapshot(self):
         """#438's review: a cap committed by another connection between the
         registry's rows and the cost rows is in all of the read or in none

@@ -269,6 +269,11 @@ Usage: sd-db.sh <command>
               failure, unless PATH is a mounted volume and the destination
               lands on it: a detached drive's mount point is a plain
               directory on the boot disk.
+              Before anything is written, a child process writes and
+              removes one small file in the destination; if that has not
+              finished within 30 s, the run fails, mailing "backup
+              destination DIR did not answer within 30 s", instead of
+              hanging until the job's limit.
               --no-row-prune skips the row prune below and its report item,
               for a backup taken more often than nightly; the hourly
               `sd-db-backup-hourly` job passes it.
@@ -350,6 +355,9 @@ Usage: sd-db.sh <command>
               The same suite with every in-process `connect` going over the
               wire to a `serve --loopback` at HOST:PORT, which wrote its
               token to TOKEN_FILE. Its summary line must equal the local one.
+              A test marked `hub_only` keeps its connections local, since
+              the wire refuses hub-only paths by design; the run prints how
+              many ran local.
   test --surface [ARGS]
               The same suite with every `connect` returning a connection
               that raises on any attribute outside the surface the remote

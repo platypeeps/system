@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 from sd_db import runner_journal, ship
 from sd_db.runner import RunnerRefused
+from sd_db.testing.wire import hub_only
 from sd_db.workflow import WorkflowError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -158,6 +159,7 @@ class HardenedLock(unittest.TestCase):
                 with runner_journal.lock(self.root / "held.lock", blocking=False, error=WorkflowError, held="someone else"):
                     self.fail("second owner")
 
+    @hub_only
     def test_the_ship_repository_lock_is_the_shared_lock(self):
         database = self.root / "sd.db"
         locks = self.root / "ship-locks"

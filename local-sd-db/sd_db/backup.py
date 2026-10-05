@@ -48,6 +48,8 @@ import re
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -56,7 +58,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import paths
-from .database import connect, schema_version, tables
+from .database import connect, local_path, refuse_hub_only, schema_version, tables
 from .errors import BackupError, SchemaTooOld, SdDbError
 from .migrate import migrate as migrate_database
 from .schema import SCHEMA_VERSION, TABLES, migrations
@@ -93,6 +95,23 @@ BACKUP_MANIFEST = "backup-manifest.json"
 # A restore must stop with a usable current database when another process
 # holds the writer lock, rather than waiting forever inside sqlite.backup.
 RESTORE_SECONDS = 30
+
+#: How long the destination has to finish a test write before a run gives up
+#: on it (`probe_destination`).
+PROBE_SECONDS = 30
+
+#: The test write, run in a child of its own: open, write and remove one small
+#: file in the destination, or in the nearest part of it that exists.
+_PROBE = """\
+import os, sys
+directory = sys.argv[1]
+while not os.path.exists(directory) and os.path.dirname(directory) != directory:
+    directory = os.path.dirname(directory)
+path = os.path.join(directory, f".sd-db-probe-{os.getpid()}")
+with open(path, "xb") as handle:
+    handle.write(b"probe")
+os.remove(path)
+"""
 PUBLICATION_RESTORE_INTENT = "publication-restore-intent.json"
 
 
@@ -378,12 +397,13 @@ def _check_runner_records(connection: sqlite3.Connection, directory: Path) -> No
     rows = list(connection.execute("SELECT * FROM runner_run"))
     if not rows:
         return
-    from .runner_journal import canonical
+    from .runner_journal import against, canonical
     files = _runner_files(directory / "runner-journal")
     for row in rows:
         # A record written before migration 014 names the repository by its
         # absolute path; the row names the key. Both sides keyed (sd:1447).
-        record = canonical(json.loads(files.get(f"{row['id']}.json", b"{}" )).get("record", {}))
+        # A row `repo remove` detached has no repo; its journal keeps it (sd:2581).
+        record = against(json.loads(files.get(f"{row['id']}.json", b"{}" )).get("record", {}), dict(row))
         row = canonical(dict(row))
         identity = ("id", "assignment", "run", "repo", "branch", "work_path", "retained_path")
         if (any(record.get(name) != row[name] for name in identity)
@@ -393,13 +413,15 @@ def _check_runner_records(connection: sqlite3.Connection, directory: Path) -> No
 
 
 def _compatible_runner_records(saved: dict[str, bytes], live: dict[str, bytes]) -> None:
+    from .runner_journal import canonical
     for name in set(saved) & set(live):
         old, current = (json.loads(data)["record"] for data in (saved[name], live[name]))
         # A journal written before migration 014 names the repository by its
         # absolute path and one written after by its `~/` key (sd:1439).
+        # One written before migration 018 has no `detached_from` (sd:2581).
         if (any(old[key] != current[key] for key in ("id", "assignment", "run", "branch", "work_path", "retained_path"))
                 or not (old["repo"] == current["repo"] or paths.same(old["repo"], current["repo"]))
-                or old["journal_version"] == current["journal_version"] and old != current):
+                or old["journal_version"] == current["journal_version"] and canonical(old) != canonical(current)):
             raise BackupError(f"runner journal conflicts with live evidence: {name}; preserve both copies")
 
 
@@ -917,6 +939,37 @@ def require_mount(mount: Path, destination: Path,
         )
 
 
+def probe_destination(root: Path) -> None:
+    """Refuse unless a test write under `root` finishes within `PROBE_SECONDS`.
+
+    On some nights macOS stops answering permission checks for launchd jobs.
+    Each open then blocks for seconds and fails with EINTR, Python retries it
+    (PEP 475), and the backup ran until the job's two-hour limit killed it
+    with nothing said (sd:2660). The write runs in a child, so an open that
+    never returns holds the child and not this process. A probe that fails at
+    once is not this check's to name: the writes below fail the same way and
+    say which step did.
+    """
+    try:
+        child = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", _PROBE, str(root)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        raise BackupError(f"the probe of backup destination {root} did not start: {error}") from None
+    try:
+        child.wait(timeout=PROBE_SECONDS)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise BackupError(
+            f"backup destination {root} did not answer within {PROBE_SECONDS:g} s"
+        ) from None
+
+
 def run(
     *,
     home: Path | str,
@@ -932,7 +985,8 @@ def run(
     `keep` retains that many owned backups; `keep_days` retains owned backups
     by age (`prune_older`). They are two answers to one question, so asking
     both is refused. `mount` names the volume the destination must be on,
-    checked before anything is written (`require_mount`).
+    checked before anything is written (`require_mount`). The destination
+    must then finish a test write in time (`probe_destination`).
     """
     _check_keep(keep)
     if keep == 0:
@@ -943,6 +997,8 @@ def run(
     if keep is not None and keep_days is not None:
         raise BackupError("backup retention takes a count or an age, not both")
     home = Path(home)
+    # Before the mount check and the probe: a satellite writes nothing.
+    refuse_hub_only(database if database is not None else local_path(home), "the backup", home)
     when = when or datetime.now(UTC)
     root = (
         Path(destination).expanduser()
@@ -955,6 +1011,7 @@ def run(
         # The default root is on a disk that may be detached. Falling back to
         # the home would hide that, so a run names the fix and writes nothing.
         require_mount(DEFAULT_MOUNT, root, "mount the disk or pass --destination PATH")
+    probe_destination(root)
     run_id = uuid.uuid4().hex
 
     checkpointed = True
@@ -1299,6 +1356,7 @@ def restore(directory: Path | str, *, home: Path | str) -> Path:
 
     directory = Path(directory)
     home = Path(home)
+    refuse_hub_only(local_path(home), "the restore", home)
     snapshot = directory / "sd.db"
     if not snapshot.exists():
         raise BackupError(f"{directory} holds no sd.db")

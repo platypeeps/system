@@ -7,6 +7,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
+. "$DIR/../lib/bounded.sh"
 # The .inv manifests are a machine's own inventory, so they live in the shared
 # config directory outside the checkout. AI_APPS_PROFILES_DIR points
 # elsewhere; a private fork that tracks them sets it to this folder's
@@ -690,10 +691,18 @@ PY
   esac
 }
 
-# The apps themselves all come from homebrew; upgrade just these six.
+# The apps themselves all come from homebrew; upgrade just these six. Each
+# brew call is a bounded step (lib/bounded.sh): the query gets 600 s and the
+# upgrade 1800 s, or AI_APPS_STEP_TIMEOUT seconds each when that is set. A
+# query that did not finish checked nothing, so it is not "all current".
 cmd_update() {
   PKGS="codex opencode claude claude-code antigravity copilot-cli"
-  out=$(brew outdated --quiet 2>/dev/null || true)
+  rc=0
+  out=$(st_step "${AI_APPS_STEP_TIMEOUT:-600}" brew outdated --quiet) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "brew outdated failed (exit $rc); no AI app was checked or upgraded"
+    return 1
+  fi
   todo=""
   for p in $PKGS; do
     echo "$out" | grep -qx "$p" && todo="$todo $p"
@@ -704,19 +713,35 @@ cmd_update() {
   fi
   echo "upgrading:$todo"
   # shellcheck disable=SC2086  # word splitting of the package list is the point
-  brew upgrade $todo
+  st_step "${AI_APPS_STEP_TIMEOUT:-1800}" brew upgrade $todo
 }
 
 # Cron flavor: upgrade the six apps, re-capture the inventory, and email
 # only when something actually moved (an upgrade or an inventory change).
-# Exits 1 when the email could not be delivered, and with capture's code when
-# capture failed.
+# Exits 1 when the email could not be delivered or the update failed, and
+# with capture's code when capture failed.
 cmd_nightly() {
   NOTIFY="$DIR/../local-notify/notify.sh"
   TMPD=$(mktemp -d)
-  trap 'rm -rf "$TMPD"' EXIT INT TERM
+  # EXIT removes the folder; a signal exits, and so runs EXIT. A TERM trap
+  # that only removed it returned into the run, which then wrote the capture
+  # into the folder it had just removed (sd:2660).
+  trap 'rm -rf "$TMPD"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # fd 3 is the job log. The update's output goes into the report, and each
+  # brew step names itself here as it starts, so a hang names its step.
+  exec 3>&2
+  # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+  ST_STEP_FD3=1
 
-  cmd_update > "$TMPD/up" 2>&1 || true
+  # The update's code is kept too. A brew step that failed or timed out on a
+  # quiet night used to exit 0 with no mail, its step line in the job log the
+  # only trace (sd:2662). The report still goes when something moved; the exit
+  # then fails the night, so cron-jobs raises its failure banner and push.
+  up_rc=0
+  cmd_update > "$TMPD/up" 2>&1 || up_rc=$?
 
   # The rc is kept, not discarded. `capture` refuses to write when a config it
   # reads is present and unparseable, and the old `|| true` turned that refusal
@@ -735,9 +760,20 @@ cmd_nightly() {
   changed=1
   grep -q '^  none$' "$TMPD/cap" && changed=0
 
-  if [ "$upgraded" -eq 0 ] && [ "$changed" -eq 0 ]; then
-    return 0
+  if [ "$upgraded" -eq 1 ] || [ "$changed" -eq 1 ]; then
+    send_report
   fi
+  # 1 and not the update's own code: a step's timeout is 124, which cron-jobs
+  # uses for the job's own limit.
+  if [ "$up_rc" -ne 0 ]; then
+    echo "ai-apps: the app update failed (exit $up_rc); the step lines above name the brew call" >&2
+    exit 1
+  fi
+  return 0
+}
+
+# The nightly's report mail. Exits 1 when it could not be delivered.
+send_report() {
 
   subject="ai-apps: changes on $(hostname -s)"
   body=$(printf 'ai-apps nightly — %s on %s\n\nApp upgrades:\n%s\n\nInventory (profile %s):\n%s\n' \
@@ -747,7 +783,6 @@ cmd_nightly() {
     echo "email FAILED — exiting 1 so the cron failure push fires" >&2
     exit 1
   fi
-  return 0
 }
 
 case "${1:-}" in
@@ -786,12 +821,16 @@ usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--ap
                              app's config snippet with secret values REDACTED
                              (never written automatically); plugins print the
                              install command
-  update                     brew upgrade for just the six AI apps
+  update                     brew upgrade for just the six AI apps; each
+                             brew call is logged as it starts and stopped
+                             after 600 s (query) or 1800 s (upgrade), or
+                             AI_APPS_STEP_TIMEOUT seconds when that is set
   nightly                    update + capture into the config folder, emailing
                              the report when an app was upgraded or the
                              inventory changed (what the ai-apps-nightly cron
                              job runs). Exits 1 when the email could not be
-                             delivered, and with capture's code when capture
+                             delivered or a brew step of the update failed or
+                             timed out, and with capture's code when capture
                              failed and the inventory was not rewritten.
 
 apps: claude-code, claude-desktop, codex, copilot, opencode, antigravity

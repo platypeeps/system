@@ -47,6 +47,19 @@ backup, and the fixture harness both repositories test against.
                     `server_ms` and `probabilities`. A rebuild, as 007's.
                     Carries its reverse in its header, run before 016's;
                     it drops the comparison rows (sd:2366)
+      schema/018_runner_run_repo_nullable.sql  `runner_run.repo` may be
+                    NULL: `repo remove` detaches a released run of an item
+                    that moved to another repo, and adds `detached_from`,
+                    the repo it had. An in-place edit, as 009's.
+                    Carries its reverse in its header, run before 017's
+                    (sd:2581)
+      schema/019_request_outcome.sql  `request_outcome`: one row per write
+                    transaction a remote session committed that changed
+                    something, inserted by
+                    `serve` inside that transaction, so a satellite whose
+                    COMMIT answer was lost can ask whether it landed. No
+                    row is pruned. Carries its reverse in its header, run
+                    before 018's (sd:1335)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -583,6 +596,9 @@ Age, not a count, because a sleeping Mac misses hourly runs and 168 runs would t
 Only directories past the window are opened, so an hourly run does not verify the whole week.
 `--require-mount PATH` refuses before writing anything unless PATH is mounted and holds the destination.
 A detached disk's mount point is an ordinary directory on the boot disk; the refusal exits 1 and mails.
+Before anything is written, a child process writes and removes one small file in the destination.
+If that write has not finished within 30 s, the run exits 1 and mails `backup destination DIR did not answer within 30 s`.
+Reason: on some nights macOS stops answering permission checks for launchd jobs, and the run then hung until its job limit.
 `--no-row-prune` skips the nightly row prune and its report item; the hourly job passes it.
 Retention checks the complete manifest and checkpoint before deleting a directory.
 Legacy backups without this manifest remain available for restore and are never pruned.
@@ -1115,7 +1131,19 @@ store has changed since (G3). It takes a backup first, then in one
 transaction under `control_gate` files the record, deletes the rows children
 first, and checks foreign keys; then it moves each removed run's journal
 pair into `runner-recovery-evidence/removed-<fingerprint>/`. A signal before
-the commit removes nothing and exits 1. Exit 4 means the rows are gone and
+the commit removes nothing and exits 1.
+
+A run on the repo whose item moved to another repo (`sd task edit N
+--belongs-to`) is not removed and does not refuse (sd:2581). The preview
+lists it under "detached, kept with their item"; the apply sets its `repo`
+to NULL and copies the old value to `detached_from` (both migration 018);
+nothing else on the row changes. Its journal is not rewritten: it keeps the
+repo, and a detached row agrees with it only when the journal's repo is the
+row's `detached_from`. The record's `detached:` lines name the repo each run
+had. P4 still holds such a run: it
+must be released, with no retained clone on disk. Its released lease names
+the repo, so it goes with the repo. An item with no repo at all still
+refuses its runs (P6). Exit 4 means the rows are gone and
 the record is filed, but the move did not finish; see below.
 
 **The record.** Each apply files one `report` item, `<kind>-remove:<fingerprint>`,

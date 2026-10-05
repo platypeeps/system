@@ -1845,13 +1845,31 @@ def rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     A left join: a repository with no `repo_protection` row yet is `unknown`
     with `not yet observed`, so the table never has fewer rows than the
     registry and never lets an unobserved repository pass for a safe one.
+
+    A checkout with no row borrows the row of a sibling checkout of the same
+    GitHub repository, the latest observed, and names it in `borrowed_from`
+    (sd:1607): the table is keyed by path, and protection belongs to the
+    remote. The borrowed row brings the sibling's `ci` with it, since its
+    flags were judged against that. A checkout with a row of its own keeps it.
     """
-    out = []
-    for row in connection.execute(
-        "SELECT repo.path, repo.remote, repo.ci, p.observed_at, p.status, p.default_branch, "
-        "p.reason, p.body FROM repo LEFT JOIN repo_protection p ON p.repo = repo.path "
+    found = list(connection.execute(
+        "SELECT repo.path, repo.remote, repo.ci, p.repo AS observed, p.observed_at, p.status, "
+        "p.default_branch, p.reason, p.body FROM repo LEFT JOIN repo_protection p ON p.repo = repo.path "
         "ORDER BY repo.path"
-    ):
+    ))
+    lenders: dict[tuple[str, str], sqlite3.Row] = {}
+    for row in found:
+        slug = github_slug(row["remote"])
+        if slug is None or row["observed"] is None:
+            continue
+        key = (slug[0].lower(), slug[1].lower())
+        if key not in lenders or row["observed_at"] > lenders[key]["observed_at"]:
+            lenders[key] = row
+    out = []
+    for own in found:
+        slug = github_slug(own["remote"])
+        lender = lenders.get((slug[0].lower(), slug[1].lower())) if slug and own["observed"] is None else None
+        row = lender or own
         try:
             body = json.loads(row["body"]) if row["body"] else {}
         except ValueError:
@@ -1859,13 +1877,13 @@ def rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
         if not isinstance(body, dict):
             body = {}
         status = row["status"] if row["status"] in STATUSES else "unknown"
-        slug = github_slug(row["remote"])
         out.append({
-            "repo": row["path"],
-            "remote": row["remote"],
+            "repo": own["path"],
+            "remote": own["remote"],
             # The screen names the baseline check from it: `baseline_check(ci)` (sd:2509).
             "ci": row["ci"],
             "slug": f"{slug[0]}/{slug[1]}" if slug else None,
+            "borrowed_from": lender["path"] if lender else None,
             "status": status,
             "observed_at": row["observed_at"],
             "default_branch": row["default_branch"],

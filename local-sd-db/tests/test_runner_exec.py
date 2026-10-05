@@ -21,6 +21,7 @@ from sd_db import runner, runner_controls, runner_exec, workflow
 from sd_db.database import connect
 from sd_db.errors import SdDbError
 from sd_db.migrate import initialise
+from sd_db.testing.wire import hub_only
 from sd_db.writes import (
     add_note,
     create_assignment,
@@ -70,6 +71,7 @@ class PaletteFixture(unittest.TestCase):
 
 
 class Palette(PaletteFixture):
+    @hub_only
     def test_readonly_prepare_records_before_any_process_and_completes_exact_log(self):
         with patch("subprocess.Popen", side_effect=AssertionError("prepare started a process")):
             prepared = self.prepare()["execution"]
@@ -89,6 +91,7 @@ class Palette(PaletteFixture):
             with self.subTest(change=change), self.assertRaises(SdDbError): self.prepare(**change)
             self.assertEqual(before, self.snapshot())
 
+    @hub_only
     def test_missing_mutates_scope_shell_and_embedded_placeholder_reject_the_entry_by_name(self):
         original = dict(self.entries["inspect"])
         variants = [({key: value for key, value in original.items() if key != "mutates"}, "required"),
@@ -106,6 +109,7 @@ class Palette(PaletteFixture):
                 with self.assertRaisesRegex(workflow.WorkflowError, "rejected from the catalog"):
                     self.prepare(expected_catalog=current["sha256"])
 
+    @hub_only
     def test_one_rejected_entry_leaves_the_others_registered(self):
         self.entries["broken"] = {**self.entries["inspect"], "argv": ["relative/path", "{item}"]}; self.write()
         current = runner_exec.catalog(path=self.file)
@@ -114,6 +118,7 @@ class Palette(PaletteFixture):
         with patch("subprocess.Popen", side_effect=AssertionError("prepare started a process")):
             self.assertEqual(self.prepare()["execution"]["command"], "inspect")
 
+    @hub_only
     def test_changed_entry_or_executable_invalidates_authorization(self):
         descriptor = self.prepare()["execution"]
         self.program.write_text(self.program.read_text() + "# changed\n")
@@ -123,6 +128,7 @@ class Palette(PaletteFixture):
         with self.assertRaisesRegex(workflow.WorkflowError, "changed"):
             runner_exec.verify_descriptor(descriptor)
 
+    @hub_only
     def test_mutating_command_queues_only_its_recorded_descriptor(self):
         self.entries["inspect"]["mutates"] = True; self.write()
         def enqueue(connection, items, **options):
@@ -143,6 +149,7 @@ class Palette(PaletteFixture):
         with self.assertRaises(workflow.WorkflowError): runner_exec.validate_enqueue(self.db, [self.item], "item")
         self.assertEqual(list(self.repo.iterdir()), [])
 
+    @hub_only
     def test_foreign_target_and_uncertain_control_are_held(self):
         self.entries["cancel"] = {"argv": ["sd", "runner", "cancel", "{assignment}"], "screens": ["item"],
                                   "mutates": True, "scope": "control", "operation": "cancel", "placeholders": {"assignment": "assignment"}}
@@ -160,12 +167,14 @@ class Palette(PaletteFixture):
             self.prepare(command="cancel", values={"assignment": assignment}, target=target)
         self.assertEqual(before, self.snapshot())
 
+    @hub_only
     def test_output_readback_never_reads_arbitrary_note_paths(self):
         secret = self.root / "private"; secret.write_text("must not read")
         note = add_note(self.db, self.item, "exec", "{}", output_path=str(secret))
         with self.assertRaisesRegex(workflow.WorkflowError, "designated"):
             runner_exec.read_execution(self.db, note)
 
+    @hub_only
     def test_real_readonly_process_keeps_output_and_scrubs_environment(self):
         self.program.write_text("#!/usr/bin/python3\nimport os,sys\nprint('item=' + sys.argv[1])\nprint('secret=' + str(os.getenv('PALETTE_SECRET')))\nprint('cwd=' + os.getcwd())\nsys.exit(7)\n")
         descriptor = self.prepare()["execution"]
@@ -178,12 +187,14 @@ class Palette(PaletteFixture):
         with self.assertRaisesRegex(workflow.WorkflowError, "already ended"):
             runner_exec.execute_immediate(self.db, descriptor["note"])
 
+    @hub_only
     def test_malformed_descriptor_refuses_without_process(self):
         original = self.prepare()["execution"]
         for value in (None, [], {**original, "registry_path": None}, {**original, "values": []},
                       {**original, "values": {"item": "1;bad"}}, {**original, "extra": "argv"}):
             with self.assertRaises(workflow.WorkflowError): runner_exec.verify_descriptor(value)
 
+    @hub_only
     def test_queued_process_inherits_only_owned_marker_and_clone_scratch(self):
         self.entries["inspect"]["mutates"] = True; self.write()
         with patch("sd_db.runner.enqueue", return_value=[]): value = self.prepare()["execution"]
@@ -199,6 +210,7 @@ class Palette(PaletteFixture):
         self.assertEqual(result["exit_code"], 0)
         self.assertEqual(list(self.repo.iterdir()), [])
 
+    @hub_only
     def test_process_environment_carries_user_from_uid_not_ambient(self):
         """A keychain read keys on USER; the runner used to omit it, so the agent reported itself logged out."""
         value = self.prepare()["execution"]
@@ -210,6 +222,7 @@ class Palette(PaletteFixture):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(runner_exec.process_plan(value)["environment"]["USER"], expected)
 
+    @hub_only
     def test_lost_control_response_reconciles_exact_target_without_replay(self):
         self.entries["cancel"] = {"argv": ["sd", "runner", "cancel", "{assignment}"], "screens": ["item"],
                                   "mutates": True, "scope": "control", "operation": "cancel", "placeholders": {"assignment": "assignment"}}
@@ -229,6 +242,7 @@ class Palette(PaletteFixture):
             result = runner_exec.reconcile(self.db, value["note"])
         self.assertEqual(result["exit_code"], 0)
 
+    @hub_only
     def test_output_collision_and_changed_catalog_never_launch(self):
         value = self.prepare()["execution"]
         with runner_exec.open_output(value) as output: output.write(b"prior evidence")
@@ -236,6 +250,7 @@ class Palette(PaletteFixture):
             runner_exec.run_process(value, cwd=self.repo)
         self.assertEqual(Path(value["output_path"]).read_text(), "prior evidence")
 
+    @hub_only
     def test_lost_restore_response_needs_exact_runner_receipt_and_never_replays(self):
         self.entries["restore"] = {"argv": ["sd", "worktree", "restore", "{assignment}", "--destination", "{destination}"],
             "screens": ["item"], "mutates": True, "scope": "supervisor", "operation": "restore",
@@ -283,6 +298,7 @@ class Palette(PaletteFixture):
         self.assertEqual(calls.count("restore-status"), 4)
         self.assertEqual((Path(destination) / "retained.txt").read_text(), "fixture restore evidence")
 
+    @hub_only
     def test_cancelled_queued_request_closes_without_process_or_replay(self):
         self.entries["inspect"]["mutates"] = True
         self.write()
@@ -297,6 +313,7 @@ class Palette(PaletteFixture):
         with self.assertRaisesRegex(workflow.WorkflowError, "unfinished authorization"):
             runner_exec.resolve_assignment(self.db, assignment)
 
+    @hub_only
     def test_restore_hold_blocks_preparation_and_immediate_dispatch(self):
         value = self.prepare()["execution"]
         record_state(self.db, "restore", body={"fixture": True})
@@ -308,6 +325,7 @@ class Palette(PaletteFixture):
                 runner_exec.execute_immediate(self.db, value["note"])
         self.assertEqual(before, self.snapshot())
 
+    @hub_only
     def test_output_is_bounded_for_a_real_verbose_process(self):
         self.program.write_text("#!/usr/bin/python3\nimport sys\nsys.stdout.write('x' * 3000000)\n")
         value = self.prepare()["execution"]
@@ -360,6 +378,7 @@ class Palette(PaletteFixture):
         with patch.object(runner_exec, "time", SimpleNamespace(monotonic=clock)):
             yield
 
+    @hub_only
     def test_closed_output_still_waits_for_normal_exit_and_receipt(self):
         self.program.write_text(
             f"#!{sys.executable}\nimport os,sys,time\nos.write(1,b'ready\\n')\n"
@@ -374,6 +393,7 @@ class Palette(PaletteFixture):
         self.assertEqual(Path(value["output_path"]).read_bytes(), b"ready\n")
         self.assertEqual(runner_exec.process_result(value)["exit_code"], 7)
 
+    @hub_only
     def test_time_limit_reaps_process_with_open_or_closed_output(self):
         for close_output in (False, True):
             for own_group in (False, True):
@@ -398,6 +418,7 @@ class Palette(PaletteFixture):
                     self.assertIn(b"Command time limit exceeded", output.read_bytes())
                     self.assertFalse(output.with_suffix(".receipt.json").exists())
 
+    @hub_only
     def test_time_limit_survives_a_group_that_exited_before_its_kill(self):
         """sd:2338: the command can exit between `poll()` and `killpg`.
 
@@ -427,6 +448,7 @@ class Palette(PaletteFixture):
                     self.assertEqual(processes[0].returncode, -signal.SIGKILL)
                 self.assertIn(b"Command time limit exceeded", Path(value["output_path"]).read_bytes())
 
+    @hub_only
     def test_time_limit_does_not_wait_on_a_live_group_that_refuses_the_kill(self):
         """A live leader that changed credentials answers EPERM too; waiting on it outlasts the deadline."""
         self.program.write_text(f"#!{sys.executable}\nimport os,time\nos.write(1,b'ready\\n')\ntime.sleep(60)\n")
@@ -439,6 +461,7 @@ class Palette(PaletteFixture):
             self.assertIsNone(processes[0].poll())
         self.assertLess(time.monotonic() - started, GUARD_SECONDS)
 
+    @hub_only
     def test_lost_process_response_reconciles_durable_exit_without_replay(self):
         value = self.prepare()["execution"]
         with patch.object(runner_exec, "complete", side_effect=workflow.WorkflowError("lost completion")), self.assertRaisesRegex(workflow.WorkflowError, "lost completion"):
@@ -449,6 +472,7 @@ class Palette(PaletteFixture):
         self.assertEqual(result["exit_code"], 0)
         self.assertIn("fixture output", result["output"])
 
+    @hub_only
     def test_queued_receipt_binds_exact_run_and_output_before_reconciliation(self):
         self.entries["inspect"]["mutates"] = True
         self.write()
@@ -482,6 +506,7 @@ class Palette(PaletteFixture):
         self.file.chmod(0o666)
         with self.assertRaises(workflow.WorkflowError): runner_exec.catalog(path=self.file)
 
+    @hub_only
     def test_repository_and_log_tampering_refuse_database_bound_authorization(self):
         self.entries["inspect"]["mutates"] = True; self.write()
         with patch("sd_db.runner.enqueue", return_value=[]): original = self.prepare()["execution"]
@@ -575,6 +600,7 @@ class TheStandingRefusal(PaletteFixture):
                 ("an item placeholder declared a provider", "declare_the_item_a_provider", "provider placeholder must name a configured provider"),
                 ("an item placeholder declared a destination", "declare_the_item_a_destination", "destination must be a new absolute directory"))
 
+    @hub_only
     def test_it_answers_every_standing_refusal_and_prepare_makes_the_very_same_one(self):
         """Each staged in turn, asked both ways, and undone before the next.
 
@@ -598,6 +624,7 @@ class TheStandingRefusal(PaletteFixture):
             self.db.execute("DELETE FROM state WHERE kind='restore'"); self.db.commit()
         self.assertIsNone(self.ask(self.sha()))
 
+    @hub_only
     def test_it_does_not_answer_a_refusal_that_resolves_the_value(self):
         """The other direction, and the reason the set is not simply every refusal.
 
@@ -626,6 +653,7 @@ class TheStandingRefusal(PaletteFixture):
     def exec_notes(self):
         return self.db.execute("SELECT COUNT(*) FROM note WHERE item=? AND kind='exec'", (self.item,)).fetchone()[0]
 
+    @hub_only
     def test_asked_for_a_queue_it_refuses_a_command_prepare_would_not_queue(self):
         """sd:814: a worktree command that does not mutate runs at once, and is never queued.
 
@@ -652,6 +680,7 @@ class TheStandingRefusal(PaletteFixture):
         self.entries["inspect"]["mutates"] = True; self.write()
         self.assertIsNone(self.ask(self.sha(), require_queue=True))
 
+    @hub_only
     def test_not_asked_for_a_queue_a_non_mutating_command_is_still_prepared(self):
         """The default, which the dashboard and the CLI keep: record the note, queue nothing."""
         self.assertIsNone(self.ask(self.sha()))
@@ -678,6 +707,7 @@ class TheStandingRefusal(PaletteFixture):
              ("a destination that is relative", "destination", "relative/path", "destination must be a new absolute directory"),
              ("a destination longer than its bound", "destination", "/" + "d" * 4000, "destination must be a new absolute directory"))
 
+    @hub_only
     def test_it_answers_every_form_check_its_entry_kinds_have(self):
         """One case per check in `_shape`, staged and asked both ways.
 
