@@ -657,3 +657,34 @@ confirmation go from step 10. Gap (d) in `design.md` now says no
 `common.cron` job pushes. The 2026-09-23 entry above stays as history.
 This also supersedes "the operator's deploy key" in the 2026-10-04
 entry above: steps 10 and 11 need only the second laptop.
+
+2026-10-05 — step 10 run on the second laptop, LAN half. The `work`
+profile gained a `.satellite` naming the hub. The first `status` failed:
+the pack's virtualenv held an `sd_db` built before step 9 ("No module
+named sd_db.satellite"); `sd-db.sh install` into it fixed that. The stage
+then wrote `hub.json`, matched the build (`a3da437c2d089d4b`) and
+installed the hub's `providers.yaml`; a second `status` printed three `ok`
+lines. One interactive account (uid 501). All 59 `repo` rows resolve
+home-relative; 37 are cloned, and the rest are outside the `work`
+profile's repo-sync lists. The path was direct, 1 ms.
+
+- Criterion 2: `sd-note add` exited 0 in 0.45 s; the hub's own `sqlite3`
+  read printed note 9615.
+- Criterion 3: with Tailscale down, `sd today` exited 1 with "the sd hub
+  at <hub>:8769 is unreachable: No route to host (named in …/hub.json)";
+  no `sd.db` appeared on the satellite.
+- Criterion 4: during 14 satellite writes (notes 9649 to 9662), `lsof` on
+  the hub's file listed one hub `Python` process; the satellite has no
+  `sd.db`.
+- Criterion 8, LAN: `sd-status` took 61.6, 59.0 and 48.6 s on the
+  satellite and 79.2, 79.4 and 83.4 s on the hub, whose load average was
+  67 to 90 during its runs. The ratio is under 1, against a budget of 3.
+  A profile of one satellite run (52.4 s) puts about 13 s on the wire:
+  9,306 statements, most from `contributions.projection` (sd:2678). The
+  rest is `git` and `gh`, which the hub pays too.
+
+Not verified: criterion 8 over the internet (followup 9622); gap (g)'s
+longest frame gap inside a write transaction and longest write
+transaction, which need serve-side timing. Step 11 is blocked: `sd-ship
+prepare` takes `repository_lock` up front and refuses with `HubOnly` on
+the satellite before it binds the pull request (sd:2679, pack).
