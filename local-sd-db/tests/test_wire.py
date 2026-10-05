@@ -490,8 +490,12 @@ class TheHandshake(ServedCase):
         build, version = newer_build(self.root)
         upgraded = Served(self.root, build=build, log=".upgraded")
         self.addCleanup(upgraded.stop)
-        with self.assertRaises(remote.HubUnreachable):
+        # The write's answer is lost, so it is settled (sd:2671); the
+        # old hub is gone, so its outcome stays unknown.
+        with mock.patch.object(remote, "OUTCOME_BOUND", 0.3), \
+                self.assertRaises(remote.UnknownOutcome) as raised:
             wire.execute("INSERT INTO probe (name) VALUES ('after')")
+        self.assertIsInstance(raised.exception.__cause__, remote.HubUnreachable)
         with self.assertRaisesRegex(remote.BuildMismatch, f"upgrade this satellite's sd_db to {version}"):
             upgraded.connect()
         self.assertEqual(self.rows(), 0)

@@ -27,6 +27,11 @@ bounded backoff: `recorded` returns as a commit would, `absent` raises
 nothing: the verb is run again, under a new id, by whoever chooses to. A
 plain `BEGIN` carries no R; the hub runs it as a read transaction.
 
+A write outside a transaction (sd:2671) carries an R too, and the hub runs
+it as a write transaction of that one statement: a lost answer is settled
+the same way. A `recorded` write returns no rows and no `lastrowid`, since
+its answer is gone.
+
 The frame is a 4-byte big-endian length and that many bytes of UTF-8 JSON.
 JSON and not pickle: the hub will read frames from another machine, and a
 pickle is code.
@@ -140,6 +145,13 @@ def new_request_id(now: float | None = None) -> str:
 _BEGIN = re.compile(r"BEGIN(?:\s+(DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?")
 _COMMIT = re.compile(r"(?:COMMIT|END)(?:\s+TRANSACTION)?")
 _ROLLBACK = re.compile(r"ROLLBACK(?:\s+TRANSACTION)?")
+
+
+#: Statements that may write, by first word: a write outside a transaction
+#: carries a request id (sd:2671). A read, a PRAGMA or a SAVEPOINT does not:
+#: the hub would run it inside a transaction, where a PRAGMA can do nothing
+#: and a SAVEPOINT opens nothing. A text this misses goes as before, unsettled.
+_WRITE = re.compile(r"\s*(INSERT|UPDATE|DELETE|REPLACE|WITH|CREATE|DROP|ALTER)\b", re.IGNORECASE)
 
 
 def statement(sql: str) -> str | None:
@@ -628,6 +640,13 @@ class Connection:
             answer = self._call("execute", rid=rid, sql=sql, params=params)
             self._rid = rid
             return answer
+        if kind is None and not self.in_transaction and _WRITE.match(sql):
+            rid = new_request_id()
+            try:
+                return self._call("execute", rid=rid, sql=sql, params=params)
+            except HubUnreachable as lost:
+                self._settle(rid, lost, "the write")
+                return {"ok": True, "in_transaction": False}
         if kind == "commit" and self._rid is not None:
             return self._commit("execute", sql=sql, params=params)
         if kind == "rollback":
@@ -642,7 +661,7 @@ class Connection:
         except HubUnreachable as lost:
             self._rid = None
             self.in_transaction = False
-            self._settle(rid, lost)
+            self._settle(rid, lost, "COMMIT")
             return {"ok": True, "in_transaction": False}
         except Exception:
             # Refused or failed on the hub: the transaction is still open
@@ -664,7 +683,7 @@ class Connection:
             return {"ok": True, "in_transaction": False}
         return self._call(op, **fields)
 
-    def _settle(self, rid: str, lost: HubUnreachable) -> None:
+    def _settle(self, rid: str, lost: HubUnreachable, what: str) -> None:
         """Ask the hub for R until it says `recorded` or `absent`, or the bound.
 
         Each ask opens its own session: this one is gone. `recorded` returns,
@@ -674,13 +693,13 @@ class Connection:
         """
         deadline = time.monotonic() + OUTCOME_BOUND
         wait = OUTCOME_FIRST_WAIT
-        reason = f"the answer to COMMIT was lost ({lost.reason})"
+        reason = f"the answer to {what} was lost ({lost.reason})"
         while True:
             try:
                 answer = self.outcome(rid)
             except Exception as error:  # no hub, or a hub that cannot answer yet
                 answer = "unreachable"
-                reason = f"the answer to COMMIT was lost ({lost.reason}), and the hub " \
+                reason = f"the answer to {what} was lost ({lost.reason}), and the hub " \
                          f"could not be asked for it ({error})"
             self.outcomes.append((rid, answer))
             if answer == RECORDED:
@@ -688,7 +707,7 @@ class Connection:
             if answer == ABSENT:
                 raise TransactionLost(rid) from UnknownOutcome(rid, reason)
             if answer == IN_FLIGHT:
-                reason = (f"the answer to COMMIT was lost ({lost.reason}), and a session on "
+                reason = (f"the answer to {what} was lost ({lost.reason}), and a session on "
                           f"the hub still owns {rid}")
             remaining = deadline - time.monotonic()
             if remaining <= 0:

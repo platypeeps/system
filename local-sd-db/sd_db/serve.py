@@ -69,7 +69,12 @@ without the prune, so no row is ever deleted:
 - `outcome(R)` answers `in_flight` while a session owns R, else `recorded`
   when the row exists, else `absent`. Admission, settlement and the answer
   run under one lock per id, so absence proves the transaction ended
-  without committing: nothing unowned can commit.
+  without committing: nothing unowned can commit. `absent` marks R seen,
+  so a frame carrying R that lands later is refused.
+- A statement outside a transaction that carries R (sd:2671) runs as a
+  write transaction of its own: a plain `BEGIN`, the statement, and the
+  `COMMIT` above, row and all. A deferred `BEGIN` locks as the autocommit
+  statement would.
 - A plain `BEGIN` carries no R and opens a read transaction under
   `query_only` (gap C2). Its `COMMIT` or `ROLLBACK` needs no R and writes
   no row.
@@ -396,6 +401,8 @@ class Session(socketserver.BaseRequestHandler):
             return self._begin_read(connection, frame.get("rid"), sql, params)
         if kind == "commit":
             return self._commit(connection, frame.get("rid"), lambda: connection.execute(sql, params))
+        if kind is None and frame.get("rid") is not None and not connection.in_transaction:
+            return self._autocommit(connection, frame["rid"], sql, params)
         if kind is not None:
             # ROLLBACK, or a BEGIN inside a transaction, which SQLite refuses.
             with self._routed():
@@ -417,17 +424,34 @@ class Session(socketserver.BaseRequestHandler):
                                          f"a write transaction takes a new id")
             self.wrote = False
             try:
-                with self._routed():
-                    answer = _answer(connection, connection.execute(sql, params))
+                # Before BEGIN: only R's owner writes R's row, so nothing can
+                # add it in between, and a read inside a deferred BEGIN would
+                # fix a snapshot its write then fails on (sd:2671).
                 if self._recorded(connection, rid):
                     raise remote.RemoteError(f"refused: request id {rid} has committed before; "
                                              f"a write transaction takes a new id")
+                with self._routed():
+                    answer = _answer(connection, connection.execute(sql, params))
             except BaseException:
                 if connection.in_transaction:
                     self._quiet(connection, "ROLLBACK")
                 owners.settle(rid)
                 raise
             self.kind, self.rid, self.mark = "write", rid, connection.total_changes
+        return answer
+
+    def _autocommit(self, connection: sqlite3.Connection, rid, sql: str, params) -> dict:
+        """A write sent outside a transaction with R: its own write transaction (sd:2671)."""
+        self._begin_write(connection, rid, "BEGIN", ())
+        try:
+            answer = _answer(connection, connection.execute(sql, params))
+            self._commit(connection, rid, lambda: connection.execute("COMMIT"))
+        except BaseException:
+            if connection.in_transaction:
+                self._quiet(connection, "ROLLBACK")
+            self._settle(connection)
+            raise
+        answer["in_transaction"] = connection.in_transaction
         return answer
 
     def _begin_read(self, connection: sqlite3.Connection, rid, sql: str, params) -> dict:
@@ -522,7 +546,12 @@ class Session(socketserver.BaseRequestHandler):
         with owners.lock(rid):
             if owners.owner(rid) is not None:
                 return remote.IN_FLIGHT
-            return remote.RECORDED if self._recorded(connection, rid) else remote.ABSENT
+            if self._recorded(connection, rid):
+                return remote.RECORDED
+            # Final: a write frame still in transit is refused when it lands.
+            owners.admit(rid, self.number)
+            owners.settle(rid)
+            return remote.ABSENT
 
     def handle(self) -> None:
         with Session.counter_guard:
