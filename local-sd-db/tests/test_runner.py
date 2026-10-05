@@ -12,6 +12,7 @@ from sd_db.database import connect
 from sd_db.errors import SdDbError
 from sd_db.migrate import initialise
 from sd_db.registry import parse
+from sd_db.testing.wire import hub_only
 from sd_db.workflow import item_state
 from sd_db.writes import create_assignment, create_item, record_cost, upsert_repo
 
@@ -409,6 +410,7 @@ class UrlAuthor(unittest.TestCase):
     def notes(self, kind):
         return [row['body'] for row in self.db.execute('SELECT body FROM note WHERE item = ? AND kind = ? ORDER BY id', (self.item, kind))]
 
+    @hub_only
     def test_a_settled_call_ends_the_row_done_with_the_response_and_one_run_cost_row(self):
         request = self.claim()
         wire = Wire((200, answer(1000, 500)))
@@ -429,6 +431,7 @@ class UrlAuthor(unittest.TestCase):
         self.assertEqual([(r['call_id'], r['source'], r['pass'], r['role'], r['repo'], r['provider'], r['bill'], r['usd']) for r in self.cost(request)],
                          [(f"url:{request['run']['id']}", 'run', request['run']['id'], 'author', '/fixture/repo', 'mini', 'open', 0.002)])
 
+    @hub_only
     def test_a_refused_budget_ends_the_row_blocked_with_a_budget_spent_note_and_the_loop_leaves_it(self):
         bound = bound_for(self.mini, BRIEF)
         request = self.claim(budget_usd=bound)
@@ -450,6 +453,7 @@ class UrlAuthor(unittest.TestCase):
         self.assertEqual(runner.queued(self.db), [])
         self.assertIsNone(runner.claim(self.db, request['id'], owner='fixture', work_root=self.root / 'work', retention_root=self.root / 'retained'))
 
+    @hub_only
     def test_a_lost_response_ends_the_row_blocked_and_the_ledger_row_bound(self):
         request = self.claim()
         answered = self.answer(request, Wire(TimeoutError('timed out')))
@@ -461,6 +465,7 @@ class UrlAuthor(unittest.TestCase):
         bill = next(row for row in reads.cost_by_bill(self.db) if row['name'] == 'open')
         self.assertEqual((bill['spent'], bill['reserved']), (bound_for(self.mini, PROMPT), 0.0))
 
+    @hub_only
     def test_the_response_is_retained_before_the_ending_is_written(self):
         # PR #429 review: the ending must never claim a work product that was
         # not kept, so `retain` sees the body while the run still has no outcome.
@@ -471,6 +476,7 @@ class UrlAuthor(unittest.TestCase):
         self.assertEqual(seen, [(None, answered['body'])])
         self.assertEqual(runner.run_state(self.db, request['run']['id'])['outcome'], 'done')
 
+    @hub_only
     def test_a_failed_retain_leaves_the_run_without_an_ending_and_the_call_settled(self):
         request = self.claim()
         def retain(body):
@@ -483,6 +489,7 @@ class UrlAuthor(unittest.TestCase):
         self.assertIsNone(runner.run_state(self.db, request['run']['id'])['outcome'])
         self.assertEqual([(r['source'], r['usd']) for r in self.cost(request)], [('run', 0.002)])
 
+    @hub_only
     def test_a_refused_reservation_retains_nothing_and_a_dead_retain_cannot_hide_the_refusal(self):
         # PR #429 review: a refusal has no body, so `retain` is not called on
         # that path; a volume that cannot be written never turns `budget
@@ -498,6 +505,7 @@ class UrlAuthor(unittest.TestCase):
         self.assertTrue(answered['detail'].startswith('budget spent: assignment'))
         self.assertEqual(self.notes('followup'), [answered['detail']])
 
+    @hub_only
     def test_a_cancel_requested_while_the_call_is_on_the_wire_wins_the_ending(self):
         """The `start` path polls `cancel_requested` and ends `cancelled`; the
         `url` path has no poll, so the row is re-read after the answer and a

@@ -12,10 +12,12 @@ from sd_db.backup import restore, run
 from sd_db.errors import BackupError
 from sd_db.migrate import initialise
 from sd_db.schema import SCHEMA_VERSION, migrations
+from sd_db.testing.wire import hub_only
 
 backup_module = importlib.import_module("sd_db.backup")
 
 
+@hub_only
 class RestoreSafety(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

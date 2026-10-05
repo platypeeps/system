@@ -305,7 +305,8 @@ satellite stage reports each one installed or loaded as `EXTRA`.
 | `providers.yaml`, `commands.yaml` | Read beside the database | `registry.beside`, `runner_exec` |
 | Ledger reservations, the orphan sweep, and every provider call charged through `sd_db.calls` | The sweep judges an owner by a local `os.kill`; a pid from another kernel reads as dead | `release_orphans`, `local-sd-db/sd_db/ledger.py`; gap C1 |
 | Every directory beside the database (`executions/`, `runner-journal/`, `runner-ending/`, `publications/`, the two recovery-evidence directories) | Under a remote connection there is no directory to be beside | `publication_journal.root`, `registry.beside`; gap (b) |
-| The `sd writing` state read (`writing.piece_state`) | It reads the publication journal beside the database; found by step 1 | `piece_state`, `local-sd-db/sd_db/writing.py`; gap (b) |
+
+Corrected 2026-10-04 by step 6: `writing.piece_state` is not hub-only. It reads `publication_claim` rows and the piece's own checkout, not a directory beside the database, so its table row is removed.
 
 The satellite keeps: sessions, `sd-review` (its judgments go to the hub; its
 CLI provider lanes run, and its URL-provider lanes are refused by name, gap

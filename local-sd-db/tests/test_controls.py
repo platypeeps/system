@@ -30,6 +30,7 @@ from sd_db.database import connect
 from sd_db.errors import RegistryError, SdDbError
 from sd_db.migrate import initialise
 from sd_db.operations import LABEL_PREFIX
+from sd_db.testing.wire import hub_only
 from sd_db.writes import (
     add_note,
     create_item,
@@ -279,6 +280,7 @@ class Controls(unittest.TestCase):
         self.assertNotEqual(cleared["revision"], state["revision"])
         self.assertEqual(provider_controls.snapshot(self.db), cleared)
 
+    @hub_only
     def test_raising_a_cap_lets_a_refused_bill_reserve_again(self):
         """Criterion 13's raised-cap test: a bill the ledger passed over at
         its cap takes the same reservation once the cap is raised."""
@@ -434,6 +436,7 @@ class Controls(unittest.TestCase):
                                          "EnvironmentVariables": {"SD_RUNNER_PYTHON": sys.executable}}))
         return plist
 
+    @hub_only
     def test_installed_control_binds_database_revision_and_attempt(self):
         item = create_item(self.db, kind="task", title="Owned", repo=str(self.repo), branch="main", status="ready")
         assignment = runner.enqueue(self.db, [item], who="operator")[0]["id"]

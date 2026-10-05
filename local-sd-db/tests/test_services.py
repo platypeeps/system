@@ -20,6 +20,7 @@ from sd_db.services import (
     start_service,
     stop_service,
 )
+from sd_db.testing.wire import hub_only
 from sd_db.workflow import StaleItem, WorkflowError
 from sd_db.writes import record_state
 
@@ -130,6 +131,7 @@ class Services(unittest.TestCase):
         self.assertEqual(self.db.total_changes, before)
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_stop_unloads_without_deleting_plist_and_start_bootstraps_then_kickstarts(self):
         original = self.plist.read_bytes()
         stopped = self.act(stop_service)
@@ -142,12 +144,14 @@ class Services(unittest.TestCase):
             ["/bin/launchctl", "kickstart", self.domain + "/" + self.label]])
         self.assertEqual(self.plist.read_bytes(), original)
 
+    @hub_only
     def test_restart_verifies_stop_then_loads_and_starts_same_configuration(self):
         result = self.act(restart_service)
         self.assertEqual(result["request"]["status"], "accepted")
         self.assertEqual(result["service"]["state"], "running")
         self.assertEqual([call[1] for call in self.actions()], ["bootout", "bootstrap", "kickstart"])
 
+    @hub_only
     def test_idle_start_only_kickstarts_and_running_start_is_refused(self):
         with self.assertRaises(WorkflowError):
             self.act(start_service)
@@ -155,6 +159,7 @@ class Services(unittest.TestCase):
         self.assertEqual(self.act(start_service)["request"]["status"], "accepted")
         self.assertEqual([call[1] for call in self.actions()], ["kickstart"])
 
+    @hub_only
     def test_stale_plist_and_same_second_runtime_changes_refuse_before_dispatch(self):
         before = self.state()
         self.config["ProgramArguments"].append("changed")
@@ -167,6 +172,7 @@ class Services(unittest.TestCase):
             self.act(stop_service, before)
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_changed_loaded_identity_unknown_output_and_unsafe_files_disable_controls(self):
         self.configs[self.domain + "/" + self.label] = {**self.config, "ProgramArguments": ["/wrong/program"]}
         state = self.state()
@@ -192,6 +198,7 @@ class Services(unittest.TestCase):
             if row["label"] != self.label:
                 self.assertTrue(all(not value["allowed"] for value in row["capabilities"].values()))
 
+    @hub_only
     def test_system_ids_arbitrary_paths_and_missing_revisions_never_dispatch(self):
         for label in ("system:" + self.label, "../server", "-k", self.label + ";echo", "/tmp/evil.plist"):
             with self.assertRaises(WorkflowError):
@@ -201,6 +208,7 @@ class Services(unittest.TestCase):
                 stop_service(self.db, self.label, expected_revision=revision, backend=self.backend, who="operator")
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_changed_config_between_stop_and_restart_preserves_new_config_and_does_not_bootstrap(self):
         def race(argv):
             if argv[1] == "bootout":
@@ -213,6 +221,7 @@ class Services(unittest.TestCase):
         self.assertEqual(result["service"]["state"], "unloaded")
         self.assertIn("/newer/program", self.plist.read_text())
 
+    @hub_only
     def test_restore_blocks_start_restart_but_allows_stop(self):
         record_state(self.db, "restore", key="fixture", body={})
         with self.assertRaisesRegex(WorkflowError, "restore"):
@@ -221,6 +230,7 @@ class Services(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowError, "restore"):
             self.act(start_service, stopped["service"])
 
+    @hub_only
     def test_disabled_agent_and_unknown_disabled_observation_refuse_start(self):
         self.runtime.clear()
         self.disabled = True
@@ -228,6 +238,7 @@ class Services(unittest.TestCase):
             self.act(start_service)
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_unknown_enablement_blocks_start_restart_but_allows_safe_stop(self):
         original = self.run_command
         def unknown(argv):
@@ -362,6 +373,7 @@ class Services(unittest.TestCase):
                 self.assertNotIn("HIDDEN", json.dumps(state))
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_program_only_agent_has_exact_loaded_identity(self):
         self.config = {"Label": self.label, "Program": str(self.program), "KeepAlive": True}
         self.plist.write_bytes(plistlib.dumps(self.config))
@@ -369,6 +381,7 @@ class Services(unittest.TestCase):
         self.assertTrue(self.state()["capabilities"]["stop"]["allowed"])
         self.assertEqual(self.act(restart_service)["service"]["state"], "running")
 
+    @hub_only
     def test_symlink_and_malformed_plists_remain_visible_without_controls(self):
         alternate = self.root / "alternate.plist"
         alternate.write_bytes(self.plist.read_bytes())
@@ -382,6 +395,7 @@ class Services(unittest.TestCase):
             self.act(stop_service)
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_accepted_stop_without_observed_unload_does_not_continue_restart(self):
         original = self.run_command
         def no_effect(argv):
@@ -396,6 +410,7 @@ class Services(unittest.TestCase):
         self.assertFalse(result["service"]["capabilities"]["restart"]["allowed"])
         self.assertEqual([call[1] for call in self.actions()], ["bootout"])
 
+    @hub_only
     def test_registration_failure_keeps_observed_unloaded_state_and_phase(self):
         def fail_registration(argv):
             if argv[1] == "bootstrap":
@@ -406,6 +421,7 @@ class Services(unittest.TestCase):
         self.assertEqual(result["service"]["state"], "unloaded")
         self.assertEqual([call[1] for call in self.actions()], ["bootout", "bootstrap"])
 
+    @hub_only
     def test_transient_spawn_after_registration_is_observed_before_kickstart(self):
         self.runtime.clear()
         original = self.run_command
@@ -423,6 +439,7 @@ class Services(unittest.TestCase):
         self.assertEqual(result["service"]["state"], "running")
         self.assertEqual([call[1] for call in self.actions()], ["bootstrap", "kickstart"])
 
+    @hub_only
     def test_unknown_registration_observation_times_out_without_kickstart(self):
         self.runtime.clear()
         original = self.run_command
@@ -438,6 +455,7 @@ class Services(unittest.TestCase):
         self.assertEqual(result["service"]["state"], "unknown")
         self.assertEqual([call[1] for call in self.actions()], ["bootstrap"])
 
+    @hub_only
     def test_plist_changed_during_runtime_inspection_is_not_a_dispatchable_snapshot(self):
         before = self.state()
         def race(argv):
@@ -449,6 +467,7 @@ class Services(unittest.TestCase):
         self.assertFalse(self.state()["capabilities"]["stop"]["allowed"])
         self.assertEqual(self.actions(), [])
 
+    @hub_only
     def test_failed_and_timed_out_requests_are_honest_and_do_not_expose_output(self):
         for error, status in ((5, "failed"), (subprocess.TimeoutExpired("launchctl", 10), "unknown")):
             self.command_error = error
@@ -459,6 +478,7 @@ class Services(unittest.TestCase):
             self.assertNotIn("HIDDEN", json.dumps(result))
             self.assertNotIn("SECRET", json.dumps(result))
 
+    @hub_only
     def test_crash_at_dispatch_keeps_durable_request_and_rejects_stale_replay(self):
         before = self.state()
         self.command_error = SystemExit(86)
@@ -470,6 +490,7 @@ class Services(unittest.TestCase):
             self.act(stop_service, before)
         self.assertFalse(current["capabilities"]["stop"]["allowed"])
 
+    @hub_only
     def test_final_recheck_after_durable_request_refuses_new_runtime(self):
         original = self.backend.inspect
         calls = 0

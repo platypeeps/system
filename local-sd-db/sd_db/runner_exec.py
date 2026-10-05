@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 
 from . import paths, registry, runner, runner_controls, workflow
-from .database import transaction
+from .database import refuse_hub_only, transaction
 from .errors import SdDbError
 from .writes import add_note, now
 from .yaml_lite import load
@@ -230,6 +230,7 @@ def verify_descriptor(value):
 
 
 def _validate(connection, items, scope, assignment=None):
+    refuse_hub_only(connection, "the runner's executions directory")
     value = _descriptor(scope)
     if items != [value.get("item")] or value.get("scope") != "worktree" or value.get("mutates") is not True:
         raise workflow.WorkflowError("queued exec must be one mutating worktree command")
@@ -311,7 +312,8 @@ def _standing(connection, command, values, *, expected_catalog, screen, path, ho
     its kind is refused on the form and never on the row, and the dashboard
     sends 400 for it where a well-typed value on the same request would have
     got 409 with `reload` for a stale row, or 404 for a row that is not
-    there (`local-project-dashboard/sd_dashboard/server.py:548`). Nothing
+    there (`except workflow.StaleItem as problem`, in `do_POST` of
+    `local-project-dashboard/sd_dashboard/server.py`). Nothing
     branches on the difference -- `dashboard.js` reads `error` alone, and the
     CLI exits 1 for any of them -- so it is recorded here rather than pinned
     by a test, which is what a reader of either code would need (sd:820).
@@ -373,6 +375,7 @@ def standing_refusal(connection, command, values, *, expected_catalog, screen="i
 
 
 def prepare(connection, item, command, values, *, expected_revision, expected_catalog, screen="item", target=None, path=None, home=None, who, require_queue=False):
+    refuse_hub_only(connection, "the runner's executions directory")
     with transaction(connection):
         current, entry = _standing(connection, command, values, expected_catalog=expected_catalog,
                                    screen=screen, path=path, home=home, require_queue=require_queue)
@@ -429,6 +432,7 @@ def read_execution(connection, note, *, offset=0):
         raise workflow.WorkflowError("output offset must be nonnegative")
     data = dict(row)
     path = Path(row["output_path"])
+    refuse_hub_only(connection, "the runner's executions directory")
     database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
     if path.parent != database.parent / "executions" or not re.fullmatch(r"[a-f0-9]{32}\.log", path.name) or path.parent.is_symlink():
         raise workflow.WorkflowError("execution output is outside its designated log directory")
@@ -658,6 +662,7 @@ def execute_immediate(connection, note, *, home=None, backend=None):
 
 def reconcile(connection, note, *, home=None, backend=None):
     """Observe the original target, never replay a command with an unknown outcome."""
+    refuse_hub_only(connection, "runner controls")
     row, value = _record(connection, note)
     if row["ended"]:
         return read_execution(connection, note)

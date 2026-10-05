@@ -84,7 +84,7 @@ class HubFileNoServer(Satellite):
                 attempt()
             self.assertIn(f"127.0.0.1:{port}", str(caught.exception))
             self.assertIn(str(config), str(caught.exception))
-        with self.assertRaisesRegex(remote.RemoteError, "run on the hub"):
+        with self.assertRaisesRegex(remote.HubOnly, "init and migrate runs on the sd hub only"):
             initialise(home=self.home)
         self.assertEqual(files_under(self.home), before)
         self.assertFalse((self.home / ".local").exists())
