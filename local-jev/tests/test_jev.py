@@ -495,7 +495,8 @@ class TestEnvFile(StubServer):
     def run_link(self, link, args, env):
         environ = dict(os.environ)
         # `jev.sh test` sources the operator's own .env, so drop what it set.
-        for name in ("TYPESAFE_API_KEY", "JEV_MODEL", "JEV_TRACES_URL", "JEV_TRACES_TIMEOUT"):
+        for name in ("TYPESAFE_API_KEY", "JEV_MODEL", "JEV_TRACES_URL", "JEV_TRACES_TIMEOUT",
+                     "JEV_SHADOW"):
             environ.pop(name, None)
         environ["JEV_URL"] = self.url
         environ["JEV_FLAG_FILE"] = self.switch
@@ -518,6 +519,15 @@ class TestEnvFile(StubServer):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(Stub.seen[-1]["auth"], "Bearer exported")
         self.assertEqual(Stub.seen[-1]["payload"]["model"], "exported")
+
+    def test_an_exported_shadow_switch_beats_the_env_file_both_ways(self):
+        link = self.copy("TYPESAFE_API_KEY=k\nJEV_SHADOW=1\n")
+        self.assertIn("shadow=on", self.run_link(link, ["status"], {}).stdout)
+        self.assertIn("shadow=off",
+                      self.run_link(link, ["status"], {"JEV_SHADOW": "0"}).stdout)
+        link = self.copy("TYPESAFE_API_KEY=k\nJEV_SHADOW=0\n")
+        self.assertIn("shadow=on",
+                      self.run_link(link, ["status"], {"JEV_SHADOW": "1"}).stdout)
 
     def test_without_a_key_anywhere_the_link_exits_three(self):
         link = self.copy("#JEV_MODEL=unset\n")
@@ -628,6 +638,22 @@ class TestSwitch(StubServer):
         self.run_main(["on"])
         self.assertEqual(self.run_main(["enabled"])[0], 0)
 
+    def test_shadow_on_and_off_write_a_file_beside_the_switch(self):
+        """sd:2761. Off until switched on, and `enabled --why` says so."""
+        self.assertNotIn("shadow", self.run_main(["enabled", "--why"])[1])
+        self.assertEqual(self.run_main(["shadow", "on"])[0], 0)
+        beside = Path(self.switch).with_name("shadow")
+        self.assertEqual(beside.read_text().strip(), "on")
+        self.assertFalse(Path(self.switch).exists())
+        self.assertIn("shadow on", self.run_main(["enabled", "--why"])[1])
+        self.assertEqual(self.run_main(["enabled"])[0], 0)
+        self.run_main(["shadow", "off"])
+        self.assertNotIn("shadow", self.run_main(["enabled", "--why"])[1])
+
+    def test_status_names_the_shadow_switch(self):
+        self.assertIn("shadow=off", self.run_main(["status"])[1])
+        self.assertIn("shadow=on", self.run_main(["status"], JEV_SHADOW="1")[1])
+
     def test_off_stops_a_verb_before_the_network(self):
         self.write_switch("off")
         code, _out, err = self.run_verbose(["noul", "q"])
@@ -708,7 +734,7 @@ class TestFallback(StubServer):
         thing it reports, and `record` because the whole verb is one row about
         work that already happened somewhere else.
         """
-        local = {"status", "enabled", "on", "off", "record"}
+        local = {"status", "enabled", "on", "off", "shadow", "record"}
         parser = jev.build_parser()
         subs = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         for verb, sub in subs.choices.items():

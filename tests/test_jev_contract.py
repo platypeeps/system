@@ -77,8 +77,14 @@ KNOWN_CALLERS = frozenset({
     "local-notify",
     "local-obsidian-review",
     "local-obsidian-tasks",
+    "local-scan-for-secrets",
     "local-sd-plan",
 })
+
+#: Callers whose input may not leave the machine: every `jev` call they make
+#: passes `--local-only`, so it reaches the local Kev or nothing. Their hits
+#: are candidate credentials (sd:2761).
+LOCAL_ONLY_CALLERS = frozenset({"local-scan-for-secrets"})
 
 #: `local-bin-links` puts `jev` on PATH and `local-project-dashboard` has a
 #: `score` collector of its own. Neither asks Jev anything. They are named
@@ -686,6 +692,22 @@ class AFallbackNeverReadsAsAJudgment(unittest.TestCase):
             "--fallback is passed before the verb; it is a subparser "
             f"argument and argparse exits 2 before the verb is read: {bad}",
         )
+
+
+class ALocalOnlyCallerNeverAsksAHostedModel(unittest.TestCase):
+    """A folder in LOCAL_ONLY_CALLERS passes `--local-only` on every call."""
+
+    def test_every_call_passes_local_only(self):
+        bad, calls = [], 0
+        for folder in sorted(LOCAL_ONLY_CALLERS):
+            for rel, rows in folder_files(folder):
+                for number, text in shell_calls(rows):
+                    if re.search(r"""(?:\bjev|["']\$\{?JEV\}?["'])\s+(?:noul|choice|score|ask|enabled)\b""", text):
+                        calls += 1
+                        if "--local-only" not in text:
+                            bad.append(f"{rel}:{number}")
+        self.assertGreater(calls, 0, "no call found, so the rule checked nothing")
+        self.assertEqual(bad, [], f"a call without --local-only: {bad}")
 
 
 class OnlyOneOptionReadsStdin(unittest.TestCase):

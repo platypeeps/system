@@ -60,6 +60,11 @@ backup, and the fixture harness both repositories test against.
                     COMMIT answer was lost can ask whether it landed. No
                     row is pruned. Carries its reverse in its header, run
                     before 018's (sd:1335)
+      schema/020_repo_satellite_gate.sql  `repo.satellite_gate`, `off` or
+                    `accept`: whether the hub may merge on a satellite's
+                    gate pass. The column only, every row starts at `off`,
+                    set with `repo satellite-gate`. Carries its reverse in
+                    its header, run before 019's (sd:2704)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -141,8 +146,9 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh repo runner-merge PATH manual|auto   # may the runner merge it
     ./sd-db.sh repo managed PATH yes|no   # does the operator manage it
     ./sd-db.sh repo ci PATH github|local  # where its checks run
+    ./sd-db.sh repo satellite-gate PATH off|accept  # may the hub merge on a satellite's pass
 
-A `repo list` row reads `path remote status_source managed ci runner_merge`.
+A `repo list` row reads `path remote status_source managed ci satellite_gate runner_merge`.
 `remote` is the checkout's origin URL as written, ssh or https: the runner clones over it, so it is not respelled.
 Rows are compared by repository identity, so the two spellings of one GitHub repository match.
 `repo add` on a registered path rereads the checkout, so it refreshes a row whose repository moved to a new owner.
@@ -363,6 +369,7 @@ The machine-setup `satellite` stage writes it.
 - The file and no answer from the hub: `HubUnreachable`, which names the hub. Nothing is created.
 - The file beside a local `sd.db`: `HubConflict`. A machine is a hub or a satellite, not both.
 - A file that names no usable hub: `HubConfigError`, never a fall back to a local file.
+- An explicit path equal to the default is the default: `sd-review --database ~/.local/share/sd/sd.db` opens the hub, though no file exists.
 - An explicit path other than the default opens locally, such as a backup target.
 - `init` and `migrate` refuse with `HubOnly`.
 - `token_file` is for a loopback hub only; a satellite's file names none.
@@ -456,6 +463,15 @@ accuracy and Brier score on pairs whose Jev row carries a label. A noul agrees
 when both sit on the same side of 0.5, and the mean `|Δp|` is printed beside
 it. A score agrees when the rounded scores are equal; its distribution feeds
 the Brier score only. Percentiles are nearest-rank, so every printed number is one a call took.
+
+Each arm, Jev included, is also read against the old mechanism: the baseline
+row a shadow call writes under the same pair id (sd:2761). The line gives
+agreements over comparable pairs, the percent, and the five most common
+disagreements as `old→arm` values: 1 or 0 for a noul (yes or no), a position
+for a choice, a rounded level for a score. A pair whose old answer is not a
+number, such as a `--fallback` marker or a noul asked under a `--gate` other
+than 0.5, is counted and not compared. A stage
+with no such pair says `no paired samples with the old mechanism`.
 
 ## Automatic provider selection
 

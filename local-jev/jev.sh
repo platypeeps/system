@@ -31,6 +31,7 @@ ENV_JEV_MODEL="${JEV_MODEL:-}"
 ENV_JEV_TIMEOUT="${JEV_TIMEOUT:-}"
 ENV_JEV_RETRIES="${JEV_RETRIES:-}"
 ENV_JEV_ENABLED="${JEV_ENABLED:-}"
+ENV_JEV_SHADOW="${JEV_SHADOW:-}"
 ENV_JEV_FLAG_FILE="${JEV_FLAG_FILE:-}"
 ENV_JEV_TRACES_URL="${JEV_TRACES_URL:-}"
 ENV_JEV_TRACES_TIMEOUT="${JEV_TRACES_TIMEOUT:-}"
@@ -81,11 +82,12 @@ done
 [ -n "$ENV_JEV_TIMEOUT" ] && JEV_TIMEOUT="$ENV_JEV_TIMEOUT"
 [ -n "$ENV_JEV_RETRIES" ] && JEV_RETRIES="$ENV_JEV_RETRIES"
 [ -n "$ENV_JEV_ENABLED" ] && JEV_ENABLED="$ENV_JEV_ENABLED"
+[ -n "$ENV_JEV_SHADOW" ] && JEV_SHADOW="$ENV_JEV_SHADOW"
 [ -n "$ENV_JEV_FLAG_FILE" ] && JEV_FLAG_FILE="$ENV_JEV_FLAG_FILE"
 [ -n "$ENV_JEV_TRACES_URL" ] && JEV_TRACES_URL="$ENV_JEV_TRACES_URL"
 [ -n "$ENV_JEV_TRACES_TIMEOUT" ] && JEV_TRACES_TIMEOUT="$ENV_JEV_TRACES_TIMEOUT"
 for var in TYPESAFE_API_KEY JEV_URL JEV_MODEL JEV_TIMEOUT JEV_RETRIES \
-           JEV_ENABLED JEV_FLAG_FILE JEV_TRACES_URL JEV_TRACES_TIMEOUT; do
+           JEV_ENABLED JEV_SHADOW JEV_FLAG_FILE JEV_TRACES_URL JEV_TRACES_TIMEOUT; do
   eval "value=\${$var:-}"
   [ -n "$value" ] && export "$var"
 done
@@ -109,12 +111,12 @@ case "$1" in
     shift
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
     ;;
-  ask|noul|choice|score|status|enabled|on|off|record)
+  ask|noul|choice|score|status|enabled|on|off|shadow|record)
     exec "${PYTHON:-python3}" "$DIR/jev.py" "$@"
     ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: jev.sh ask|noul|choice|score|status|enabled|on|off|record|test
+usage: jev.sh ask|noul|choice|score|status|enabled|on|off|shadow|record|test
 
 Jev is TypeSafe's System One model. It answers a narrow question about some
 state with a type and a probability, in about the time a shell pipeline takes
@@ -141,6 +143,9 @@ to do with the number.
                           the stage off. Unset means on, so one call answers
                           both halves and the vocabulary lives in one place.
   on | off                set the switch, fleet-wide for this machine
+  shadow on|off           every call is still made and recorded, and the
+                          caller gets its --fallback, or exit 3 without one,
+                          so its old mechanism runs. Off unless switched on
   record                  write one event for a decision this tool did not
                           make: what your own mechanism answered, how long it
                           took, and why Jev was not used. Sends nothing, needs
@@ -168,7 +173,16 @@ Your own mechanism is the control arm and is measured too. `jev enabled STAGE
 --record` writes the decline when the answer is no, and `jev record` writes
 what your path then did. `--shadow ANSWER` asks anyway, records both answers
 and prints yours, so a stage produces a paired sample without changing what it
-does. It costs a real call, so it is off unless you pass it.
+does. It costs a real call, so it is off unless you pass it. `--baseline
+ANSWER` is the live form: the judgment is printed and used as before, your
+answer is recorded beside it as one pair, and `changed` compares the two.
+--baseline-ms N times your own path. Not with --shadow.
+
+--local-only sends the call to the local Kev alone (JEV_COMPARE_KEV_URL,
+default http://127.0.0.1:8009/v1/systemone), never to Jev or a comparison arm.
+A Kev URL that is not a loopback address is refused before anything is sent;
+Kev down is a decline, like Jev down. `enabled STAGE --local-only` answers for
+that path. The stages in LOCAL_ONLY_STAGES (jev.py) are local-only always.
 
 Each caller also has a variable of its own -- JEV_HEALTH_CHECK,
 JEV_ADVERSARIAL_GATE and the like -- and it only switches that one stage off:
@@ -222,6 +236,8 @@ environment:
   JEV_RETRIES        retries for 429/529/5xx, doubling backoff (default 3)
   JEV_ENABLED        1/0 for one call or one session; beats the switch file
   JEV_FLAG_FILE      switch file (default ~/.config/jev/enabled)
+  JEV_SHADOW         1/0 for one call or one session; beats the shadow file,
+                     which sits beside the switch file
   JEV_TRACES_URL     OTLP/HTTP traces endpoint; one metadata-only span per call
                      (off when unset; local-genai-traces takes
                      http://127.0.0.1:4338/v1/traces)
@@ -238,7 +254,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") ask|noul|choice|score|status|enabled|on|off|record|test" >&2
+    echo "usage: $(basename "$0") ask|noul|choice|score|status|enabled|on|off|shadow|record|test" >&2
     exit 1
     ;;
 esac
