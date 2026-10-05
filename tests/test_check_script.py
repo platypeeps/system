@@ -1,7 +1,9 @@
-"""`tests/check.sh` against stub suites: its pack source.
+"""`tests/check.sh` against stub suites: its lanes and its pack source.
 
-sd:2720: the pinned pack came from GitHub in every gate; the machine's clone
-answers when it holds the pin.
+sd:2719: a slot holder exports its cap as `SD_GATE_POOL_SIZE`, and four gates
+each running every job at once ran 32 and drove the load past 200. Above a cap
+of 1, at most CPUs / cap jobs may run together. sd:2720: the pinned pack came
+from GitHub in every gate; the machine's clone answers when it holds the pin.
 
 A copy of `check.sh` runs in a temporary root beside a `ci-native.sh` and a
 `run-macos-only.sh` that only record what ran and how many ran together.
@@ -70,6 +72,7 @@ class CheckScript(unittest.TestCase):
         self.bin = self.base / "bin"
         self.bin.mkdir()
         (self.bin / "python3.14").symlink_to(sys.executable)
+        self.cores = os.cpu_count() or 4
 
     def check(self, *, expect=0, **extra):
         environment = {key: value for key, value in os.environ.items() if key != "SD_GATE_POOL_SIZE"}
@@ -79,6 +82,32 @@ class CheckScript(unittest.TestCase):
                               text=True, env=environment, stdin=subprocess.DEVNULL, timeout=120)
         self.assertEqual(done.returncode, expect, done.stdout + done.stderr)
         return done
+
+    def counts(self):
+        return [int(line) for line in (self.root / "counts").read_text().split()]
+
+    def test_a_pool_above_one_runs_cpus_over_the_pool_at_once(self):
+        pool = max(2, self.cores // 2)
+        lanes = max(1, self.cores // pool)
+        self.assertLess(lanes, JOBS)
+        done = self.check(SD_GATE_POOL_SIZE=str(pool))
+        self.assertIn(f"check.sh: {JOBS} jobs, {lanes} at a time", done.stdout)
+        self.assertEqual(len((self.root / "ran").read_text().splitlines()), JOBS)
+        self.assertLessEqual(max(self.counts()), lanes, self.counts())
+
+    def test_no_pool_and_a_pool_of_one_run_every_job_at_once(self):
+        for extra in ({}, {"SD_GATE_POOL_SIZE": "1"}, {"SD_GATE_POOL_SIZE": "nope"}):
+            with self.subTest(extra=extra):
+                done = self.check(**extra)
+                self.assertIn(f"check.sh: {JOBS} jobs, {JOBS} at a time", done.stdout)
+
+    def test_a_failing_job_in_a_lane_fails_the_check_and_is_named(self):
+        (self.root / "fail-runner").touch()
+        done = self.check(expect=1, SD_GATE_POOL_SIZE=str(max(2, self.cores // 2)))
+        self.assertIn("check.sh: leg-runner exited 3", done.stderr)
+        self.assertIn("failed: leg-runner;", done.stderr)
+        # Every other job still ran.
+        self.assertEqual(len((self.root / "ran").read_text().splitlines()), JOBS)
 
     def test_the_pack_comes_from_the_local_clone_when_it_holds_the_pin(self):
         done = self.check()

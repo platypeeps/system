@@ -122,9 +122,10 @@ python3 tests/test_product_name.py
 # this line.
 python3 tests/test_entrypoint_mode.py
 
-# tests/check.sh itself against stub suites (sd:2720): where it fetches the
-# pinned pack from. Stdlib and git only, so it runs here before the venv,
-# and the guard below demands this line.
+# tests/check.sh itself against stub suites (sd:2719, sd:2720): how many
+# jobs it runs at once and where it fetches the pinned pack from. Stdlib
+# and git only, so it runs here before the venv, and the guard below
+# demands this line.
 python3 tests/test_check_script.py
 
 # The run_suite lines at the bottom are a hand-maintained list, and

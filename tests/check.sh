@@ -33,6 +33,8 @@ Environment:
                      (default: ~/repos/platypeeps/sd-ai-command-pack)
   CI_PACK_URL        where to fetch the pinned command pack from otherwise
                      (default: https://github.com/platypeeps/sd-ai-command-pack.git)
+  SD_GATE_POOL_SIZE  the gate cap a slot holder exports; above 1, at most
+                     CPUs / cap jobs run at once
 
 `make check` runs `check.sh run`. It needs python3.14, git, sqlite3, lsof,
 ps and rsync on PATH, and network access when no local clone holds the pin.
@@ -132,13 +134,21 @@ echo "== preflight"
 job=preflight
 isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" preflight
 
-# Every leg and, on a Mac, every macOS-only suite run at once. Run one after another they took 24 minutes here,
+# Every leg and, on a Mac, every macOS-only suite run at once, unless a gate
+# cap below lowers that. Run one after another they took 24 minutes here,
 # most of it runner-macos alone, and sd-check stops a check at 15. Each job
 # writes its own log, printed whole once it ends, so the output does not
 # interleave.
 # The tools leg is the longest: dozens of short suites, one after another.
 # It runs as TOOLS_SHARDS processes, each taking every n-th suite.
+# The macOS-only suites go first: runner-macos is the longest job, and when
+# the jobs run fewer at a time (below) it must start at once.
 jobs=""
+if [ "$(uname -s)" = Darwin ]; then
+  for suite in $(sh "$DIR/run-macos-only.sh" list | awk '{ print $1 }'); do
+    jobs="$jobs macos-$suite"
+  done
+fi
 for leg in $LEGS; do
   if [ "$leg" = tools ]; then
     shard=1
@@ -150,29 +160,47 @@ for leg in $LEGS; do
     jobs="$jobs leg-$leg"
   fi
 done
-if [ "$(uname -s)" = Darwin ]; then
-  for suite in $(sh "$DIR/run-macos-only.sh" list | awk '{ print $1 }'); do
-    jobs="$jobs macos-$suite"
-  done
+
+# sd:2719: each job keeps about one CPU busy, and a slot holder such as
+# `sd gate` runs up to SD_GATE_POOL_SIZE checks at once: 4 gates ran 32
+# jobs and the load passed 200. Under a cap above 1 the jobs run in
+# CPUs / cap lanes, so the pool's gates together keep one job per CPU.
+# Each lane takes the next job no lane has claimed; mkdir is the claim.
+set -- $jobs
+lanes=$#
+cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+case "$cores" in ''|*[!0-9]*) cores=4 ;; esac
+pool="${SD_GATE_POOL_SIZE:-0}"
+case "$pool" in ''|*[!0-9]*) pool=0 ;; esac
+if [ "$pool" -gt 1 ] && [ $((cores / pool)) -lt "$lanes" ]; then
+  lanes=$((cores / pool))
+  [ "$lanes" -ge 1 ] || lanes=1
 fi
-pids=""
-for job in $jobs; do
-  case "$job" in
-    leg-*) isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "${job#leg-}" ;;
-    tools-*) isolated SUITE_SHARD="${job#tools-}/$TOOLS_SHARDS" \
-               /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg tools ;;
-    macos-*) isolated sh "$DIR/run-macos-only.sh" "${job#macos-}" ;;
-  esac > "$work/$job.log" 2>&1 &
-  pids="$pids $!"
+echo "check.sh: $# jobs, $lanes at a time (SD_GATE_POOL_SIZE=${SD_GATE_POOL_SIZE:-unset}, $cores CPUs)"
+lane=0
+while [ "$lane" -lt "$lanes" ]; do
+  for job in $jobs; do
+    mkdir "$work/$job.claim" 2>/dev/null || continue
+    started=$(date +%s)
+    status=0
+    case "$job" in
+      leg-*) isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "${job#leg-}" ;;
+      tools-*) isolated SUITE_SHARD="${job#tools-}/$TOOLS_SHARDS" \
+                 /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg tools ;;
+      macos-*) isolated sh "$DIR/run-macos-only.sh" "${job#macos-}" ;;
+    esac > "$work/$job.log" 2>&1 || status=$?
+    echo "$status $(($(date +%s) - started))" > "$work/$job.status"
+  done &
+  lane=$((lane + 1))
 done
+wait
 failed=""
-set -- $pids
 for job in $jobs; do
-  status=0
-  wait "$1" || status=$?
-  shift
-  echo "== $job"
-  cat "$work/$job.log"
+  # A job with no status file never finished: count it failed.
+  status=1 seconds=0
+  [ ! -f "$work/$job.status" ] || read -r status seconds < "$work/$job.status"
+  echo "== $job (${seconds}s)"
+  [ ! -f "$work/$job.log" ] || cat "$work/$job.log"
   [ "$status" -eq 0 ] || { echo "check.sh: $job exited $status" >&2; failed="$failed $job"; }
 done
 
