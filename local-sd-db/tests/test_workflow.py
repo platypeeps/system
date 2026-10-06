@@ -342,6 +342,28 @@ class BranchClearing(WorkflowCase):
         self.assertIsNone(cleared["item"]["branch"])
         self.assertEqual(cleared["notes"][-1]["body"], "Updated branch by operator")
 
+    def test_a_runner_owned_row_keeps_its_branch(self):
+        """The runner reads the branch to claim and restore; `configure_item`'s guards apply."""
+        for status in ("queued", "running", "ending"):
+            with self.subTest(status=status):
+                state = self.work_on("feat/held", status="planning")
+                create_assignment(self.db, item=state["item"]["id"], role="author", status=status)
+                state = item_state(self.db, state["item"]["id"])
+                with self.assertRaisesRegex(WorkflowError, f"has {status} assignment"):
+                    edit_item(self.db, state["item"]["id"], {"branch": None}, who="operator")
+                self.assertEqual(item_state(self.db, state["item"]["id"]), state)
+        state = self.work_on("feat/leased", status="planning")
+        assignment = create_assignment(self.db, item=state["item"]["id"], role="author", status="done")
+        self.db.execute(
+            "INSERT INTO runner_run (id, assignment, run, repo, branch, owner, work_path, retained_path,"
+            " created_at, updated_at) VALUES ('r1', ?, 1, '/repos/work', 'feat/leased', 'o', '/w', '/r',"
+            " 'now', 'now')", (assignment,))
+        self.db.commit()
+        state = item_state(self.db, state["item"]["id"])
+        with self.assertRaisesRegex(WorkflowError, "retained runner lease"):
+            edit_item(self.db, state["item"]["id"], {"branch": None}, who="operator")
+        self.assertEqual(item_state(self.db, state["item"]["id"]), state)
+
     def test_a_branch_value_is_refused_and_leaves_the_row(self):
         state = self.work_on("feat/gone", status="planning")
         with self.assertRaisesRegex(WorkflowError, "branch can only be cleared here"):

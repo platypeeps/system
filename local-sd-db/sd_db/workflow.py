@@ -315,6 +315,32 @@ def _recurring(kind: str, current: dict, values: dict) -> dict:
     return values
 
 
+def _refuse_active_assignment(connection: sqlite3.Connection, item: int) -> None:
+    active = connection.execute(
+        f"SELECT id, status FROM assignment WHERE item = ? AND status IN "
+        f"({', '.join('?' for _ in ACTIVE_ASSIGNMENTS)}) LIMIT 1",
+        (item, *ACTIVE_ASSIGNMENTS),
+    ).fetchone()
+    if active:
+        raise WorkflowError(f"item {item} has {active['status']} assignment {active['id']}")
+
+
+def _branch_clear(connection: sqlite3.Connection, item: int) -> None:
+    """Refuse a branch clear while the runner owns the row (sd:2818).
+
+    The runner reads the branch to claim a queued assignment and to restore a
+    run, so the guards are `runner_controls.configure_item`'s: no active
+    assignment and no unreleased runner run.
+    """
+    _refuse_active_assignment(connection, item)
+    leased = connection.execute(
+        "SELECT 1 FROM runner_run JOIN assignment ON assignment.id = runner_run.assignment "
+        "WHERE assignment.item = ? AND runner_run.released_at IS NULL LIMIT 1", (item,),
+    ).fetchone()
+    if leased:
+        raise WorkflowError(f"item {item} has a retained runner lease; reconcile it before clearing its branch")
+
+
 def _kind_change(connection: sqlite3.Connection, row: dict, new: str, repo: str | None) -> None:
     """Refuse a kind change that would take a row from its producer or reader.
 
@@ -359,13 +385,7 @@ def _kind_change(connection: sqlite3.Connection, row: dict, new: str, repo: str 
         raise WorkflowError(
             f"item {row['id']} carries {', '.join(owned)} metadata its producer reads by kind; "
             f"its kind cannot be changed here")
-    active = connection.execute(
-        f"SELECT id, status FROM assignment WHERE item = ? AND status IN "
-        f"({', '.join('?' for _ in ACTIVE_ASSIGNMENTS)}) LIMIT 1",
-        (row["id"], *ACTIVE_ASSIGNMENTS),
-    ).fetchone()
-    if active:
-        raise WorkflowError(f"item {row['id']} has {active['status']} assignment {active['id']}")
+    _refuse_active_assignment(connection, row["id"])
     if new in REPO_LESS_KINDS and repo is not None:
         raise WorkflowError(
             f"a {new} item carries no repository; clear repo in the same edit to move this row to {new}")
@@ -516,6 +536,8 @@ def edit_item(
             raise WorkflowError(f"{row['kind']} items use their own editing workflow")
         if "kind" in changed:
             _kind_change(connection, row, changed["kind"], values.get("repo", row["repo"]))
+        if "branch" in changed:
+            _branch_clear(connection, item)
         changed = _recurring(changed.get("kind", row["kind"]), row, changed)
         if changed:
             set_item_fields(connection, item, **changed)

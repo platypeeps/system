@@ -687,7 +687,9 @@ them.
 note reading `Updated branch by <who>`. It refuses any other value: setting a
 branch stays with `runner_controls.configure_item`, which checks it against
 git. A clear is how a stale branch name leaves a row, since nothing else
-writes the column back to empty.
+writes the column back to empty. A row the runner owns keeps its branch: a
+clear is refused while it has an active assignment or an unreleased runner
+run, the same guards `configure_item` applies.
 
 **That is filing behaviour and not a constraint**, which matters if you are
 reasoning about what the store can hold rather than what it does hold.
