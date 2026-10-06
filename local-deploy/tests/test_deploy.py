@@ -565,8 +565,19 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.starts(), [])
         self.assertIn("dashboard.sh health --wait 1", self.calls.read_text().splitlines())
-        self.assertIn("skip runner start: test.example.sd-runner is loaded", result.stdout)
+        self.assertIn("runner.sh status", self.calls.read_text().splitlines())
         self.assertFalse(self.stopped.exists())
+
+    def test_a_replay_keeps_a_held_runner_marked_while_its_heartbeat_fails(self):
+        self.origin()
+        self.record(self.base)
+        self.stopped.write_text("test.example.sd-runner\n")
+        result = self.run_upgrade(DEPLOY_TEST_RUNNER="1")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("deploy: runner status ( ) failed; stopped", result.stderr)
+        self.assertEqual(self.stopped.read_text(), "test.example.sd-runner\n")
+        self.assertNotIn("bootout", self.calls.read_text())
+        self.assertEqual(self.recorded(), self.base)
 
     def test_upgrade_stops_sd_serve_too_when_it_runs_from_the_venv(self):
         self.land({"local-sd-db/sd_db/remote.py": "x\n"})

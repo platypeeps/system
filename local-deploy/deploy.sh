@@ -321,15 +321,18 @@ stop_agent() {
   echo "stopped $1"
 }
 
-# A marked agent that launchd holds already is not bootstrapped again; the
-# others still pass their wait. runner.sh start boots out on its own failure.
+# A marked agent that launchd holds already is not bootstrapped again; it
+# still passes its check, and a held runner its heartbeat (runner.sh status).
+# runner.sh start boots out on its own failure; a held runner is never booted
+# out undrained, so a failed status only keeps it marked.
 start_agent() {
   case "$1" in
     *.sd-runner)
+      library_current sd-runner SD_RUNNER_PYTHON
       if loaded "$1"; then
-        echo "skip runner start: $1 is loaded"
+        why=$(sh "$ROOT/local-sd-runner/runner.sh" status 2>&1) ||
+          fail "runner status ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))"
       else
-        library_current sd-runner SD_RUNNER_PYTHON
         why=$(sh "$ROOT/local-sd-runner/runner.sh" start 2>&1) ||
           fail "runner start ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))"
       fi ;;
