@@ -62,18 +62,12 @@
         </div>
       </div>
       <div class="chips" role="group" aria-label="Availability filter" id="facets"></div>
+      <div id="chips"></div>
       <table class="ledger" aria-labelledby="cat-h">
-        <thead><tr>
-          <th scope="col" class="g"><span class="sr">State</span></th>
-          <th scope="col" data-key="n"><button class="sort" type="button">Skill<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
-          <th scope="col" data-key="st"><button class="sort" type="button">Availability<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
-          <th scope="col" data-key="u" class="use"><button class="sort" type="button">Use / week<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
-          <th scope="col" class="act"><span class="sr">Actions</span></th>
-        </tr></thead>
+        <thead id="rows-head"></thead>
         <tbody id="rows"></tbody>
       </table>
-      <p class="filtered" id="filtered" hidden></p>
-      <div class="pager" id="pager"></div>
+      <div id="pager"></div>
       <p class="foot-note" id="foot"></p>
     </section>
   </main>

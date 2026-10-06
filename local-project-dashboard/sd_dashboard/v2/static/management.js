@@ -113,27 +113,25 @@ const repoParam = params.get('repo');
 // build: the view comes from the URL, so it is checked against the five names before anything indexes by it.
 const VIEWS = ['repos', 'lane', 'sessions', 'deploys', 'schedules'];
 let view = VIEWS.includes(params.get('view')) ? params.get('view') : 'repos';
-const LIST_STATE = () => ({ repos: [RS, 'name', 1], lane: [LS, 'id', -1], schedules: [SS, 'rank', 1] })[view];
+const LIST_STATE = () => ({ repos: [RS, 'name', 1, REPO_COLS], lane: [LS, 'id', -1, MERGE_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
 function setURL() {
   const p = new URLSearchParams();
   p.set('view', view);
   if (repoParam) p.set('repo', repoParam);
   if (text.q) p.set('q', text.q);
   const L = LIST_STATE();
-  if (L) { const [st, sort, dir] = L;
-    if (st.sort !== sort || st.dir !== dir) { p.set('sort', st.sort); p.set('dir', st.dir > 0 ? 'asc' : 'desc'); }
-    if (st.page > 1) p.set('p', st.page);
-    if (st.size && st.size !== 25) p.set('n', st.size); }
+  if (L) { const [st, sort, dir] = L; shell.list.listQuery(p, st, { sort, dir, size: 25 }); }
   if (view === 'repos') ['managed', 'merge'].forEach(k => RS[k] && p.set(k, RS[k]));
   shell.url(p);
 }
 function readURL() {
   if (params.get('q')) { text.q = params.get('q'); input.value = text.q; }
   const L = LIST_STATE(); if (!L) return;
-  const [st] = L;
-  if (params.get('sort')) { st.sort = params.get('sort'); st.dir = params.get('dir') === 'desc' ? -1 : 1; }
-  if (+params.get('p') > 1 && 'page' in st) st.page = +params.get('p');
-  if ([25, 50, 100].includes(+params.get('n')) && 'size' in st) st.size = +params.get('n');
+  const [st, , , cols] = L;
+  shell.list.listParams(params, st, { sorts: cols.map(c => c[0]).filter(Boolean), size: 25 });
+  // An older link's ?p= and ?n= still open their page and size.
+  if (!params.get('page') && /^[1-9]\d*$/.test(params.get('p') || '')) st.page = +params.get('p');
+  if (!params.get('size') && [25, 50, 100].includes(+params.get('n'))) st.size = +params.get('n');
   if (view === 'repos') ['managed', 'merge'].forEach(k => { if (params.get(k)) RS[k] = params.get(k); });
 }
 function swap() { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); }
@@ -173,33 +171,15 @@ function lamps() {
   else set('schedules', 'unknown', html`▨ not read`);
 }
 
-// ---------- Lists: sort, filter, page ----------
-// build: a page from the URL or an older reading can pass the last page; clamp it before slicing, and say so in the URL.
-function clampPage(total, st) {
-  const page = Math.min(Math.max(1, st.page), Math.max(1, Math.ceil(total / st.size)));
-  if (page === st.page) return;
-  st.page = page;
-  setURL();
-}
-function pager(total, st, onChange) {
-  const pages = Math.max(1, Math.ceil(total / st.size));
-  st.page = Math.min(st.page, pages);
-  const from = total ? (st.page - 1) * st.size + 1 : 0, to = Math.min(total, st.page * st.size);
-  const el = document.createElement('div');
-  el.className = 'pager';
-  put(el, html`<span>${from}–${to} of ${total.toLocaleString()}</span>
-    <span class="pages" role="group" aria-label="Pages">${Array.from({ length: pages }, (_, i) => html`<button type="button" data-page="${i + 1}" aria-current="${String(st.page === i + 1)}">${i + 1}</button>`)}</span>
-    <span class="sizes" role="group" aria-label="Rows per page"><span>per page</span>${[25, 50, 100].map(s => html`<button type="button" data-size="${s}" aria-pressed="${String(st.size === s)}">${s}</button>`)}</span>`);
-  el.addEventListener('click', e => {
-    const p = e.target.closest('[data-page]'), s = e.target.closest('[data-size]');
-    if (p) st.page = +p.dataset.page; else if (s) { st.size = +s.dataset.size; st.page = 1; } else return;
-    onChange(); setURL();
-  });
-  return el;
-}
-function sortHead(cols, st) {
-  return html`<tr>${cols.map(([key, label, cls]) => key ? html`<th scope="col" class="${cls || ''}"${st.sort === key ? html` aria-sort="${st.dir > 0 ? 'ascending' : 'descending'}"` : ''}><button type="button" data-sort="${key}">${label}${I(st.sort === key ? (st.dir > 0 ? 'arrow-up' : 'arrow-down') : 'arrow-up-down')}</button></th>` : html`<th scope="col" class="${cls || ''}">${label}</th>`)}</tr>`;
-}
+// ---------- Lists: sort, filter, page (shell.list, sd:2682) ----------
+// build: a page from the URL or an older reading can pass the last page; shell.list clamps it before the slice, and the URL follows.
+function pageOf(rows, st) { const was = st.page, slice = shell.list.pageOf(rows, st); if (st.page !== was) setURL(); return slice; }
+const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const MERGE_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['id', 'Assignment'], [null, 'Repo'], ['at', 'Ended'], [null, 'Status'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const SCHED_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
+// The text filter is one chip on every list; Repos adds its managed and merge filters.
+const textChip = () => text.q ? [{ key: 'q', label: `Text: ${text.q}` }] : [];
+const repoChips = () => [RS.managed && { key: 'managed', label: `Managed: ${RS.managed}` }, RS.merge && { key: 'merge', label: `Runner merge: ${RS.merge}` }, ...textChip()].filter(Boolean);
 const text = { q: '' };
 function tokens() {
   const chips = {}, free = [];
@@ -227,9 +207,7 @@ function renderRepos() {
   const el = document.getElementById('view-repos');
   if (!DOC.repos) { put(el, unknown('The repo table was not read', why('repos'), 'sd-db.sh repo list')); return; }
   if (repoParam) return renderRepoPage(el);
-  const rows = repoRows();
-  clampPage(rows.length, RS);
-  const start = (RS.page - 1) * RS.size;
+  const rows = repoRows(), shown = pageOf(rows, RS);
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, <code>.github/sd-review.json</code> and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
@@ -238,25 +216,24 @@ function renderRepos() {
     <div class="filters" aria-label="Filters">
       <div class="fgroup" role="group" aria-label="Managed"><span class="label">Managed</span>${['yes', 'no'].map(v => html`<button class="chip" type="button" data-f="managed" data-v="${v}" aria-pressed="${String(RS.managed === v)}">${v}</button>`)}</div>
       <div class="fgroup" role="group" aria-label="Runner merge"><span class="label">Runner merge</span>${['auto', 'manual'].map(v => html`<button class="chip" type="button" data-f="merge" data-v="${v}" aria-pressed="${String(RS.merge === v)}">${v}</button>`)}</div>
-      <p class="fsum"><span>${rows.length} of ${ALL.length}</span>${RS.managed || RS.merge || text.q ? html`<button class="linkbtn" type="button" data-clear>Clear all</button>` : ''}</p>
+      ${repoChips().length ? shell.list.chips(repoChips(), rows.length, ALL.length) : html`<p class="fsum"><span>${rows.length} of ${ALL.length}</span></p>`}
     </div>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h"><thead>${sortHead([[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']], RS)}</thead>
-      <tbody>${rows.slice(start, start + RS.size).map(r => html`<tr data-id="${'repo:' + r.path}" data-repo="${r.path}">
+    ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h"><thead>${shell.list.sortHead(REPO_COLS, RS)}</thead>
+      <tbody>${shown.map(r => html`<tr data-id="${'repo:' + r.path}" data-repo="${r.path}">
         <td class="g" aria-hidden="true">${I(r.registered ? 'settings' : 'folder-code')}</td>
         <td class="what"><button type="button">${r.name}</button>${r.registered ? '' : html`<span class="unreg">not registered</span>`}</td>
         <td class="d mono ${r.managed}" data-k="managed">${r.managed}</td>
         <td class="d mono ${r.merge === 'auto' ? 'yes' : 'no'}" data-k="merge">${r.merge}</td>
         ${gitCells(r)}
-        <td class="act end">${shell.commands.rowActions('repo:' + r.path)}</td></tr>`)}</tbody></table>`
+        <td class="act end">${shell.commands.rowActions('repo:' + r.path)}</td></tr>`)}</tbody></table>${shell.list.pager(rows.length, RS, 'repos')}`
       : html`<p class="empty">No repo matches ${text.q ? `“${text.q}”` : 'these filters'}. <button class="linkbtn" type="button" data-clear>Clear filters</button></p>`}
     <p class="note">${I('settings')} opens a registered repo's settings. Owner and status source sit in Details. Git state is as read at ${hhmm(READ)} UTC; nothing here fetches.</p>`);
-  if (rows.length > RS.size || RS.size !== 25) el.append(pager(rows.length, RS, renderRepos));
 }
 document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('.rowact')) return;
-  const s = e.target.closest('[data-sort]'), f = e.target.closest('[data-f]'), tr = e.target.closest('tr[data-repo]');
+  const f = e.target.closest('[data-f]'), tr = e.target.closest('tr[data-repo]');
   if (e.target.closest('[data-clear]')) { RS.managed = RS.merge = null; text.q = ''; document.getElementById('shift').value = ''; RS.page = 1; renderRepos(); return setURL(); }
-  if (s) { RS.dir = RS.sort === s.dataset.sort ? -RS.dir : 1; RS.sort = s.dataset.sort; renderRepos(); return setURL(); }
+  if (shell.list.sortBy(e, RS) || shell.list.paging(e, RS)) { shell.list.keepFocus(e, renderRepos); return setURL(); }
   if (f) { RS[f.dataset.f] = RS[f.dataset.f] === f.dataset.v ? null : f.dataset.v; RS.page = 1; renderRepos(); return setURL(); }
   if (tr) selectRow(tr.dataset.id, true);
 });
@@ -551,7 +528,7 @@ document.addEventListener('shell:open', e => {
 document.addEventListener('shell:picked', e => document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
 
 // ---------- Ship lane ----------
-const LS = { sort: 'id', dir: -1 };
+const LS = { sort: 'id', dir: -1, page: 1, size: 25 }; // unpaged; page and size are the shared grammar's defaults
 // build (sd:2209): runner.sh status names the last and next archive refresh; the dashboard does not read the runner's config.
 function archiveVal() {
   const a = DOC.archive;
@@ -584,7 +561,8 @@ function renderLane() {
       <tbody>${LANE.ready.map(t => html`<tr data-id="ready:${t.id}"><td class="g g-queued">◌<span class="sr">queued</span></td><td class="what"><button type="button">#${t.id} ${t.title}</button></td><td class="d mono" data-k="repo">${asgRepo(t)}</td>${ACT('ready:' + t.id)}</tr>`)}</tbody></table>`
       : html`<p class="empty">No item waits at ready_to_send.</p>`}
     <div class="sec-head"><h2 id="merged-h">Recent merges</h2><p class="tally">latest ${LANE.merges.length} merge assignments</p></div>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="merged-h"><thead>${sortHead([[null, html`<span class="sr">State</span>`, 'g'], ['id', 'Assignment'], [null, 'Repo'], ['at', 'Ended'], [null, 'Status'], [null, html`<span class="sr">Actions</span>`, 'act']], LS)}</thead>
+    ${shell.list.chips(textChip(), rows.length, LANE.merges.length)}
+    ${rows.length ? html`<table class="ledger" aria-labelledby="merged-h"><thead>${shell.list.sortHead(MERGE_COLS, LS)}</thead>
       <tbody>${rows.slice().sort((a, b) => (LS.sort === 'id' ? a.id - b.id : String(a.ended || '').localeCompare(String(b.ended || ''))) * LS.dir).map(m => { const st = m.status === 'done' ? 'ok' : m.status === 'blocked' ? 'caution' : 'queued'; return html`<tr data-id="merge:${m.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${st}</span></td>
         <td class="what"><button type="button">#${m.id} ${m.title || 'merge'}</button></td><td class="d mono" data-k="repo">${asgRepo(m)}</td><td class="d mono"><time class="rel" datetime="${m.ended || ''}" data-empty="never"></time></td>
         <td class="d mono">${m.status}</td>${ACT('merge:' + m.id)}</tr>`; })}</tbody></table>`
@@ -592,7 +570,7 @@ function renderLane() {
 }
 document.getElementById('view-lane').addEventListener('click', e => {
   if (e.target.closest('a')) return;
-  const s = e.target.closest('[data-sort]'); if (s) { LS.dir = LS.sort === s.dataset.sort ? -LS.dir : -1; LS.sort = s.dataset.sort; renderLane(); return setURL(); }
+  if (shell.list.sortBy(e, LS)) { shell.list.keepFocus(e, renderLane); return setURL(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
@@ -669,28 +647,34 @@ function renderSchedules() {
     .sort((a, b) => SS.sort === 'rank' ? (RANK[a.rank] - RANK[b.rank]) || a.next.localeCompare(b.next)
       : SS.sort === 'name' ? a.name.localeCompare(b.name) * SS.dir : a.next.localeCompare(b.next) * SS.dir);
   const failed = CRON.filter(c => c.rank === 'warning').length;
-  clampPage(rows.length, SS);
-  const start = (SS.page - 1) * SS.size;
+  const shown = pageOf(rows, SS);
   put(el, html`
     <div class="sec-head"><h2 id="sch-h">Schedules <button class="help" type="button" aria-label="Help: Schedules" data-help="<b>launchd calendar jobs, ranked.</b> Failed first, then by next run. Last run is the cron-jobs wrapper's stamp of each run's start, end and exit. Times are this browser's clock; launchd reads the Mac's.">${I('circle-help')}</button></h2>
       <p class="tally"><span class="g-warning">■ ${failed} failed</span><span class="g-ok">● ${CRON.length - failed} not failed</span><span>launchd · ${hhmm(READ)} UTC</span></p></div>
     <div class="filters"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span><button class="chip" type="button" data-state-f="failed" aria-pressed="${String(chips.state === 'failed')}">failed</button></div>
       <p class="fsum"><span>${rows.length} of ${CRON.length}</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h"><thead>${sortHead([[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']], SS)}</thead>
-      <tbody>${rows.slice(start, start + SS.size).map((c, i, a) => html`<tr data-id="cron:${c.name}"${i && a[i - 1].rank !== c.rank ? html` class="band-start"` : ''}><td class="g g-${c.rank}">${GLYPH[c.rank]}<span class="sr">${c.rank}</span></td>
+    ${shell.list.chips(textChip(), rows.length, CRON.length)}
+    ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h"><thead>${shell.list.sortHead(SCHED_COLS, SS)}</thead>
+      <tbody>${shown.map((c, i, a) => html`<tr data-id="cron:${c.name}"${i && a[i - 1].rank !== c.rank ? html` class="band-start"` : ''}><td class="g g-${c.rank}">${GLYPH[c.rank]}<span class="sr">${c.rank}</span></td>
         <td class="what"><button type="button">${c.name}</button></td><td class="d mono">${human(c.schedule)}</td><td class="d mono">${c.state}</td><td class="d mono" data-k="last">${lastCell(c)}</td><td class="d mono" data-k="next"><time class="rel" datetime="${c.next}" data-future data-empty="never"></time></td>
-        <td class="d num" data-k="exit">${c.last_signal != null ? `sig ${c.last_signal}` : c.last_exit === null || c.last_exit === undefined ? html`<span class="no">—</span>` : c.last_exit}</td>${ACT('cron:' + c.name)}</tr>`)}</tbody></table>`
+        <td class="d num" data-k="exit">${c.last_signal != null ? `sig ${c.last_signal}` : c.last_exit === null || c.last_exit === undefined ? html`<span class="no">—</span>` : c.last_exit}</td>${ACT('cron:' + c.name)}</tr>`)}</tbody></table>${shell.list.pager(rows.length, SS, 'jobs')}`
       : html`<p class="empty">${CRON.length ? html`No job matches. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No launchd calendar job is installed.'}</p>`}`);
-  if (rows.length > SS.size || SS.size !== 25) el.querySelector('table').after(pager(rows.length, SS, renderSchedules));
 }
 document.getElementById('view-schedules').addEventListener('click', e => {
-  const s = e.target.closest('[data-sort]'); if (s) { SS.dir = SS.sort === s.dataset.sort ? -SS.dir : 1; SS.sort = s.dataset.sort; renderSchedules(); return setURL(); }
+  if (shell.list.sortBy(e, SS) || shell.list.paging(e, SS)) { shell.list.keepFocus(e, renderSchedules); return setURL(); }
   const f = e.target.closest('[data-state-f]');
   if (f) { const inp = document.getElementById('shift'); inp.value = /state:failed/.test(inp.value) ? inp.value.replace(/\s*state:failed/, '').trim() : (inp.value + ' state:failed').trim(); text.q = inp.value; SS.page = 1; renderSchedules(); return setURL(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
-document.querySelector('main').addEventListener('click', e => { if (e.target.closest('[data-clear-q]')) { document.getElementById('shift').value = ''; text.q = ''; applyText(); } });
+document.querySelector('main').addEventListener('click', e => {
+  const box = document.getElementById('shift');
+  if (e.target.closest('[data-clear-q]')) { box.value = ''; text.q = ''; applyText(); return; }
+  // A filter chip (shell.list): one removes its filter, Clear all removes every one; applyText draws the view once and writes the URL.
+  const u = e.target.closest('[data-unfilter]'), all = e.target.closest('[data-unfilter-all]'); if (!u && !all) return;
+  (all ? ['managed', 'merge', 'q'] : [u.dataset.unfilter]).forEach(k => { if (k === 'q') box.value = ''; else RS[k] = null; });
+  applyText();
+});
 
 // ---------- Details pane ----------
 function defaultDetails() {

@@ -344,8 +344,8 @@ SHELL_EXTRA = r"""
 var ROW = null;
 window.shell.row = (...a) => a.length ? (ROW = a[0]) : ROW;
 window.shell.setContext = () => {};
-OUT.urls = [];
-window.shell.url = p => OUT.urls.push({ view: p.get('view'), p: p.get('p'), q: p.get('q') });
+OUT.urls = []; OUT.qs = [];
+window.shell.url = p => { OUT.urls.push({ view: p.get('view'), p: p.get('page'), q: p.get('q') }); OUT.qs.push(p.toString()); };
 """
 
 
@@ -418,12 +418,46 @@ class TheScript(PageScript):
 
     def test_only_the_sorted_header_carries_aria_sort_and_a_click_moves_it(self):
         """sd:2527: each column with an order sorts through its button; aria-sort is on the sorted th alone."""
-        click = "ELS['view-repos'].listeners.click[0]({ target: { closest: s => s === '[data-sort]' ? { dataset: { sort: 'managed' } } : null } });"
-        sorted_ = r'aria-sort="(\w+)"><button type="button" data-sort="(\w+)"'
+        click = "ELS['view-repos'].listeners.click[0]({ target: { closest: s => s === 'button[data-sort]' ? { dataset: { sort: 'managed' } } : null } });"
+        sorted_ = r'aria-sort="(\w+)"[^>]*><button class="sorter"[^>]*data-sort="(\w+)"'
         out = self.run_page(f"R.a = ELS['view-repos'].html; {click} R.b = ELS['view-repos'].html; {click} R.c = ELS['view-repos'].html;")
         for key, want in (("a", [("ascending", "name")]), ("b", [("ascending", "managed")]), ("c", [("descending", "managed")])):
             self.assertEqual(re.findall(sorted_, out["R"][key]), want, key)
             self.assertEqual(out["R"][key].count("aria-sort"), 1, key)
+
+    def jobs(self, n):
+        """The document with n more launchd jobs, idle, named job-00 onward."""
+        quiet = next(j for j in self.doc["jobs"] if j["name"] == "quiet")
+        return dict(self.doc, jobs=self.doc["jobs"] + [dict(quiet, name=f"job-{i:02d}") for i in range(n)])
+
+    def test_the_pager_is_the_shells_and_keeps_page_and_size_in_the_url(self):
+        """sd:2682: shell.list's pager, with sizes 25 to 200; ?page= and ?size= in the URL, and an older ?p=/?n= link still opens."""
+        click = "ELS['view-schedules'].listeners.click[0]({ target: { closest: s => s === %s ? { dataset: %s } : null } });"
+        out = self.run_page("R.a = ELS['view-schedules'].html;" + click % ("'.list-pager [data-page]'", "{ page: '2' }")
+                            + " R.b = ELS['view-schedules'].html;" + click % ("'.list-pager [data-size]'", "{ size: '50' }")
+                            + " R.c = ELS['view-schedules'].html;", doc=self.jobs(30), search="?view=schedules")
+        self.assertIn('<span class="range">1–25 of 32</span>', out["R"]["a"])
+        self.assertEqual(re.findall(r'data-size="(\d+)"', out["R"]["a"]), ["25", "50", "100", "200"])
+        self.assertIn('<span class="range">26–32 of 32</span>', out["R"]["b"])
+        self.assertIn("view=schedules&page=2", out["qs"])
+        self.assertIn('<span class="range">1–32 of 32</span>', out["R"]["c"])
+        self.assertEqual(out["qs"][-1], "view=schedules&size=50")
+        out = self.run_page("R.a = ELS['view-schedules'].html;", doc=self.jobs(30), search="?view=schedules&p=2&n=50")
+        self.assertIn('<span class="range">1–32 of 32</span>', out["R"]["a"])
+        self.assertEqual(out["qs"][-1], "view=schedules&size=50")
+
+    def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
+        """sd:2682: Repos' managed, merge and text filters as shell.list chips above the list."""
+        click = "document.querySelector('main').listeners.click.forEach(f => f({ target: { closest: s => s === %s ? { dataset: %s } : null } }));"
+        out = self.run_page("R.a = ELS['view-repos'].html;" + click % ("'[data-unfilter]'", "{ unfilter: 'managed' }")
+                            + " R.b = ELS['view-repos'].html;" + click % ("'[data-unfilter-all]'", "{}")
+                            + " R.c = ELS['view-repos'].html; R.box = ELS.shift.value;", search="?view=repos&managed=yes&q=busy")
+        chips = lambda key: re.findall(r'data-unfilter="(\w+)"', out["R"][key])
+        self.assertEqual(chips("a"), ["managed", "q"])
+        self.assertIn("2 filters · ", out["R"]["a"])
+        self.assertEqual(chips("b"), ["q"])
+        self.assertEqual(out["qs"][-2], "view=repos&q=busy")
+        self.assertEqual((chips("c"), out["qs"][-1], out["R"]["box"]), ([], "view=repos", ""))
 
     def test_a_source_that_failed_renders_unknown_with_its_reason(self):
         doc = dict(self.doc, git=None, sessions=None, sources=dict(self.doc["sources"], git="stopped at its budget", sessions="stopped at its budget"))

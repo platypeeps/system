@@ -118,6 +118,18 @@ class Hub:
             raise remote.HubUnreachable(
                 self.host, self.port, f"{error.reason} (named in {self.config})"
             ) from error
+        except remote.BuildMismatch as mismatch:
+            # The hub ran no statement: install its build here and run this
+            # command again, or raise the refusal with the reason (sd:2802).
+            from . import self_install
+
+            raise self_install.after_refusal(mismatch, loopback=self.loopback())
+
+    def loopback(self) -> bool:
+        """Whether this names the hub's own machine: a loopback server, never a satellite's hub."""
+        host = self.host.lower()
+        return (self.token_file is not None or host in ("localhost", "::1")
+                or host.startswith("127."))
 
 
 def read(home: Path | str | None = None) -> Hub | None:

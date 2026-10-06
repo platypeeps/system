@@ -27,8 +27,6 @@ button.cell:hover, a.cell:hover { background: var(--color-well); }
 /* Catalog ledger */
 .ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); table-layout: auto; }
 .ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-2xs) var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
-.ledger th .sort { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: var(--space-3xs); min-height: 1.75rem; cursor: pointer; }
-.ledger th .sort:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .ledger th[aria-sort] { color: var(--color-ink); }
 .ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
 .ledger tbody tr { cursor: pointer; }
@@ -51,9 +49,6 @@ button.cell:hover, a.cell:hover { background: var(--color-well); }
 .mini .bar { fill: var(--color-series-2); }
 .mini .bar.now { fill: var(--color-series-1); }
 .mini .base { stroke: var(--color-grid); stroke-width: 1; }
-.filtered { margin: var(--space-xs) 0 0; font-size: var(--text-xs); color: var(--color-muted); }
-.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-xs); margin-top: var(--space-sm); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
-.pager .pages, .pager .sizes { display: flex; gap: var(--space-2xs); align-items: center; }
 .foot-note { margin: var(--space-md) 0 0; font-size: var(--text-xs); color: var(--color-muted); max-width: 80ch; }
 .foot-note code { color: var(--color-ink-2); }
 
@@ -100,7 +95,6 @@ button.cell:hover, a.cell:hover { background: var(--color-well); }
   .ledger td { height: var(--row-touch); }
   .chip { min-width: var(--row-touch); justify-content: center; }
   .cli .icon-btn { flex-shrink: 0; } /* a long command line squeezed the copy button to 28px */
-  .ledger th .sort { min-height: var(--row-touch); }
   .when summary { min-height: var(--row-touch); }
 }
 @media (prefers-reduced-motion: no-preference) {
