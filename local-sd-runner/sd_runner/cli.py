@@ -272,7 +272,15 @@ def start(config: Config, *, wait: float = RESTART_WAIT, label: str = LABEL,
                           capture_output=True, text=True, check=False)
     if boot.returncode:
         return {"ok": False, "reason": f"launchctl bootstrap exited {boot.returncode}: {boot.stderr.strip()}"}
-    return _await_new(config, previous, wait=wait, clock=clock, sleep=sleep)
+    result = _await_new(config, previous, wait=wait, clock=clock, sleep=sleep)
+    if not result["ok"]:
+        # Stopped is the state the caller knows how to finish from, not a
+        # loaded agent that never turned healthy.
+        out = subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+                             capture_output=True, text=True, check=False)
+        result["reason"] += ("; booted the agent out again, so it stays stopped" if out.returncode == 0
+                             else f"; launchctl bootout exited {out.returncode}, so the agent may still be loaded")
+    return result
 
 
 def _await_new(config: Config, agent, *, wait, clock, sleep) -> dict:

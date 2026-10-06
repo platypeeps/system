@@ -10,6 +10,7 @@ that answers the library check, so no case asks the real launchd, the real
 network or a real virtualenv.
 """
 
+import os
 import pathlib
 import shutil
 import stat
@@ -384,6 +385,22 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(self.head(), local)
         self.assertEqual(self.calls.read_text(), "")
 
+    def test_upgrade_runs_one_at_a_time_and_takes_over_a_dead_holders_lock(self):
+        landed = self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
+        lock = self.state.parent / "upgrade.lock"
+        lock.mkdir(parents=True)
+        (lock / "pid").write_text(f"{os.getpid()}\n")
+        result = self.run_upgrade("--from", self.base)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"another upgrade is running (pid {os.getpid()}", result.stderr)
+        self.assertEqual((self.head(), self.calls.read_text()), (self.base, ""))
+        dead = subprocess.run(["sh", "-c", "echo $$"], capture_output=True, text=True).stdout.strip()
+        (lock / "pid").write_text(dead + "\n")
+        result = self.run_upgrade("--from", self.base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.recorded(), landed)
+        self.assertFalse(lock.exists(), "the lock outlived its upgrade")
+
     def test_upgrade_with_no_record_requires_from(self):
         landed = self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
         result = self.run_upgrade()
@@ -450,7 +467,7 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(f"deploy: sd_db install into {self.tmp / 'venv'} failed; stopped", result.stderr)
         self.assertIn("the runner is stopped; finish the upgrade with: sh "
-                      f"{self.repo / 'local-deploy/deploy.sh'} upgrade", result.stderr)
+                      f"{self.repo / 'local-deploy/deploy.sh'} upgrade --from {self.base}", result.stderr)
         calls = self.calls.read_text().splitlines()
         self.assertIn("runner.sh stop", calls)
         self.assertFalse([call for call in calls if "kickstart" in call or call.startswith("runner.sh start")], calls)

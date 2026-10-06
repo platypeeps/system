@@ -171,6 +171,15 @@ class Restart(unittest.TestCase):
         with patch.object(cli, "agent_loaded", return_value=True):
             self.assertIn("already loaded", cli.start(self.fixture.config)["reason"])
 
+    def test_a_start_that_never_turns_healthy_boots_the_agent_out_again(self):
+        failed = {"ok": False, "reason": "no healthy heartbeat with a new pid within 5s"}
+        with patch.object(cli, "agent_loaded", return_value=False), patch.object(cli, "_await_new", return_value=failed), \
+                patch.dict(os.environ, self.stub()):
+            result = cli.start(self.fixture.config, wait=5.0)
+        self.assertFalse(result["ok"])
+        self.assertIn("booted the agent out again", result["reason"])
+        self.assertEqual(self.calls()[-1], f"bootout gui/{os.getuid()}/{cli.LABEL}")
+
     def test_the_load_limit_runs_as_a_script_without_sd_db(self):
         script = Path(cli.__file__).with_name("load.py")
         for limit, code in (("0.0", 1), ("100000", 0)):

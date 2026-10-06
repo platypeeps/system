@@ -129,7 +129,23 @@ fail() {
 # on a failure, so it never runs on a half-replaced sd_db.
 stopped_hint() {
   [ -z "${STOPPED:-}" ] || [ ! -e "$STOPPED" ] ||
-    echo "deploy: the runner is stopped; finish the upgrade with: sh $ROOT/local-deploy/deploy.sh upgrade" >&2
+    echo "deploy: the runner is stopped; finish the upgrade with: sh $ROOT/local-deploy/deploy.sh upgrade --from $from" >&2
+}
+
+# One upgrade at a time, from the first check to the record: a second one
+# could start the runner while the first still replaces sd_db. A lock whose
+# holder died is taken over; the directory holds the holder's pid.
+lock() {
+  LOCK="$(dirname "$STATE")/upgrade.lock"
+  mkdir -p "$(dirname "$STATE")"
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    holder=$(cat "$LOCK/pid" 2>/dev/null) || holder=""
+    [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null || refuse "another upgrade is running (pid $holder, $LOCK)"
+    rm -rf "$LOCK"
+    mkdir "$LOCK" 2>/dev/null || refuse "another upgrade took $LOCK"
+  fi
+  echo $$ > "$LOCK/pid"
+  trap 'rm -rf "$LOCK"' EXIT
 }
 
 # The runner's load limit (sd_runner/load.py), under its interpreter; the
@@ -254,6 +270,7 @@ upgrade() {
   done
   # Present while the runner is stopped mid-upgrade; a rerun starts it.
   STOPPED="$(dirname "$STATE")/runner-stopped"
+  lock
   [ "$(git -C "$ROOT" symbolic-ref -q --short HEAD)" = main ] || refuse "$ROOT is not on main"
   [ -z "$(git -C "$ROOT" status --porcelain)" ] || refuse "$ROOT has uncommitted or untracked files"
   git -C "$ROOT" fetch -q origin || fail "git fetch origin"

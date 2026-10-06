@@ -70,7 +70,8 @@ A satellite can open a session between the probe and the kickstart; that session
 sh ~/repos/system/local-deploy/deploy.sh upgrade
 ```
 
-1. It refuses unless the checkout is on `main` with no uncommitted or untracked files.
+1. It refuses while another upgrade holds `upgrade.lock` beside the record; a dead holder's lock is taken over.
+   It refuses unless the checkout is on `main` with no uncommitted or untracked files.
 2. It runs `git fetch origin`, then fast-forwards to `origin/main`; it refuses when they diverged.
 3. It reads the last deployed sha from `${XDG_STATE_HOME:-$HOME/.local/state}/system/deploy/deployed`.
    The first run has no record: give `--from SHA`, the sha the services run now. `--from` always overrides the record.
@@ -83,7 +84,7 @@ sh ~/repos/system/local-deploy/deploy.sh upgrade
    The venvs come from the interpreters the dashboard's and the runner's plists name. A failed install stops.
 9. It runs `apply` over the range, which restarts sd-serve and the dashboard, then `runner.sh start`.
 10. A failure after the stop leaves the runner stopped, never running on a mixed library.
-    It exits 1 and prints the rerun that finishes: `sh <checkout>/local-deploy/deploy.sh upgrade`.
+    It exits 1 and prints the rerun that finishes: `sh <checkout>/local-deploy/deploy.sh upgrade --from <from>`.
     A marker beside the record tells the rerun to install into the runner's venv and start it.
 11. It records the new sha only when every step passed and no session held sd-serve back.
    A `needs <folder> install` report also holds the record: install the agent, then record with `upgrade --from <new sha>`.
