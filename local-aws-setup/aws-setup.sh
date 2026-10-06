@@ -34,7 +34,7 @@ POLICY_OWNER_TAG_VALUE="${POLICY_OWNER_TAG_VALUE:-local-aws-setup}"
 # guest outside SSM. Space-separated IAM actions; no globs.
 DISK_ROUTES="ec2:RunInstances ec2:CreateFleet ec2:RequestSpotInstances ec2:RequestSpotFleet
   ec2:CreateSnapshots ec2:CopySnapshot ec2:CreateImage ec2:CreateVolume
-  ec2:CreateRestoreImageTask ec2:CreateStoreImageTask ec2:ExportImage
+  ec2:CreateRestoreImageTask ec2:CreateStoreImageTask ec2:ExportImage ec2:CreateInstanceExportTask
   ec2:ModifySnapshotAttribute ec2:ModifyImageAttribute
   ec2:AttachVolume ec2:DetachVolume ec2:CreateReplaceRootVolumeTask
   ebs:GetSnapshotBlock ebs:ListSnapshotBlocks ebs:ListChangedBlocks
