@@ -1293,6 +1293,23 @@ stage_sd() {
   fi
 }
 
+# A satellite's Jev rows reach the hub's ledger, and no shadow file means live
+# (source:local-jev/jev.py::shadow_on), so its sd-review ran on Jev's answer
+# (sd:2838). Only a missing file is drift: a written `off` is the operator's.
+# The comparison arms stay off: nothing here sets JEV_COMPARE_STAGES. Jev is
+# optional, so a machine without it skips this silently.
+stage_satellite_jev_shadow() {
+  command -v jev >/dev/null 2>&1 || return 0
+  # Where jev.py's shadow_file puts it: beside the kill switch.
+  shadow="$(dirname "${JEV_FLAG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/jev/enabled}")/shadow"
+  if [ -e "$shadow" ]; then
+    echo "  ok      jev shadow file $shadow ($(head -1 "$shadow"))"
+  else
+    echo "  MISSING $shadow — Jev would answer live on this satellite"
+    run jev shadow on
+  fi
+}
+
 # A satellite of the sd hub (step 9 of the second-machine plan): the
 # profile's `.satellite` names the hub as `host` or `host:port`. The checks
 # run in the installed library (`sd_db.satellite`, under `-I`), because the
@@ -1330,6 +1347,7 @@ stage_satellite() {
   host=${hubs%%:*}
   port=
   case "$hubs" in *:*) port=${hubs##*:} ;; esac
+  stage_satellite_jev_shadow
   if [ ! -x "$SD_DB_PYTHON" ]; then
     echo "  MISSING sd_db: no interpreter at $SD_DB_PYTHON — install the pack (python3 bin/sd_install.py --user), then rerun"
     return 0

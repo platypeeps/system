@@ -242,20 +242,29 @@ await_listener() {
   done
 }
 
+# Upgrade starts every agent it stopped once apply ends, so only an agent
+# nobody stopped is reported as skipped (sd:2837).
+skip() { # service, agent
+  stopped "$PREFIX.$2" || echo "skip $1: $PREFIX.$2 is not loaded"
+}
+
 apply() {
   actions=$(plan "$1" "$2")
-  printf '%s\n' "$actions" | grep '^report' || true
+  reports=$(printf '%s\n' "$actions" | grep '^report') || true
+  # Upgrade has just installed sd_db; its report would ask for that again.
+  [ -z "${installed:-}" ] || reports=$(printf '%s\n' "$reports" | grep -v '^report needs sd_db install') || true
+  [ -z "$reports" ] || printf '%s\n' "$reports"
   services=$(printf '%s\n' "$actions" | sed -n 's/^restart //p')
   for service in $services; do preflight "$service"; done
   for service in $services; do
     case "$service" in
-      sd-serve) held sd-serve || { echo "skip sd-serve: $PREFIX.sd-serve is not loaded"; continue; }
+      sd-serve) held sd-serve || { skip sd-serve sd-serve; continue; }
         restart_serve ;;
-      dashboard) held sd-dashboard || { echo "skip dashboard: $PREFIX.sd-dashboard is not loaded"; continue; }
+      dashboard) held sd-dashboard || { skip dashboard sd-dashboard; continue; }
         launchctl kickstart -k "gui/$(id -u)/$PREFIX.sd-dashboard" || fail "dashboard kickstart"
         sh "$ROOT/local-project-dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" || fail "dashboard health"
         echo "restarted dashboard" ;;
-      runner) held sd-runner || { echo "skip runner: $PREFIX.sd-runner is not loaded"; continue; }
+      runner) held sd-runner || { skip runner sd-runner; continue; }
         sh "$ROOT/local-sd-runner/runner.sh" restart || fail "runner restart"
         echo "restarted runner" ;;
     esac
@@ -282,9 +291,17 @@ stopped() {
 }
 
 # The interpreter a `*_PYTHON` variable in the agent's plist names, or nothing.
+# Parsed as JSON: sed cut a path short at its escaped quote (sd:2837).
+NAMED='import json, re, sys
+try:
+    env = json.load(sys.stdin).get("EnvironmentVariables") or {}
+except ValueError:
+    env = {}
+print(next((value for key, value in env.items() if re.fullmatch("[A-Z_]*_PYTHON", key)), ""))'
+
 named_python() {
   plutil -convert json -o - "$HOME/Library/LaunchAgents/$1.plist" 2>/dev/null |
-    sed -n 's/.*"[A-Z_]*_PYTHON":"\([^"]*\)".*/\1/p' | sed 's#\\/#/#g'
+    "${PYTHON:-python3}" -c "$NAMED"
 }
 
 # Where sd_db installs: the venv of each loaded or stopped agent whose plist
@@ -395,7 +412,7 @@ upgrade() {
   # Every agent that runs from a venv the install replaces stops first: each
   # imports sd_db lazily and must never see a half-replaced library. Every
   # refusal that needs no new sd_db comes before the first stop.
-  list=""; stopping=""
+  list=""; stopping=""; installed=""
   case "$actions" in *"report needs sd_db install"*)
     # Assigned first, so a refusal inside them stops the script.
     list=$(venvs | sort -u)
@@ -423,6 +440,7 @@ $stopping" in *"restart sd-serve"*|*.sd-serve*)
     done <<EOF
 $list
 EOF
+    installed=1
   fi
   held_back=""
   apply "$from" "$to"

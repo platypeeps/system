@@ -382,6 +382,13 @@ So every caller runs its old mechanism with no edit, and the comparison arms
 still get the request. `jev status` prints `shadow=on`, and `jev enabled --why`
 says so too.
 
+**A satellite runs shadow by setup.** Its rows reach the hub's ledger, and a
+missing file means live, so a satellite once ran `sd-review` on Jev's answer
+(sd:2838). `machine-setup.sh update satellite` reports a missing shadow file
+as `MISSING` and, with `--apply`, runs `jev shadow on`. It leaves a written
+`off` alone, sets no comparison arm, and skips silently where `jev` is not on
+`PATH`. The hub has no `.satellite`, so the stage never touches its file.
+
 **The agreement needs the old answer, and a fallback is a marker.**
 `tests/test_jev_contract.py` keeps every `--fallback` distinct from a real
 answer. A switched call given `--baseline B` records `B` as the pair's old
