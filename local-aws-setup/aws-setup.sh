@@ -78,7 +78,8 @@ Levels:
   public access block changes, KMS key deletion, changing the managed tag,
   and acting on an instance that does not carry it. They also deny every
   route to a disk: snapshots, images, volume moves, EBS direct reads, EC2
-  Instance Connect, and a launch from a managed image or snapshot.
+  Instance Connect, and a launch from an image or snapshot that amazon or
+  Canonical does not own.
 
 Account file <config>/aws-setup/accounts/<name>.env, where <config> is
 $SYSTEM_TOOLS_CONFIG (default ~/.config/system); AWS_SETUP_ACCOUNTS_DIR
@@ -416,8 +417,16 @@ EOF
 # A snapshot, an image, a moved volume or a guest key turns a deployment's
 # disk into one the agent can read, so every level denies them (sd:2870).
 # Neither the agent nor the deployer needs one, and an untagged copy would
-# slip past a tag condition, so the first statement has none. A launch from a
-# public image stays allowed; a launch from a managed image or snapshot does not.
+# slip past a tag condition, so the first statement has none.
+#
+# A launch source is an allowlist of owners, not a tag: an untagged private
+# backup image or snapshot is denied like a tagged one. Snapshots take the
+# same list rather than an outright deny. RunInstances names snapshot as an
+# optional resource, and if IAM presents an AMI's own backing snapshot, an
+# outright deny would stop the deployer's Canonical launch too. Every snapshot
+# this account owns is still denied.
+# ponytail: owners are fixed to amazon and Canonical; make them a setting when
+# an account needs another publisher.
 stmt_deny_disk_reads() {
   cat <<EOF
     {
@@ -448,11 +457,11 @@ stmt_deny_disk_reads() {
       "Resource": "*"
     },
     {
-      "Sid": "DenyLaunchFromManagedDisk",
+      "Sid": "DenyLaunchFromUnapprovedSource",
       "Effect": "Deny",
       "Action": "ec2:RunInstances",
       "Resource": ["arn:aws:ec2:*::image/*", "arn:aws:ec2:*::snapshot/*"],
-      "Condition": { "StringEquals": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
+      "Condition": { "StringNotEqualsIfExists": { "ec2:Owner": ["amazon", "099720109477"] } }
     },
 EOF
 }
@@ -1145,10 +1154,13 @@ expect_lifecycle() {
       ec2-instance-connect:OpenTunnel; do
     expect explicitDeny "$disk_read" "*" "$tagged"
   done
-  expect explicitDeny ec2:RunInstances "$image" "$tagged"
-  expect explicitDeny ec2:RunInstances "arn:aws:ec2:$AGENT_REGION::snapshot/snap-0123456789abcdef0" "$tagged"
-  # The deployer's launch from a public image.
-  expect "$(from_level sandbox)" ec2:RunInstances "$image"
+  # A private source is denied with or without the tag; the deployer's
+  # Canonical image, and the snapshot behind it, still launch.
+  for source in "$image" "arn:aws:ec2:$AGENT_REGION::snapshot/snap-0123456789abcdef0"; do
+    expect explicitDeny ec2:RunInstances "$source" "$tagged" "ec2:Owner=$ACCOUNT_ID"
+    expect explicitDeny ec2:RunInstances "$source" "ec2:Owner=$ACCOUNT_ID"
+    expect "$(from_level sandbox)" ec2:RunInstances "$source" "ec2:Owner=099720109477"
+  done
   for pair in DisassociateAddress:elastic-ip DisassociateAddress:network-interface ReleaseAddress:elastic-ip DeleteSecurityGroup:security-group DeleteKeyPair:key-pair DeleteVolume:volume DeleteNetworkInterface:network-interface DeleteSnapshot:snapshot; do
     # Not `action`: expect() assigns that global, and the next probe would
     # ask for ec2:ec2:<Action>, which the simulator answers implicitDeny.

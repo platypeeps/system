@@ -57,7 +57,7 @@ truth; `./aws-setup.sh accounts` lists them.
 | Start, stop, reboot, terminate, or read console output without `claude-managed=true` | denied | denied | denied |
 | Change the `claude-managed` tag on existing resources | denied | denied | denied |
 | IAM administration, role assumption, Organizations, account settings, CloudTrail tampering including its event selectors, changing an instance attribute, bucket deletion/policy/ACL/public access block, KMS key deletion | denied | denied | denied |
-| Create, copy or share snapshots and images; create, attach or detach volumes; EBS direct reads; EC2 Instance Connect; spot and fleet launches; launch from a `claude-managed=true` image or snapshot | denied | denied | denied |
+| Create, copy or share snapshots and images; create, attach or detach volumes; EBS direct reads; EC2 Instance Connect; spot and fleet launches; launch from an image or snapshot that `amazon` or Canonical (`099720109477`) does not own | denied | denied | denied |
 
 Console output is part of managing an instance: an agent that may stop and
 start one needs to read why it did not come up. It returns whatever the guest
@@ -105,6 +105,7 @@ Copy `accounts/agent-ssm-deny.json.example` to `sandbox.policies/agent-ssm-deny.
 It denies every SSM command and session to the agent, whatever else is attached later.
 Every level denies each route to a deployment's disk: snapshots, images, volume moves, EBS direct reads, Instance Connect (sd:2870).
 The deployer launches from a public Canonical image and needs none of them.
+A launch source must be owned by `amazon` or Canonical, so an untagged private backup is denied too.
 
 The template allows `AWS-RunShellScript` for commands and `AWS-StartPortForwardingSession` for tunnels, in separate statements.
 Its instance statement sets `ssm:SessionDocumentAccessCheck`, so a session without a document cannot fall back to a shell.

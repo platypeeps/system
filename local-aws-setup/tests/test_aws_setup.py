@@ -739,8 +739,22 @@ class CommandCase(unittest.TestCase):
                 for action in DISK_READS:
                     self.assertIn("FAIL want explicitDeny, got allowed: %s " % action, done.stdout)
                 for kind in ("snapshot", "image"):
-                    self.assertRegex(done.stdout, r"FAIL want explicitDeny, got allowed: ec2:RunInstances "
-                                                  r"arn:aws:ec2:eu-west-1::%s/\S+ \[aws:ResourceTag/claude-managed=true\]" % kind)
+                    for context in ("aws:ResourceTag/claude-managed=true ec2:Owner=%s" % ACCOUNT_ID, "ec2:Owner=%s" % ACCOUNT_ID):
+                        self.assertRegex(done.stdout, r"FAIL want explicitDeny, got allowed: ec2:RunInstances "
+                                                      r"arn:aws:ec2:eu-west-1::%s/\S+ \[%s\]\n" % (kind, context))
+
+    def test_the_check_tells_a_private_image_from_an_approved_one(self):
+        # A simulator that answers by owner, as the policy should: the private
+        # untagged image is denied, and the Canonical one launches at sandbox.
+        box = self.sandbox(level="sandbox")
+        box.profile("default", aws_access_key_id="AKIAADMIN")
+        box.identity("AKIAADMIN", ADMIN_ARN)
+        box.rule("simulate-custom-policy", "ContextKeyValues=%s," % ACCOUNT_ID, stdout="explicitDeny")
+        box.rule("simulate-custom-policy", stdout="allowed")
+        done = box.run("simulate", "x")
+        image = "ec2:RunInstances arn:aws:ec2:eu-west-1::image/ami-0123456789abcdef0"
+        self.assertIn("PASS explicitDeny %s [ec2:Owner=%s]\n" % (image, ACCOUNT_ID), done.stdout)
+        self.assertIn("PASS allowed %s [ec2:Owner=099720109477]\n" % image, done.stdout)
 
 
 
@@ -866,13 +880,22 @@ class LifecycleCase(unittest.TestCase):
                 with self.subTest(level=level, action=action):
                     resource = "arn:aws:ec2:us-east-1::snapshot/probe"
                     self.assertEqual(self.decision(policy, action, resource, tagged, broad=True), "explicitDeny")
-            for kind in ("snapshot/probe", "image/ami-probe"):
-                with self.subTest(level=level, kind=kind):
-                    resource = "arn:aws:ec2:us-east-1::" + kind
-                    self.assertEqual(self.decision(policy, "ec2:RunInstances", resource, tagged, broad=True), "explicitDeny")
-            public = "arn:aws:ec2:us-east-1::image/ami-public"
-            self.assertEqual(self.decision(policy, "ec2:RunInstances", public, {}),
-                             "allowed" if level == "sandbox" else "implicitDeny")
+
+    def test_launch_sources_are_an_owner_allowlist(self):
+        # A tag names only the disks someone remembered to tag: an untagged
+        # private backup image or snapshot must not launch either (sd:2870).
+        private = {"ec2:Owner": ACCOUNT_ID}
+        for level in ("readonly", "operator", "sandbox"):
+            policy = render(level)
+            for kind in ("snapshot/snap-probe", "image/ami-probe"):
+                resource = "arn:aws:ec2:us-east-1::" + kind
+                for context in ({**private, "aws:ResourceTag/claude-managed": "true"}, private, {}):
+                    with self.subTest(level=level, kind=kind, context=context):
+                        self.assertEqual(self.decision(policy, "ec2:RunInstances", resource, context, broad=True), "explicitDeny")
+                for owner in ("amazon", "099720109477"):
+                    with self.subTest(level=level, kind=kind, owner=owner):
+                        self.assertEqual(self.decision(policy, "ec2:RunInstances", resource, {"ec2:Owner": owner}),
+                                         "allowed" if level == "sandbox" else "implicitDeny")
 
     def test_rendered_policies_fit_managed_policy_limit(self):
         for level in ("readonly", "operator", "sandbox"):
