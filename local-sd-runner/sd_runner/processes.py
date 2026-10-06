@@ -66,7 +66,15 @@ _INCOMPLETE = "Output information may be incomplete."
 # lsof reports a process it could not read as a file named by the error, on
 # stdout and with exit 0 (Apple lsof 4.91, `dproc.c`): that process's working
 # directory, descriptors or mappings are unknown, so it may hold the clone (sd:2769).
+# A gate saw `region info error: Operation not permitted` for a process that
+# was most likely exiting, so the table is read once more before it refuses.
 _UNREADABLE = re.compile(rb"(?:cwd\|rtd|FD|FILEPORT|region|thread) info error: ")
+
+
+def _unreadable(table: bytes) -> str | None:
+    """The first process lsof could not read in `table`, as `<pid>: <error>`."""
+    return next((f"{pid}: {os.fsdecode(fields[b'n'])}" for pid, fields in _files(table)
+                 if _UNREADABLE.match(fields.get(b"n", b""))), None)
 _ASSUMED_DEVICE = re.compile(r'assuming "dev=([0-9a-fA-F]+)" from mount table')
 
 
@@ -245,10 +253,13 @@ def holders(path: Path) -> set[int]:
     device = path.stat().st_dev
     prefixes = {os.fsencode(root) for root in roots}
     held, aliases = set(), {}
-    for pid, fields in _files(_lsof(path, "ptDin")):
+    table = _lsof(path, "ptDin")
+    if _unreadable(table):
+        table = _lsof(path, "ptDin")
+        if unreadable := _unreadable(table):
+            raise RunnerRefused(f"cannot verify clone holders: lsof could not read process {unreadable}")
+    for pid, fields in _files(table):
         name = fields.get(b"n", b"")
-        if _UNREADABLE.match(name):
-            raise RunnerRefused(f"cannot verify clone holders: lsof could not read process {pid}: {os.fsdecode(name)}")
         if pid is None:
             continue
         if any(name == root or name.startswith(root + b"/") for root in prefixes):
