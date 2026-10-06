@@ -128,7 +128,8 @@ All five arms answer the same question over the same state. None sees another's 
 
 The replay calls Jev with both comparison switches unset, so `jev.post` starts no child arm.
 It then runs the Kev and Haiku arms in-process on the same redacted payload.
-It omits `--unsure-below`, so each arm returns its full distribution; analysis applies the 0.6 rule both ways.
+It omits `--unsure-below`, so each arm returns its full distribution.
+Analysis applies the 0.6 rule afterwards: confirmatory metrics read the production answer, raw answers are exploratory.
 Haiku does not use the `claude-cli` transport: its latency and tokens include Claude Code's own start-up.
 
 **The heuristic, frozen before the replay.** It reads only the state and the routed tier the reason states.
@@ -162,7 +163,8 @@ The rules have no category for zero lines; Jev's 28 skips were all zero-line.
 The replay refuses a file whose hash differs from the registered one; a change after the freeze is a new arm, reported as exploratory.
 
 **The floor.** Production clamps every model answer at the routed tier.
-Analysis reports each arm raw and floored; the decision reads the raw answer, because the floor hides what a model believes.
+Analysis reports each arm raw and floored; the decision reads the production answer unfloored.
+The floor hides what a model believes, while the 0.6 cutoff is what production would keep if the floor were relaxed.
 
 **Ledger isolation.** Replay rows must not land under the live stage `JEV_SD_REVIEW`.
 They would distort `judgments compare` for the live stage and sd:2761's shadow agreement.
