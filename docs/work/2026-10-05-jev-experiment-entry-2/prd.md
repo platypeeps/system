@@ -20,6 +20,7 @@ The experiment asks whether any model can **safely allow `skip`**, and whether t
 The answer decides the review tier's model:
 
 1. **Drop the model**: rules only. Taken when no model can safely allow `skip`, when the 20-line heuristic matches the best model,
+   when no selectable model is both safe and worth having on its own results (note #10183),
    or when the result is still inconclusive after one extra 4-week shadow window (ruling R1).
 2. **Switch to local Kev**: Kev-4B on this machine reads the tier, and no path leaves the machine.
 3. **Keep Jev**: the hosted model keeps reading the tier.

@@ -46,6 +46,7 @@ Recorded on sd:2764. Times are the notes' recorded timestamps in MDT; each note'
 | #10070 | 11:53 MDT | the question above; the contamination ruling; Haiku through the `anthropic` transport; experiment rows to a separate database |
 | #10075 | 12:11 MDT | rulings R1 to R3; the planner drafts the prediction blanks from the operator's answers |
 | #10168 | 17:32 MDT | the remaining predictions: H1 and H2 confirmed, H3 to H8, and the decision line |
+| #10183 | 18:01 MDT | the decision rule judges safety per selectable arm (Jev, Kev), after the lane's review |
 
 - **O1, prediction**: under 10% of the 28 `skip` readings are wrong.
 - **O2, switch rule**: switch to local Kev if Kev's labelled accuracy is within 5 points of Jev's, and its too-low errors are not more frequent.
@@ -266,14 +267,23 @@ PREDICTION (operator, note #10061, recorded 11:07 MDT): under 10% of the 28 `ski
 ## Decision rule
 
 Read in order; the first line that applies decides.
+Only Jev and Kev can be selected. Haiku's H1 and H4 results are reported, and decide nothing.
+"Holds H1" and "holds H4" are judged for the named arm itself.
 
 | # | Condition | Decision | Source |
 |---|---|---|---|
-| 1 | H1 fails for every model arm | **drop the model**, rules only | ruling #10070: no model can safely allow `skip` |
-| 2 | no arm holds both H1 and H4, and line 1 does not apply (inconclusive) | **keep the shadow** for one fixed 4-week window, rerun this analysis once, then **drop the model** if still inconclusive | R1 |
+| 1 | H1 fails for both Jev and Kev | **drop the model**, rules only | ruling #10070: no model can safely allow `skip` |
+| 2 | neither Jev nor Kev holds both H1 and H4, and line 1 does not apply (inconclusive) | **keep the shadow** for one fixed 4-week window, rerun this analysis once, then **drop the model** if still inconclusive | R1 |
 | 3 | H3 holds | **drop the model**, rules only | O3 |
-| 4 | H2 holds and H5 holds | **switch to local Kev** | O2; H5 is the planner's addition, open on sd:2764 |
-| 5 | otherwise | **keep Jev** | O2, O3 |
+| 4 | Kev holds H1 and H4, and H2 and H5 hold | **switch to local Kev** | O2; H5 is the planner's addition, open on sd:2764 |
+| 5 | Jev holds H1 and H4 | **keep Jev** | O2, O3 |
+| 6 | otherwise | **drop the model**, rules only | note #10183 |
+
+**Changed before any replay data** (note #10183, 18:01 MDT).
+The registered rule asked in lines 1 and 2 whether any arm held H1 and H4, Haiku included, and then selected Kev or Jev without that check.
+A safe Haiku could so have selected an unsafe Kev (line 4) or kept an unsafe Jev (line 5).
+The lane's review of this page found it (one high finding); the operator adopted the per-arm rule above, with line 6 new.
+The operator's prediction below is unchanged under it: Jev holds H1 and fails H4, so line 2 applies.
 
 A decision to keep or switch implies a follow-up that lets that model allow `skip` past the floor; this item ships no such change.
 Whether "rules only" keeps the heuristic as a new rule is the operator's call after the results.
