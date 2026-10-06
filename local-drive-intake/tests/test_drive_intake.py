@@ -27,10 +27,11 @@ import drive_intake as di  # noqa: E402
 #: declines and sends nothing, whatever key `<config>/jev/.env` holds;
 #: unmetered and with no corpus, it writes nothing. Unpinned, an operator's
 #: run made a real hosted call and wrote it to their own ledger and trace
-#: corpus (sd:2790).
+#: corpus (sd:2790). The trace URL is an off word, not empty: `jev.sh` lets
+#: `<config>/jev/.env` fill an empty one (sd:2799).
 _ISOLATED = unittest.mock.patch.dict(os.environ, {
     "JEV_ENABLED": "0", "TYPESAFE_API_KEY": "", "JEV_METER": "0", "JEV_CORPUS": "0",
-    "JEV_TRACES_URL": ""})
+    "JEV_TRACES_URL": "0"})
 
 
 def setUpModule():
