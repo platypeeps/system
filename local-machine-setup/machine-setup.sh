@@ -1016,6 +1016,7 @@ container_for() {
     local-milvus)                  echo zilliz ;;
     local-opentelemetry-collector) echo local-opentelemetry-collector ;;
     local-graphiti-mcp)            echo local-graphiti-mcp-graphiti-falkordb-1 ;;
+    local-genai-traces)            echo local-genai-collector ;;
     *)                             echo "${1#local-}" ;;
   esac
 }

@@ -122,12 +122,16 @@ class Case(unittest.TestCase):
         self.origin = Origin(self.root)
         self.venv = make_venv(self.root)
         self.unpack = Unpacker(self.venv)
+        # The pack's provisioning lock lives under the state home: this
+        # case's, never the operator's (sd:2845).
+        self.state = {"XDG_STATE_HOME": str(self.root / "state")}
+        self.enterContext(mock.patch.dict(os.environ, self.state))
 
     def install(self, digest: str, *, environ: dict | None = None, source: Path | None = None):
         with mock.patch.object(self_install, "pip_install", self.unpack):
             return self_install.install_hub_build(
                 digest, venv=self.venv, source=self.origin.source if source is None else source,
-                environ={} if environ is None else environ)
+                environ={**self.state, **(environ or {})})
 
     def installed(self) -> str | None:
         return self_install.installed_digest(self.venv / "bin" / "python")
@@ -183,6 +187,23 @@ class TheInstall(Case):
         self.assertIn("lock", outcome.text)
         self.assertEqual(self.unpack.calls, [])
 
+    def test_a_held_pack_provisioning_lock_installs_nothing_at_its_bound(self):
+        # `make setup` or a merge reconcile holds it around its own pip install.
+        wanted = self.origin.digest()
+        lock = self.root / "state" / "sd-ai-command-pack" / "sd-db-provision.lock"
+        self.assertEqual(self_install.pack_lock(self.state), lock)
+        lock.parent.mkdir(parents=True)
+        with open(lock, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            with mock.patch.object(self_install, "LOCK_WAIT", 0.3):
+                outcome = self.install(wanted)
+        self.assertFalse(outcome.installed)
+        self.assertIn(f"the command pack's sd_db provisioning held the lock {lock}", outcome.text)
+        self.assertIn("nothing installed", outcome.text)
+        self.assertEqual(self.unpack.calls, [])
+        self.assertIsNone(self.installed())
+        self.assertTrue(self.install(wanted).installed)
+
     def test_an_install_another_process_finished_is_not_repeated(self):
         wanted = self.origin.digest()
         self.assertTrue(self.install(wanted).installed)
@@ -203,7 +224,7 @@ class TheInstall(Case):
 
     def test_an_unknown_source_refuses_by_name(self):
         with mock.patch.object(self_install, "pip_install", self.unpack):
-            outcome = self_install.install_hub_build(self.origin.digest(), venv=self.venv, environ={})
+            outcome = self_install.install_hub_build(self.origin.digest(), venv=self.venv, environ=self.state)
         self.assertFalse(outcome.installed)
         self.assertIn(self_install.SOURCE, outcome.text)
         self.assertEqual(self.unpack.calls, [])

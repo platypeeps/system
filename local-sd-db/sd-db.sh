@@ -154,9 +154,10 @@ Usage: sd-db.sh <command>
               copies a database it cannot yet write). Nothing migrates on
               open.
   status      The path, the schema version, the version this library was
-              built for, any unresolved state record, and how many key
-              column values are absolute under this home (0 after
-              migration 014).
+              built for, each unresolved restore, verified and check record,
+              one count line per other state kind without resolved_at (logs
+              read latest-per-key, not open work), and how many key column
+              values are absolute under this home (0 after migration 014).
   restore DIR Put a dated backup directory back in place. The restore is a
               record, not a permission: it lands unreconciled, and
               `sd restore resume` clears it.
