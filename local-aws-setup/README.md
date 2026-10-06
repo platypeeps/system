@@ -101,7 +101,8 @@ The base policy supplies instance launch, rule tagging, teardown, and the option
 Set `LEVEL=sandbox`, configure `EXTRA_POLICIES`, and audit the instance role before setting `PASS_ROLE_ARNS`.
 Create the VPC, role, and instance profile with an administrator first; this tool grants no IAM provisioning permission.
 Review SSM document permissions and ownership tags for the intended deployment before applying the template.
-The fresh template requires `claude-managed=true` for SSM instance access and Elastic IP association, alongside its ownership tags.
+The fresh template requires `claude-managed=true` when creating security groups, key pairs, and Elastic IPs, alongside its ownership tags.
+It also requires that tag for SSM instance access and Elastic IP association.
 
 Copy the existing default-version document exactly when adopting current permissions.
 Keep account IDs, resource ARNs, and SSM scopes in private account configuration.

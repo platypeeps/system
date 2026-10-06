@@ -920,6 +920,18 @@ class ExtraPolicyCase(unittest.TestCase):
                         context["aws:ResourceTag/claude-managed"] = managed
                     with self.subTest(action=action, kind=kind, managed=managed):
                         self.assertEqual(decision(self, policy, action, prefix + kind + "/probe", context), "implicitDeny")
+        for operation, kind in (("AllocateAddress", "elastic-ip/probe"),
+                                ("CreateSecurityGroup", "security-group/probe"),
+                                ("ImportKeyPair", "key-pair/example-legacy-probe")):
+            for action in ("ec2:" + operation, "ec2:CreateTags"):
+                for managed in (None, "false"):
+                    context = {**request, "ec2:CreateAction": operation}
+                    if managed is None:
+                        del context["aws:RequestTag/claude-managed"]
+                    else:
+                        context["aws:RequestTag/claude-managed"] = managed
+                    with self.subTest(action=action, kind=kind, managed=managed):
+                        self.assertEqual(decision(self, policy, action, prefix + kind, context), "implicitDeny")
         key = prefix + "key-pair/example-deployment-123"
         for tag in request:
             missing = dict(request)

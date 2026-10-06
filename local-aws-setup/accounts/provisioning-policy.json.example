@@ -16,7 +16,8 @@
         "StringEquals": {
           "aws:RequestTag/Owner": "{{OWNER}}",
           "aws:RequestTag/Project": "{{PROJECT}}",
-          "aws:RequestTag/Purpose": "{{PURPOSE}}"
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
         }
       }
     },
@@ -29,7 +30,8 @@
         "StringEquals": {
           "aws:RequestTag/Owner": "{{OWNER}}",
           "aws:RequestTag/Project": "{{PROJECT}}",
-          "aws:RequestTag/Purpose": "{{PURPOSE}}"
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
         }
       }
     },
@@ -43,7 +45,8 @@
           "ec2:CreateAction": "CreateSecurityGroup",
           "aws:RequestTag/Owner": "{{OWNER}}",
           "aws:RequestTag/Project": "{{PROJECT}}",
-          "aws:RequestTag/Purpose": "{{PURPOSE}}"
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
         }
       }
     },
@@ -57,7 +60,8 @@
           "ec2:CreateAction": "ImportKeyPair",
           "aws:RequestTag/Owner": "{{OWNER}}",
           "aws:RequestTag/Project": "{{PROJECT}}",
-          "aws:RequestTag/Purpose": "{{PURPOSE}}"
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
         }
       }
     },
@@ -88,7 +92,8 @@
         "StringEquals": {
           "aws:RequestTag/Owner": "{{OWNER}}",
           "aws:RequestTag/Project": "{{PROJECT}}",
-          "aws:RequestTag/Purpose": "{{PURPOSE}}"
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
         }
       }
     },
@@ -102,7 +107,8 @@
           "ec2:CreateAction": "AllocateAddress",
           "aws:RequestTag/Owner": "{{OWNER}}",
           "aws:RequestTag/Project": "{{PROJECT}}",
-          "aws:RequestTag/Purpose": "{{PURPOSE}}"
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
         }
       }
     },
