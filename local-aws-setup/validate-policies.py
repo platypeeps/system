@@ -57,18 +57,23 @@ def grants_shell(item):
         check = entries.get("ssm:SessionDocumentAccessCheck") if isinstance(entries, dict) else None
         if operator in ("Bool", "BoolIfExists") and str(check).lower() in ("true", "['true']"):
             return False
-    # Unchecked, any session target opens the default shell. Each pattern's own
-    # instance id, wildcards filled, stands in for the instances it can name.
-    # ponytail: approximates glob intersection; a pattern that names instances
-    # only through an unusual wildcard split may slip past.
+    # Unchecked, any session target opens the default shell.
     resources = item["Resource"]
-    resources = [resources] if isinstance(resources, str) else resources
-    for resource in resources:
-        target = re.sub(r"\$\{[^}]*\}|[*?]", "0", resource.split("instance/", 1)[-1] if "instance/" in resource else "i-0")
-        if any(covers(item, "Resource", f"arn:aws:{kind}/{target}")
-               for kind in ("ec2:region:account:instance", "ssm:region:account:managed-instance")):
-            return True
-    return False
+    return any(session_target(resource) for resource in ([resources] if isinstance(resources, str) else resources))
+
+
+def session_target(resource):
+    """Whether a Resource pattern may name an EC2 instance or an SSM managed instance.
+
+    A wildcard or a variable in the service or resource type counts as one.
+    """
+    fields = re.sub(r"\$\{[^}]*\}", "*", resource).split(":", 5)
+    if len(fields) < 6:
+        return True
+    service, kind = fields[2], fields[5].split("/", 1)[0]
+    if re.search(r"[*?]", service):
+        return True
+    return service in ("ec2", "ssm") and (bool(re.search(r"[*?]", kind)) or kind in ("instance", "managed-instance"))
 
 
 def validate(path):

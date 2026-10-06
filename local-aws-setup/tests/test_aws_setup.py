@@ -994,6 +994,8 @@ class ExtraPolicyCase(unittest.TestCase):
             {"Action": "ssm:StartSession", "Resource": f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:instance/i-abc*"},
             {"Action": "ssm:StartSession", "Resource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:managed-instance/*"},
             {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:*:*:*"},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:inst*/i-ab*"},
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:*:us-east-1:*:*/*"},
             {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:us-east-1:%s:document/${aws:PrincipalTag/Doc, 'SSM-SessionManagerRunShell'}" % ACCOUNT_ID},
             {"Action": "ssm:StartSession", "NotResource": "arn:aws:ssm:us-east-1::document/SSM-SessionManagerRunShell", "Condition": checked},
             {"Action": "ssm:StartSession", "NotResource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:document/SSM-SessionManagerRunShell", "Condition": checked},
