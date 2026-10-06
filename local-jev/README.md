@@ -516,9 +516,10 @@ A record carries:
 - `caller`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
   `shadow`, and the ledger's fields: answer, confidence, distribution,
   outcome, cause, tokens, duration, `changed`;
-- `request`: the payload as sent. For Jev and the Haiku arm that is after
-  redaction; for Kev it is the local payload as given. The Haiku arm adds
-  `prompts`, the message and schema each question became;
+- `request`: the payload as sent. For Jev and both comparison arms that is
+  after redaction. A local-only call sends its payload unredacted, so its
+  state is stored as a hash (below). The Haiku arm adds `prompts`, the
+  message and schema each question became;
 - `response`: the whole parsed response, every distribution included; for
   the Haiku arm, each question's reply text;
 - `settings`: every flag the verb parsed, so `--gate`, `--unsure-below`,
