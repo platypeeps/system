@@ -1128,14 +1128,16 @@ expect_lifecycle() {
   expect explicitDeny ec2:CreateSnapshot "$snapshot"
   expect "$lifecycle_decision" ec2:CreateTags "$snapshot" "$requested" "aws:TagKeys=$MANAGED_TAG_KEY" "ec2:CreateAction=CreateSnapshot"
   for pair in DisassociateAddress:elastic-ip DisassociateAddress:network-interface ReleaseAddress:elastic-ip DeleteSecurityGroup:security-group DeleteKeyPair:key-pair DeleteVolume:volume DeleteNetworkInterface:network-interface DeleteSnapshot:snapshot; do
-    action=${pair%%:*}
+    # Not `action`: expect() assigns that global, and the next probe would
+    # ask for ec2:ec2:<Action>, which the simulator answers implicitDeny.
+    teardown=${pair%%:*}
     kind=${pair#*:}
     owner=$ACCOUNT_ID
     [ "$kind" != snapshot ] || owner=""
-    resource="arn:aws:ec2:$AGENT_REGION:$owner:$kind/probe"
-    expect "$lifecycle_decision" "ec2:$action" "$resource" "$tagged"
-    expect explicitDeny "ec2:$action" "$resource"
-    expect explicitDeny "ec2:$action" "$resource" "aws:ResourceTag/$MANAGED_TAG_KEY=false"
+    probe="arn:aws:ec2:$AGENT_REGION:$owner:$kind/probe"
+    expect "$lifecycle_decision" "ec2:$teardown" "$probe" "$tagged"
+    expect explicitDeny "ec2:$teardown" "$probe"
+    expect explicitDeny "ec2:$teardown" "$probe" "aws:ResourceTag/$MANAGED_TAG_KEY=false"
   done
   expect explicitDeny ec2:ModifyInstanceAttribute "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:instance/probe" "$tagged"
   rule="arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:security-group-rule/sgr-probe"
