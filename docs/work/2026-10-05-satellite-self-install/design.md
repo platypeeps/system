@@ -59,14 +59,19 @@ The refusal arrives in answer to the first frame, so the hub ran no statement of
 | No hub digest (older hub) | today's error and the reason |
 | `upgrade == "hub"` (satellite newer) | today's error and the reason: upgrade the hub |
 | Install refused | today's error and the outcome's reason |
-| Installed, and argv cannot replay the command | today's error, the install line, and "run it again" |
-| Installed, and argv replays the command | one stderr line, then `execve(sys.executable, sys.orig_argv)` with the rerun variable set |
+| Installed, and the entrypoint did not call `declare_replayable()` | today's error, the install line, and "run it again" |
+| Installed, declared, and argv cannot replay the command | today's error, the install line, and "run it again" |
+| Installed, declared, and argv replays the command | one stderr line, then `execve(sys.executable, sys.orig_argv)` with the rerun variable set |
 
 `replay_refusal` decides whether argv replays the command.
 A program read from standard input (`python -`, an interactive interpreter) does not, nor does a missing program file.
 A pipe or a file on standard input may already have given this run its input, so it does not either.
 A terminal, `/dev/null` and a closed standard input do.
 Review of the first head found the `python -` case: the rerun read an empty stdin and exited 0 without the command (sd:2802).
+Review of the second head found that a script's local work before `Hub.open` ran twice.
+Only the entrypoint knows whether that work repeats safely, so the rerun needs its declaration.
+No entrypoint declares it yet; the command pack's `sd` can, verb by verb, as a follow-up.
+Until then a refusal costs one manual rerun, not a manual install.
 
 The session counter (`remote.sessions_opened`) guards the one case where a rerun could repeat hub writes.
 That case is a hub upgraded while a process already holds sessions.
@@ -83,7 +88,7 @@ An environment variable and not a flag: an older installed `sd_db.satellite` ign
 
 ## Known limits
 
-- A rerun repeats any local work the command did before its first hub session; the replay check covers standard input only.
+- A declared rerun repeats any local work the command did before its first hub session; the declaration is the entrypoint's promise that this is safe.
 - The lock is per venv. The pack's own `sd_install.py` takes another lock, so the two installers do not serialise with each other.
 - A wheel install leaves no `vcs_info` in `direct_url.json`, as `sd-db.sh install` does today.
   The pack's ancestry guard then sees no installed commit.

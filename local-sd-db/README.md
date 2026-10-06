@@ -387,8 +387,9 @@ The satellite then installs the hub's build itself (sd:2802); the plan is `docs/
 - It installs only when that export's build digest equals the hub's; the refusal carries the hub's digest.
   A hub that runs another build gets no install, and the error says why.
 - A fresh `python -I` in the venv must then report the hub's digest.
-- On a refusal, the command installs, prints one line on stderr, and runs again once.
-  A command whose argv cannot replay it installs and asks you to run it again: a program read from standard input, or a pipe or file on standard input.
+- On a refusal, the command installs the hub's build, and the error asks you to run the command again.
+  An entrypoint that calls `sd_db.self_install.declare_replayable()` runs again once by itself instead.
+  A program read from standard input, or a pipe or file on standard input, is never run again.
 - The nightly `machine-setup.sh update --apply` installs through the `satellite` stage; a dry run prints the plan.
 
 | Variable or file | Effect |

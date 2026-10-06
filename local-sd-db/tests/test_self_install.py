@@ -364,6 +364,33 @@ class TheReplayCheck(unittest.TestCase):
         os.close(closed)
         self.assertIsNone(self_install.replay_refusal(__file__, closed))
 
+    def test_an_undeclared_command_is_never_rerun(self):
+        with mock.patch.object(self_install, "_replayable", False):
+            self.assertIn("did not declare", self_install.rerun_refusal())
+        with mock.patch.object(self_install, "_replayable", True), \
+                mock.patch.object(self_install, "replay_refusal", return_value=None):
+            self.assertIsNone(self_install.rerun_refusal())
+
+    def test_local_work_before_the_refusal_runs_once_without_a_declaration(self):
+        """The second review's reproduction (sd:2802): a script's local effect ran twice."""
+        script = Path(tempfile.mkdtemp()) / "client.py"
+        self.addCleanup(shutil.rmtree, script.parent)
+        script.write_text(
+            "import os, sys\n"
+            "from sd_db import remote, self_install\n"
+            "print('LOCAL_EFFECT', flush=True)\n"
+            "error = remote.BuildMismatch('build', 'a' * 16, 'b' * 16, hub_build='b' * 16)\n"
+            "install = lambda digest, **_: self_install.Outcome(True, 'installed the hub build')\n"
+            "raise self_install.after_refusal(error, loopback=False, environ=dict(os.environ),"
+            " install=install)\n"
+        )
+        with open(os.devnull) as null:
+            done = subprocess.run([sys.executable, str(script)], stdin=null, capture_output=True, text=True,
+                                  check=False, timeout=60, env={**os.environ, "PYTHONPATH": str(HERE)})
+        self.assertEqual(done.stdout.count("LOCAL_EFFECT"), 1, done.stdout)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("did not declare", done.stderr)
+
     def test_python_dash_installs_and_says_run_it_again_instead_of_exiting_quietly(self):
         """The review's reproduction (sd:2802): `python -` reran against an empty stdin."""
         program = (

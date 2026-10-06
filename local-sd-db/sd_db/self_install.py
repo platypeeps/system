@@ -17,8 +17,10 @@ hub's digest, or the install is reported as unverified.
 Two callers:
 
 * `after_refusal`, from `hub.Hub.open`: a satellite's command met the
-  refusal before the hub ran any statement. It installs, prints one line
-  on stderr, and runs the same command once more (`RERUN` stops a loop).
+  refusal before the hub ran any statement. It installs, then asks for a
+  rerun in the refusal's text. A command that called `declare_replayable`
+  is instead run once more, after one line on stderr (`RERUN` stops a
+  loop): only the entrypoint knows whether its local work repeats safely.
 * `sd_db.satellite --apply`, the nightly machine-setup stage.
 
 Guards: `OFF` switches it off; a lock in the venv serialises two
@@ -327,6 +329,30 @@ def replay_refusal(argv0: str | None = None, stdin: int = 0) -> str | None:
     return "its standard input is a pipe or a file this run may have read"
 
 
+#: Set by `declare_replayable`: this process's entrypoint may be run again.
+_replayable = False
+
+
+def declare_replayable() -> None:
+    """An entrypoint's promise that running its argv again repeats nothing.
+
+    Call it only from a command that does no local work with effects
+    (a file written, a request sent) before its first hub session. A
+    rerun replays the whole process, and `remote.sessions_opened` guards
+    hub statements only. Without this promise, a refusal installs the
+    hub's build and asks for a rerun instead.
+    """
+    global _replayable
+    _replayable = True
+
+
+def rerun_refusal() -> str | None:
+    """Why this process is not rerun after an install, or `None` when it is."""
+    if not _replayable:
+        return "this command did not declare that running it again is safe"
+    return replay_refusal()
+
+
 def rerun(environ, execve=os.execve) -> None:
     """Replace this process with the same command, marked as the rerun."""
     for stream in (sys.stdout, sys.stderr):
@@ -339,9 +365,10 @@ def after_refusal(mismatch: remote.BuildMismatch, *, loopback: bool, environ=Non
     """Install the hub's build and rerun this command, or the error to raise.
 
     Called where the satellite's open met the refusal, so the hub ran no
-    statement of this command. It reruns only a command whose argv replays
-    it (`replay_refusal`); otherwise it installs and asks for a rerun. On a
-    rerun it does not return: the process is replaced. `install`, `execve`
+    statement of this command. It reruns only a command that declared
+    itself replayable and whose argv replays it (`rerun_refusal`);
+    otherwise it installs and asks for a rerun. On a rerun it does not
+    return: the process is replaced. `install`, `execve`
     and `replay` are seams for tests.
     """
     if loopback:
@@ -349,7 +376,7 @@ def after_refusal(mismatch: remote.BuildMismatch, *, loopback: bool, environ=Non
     environ = os.environ if environ is None else environ
     err = sys.stderr if err is None else err
     install = install_hub_build if install is None else install
-    replay = replay_refusal if replay is None else replay
+    replay = rerun_refusal if replay is None else replay
     reason = _why_not(mismatch, environ)
     if reason is not None:
         return _with_reason(mismatch, reason)

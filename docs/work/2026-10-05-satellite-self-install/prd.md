@@ -32,9 +32,10 @@ The operator approved two triggers: "on refusal + nightly".
    An unknown source refuses, naming the variable.
 8. Every handshake refusal carries the hub's build digest, whatever field differs.
    A refusal from an older hub without the digest installs nothing and keeps today's error, plus the reason.
-9. On a refusal, the satellite's command installs, prints one stderr line, and runs the same argv again once.
-   A refused install keeps today's error, plus the reason.
-   A command whose argv cannot replay it is installed for and not rerun; the error asks for a rerun.
+9. On a refusal, the satellite's command installs the hub's build; a refused install keeps today's error, plus the reason.
+   The brief asked for a rerun of the same argv once. A rerun repeats any local work done before the refusal,
+   so it is opt-in: only an entrypoint that calls `declare_replayable()` is run again, once.
+   Every other command gets today's error, the install line, and "run it again".
 10. `sd_db.satellite --apply` installs on a mismatch; without `--apply` it prints the plan line.
 
 ## Acceptance criteria
@@ -47,3 +48,4 @@ The operator approved two triggers: "on refusal + nightly".
 ## Log
 
 - 2026-10-05 created and built on branch `feat/sd-2802-satellite-self-install`.
+- 2026-10-05 review of two heads found that an automatic rerun repeats a command's local work; the rerun became opt-in.
