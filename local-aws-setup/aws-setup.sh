@@ -29,6 +29,17 @@ KEY_PROPAGATION_SLEEP="${KEY_PROPAGATION_SLEEP:-5}"
 # before a later run replaces that policy's default version.
 POLICY_OWNER_TAG_KEY="${POLICY_OWNER_TAG_KEY:-managed-by}"
 POLICY_OWNER_TAG_VALUE="${POLICY_OWNER_TAG_VALUE:-local-aws-setup}"
+# Every route to a deployment's disk, denied below sandbox (sd:2870): launch
+# from a copy, copy or share it, move or read it block by block, or reach the
+# guest outside SSM. Space-separated IAM actions; no globs.
+DISK_ROUTES="ec2:RunInstances ec2:CreateFleet ec2:RequestSpotInstances ec2:RequestSpotFleet
+  ec2:CreateSnapshots ec2:CopySnapshot ec2:CreateImage ec2:CreateVolume
+  ec2:CreateRestoreImageTask ec2:CreateStoreImageTask ec2:ExportImage ec2:CreateInstanceExportTask
+  ec2:ModifySnapshotAttribute ec2:ModifyImageAttribute
+  ec2:AttachVolume ec2:DetachVolume ec2:CreateReplaceRootVolumeTask
+  ebs:GetSnapshotBlock ebs:ListSnapshotBlocks ebs:ListChangedBlocks
+  ec2-instance-connect:SendSSHPublicKey ec2-instance-connect:SendSerialConsoleSSHPublicKey
+  ec2:GetConsoleScreenshot"
 
 usage() {
   echo "usage: $(basename "$0") accounts | test | render|simulate|apply|keys|rotate|check <account>" >&2
@@ -70,9 +81,12 @@ Levels:
   readonly  describe/list/metrics; get on listed buckets.
   operator  readonly + start/stop/reboot and read the console output of
             instances tagged MANAGED_TAG_KEY=true; put on listed buckets.
+            The level for an evaluated agent beside a deployer user.
   sandbox   operator + launch instances tagged at launch, terminate tagged
             instances; snapshot and clean up tagged resources in the configured
             account/region; delete on listed buckets.
+  Below sandbox, every route to an instance's disk is denied: launch,
+  snapshot, image, volume copy or move, EBS block reads, Instance Connect.
   All levels deny IAM administration, role assumption, CloudTrail tampering including its
   event selectors, changing an instance attribute, bucket policy/ACL and
   public access block changes, KMS key deletion, changing the managed tag,
@@ -571,6 +585,13 @@ stmt_hard_denies() {
         "ec2:DeleteVolume",
         "ec2:DeleteNetworkInterface",
         "ec2:DeleteSnapshot",'
+  # Below sandbox, every route to a deployment's disk, where ground truth
+  # lives: launch, copy, share, move or read it, or reach the guest outside
+  # SSM (sd:2870). The deployer launches and snapshots at sandbox.
+  # shellcheck disable=SC2086 # a fixed list of IAM actions, no globs
+  disk_routes=$(json_strings '        ' $DISK_ROUTES)
+  terminate="$terminate
+$disk_routes,"
   [ "$LEVEL" != sandbox ] || terminate=""
   cat <<EOF
     {
@@ -1102,7 +1123,9 @@ expect_ec2() {
   # explicitDeny, not implicitDeny: an untagged instance is outside the
   # conditional Allow either way, but only the Deny survives a second policy.
   expect explicitDeny ec2:StopInstances "$instance" "$untagged"
-  expect "$(from_level sandbox)" ec2:RunInstances "$instance" "aws:RequestTag/$MANAGED_TAG_KEY=true"
+  launch=explicitDeny
+  [ "$LEVEL" != sandbox ] || launch=allowed
+  expect "$launch" ec2:RunInstances "$instance" "aws:RequestTag/$MANAGED_TAG_KEY=true"
   expect explicitDeny ec2:RunInstances "$instance"
   if [ "$LEVEL" = sandbox ]; then
     expect allowed ec2:TerminateInstances "$instance" "$tagged"
@@ -1145,6 +1168,10 @@ expect_lifecycle() {
     expect "$lifecycle_decision" ec2:CreateTags "$rule" "$requested" "aws:TagKeys=$MANAGED_TAG_KEY" "ec2:CreateAction=$operation"
   done
   expect explicitDeny ec2:CreateTags "$rule" "aws:TagKeys=$MANAGED_TAG_KEY"
+  [ "$LEVEL" != sandbox ] || return 0
+  for route in $DISK_ROUTES; do
+    expect explicitDeny "$route" "*" "$tagged" "$requested"
+  done
 }
 
 # Every bucket the account file names, not the first word of the list. Taking

@@ -47,6 +47,18 @@ OLD_KEY = "AKIAOLDKEY"
 NEW_KEY = "AKIANEWKEY"
 NEW_SECRET = "s3cret-that-must-not-be-an-argument"
 
+# Every route from an agent below sandbox to a deployment's disk (sd:2870).
+DISK_ROUTES = (
+    "ec2:RunInstances", "ec2:CreateFleet", "ec2:RequestSpotInstances", "ec2:RequestSpotFleet",
+    "ec2:CreateSnapshots", "ec2:CopySnapshot", "ec2:CreateImage", "ec2:CreateVolume",
+    "ec2:CreateRestoreImageTask", "ec2:CreateStoreImageTask", "ec2:ExportImage", "ec2:CreateInstanceExportTask",
+    "ec2:ModifySnapshotAttribute", "ec2:ModifyImageAttribute",
+    "ec2:AttachVolume", "ec2:DetachVolume", "ec2:CreateReplaceRootVolumeTask",
+    "ebs:GetSnapshotBlock", "ebs:ListSnapshotBlocks", "ebs:ListChangedBlocks",
+    "ec2-instance-connect:SendSSHPublicKey", "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+    "ec2:GetConsoleScreenshot",
+)
+
 
 def render(level, buckets="", tag_key="claude-managed", pass_roles=""):
     """The policy document for a level, parsed."""
@@ -223,9 +235,10 @@ class PolicyCase(unittest.TestCase):
         # confuses the two denies nothing while looking as though it does.
         # Both shapes are checked: the grammar, and the services this script
         # is allowed to speak about at all.
-        grammar = re.compile(r"[a-z0-9]+:[A-Za-z0-9*]+")
-        services = {"account", "cloudtrail", "cloudwatch", "ec2", "iam",
-                    "kms", "organizations", "s3", "sts"}
+        grammar = re.compile(r"[a-z0-9-]+:[A-Za-z0-9*]+")
+        services = {"account", "cloudtrail", "cloudwatch", "ebs", "ec2",
+                    "ec2-instance-connect", "iam", "kms", "organizations",
+                    "s3", "sts"}
         for level in ("readonly", "operator", "sandbox"):
             for buckets in ("", "claude-managed-bucket"):
                 document = render(level, buckets=buckets)
@@ -836,6 +849,24 @@ class LifecycleCase(unittest.TestCase):
         context["ec2:CreateAction"] = "CreateVolume"
         self.assertEqual(self.decision(policy, "ec2:CreateTags", resource, context, broad=True), "explicitDeny")
 
+    def test_no_route_to_a_managed_disk_below_sandbox_even_with_broad_extra(self):
+        # Ground truth lives on a deployment's disk (sd:2870). Below sandbox
+        # every way to copy, share, move, read or launch from that disk, or to
+        # reach the guest outside SSM, is an explicit Deny: a missing Allow
+        # says nothing once a broader policy is attached.
+        tagged = {"aws:ResourceTag/claude-managed": "true",
+                  "aws:RequestTag/claude-managed": "true"}
+        for level in ("readonly", "operator"):
+            policy = render(level)
+            denied = actions_of(statement(policy, "HardDenies"))
+            for action in DISK_ROUTES:
+                with self.subTest(level=level, action=action):
+                    self.assertIn(action, denied)
+                    self.assertEqual(self.decision(policy, action, "arn:aws:ec2:us-east-1:%s:volume/probe" % ACCOUNT_ID, tagged, broad=True), "explicitDeny")
+        # The deployer launches and snapshots at sandbox; its document keeps them.
+        denied = actions_of(statement(render("sandbox"), "HardDenies"))
+        self.assertEqual([a for a in DISK_ROUTES if a in denied], [])
+
     def test_rendered_policies_fit_managed_policy_limit(self):
         for level in ("readonly", "operator", "sandbox"):
             self.assertLessEqual(len(json.dumps(render(level), separators=(",", ":"))), 6144)
@@ -1209,6 +1240,16 @@ class RoleAndRuleCase(unittest.TestCase):
         self.assertEqual(malformed, [])
         teardown = [n for n in names if n == "ec2:DeleteKeyPair"]
         self.assertEqual(len(teardown), 3)
+
+    def test_check_proves_every_disk_route_denied_below_sandbox(self):
+        # The live check, not only the render, has to show the routes closed:
+        # it is what the owner reads before lifting the evaluation rule.
+        box = self.ready(level="operator")
+        box.profile("default", aws_access_key_id="AKIAADMIN")
+        box.rule("simulate-custom-policy", stdout="explicitDeny")
+        done = box.run("simulate", "x")
+        for action in DISK_ROUTES:
+            self.assertIn("PASS explicitDeny " + action + " ", done.stdout)
 
 if __name__ == "__main__":
     unittest.main()
