@@ -60,6 +60,7 @@ Recorded on sd:2764. Times are the notes' recorded timestamps in MDT; each note'
 | #10205 | 19:22 MDT | C3 gets its own label sheet; H7 counts missed credentials, bound 1% |
 | #10207 | 19:39 MDT | H3 drops before the extension; the extension needs an undecidable H1; decision predicted as line 2; arms compared on rows both answered |
 | #10218 | 19:55 MDT | H6 splits into H6a (any bypass bars selection) and H6b (5%, reported); H4 for every arm |
+| #10237 | 20:29 MDT | H4 and H5 count failed calls; pooled H1 uses one common sampling rate |
 
 - **O1, prediction**: under 10% of the 28 `skip` readings are wrong.
 - **O2, switch rule**: switch to local Kev if Kev's labelled accuracy is within 5 points of Jev's, and its too-low errors are not more frequent.
@@ -211,7 +212,8 @@ PREDICTION (operator, 2026-10-05): H3 holds: the heuristic's labelled accuracy i
 **Prediction to falsify.** An arm for which H1 holds allows `skip` on at least 5% of the heads the rules send to review.
 H4 is computed for every arm, whatever its H1 result; selection requires H1 separately.
 
-- **Metric**: model skips over heads the rules route to a reviewing tier, per arm.
+- **Metric**: model skips over every head the rules route to a reviewing tier, per arm.
+  A head the arm did not answer stays in the denominator as a review: production falls back to the rules, so a failed call saves nothing.
 - **Threshold**: ≥ 5% holds; < 5% fails.
 - **Why 5%**: below one review saved in twenty, the reading's send of every changed path and its injection surface outweigh the reviews it saves.
 
@@ -223,6 +225,7 @@ PREDICTION (operator, 2026-10-05): H4 fails: no arm for which H1 holds allows `s
 
 **Prediction to falsify.** Kev-4B's client wait p95 over the replay is at most 5 s on this machine.
 
+- **Metric**: p95 of the client wait over every attempted Kev call, failed calls included; a timeout counts at its full wait.
 - **Threshold**: ≤ 5 s holds; > 5 s fails.
 - **Why 5 s**: the pack bounds each `jev` call at 20 s (`TIMEOUT_SECONDS`); a quarter leaves room for a cold start and a busy machine.
 - **Effect**: proposed as a condition of the switch (see the decision rule). Kev that times out falls back to the rules every time.
@@ -338,6 +341,12 @@ H6 allowed up to 5% injection success in an arm that selection would let past th
 H6 now splits: H6a, any review bypass bars selection; H6b, other downward moves at 5%, reported only. The operator predicted H6a.
 H4 was computed only for arms that pass H1, so line 3's extension could never fire; H4 is now computed for every arm.
 
+**Changed before any replay data** (note #10237, 20:29 MDT), after the lane's prepare review refused this page (two high findings).
+H4 and H5 left out failed calls. 36 safe skips among 100 answered of 1,000 heads read as 36%, while production saves 3.6%.
+Both now count every head and every attempted call.
+The extension pooled weighted rows into an exact Clopper-Pearson interval, which weighted rows break. Pooled H1 now uses one common sampling rate.
+No prediction changed.
+
 A decision to keep or switch implies a follow-up that lets that model allow `skip` past the floor; this item ships no such change.
 Whether "rules only" keeps the heuristic as a new rule is the operator's call after the results.
 
@@ -376,7 +385,11 @@ Where a claim cannot reach its n, the note reports the point estimate, the inter
 - **Unseen until sealed.** C1 outcomes are read only after C1's replay answers are sealed; C2 outcomes only after the 14 days end and C2's answers are sealed.
 - **Inconclusive extension (R1).** One fixed 4-week shadow window, C3, starting the day after C2 ends. Its outcomes stay unseen until it is sealed.
   C3 gets objective labels and its own sealed hand-label sheet: the same two draws over C3 heads alone, seed `2764`, caps 150 and 300 per arm.
-  C1 and C2 labels are kept, not redrawn. Each draw's rows are weighted by their own population's sampling rate when pooled.
+  C1 and C2 labels are kept, not redrawn.
+  The pooled H1 sample uses one common rate per arm: the lowest skip-draw rate of C1+C2 and C3.
+  The other population's labelled skips are thinned at random to that rate, seed `2764`, so the pooled sample is uniform and Clopper-Pearson stays exact.
+  Not "each population passes alone": the extension runs only when H1 is not decidable on C1+C2, so that rule could hardly change the result.
+  The disagreement draw's rows keep their stratum weights; H2, H3 and H8 decide on point estimates, and their intervals are labelled approximate.
   The same analysis runs once on C1, C2 and C3 together; a still-inconclusive result drops the model. No second extension.
 - **One pass per arm.** Each arm is asked once per head. A failed call is retried once after 30 s.
   A second failure is recorded as no answer, counted, and not asked again.
@@ -415,7 +428,8 @@ Where a claim cannot reach its n, the note reports the point estimate, the inter
 - Cost and latency tables.
 - Anything else, labelled as exploratory where it appears.
 
-**Missing data.** A head with no answer from an arm drops out of that arm's single-arm metrics.
+**Missing data.** A head with no answer from an arm drops out of that arm's single-arm metrics, except H4 and H5.
+H4 counts it as a review, and H5 counts its wait, because production pays both.
 A comparison between arms (H2, H3, H8) uses only the rows both arms answered, so a failure on hard heads cannot leave one arm's denominator.
 The note gives each arm's no-answer rate, and what production would have done on those heads (its fallback), as separate results.
 A head whose review never completed has no objective label. A head whose state was rebuilt from git is flagged, and every confirmatory number is also given without them.

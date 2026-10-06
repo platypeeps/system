@@ -210,7 +210,9 @@ The label is written to the experiment ledger only with `label`, source `review-
 - **Skip draw**: every Jev and Kev model skip. Above 300 for an arm, a seeded simple random draw keeps 300 of that arm's.
 
 The key records which draw each row came from; the sheet does not.
-If the extension (C3) runs, C3 gets its own sheet from the same two draws over C3 heads alone; pooled estimates weight each row by its own population's sampling rate.
+If the extension (C3) runs, C3 gets its own sheet from the same two draws over C3 heads alone.
+Pooled H1 uses one common skip-draw rate per arm, the lowest of C1+C2 and C3; the other population's labelled skips are thinned at random to it, so Clopper-Pearson stays exact.
+Pooled disagreement-draw estimates weight each row by its own population's sampling rate.
 Order is shuffled with the same seed.
 
 **Sheet.** `labels/sheet.csv` in the raw data folder, with a Markdown copy for reading:
@@ -325,6 +327,7 @@ GitHub push protection and readers' own scanners would flag a full one.
 ## Cost and latency
 
 Per arm and per decision: tokens in and out, US dollars, client wait p50 and p95, and Kev's `server_ms`.
+Waits cover every attempted call; a failed or timed-out call counts at its full wait.
 
 - Jev: TypeSafe's list price, $0.042 per million input tokens, output free.
 - Haiku 4.5: $1 per million input tokens and $5 per million output.
