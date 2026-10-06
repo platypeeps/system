@@ -991,8 +991,11 @@ class ExtraPolicyCase(unittest.TestCase):
         box.rule("simulate-custom-policy", stdout="allowed")
         done = box.run("simulate", "x")
         self.assertNotEqual(done.returncode, 0)
+        self.assertIn("Argument list too long", done.stderr)
         self.assertNotIn("PASS", done.stdout)
-        self.assertFalse([c for c in box.calls() if "simulate-custom-policy" in c["rest"]])
+        calls = [c["rest"][:2] for c in box.calls()]
+        # The document passed validation: the session check ran after it.
+        self.assertEqual(calls, [["sts", "get-caller-identity"]])
 
     def test_unconfigured_attachment_rejected_even_with_configured_extra(self):
         box = self.ready(EXTRA_POLICIES="provision")
