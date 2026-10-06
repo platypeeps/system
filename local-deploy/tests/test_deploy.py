@@ -329,8 +329,8 @@ class DeployTest(unittest.TestCase):
     def recorded(self):
         return self.state.read_text().strip() if self.state.exists() else None
 
-    def run_upgrade(self, *args, **extra):
-        return subprocess.run(["sh", str(self.repo / "local-deploy/deploy.sh"), "upgrade", *args],
+    def run_upgrade(self, *args, cwd=None, **extra):
+        return subprocess.run(["sh", str(self.repo / "local-deploy/deploy.sh"), "upgrade", *args], cwd=cwd,
                               env={**self.env, **extra}, capture_output=True, text=True, timeout=60)
 
     def assert_nothing_ran(self, result):
@@ -384,6 +384,24 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"nothing to deploy from {landed} to {landed}", result.stdout)
         self.assertEqual(self.calls.read_text(), "")
+
+    def test_upgrade_acts_on_its_own_checkout_from_any_working_directory(self):
+        """The allow rule matches `sh <abs>/deploy.sh upgrade` alone, with no `cd` before it."""
+        landed = self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        other = self.tmp / "other-repo"
+        subprocess.run(["git", "init", "-q", "-b", "topic", str(other)], check=True)
+        (other / "stray.txt").write_text("x\n")
+        for cwd in (plain, other):
+            with self.subTest(cwd=cwd.name):
+                self.git("reset", "-q", "--hard", self.base)
+                (self.tmp / "kicked").unlink(missing_ok=True)
+                self.state.unlink(missing_ok=True)
+                result = self.run_upgrade("--from", self.base, cwd=cwd)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("restarted runner", result.stdout)
+                self.assertEqual((self.head(), self.recorded()), (landed, landed))
 
     def test_upgrade_installs_sd_db_once_per_venv_before_any_restart(self):
         self.land({"local-sd-db/sd_db/remote.py": "x\n"})
