@@ -191,11 +191,24 @@ class ACall(MeteringCase):
         self.run_main(["noul", f"is {secret} live?", "--fallback", secret,
                        "--baseline", secret, "--gate", "0.5"],
                       stdin="state", JEV_ENABLED="0")
-        self.run_main(["noul", f"is {secret} live?", "--fallback", secret])
+        self.run_main(["noul", f"is {secret} live?", "--fallback", secret,
+                       "--model", f"jev-{secret}"])
         stored = self.stored()
         self.assertEqual(len(stored), 3)
         self.assertNotIn(secret, json.dumps(stored))
         self.assertIn("[REDACTED]", stored[0]["fallback"])
+        self.assertEqual(stored[2]["settings"]["model"], "jev-[REDACTED]")
+
+    def test_printed_is_what_reached_stdout_and_the_judgment_is_the_answer(self):
+        code, out = self.run_main(["noul", "is it?", "--shadow", "no"])
+        self.assertEqual((code, out), (0, "no\n"))
+        code, out = self.run_main(["noul", "is it?", "--shadow", "yes"], JEV_ENABLED="0")
+        self.assertEqual((code, out), (0, "yes\n"))
+        self.run_main(["noul", "is it?"])
+        judged, failed, live = [r for r in self.stored() if r["arm"] == "jev"]
+        self.assertEqual((judged["printed"], judged["answer"]), ("no", "0.97"))
+        self.assertEqual((failed["printed"], failed["answer"]), ("yes", None))
+        self.assertEqual((live["printed"], live["answer"]), ("0.97", "0.97"))
 
     def test_a_call_that_sent_nothing_stores_no_request(self):
         code, out = self.run_main(["noul", "is it?", "--fallback", "yes"], JEV_ENABLED="0")
@@ -232,7 +245,8 @@ class LocalContent(CompareCase):
             path.unlink()
         Arm.kev_answer = {"type": "noul", "noul": 0.81, "echo": self.state}
         code, out = self.run_main(["noul", f"is {SECRET} live?", "--local-only",
-                                   "--stage", stage], stdin=self.state)
+                                   "--stage", stage, "--model", f"kev-{SECRET}"],
+                                  stdin=self.state)
         self.assertEqual((code, out), (0, "0.81\n"))
         Arm.kev_answer = None
         code, _ = self.run_main(["choice", "where?", "--local-only", "--stage", stage,
@@ -255,6 +269,7 @@ class LocalContent(CompareCase):
         self.assertEqual(choice["request"]["questions"]["answer"]["criteria"]["desk"],
                          "near [REDACTED]")
         self.assertEqual(choice["printed"], "phone")
+        self.assertEqual(noul["settings"]["model"], "kev-[REDACTED]")
 
     def test_the_secret_scanner_stores_only_digests(self):
         noul, choice = self.planted("JEV_SECRET_SCAN")
@@ -266,6 +281,9 @@ class LocalContent(CompareCase):
                                      else ["sha256", "state_sha256"], field)
         self.assertEqual(noul["request"]["state_sha256"],
                          hashlib.sha256(self.state.encode()).hexdigest())
+        self.assertEqual(noul["settings"]["model"],
+                         {"sha256": hashlib.sha256(f"kev-{SECRET}".encode()).hexdigest()})
+        self.assertEqual(noul["settings"]["gate"], None)
 
     def test_a_named_stage_is_hashed_on_any_path(self):
         said = []

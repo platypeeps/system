@@ -523,11 +523,15 @@ A record carries:
 - `response`: the whole parsed response, every distribution included; for
   the Haiku arm, each question's reply text. Redacted, since a model can
   echo what it was asked;
-- `settings`: the flags that shape the printed answer and carry no text
-  (`CORPUS_SETTINGS` in `jev.py`), such as `--gate` and `--unsure-below`;
-  the instructions and criteria are in `request`, redacted;
-- `printed`, `fallback` and `baseline`: what the caller saw, its
-  `--fallback` marker and its own answer, redacted too;
+- `settings`: the flags that shape the printed answer (`CORPUS_SETTINGS`
+  in `jev.py`), such as `--gate`, `--unsure-below` and `--model`, the one
+  that takes text and is redacted; the instructions and criteria are in
+  `request`, redacted;
+- `printed`: exactly what reached the caller's stdout, without its final
+  newline, or null when nothing did. In shadow mode that is the caller's
+  own answer; the judgment is `answer`;
+- `fallback` and `baseline`: the `--fallback` marker and the caller's own
+  answer;
 - `ledger`: the `judgment` row's id, or null when the meter wrote none.
 
 **A call that sent nothing stores no request.** Switched off, unkeyed, a
@@ -539,8 +543,9 @@ the caller's answer is printed, which blocks a caller whose stdin is open.
 nothing, and the ledger already holds all they know.
 
 **Every content field is redacted, or for the secret scanner hashed.**
-`request`, `response`, `prompts`, `answer`, `printed`, `fallback` and
-`baseline` (`CORPUS_CONTENT` in `jev.py`) go through the redaction a
+`request`, `response`, `prompts`, `answer`, `printed`, `fallback`,
+`baseline`, `model` and `settings.model` (`CORPUS_CONTENT` in `jev.py`;
+`--model` takes any text) go through the redaction a
 hosted request gets, on every record, so a local-only call stays
 replayable. A field the pass refuses, or every one when the pattern file
 does not load, is stored as null. A stage in `CORPUS_HASHED_STAGES`

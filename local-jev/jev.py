@@ -205,12 +205,13 @@ LOCAL_ONLY_STAGES = ("JEV_SECRET_SCAN",)
 CORPUS_HASHED_STAGES = ("JEV_SECRET_SCAN",)
 
 #: The fields of a corpus record that can hold text a caller gave or a model
-#: echoed. Hashed for a stage above, redacted for every other record.
+#: echoed, `settings.model` among them: `--model` takes any text. Hashed for
+#: a stage above, redacted for every other record.
 CORPUS_CONTENT = ("request", "response", "prompts", "answer", "printed",
-                  "fallback", "baseline")
+                  "fallback", "baseline", "model")
 
 #: The flags a corpus record keeps under `settings`: the ones that shape the
-#: printed answer and carry no text. The instructions, criteria and levels
+#: printed answer. Only `model` takes text, and `CORPUS_CONTENT` covers it. The instructions, criteria and levels
 #: are kept as sent, redacted, in `request`; a path to a file is not kept.
 CORPUS_SETTINGS = ("verb", "gate", "unsure_below", "json", "changed",
                    "state_format", "model", "local_only", "shadow_ms",
@@ -499,22 +500,31 @@ def sha256(value) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def each_content(record: dict, change) -> dict:
+    """`record` with `change(field, value)` applied to every content field
+    that holds a value, `settings.model` included."""
+    out = dict(record)
+    for field in CORPUS_CONTENT:
+        if out.get(field) is not None:
+            out[field] = change(field, out[field])
+    settings = out.get("settings")
+    if isinstance(settings, dict) and settings.get("model") is not None:
+        out["settings"] = dict(settings, model=change("model", settings["model"]))
+    return out
+
+
 def hashed(record: dict) -> dict:
     """`record` with every content field replaced by its digest.
 
     The request keeps the state's digest apart, so one hit can be found again
     across calls and labelled; nothing in it can be read back.
     """
-    out = dict(record)
-    for field in CORPUS_CONTENT:
-        value = out.get(field)
-        if value is None:
-            continue
-        digest = {"sha256": sha256(value)}
+    def digest(field, value):
+        out = {"sha256": sha256(value)}
         if field == "request" and isinstance(value, dict) and "state" in value:
-            digest["state_sha256"] = sha256(value["state"])
-        out[field] = digest
-    return out
+            out["state_sha256"] = sha256(value["state"])
+        return out
+    return each_content(record, digest)
 
 
 def scrubbed(record: dict, env) -> dict:
@@ -522,15 +532,13 @@ def scrubbed(record: dict, env) -> dict:
     request gets. A field the pass refuses, or every field when the pattern
     file does not load, is dropped: the record is kept, the text is not."""
     patterns, problem = privacy_patterns(env)
-    out = dict(record)
-    for field in CORPUS_CONTENT:
-        if out.get(field) is None:
-            continue
+
+    def clean(field, value):
         try:
-            out[field] = None if problem else redact(out[field], patterns, [0])
+            return None if problem else redact(value, patterns, [0])
         except JevError:
-            out[field] = None
-    return out
+            return None
+    return each_content(record, clean)
 
 
 def to_corpus(record: dict, env) -> str:
@@ -804,12 +812,15 @@ def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
                                 numeric=event.get("primitive") != "choice")
     # What the call sent and got back, for the corpus. A call that sent
     # nothing -- switched off, unkeyed, a refused redaction -- has no request.
+    # `printed` is what reached the caller's stdout, which in shadow mode is
+    # its own answer; the judgment is `answer`.
     corpus = {"arm": event.get("arm", "jev"), "call": private.get("_call"),
               "local": private.get("_local", False),
               "settings": private.get("_settings"),
               "request": private.get("_request"),
               "response": private.get("_response"),
-              "printed": printed, "fallback": fallback, "baseline": baseline}
+              "printed": private.get("_stdout"), "fallback": fallback,
+              "baseline": baseline}
     return write_event(event, env, corpus=corpus)
 
 
@@ -1742,6 +1753,20 @@ def degrade(reason: str, fallback, out) -> int:
 LOCAL_VERBS = (cmd_enabled, set_flag, cmd_status, cmd_record)
 
 
+class Teed:
+    """`out`, keeping a copy of what was written to it, for the corpus."""
+
+    def __init__(self, out):
+        self.out, self.text = out, ""
+
+    def write(self, text):
+        self.text += text
+        return self.out.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self.out, name)
+
+
 def main(argv=None, out=None, env=None, **kw) -> int:
     out = sys.stdout if out is None else out
     env = os.environ if env is None else env
@@ -1801,6 +1826,7 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     note(_call=call, _local=local, _settings=flags)
     # In shadow mode the judgment is measured and not used, so it is written
     # to a sink and the caller is handed back its own answer instead.
+    out = Teed(out)
     sink = io.StringIO() if shadowed else out
     word, reason = why_unusable(conf, env)
     if switched and not reason:
@@ -1838,6 +1864,7 @@ def main(argv=None, out=None, env=None, **kw) -> int:
         # like, so only `--baseline` gives the pair an old answer to compare.
         answered = (None if switched and baseline is None
                     else baseline_answer(args, own))
+    note(_stdout=out.text.removesuffix("\n") if out.text else None)
     flush(outcome, cause=cause, fallback=fallback, baseline=own, env=env)
     if own is not None:
         write_baseline(args, env, pair=pair, own=answered, shadow=shadowed,
