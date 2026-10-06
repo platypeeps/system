@@ -1,0 +1,237 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateGroupInSandboxVpc",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSecurityGroup",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:vpc/{{VPC_ID}}"
+    },
+    {
+      "Sid": "CreateExperimentGroup",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSecurityGroup",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "ImportExperimentKey",
+      "Effect": "Allow",
+      "Action": "ec2:ImportKeyPair",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:key-pair/{{LEGACY_KEY_PREFIX}}-*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "TagGroupAtCreation",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "CreateSecurityGroup",
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "TagKeyAtImport",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:key-pair/{{LEGACY_KEY_PREFIX}}-*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "ImportKeyPair",
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "ManageExperimentGroupRules",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress"
+      ],
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Owner": "{{OWNER}}",
+          "aws:ResourceTag/Project": "{{PROJECT}}",
+          "aws:ResourceTag/Purpose": "{{PURPOSE}}",
+          "aws:ResourceTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "AllocateTaggedExperimentAddress",
+      "Effect": "Allow",
+      "Action": "ec2:AllocateAddress",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:elastic-ip/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "TagAddressAtAllocation",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:elastic-ip/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "AllocateAddress",
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "AssociateExperimentAddress",
+      "Effect": "Allow",
+      "Action": "ec2:AssociateAddress",
+      "Resource": [
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:elastic-ip/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:instance/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Owner": "{{OWNER}}",
+          "aws:ResourceTag/Project": "{{PROJECT}}",
+          "aws:ResourceTag/Purpose": "{{PURPOSE}}",
+          "aws:ResourceTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "ManageExperimentWithSsm",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand",
+        "ssm:StartSession"
+      ],
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Owner": "{{OWNER}}",
+          "aws:ResourceTag/Project": "{{PROJECT}}",
+          "aws:ResourceTag/Purpose": "{{PURPOSE}}",
+          "aws:ResourceTag/claude-managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "ApprovedSsmDocuments",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand",
+        "ssm:StartSession"
+      ],
+      "Resource": [
+        "arn:aws:ssm:{{REGION}}::document/AWS-RunShellScript",
+        "arn:aws:ssm:{{REGION}}::document/AWS-StartPortForwardingSession",
+        "arn:aws:ssm:{{REGION}}::document/SSM-SessionManagerRunShell",
+        "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:document/SSM-SessionManagerRunShell"
+      ]
+    },
+    {
+      "Sid": "ReadSsmExecutionState",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:ListCommands",
+        "ssm:DescribeSessions",
+        "ssm:GetConnectionStatus"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EndOwnSsmSessions",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:TerminateSession",
+        "ssm:ResumeSession"
+      ],
+      "Resource": "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:session/{{AGENT_USER}}-*"
+    },
+    {
+      "Sid": "ImportManagedDeploymentKey",
+      "Effect": "Allow",
+      "Action": "ec2:ImportKeyPair",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:key-pair/{{DEPLOYMENT_KEY_PREFIX}}-*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true",
+          "aws:RequestTag/ManagedBy": "{{MANAGED_BY}}"
+        }
+      }
+    },
+    {
+      "Sid": "TagManagedDeploymentKeyAtImport",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:key-pair/{{DEPLOYMENT_KEY_PREFIX}}-*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "ImportKeyPair",
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true",
+          "aws:RequestTag/ManagedBy": "{{MANAGED_BY}}"
+        }
+      }
+    },
+    {
+      "Sid": "CreateManagedDeploymentRules",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress"
+      ],
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:security-group-rule/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Owner": "{{OWNER}}",
+          "aws:RequestTag/Project": "{{PROJECT}}",
+          "aws:RequestTag/Purpose": "{{PURPOSE}}",
+          "aws:RequestTag/claude-managed": "true",
+          "aws:RequestTag/ManagedBy": "{{MANAGED_BY}}"
+        }
+      }
+    }
+  ]
+}

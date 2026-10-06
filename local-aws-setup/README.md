@@ -1,9 +1,10 @@
 # local-aws-setup
 
 Scoped AWS access for coding agents (Claude Code) across several accounts.
-Every account gets its own agent IAM user (`agent`) with one managed
-policy (`agent-base` unless the account names another), rendered from the account's **access level**. Dangerous
-actions are explicitly denied at every level, so they stay denied even if a
+Each account gets an agent IAM user (`agent`) with a rendered base policy.
+Its name defaults to `agent-base`; the account may override it with `POLICY_NAME`.
+Private `EXTRA_POLICIES` documents reproduce additional provisioning and service permissions during initial setup.
+Dangerous actions are explicitly denied at every level, so they stay denied even if a
 broader policy is attached later.
 
 ## Two layers
@@ -36,6 +37,8 @@ takes. `<config>` is `$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`);
 | `AGENT_REGION` | region for that profile (default `us-east-1`) |
 | `S3_BUCKETS` | space-separated bucket names |
 | `POLICY_NAME` | managed policy name in this account; overrides the shared `POLICY_NAME` in `<config>/aws-setup/.env` (default `agent-base`) |
+| `EXTRA_POLICIES` | space-separated supplemental managed policy names; default empty |
+| `PASS_ROLE_ARNS` | exact same-account instance role ARNs; sandbox only, passed to EC2 only; default empty |
 
 A typical setup: `dev` (operator, profile `agent-dev`) and `sandbox`
 (sandbox, profile `agent-sandbox`). The account files are the source of
@@ -49,29 +52,120 @@ truth; `./aws-setup.sh accounts` lists them.
 | Start/stop/reboot instances tagged `claude-managed=true`, and read their console output | — | yes | yes |
 | Launch instances | — | — | only tagged `claude-managed=true` at launch |
 | Terminate instances | denied | denied | tagged only |
+| Snapshot managed volumes | denied | denied | volume tagged; snapshot tagged during creation |
+| Disassociate/release Elastic IPs; delete security groups, key pairs, volumes, network interfaces, snapshots | denied | denied | tagged only, configured account/region |
 | Listed buckets | get | get, put | get, put, delete |
-| Anything at all on an instance that does not carry `claude-managed=true` | denied | denied | denied |
+| Start, stop, reboot, terminate, or read console output without `claude-managed=true` | denied | denied | denied |
 | Change the `claude-managed` tag on existing resources | denied | denied | denied |
-| IAM, role assumption, Organizations, account settings, CloudTrail tampering including its event selectors, changing an instance attribute, bucket deletion/policy/ACL/public access block, KMS key deletion | denied | denied | denied |
+| IAM administration, role assumption, Organizations, account settings, CloudTrail tampering including its event selectors, changing an instance attribute, bucket deletion/policy/ACL/public access block, KMS key deletion | denied | denied | denied |
 
 Console output is part of managing an instance: an agent that may stop and
 start one needs to read why it did not come up. It returns whatever the guest
 printed at boot, so treat a boot log as readable by the agent.
 
-The last three rows are explicit `Deny` statements, not gaps in an `Allow`.
+The restricted rows use explicit `Deny` statements, not gaps in an `Allow`.
 The difference only shows when a second policy is attached: a conditional
 `Allow` says nothing about what another policy grants, and an explicit `Deny`
 beats every `Allow` anywhere. That is why the untagged-instance denies render
 at `readonly` too, where nothing is allowed for them to contradict.
 
-Anything not listed is implicitly denied. Print the exact document with
+The base policy implicitly denies unlisted actions. Supplemental policies can add grants. Print the base document with
 `./aws-setup.sh render <name>`. Suggested mapping: `sandbox` for sandbox
 accounts, `operator` for dev, `readonly` for staging, prod and anything
 shared.
 
+## Supplemental policies and teardown
+
+List every additional attached policy in `EXTRA_POLICIES` before initial setup.
+Store each identity policy document at `<accounts>/<name>.policies/<policy-name>.json`.
+For example, `sandbox.env` can contain:
+
+```sh
+EXTRA_POLICIES="agent-provisioning"
+```
+
+Its document lives beside that file in `sandbox.policies/agent-provisioning.json`.
+For a fresh sandbox, copy `accounts/provisioning-policy.json.example` into that private document path.
+Replace every `{{...}}` placeholder before rendering or applying it:
+
+| Placeholder | Private deployment input |
+|---|---|
+| `ACCOUNT_ID`, `REGION`, `AGENT_USER` | Values from the account configuration |
+| `VPC_ID` | Existing VPC where the deployment creates security groups |
+| `OWNER`, `PROJECT`, `PURPOSE`, `MANAGED_BY` | Exact resource-tag values sent by the deployment |
+| `DEPLOYMENT_KEY_PREFIX` | Key-name prefix used by the deployment, without the trailing hyphen |
+| `LEGACY_KEY_PREFIX` | Existing approved key-name prefix; remove its two statements when no legacy grant is needed |
+
+The template covers security groups, key import, Elastic IPs, and SSM commands and sessions.
+The base policy supplies instance launch, rule tagging, teardown, and the optional exact-role grant.
+Set `LEVEL=sandbox`, configure `EXTRA_POLICIES`, and audit the instance role before setting `PASS_ROLE_ARNS`.
+Create the VPC, role, and instance profile with an administrator first; this tool grants no IAM provisioning permission.
+Review SSM document permissions and ownership tags for the intended deployment before applying the template.
+The fresh template requires `claude-managed=true` when creating security groups, key pairs, and Elastic IPs, alongside its ownership tags.
+It also requires that tag for security-group rule changes, SSM instance access, and Elastic IP association.
+
+Copy the existing default-version document exactly when adopting current permissions.
+Keep account IDs, resource ARNs, and SSM scopes in private account configuration.
+Do not broaden those grants when moving them into configuration.
+Literal adoption preserves legacy grants; it does not apply the fresh template's stricter managed-tag conditions.
+Audit adopted SSM and address-association grants separately. The base policy denies untagged access only for its listed lifecycle actions.
+
+```sh
+./aws-setup.sh render sandbox agent-provisioning
+./aws-setup.sh simulate sandbox
+DRY_RUN=1 ./aws-setup.sh apply sandbox
+./aws-setup.sh apply sandbox
+./aws-setup.sh check sandbox
+```
+
+`render <account>` prints the base policy; the optional policy name selects a configured supplemental document.
+`simulate` evaluates all configured documents together; `check` evaluates the attached principal policies.
+These checks test the base permission boundaries, including teardown. Add service-specific expectations when supplemental behavior changes.
+
+Every supplemental document must contain valid identity-policy JSON within IAM's 6,144 non-whitespace character limit.
+Policy names must be valid IAM names, unique, and different from `POLICY_NAME`.
+Missing or invalid documents fail before AWS calls.
+`apply` checks ownership of every existing configured policy before its first IAM write.
+It refuses unconfigured attachments, group membership, and inline policies. It never adopts or detaches them automatically.
+
+Before adopting an existing policy, inspect its default document and every attached user, group, and role.
+Changing its default version affects all consumers, including automation.
+Then deliberately add `managed-by=local-aws-setup` with the admin profile, as shown below for the base policy.
+The same ownership requirement applies to supplemental policies.
+
+Sandbox teardown permits snapshots and cleanup only in the configured region; account-bearing resources use the configured account.
+AWS snapshot ARNs omit the account field. Their managed tags constrain snapshot creation and deletion.
+Both the source volume and new snapshot must satisfy their respective managed-tag conditions.
+Elastic IP disassociation checks both the Elastic IP and its network interface; tag both during provisioning.
+Apply the managed tag during resource creation. Existing resources require deliberate tagging by an administrator.
+The creation exception covers `RunInstances`, `CreateSnapshot`, `CreateSecurityGroup`, `ImportKeyPair`, `AllocateAddress`, `AuthorizeSecurityGroupIngress`, and `AuthorizeSecurityGroupEgress`.
+It grants no standalone permission to retag existing resources.
+
+Create a tagged snapshot, wait for completion, then terminate the instance and clean up managed resources.
+`ec2:ModifyInstanceAttribute` stays explicitly denied. Teardown does not require changing disk deletion settings after a backup completes.
+Retained snapshots incur storage charges until deleted. Keep backups according to your retention requirements.
+IAM self-management stays denied; an admin applies policy updates before the agent performs teardown.
+
+### Deploying with an existing instance role
+
+Enable `PASS_ROLE_ARNS` only after auditing the instance role's current permissions, EC2 trust, and existing consumers.
+Use exact role ARNs from the configured account. Wildcards, duplicate roles, and lower access levels are rejected.
+This permits `iam:PassRole` only for those roles and only to `ec2.amazonaws.com`.
+Other roles, other services, IAM administration, and role assumption remain explicitly denied.
+The agent can run code with the passed role's permissions. Do not pass a role with broader privileges than intended.
+An existing `AmazonSSMManagedInstanceCore` attachment includes parameter reads across resources; review that scope before permitting role passage.
+No role is created or changed by this setting. Leave it empty to preserve the complete IAM deny.
+AWS describes these controls in its [PassRole guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html).
+
+Sandbox permits managed tags during security-group rule creation in the configured account and region.
+The supplemental policy must allow rule creation on both its intended security groups and new rule ARNs.
+Tagged rule creation checks ownership request tags on the new rule; the example includes both resource permissions.
+Key import policies must match the deployment's configured key-name prefix and ownership request tags.
+Test the actual creation request with `DryRun=true`; an allowed EC2 request returns `DryRunOperation` without creating resources.
+
 ## Adding an account
 
-Prerequisites: `aws` CLI v2 and an admin login for the account.
+Prerequisites: `aws` CLI v2, Python 3, and an admin login for the account.
 
 1. **Log in as admin** under a profile named for the account. `aws login`
    uses your console session, so make sure the browser is signed in to the
@@ -106,8 +200,7 @@ Prerequisites: `aws` CLI v2 and an admin login for the account.
    DRY_RUN=1 ./aws-setup.sh apply sandbox    # the IAM calls apply would make
    ```
 
-5. **Apply** — creates `agent-base` in the account (or a new default version)
-   and attaches it to the user:
+5. **Apply** — creates or versions `agent-base` and every configured supplemental policy, then attaches each to the user:
 
    ```sh
    ./aws-setup.sh apply sandbox
@@ -274,7 +367,7 @@ A single hub user assuming a role in each account would mean one key and
 short-lived credentials, but it breaks when an account's organization blocks
 principals from outside it. A user per account always works; the cost is one
 long-lived key per account, which is what `rotate` is for, and why every
-level denies `iam:*` (the agent cannot mint itself more keys).
+level denies IAM administration (the agent cannot mint itself more keys).
 
 ## CLI or MCP server?
 

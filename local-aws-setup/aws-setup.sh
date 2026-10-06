@@ -46,12 +46,12 @@ usage: aws-setup.sh accounts | test
 
   accounts  list the account files in ./accounts.
   test      run the unittest suite in ./tests (extra args go to unittest).
-  render    print the policy JSON for the account's LEVEL.
+  render    print base policy JSON, or render <account> <extra-policy-name>.
   simulate  run the IAM policy simulator against the rendered policy before
             anything is applied (read-only; runs as SIMULATE_PROFILE).
-  apply     confirm ADMIN_PROFILE is really ACCOUNT_ID, then create the managed
-            policy POLICY_NAME in that account (or add a new default version,
-            pruning the oldest at the IAM limit) and attach it to AGENT_USER.
+  apply     confirm ADMIN_PROFILE is really ACCOUNT_ID, then create or version
+            POLICY_NAME and every EXTRA_POLICIES policy and attach them to
+            AGENT_USER. Existing policies must carry this tool's ownership tag.
             The user must already exist. DRY_RUN=1 prints the mutating calls.
   keys      create an access key for AGENT_USER and store it in AGENT_PROFILE.
             Refuses when the profile already has a key. The secret is never
@@ -71,8 +71,9 @@ Levels:
   operator  readonly + start/stop/reboot and read the console output of
             instances tagged MANAGED_TAG_KEY=true; put on listed buckets.
   sandbox   operator + launch instances tagged at launch, terminate tagged
-            instances; delete on listed buckets.
-  All levels deny IAM, role assumption, CloudTrail tampering including its
+            instances; snapshot and clean up tagged resources in the configured
+            account/region; delete on listed buckets.
+  All levels deny IAM administration, role assumption, CloudTrail tampering including its
   event selectors, changing an instance attribute, bucket policy/ACL and
   public access block changes, KMS key deletion, changing the managed tag,
   and acting on an instance that does not carry it.
@@ -90,6 +91,10 @@ names another folder. Start from local-aws-setup/accounts/example.env.example:
   S3_BUCKETS     space-separated bucket names                (default: none)
   POLICY_NAME    managed policy name in this account; overrides the shared
                  setting below, e.g. where another agent-base already exists
+  EXTRA_POLICIES space-separated managed policy names         (default: none)
+                 JSON in <accounts>/<name>.policies/<policy-name>.json
+  PASS_ROLE_ARNS exact same-account role ARNs passed only to EC2 (default: none)
+                 sandbox only; audit role privileges and consumers before use
 
 Shared settings (environment, or <config>/aws-setup/.env — see .env.example):
   POLICY_NAME       managed policy name            (default: agent-base;
@@ -109,13 +114,14 @@ load_account() {
   file="$ACCOUNTS_DIR/$ACCOUNT.env"
   [ -f "$file" ] || die "no account file $file (copy local-aws-setup/accounts/example.env.example to $file)"
   ACCOUNT_ID="" LEVEL="" ADMIN_PROFILE="" AGENT_USER="" AGENT_PROFILE=""
-  AGENT_REGION="" S3_BUCKETS="" AGENT_USER_ARN=""
+  AGENT_REGION="" S3_BUCKETS="" AGENT_USER_ARN="" EXTRA_POLICIES="" PASS_ROLE_ARNS=""
   # shellcheck disable=SC1090
   . "$file"
   AGENT_USER="${AGENT_USER:-agent}"
   AGENT_PROFILE="${AGENT_PROFILE:-agent-$ACCOUNT}"
   AGENT_REGION="${AGENT_REGION:-us-east-1}"
   validate_account
+  validate_extra_policies
 }
 
 validate_account() {
@@ -137,6 +143,11 @@ validate_account() {
   case "$MANAGED_TAG_KEY" in
     ""|*[!A-Za-z0-9_.:/+@-]*) die "invalid MANAGED_TAG_KEY: '$MANAGED_TAG_KEY'" ;;
   esac
+  # The names reach unquoted loops and a JMESPath literal, and the shell splits
+  # on fewer characters than Python's split(): only IAM name characters and
+  # space, tab or newline separators pass.
+  [ -z "$(printf '%s' "$EXTRA_POLICIES" | LC_ALL=C tr -d 'A-Za-z0-9_+=,.@ \t\n-')" ] ||
+    die "$ACCOUNT: EXTRA_POLICIES may hold only IAM policy names separated by spaces"
   for b in $S3_BUCKETS; do
     case "$b" in
       *[!a-z0-9.-]*) die "$ACCOUNT: invalid bucket name: '$b'" ;;
@@ -145,6 +156,27 @@ validate_account() {
       die "$ACCOUNT: bucket name must be 3-63 characters: '$b'"
     fi
   done
+}
+
+# Validate every supplemental document before any AWS call or mutation.
+validate_extra_policies() {
+  "${PYTHON:-python3}" "$DIR/validate-policies.py" "$ACCOUNTS_DIR/$ACCOUNT.policies" "$POLICY_NAME" "$EXTRA_POLICIES" "$ACCOUNT_ID" "$LEVEL" "$PASS_ROLE_ARNS" ||
+    die "$ACCOUNT: invalid supplemental policy configuration"
+}
+
+render_named_policy() {
+  selected=${1:-$POLICY_NAME}
+  if [ "$selected" = "$POLICY_NAME" ]; then
+    render_policy
+    return
+  fi
+  for configured in $EXTRA_POLICIES; do
+    if [ "$selected" = "$configured" ]; then
+      cat "$ACCOUNTS_DIR/$ACCOUNT.policies/$configured.json"
+      return
+    fi
+  done
+  die "$ACCOUNT: policy '$selected' is not configured"
 }
 
 # `accounts`, `render` and `simulate` never use the admin profile, so an
@@ -272,6 +304,147 @@ stmt_ec2_launch() {
 EOF
 }
 
+# Snapshot before termination; attribute changes remain explicitly denied.
+stmt_ec2_lifecycle() {
+  [ "$LEVEL" = sandbox ] || return 0
+  cat <<EOF
+    {
+      "Sid": "SandboxSnapshotManagedVolume",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSnapshot",
+      "Resource": "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:volume/*",
+      "Condition": { "StringEquals": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
+    },
+    {
+      "Sid": "SandboxCreateManagedSnapshot",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSnapshot",
+      "Resource": "arn:aws:ec2:$AGENT_REGION::snapshot/*",
+      "Condition": { "StringEquals": { "aws:RequestTag/$MANAGED_TAG_KEY": "true" } }
+    },
+    {
+      "Sid": "SandboxTagSnapshotOnCreation",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:$AGENT_REGION::snapshot/*",
+      "Condition": { "StringEquals": { "ec2:CreateAction": "CreateSnapshot", "aws:RequestTag/$MANAGED_TAG_KEY": "true" } }
+    },
+    {
+      "Sid": "SandboxCleanupManagedResources",
+      "Effect": "Allow",
+      "Action": ["ec2:DisassociateAddress", "ec2:ReleaseAddress", "ec2:DeleteSecurityGroup", "ec2:DeleteKeyPair", "ec2:DeleteVolume", "ec2:DeleteNetworkInterface"],
+      "Resource": [
+        "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:elastic-ip/*",
+        "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:network-interface/*",
+        "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:security-group/*",
+        "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:key-pair/*",
+        "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:volume/*"
+      ],
+      "Condition": { "StringEquals": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
+    },
+    {
+      "Sid": "SandboxDeleteManagedSnapshot",
+      "Effect": "Allow",
+      "Action": "ec2:DeleteSnapshot",
+      "Resource": "arn:aws:ec2:$AGENT_REGION::snapshot/*",
+      "Condition": { "StringEquals": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
+    },
+EOF
+}
+
+# Rule creation has its own CreateTags authorization and managed-tag exception.
+stmt_ec2_rule_tags() {
+  [ "$LEVEL" = sandbox ] || return 0
+  cat <<EOF
+    {
+      "Sid": "SandboxTagManagedRulesAtCreation",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:security-group-rule/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": ["AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"],
+          "aws:RequestTag/$MANAGED_TAG_KEY": "true"
+        }
+      }
+    },
+EOF
+}
+
+# Split the IAM deny by resource and action; only PassRole on approved roles
+# reaches the service check. No other IAM action can use this exception.
+stmt_pass_role() {
+  [ -n "$PASS_ROLE_ARNS" ] || return 0
+  # Role ARNs have been validated as exact same-account names, without globs.
+  # shellcheck disable=SC2086
+  role_lines=$(json_strings '        ' $PASS_ROLE_ARNS)
+  cat <<EOF
+    {
+      "Sid": "DenyIamOutsideApprovedRoles",
+      "Effect": "Deny",
+      "Action": "iam:*",
+      "NotResource": [
+$role_lines
+      ]
+    },
+    {
+      "Sid": "DenyApprovedRoleActionsExceptPassRole",
+      "Effect": "Deny",
+      "NotAction": "iam:PassRole",
+      "Resource": [
+$role_lines
+      ]
+    },
+    {
+      "Sid": "DenyPassingRolesToOtherServices",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEqualsIfExists": { "iam:PassedToService": "ec2.amazonaws.com" }
+      }
+    },
+    {
+      "Sid": "PassApprovedRolesToEc2",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+$role_lines
+      ],
+      "Condition": {
+        "StringEquals": { "iam:PassedToService": "ec2.amazonaws.com" }
+      }
+    },
+EOF
+}
+
+# These denies survive broader supplemental policies at every access level.
+stmt_deny_untagged_lifecycle() {
+  cat <<EOF
+    {
+      "Sid": "DenyCleanupWithoutManagedTag",
+      "Effect": "Deny",
+      "Action": ["ec2:DisassociateAddress", "ec2:ReleaseAddress", "ec2:DeleteSecurityGroup", "ec2:DeleteKeyPair", "ec2:DeleteVolume", "ec2:DeleteNetworkInterface", "ec2:DeleteSnapshot"],
+      "Resource": "*",
+      "Condition": { "StringNotEqualsIfExists": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
+    },
+    {
+      "Sid": "DenySnapshotOfUnmanagedVolume",
+      "Effect": "Deny",
+      "Action": "ec2:CreateSnapshot",
+      "Resource": "arn:aws:ec2:*:*:volume/*",
+      "Condition": { "StringNotEqualsIfExists": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
+    },
+    {
+      "Sid": "DenySnapshotWithoutManagedTag",
+      "Effect": "Deny",
+      "Action": "ec2:CreateSnapshot",
+      "Resource": "arn:aws:ec2:*::snapshot/*",
+      "Condition": { "StringNotEqualsIfExists": { "aws:RequestTag/$MANAGED_TAG_KEY": "true" } }
+    },
+EOF
+}
+
 # The Allows above are conditioned on the managed tag, so an untagged
 # instance is outside them -- but only for as long as this is the one policy
 # the user carries. A second policy granting ec2:* would reach every instance
@@ -353,12 +526,12 @@ EOF
 }
 
 # Nobody changes the managed tag on an existing resource; that would widen the
-# agent's reach. Sandbox's tag-on-launch is the one exception.
+# agent's reach. Sandbox allows managed tags only in named creation contexts.
 stmt_deny_tag_changes() {
   launch_exception=""
   if [ "$LEVEL" = sandbox ]; then
     launch_exception=',
-        "StringNotEqualsIfExists": { "ec2:CreateAction": "RunInstances" }'
+        "StringNotEqualsIfExists": { "ec2:CreateAction": ["RunInstances", "CreateSnapshot", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"] }'
   fi
   cat <<EOF
     {
@@ -386,15 +559,25 @@ EOF
 # DeletePublicAccessBlock API, so setting and deleting the block are both
 # denied by it. There is no s3:DeleteBucketPublicAccessBlock action to name.
 stmt_hard_denies() {
+  iam_deny='"iam:*",'
+  [ -z "$PASS_ROLE_ARNS" ] || iam_deny=""
   terminate='
-        "ec2:TerminateInstances",'
+        "ec2:TerminateInstances",
+        "ec2:CreateSnapshot",
+        "ec2:DisassociateAddress",
+        "ec2:ReleaseAddress",
+        "ec2:DeleteSecurityGroup",
+        "ec2:DeleteKeyPair",
+        "ec2:DeleteVolume",
+        "ec2:DeleteNetworkInterface",
+        "ec2:DeleteSnapshot",'
   [ "$LEVEL" != sandbox ] || terminate=""
   cat <<EOF
     {
       "Sid": "HardDenies",
       "Effect": "Deny",
       "Action": [$terminate
-        "iam:*",
+        $iam_deny
         "sts:AssumeRole",
         "organizations:*",
         "account:*",
@@ -422,8 +605,12 @@ render_policy() {
   stmt_discovery
   stmt_ec2_tagged
   stmt_ec2_launch
+  stmt_ec2_lifecycle
+  stmt_ec2_rule_tags
+  stmt_pass_role
   stmt_s3
   stmt_deny_untagged_ec2
+  stmt_deny_untagged_lifecycle
   stmt_deny_tag_changes
   stmt_hard_denies
   printf '  ]\n}\n'
@@ -481,12 +668,12 @@ refuse_dry_run() {
 }
 
 # The agent user is meant to carry exactly what this script attaches: no
-# groups, no inline policies, no other managed policy. Asking only whether it
+# groups, no inline policies, no unconfigured managed policy. Asking only whether it
 # exists reads a user whose real permissions are its group's as though they
 # were the rendered policy, and `check` then simulates a principal wider than
 # anything this file describes. So enumerate the three ways an IAM user is
-# widened and name whatever is there. The argument is this tool's own policy
-# ARN, which is the one attachment that is not a surprise.
+# widened and name whatever is there. Only the base and configured supplemental
+# policy ARNs are accepted attachments.
 # The agent user's real ARN, asked of IAM once and kept. An IAM user carries
 # a path, and a user created under one is `user/automation/agent`, not
 # `user/agent`: an ARN rebuilt from the account id and the user name is
@@ -507,7 +694,10 @@ agent_user_arn() {
 }
 
 require_agent_user() {
-  ours=$1
+  attachment_filter="PolicyArn!='arn:aws:iam::$ACCOUNT_ID:policy/$POLICY_NAME'"
+  for configured in $EXTRA_POLICIES; do
+    attachment_filter="$attachment_filter && PolicyArn!='arn:aws:iam::$ACCOUNT_ID:policy/$configured'"
+  done
   agent_user_arn >/dev/null
   extra=""
   found=$(admin iam list-groups-for-user --user-name "$AGENT_USER" \
@@ -519,11 +709,11 @@ require_agent_user() {
     die "could not list the inline policies of '$AGENT_USER' in $ACCOUNT_ID"
   [ -z "$found" ] || [ "$found" = None ] || extra="$extra inline policies ($found)"
   found=$(admin iam list-attached-user-policies --user-name "$AGENT_USER" \
-    --query "AttachedPolicies[?PolicyArn!='$ours'].PolicyName" --output text) ||
+    --query "AttachedPolicies[?$attachment_filter].PolicyName" --output text) ||
     die "could not list the attached policies of '$AGENT_USER' in $ACCOUNT_ID"
   [ -z "$found" ] || [ "$found" = None ] || extra="$extra other managed policies ($found)"
   [ -z "$extra" ] ||
-    die "IAM user '$AGENT_USER' in $ACCOUNT_ID carries more than $POLICY_NAME:$extra; detach them, or what this renders is not what the agent can do"
+    die "IAM user '$AGENT_USER' in $ACCOUNT_ID carries unconfigured permissions beyond $POLICY_NAME $EXTRA_POLICIES:$extra; detach them, or what this renders is not what the agent can do"
 }
 
 # Whose policy is at that ARN. The name is not an identity: a policy someone
@@ -564,29 +754,36 @@ cmd_apply() {
     require_admin_account
     require_agent_user "$arn"
   fi
-  policy_file=$(mktemp)
-  trap 'rm -f "$policy_file"' EXIT
-  render_policy >"$policy_file"
-
-  # get-policy is read-only, so a dry run asks it too and previews the branch
-  # it would really take. Skipping it printed a create for every dry run,
-  # including the accounts where apply would add a version instead.
-  if admin iam get-policy --policy-arn "$arn" >/dev/null 2>&1; then
-    require_policy_is_ours "$arn"
-    prune_policy_versions "$arn"
-    admin_mutate iam create-policy-version --policy-arn "$arn" \
-      --policy-document "file://$policy_file" --set-as-default >/dev/null
-    echo "updated $arn (new default version, level $LEVEL)"
-  else
-    admin_mutate iam create-policy --policy-name "$POLICY_NAME" \
-      --description "Scoped $LEVEL access for coding agents (local-aws-setup)" \
-      --policy-document "file://$policy_file" \
-      --tags "Key=$POLICY_OWNER_TAG_KEY,Value=$POLICY_OWNER_TAG_VALUE" >/dev/null
-    echo "created $arn (level $LEVEL)"
-  fi
-
-  admin_mutate iam attach-user-policy --user-name "$AGENT_USER" --policy-arn "$arn"
-  echo "attached $POLICY_NAME to $AGENT_USER in $ACCOUNT"
+  policy_dir=$(mktemp -d)
+  trap 'rm -rf "$policy_dir"' EXIT HUP INT TERM
+  # Check every ownership guard before the first create, version, or attach.
+  for policy in "$POLICY_NAME" $EXTRA_POLICIES; do
+    render_named_policy "$policy" >"$policy_dir/$policy.json"
+    "${PYTHON:-python3}" "$DIR/validate-policies.py" --document "$policy_dir/$policy.json" ||
+      die "$ACCOUNT: invalid rendered policy $policy"
+    arn="arn:aws:iam::$ACCOUNT_ID:policy/$policy"
+    if admin iam get-policy --policy-arn "$arn" >/dev/null 2>&1; then
+      require_policy_is_ours "$arn"
+      touch "$policy_dir/$policy.exists"
+    fi
+  done
+  for policy in "$POLICY_NAME" $EXTRA_POLICIES; do
+    arn="arn:aws:iam::$ACCOUNT_ID:policy/$policy"
+    if [ -f "$policy_dir/$policy.exists" ]; then
+      prune_policy_versions "$arn"
+      admin_mutate iam create-policy-version --policy-arn "$arn" \
+        --policy-document "file://$policy_dir/$policy.json" --set-as-default >/dev/null
+      echo "updated $arn (new default version, level $LEVEL)"
+    else
+      admin_mutate iam create-policy --policy-name "$policy" \
+        --description "Scoped $LEVEL access for coding agents (local-aws-setup)" \
+        --policy-document "file://$policy_dir/$policy.json" \
+        --tags "Key=$POLICY_OWNER_TAG_KEY,Value=$POLICY_OWNER_TAG_VALUE" >/dev/null
+      echo "created $arn (level $LEVEL)"
+    fi
+    admin_mutate iam attach-user-policy --user-name "$AGENT_USER" --policy-arn "$arn"
+    echo "attached $policy to $AGENT_USER in $ACCOUNT"
+  done
 }
 
 # The ARN a key pair really answers as, or nothing. The pair is written into a
@@ -868,8 +1065,12 @@ expect() {
   # region, and an `aws login` profile carries none -- the same reason the
   # admin wrapper passes it.
   if [ "$SIM_MODE" = custom ]; then
+    set -- "$SIM_POLICY" "$@"
+    for policy in $EXTRA_POLICIES; do
+      set -- "$(render_named_policy "$policy")" "$@"
+    done
     got=$(aws --profile "$SIM_PROFILE" --region "$AGENT_REGION" \
-      iam simulate-custom-policy --policy-input-list "$SIM_POLICY" "$@")
+      iam simulate-custom-policy --policy-input-list "$@")
   else
     got=$(aws --profile "$SIM_PROFILE" --region "$AGENT_REGION" \
       iam simulate-principal-policy --policy-source-arn "$SIM_USER_ARN" "$@")
@@ -914,6 +1115,36 @@ expect_ec2() {
   expect explicitDeny ec2:DeleteTags "$instance" "aws:TagKeys=$MANAGED_TAG_KEY"
 }
 
+expect_lifecycle() {
+  tagged="aws:ResourceTag/$MANAGED_TAG_KEY=true"
+  requested="aws:RequestTag/$MANAGED_TAG_KEY=true"
+  volume="arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:volume/vol-0123456789abcdef0"
+  snapshot="arn:aws:ec2:$AGENT_REGION::snapshot/snap-0123456789abcdef0"
+  lifecycle_decision=explicitDeny
+  [ "$LEVEL" != sandbox ] || lifecycle_decision=allowed
+  expect "$lifecycle_decision" ec2:CreateSnapshot "$volume" "$tagged"
+  expect explicitDeny ec2:CreateSnapshot "$volume"
+  expect "$lifecycle_decision" ec2:CreateSnapshot "$snapshot" "$requested"
+  expect explicitDeny ec2:CreateSnapshot "$snapshot"
+  expect "$lifecycle_decision" ec2:CreateTags "$snapshot" "$requested" "aws:TagKeys=$MANAGED_TAG_KEY" "ec2:CreateAction=CreateSnapshot"
+  for pair in DisassociateAddress:elastic-ip DisassociateAddress:network-interface ReleaseAddress:elastic-ip DeleteSecurityGroup:security-group DeleteKeyPair:key-pair DeleteVolume:volume DeleteNetworkInterface:network-interface DeleteSnapshot:snapshot; do
+    action=${pair%%:*}
+    kind=${pair#*:}
+    owner=$ACCOUNT_ID
+    [ "$kind" != snapshot ] || owner=""
+    resource="arn:aws:ec2:$AGENT_REGION:$owner:$kind/probe"
+    expect "$lifecycle_decision" "ec2:$action" "$resource" "$tagged"
+    expect explicitDeny "ec2:$action" "$resource"
+    expect explicitDeny "ec2:$action" "$resource" "aws:ResourceTag/$MANAGED_TAG_KEY=false"
+  done
+  expect explicitDeny ec2:ModifyInstanceAttribute "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:instance/probe" "$tagged"
+  rule="arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:security-group-rule/sgr-probe"
+  for operation in AuthorizeSecurityGroupIngress AuthorizeSecurityGroupEgress; do
+    expect "$lifecycle_decision" ec2:CreateTags "$rule" "$requested" "aws:TagKeys=$MANAGED_TAG_KEY" "ec2:CreateAction=$operation"
+  done
+  expect explicitDeny ec2:CreateTags "$rule" "aws:TagKeys=$MANAGED_TAG_KEY"
+}
+
 # Every bucket the account file names, not the first word of the list. Taking
 # the first left the rest of a multi-bucket account unchecked; and a list that
 # happened to start with a space produced an empty name, which then skipped
@@ -937,9 +1168,19 @@ expect_s3() {
 run_expectations() {
   FAILURES=0
   expect_ec2 "$1"
+  expect_lifecycle
   expect_s3
   expect explicitDeny iam:CreateAccessKey "*"
   expect explicitDeny sts:AssumeRole "*"
+  for role in $PASS_ROLE_ARNS; do
+    expect allowed iam:PassRole "$role" "iam:PassedToService=ec2.amazonaws.com"
+    expect explicitDeny iam:PassRole "$role" "iam:PassedToService=lambda.amazonaws.com"
+    expect explicitDeny iam:PassRole "$role"
+    expect explicitDeny iam:UpdateAssumeRolePolicy "$role"
+  done
+  if [ -n "$PASS_ROLE_ARNS" ]; then
+    expect explicitDeny iam:PassRole "arn:aws:iam::000000000000:role/unapproved" "iam:PassedToService=ec2.amazonaws.com"
+  fi
   if [ "$FAILURES" -gt 0 ]; then
     die "$FAILURES expectation(s) failed for $ACCOUNT ($LEVEL)"
   fi
@@ -987,7 +1228,7 @@ need_account() {
 
 case "${1:-}" in
   accounts) cmd_accounts ;;
-  render)   need_account "$1" "${2:-}"; load_account "$2"; render_policy ;;
+  render)   need_account "$1" "${2:-}"; load_account "$2"; render_named_policy "${3:-}" ;;
   simulate) need_account "$1" "${2:-}"; cmd_simulate "$2" ;;
   apply)    need_account "$1" "${2:-}"; cmd_apply "$2" ;;
   keys)     need_account "$1" "${2:-}"; cmd_keys "$2" ;;
