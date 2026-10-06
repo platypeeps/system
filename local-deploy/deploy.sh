@@ -50,13 +50,16 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           ~/.local/state/system/deploy/deployed); with no record, --from is
           required, and --from always overrides it. An empty plan records the
           new sha and exits 0. A migration report refuses, and so does the
-          runner's load limit when the plan restarts it. Then `runner.sh
-          stop` (drain, idle checks, bootout), so no runner imports sd_db
-          while a `needs sd_db install` report runs `local-sd-db/sd-db.sh
-          install <venv>` once per distinct venv behind the dashboard's and
-          the runner's interpreters (from their plists). Then apply, then
-          `runner.sh start`. A failure after the stop leaves the runner
-          stopped and names the rerun that finishes. It records the new sha only when
+          runner's load limit and an open sd-serve session, all before
+          the first stop. A `needs sd_db install` report installs into each
+          venv a loaded agent's plist names (`*_PYTHON`), and first stops
+          every loaded sd agent ($PREFIX.sd-*.plist) whose interpreter
+          lives there: the runner with `runner.sh stop` (drain), the others
+          with `launchctl bootout`. Then `local-sd-db/sd-db.sh install
+          <venv>`, apply, and a start of each stopped agent: sd-serve, the
+          dashboard (`health --wait`), the runner (`runner.sh start`). A
+          failure after the first stop leaves them stopped and names the
+          rerun that finishes. It records the new sha only when
           every step passed, sd-serve was not held back by a session and no
           LaunchAgent install is reported, so a rerun replays the same range.
   test    run the unittest suite (tests/); extra arguments go to unittest.
@@ -125,11 +128,11 @@ fail() {
   exit 1
 }
 
-# Set by upgrade while it holds the runner stopped. The runner stays stopped
-# on a failure, so it never runs on a half-replaced sd_db.
+# STOPPED lists the agents upgrade stopped and has not started again. They
+# stay stopped on a failure, so none runs on a half-replaced sd_db.
 stopped_hint() {
-  [ -z "${STOPPED:-}" ] || [ ! -e "$STOPPED" ] ||
-    echo "deploy: the runner is stopped; finish the upgrade with: sh $ROOT/local-deploy/deploy.sh upgrade --from $from" >&2
+  [ -z "${STOPPED:-}" ] || [ ! -s "$STOPPED" ] ||
+    echo "deploy: left stopped: $(tr '\n' ' ' < "$STOPPED" | sed 's/ $//'); finish the upgrade with: sh $ROOT/local-deploy/deploy.sh upgrade --from $from" >&2
 }
 
 # One upgrade at a time, from the first check to the record: a second one
@@ -217,11 +220,16 @@ restart_serve() {
     return 0
   fi
   launchctl kickstart -k "gui/$(id -u)/$PREFIX.sd-serve" || fail "sd-serve kickstart"
+  await_listener
+  echo "restarted sd-serve: listener pid $new"
+}
+
+# Waits for a listener on sd-serve's port other than old_listener; sets new.
+await_listener() {
   waited=0
   while :; do
     new=$(serve_pids LISTEN) || fail "sd-serve listener check (lsof)"
     if [ -n "$new" ] && [ "$new" != "$old_listener" ]; then
-      echo "restarted sd-serve: listener pid $new"
       return 0
     fi
     [ "$waited" -lt "${DEPLOY_WAIT:-30}" ] || fail "sd-serve listener check (no new listener on port $SERVE_PORT)"
@@ -250,12 +258,93 @@ apply() {
   done
 }
 
-# Each venv behind the loaded dashboard's and the loaded or stopped runner's interpreters.
+# The interpreter dashboard.sh, runner.sh and sd-db.sh each run when the
+# agent's plist names none.
+DEFAULT_PYTHON="$HOME/repos/platypeeps/sd-ai-command-pack/.venv/bin/python"
+
+# Every sd agent's label, from the plists launchd reads; not a fixed list.
+agents() {
+  for plist in "$HOME/Library/LaunchAgents/$PREFIX".sd-*.plist; do
+    [ ! -e "$plist" ] || basename "$plist" .plist
+  done
+}
+
+loaded() {
+  launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1
+}
+
+stopped() {
+  [ -s "$STOPPED" ] && grep -qxF "$1" "$STOPPED"
+}
+
+# The interpreter a `*_PYTHON` variable in the agent's plist names, or nothing.
+named_python() {
+  plutil -convert json -o - "$HOME/Library/LaunchAgents/$1.plist" 2>/dev/null |
+    sed -n 's/.*"[A-Z_]*_PYTHON":"\([^"]*\)".*/\1/p' | sed 's#\\/#/#g'
+}
+
+# Where sd_db installs: the venv of each loaded or stopped agent whose plist
+# names its interpreter (the dashboard's and the runner's).
 venvs() {
-  ! held sd-dashboard || { interpreter sd-dashboard SD_DASHBOARD_PYTHON; dirname "$(dirname "$py")"; }
-  if held sd-runner || [ -e "$STOPPED" ]; then
-    interpreter sd-runner SD_RUNNER_PYTHON; dirname "$(dirname "$py")"
-  fi
+  for label in $(agents); do
+    loaded "$label" || stopped "$label" || continue
+    named=$(named_python "$label")
+    [ -z "$named" ] || dirname "$(dirname "$named")"
+  done
+}
+
+# The loaded agents whose interpreter lives in a venv named on stdin: they
+# must not run while sd_db there is replaced. The runner comes first, so it
+# drains before anything else stops.
+consumers() {
+  targets=$(cat)
+  for label in $(agents); do
+    loaded "$label" || continue
+    named=$(named_python "$label")
+    venv=$(dirname "$(dirname "${named:-$DEFAULT_PYTHON}")")
+    printf '%s\n' "$targets" | grep -qxF "$venv" || continue
+    case "$label" in *.sd-runner) echo "0 $label" ;; *) echo "1 $label" ;; esac
+  done | sort | cut -d' ' -f2-
+}
+
+stop_agent() {
+  case "$1" in
+    *.sd-runner) why=$(sh "$ROOT/local-sd-runner/runner.sh" stop 2>&1) ||
+      fail "runner stop ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))" ;;
+    *) launchctl bootout "gui/$(id -u)/$1" || fail "$1 bootout" ;;
+  esac
+  echo "$1" >> "$STOPPED"
+  echo "stopped $1"
+}
+
+start_agent() {
+  case "$1" in
+    *.sd-runner)
+      library_current sd-runner SD_RUNNER_PYTHON
+      why=$(sh "$ROOT/local-sd-runner/runner.sh" start 2>&1) ||
+        fail "runner start ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))" ;;
+    *)
+      [ "$1" != "$PREFIX.sd-dashboard" ] || library_current sd-dashboard SD_DASHBOARD_PYTHON
+      launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist" || fail "$1 bootstrap"
+      case "$1" in
+        *.sd-serve) await_listener ;;
+        *.sd-dashboard) sh "$ROOT/local-project-dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" ||
+          fail "dashboard health" ;;
+      esac ;;
+  esac
+  grep -vxF "$1" "$STOPPED" > "$STOPPED.$$" || true
+  mv "$STOPPED.$$" "$STOPPED"
+  echo "started $1"
+}
+
+# sd-serve first, the dashboard next, the runner last.
+start_stopped() {
+  [ -s "$STOPPED" ] || return 0
+  for label in $(grep -v -e '\.sd-dashboard$' -e '\.sd-runner$' "$STOPPED") \
+    $(grep '\.sd-dashboard$' "$STOPPED") $(grep '\.sd-runner$' "$STOPPED"); do
+    start_agent "$label"
+  done
+  rm -f "$STOPPED"
 }
 
 upgrade() {
@@ -266,8 +355,9 @@ upgrade() {
       *) echo "deploy: unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
   done
-  # Present while the runner is stopped mid-upgrade; a rerun starts it.
-  STOPPED="$(dirname "$STATE")/runner-stopped"
+  # The agents this upgrade stopped, one label a line; a rerun starts them.
+  STOPPED="$(dirname "$STATE")/stopped"
+  mkdir -p "$(dirname "$STATE")"
   [ "$(git -C "$ROOT" symbolic-ref -q --short HEAD)" = main ] || refuse "$ROOT is not on main"
   [ -z "$(git -C "$ROOT" status --porcelain)" ] || refuse "$ROOT has uncommitted or untracked files"
   git -C "$ROOT" fetch -q origin || fail "git fetch origin"
@@ -278,7 +368,7 @@ upgrade() {
   [ -n "$from" ] || from=$(cat "$STATE" 2>/dev/null) || true
   [ -n "$from" ] || refuse "no deployed sha recorded in $STATE; give --from SHA, the sha the services run now"
   actions=$(plan "$from" "$to")
-  if [ -z "$actions" ] && [ ! -e "$STOPPED" ]; then
+  if [ -z "$actions" ] && [ ! -s "$STOPPED" ]; then
     echo "nothing to deploy from $from to $to"
     record "$to"
     return 0
@@ -287,39 +377,41 @@ upgrade() {
     printf '%s\n' "$actions" | grep '^report' || true
     refuse "the range needs a migration; migrate and restart by hand, then record it: deploy.sh upgrade --from $to" ;;
   esac
-  # Every refusal that needs no new sd_db comes before the runner stops. The
-  # runner then stays stopped through the install and the other restarts: a
-  # daemon that lazily imports sd_db must never see a half-replaced library.
-  case "$actions" in *"restart runner"*)
-    if held sd-runner; then
-      runner_load
-      why=$(sh "$ROOT/local-sd-runner/runner.sh" stop 2>&1) || refuse "runner: stop: $(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  ')"
-      mkdir -p "$(dirname "$STOPPED")"
-      : > "$STOPPED"
-      echo "stopped runner"
+  # Every agent that runs from a venv the install replaces stops first: each
+  # imports sd_db lazily and must never see a half-replaced library. Every
+  # refusal that needs no new sd_db comes before the first stop.
+  list=""; stopping=""
+  case "$actions" in *"report needs sd_db install"*)
+    # Assigned first, so a refusal inside them stops the script.
+    list=$(venvs | sort -u)
+    stopping=$(printf '%s\n' "$list" | consumers) ;;
+  esac
+  case "$actions
+$stopping" in *"restart runner"*|*.sd-runner*)
+    ! held sd-runner || runner_load ;;
+  esac
+  case "$actions
+$stopping" in *"restart sd-serve"*|*.sd-serve*)
+    if held sd-serve; then
+      sessions=$(serve_pids ESTABLISHED) || refuse "sd-serve: lsof cannot tell whether a satellite session is open"
+      [ -z "$sessions" ] || refuse "sd-serve: a session is open on port $SERVE_PORT; rerun upgrade when it closes"
+      old_listener=$(serve_pids LISTEN) || refuse "sd-serve: lsof cannot read the listener"
     fi ;;
   esac
-  case "$actions" in *"report needs sd_db install"*)
-    # Assigned first, so a refusal inside venvs stops the script; a
-    # here-document keeps the loop in this shell and each path whole.
-    list=$(venvs)
+  for label in $stopping; do stop_agent "$label"; done
+  if [ -n "$list" ]; then
+    # A here-document keeps the loop in this shell and each path whole.
     while IFS= read -r venv; do
       [ -n "$venv" ] || continue
       sh "$ROOT/local-sd-db/sd-db.sh" install "$venv" || fail "sd_db install into $venv"
       echo "installed sd_db into $venv"
     done <<EOF
-$(printf '%s\n' "$list" | sort -u)
+$list
 EOF
-    ;;
-  esac
+  fi
   held_back=""
   apply "$from" "$to"
-  if [ -e "$STOPPED" ]; then
-    library_current sd-runner SD_RUNNER_PYTHON
-    why=$(sh "$ROOT/local-sd-runner/runner.sh" start 2>&1) || fail "runner start ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))"
-    rm -f "$STOPPED"
-    echo "started runner"
-  fi
+  start_stopped
   [ -z "$held_back" ] || { echo "deploy: sd-serve still runs the old code; $to not recorded; rerun upgrade" >&2; exit 1; }
   # A restart keeps the old LaunchAgent: recording would drop the report.
   case "$actions" in *"install ("*)

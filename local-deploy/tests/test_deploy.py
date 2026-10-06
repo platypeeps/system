@@ -22,14 +22,17 @@ import unittest
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 RUNTIME = FOLDER.parent / "local-project-dashboard" / "sd_dashboard" / "runtime.py"
 
-# `print` fails for a label named in DEPLOY_TEST_UNLOADED, and for the runner
-# while `runner.sh stop` holds it stopped; `kickstart` marks
+# `print` fails for a label named in DEPLOY_TEST_UNLOADED or stopped: a file
+# in DEPLOY_TEST_OUT, which `bootout` and `runner.sh stop` write and
+# `bootstrap` and `runner.sh start` remove. `kickstart` and `bootstrap` mark
 # the restart so the lsof stub can answer with a new listener.
 LAUNCHCTL = """#!/bin/sh
 echo "launchctl $*" >> "$DEPLOY_TEST_CALLS"
 case "$1" in
   print) case " $DEPLOY_TEST_UNLOADED " in *" ${2##*/} "*) exit 113 ;; esac
-         case "$2" in *.sd-runner) [ ! -e "$DEPLOY_TEST_STOPPED" ] || exit 113 ;; esac ;;
+         [ ! -e "$DEPLOY_TEST_OUT/${2##*/}" ] || exit 113 ;;
+  bootout) touch "$DEPLOY_TEST_OUT/${2##*/}" ;;
+  bootstrap) rm -f "$DEPLOY_TEST_OUT/$(basename "$3" .plist)"; touch "$DEPLOY_TEST_KICKED" ;;
   kickstart) touch "$DEPLOY_TEST_KICKED" ;;
 esac
 exit 0
@@ -57,9 +60,22 @@ esac
 echo "$pids"
 """
 
-# Answers every plist variable with the stub interpreter; the runner's can differ.
+# Answers every plist variable with the stub interpreter; the runner's can
+# differ. `-convert json` answers as the real one does, slashes escaped; the
+# sd-serve plist names an interpreter only when DEPLOY_TEST_SERVE_PYTHON is set.
 PLUTIL = """#!/bin/sh
 case "$*" in
+  *-convert*)
+    case "$*" in
+      *.sd-runner.plist*) key=SD_RUNNER_PYTHON; value="${DEPLOY_TEST_RUNNER_PYTHON:-$DEPLOY_TEST_PYTHON}" ;;
+      *.sd-dashboard.plist*) key=SD_DASHBOARD_PYTHON; value="$DEPLOY_TEST_PYTHON" ;;
+      *) key=SD_DB_PYTHON; value="$DEPLOY_TEST_SERVE_PYTHON" ;;
+    esac
+    if [ -n "$value" ]; then
+      printf '{"EnvironmentVariables":{"PATH":"\\/usr\\/bin","%s":"%s"}}\\n' "$key" "$(printf '%s' "$value" | sed 's#/#\\\\/#g')"
+    else
+      printf '{"EnvironmentVariables":{"PATH":"\\/usr\\/bin"}}\\n'
+    fi ;;
   *SD_RUNNER_PYTHON*) echo "${DEPLOY_TEST_RUNNER_PYTHON:-$DEPLOY_TEST_PYTHON}" ;;
   *) echo "$DEPLOY_TEST_PYTHON" ;;
 esac
@@ -92,18 +108,19 @@ exit "${{{status}:-0}}"
 RUNNER = """#!/bin/sh
 echo "runner.sh $*" >> "$DEPLOY_TEST_CALLS"
 case "$1" in
-  stop) touch "$DEPLOY_TEST_STOPPED" ;;
-  start) rm -f "$DEPLOY_TEST_STOPPED" ;;
+  stop) touch "$DEPLOY_TEST_OUT/$SYSTEM_TOOLS_LABEL_PREFIX.sd-runner" ;;
+  start) rm -f "$DEPLOY_TEST_OUT/$SYSTEM_TOOLS_LABEL_PREFIX.sd-runner" ;;
   *) exit "${DEPLOY_TEST_RUNNER:-0}" ;;
 esac
 """
 
-# Logs whether the runner was up while sd_db was replaced.
+# Logs which agents were stopped while sd_db was replaced.
 SDDB = """#!/bin/sh
-if [ -e "$DEPLOY_TEST_STOPPED" ]; then runner=stopped; else runner=up; fi
-echo "sd-db.sh $* runner=$runner" >> "$DEPLOY_TEST_CALLS"
+echo "sd-db.sh $* stopped=$(ls "$DEPLOY_TEST_OUT" | tr '\\n' ' ' | sed 's/ $//')" >> "$DEPLOY_TEST_CALLS"
 exit "${DEPLOY_TEST_INSTALL:-0}"
 """
+
+AGENTS = ("test.example.sd-dashboard", "test.example.sd-runner", "test.example.sd-serve")
 
 LOAD = "the 1-minute load average 169.0 is at or above 16; a cold start under load can stall on diskutil"
 
@@ -136,10 +153,16 @@ class DeployTest(unittest.TestCase):
                     "SYSTEM_TOOLS_LABEL_PREFIX": "test.example",
                     "DEPLOY_TEST_CALLS": str(self.calls),
                     "DEPLOY_TEST_KICKED": str(self.tmp / "kicked"),
-                    "DEPLOY_TEST_STOPPED": str(self.tmp / "runner-stopped"),
+                    "DEPLOY_TEST_OUT": str(self.tmp / "out"),
                     "DEPLOY_TEST_PYTHON": str(self.python),
                     "DEPLOY_WAIT": "1", "PYTHON": sys.executable, "XDG_STATE_HOME": str(self.tmp / "state")}
         self.state = self.tmp / "state" / "system" / "deploy" / "deployed"
+        self.stopped = self.state.with_name("stopped")
+        (self.tmp / "out").mkdir()
+        agents = self.tmp / "Library" / "LaunchAgents"
+        agents.mkdir(parents=True)
+        for label in AGENTS:
+            (agents / f"{label}.plist").write_text("<plist/>\n")
 
     def write(self, relative, text):
         path = self.repo / relative
@@ -412,7 +435,7 @@ class DeployTest(unittest.TestCase):
         landed = self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
         result = self.run_upgrade("--from", self.base)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("started runner", result.stdout)
+        self.assertIn("restarted runner", result.stdout)
         self.assertIn(f"deployed {landed}", result.stdout)
         self.assertEqual((self.head(), self.recorded()), (landed, landed))
         self.calls.write_text("")
@@ -436,7 +459,7 @@ class DeployTest(unittest.TestCase):
                 self.state.unlink(missing_ok=True)
                 result = self.run_upgrade("--from", self.base, cwd=cwd)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("started runner", result.stdout)
+                self.assertIn("restarted runner", result.stdout)
                 self.assertEqual((self.head(), self.recorded()), (landed, landed))
 
     def test_upgrade_installs_sd_db_once_per_venv_before_any_restart(self):
@@ -453,8 +476,11 @@ class DeployTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = self.calls.read_text().splitlines()
                 installs = [call for call in calls if call.startswith("sd-db.sh")]
-                self.assertEqual(installs, [f"sd-db.sh install {venv} runner=stopped" for venv in venvs])
+                stopped = "stopped=test.example.sd-dashboard test.example.sd-runner"
+                self.assertEqual(installs, [f"sd-db.sh install {venv} {stopped}" for venv in venvs])
                 self.assertLess(calls.index("runner.sh stop"), calls.index(installs[0]))
+                self.assertEqual(calls[-1], "runner.sh start")
+                self.assertFalse(list((self.tmp / "out").iterdir()))
                 kick = next(call for call in calls if "kickstart" in call)
                 self.assertLess(calls.index(installs[-1]), calls.index(kick))
 
@@ -464,12 +490,14 @@ class DeployTest(unittest.TestCase):
         result = self.run_upgrade(DEPLOY_TEST_INSTALL="1")
         self.assertEqual(result.returncode, 1)
         self.assertIn(f"deploy: sd_db install into {self.tmp / 'venv'} failed; stopped", result.stderr)
-        self.assertIn("the runner is stopped; finish the upgrade with: sh "
+        self.assertIn("left stopped: test.example.sd-runner test.example.sd-dashboard; finish the upgrade with: sh "
                       f"{self.repo / 'local-deploy/deploy.sh'} upgrade --from {self.base}", result.stderr)
         calls = self.calls.read_text().splitlines()
         self.assertIn("runner.sh stop", calls)
-        self.assertFalse([call for call in calls if "kickstart" in call or call.startswith("runner.sh start")], calls)
-        self.assertTrue((self.tmp / "runner-stopped").exists())
+        self.assertFalse([call for call in calls if "kickstart" in call or "bootstrap" in call
+                          or call.startswith("runner.sh start")], calls)
+        self.assertEqual(sorted(path.name for path in (self.tmp / "out").iterdir()),
+                         ["test.example.sd-dashboard", "test.example.sd-runner"])
         self.assertEqual(self.recorded(), self.base)
         self.calls.write_text("")
         result = self.run_upgrade()
@@ -477,8 +505,23 @@ class DeployTest(unittest.TestCase):
         calls = self.calls.read_text().splitlines()
         self.assertEqual(calls[-1], "runner.sh start")
         self.assertNotIn("runner.sh stop", calls)
-        self.assertFalse((self.tmp / "runner-stopped").exists())
+        self.assertFalse(list((self.tmp / "out").iterdir()))
+        self.assertFalse(self.stopped.exists())
         self.assertEqual(self.recorded(), landed)
+
+    def test_upgrade_stops_sd_serve_too_when_it_runs_from_the_venv(self):
+        self.land({"local-sd-db/sd_db/remote.py": "x\n"})
+        self.record(self.base)
+        result = self.run_upgrade(DEPLOY_TEST_SERVE_PYTHON=str(self.python))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text().splitlines()
+        install = next(call for call in calls if call.startswith("sd-db.sh"))
+        self.assertTrue(install.endswith("stopped=test.example.sd-dashboard test.example.sd-runner test.example.sd-serve"),
+                        install)
+        starts = [call.split()[-1].rsplit("/", 1)[-1] for call in calls
+                  if "bootstrap" in call or call == "runner.sh start"]
+        self.assertEqual(starts, ["test.example.sd-serve.plist", "test.example.sd-dashboard.plist", "start"])
+        self.assertIn("started test.example.sd-serve", result.stdout)
 
     def test_upgrade_refuses_on_the_runner_load_before_any_restart(self):
         self.land({"local-project-dashboard/sd_dashboard/app.py": "x\n",
@@ -499,20 +542,19 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("deploy: dashboard health failed; stopped", result.stderr)
         self.assertEqual(self.recorded(), self.base)
-        self.assertIn("the runner is stopped", result.stderr)
         result = self.run_upgrade()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("restarted dashboard", result.stdout)
-        self.assertIn("started runner", result.stdout)
+        self.assertIn("restarted runner", result.stdout)
         self.assertEqual(self.recorded(), landed)
 
-    def test_upgrade_does_not_record_while_sd_serve_is_held_back(self):
+    def test_upgrade_refuses_an_open_sd_serve_session_before_any_stop(self):
         self.land({"local-sd-db/serve.conf": "x\n"})
         self.record(self.base)
         result = self.run_upgrade(DEPLOY_TEST_SESSIONS="4242")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("report sd-serve not restarted", result.stdout)
-        self.assertIn("not recorded; rerun upgrade", result.stderr)
+        self.assertIn("sd-serve: a session is open on port 8769; rerun upgrade when it closes", result.stderr)
+        self.assertNotIn("kickstart", self.calls.read_text())
         self.assertEqual(self.recorded(), self.base)
 
     def test_upgrade_applies_but_does_not_record_a_pending_launchagent_install(self):
@@ -522,7 +564,7 @@ class DeployTest(unittest.TestCase):
         result = self.run_upgrade()
         self.assertEqual(result.returncode, 1)
         self.assertIn(f"report needs local-sd-runner install ({path})", result.stdout)
-        self.assertIn("started runner", result.stdout)
+        self.assertIn("restarted runner", result.stdout)
         self.assertIn("a LaunchAgent install is pending", result.stderr)
         self.assertEqual(self.recorded(), self.base)
 
