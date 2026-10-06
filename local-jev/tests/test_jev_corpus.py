@@ -100,6 +100,14 @@ class TheModule(unittest.TestCase):
                          jev_corpus.FAILED)
         self.assertEqual(list(target.iterdir()), [])
 
+    def test_a_fifo_in_the_file_s_place_is_refused_without_waiting(self):
+        self.folder.mkdir()
+        os.mkfifo(self.folder / (time.strftime("%Y-%m-%d", time.gmtime()) + ".jsonl"))
+        began = time.monotonic()
+        self.assertEqual(jev_corpus.append({}, {"JEV_CORPUS_DIR": str(self.folder)}),
+                         jev_corpus.FAILED)
+        self.assertLess(time.monotonic() - began, 1.0)
+
     def test_a_short_write_still_leaves_a_whole_line(self):
         real = os.write
         with mock.patch.object(jev_corpus.os, "write",

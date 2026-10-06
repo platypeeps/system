@@ -505,7 +505,7 @@ can be rerun and relabelled from stored data when the success criteria
 change. One JSON line per call per arm, appended to
 `~/.local/share/sd/jev-corpus/YYYY-MM-DD.jsonl` (the UTC day), or under
 `JEV_CORPUS_DIR`. The folder is held to 0700 and each file to 0600, and a
-symlink or another user's file is refused. Keep it on the
+symlink, a FIFO or another user's file is refused. Keep it on the
 system disk: a volume mounted `noowners` ignores both modes. The corpus is
 never committed, and nothing here sends it anywhere. Nothing prunes it
 either: a day is one file, so removing old days is `rm` of those files.

@@ -10,9 +10,9 @@ JSON line per call per arm, appended to one file per UTC day.
 **Where.** `JEV_CORPUS_DIR`, default `~/.local/share/sd/jev-corpus`. The
 folder is made 0700 and each file 0600, because a record holds the state as
 sent: paths, diffs, subjects. An existing folder or file is held to the
-same modes, and a symlink or another user's file is refused. Keep it on the
-system disk; a volume mounted `noowners` ignores both modes. Nothing here is
-ever committed.
+same modes, and a symlink, a FIFO or another user's file is refused. Keep
+it on the system disk; a volume mounted `noowners` ignores both modes.
+Nothing here is ever committed.
 
 **Switching it off.** `JEV_CORPUS=0` (or `off`, `false`, `no`, `disabled`)
 stores nothing. Unset means on, the default the meter uses.
@@ -107,7 +107,10 @@ def append(record: dict, env=None) -> str:
             return FAILED
         os.chmod(folder, 0o700)
         path = os.path.join(folder, now.strftime("%Y-%m-%d") + ".jsonl")
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        # O_NONBLOCK so a FIFO in the file's place fails here instead of
+        # waiting for a reader; the type check below then refuses it.
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+                     | os.O_NONBLOCK, 0o600)
         try:
             if not private(os.fstat(fd), stat.S_ISREG):
                 return FAILED
