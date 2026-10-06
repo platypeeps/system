@@ -36,7 +36,7 @@ echo "$*" >> {log}
 if [ "$1" = print ]; then
   echo "	pid = {agent}"
 fi
-if [ "$1" = kickstart ]; then
+if [ "$1" = kickstart ] || [ "$1" = bootstrap ]; then
   exec {python} -c 'import sys; from sd_db.database import connect; from sd_db import runner as store; \\
 c = connect(sys.argv[1]); store.heartbeat(c, {{"pid": 424242, "healthy": True, "interval_seconds": 10, "runner_commit": "fixture-commit"}}); c.close()' {database}
 fi
@@ -148,6 +148,66 @@ class Restart(unittest.TestCase):
         self.assertEqual((result["ok"], result["max_load"]), (False, 8.0), result)
         self.assert_not_kicked()
 
+    def test_stop_drains_then_boots_the_agent_out_without_a_kick(self):
+        store.enqueue(self.fixture.db, [self.fixture.item], who="operator")
+        result = self.restart(stop=True)
+        self.assertEqual(result, {"ok": True, "stopped": True, "previous_pid": os.getpid()})
+        self.assertEqual(self.claimed, [], "the daemon claimed work while the verb was about to stop it")
+        self.assertEqual(self.calls()[-1], f"bootout gui/{os.getuid()}/{cli.LABEL}")
+        self.assert_not_kicked()
+
+    def test_stop_keeps_every_restart_refusal(self):
+        self.fixture.claim()
+        result = self.restart(stop=True)
+        self.assertIn("the queue is not idle", result["reason"])
+        self.assertFalse([call for call in self.calls() if call.startswith("bootout")], self.calls())
+
+    def test_start_bootstraps_the_plist_and_waits_for_a_new_pid(self):
+        with patch.object(cli, "agent_loaded", return_value=False), patch.dict(os.environ, self.stub()):
+            result = cli.start(self.fixture.config, wait=5.0, sleep=lambda seconds: None)
+        self.assertEqual(result["pid"], 424242, result)
+        plist = self.fixture.config.home / "Library/LaunchAgents" / f"{cli.LABEL}.plist"
+        self.assertEqual(self.calls()[-1], f"bootstrap gui/{os.getuid()} {plist}")
+        with patch.object(cli, "agent_loaded", return_value=True):
+            self.assertIn("already loaded", cli.start(self.fixture.config)["reason"])
+
+    def test_a_start_that_never_turns_healthy_boots_the_agent_out_again(self):
+        failed = {"ok": False, "reason": "no healthy heartbeat with a new pid within 5s"}
+        with patch.object(cli, "agent_loaded", return_value=False), patch.object(cli, "_await_new", return_value=failed), \
+                patch.dict(os.environ, self.stub()):
+            result = cli.start(self.fixture.config, wait=5.0)
+        self.assertFalse(result["ok"])
+        self.assertIn("booted the agent out again", result["reason"])
+        self.assertEqual(self.calls()[-1], f"bootout gui/{os.getuid()}/{cli.LABEL}")
+
+    def test_a_wait_that_never_ends_is_refused_before_the_verb(self):
+        # A deadline of nan or inf is never reached, so the wait would never end (sd:2837).
+        for verb in ("start", "restart"):
+            for value in ("nan", "inf", "-inf", "0", "-5", "soon"):
+                with self.subTest(verb=verb, value=value), contextlib.redirect_stderr(io.StringIO()) as err, \
+                        patch.object(cli, "start") as start, patch.object(cli, "restart") as restart, \
+                        self.assertRaises(SystemExit) as raised:
+                    cli.main([verb, f"--wait={value}"])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("must be a finite number of seconds above 0", err.getvalue())
+                start.assert_not_called()
+                restart.assert_not_called()
+        with patch.object(cli, "start", return_value={"ok": True}) as start, \
+                patch.object(cli, "configuration", return_value=self.fixture.config), \
+                contextlib.redirect_stdout(io.StringIO()):
+            cli.main(["start", "--wait", "2.5"])
+        self.assertEqual(start.call_args.kwargs["wait"], 2.5)
+
+    def test_the_load_limit_runs_as_a_script_without_sd_db(self):
+        script = Path(cli.__file__).with_name("load.py")
+        for limit, code in (("0.0", 1), ("100000", 0)):
+            done = subprocess.run([sys.executable, "-I", "-c",
+                                   "import os, runpy, sys; os.cpu_count = lambda: float(sys.argv[2]); "
+                                   "sys.modules['sd_db'] = None; runpy.run_path(sys.argv[1], run_name='__main__')",
+                                   str(script), limit], capture_output=True, text=True)
+            self.assertEqual(done.returncode, code, done.stderr)
+            self.assertEqual(json.loads(done.stdout)["ok"], code == 0)
+
     def test_an_agent_that_is_not_loaded_refuses(self):
         with patch.object(cli, "agent_loaded", return_value=False):
             result = self.restart()
@@ -249,6 +309,12 @@ class Restart(unittest.TestCase):
                 contextlib.redirect_stdout(output):
             code = cli.main(["restart", "--max-load", "3", "--wait", "7"])
         self.assertEqual((code, restart.call_args.kwargs), (1, {"max_load": 3.0, "wait": 7.0}))
+        with patch.object(cli, "restart", return_value={"ok": True}) as restart, contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["stop", "--max-load", "5"]), 0)
+        self.assertEqual(restart.call_args.kwargs, {"max_load": 5.0, "stop": True})
+        with patch.object(cli, "start", return_value={"ok": True}) as start, contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["start", "--wait", "9"]), 0)
+        self.assertEqual(start.call_args.kwargs, {"wait": 9.0})
 
 
 class Drain(unittest.TestCase):

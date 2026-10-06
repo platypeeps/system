@@ -49,6 +49,7 @@ from ..sources import verify as verify_source
 from ..sources.frontmatter import FrontmatterError
 from ..sources.frontmatter import read as read_frontmatter
 from ..workflow import WorkflowError, register_work_item
+from ..writes import OPEN_STATE_KINDS
 
 
 def _home() -> Path:
@@ -118,9 +119,17 @@ def command_status(_argv: list[str]) -> int:
         print(f"sd-db: {path}")
         print(f"sd-db: schema version {found}, this library is built for {SCHEMA_VERSION}")
         print(f"sd-db: {len(tables(connection))} table(s)")
+        # One line per kind: the hub holds tens of thousands of checkpoint
+        # and heartbeat rows, and their NULL resolved_at is not open (sd:2849).
+        marks = ", ".join("?" * len(OPEN_STATE_KINDS))
         for row in connection.execute(
-            "SELECT kind, key, timestamp FROM state WHERE resolved_at IS NULL "
-            "ORDER BY timestamp"
+            f"SELECT kind, COUNT(*) AS rows FROM state WHERE resolved_at IS NULL "
+            f"AND kind NOT IN ({marks}) GROUP BY kind ORDER BY kind", OPEN_STATE_KINDS
+        ):
+            print(f"sd-db: {row['rows']} {row['kind']} row(s) without resolved_at (a log; not open work)")
+        for row in connection.execute(
+            f"SELECT kind, key, timestamp FROM state WHERE resolved_at IS NULL "
+            f"AND kind IN ({marks}) ORDER BY timestamp", OPEN_STATE_KINDS
         ):
             print(f"sd-db: unresolved {row['kind']} {row['key'] or ''} at {row['timestamp']}")
         # sd:1439: the key columns hold `~/` for a path under this home.

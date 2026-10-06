@@ -154,9 +154,10 @@ Usage: sd-db.sh <command>
               copies a database it cannot yet write). Nothing migrates on
               open.
   status      The path, the schema version, the version this library was
-              built for, any unresolved state record, and how many key
-              column values are absolute under this home (0 after
-              migration 014).
+              built for, each unresolved restore, verified and check record,
+              one count line per other state kind without resolved_at (logs
+              read latest-per-key, not open work), and how many key column
+              values are absolute under this home (0 after migration 014).
   restore DIR Put a dated backup directory back in place. The restore is a
               record, not a permission: it lands unreconciled, and
               `sd restore resume` clears it.
@@ -378,6 +379,8 @@ Usage: sd-db.sh <command>
   install DIR Install the built wheel into the virtual environment at DIR.
               Never editable: the pack and this repository both install a
               copy, and an editable install would hide a missing file.
+              Writes DIR/sd-db-source, naming this checkout: a satellite
+              installs the hub's build from its origin/main by itself.
   check       What CI runs: `test` with no arguments, the whole suite.
   release [--dry-run]
               Cut the annotated tag `sd-db-v<version>` for this commit, with
@@ -578,6 +581,9 @@ case "${1:-}" in
         fi
         wheel="$("$0" build)"
         "$target/bin/python" -m pip install --no-index --force-reinstall "$DIR/dist/$wheel"
+        # The checkout this copy came from, for a satellite's self-install
+        # (sd_db.self_install, sd:2802): it fetches and exports origin/main there.
+        (cd "$DIR/.." && pwd -P) > "$target/sd-db-source"
         ;;
     -h|--help|help)
         usage

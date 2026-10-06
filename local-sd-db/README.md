@@ -78,6 +78,8 @@ backup, and the fixture harness both repositories test against.
       hub.py        `~/.config/sd/hub.json`, which makes a machine a satellite
       tailnet.py    this Tailscale node and its peers, by `tailscale whois`
       satellite.py  the checks the machine-setup `satellite` stage runs
+      self_install.py  a satellite installs the hub's build from
+                    origin/main when its digest is the hub's (sd:2802)
       migrate.py    applying migrations, by command and never on open
       writes.py     every write, as a named function
       registry.py   providers.yaml merged with the provider and bill rows;
@@ -193,7 +195,8 @@ So `file` there is correct, and it needs no migration.
                               # to unittest, e.g. `test -k name`
     ./sd-db.sh check          # what CI runs: `test`, the whole suite
     ./sd-db.sh build          # a wheel, into ./dist
-    ./sd-db.sh install VENV   # install that wheel into a virtual environment
+    ./sd-db.sh install VENV   # install that wheel into a virtual environment,
+                              # and record this checkout in VENV/sd-db-source
     ./sd-db.sh release --dry-run   # the tag `release` would cut; see below
 
 From a test:
@@ -373,6 +376,83 @@ The machine-setup `satellite` stage writes it.
 - An explicit path other than the default opens locally, such as a backup target.
 - `init` and `migrate` refuse with `HubOnly`.
 - `token_file` is for a loopback hub only; a satellite's file names none.
+
+### A satellite installs the hub's build itself
+
+After the hub's `sd_db` changes, the hub refuses an older satellite with `BuildMismatch`.
+The satellite then installs the hub's build itself (sd:2802); the plan is `docs/work/2026-10-05-satellite-self-install/`.
+
+- It fetches `origin` in the system checkout and exports `origin/main:local-sd-db` with `git archive`.
+  The checkout's worktree and `HEAD` do not change.
+- It installs only when that export's build digest equals the hub's; the refusal carries the hub's digest.
+  A hub that runs another build gets no install, and the error says why.
+- A fresh `python -I` in the venv must then report the hub's digest.
+- On a refusal, the command installs the hub's build, and the error asks you to run the command again.
+  An entrypoint that calls `sd_db.self_install.declare_replayable()` runs again once by itself instead.
+  A program read from standard input, or a pipe or file on standard input, is never run again.
+- The nightly `machine-setup.sh update --apply` installs through the `satellite` stage; a dry run prints the plan.
+
+| Variable or file | Effect |
+| --- | --- |
+| `SD_SATELLITE_SELF_INSTALL=0` | switches it off; `off`, `false`, `no` and `disabled` do too |
+| `SD_DB_SOURCE_CHECKOUT` | the system checkout to install from; `machine-setup.sh` sets its own |
+| `<venv>/sd-db-source` | the checkout the last `sd-db.sh install` or self-install used |
+| `${XDG_STATE_HOME:-~/.local/state}/sd-ai-command-pack/sd-db-provision.lock` | the command pack's provisioning lock, taken first; a held lock waits up to 600 s, then installs nothing (sd:2845) |
+| `<venv>/sd-db-self-install.lock` | held during an install; a second installer waits up to 600 s |
+
+It installs nothing in these cases, and the error names the reason:
+
+- a loopback hub (the hub's own machine);
+- a rerun that meets the refusal again;
+- a process that already opened a session on the hub;
+- a satellite newer than the hub;
+- a hub too old to send its digest;
+- no known source checkout.
+
+A self-install builds a wheel, so pip records no VCS commit for it.
+The pack's ancestry guard reads that commit, so it cannot see a self-installed build (sd:2845).
+A stale `make setup` can then install older code once; the next hub call self-installs the hub's build again.
+
+### Satellite gate offload: the satellite gates, the hub merges
+
+In a repository with `repo.ci = local` and `repo.satellite_gate = accept`, a satellite runs the gate.
+The hub's lane merges the item and runs no `sd-check` for it.
+The merge compares the satellite's offload receipt under the pack's trust rule, under the hub's repository lock.
+The design record is the pack's, under sd:2704; the pack's `WORKFLOW.md` lists each step.
+
+Who does the work (sd:2724):
+
+| Work | Satellite | Hub |
+| --- | --- | --- |
+| Catch up with the base | `git merge origin/main`, or `sd-ship prepare --catch-up` | nothing |
+| Run `sd-check` | `sd gate check --base main`; it writes the offload receipt to the hub | nothing for this item |
+| Review, push, bind the pull request | `sd-ship prepare --item N --title T --body-file F` | nothing |
+| Post `sd/local-gate` | `prepare`, from the offload receipt | nothing |
+| Ask for the merge | `sd-ship lane request --item N --manual` | nothing |
+| Take requests in | nothing | `sd-ship -C <checkout> lane run --satellite-only`, from a scheduled job |
+| Merge | nothing | `sd-ship merge --satellite-gate`: accepts the receipt, posts no status, merges |
+| A refusal or a moved branch or base | reads the next action on the request row and the item, then gates and requests again | hands the item back |
+
+The opt-in is a `repo` column, set per repository on the hub:
+
+    ./sd-db.sh repo satellite-gate PATH accept   # the hub may merge on a satellite's pass
+    ./sd-db.sh repo satellite-gate PATH off      # the rollback
+
+- Every row starts at `off`, and a library older than the column reads `off`.
+- With `off`, intake refuses new requests, and the merge hands back any waiting entry.
+- The adversarial review sd:2782 of that binding closed with pack #1385, so `accept` is open to a repository.
+- `accept` restricts every gate's environment in that repository, not only the satellite's (sd:2817).
+  - The hub's own gate, the merge gate, local reuse and a satellite's gate all run `sd-check` under one filter.
+  - The filter keeps `HOME`, `USER` and `PATH`, and the variables an offload view compares.
+  - A compared variable is in the pack's `OFFLOAD_VARIABLES`, or starts with an `OFFLOAD_VARIABLE_PREFIXES` prefix.
+  - A variable whose name contains a credential word (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `COOKIE`, `AUTH`) is dropped.
+  - The gate drops every other variable, such as `SKIP_TESTS`, `RUN_INTEGRATION`, `SSH_AUTH_SOCK` or `TMPDIR`.
+  - A check that needs a dropped variable fails on every machine; keep that repository at `off` until the pack allowlists it.
+  - The pack's `sd_gate_receipts.offload_environment` is the filter, and `offload_run` applies it to every gate.
+  - Each receipt binds an `environment_mode`, so a pass from before the opt-in does not stand after it.
+  Reason: the satellite and the hub then run the same check, and a dropped variable chooses no tests on either.
+- Roll out one repository at a time: set `accept`, install the hub's job, then request from the satellite.
+- The job is `local-cron-jobs/examples/satellite-lane-run.job`, one copy per opted-in repository, on the hub only.
 
 ## `judgments`: what the judgment models cost, by stage
 
@@ -616,6 +696,14 @@ does, and `workflow.edit_item` edits a followup's title, body, priority, due
 date and repository (`workflow.DETAIL_KINDS`), so `sd task edit ID --belongs-to PATH`
 moves one. Followups filed before then carry no repository until someone moves
 them.
+
+`workflow.edit_item` also clears a row's `branch` (sd:2818), with a `comment`
+note reading `Updated branch by <who>`. It refuses any other value: setting a
+branch stays with `runner_controls.configure_item`, which checks it against
+git. A clear is how a stale branch name leaves a row, since nothing else
+writes the column back to empty. A row the runner owns keeps its branch: a
+clear is refused while it has an active assignment or an unreleased runner
+run, the same guards `configure_item` applies.
 
 **That is filing behaviour and not a constraint**, which matters if you are
 reasoning about what the store can hold rather than what it does hold.

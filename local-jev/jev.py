@@ -1307,7 +1307,8 @@ def start_arms(payload: dict) -> str:
 
     Only for a measured call (`status` is not one) and only with the meter
     on: an arm exists to write a row, and with nothing to write it to it
-    would only spend money. Never raises -- an arm may not cost a caller its
+    would only spend money. Only for a stage `JEV_COMPARE_STAGES` lists,
+    too (`jev_compare.stage_listed`). Never raises -- an arm may not cost a caller its
     answer, so any failure to start one is no arm at all.
 
     The child gets a fresh interpreter, its own session, and `/dev/null` for
@@ -1326,7 +1327,7 @@ def start_arms(payload: dict) -> str:
         if not jev_meter.switched_on(env):
             return ""
         import jev_compare
-        if not jev_compare.wanted(env):
+        if not jev_compare.wanted(env, _EVENT.get("stage")):
             return ""
         import subprocess
         import tempfile

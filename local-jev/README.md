@@ -384,6 +384,13 @@ So every caller runs its old mechanism with no edit, and the comparison arms
 still get the request. `jev status` prints `shadow=on`, and `jev enabled --why`
 says so too.
 
+**A satellite runs shadow by setup.** Its rows reach the hub's ledger, and a
+missing file means live, so a satellite once ran `sd-review` on Jev's answer
+(sd:2838). `machine-setup.sh update satellite` reports a missing shadow file
+as `MISSING` and, with `--apply`, runs `jev shadow on`. It leaves a written
+`off` alone, sets no comparison arm, and skips silently where `jev` is not on
+`PATH`. The hub has no `.satellite`, so the stage never touches its file.
+
 **The agreement needs the old answer, and a fallback is a marker.**
 `tests/test_jev_contract.py` keeps every `--fallback` distinct from a real
 answer. A switched call given `--baseline B` records `B` as the pair's old
@@ -400,7 +407,8 @@ one records no old answer, and its `changed` is `unknown`.
 
 - The request goes to the local Kev alone, at `JEV_COMPARE_KEV_URL`
   (default `http://127.0.0.1:8009/v1/systemone`). It never goes to Jev or to
-  a comparison arm, whatever `JEV_COMPARE_KEV` and `JEV_COMPARE_HAIKU_VIA` say.
+  a comparison arm, whatever `JEV_COMPARE_KEV`, `JEV_COMPARE_HAIKU_VIA` and
+  `JEV_COMPARE_STAGES` say.
 - A Kev URL whose host is not a literal loopback address is refused before
   anything is sent; `localhost` is refused too, since a name is resolved. The
   request uses no proxy and follows no redirect.
@@ -492,7 +500,22 @@ Switch the Kev arm on with an on-word (`JEV_COMPARE_KEV=1`) and the Haiku arm
 by naming a transport (`JEV_COMPARE_HAIKU_VIA=anthropic`). Unset or an
 off-word is off: unlike a Jev stage, where unset means on, an arm sends every
 live request to a second endpoint, so it is opt-in. An off arm starts no
-child and writes no row. Install the Kev server (`local-kev/kev.sh install`,
+child and writes no row.
+
+**An arm runs only for a stage `JEV_COMPARE_STAGES` lists**, stage names
+separated by commas: `JEV_COMPARE_STAGES=JEV_SD_REVIEW`. Unset or empty lists
+none, so a machine with an arm on and no list sends nothing extra. Until
+sd:2824 an arm ran for every stage, so set the list when you upgrade, or the
+arms stop. A local-only stage stays out of every arm even when listed.
+
+**Put a comparison key in `<config>/jev/.env`.** `jev.sh` reads that file on
+every call, so a key there reaches every caller at once. A key exported from
+the shell profile (`~/.config/shell/env.sh`) reaches only shells started after
+the edit; a caller started before it records the Haiku arm as `unkeyed`.
+
+A Kev row arrives when Kev answers or when `JEV_COMPARE_TIMEOUT` (60 s by
+default) runs out, whichever is first. A Kev that hangs leaves its `timeout`
+row a minute after the Jev row, not beside it. Install the Kev server (`local-kev/kev.sh install`,
 then `agent-install`) when you switch the Kev arm on, not before. The rest of
 the settings are in `.env.example`. Read the comparison with:
 

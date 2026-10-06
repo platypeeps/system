@@ -785,6 +785,13 @@
     if (s) { st.size = +s.dataset.size; st.page = 1; return true; }
     return false;
   }
+  // A redraw replaces the header and the pager; focus moves to the new copy of the clicked sort, page or size button.
+  function keepFocus(e, draw) {
+    const b = e.target.closest?.('button[data-sort], button[data-page], button[data-size]'), root = e.currentTarget;
+    draw();
+    const k = b && ['sort', 'page', 'size'].find(a => b.dataset[a] != null);
+    if (k) root?.querySelector(`button[data-${k}="${b.dataset[k]}"]`)?.focus();
+  }
   // Active filters above the list: one removable chip each, how many rows they leave, and one Clear all.
   // list: [{ key, label }]; a click on a chip names its key in data-unfilter, Clear all carries data-unfilter-all.
   function chips(list, shown, total) {
@@ -806,7 +813,7 @@
     if (st.sort && (st.sort !== sort || st.dir !== dir)) { p.set('sort', st.sort); p.set('dir', st.dir > 0 ? 'asc' : 'desc'); }
     return p;
   }
-  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, rangeText, pageList, chips, listParams, listQuery };
+  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery };
   // list:end
 
   // ---------- The page's list: j / k, Esc and ?row= ----------

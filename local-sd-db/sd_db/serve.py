@@ -602,7 +602,8 @@ class Session(socketserver.BaseRequestHandler):
                         if opening:
                             # The first frame of an older or newer client:
                             # name the side to upgrade (step 3).
-                            raise remote.BuildMismatch("protocol", frame.get("v"), remote.PROTOCOL_VERSION)
+                            raise remote.BuildMismatch("protocol", frame.get("v"), remote.PROTOCOL_VERSION,
+                                                       hub_build=remote.build_digest())
                         raise remote.RemoteError(
                             f"protocol version {frame.get('v')!r} refused; this hub speaks "
                             f"{remote.PROTOCOL_VERSION}"

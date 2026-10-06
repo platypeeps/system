@@ -505,9 +505,18 @@ def haiku_via(env) -> str:
     return "" if not word or word in jev.FLAG_OFF else word
 
 
-def wanted(env) -> bool:
-    """Whether any arm is on here. `jev.py` asks this before it starts one."""
-    return kev_on(env) or bool(haiku_via(env))
+def stage_listed(env, stage) -> bool:
+    """Whether `JEV_COMPARE_STAGES`, stage names separated by commas, names
+    `stage`. Unset or empty names none (sd:2824): an arm switched on for one
+    experiment does not reach every other stage that calls Jev."""
+    names = {name.strip() for name in (env.get("JEV_COMPARE_STAGES") or "").split(",")}
+    return bool(stage) and stage in names
+
+
+def wanted(env, stage) -> bool:
+    """Whether any arm runs for `stage` here. `jev.py` asks this before it
+    starts one."""
+    return stage_listed(env, stage) and (kev_on(env) or bool(haiku_via(env)))
 
 
 def kev_arm(job: dict, env) -> dict:
@@ -732,6 +741,12 @@ def main(argv=None, env=None) -> int:
                 path.unlink()
             except OSError:
                 pass
+    # Asked again here, so a child started some other way sends nothing for
+    # a stage the operator did not list.
+    if not stage_listed(env, job.get("stage")):
+        sys.stderr.write(f"jev-compare: not run, {job.get('stage')!r} is not "
+                         "in JEV_COMPARE_STAGES\n")
+        return 0
     work = []
     if kev_on(env):
         work.append(("kev", lambda: kev_arm(job, env)))

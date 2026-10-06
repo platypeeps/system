@@ -116,8 +116,12 @@ SUITE_RUNNER = "tests/ci-native.sh"
 #: row can carry, one of which is spelled `jev`, and a schema that could not
 #: name the thing it counts would be a worse schema. It holds no key, opens no
 #: socket and would still be correct if this folder were deleted.
+#: `local-machine-setup` runs `jev shadow on` on a satellite whose shadow file
+#: is missing (sd:2838): it sets a switch, asks Jev nothing, and skips the step
+#: where `jev` is not on PATH.
 NOT_CALLERS = frozenset({
     "local-bin-links",
+    "local-machine-setup",
     "local-project-dashboard",
     "local-sd-db",
 })

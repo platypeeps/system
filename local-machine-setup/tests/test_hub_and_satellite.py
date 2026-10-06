@@ -195,6 +195,11 @@ class TheSatellite(Case):
         self.hub_json = self.fixture.home / ".config/sd/hub.json"
         self.agents = self.fixture.home / "Library/LaunchAgents"
         self.launchctl_log = self.stub_launchd(self.fixture)
+        # A jev on this machine's PATH reads the fixture home: shadow is set,
+        # so the cases below see no jev drift whether jev is installed or not.
+        self.shadow = self.fixture.home / ".config/jev/shadow"
+        self.shadow.parent.mkdir(parents=True)
+        self.shadow.write_text("on\n")
 
     @staticmethod
     def stub_launchd(fixture):
@@ -347,6 +352,76 @@ class TheSatellite(Case):
                                  "runs the hub's agents; the hub cannot be its own satellite — remove "
                                  "personal.satellite"])
         self.assertFalse(self.hub_json.exists())
+
+    def stub_jev(self):
+        """`jev shadow on` as jev.py does it, each call logged."""
+        log = self.root / "jev.log"
+        write_stub(self.fixture.stubs, "jev",
+                   f'echo "$*" >> "{log}"\n'
+                   '[ "$1 $2" = "shadow on" ] && mkdir -p "$HOME/.config/jev" && echo on > "$HOME/.config/jev/shadow"\n'
+                   'exit 0\n')
+        return log
+
+    def jev_satellite(self, *flags, **extra):
+        (self.profiles / "work.satellite").write_text("hub.example.test\n")
+        python = write_stub(self.root, "stub-python", 'echo "  ok      sd_db satellite"\n')
+        return self.run_stage("satellite", *flags, SD_DB_PYTHON=python, **extra)
+
+    def test_a_satellite_without_a_shadow_file_gets_one_and_no_arms(self):
+        # No shadow file means live, and a satellite's live rows reached the
+        # hub's ledger (sd:2838). One MISSING; --apply runs `jev shadow on`.
+        log = self.stub_jev()
+        self.shadow.unlink()
+        out = self.jev_satellite()
+        self.assertEqual(markers(out), [f"  MISSING {self.shadow} — Jev would answer live on this satellite"])
+        self.assertIn("[dry-run] jev shadow on", out)
+        self.assertFalse(self.shadow.exists())
+        self.assertEqual(markers(self.jev_satellite("--apply")), [f"  MISSING {self.shadow} — Jev would answer live on this satellite"])
+        self.assertEqual(self.shadow.read_text(), "on\n")
+        # Idempotent: the second run finds it and calls nothing.
+        out = self.jev_satellite("--apply")
+        self.assertEqual(markers(out), [])
+        self.assertIn(f"  ok      jev shadow file {self.shadow} (on)", out)
+        self.assertEqual(log.read_text().splitlines(), ["shadow on"])
+
+    def test_a_written_shadow_off_is_the_operators_and_stays(self):
+        log = self.stub_jev()
+        self.shadow.write_text("off\n")
+        out = self.jev_satellite("--apply")
+        self.assertEqual(markers(out), [])
+        self.assertEqual(self.shadow.read_text(), "off\n")
+        self.assertFalse(log.exists())
+
+    def test_a_satellite_without_jev_skips_the_shadow_silently(self):
+        self.shadow.unlink()
+        out = self.jev_satellite("--apply", PATH=f"{self.fixture.stubs}:/usr/bin:/bin")
+        self.assertNotIn("jev", out)
+        self.assertEqual(markers(out), [])
+        self.assertFalse(self.shadow.exists())
+
+    def test_the_hub_never_writes_a_shadow_file(self):
+        log = self.stub_jev()
+        self.shadow.unlink()
+        (self.fixture.state / "profile").write_text("personal\n")
+        for satellite in (None, "hub.example.test\n"):
+            with self.subTest(satellite=satellite):
+                if satellite:
+                    (self.profiles / "personal.satellite").write_text(satellite)
+                self.run_stage("satellite", "--apply")
+                self.assertFalse(self.shadow.exists())
+                self.assertFalse(log.exists())
+
+    def test_the_stage_names_its_own_checkout_as_the_source_to_install_from(self):
+        # sd:2802: `--apply` installs the hub's build from origin/main of a
+        # system checkout; the stage names its own, and an exported value wins.
+        (self.profiles / "work.satellite").write_text("hub.example.test\n")
+        write_stub(self.root, "stub-python", 'echo "  ok      source=$SD_DB_SOURCE_CHECKOUT args=$*"\n')
+        python = self.root / "stub-python"
+        out = self.run_stage("satellite", "--apply", SD_DB_PYTHON=python)
+        self.assertIn(f"  ok      source={ROOT} args=-I -m sd_db.satellite --hub hub.example.test --apply", out)
+        chosen = self.root / "elsewhere"
+        out = self.run_stage("satellite", SD_DB_PYTHON=python, SD_DB_SOURCE_CHECKOUT=chosen)
+        self.assertIn(f"  ok      source={chosen} args=", out)
 
     def test_no_interpreter_is_missing(self):
         self.start_hub()

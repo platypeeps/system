@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import http.client
 import json
+import math
 import os
 import plistlib
 import re
@@ -435,8 +436,14 @@ def preflight(config_path, *, home=None):
     return report
 
 
-def health_check(port, *, attempts=20):
-    for attempt in range(attempts):
+def health_check(port, *, wait=30.0):
+    """Poll /health until it answers healthy or `wait` seconds pass; 0 tries once.
+
+    A clock bounds it, not an attempt count: a refused connection returns at
+    once, so 20 attempts gave a slow start about 5 seconds (sd:2811).
+    """
+    deadline = time.monotonic() + wait
+    while True:
         client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         try:
             client.request("GET", "/health")
@@ -448,9 +455,9 @@ def health_check(port, *, attempts=20):
             pass
         finally:
             client.close()
-        if attempt + 1 < attempts:
-            time.sleep(0.25)
-    raise RuntimeRefused("new dashboard did not return its healthy /health response")
+        if time.monotonic() >= deadline:
+            raise RuntimeRefused(f"new dashboard did not return its healthy /health response within {wait:g}s")
+        time.sleep(0.25)
 
 
 def _verify_loaded_process(domain, health):
@@ -625,12 +632,16 @@ def main():
     parser.add_argument("--config", type=Path, default=Path.home() / ".config/sd/dashboard.json")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--expected-fingerprint")
+    # health: seconds to wait for a starting server; 0, the default, tries once.
+    parser.add_argument("--wait", type=float, default=0.0)
     args = parser.parse_args()
+    if not (math.isfinite(args.wait) and args.wait >= 0):
+        parser.error("--wait needs a finite number of seconds, 0 or more")
     try:
         if args.action == "health":
             config = read_config(args.config)
             load_frontdoor(args.config, config["port"])
-            result = health_check(config["port"], attempts=1)
+            result = health_check(config["port"], wait=args.wait)
         elif args.action == "install" and args.apply:
             if not args.expected_fingerprint:
                 raise RuntimeRefused("--apply requires --expected-fingerprint from preflight")

@@ -411,6 +411,29 @@ class TheVerbs(CliCase):
         status = self.sd_db("status")
         self.assertRegex(status.stdout, re.compile(r"unresolved restore", re.MULTILINE))
 
+    def test_status_lists_open_records_and_counts_the_logs(self):
+        """A NULL resolved_at is open only for restore, verified and check;
+        the hub's 28,038 log rows printed one line each (sd:2849)."""
+        from sd_db.database import connect
+        from sd_db.writes import record_state
+
+        self.sd_db("init")
+        connection = connect(self.home / ".local/share/sd/sd.db")
+        for minute in (1, 2, 3):
+            record_state(connection, "checkpoint", key="ship:1", body={}, timestamp=f"2026-10-06T00:0{minute}:00Z")
+        record_state(connection, "heartbeat", key="runner", body={}, timestamp="2026-10-06T00:04:00Z")
+        record_state(connection, "verified", key="receipt", body={}, timestamp="2026-10-06T00:05:00Z")
+        record_state(connection, "restore", key="snapshot", body={}, timestamp="2026-10-06T00:06:00Z")
+        connection.close()
+        lines = [line for line in self.sd_db("status").stdout.splitlines()
+                 if "unresolved" in line or "resolved_at" in line]
+        self.assertEqual(lines, [
+            "sd-db: 3 checkpoint row(s) without resolved_at (a log; not open work)",
+            "sd-db: 1 heartbeat row(s) without resolved_at (a log; not open work)",
+            "sd-db: unresolved verified receipt at 2026-10-06T00:05:00Z",
+            "sd-db: unresolved restore snapshot at 2026-10-06T00:06:00Z",
+        ])
+
 
 
 class MigrationVerbCase(CliCase):
