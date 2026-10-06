@@ -2,7 +2,7 @@
 
 Scoped AWS access for coding agents (Claude Code) across several accounts.
 Every account gets its own agent IAM user (`agent`) with one managed
-policy, `agent-base`, rendered from the account's **access level**. Dangerous
+policy (`agent-base` unless the account names another), rendered from the account's **access level**. Dangerous
 actions are explicitly denied at every level, so they stay denied even if a
 broader policy is attached later.
 
@@ -35,6 +35,7 @@ takes. `<config>` is `$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`);
 | `AGENT_PROFILE` | CLI profile holding the agent key (default `agent-<name>`) |
 | `AGENT_REGION` | region for that profile (default `us-east-1`) |
 | `S3_BUCKETS` | space-separated bucket names |
+| `POLICY_NAME` | managed policy name in this account; overrides the shared `POLICY_NAME` in `<config>/aws-setup/.env` (default `agent-base`) |
 
 A typical setup: `dev` (operator, profile `agent-dev`) and `sandbox`
 (sandbox, profile `agent-sandbox`). The account files are the source of
@@ -116,7 +117,8 @@ Prerequisites: `aws` CLI v2 and an admin login for the account.
    `apply` refuses to version a policy at that ARN that carries no such tag:
    `agent-base` is a name, not an identity, and replacing the default version
    of somebody else's policy changes every principal holding it. An account
-   whose `agent-base` predates the tag is adopted once, deliberately:
+   whose `agent-base` predates the tag is adopted once, deliberately, or
+   given another name with `POLICY_NAME` in its account file:
 
    ```sh
    aws iam tag-policy --profile admin-sandbox --region us-east-1 \
