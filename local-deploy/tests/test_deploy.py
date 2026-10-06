@@ -66,8 +66,13 @@ echo "$pids"
 # Answers every plist variable with the stub interpreter; the runner's can
 # differ. `-convert json` answers as the real one does, with slashes, quotes
 # and backslashes escaped; the sd-serve plist names an interpreter only when
-# DEPLOY_TEST_SERVE_PYTHON is set.
+# DEPLOY_TEST_SERVE_PYTHON is set. DEPLOY_TEST_RUNNER_JSON replaces the
+# runner plist's JSON whole.
 PLUTIL = """#!/bin/sh
+case "$*" in
+  *-convert*.sd-runner.plist*)
+    if [ -n "$DEPLOY_TEST_RUNNER_JSON" ]; then echo "$DEPLOY_TEST_RUNNER_JSON"; exit 0; fi ;;
+esac
 case "$*" in
   *-convert*)
     case "$*" in
@@ -499,6 +504,24 @@ class DeployTest(unittest.TestCase):
         skips = [line for line in result.stdout.splitlines() if line.startswith("skip ")]
         self.assertEqual(skips, ["skip sd-serve: test.example.sd-serve is not loaded"], result.stdout)
         self.assertIn("started test.example.sd-dashboard", result.stdout)
+
+    def test_upgrade_refuses_a_plist_it_cannot_read_an_interpreter_from(self):
+        """A consumer missed would run on the replaced sd_db (sd:2837 review)."""
+        self.land({"local-sd-db/sd_db/remote.py": "x\n"})
+        for shape in ('{"EnvironmentVariables": ["x"]}', '{"EnvironmentVariables": {"SD_RUNNER_PYTHON": 5}}',
+                      '["x"]'):
+            with self.subTest(shape=shape):
+                self.git("reset", "-q", "--hard", self.base)
+                self.calls.write_text("")
+                result = self.run_upgrade("--from", self.base, DEPLOY_TEST_RUNNER_JSON=shape)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("deploy: refused before any restart: cannot read an sd agent's interpreter",
+                              result.stderr)
+                self.assertIn("test.example.sd-runner: ", result.stderr)
+                calls = self.calls.read_text()
+                self.assertNotIn("runner.sh stop", calls)
+                self.assertNotIn("sd-db.sh install", calls)
+                self.assertNotIn("bootout", calls)
 
     def test_a_failure_after_the_stop_leaves_the_runner_stopped_until_a_rerun(self):
         landed = self.land({"local-sd-db/sd_db/remote.py": "x\n"})
