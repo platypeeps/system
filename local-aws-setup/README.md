@@ -55,7 +55,7 @@ truth; `./aws-setup.sh accounts` lists them.
 | Snapshot managed volumes | denied | denied | volume tagged; snapshot tagged during creation |
 | Disassociate/release Elastic IPs; delete security groups, key pairs, volumes, network interfaces, snapshots | denied | denied | tagged only, configured account/region |
 | Listed buckets | get | get, put | get, put, delete |
-| Anything at all on an instance that does not carry `claude-managed=true` | denied | denied | denied |
+| Start, stop, reboot, terminate, or read console output without `claude-managed=true` | denied | denied | denied |
 | Change the `claude-managed` tag on existing resources | denied | denied | denied |
 | IAM administration, role assumption, Organizations, account settings, CloudTrail tampering including its event selectors, changing an instance attribute, bucket deletion/policy/ACL/public access block, KMS key deletion | denied | denied | denied |
 
@@ -101,10 +101,13 @@ The base policy supplies instance launch, rule tagging, teardown, and the option
 Set `LEVEL=sandbox`, configure `EXTRA_POLICIES`, and audit the instance role before setting `PASS_ROLE_ARNS`.
 Create the VPC, role, and instance profile with an administrator first; this tool grants no IAM provisioning permission.
 Review SSM document permissions and ownership tags for the intended deployment before applying the template.
+The fresh template requires `claude-managed=true` for SSM instance access and Elastic IP association, alongside its ownership tags.
 
 Copy the existing default-version document exactly when adopting current permissions.
 Keep account IDs, resource ARNs, and SSM scopes in private account configuration.
 Do not broaden those grants when moving them into configuration.
+Literal adoption preserves legacy grants; it does not apply the fresh template's stricter managed-tag conditions.
+Audit adopted SSM and address-association grants separately. The base policy denies untagged access only for its listed lifecycle actions.
 
 ```sh
 ./aws-setup.sh render sandbox agent-provisioning

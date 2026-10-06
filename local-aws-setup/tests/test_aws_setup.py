@@ -908,6 +908,18 @@ class ExtraPolicyCase(unittest.TestCase):
         ]:
             with self.subTest(action=action, arn=arn):
                 self.assertEqual(decision(self, policy, action, arn, context), "allowed")
+        for action, kinds in (("ssm:SendCommand", ("instance",)),
+                              ("ssm:StartSession", ("instance",)),
+                              ("ec2:AssociateAddress", ("instance", "elastic-ip", "network-interface"))):
+            for kind in kinds:
+                for managed in (None, "false"):
+                    context = dict(resource)
+                    if managed is None:
+                        del context["aws:ResourceTag/claude-managed"]
+                    else:
+                        context["aws:ResourceTag/claude-managed"] = managed
+                    with self.subTest(action=action, kind=kind, managed=managed):
+                        self.assertEqual(decision(self, policy, action, prefix + kind + "/probe", context), "implicitDeny")
         key = prefix + "key-pair/example-deployment-123"
         for tag in request:
             missing = dict(request)
