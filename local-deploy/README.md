@@ -41,8 +41,8 @@ A library change reaches them only after `local-sd-db/sd-db.sh install <venv>` f
   It does not use `_library_lag`: that compares commits, and a wheel from `sd-db.sh install` records none.
   It runs under the interpreter the agent's plist names (`SD_DASHBOARD_PYTHON`, `SD_RUNNER_PYTHON`).
   The refusal names the `sd-db.sh install <venv>` that provisions it.
-- The plan restarts the runner, and `runner.sh restart --dry-run` refuses.
-  The dry run applies the runner's own agent and load checks (`max_load`, default the core count) and kicks nothing.
+- The plan restarts the runner, and the runner's load limit refuses (`local-sd-runner/sd_runner/load.py`).
+  `runner.sh restart` uses the same module, so the limit is the core count unless `--max-load` says otherwise.
 
 Then it restarts each service:
 
@@ -76,10 +76,16 @@ sh ~/repos/system/local-deploy/deploy.sh upgrade
    The first run has no record: give `--from SHA`, the sha the services run now. `--from` always overrides the record.
 4. An empty plan records the new sha and exits 0.
 5. A plan that needs a migration refuses. Migrate and restart by hand, then record with `upgrade --from <new sha>`.
-6. A `needs sd_db install` plan runs `local-sd-db/sd-db.sh install <venv>` once per distinct venv.
+6. When the plan restarts a loaded runner, the runner's load limit can refuse. That is the last refusal before a change.
+7. It stops the runner with `runner.sh stop`: the restart's drain and idle checks, then `launchctl bootout`.
+   The runner imports `sd_db` lazily, so it must not run while the library is replaced.
+8. A `needs sd_db install` plan runs `local-sd-db/sd-db.sh install <venv>` once per distinct venv.
    The venvs come from the interpreters the dashboard's and the runner's plists name. A failed install stops.
-7. It runs `apply` over the range.
-8. It records the new sha only when every step passed and no session held sd-serve back.
+9. It runs `apply` over the range, which restarts sd-serve and the dashboard, then `runner.sh start`.
+10. A failure after the stop leaves the runner stopped, never running on a mixed library.
+    It exits 1 and prints the rerun that finishes: `sh <checkout>/local-deploy/deploy.sh upgrade`.
+    A marker beside the record tells the rerun to install into the runner's venv and start it.
+11. It records the new sha only when every step passed and no session held sd-serve back.
    A `needs <folder> install` report also holds the record: install the agent, then record with `upgrade --from <new sha>`.
    After a failure the old record stays, so a rerun replays the same range; the restarts are idempotent.
 

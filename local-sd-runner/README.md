@@ -342,8 +342,10 @@ The verb then refuses with a reason, removes the marker, and leaves launchd alon
 - The 1-minute load average is below `--max-load` (default: the core count).
   A cold start under load stalled on `diskutil` and launchd relaunched it for six minutes (sd:1950).
 
-`restart --dry-run` checks only the loaded agent, its process and the load, then exits without a drain or a kick.
-`local-deploy/deploy.sh` runs it before its first restart (sd:2812).
+`runner.sh stop` runs the same checks and the drain, then `launchctl bootout` instead of the kick.
+`runner.sh start` bootstraps the agent again and waits up to `--wait` seconds for a healthy heartbeat with a new pid.
+`local-deploy/deploy.sh upgrade` stops the runner before it replaces `sd_db`, and starts it after (sd:2812).
+`sd_runner/load.py` holds the load limit and imports no `sd_db`, so `deploy.sh` can ask it before that install.
 
 It then runs `launchctl kickstart -k` on the `<prefix>.sd-runner` agent.
 It waits up to `--wait` seconds (default 180) for a healthy heartbeat with a new pid.

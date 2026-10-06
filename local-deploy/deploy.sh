@@ -34,8 +34,8 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           `lsof` cannot answer for port 8769, when the dashboard's or the
           runner's installed sd_db differs in content from this checkout's
           local-sd-db/sd_db (sd_dashboard.runtime._build_manifest on both,
-          run under the interpreter its plist names), or when
-          `runner.sh restart --dry-run` refuses (its load limit). Then
+          run under the interpreter its plist names), or when the runner's
+          load limit refuses (local-sd-runner/sd_runner/load.py). Then
           restart. sd-serve: skip with a report while a session is open on
           port 8769, else `launchctl kickstart -k` and wait for a new
           listener. dashboard: kickstart -k, then `dashboard.sh health
@@ -49,10 +49,14 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           $XDG_STATE_HOME/system/deploy/deployed (default
           ~/.local/state/system/deploy/deployed); with no record, --from is
           required, and --from always overrides it. An empty plan records the
-          new sha and exits 0. A migration report refuses. A `needs sd_db
-          install` report runs `local-sd-db/sd-db.sh install <venv>` once per
-          distinct venv behind the dashboard's and the runner's interpreters
-          (from their plists). Then apply. It records the new sha only when
+          new sha and exits 0. A migration report refuses, and so does the
+          runner's load limit when the plan restarts it. Then `runner.sh
+          stop` (drain, idle checks, bootout), so no runner imports sd_db
+          while a `needs sd_db install` report runs `local-sd-db/sd-db.sh
+          install <venv>` once per distinct venv behind the dashboard's and
+          the runner's interpreters (from their plists). Then apply, then
+          `runner.sh start`. A failure after the stop leaves the runner
+          stopped and names the rerun that finishes. It records the new sha only when
           every step passed, sd-serve was not held back by a session and no
           LaunchAgent install is reported, so a rerun replays the same range.
   test    run the unittest suite (tests/); extra arguments go to unittest.
@@ -111,12 +115,31 @@ held() {
 
 refuse() {
   echo "deploy: refused before any restart: $1" >&2
+  stopped_hint
   exit 1
 }
 
 fail() {
   echo "deploy: $1 failed; stopped" >&2
+  stopped_hint
   exit 1
+}
+
+# Set by upgrade while it holds the runner stopped. The runner stays stopped
+# on a failure, so it never runs on a half-replaced sd_db.
+stopped_hint() {
+  [ -z "${STOPPED:-}" ] || [ ! -e "$STOPPED" ] ||
+    echo "deploy: the runner is stopped; finish the upgrade with: sh $ROOT/local-deploy/deploy.sh upgrade" >&2
+}
+
+# The runner's load limit (sd_runner/load.py), under its interpreter; the
+# module imports no sd_db, so it answers before an install too.
+runner_load() {
+  interpreter sd-runner SD_RUNNER_PYTHON
+  why=$("$py" -I "$ROOT/local-sd-runner/sd_runner/load.py" 2>&1) || {
+    reason=$(printf '%s\n' "$why" | sed -n 's/.*"reason": "\([^"]*\)".*/\1/p')
+    refuse "runner: ${reason:-$(printf '%s\n' "$why" | tail -1)}"
+  }
 }
 
 # The pids lsof finds in one TCP state on sd-serve's port. lsof -t exits 1
@@ -168,12 +191,8 @@ preflight() {
     runner)
       held sd-runner || return 0
       library_current sd-runner SD_RUNNER_PYTHON
-      # The runner's own refusals (its load limit, sd:1950), checked before
-      # any restart rather than after sd-serve and the dashboard restarted.
-      why=$(sh "$ROOT/local-sd-runner/runner.sh" restart --dry-run 2>&1) || {
-        reason=$(printf '%s\n' "$why" | sed -n 's/^ *"reason": "\(.*\)",*$/\1/p')
-        refuse "runner: restart --dry-run refused: ${reason:-$(printf '%s\n' "$why" | tail -1)}"
-      } ;;
+      # Checked before any restart, not after sd-serve and the dashboard restarted.
+      runner_load ;;
   esac
 }
 
@@ -217,10 +236,12 @@ apply() {
   done
 }
 
-# Each distinct venv behind the loaded dashboard's and runner's interpreters.
+# Each venv behind the loaded dashboard's and the loaded or stopped runner's interpreters.
 venvs() {
   ! held sd-dashboard || { interpreter sd-dashboard SD_DASHBOARD_PYTHON; dirname "$(dirname "$py")"; }
-  ! held sd-runner || { interpreter sd-runner SD_RUNNER_PYTHON; dirname "$(dirname "$py")"; }
+  if held sd-runner || [ -e "$STOPPED" ]; then
+    interpreter sd-runner SD_RUNNER_PYTHON; dirname "$(dirname "$py")"
+  fi
 }
 
 upgrade() {
@@ -231,6 +252,8 @@ upgrade() {
       *) echo "deploy: unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
   done
+  # Present while the runner is stopped mid-upgrade; a rerun starts it.
+  STOPPED="$(dirname "$STATE")/runner-stopped"
   [ "$(git -C "$ROOT" symbolic-ref -q --short HEAD)" = main ] || refuse "$ROOT is not on main"
   [ -z "$(git -C "$ROOT" status --porcelain)" ] || refuse "$ROOT has uncommitted or untracked files"
   git -C "$ROOT" fetch -q origin || fail "git fetch origin"
@@ -241,7 +264,7 @@ upgrade() {
   [ -n "$from" ] || from=$(cat "$STATE" 2>/dev/null) || true
   [ -n "$from" ] || refuse "no deployed sha recorded in $STATE; give --from SHA, the sha the services run now"
   actions=$(plan "$from" "$to")
-  if [ -z "$actions" ]; then
+  if [ -z "$actions" ] && [ ! -e "$STOPPED" ]; then
     echo "nothing to deploy from $from to $to"
     record "$to"
     return 0
@@ -249,6 +272,18 @@ upgrade() {
   case "$actions" in *"report needs migration"*)
     printf '%s\n' "$actions" | grep '^report' || true
     refuse "the range needs a migration; migrate and restart by hand, then record it: deploy.sh upgrade --from $to" ;;
+  esac
+  # Every refusal that needs no new sd_db comes before the runner stops. The
+  # runner then stays stopped through the install and the other restarts: a
+  # daemon that lazily imports sd_db must never see a half-replaced library.
+  case "$actions" in *"restart runner"*)
+    if held sd-runner; then
+      runner_load
+      why=$(sh "$ROOT/local-sd-runner/runner.sh" stop 2>&1) || refuse "runner: stop: $(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  ')"
+      mkdir -p "$(dirname "$STOPPED")"
+      : > "$STOPPED"
+      echo "stopped runner"
+    fi ;;
   esac
   case "$actions" in *"report needs sd_db install"*)
     # Assigned first, so a refusal inside venvs stops the script; a
@@ -265,6 +300,12 @@ EOF
   esac
   held_back=""
   apply "$from" "$to"
+  if [ -e "$STOPPED" ]; then
+    library_current sd-runner SD_RUNNER_PYTHON
+    why=$(sh "$ROOT/local-sd-runner/runner.sh" start 2>&1) || fail "runner start ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))"
+    rm -f "$STOPPED"
+    echo "started runner"
+  fi
   [ -z "$held_back" ] || { echo "deploy: sd-serve still runs the old code; $to not recorded; rerun upgrade" >&2; exit 1; }
   # A restart keeps the old LaunchAgent: recording would drop the report.
   case "$actions" in *"install ("*)
