@@ -131,9 +131,15 @@ def record(event: dict, env=None) -> str:
     is for the suite and for a human reading a trace; no caller branches on it,
     because no caller may care whether the recording worked.
     """
+    return write(event, env)[0]
+
+
+def write(event: dict, env=None) -> tuple:
+    """`record`, and the row's id when one was written, else None. The corpus
+    keeps the id, so a stored request joins its ledger row."""
     env = os.environ if env is None else env
     if not switched_on(env):
-        return SWITCHED_OFF
+        return SWITCHED_OFF, None
     try:
         from sd_db.database import connect
         from sd_db.judgment import record as write_row
@@ -143,28 +149,28 @@ def record(event: dict, env=None) -> str:
         # the failures someone listed is not that promise. An `ImportError` is
         # the expected one; a half-installed package raising something else
         # must land in the same place.
-        return NO_LIBRARY
+        return NO_LIBRARY, None
     path = (env.get("JEV_METER_DB") or "").strip() or None
     try:
         # A bounded wait, not the library's five seconds. See the module
         # docstring: a lock here is time added to a judgment already printed.
         connection = connect(path, busy_timeout=busy_ms(env))
     except OperationalError:
-        return CONTENDED
+        return CONTENDED, None
     except Exception:
-        return NO_STORE
+        return NO_STORE, None
     try:
-        write_row(connection, **accepted(write_row, event))
+        row = write_row(connection, **accepted(write_row, event))
     except OperationalError:
         # `database is locked` once the wait ran out, which is the expected
         # answer under contention rather than a fault, and is worth its own
         # word so a trace does not read it as a refused row.
-        return CONTENDED
+        return CONTENDED, None
     except Exception:
-        return REFUSED
+        return REFUSED, None
     finally:
         try:
             connection.close()
         except Exception:
             pass
-    return WRITTEN
+    return WRITTEN, row if type(row) is int else None

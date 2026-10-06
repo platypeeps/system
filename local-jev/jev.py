@@ -63,6 +63,12 @@ except ImportError:                          # pragma: no cover - a copy alone
     # a judgment that did not happen.
     jev_trace = None
 
+try:
+    import jev_corpus
+except ImportError:                          # pragma: no cover - a copy alone
+    # And the same again for the corpus.
+    jev_corpus = None
+
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_UNCONFIGURED = 3
@@ -191,6 +197,12 @@ def shadow_on(env) -> bool:
 # for text that may not leave the machine, such as a secret scanner's hits.
 # A stage named here is local-only even when its caller forgets the flag.
 LOCAL_ONLY_STAGES = ("JEV_SECRET_SCAN",)
+
+#: Stages whose state the corpus keeps as a SHA-256 and never as text. The
+#: secret scanner's state is a candidate credential, and a second copy of it
+#: in a file is what the scanner exists to find. Every local-only call is
+#: hashed too, named here or not: its caller said the text is sensitive.
+CORPUS_HASHED_STAGES = ("JEV_SECRET_SCAN",)
 
 #: Kev's System One endpoint, the name a request asks it for, and the model a
 #: row records; `jev_compare`'s Kev arm reads the same three.
@@ -435,26 +447,70 @@ _EVENT = None
 _ENV = None
 
 
-def write_event(event: dict, env) -> str:
+def write_event(event: dict, env, corpus=None) -> str:
     """Hand one finished event to the recorder. Never raises.
 
     The one door to the ledger, so every caller of it -- a judgment, a
     decline, a caller's own report of its old path -- is refused, degraded and
     recorded in exactly the same way.
+
+    `corpus` is what the call sent and got back, for the trace corpus. It is
+    kept apart from `event` because every key of `event` is a ledger column
+    and a span attribute, and neither may hold content. Given, it is stored
+    with the event and the ledger row's id.
     """
     if jev_trace is not None:
         try:
             jev_trace.export(event, env)
         except Exception:                    # pragma: no cover - belt and brace
             pass
-    if jev_meter is None:
+    said, row = "", None
+    if jev_meter is not None:
+        try:
+            said, row = jev_meter.write(event, env)
+        except Exception:                    # pragma: no cover - belt and brace
+            # `jev_meter.write` promises not to raise. This is the promise
+            # being kept anyway, because the cost of being wrong about it is
+            # a caller that stopped working over its own bookkeeping.
+            pass
+    if corpus is not None:
+        to_corpus(dict(event, **corpus, ledger=row), env)
+    return said
+
+
+def hashed(record: dict) -> dict:
+    """`record` with the state as its SHA-256 and the prompts left out.
+
+    The prompts are left out because a prompt embeds the state. JSON state
+    is hashed as its sorted, compact encoding, so equal states hash equal.
+    """
+    import hashlib
+    out = dict(record)
+    out.pop("prompts", None)
+    request = out.get("request")
+    if isinstance(request, dict) and "state" in request:
+        request = dict(request)
+        state = request.pop("state")
+        text = state if isinstance(state, str) else json.dumps(
+            state, sort_keys=True, separators=(",", ":"))
+        request["state_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        out["request"] = request
+    return out
+
+
+def to_corpus(record: dict, env) -> str:
+    """Store one record in the trace corpus. Never raises.
+
+    The one door to the corpus, for `jev`'s own rows and the arms' alike, so
+    the hashing rule cannot be skipped by one of them.
+    """
+    if jev_corpus is None:
         return ""
     try:
-        return jev_meter.record(event, env)
+        if record.get("local") or record.get("stage") in CORPUS_HASHED_STAGES:
+            record = hashed(record)
+        return jev_corpus.append(record, env)
     except Exception:                        # pragma: no cover - belt and brace
-        # `jev_meter.record` promises not to raise. This is the promise being
-        # kept anyway, because the cost of being wrong about it is a caller
-        # that stopped working over its own bookkeeping.
         return ""
 
 
@@ -687,10 +743,10 @@ def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
     event, _EVENT = _EVENT, None
     if event is None:
         return ""
-    printed = event.pop("_printed", None)
-    declared = event.pop("_declared", None)
-    event.pop("_cause", None)
-    event.pop("_criteria", None)
+    # Every `_` key is this process's own note, never a column.
+    private = {key: event.pop(key) for key in [k for k in event if k.startswith("_")]}
+    printed = private.get("_printed")
+    declared = private.get("_declared")
     if fallback is not None and outcome != "ok":
         outcome = "fallback"
         cause = cause or "unavailable"
@@ -706,7 +762,15 @@ def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
     against = fallback if baseline is None else baseline
     event["changed"] = _changed(outcome, declared, printed, against,
                                 numeric=event.get("primitive") != "choice")
-    return write_event(event, env)
+    # What the call sent and got back, for the corpus. A call that sent
+    # nothing -- switched off, unkeyed, a refused redaction -- has no request.
+    corpus = {"arm": event.get("arm", "jev"), "call": private.get("_call"),
+              "local": private.get("_local", False),
+              "settings": private.get("_settings"),
+              "request": private.get("_request"),
+              "response": private.get("_response"),
+              "printed": printed, "fallback": fallback, "baseline": baseline}
+    return write_event(event, env, corpus=corpus)
 
 
 def baseline_answer(args, own) -> str | None:
@@ -760,7 +824,8 @@ def baseline_answer(args, own) -> str | None:
         return None
 
 
-def write_baseline(args, env, *, pair, own, shadow: bool, duration_ms) -> str:
+def write_baseline(args, env, *, pair, own, shadow: bool, duration_ms,
+                   corpus=None) -> str:
     """Write the control arm of one paired decision. Never raises.
 
     One writer for both modes, so a shadow pair and a live pair are the same
@@ -790,7 +855,7 @@ def write_baseline(args, env, *, pair, own, shadow: bool, duration_ms) -> str:
         # The baseline is what happened, so relative to itself it changed
         # nothing. The delta is on the judgment's row.
         "changed": "no",
-    }, env)
+    }, env, corpus=corpus)
 
 
 def cause_of(exc) -> str:
@@ -1112,6 +1177,8 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
         # After redaction and refusal, before the first attempt: the arms see
         # the bytes Jev sees, once per call however many retries follow.
         start_arms(payload)
+    # The bytes as sent, for the corpus: redacted for Jev, as given for Kev.
+    note(_request=payload)
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if conf["key"]:
@@ -1140,6 +1207,7 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                         # column exists to keep.
                         note(_cause="invalid")
                         raise
+                    note(_response=parsed)
                     if not conf.get("local"):
                         # Kev answers `kev-latest`; its row keeps the checkpoint.
                         note(model=parsed.get("model"))
@@ -1215,6 +1283,7 @@ def start_arms(payload: dict) -> str:
             _EVENT["pair"] = os.urandom(8).hex()
         job = {key: _EVENT.get(key) for key in
                ("caller", "stage", "pair", "question_id", "primitive", "questions")}
+        job["call"] = _EVENT.get("_call")
         job["payload"] = payload
         log = (env.get("JEV_COMPARE_LOG") or "").strip()
         with tempfile.TemporaryFile("w+", encoding="utf-8", prefix="jev-compare-") as fh:
@@ -1684,6 +1753,12 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     if switched:
         declared = None if baseline is not None else "unknown"
     note(_declared=declared, pair=pair, shadow=shadowed)
+    # The corpus's join key: one per call, on `jev`'s record, the baseline's
+    # and each arm's, with or without a pair. The parsed flags are kept whole,
+    # so a record says which `--gate`, criteria or fallback shaped the answer.
+    call = os.urandom(8).hex()
+    flags = {key: value for key, value in vars(args).items() if key != "run"}
+    note(_call=call, _local=local, _settings=flags)
     # In shadow mode the judgment is measured and not used, so it is written
     # to a sink and the caller is handed back its own answer instead.
     sink = io.StringIO() if shadowed else out
@@ -1727,7 +1802,9 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     if own is not None:
         write_baseline(args, env, pair=pair, own=answered, shadow=shadowed,
                        duration_ms=getattr(args, "baseline_ms" if baseline is not None
-                                           else "shadow_ms", None))
+                                           else "shadow_ms", None),
+                       corpus={"arm": "baseline", "call": call, "local": local,
+                               "settings": flags, "baseline": own})
     return code
 
 
