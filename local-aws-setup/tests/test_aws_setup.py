@@ -994,6 +994,7 @@ class ExtraPolicyCase(unittest.TestCase):
             {"Action": "ssm:StartSession", "Resource": f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:instance/i-abc*"},
             {"Action": "ssm:StartSession", "Resource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:managed-instance/*"},
             {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:*:*:*"},
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:us-east-1:%s:document/${aws:PrincipalTag/Doc, 'SSM-SessionManagerRunShell'}" % ACCOUNT_ID},
             {"Action": "ssm:StartSession", "NotResource": "arn:aws:ssm:us-east-1::document/SSM-SessionManagerRunShell", "Condition": checked},
             {"Action": "ssm:StartSession", "NotResource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:document/SSM-SessionManagerRunShell", "Condition": checked},
             {"Action": "ssm:StartSession", "Resource": instance, "Condition": {"BoolIfExists": {"ssm:SessionDocumentAccessCheck": "false"}}},
@@ -1009,6 +1010,7 @@ class ExtraPolicyCase(unittest.TestCase):
             {"Action": "ssm:StartSession", "Resource": instance, "Condition": checked},
             {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:us-east-1::document/AWS-StartPortForwardingSession"},
             {"Action": "ssm:SendCommand", "Resource": [instance, "arn:aws:ssm:us-east-1::document/AWS-RunShellScript"]},
+            {"Action": "*", "Resource": "arn:aws:s3:::example-bucket/*"},
         ):
             with self.subTest(statement=statement):
                 box = self.ready(EXTRA_POLICIES="provision")

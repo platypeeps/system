@@ -33,7 +33,9 @@ def covers(item, key, value):
         # IAM action names are case-insensitive.
         value, patterns = value.lower(), [pattern.lower() for pattern in patterns]
     else:
-        # Match any region and account: arn:partition:service:region:account:resource.
+        # A policy variable can expand to anything; match any region and account:
+        # arn:partition:service:region:account:resource.
+        patterns = [re.sub(r"\$\{[^}]*\}", "*", pattern) for pattern in patterns]
         patterns = [":".join(fields[:3] + ["*", "*"] + fields[5:]) if len(fields) == 6 else pattern
                     for pattern in patterns for fields in [pattern.split(":", 5)]]
     return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns) != ("Not" + key in item)
@@ -55,10 +57,18 @@ def grants_shell(item):
         check = entries.get("ssm:SessionDocumentAccessCheck") if isinstance(entries, dict) else None
         if operator in ("Bool", "BoolIfExists") and str(check).lower() in ("true", "['true']"):
             return False
-    # Unchecked, any session target (instance, managed instance, wildcard) opens the default shell.
+    # Unchecked, any session target opens the default shell. Each pattern's own
+    # instance id, wildcards filled, stands in for the instances it can name.
+    # ponytail: approximates glob intersection; a pattern that names instances
+    # only through an unusual wildcard split may slip past.
     resources = item["Resource"]
     resources = [resources] if isinstance(resources, str) else resources
-    return any(":document/" not in resource for resource in resources)
+    for resource in resources:
+        target = re.sub(r"\$\{[^}]*\}|[*?]", "0", resource.split("instance/", 1)[-1] if "instance/" in resource else "i-0")
+        if any(covers(item, "Resource", f"arn:aws:{kind}/{target}")
+               for kind in ("ec2:region:account:instance", "ssm:region:account:managed-instance")):
+            return True
+    return False
 
 
 def validate(path):
