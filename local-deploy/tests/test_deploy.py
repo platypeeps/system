@@ -1,8 +1,10 @@
-"""Tests for deploy.sh (sd:2725).
+"""Tests for deploy.sh (sd:2725, sd:2812).
 
 Each case builds a throwaway git checkout with deploy.sh in `local-deploy/`
-and stub `dashboard.sh` and `runner.sh` entrypoints beside it, commits a
-change, and runs `plan` or `apply` over that commit. `launchctl`, `lsof` and
+and stub `dashboard.sh`, `runner.sh` and `sd-db.sh` entrypoints beside it,
+commits a change, and runs `plan` or `apply` over that commit. An `upgrade`
+case gives the checkout a bare repository as its origin and lands the change
+there, so its fetch reads a local path. `launchctl`, `lsof` and
 `plutil` are stubs on PATH, and the interpreter the plist names is a stub
 that answers the library check, so no case asks the real launchd, the real
 network or a real virtualenv.
@@ -52,9 +54,12 @@ esac
 echo "$pids"
 """
 
-# Answers every plist variable with the stub interpreter.
+# Answers every plist variable with the stub interpreter; the runner's can differ.
 PLUTIL = """#!/bin/sh
-echo "$DEPLOY_TEST_PYTHON"
+case "$*" in
+  *SD_RUNNER_PYTHON*) echo "${DEPLOY_TEST_RUNNER_PYTHON:-$DEPLOY_TEST_PYTHON}" ;;
+  *) echo "$DEPLOY_TEST_PYTHON" ;;
+esac
 """
 
 # The consumer's interpreter: DEPLOY_TEST_LAG makes the library check refuse.
@@ -71,6 +76,19 @@ echo "{name} $*" >> "$DEPLOY_TEST_CALLS"
 exit "${{{status}:-0}}"
 """
 
+# `restart --dry-run` refuses as the runner does, with DEPLOY_TEST_LOAD as its
+# reason; `restart` exits DEPLOY_TEST_RUNNER.
+RUNNER = """#!/bin/sh
+echo "runner.sh $*" >> "$DEPLOY_TEST_CALLS"
+case "$*" in
+  *--dry-run*)
+    [ -z "$DEPLOY_TEST_LOAD" ] || { printf '{\\n  "ok": false,\\n  "reason": "%s",\\n  "load": 169.0\\n}\\n' "$DEPLOY_TEST_LOAD"; exit 1; } ;;
+  *) exit "${DEPLOY_TEST_RUNNER:-0}" ;;
+esac
+"""
+
+LOAD = "the 1-minute load average 169.0 is at or above 16; a cold start under load can stall on diskutil"
+
 
 class DeployTest(unittest.TestCase):
     def setUp(self):
@@ -80,8 +98,8 @@ class DeployTest(unittest.TestCase):
         self.write("local-deploy/deploy.sh", (FOLDER / "deploy.sh").read_text())
         self.write("local-project-dashboard/dashboard.sh",
                    ENTRYPOINT.format(name="dashboard.sh", status="DEPLOY_TEST_HEALTH"))
-        self.write("local-sd-runner/runner.sh",
-                   ENTRYPOINT.format(name="runner.sh", status="DEPLOY_TEST_RUNNER"))
+        self.write("local-sd-runner/runner.sh", RUNNER)
+        self.write("local-sd-db/sd-db.sh", ENTRYPOINT.format(name="sd-db.sh", status="DEPLOY_TEST_INSTALL"))
         self.write("local-sd-db/sd_db/schema.py", "SCHEMA_VERSION = 1\n")
         self.git("init", "-q")
         self.commit()
@@ -101,7 +119,8 @@ class DeployTest(unittest.TestCase):
                     "DEPLOY_TEST_CALLS": str(self.calls),
                     "DEPLOY_TEST_KICKED": str(self.tmp / "kicked"),
                     "DEPLOY_TEST_PYTHON": str(self.python),
-                    "DEPLOY_WAIT": "1"}
+                    "DEPLOY_WAIT": "1", "XDG_STATE_HOME": str(self.tmp / "state")}
+        self.state = self.tmp / "state" / "system" / "deploy" / "deployed"
 
     def write(self, relative, text):
         path = self.repo / relative
@@ -189,8 +208,9 @@ class DeployTest(unittest.TestCase):
         self.assertTrue(kicks[0].startswith("launchctl kickstart -k gui/")
                         and kicks[0].endswith("/test.example.sd-serve"), kicks)
         self.assertTrue(kicks[1].endswith("/test.example.sd-dashboard"), kicks)
-        self.assertIn("dashboard.sh health", calls)
+        self.assertIn("dashboard.sh health --wait 1", calls)
         self.assertIn("runner.sh restart", calls)
+        self.assertLess(calls.index("runner.sh restart --dry-run"), calls.index(kicks[0]))
         self.assertEqual(calls.count("lag-check"), 2, calls)
         self.assertLess(calls.index("lag-check"), calls.index(kicks[0]))
 
@@ -261,7 +281,7 @@ class DeployTest(unittest.TestCase):
         result = self.run_deploy("apply", DEPLOY_TEST_NO_LISTENER="1")
         self.assertEqual(result.returncode, 1)
         self.assertIn("sd-serve listener check", result.stderr)
-        self.assertNotIn("runner.sh", self.calls.read_text())
+        self.assertNotIn("runner.sh restart", self.calls.read_text().splitlines())
 
     def test_apply_stops_at_a_failed_dashboard_health_check(self):
         self.change({"local-project-dashboard/sd_dashboard/app.py": "x\n",
@@ -269,7 +289,7 @@ class DeployTest(unittest.TestCase):
         result = self.run_deploy("apply", DEPLOY_TEST_HEALTH="1")
         self.assertEqual(result.returncode, 1)
         self.assertIn("deploy: dashboard health failed; stopped", result.stderr)
-        self.assertNotIn("runner.sh", self.calls.read_text())
+        self.assertNotIn("runner.sh restart", self.calls.read_text().splitlines())
 
     def test_apply_fails_when_the_runner_restart_fails(self):
         self.change({"local-sd-runner/sd_runner/cli.py": "x\n"})
@@ -284,6 +304,156 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("skip sd-serve: test.example.sd-serve is not loaded", result.stdout)
         self.assertNotIn("kickstart", self.calls.read_text())
+
+    def origin(self):
+        """Put the checkout on main, with a bare repository as its origin."""
+        self.git("branch", "-M", "main")
+        origin = self.tmp / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        self.git("remote", "add", "origin", str(origin))
+        self.git("push", "-q", "origin", "main")
+
+    def land(self, files):
+        """Land `files` on origin/main and leave the checkout one commit behind it."""
+        self.origin()
+        self.change(files)
+        landed = self.head()
+        self.git("push", "-q", "origin", "main")
+        self.git("reset", "-q", "--hard", self.base)
+        return landed
+
+    def record(self, sha):
+        self.state.parent.mkdir(parents=True, exist_ok=True)
+        self.state.write_text(sha + "\n")
+
+    def recorded(self):
+        return self.state.read_text().strip() if self.state.exists() else None
+
+    def run_upgrade(self, *args, **extra):
+        return subprocess.run(["sh", str(self.repo / "local-deploy/deploy.sh"), "upgrade", *args],
+                              env={**self.env, **extra}, capture_output=True, text=True, timeout=60)
+
+    def assert_nothing_ran(self, result):
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(self.head(), self.base)
+        self.assertEqual(self.calls.read_text(), "")
+        self.assertIsNone(self.recorded())
+
+    def test_upgrade_refuses_a_checkout_off_main(self):
+        self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
+        self.git("checkout", "-q", "-b", "topic")
+        result = self.run_upgrade("--from", self.base)
+        self.assertIn("is not on main", result.stderr)
+        self.assert_nothing_ran(result)
+
+    def test_upgrade_refuses_a_checkout_with_untracked_files(self):
+        self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
+        self.write("local-sd-db/sd_db/stray.py", "x\n")
+        result = self.run_upgrade("--from", self.base)
+        self.assertIn("has uncommitted or untracked files", result.stderr)
+        self.assert_nothing_ran(result)
+
+    def test_upgrade_refuses_a_main_that_diverged_from_origin(self):
+        self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
+        self.change({"local-herdr/herdr.sh": "x\n"})
+        local = self.head()
+        result = self.run_upgrade("--from", self.base)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("main and origin/main have diverged", result.stderr)
+        self.assertEqual(self.head(), local)
+        self.assertEqual(self.calls.read_text(), "")
+
+    def test_upgrade_with_no_record_requires_from(self):
+        landed = self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
+        result = self.run_upgrade()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"no deployed sha recorded in {self.state}; give --from SHA", result.stderr)
+        self.assertEqual(self.calls.read_text(), "")
+        self.assertIsNone(self.recorded())
+        self.assertEqual(self.head(), landed)
+
+    def test_upgrade_records_the_sha_and_the_next_run_reads_it(self):
+        landed = self.land({"local-sd-runner/sd_runner/cli.py": "x\n"})
+        result = self.run_upgrade("--from", self.base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("restarted runner", result.stdout)
+        self.assertIn(f"deployed {landed}", result.stdout)
+        self.assertEqual((self.head(), self.recorded()), (landed, landed))
+        self.calls.write_text("")
+        result = self.run_upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"nothing to deploy from {landed} to {landed}", result.stdout)
+        self.assertEqual(self.calls.read_text(), "")
+
+    def test_upgrade_installs_sd_db_once_per_venv_before_any_restart(self):
+        self.land({"local-sd-db/sd_db/remote.py": "x\n"})
+        other = self.tmp / "other" / "bin" / "python"
+        other.parent.mkdir(parents=True)
+        shutil.copy(self.python, other)
+        for runner_python, venvs in ((self.python, [self.tmp / "venv"]),
+                                     (other, sorted([self.tmp / "venv", self.tmp / "other"]))):
+            with self.subTest(runner_python=runner_python):
+                self.calls.write_text("")
+                (self.tmp / "kicked").unlink(missing_ok=True)
+                result = self.run_upgrade("--from", self.base, DEPLOY_TEST_RUNNER_PYTHON=str(runner_python))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.calls.read_text().splitlines()
+                installs = [call for call in calls if call.startswith("sd-db.sh")]
+                self.assertEqual(installs, [f"sd-db.sh install {venv}" for venv in venvs])
+                kick = next(call for call in calls if "kickstart" in call)
+                self.assertLess(calls.index(installs[-1]), calls.index(kick))
+
+    def test_upgrade_stops_at_a_failed_install_and_keeps_the_record(self):
+        self.land({"local-sd-db/sd_db/remote.py": "x\n"})
+        self.record(self.base)
+        result = self.run_upgrade(DEPLOY_TEST_INSTALL="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"deploy: sd_db install into {self.tmp / 'venv'} failed; stopped", result.stderr)
+        self.assertNotIn("kickstart", self.calls.read_text())
+        self.assertEqual(self.recorded(), self.base)
+
+    def test_upgrade_refuses_on_the_runner_load_before_any_restart(self):
+        self.land({"local-project-dashboard/sd_dashboard/app.py": "x\n",
+                   "local-sd-runner/sd_runner/cli.py": "x\n"})
+        self.record(self.base)
+        result = self.run_upgrade(DEPLOY_TEST_LOAD=LOAD)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"deploy: refused before any restart: runner: restart --dry-run refused: {LOAD}", result.stderr)
+        calls = self.calls.read_text().splitlines()
+        self.assertFalse([call for call in calls if "kickstart" in call or call == "runner.sh restart"], calls)
+        self.assertEqual(self.recorded(), self.base)
+
+    def test_upgrade_keeps_the_record_when_a_step_fails_so_a_rerun_replays_it(self):
+        landed = self.land({"local-project-dashboard/sd_dashboard/app.py": "x\n",
+                            "local-sd-runner/sd_runner/cli.py": "x\n"})
+        self.record(self.base)
+        result = self.run_upgrade(DEPLOY_TEST_HEALTH="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("deploy: dashboard health failed; stopped", result.stderr)
+        self.assertEqual(self.recorded(), self.base)
+        result = self.run_upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("restarted dashboard", result.stdout)
+        self.assertIn("restarted runner", result.stdout)
+        self.assertEqual(self.recorded(), landed)
+
+    def test_upgrade_does_not_record_while_sd_serve_is_held_back(self):
+        self.land({"local-sd-db/serve.conf": "x\n"})
+        self.record(self.base)
+        result = self.run_upgrade(DEPLOY_TEST_SESSIONS="4242")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("report sd-serve not restarted", result.stdout)
+        self.assertIn("not recorded; rerun upgrade", result.stderr)
+        self.assertEqual(self.recorded(), self.base)
+
+    def test_upgrade_refuses_a_migration_and_keeps_the_record(self):
+        landed = self.land({"local-sd-db/sd_db/schema.py": "SCHEMA_VERSION = 2\n"})
+        self.record(self.base)
+        result = self.run_upgrade()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"then record it: deploy.sh upgrade --from {landed}", result.stderr)
+        self.assertEqual(self.calls.read_text(), "")
+        self.assertEqual(self.recorded(), self.base)
 
     def test_usage(self):
         script = str(FOLDER / "deploy.sh")

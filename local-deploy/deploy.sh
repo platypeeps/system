@@ -2,17 +2,21 @@
 # After a merge to this checkout, restart only the sd services the merge
 # changed, each in its safe form, and report what a restart cannot apply:
 # a LaunchAgent change (an install) or a schema change (a migration) (sd:2725).
-# Usage: deploy.sh plan|apply <from-sha> <to-sha>|test|help
+# `upgrade` wraps the whole hub upgrade: pull, install sd_db, apply (sd:2812).
+# Usage: deploy.sh plan|apply <from-sha> <to-sha>|upgrade [--from SHA]|test|help
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 # sd-serve's default port; its plist passes no --port.
 SERVE_PORT=8769
+# The sha the last complete upgrade deployed; local disk, outside the checkout.
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/system/deploy/deployed"
 
 usage() {
   cat <<'HELPEOF'
-usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> | test | help
+usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
+       upgrade [--from SHA] | test | help
 
   plan    read `git diff --name-only from..to` in this checkout and print one
           action per line; an empty plan prints nothing and exits 0:
@@ -27,20 +31,37 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> | test | h
             restart runner      local-sd-runner/ or local-sd-db/sd_db/
           Changes under tests/ and to *.md files restart nothing.
   apply   print the reports, then refuse with exit 1 before any restart when
-          `lsof` cannot answer for port 8769, or when the dashboard's or the
+          `lsof` cannot answer for port 8769, when the dashboard's or the
           runner's installed sd_db differs in content from this checkout's
           local-sd-db/sd_db (sd_dashboard.runtime._build_manifest on both,
-          run under the interpreter its plist names). Then restart. sd-serve: skip with a report while a
-          session is open on port 8769, else `launchctl kickstart -k` and
-          wait for a new listener. dashboard: kickstart -k, then
-          `dashboard.sh health`. runner: `runner.sh restart` (drains), never
+          run under the interpreter its plist names), or when
+          `runner.sh restart --dry-run` refuses (its load limit). Then
+          restart. sd-serve: skip with a report while a session is open on
+          port 8769, else `launchctl kickstart -k` and wait for a new
+          listener. dashboard: kickstart -k, then `dashboard.sh health
+          --wait DEPLOY_WAIT`. runner: `runner.sh restart` (drains), never
           kickstart. A service whose agent is not loaded is skipped. Stops at
           the first failed check and exits 1 naming it.
+  upgrade [--from SHA]
+          refuse unless this checkout is on main and clean; `git fetch
+          origin`, then fast-forward to origin/main (refuse on divergence).
+          From is the sha the last complete upgrade recorded in
+          $XDG_STATE_HOME/system/deploy/deployed (default
+          ~/.local/state/system/deploy/deployed); with no record, --from is
+          required, and --from always overrides it. An empty plan records the
+          new sha and exits 0. A migration report refuses. A `needs sd_db
+          install` report runs `local-sd-db/sd-db.sh install <venv>` once per
+          distinct venv behind the dashboard's and the runner's interpreters
+          (from their plists). Then apply. It records the new sha only when
+          every step passed and sd-serve was not held back by a session, so
+          a rerun replays the same range.
   test    run the unittest suite (tests/); extra arguments go to unittest.
 
 env:
   SYSTEM_TOOLS_LABEL_PREFIX  launchd label prefix (default local.system-tools)
-  DEPLOY_WAIT                seconds to wait for sd-serve's listener (default 30)
+  DEPLOY_WAIT                seconds to wait for sd-serve's listener and the
+                             dashboard's health (default 30)
+  XDG_STATE_HOME             holds upgrade's record (default ~/.local/state)
 HELPEOF
 }
 
@@ -123,10 +144,14 @@ differ = sorted(n for n in installed.keys() | checkout.keys() if installed.get(n
 if differ:
     sys.exit("installed sd_db differs from this checkout in " + str(len(differ)) + " file(s): " + " ".join(differ[:5]))'
 
-library_current() { # agent, plist variable naming its interpreter
+interpreter() { # agent, plist variable naming its interpreter
   plist="$HOME/Library/LaunchAgents/$PREFIX.$1.plist"
   py=$(plutil -extract "EnvironmentVariables.$2" raw -o - "$plist" 2>/dev/null) || py=""
   [ -n "$py" ] || refuse "$1: cannot read $2 from $plist"
+}
+
+library_current() { # agent, plist variable naming its interpreter
+  interpreter "$1" "$2"
   why=$("$py" -I -c "$LAG" "$ROOT" 2>&1) ||
     refuse "$1: $(printf '%s\n' "$why" | tail -1); provision: local-sd-db/sd-db.sh install $(dirname "$(dirname "$py")"), then rerun apply"
 }
@@ -140,13 +165,22 @@ preflight() {
       sessions=$(serve_pids ESTABLISHED) || refuse "sd-serve: lsof cannot tell whether a satellite session is open"
       old_listener=$(serve_pids LISTEN) || refuse "sd-serve: lsof cannot read the listener" ;;
     dashboard) ! held sd-dashboard || library_current sd-dashboard SD_DASHBOARD_PYTHON ;;
-    runner) ! held sd-runner || library_current sd-runner SD_RUNNER_PYTHON ;;
+    runner)
+      held sd-runner || return 0
+      library_current sd-runner SD_RUNNER_PYTHON
+      # The runner's own refusals (its load limit, sd:1950), checked before
+      # any restart rather than after sd-serve and the dashboard restarted.
+      why=$(sh "$ROOT/local-sd-runner/runner.sh" restart --dry-run 2>&1) || {
+        reason=$(printf '%s\n' "$why" | sed -n 's/^ *"reason": "\(.*\)",*$/\1/p')
+        refuse "runner: restart --dry-run refused: ${reason:-$(printf '%s\n' "$why" | tail -1)}"
+      } ;;
   esac
 }
 
 restart_serve() {
   if [ -n "$sessions" ]; then
     echo "report sd-serve not restarted: a session is open on port $SERVE_PORT; rerun apply when it closes"
+    held_back=1
     return 0
   fi
   launchctl kickstart -k "gui/$(id -u)/$PREFIX.sd-serve" || fail "sd-serve kickstart"
@@ -174,7 +208,7 @@ apply() {
         restart_serve ;;
       dashboard) held sd-dashboard || { echo "skip dashboard: $PREFIX.sd-dashboard is not loaded"; continue; }
         launchctl kickstart -k "gui/$(id -u)/$PREFIX.sd-dashboard" || fail "dashboard kickstart"
-        sh "$ROOT/local-project-dashboard/dashboard.sh" health || fail "dashboard health"
+        sh "$ROOT/local-project-dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" || fail "dashboard health"
         echo "restarted dashboard" ;;
       runner) held sd-runner || { echo "skip runner: $PREFIX.sd-runner is not loaded"; continue; }
         sh "$ROOT/local-sd-runner/runner.sh" restart || fail "runner restart"
@@ -183,10 +217,71 @@ apply() {
   done
 }
 
+# Each distinct venv behind the loaded dashboard's and runner's interpreters.
+venvs() {
+  ! held sd-dashboard || { interpreter sd-dashboard SD_DASHBOARD_PYTHON; dirname "$(dirname "$py")"; }
+  ! held sd-runner || { interpreter sd-runner SD_RUNNER_PYTHON; dirname "$(dirname "$py")"; }
+}
+
+upgrade() {
+  from=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) [ $# -ge 2 ] || { usage >&2; exit 1; }; from="$2"; shift 2 ;;
+      *) echo "deploy: unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+  [ "$(git -C "$ROOT" symbolic-ref -q --short HEAD)" = main ] || refuse "$ROOT is not on main"
+  [ -z "$(git -C "$ROOT" status --porcelain)" ] || refuse "$ROOT has uncommitted or untracked files"
+  git -C "$ROOT" fetch -q origin || fail "git fetch origin"
+  git -C "$ROOT" merge-base --is-ancestor HEAD origin/main ||
+    refuse "main and origin/main have diverged; reconcile them by hand"
+  git -C "$ROOT" merge -q --ff-only origin/main || fail "fast-forward to origin/main"
+  to=$(git -C "$ROOT" rev-parse HEAD)
+  [ -n "$from" ] || from=$(cat "$STATE" 2>/dev/null) || true
+  [ -n "$from" ] || refuse "no deployed sha recorded in $STATE; give --from SHA, the sha the services run now"
+  actions=$(plan "$from" "$to")
+  if [ -z "$actions" ]; then
+    echo "nothing to deploy from $from to $to"
+    record "$to"
+    return 0
+  fi
+  case "$actions" in *"report needs migration"*)
+    printf '%s\n' "$actions" | grep '^report' || true
+    refuse "the range needs a migration; migrate and restart by hand, then record it: deploy.sh upgrade --from $to" ;;
+  esac
+  case "$actions" in *"report needs sd_db install"*)
+    # Assigned first, so a refusal inside venvs stops the script.
+    list=$(venvs)
+    for venv in $(printf '%s\n' "$list" | sort -u); do
+      sh "$ROOT/local-sd-db/sd-db.sh" install "$venv" || fail "sd_db install into $venv"
+      echo "installed sd_db into $venv"
+    done ;;
+  esac
+  held_back=""
+  apply "$from" "$to"
+  [ -z "$held_back" ] || { echo "deploy: sd-serve still runs the old code; $to not recorded; rerun upgrade" >&2; exit 1; }
+  record "$to"
+}
+
+record() {
+  mkdir -p "$(dirname "$STATE")"
+  printf '%s\n' "$1" > "$STATE.tmp"
+  mv "$STATE.tmp" "$STATE"
+  echo "deployed $1"
+}
+
 case "${1:-}" in
   plan|apply)
     [ $# -eq 3 ] || { usage >&2; exit 1; }
     "$1" "$2" "$3" ;;
+  upgrade)
+    # The fast-forward can rewrite this file while sh reads it: exit here, so
+    # nothing past this line is read. The functions above, from before the
+    # pull, run the whole upgrade; a change to deploy.sh applies next time.
+    shift
+    upgrade "$@"
+    exit 0 ;;
   test)
     shift
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@" ;;

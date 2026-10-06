@@ -826,5 +826,60 @@ class QuickNoteEnvironment(unittest.TestCase):
         self.assertNotIn("OBSIDIAN_VAULT", environment)
         self.assertEqual(gaps, ["sd is not on the installing shell's PATH", "OBSIDIAN_VAULT is not set"])
 
+class HealthWait(unittest.TestCase):
+    """A clock bounds the wait: a refused connection returns at once (sd:2811)."""
+
+    def poll(self, refusals, **wait):
+        now, tries = [0.0], []
+
+        class Response:
+            status = 200
+
+            def read(self):
+                return b'{"ok": true, "service": "sd-dashboard"}'
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def request(self, *args):
+                tries.append(now[0])
+                if len(tries) <= refusals:
+                    raise ConnectionRefusedError
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        with patch.object(runtime.http.client, "HTTPConnection", Connection), \
+                patch.object(runtime.time, "monotonic", lambda: now[0]), \
+                patch.object(runtime.time, "sleep", sleep):
+            try:
+                return runtime.health_check(8767, **wait), tries
+            except runtime.RuntimeRefused as refusal:
+                return refusal, tries
+
+    def test_a_start_slower_than_twenty_refusals_is_still_healthy(self):
+        result, tries = self.poll(40)
+        self.assertEqual(result, {"ok": True, "service": "sd-dashboard"})
+        self.assertEqual(len(tries), 41)
+
+    def test_the_wait_ends_on_the_clock(self):
+        result, tries = self.poll(10_000)
+        self.assertIn("did not return its healthy /health response within 30s", str(result))
+        self.assertGreaterEqual(tries[-1], 30)
+        self.assertLess(tries[-1], 30.5)
+
+    def test_no_wait_tries_once(self):
+        result, tries = self.poll(1, wait=0)
+        self.assertIsInstance(result, runtime.RuntimeRefused)
+        self.assertEqual(tries, [0.0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -342,6 +342,9 @@ The verb then refuses with a reason, removes the marker, and leaves launchd alon
 - The 1-minute load average is below `--max-load` (default: the core count).
   A cold start under load stalled on `diskutil` and launchd relaunched it for six minutes (sd:1950).
 
+`restart --dry-run` checks only the loaded agent, its process and the load, then exits without a drain or a kick.
+`local-deploy/deploy.sh` runs it before its first restart (sd:2812).
+
 It then runs `launchctl kickstart -k` on the `<prefix>.sd-runner` agent.
 It waits up to `--wait` seconds (default 180) for a healthy heartbeat with a new pid.
 It removes the marker, prints that pid and the heartbeat's `runner_commit` (null from a daemon that does not write it), and exits 0.

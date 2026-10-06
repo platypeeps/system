@@ -128,7 +128,7 @@ def agent_pid(label: str = LABEL) -> int | None:
 
 
 def restart(config: Config, *, max_load: float | None = None, wait: float = RESTART_WAIT, label: str = LABEL,
-            clock=time.monotonic, sleep=time.sleep) -> dict:
+            clock=time.monotonic, sleep=time.sleep, dry_run: bool = False) -> dict:
     """Drain the runner, then kick its agent, and wait for the new daemon (sd:1951).
 
     A snapshot of an idle queue proves nothing about the moment of the
@@ -156,6 +156,10 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
     dies. The marker is written once and never renewed, so a lapsed token
     cannot come back. Just before the kick the verb checks that the marker
     still names its token; a removed or replaced marker refuses.
+
+    `dry_run` stops after the agent and load checks, before the drain, so
+    `deploy.sh` can refuse before its first restart on the runner's own
+    terms (sd:2812).
     """
     if not agent_loaded(label):
         return {"ok": False, "reason": f"the {label} agent is not loaded; install it first (runner.sh install-plan)"}
@@ -168,6 +172,8 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
         return {"ok": False, "reason": f"the 1-minute load average {load:.1f} is at or above {limit:g}; "
                 "a cold start under load can stall on diskutil, so restart when the machine is quieter",
                 "load": load, "max_load": limit}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "load": load, "max_load": limit}
     from .runtime import drain_path, restart_lock_path
     marker = drain_path(config.database)
     with contextlib.ExitStack() as held:
@@ -344,6 +350,7 @@ def main(argv=None) -> int:
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--max-load", type=float)
     command.add_argument("--wait", type=float, default=RESTART_WAIT)
+    command.add_argument("--dry-run", action="store_true")
     command = sub.add_parser("prune-apply")
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--days", type=int, default=30)
@@ -407,7 +414,7 @@ def dispatch(args) -> int:
         if args.verb == "preflight":
             result = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb)
         elif args.verb == "restart":
-            result = restart(config, max_load=args.max_load, wait=args.wait)
+            result = restart(config, max_load=args.max_load, wait=args.wait, dry_run=args.dry_run)
         elif args.verb == "install-plan":
             result = install_plan(config, config_path=args.config)
         elif args.verb in {"prune", "discard-plan"}:

@@ -148,6 +148,14 @@ class Restart(unittest.TestCase):
         self.assertEqual((result["ok"], result["max_load"]), (False, 8.0), result)
         self.assert_not_kicked()
 
+    def test_a_dry_run_checks_the_load_and_neither_drains_nor_kicks(self):
+        result = self.restart(max_load=4, load=4.0, dry_run=True)
+        self.assertIn("load average 4.0 is at or above 4", result["reason"])
+        result = self.restart(max_load=4, load=1.0, dry_run=True)
+        self.assertEqual(result, {"ok": True, "dry_run": True, "load": 1.0, "max_load": 4.0})
+        self.assert_not_kicked()
+        self.assertFalse(runtime.restart_lock_path(self.fixture.database).exists(), "a dry run took the restart lock")
+
     def test_an_agent_that_is_not_loaded_refuses(self):
         with patch.object(cli, "agent_loaded", return_value=False):
             result = self.restart()
@@ -248,7 +256,10 @@ class Restart(unittest.TestCase):
         with patch.object(cli, "restart", return_value={"ok": False, "reason": "fixture"}) as restart, \
                 contextlib.redirect_stdout(output):
             code = cli.main(["restart", "--max-load", "3", "--wait", "7"])
-        self.assertEqual((code, restart.call_args.kwargs), (1, {"max_load": 3.0, "wait": 7.0}))
+        self.assertEqual((code, restart.call_args.kwargs), (1, {"max_load": 3.0, "wait": 7.0, "dry_run": False}))
+        with patch.object(cli, "restart", return_value={"ok": True}) as restart, contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["restart", "--dry-run"]), 0)
+        self.assertTrue(restart.call_args.kwargs["dry_run"])
 
 
 class Drain(unittest.TestCase):

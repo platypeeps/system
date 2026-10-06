@@ -7,6 +7,7 @@ A LaunchAgent change or a schema change is reported, never applied.
 ```sh
 local-deploy/deploy.sh plan <from-sha> <to-sha>    # print the actions
 local-deploy/deploy.sh apply <from-sha> <to-sha>   # run them
+local-deploy/deploy.sh upgrade [--from SHA]        # pull main, install, apply, record
 ```
 
 ## What a change maps to
@@ -31,7 +32,7 @@ A library change reaches them only after `local-sd-db/sd-db.sh install <venv>` f
 
 ## How `apply` restarts each service
 
-`apply` prints the reports, then refuses with exit 1 before any restart in two cases:
+`apply` prints the reports, then refuses with exit 1 before any restart in three cases:
 
 - `lsof` cannot answer for port 8769: it is missing, or exits other than 1 with no output (its "no match").
 - The dashboard's or the runner's installed `sd_db` differs in content from the checkout's `local-sd-db/sd_db`.
@@ -39,13 +40,15 @@ A library change reaches them only after `local-sd-db/sd-db.sh install <venv>` f
   It does not use `_library_lag`: that compares commits, and a wheel from `sd-db.sh install` records none.
   It runs under the interpreter the agent's plist names (`SD_DASHBOARD_PYTHON`, `SD_RUNNER_PYTHON`).
   The refusal names the `sd-db.sh install <venv>` that provisions it.
+- The plan restarts the runner, and `runner.sh restart --dry-run` refuses.
+  The dry run applies the runner's own agent and load checks (`max_load`, default the core count) and kicks nothing.
 
 Then it restarts each service:
 
 | Service | Restart | Check |
 | --- | --- | --- |
 | sd-serve | `launchctl kickstart -k gui/<uid>/<prefix>.sd-serve` | a new listener on port 8769 within `DEPLOY_WAIT` seconds (default 30) |
-| dashboard | `launchctl kickstart -k gui/<uid>/<prefix>.sd-dashboard` | `dashboard.sh health` |
+| dashboard | `launchctl kickstart -k gui/<uid>/<prefix>.sd-dashboard` | `dashboard.sh health --wait`, up to `DEPLOY_WAIT` seconds |
 | runner | `runner.sh restart`, which drains first; never a kickstart | its exit code |
 
 - The label prefix is `SYSTEM_TOOLS_LABEL_PREFIX`, default `local.system-tools`.
@@ -57,6 +60,29 @@ Then it restarts each service:
 
 Limit of the session probe: `lsof` sees the moment it runs.
 A satellite can open a session between the probe and the kickstart; that session drops, as on any hub restart.
+
+## Upgrading the hub in one command
+
+`upgrade` does the whole hub upgrade in one line (sd:2812):
+
+```sh
+sh ~/repos/system/local-deploy/deploy.sh upgrade
+```
+
+1. It refuses unless the checkout is on `main` with no uncommitted or untracked files.
+2. It runs `git fetch origin`, then fast-forwards to `origin/main`; it refuses when they diverged.
+3. It reads the last deployed sha from `${XDG_STATE_HOME:-$HOME/.local/state}/system/deploy/deployed`.
+   The first run has no record: give `--from SHA`, the sha the services run now. `--from` always overrides the record.
+4. An empty plan records the new sha and exits 0.
+5. A plan that needs a migration refuses. Migrate and restart by hand, then record with `upgrade --from <new sha>`.
+6. A `needs sd_db install` plan runs `local-sd-db/sd-db.sh install <venv>` once per distinct venv.
+   The venvs come from the interpreters the dashboard's and the runner's plists name. A failed install stops.
+7. It runs `apply` over the range.
+8. It records the new sha only when every step passed and no session held sd-serve back.
+   After a failure the old record stays, so a rerun replays the same range; the restarts are idempotent.
+
+The pull runs before the steps, but the steps run the `deploy.sh` read before the pull.
+A change to `deploy.sh` itself takes effect on the next upgrade.
 
 ## Wiring it into the merge lane
 
