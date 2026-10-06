@@ -322,6 +322,33 @@ class BranchItemClose(WorkflowCase):
         self.assertEqual(change_status(self.db, item, "blocked", who="dashboard")["item"]["status"], "blocked")
 
 
+class BranchClearing(WorkflowCase):
+    """sd:2818: `edit_item` clears a stale branch and sets none."""
+
+    def work_on(self, branch, status="done"):
+        upsert_repo(self.db, "/repos/work", status_source="row")
+        item = create_item(self.db, kind="work", status=status, title="Work",
+                           repo="/repos/work", branch=branch)
+        return item_state(self.db, item)
+
+    def test_a_cleared_branch_is_written_noted_and_revision_checked(self):
+        state = self.work_on("feat/gone")
+        item = state["item"]["id"]
+        with self.assertRaises(StaleItem):
+            edit_item(self.db, item, {"branch": None}, who="operator", expected_revision="0" * 64)
+        self.assertEqual(item_state(self.db, item), state)
+        cleared = edit_item(self.db, item, {"branch": None}, who="operator",
+                            expected_revision=state["revision"])
+        self.assertIsNone(cleared["item"]["branch"])
+        self.assertEqual(cleared["notes"][-1]["body"], "Updated branch by operator")
+
+    def test_a_branch_value_is_refused_and_leaves_the_row(self):
+        state = self.work_on("feat/gone", status="planning")
+        with self.assertRaisesRegex(WorkflowError, "branch can only be cleared here"):
+            edit_item(self.db, state["item"]["id"], {"branch": "feat/new"}, who="operator")
+        self.assertEqual(item_state(self.db, state["item"]["id"]), state)
+
+
 class KindEditing(WorkflowCase):
     """sd:743 -- a row's kind changes through `edit_item`, attributed and noted."""
 

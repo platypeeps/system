@@ -34,6 +34,12 @@ USER_FIELDS = frozenset({"title", "body", "priority", "due", "repo", "kind"})
 #: the two equal, and the form has no recurrence control yet.
 RECURRENCE_FIELDS = frozenset({"recurrence", "recurrence_anchor"})
 
+#: `branch`, which `edit_item` only clears (sd:2818): a stale name has no
+#: other way out. Setting one stays with `runner_controls.configure_item`,
+#: which checks it against git. Outside `USER_FIELDS` for the same reason as
+#: `RECURRENCE_FIELDS`.
+BRANCH_FIELDS = frozenset({"branch"})
+
 #: The item kinds a person may set by hand: the five the pack's `sd task add`
 #: files (`ADD_KINDS`, `bin/sd_work.py`), for the reason that list gives. Each
 #: other kind in `item.kind`'s CHECK has a producer -- `work` the work lane,
@@ -209,10 +215,12 @@ def schema_kinds(connection: sqlite3.Connection) -> tuple[str, ...]:
 def _fields(connection: sqlite3.Connection, changes: dict) -> dict:
     if not isinstance(changes, dict) or any(not isinstance(key, str) for key in changes):
         raise WorkflowError("changes must be an object with named fields")
-    unknown = set(changes) - USER_FIELDS - RECURRENCE_FIELDS
+    unknown = set(changes) - USER_FIELDS - RECURRENCE_FIELDS - BRANCH_FIELDS
     if unknown:
         raise WorkflowError(f"fields cannot be edited here: {', '.join(sorted(unknown))}")
     result = dict(changes)
+    if result.get("branch") is not None:
+        raise WorkflowError("branch can only be cleared here; `sd runner prepare --branch` sets one")
     if "title" in result:
         result["title"] = _text(result["title"], "title")
     if "body" in result:
