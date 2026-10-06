@@ -70,7 +70,7 @@ A satellite can open a session between the probe and the kickstart; that session
 sh ~/repos/system/local-deploy/deploy.sh upgrade
 ```
 
-1. It refuses while another upgrade holds `upgrade.lock` beside the record; a dead holder's lock is taken over.
+1. It refuses while another upgrade holds `upgrade.lock` beside the record: an `flock` the kernel drops when its upgrade ends.
    It refuses unless the checkout is on `main` with no uncommitted or untracked files.
 2. It runs `git fetch origin`, then fast-forwards to `origin/main`; it refuses when they diverged.
 3. It reads the last deployed sha from `${XDG_STATE_HOME:-$HOME/.local/state}/system/deploy/deployed`.

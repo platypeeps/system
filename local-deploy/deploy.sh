@@ -133,20 +133,18 @@ stopped_hint() {
 }
 
 # One upgrade at a time, from the first check to the record: a second one
-# could start the runner while the first still replaces sd_db. A lock whose
-# holder died is taken over; the directory holds the holder's pid.
-lock() {
-  LOCK="$(dirname "$STATE")/upgrade.lock"
-  mkdir -p "$(dirname "$STATE")"
-  if ! mkdir "$LOCK" 2>/dev/null; then
-    holder=$(cat "$LOCK/pid" 2>/dev/null) || holder=""
-    [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null || refuse "another upgrade is running (pid $holder, $LOCK)"
-    rm -rf "$LOCK"
-    mkdir "$LOCK" 2>/dev/null || refuse "another upgrade took $LOCK"
-  fi
-  echo $$ > "$LOCK/pid"
-  trap 'rm -rf "$LOCK"' EXIT
-}
+# could start the runner while the first still replaces sd_db. flock(2) on
+# upgrade.lock, held by the descriptor the upgrade inherits through exec: the
+# kernel drops it when the upgrade ends, so no lock outlives its holder.
+LOCKER='import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit("deploy: refused before any restart: another upgrade holds " + sys.argv[1])
+os.set_inheritable(fd, True)
+os.execvp(sys.argv[2], sys.argv[2:])'
+
 
 # The runner's load limit (sd_runner/load.py), under its interpreter; the
 # module imports no sd_db, so it answers before an install too.
@@ -270,7 +268,6 @@ upgrade() {
   done
   # Present while the runner is stopped mid-upgrade; a rerun starts it.
   STOPPED="$(dirname "$STATE")/runner-stopped"
-  lock
   [ "$(git -C "$ROOT" symbolic-ref -q --short HEAD)" = main ] || refuse "$ROOT is not on main"
   [ -z "$(git -C "$ROOT" status --porcelain)" ] || refuse "$ROOT has uncommitted or untracked files"
   git -C "$ROOT" fetch -q origin || fail "git fetch origin"
@@ -348,6 +345,11 @@ case "${1:-}" in
     # nothing past this line is read. The functions above, from before the
     # pull, run the whole upgrade; a change to deploy.sh applies next time.
     shift
+    if [ -z "${DEPLOY_UPGRADE_LOCKED:-}" ]; then
+      mkdir -p "$(dirname "$STATE")"
+      DEPLOY_UPGRADE_LOCKED=1 exec "${PYTHON:-python3}" -c "$LOCKER" "$(dirname "$STATE")/upgrade.lock" \
+        sh "$DIR/deploy.sh" upgrade "$@"
+    fi
     upgrade "$@"
     exit 0 ;;
   test)
