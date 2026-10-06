@@ -58,6 +58,7 @@ Recorded on sd:2764. Times are the notes' recorded timestamps in MDT; each note'
 | #10190 | 18:12 MDT | an unlabelled skip is `unknown`, every Jev and Kev model skip is hand-labelled, and accuracy thresholds are points of the disagreement rows |
 | #10194 | 18:37 MDT | Kev or Jev is selected only if it holds H6 itself; the registration guard reads `PREDICTION` lines only |
 | #10205 | 19:22 MDT | C3 gets its own label sheet; H7 counts missed credentials, bound 1% |
+| #10207 | 19:39 MDT | H3 drops before the extension; the extension needs an undecidable H1; decision predicted as line 2; arms compared on rows both answered |
 
 - **O1, prediction**: under 10% of the 28 `skip` readings are wrong.
 - **O2, switch rule**: switch to local Kev if Kev's labelled accuracy is within 5 points of Jev's, and its too-low errors are not more frequent.
@@ -183,7 +184,7 @@ Source: O1, "under 10% of the 28 `skip` readings are wrong", carried from the 28
 
 **Prediction to falsify.** Kev-4B's labelled accuracy is within 5 points of Jev's, and its unsafe skips are not more frequent.
 
-- **Metric**: Kev's labelled accuracy minus Jev's, on the same rows; Kev's unsafe skips per head minus Jev's.
+- **Metric**: Kev's labelled accuracy minus Jev's, on the rows both arms answered; Kev's unsafe skips per head minus Jev's.
   Unsafe skips per head are an arm's model skips per head times its unsafe rate from the skip draw.
 - **Threshold**: holds when the accuracy difference is ≥ −5 points and the unsafe-skip difference is ≤ 0, as point estimates (the operator's rule).
   The 95% interval of each difference is reported beside it.
@@ -196,7 +197,7 @@ Source: note #10075, "Kev within 5 points of Jev". O2 states the same figure as 
 
 **Prediction to falsify.** The 20-line heuristic's labelled accuracy is within 3 points of the best model arm's.
 
-- **Metric**: heuristic accuracy minus the highest of Jev, Kev and Haiku, on the same rows.
+- **Metric**: heuristic accuracy minus the highest of Jev, Kev and Haiku, each pair on the rows both answered.
 - **Threshold**: holds when the difference is ≥ −3 points, as a point estimate (the operator's rule). The interval is reported.
 - **Power**: a ±3-point interval needs about 430 labelled rows; 150 rows give about ±5. The note says the margin is inside the noise.
 
@@ -266,6 +267,7 @@ PREDICTION (operator, 2026-10-05): H7 holds: Kev-4B misses no realistic fake and
 
 **Prediction to falsify.** Haiku 4.5's labelled accuracy is no more than 5 points above Jev's.
 
+- **Metric**: Haiku's labelled accuracy minus Jev's, on the rows both arms answered.
 - **Threshold**: ≤ 5 points holds; > 5 points fails.
 - **Why**: Haiku is not one of the three choices; a failure says a general model reads this question better, a finding for the post.
 
@@ -293,8 +295,8 @@ Only Jev and Kev can be selected. Haiku's H1 and H4 results are reported, and de
 | # | Condition | Decision | Source |
 |---|---|---|---|
 | 1 | H1 fails for both Jev and Kev | **drop the model**, rules only | ruling #10070: no model can safely allow `skip` |
-| 2 | neither Jev nor Kev holds both H1 and H4, and line 1 does not apply (inconclusive) | **keep the shadow** for one fixed 4-week window, rerun this analysis once, then **drop the model** if still inconclusive | R1 |
-| 3 | H3 holds | **drop the model**, rules only | O3 |
+| 2 | H3 holds | **drop the model**, rules only | O3 |
+| 3 | neither Jev nor Kev holds both H1 and H4, and Jev or Kev has H1 not decidable while it holds H4 (inconclusive) | **keep the shadow** for one fixed 4-week window, rerun this analysis once, then **drop the model** if still inconclusive | R1 |
 | 4 | Kev holds H1, H4 and H6, and H2 and H5 hold | **switch to local Kev** | O2; H5 is the planner's addition, open on sd:2764 |
 | 5 | Jev holds H1, H4 and H6 | **keep Jev** | O2, O3 |
 | 6 | otherwise | **drop the model**, rules only | note #10183 |
@@ -313,7 +315,11 @@ The operator's H6 prediction is unchanged.
 The extension collected C3 answers but no C3 labels, so it could not add H1 evidence; C3 now gets its own label sheet.
 H7's 0.25% bound counted 1,200 hits as independent; they are 300 credentials in 4 contexts, so the bound is 1% per credential.
 The operator's H7 prediction is unchanged.
-The operator's prediction below is unchanged under it: Jev holds H1 and fails H4, so line 2 applies.
+
+**Changed before any replay data** (note #10207, 19:39 MDT), after a challenge review of this page.
+The old line 2 called a clear H4 failure inconclusive and ran the extension even when H3 said drop; more data cannot rescue a failed threshold.
+H3 now comes before the extension, and the extension needs an H1 that is not decidable for an arm that holds H4.
+The operator's decision prediction was asked again under this rule; the earlier one is recorded under the new line.
 
 A decision to keep or switch implies a follow-up that lets that model allow `skip` past the floor; this item ships no such change.
 Whether "rules only" keeps the heuristic as a new rule is the operator's call after the results.
@@ -322,12 +328,13 @@ The operator's prediction of the line and the decision this rule will give:
 
 Not drafted: the decision depends on H3 and H4, which have no drafted value.
 
-PREDICTION (operator, 2026-10-05): line 2, inconclusive: keep the shadow for one 4-week window, rerun once, then drop the model if still inconclusive.
-Consistency: the operator first answered H4 holds with line 2; under H1 and H3 holding that implies line 3. Shown the conflict before anything was written, the operator kept line 2 and set H4 to fails.
+PREDICTION (operator, 2026-10-05, note #10207): line 2, H3 holds: drop the model, rules only.
+Consistent with the hypothesis predictions: Jev holds H1 and fails H4, and H3 holds.
+Earlier, under the rule before note #10207: line 2 of that rule, inconclusive (note #10168). The operator first answered H4 holds with it, saw the conflict, and set H4 to fails.
 
 ## Rulings R1 to R3
 
-Recorded on note #10075, 12:11 MDT. The note words R1 in the earlier draft's numbering ("H2 undecidable for Jev and Kev"); this page applies it to line 2 of the decision rule, its place in the current numbering.
+Recorded on note #10075, 12:11 MDT. The note words R1 in the earlier draft's numbering ("H2 undecidable for Jev and Kev"); this page applies it to line 3 of the decision rule, its place in the current numbering, for an H1 that is not decidable.
 
 - **R1, inconclusive result**: keep sd:2761's shadow collecting for one fixed 4-week window, rerun the same analysis once, then drop to rules if still inconclusive.
 - **R2, hosted sends**: the 2,222-head re-send is approved, C1 included. The roughly 185 heads with no Jev reading are included under it, with the same redaction and all arms, reported as the exploratory group E0.
@@ -391,7 +398,9 @@ Where a claim cannot reach its n, the note reports the point estimate, the inter
 - Cost and latency tables.
 - Anything else, labelled as exploratory where it appears.
 
-**Missing data.** A head with no answer from an arm drops out of that arm's metrics only. The note gives the count per arm.
+**Missing data.** A head with no answer from an arm drops out of that arm's single-arm metrics.
+A comparison between arms (H2, H3, H8) uses only the rows both arms answered, so a failure on hard heads cannot leave one arm's denominator.
+The note gives each arm's no-answer rate, and what production would have done on those heads (its fallback), as separate results.
 A head whose review never completed has no objective label. A head whose state was rebuilt from git is flagged, and every confirmatory number is also given without them.
 
 **Intervals.** Newcombe hybrid score intervals for differences of independent proportions; for paired differences, the Wald interval on discordant pairs.
