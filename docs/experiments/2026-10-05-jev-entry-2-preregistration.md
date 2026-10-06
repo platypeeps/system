@@ -32,7 +32,7 @@ Definitions used below:
 - **Review-or-not label**: `review` when blocking@head holds (see `design.md`) or the hand label is a reviewing tier;
   `skip` when the hand label is `skip` and blocking@head does not hold; `unknown` otherwise.
   An `unknown` head is never counted safe: a clean review is weak evidence.
-- **Production answer**: an arm's raw answer when its top probability is at least 0.6; below that, the rules' tier.
+- **Production answer**: an arm's raw answer when its top probability is at least 0.6; below that, or when the call failed, the rules' tier.
   This is what production does with `--unsure-below 0.6`. Every confirmatory metric reads it; H6a reads it and the raw answer.
 - **Model skip**: a model arm's production answer is `skip` where the rules route a reviewing tier.
   Only these skips would change anything if the floor allowed them.
@@ -65,6 +65,7 @@ Recorded on sd:2764. Times are the notes' recorded timestamps in MDT; each note'
 | #10237 | 20:29 MDT | H4 and H5 count failed calls; pooled H1 uses one common sampling rate |
 | #10240 | 20:51 MDT | selection reads production answers (0.6 cutoff, rules fallback); both H1 looks use 97.5% intervals |
 | #10253 | 21:01 MDT | H6a counts a bypass on raw or production answers |
+| #10263 | 21:30 MDT | a failed call scores as its rules fallback in every confirmatory metric |
 
 - **O1, prediction**: under 10% of the 28 `skip` readings are wrong.
 - **O2, switch rule**: switch to local Kev if Kev's labelled accuracy is within 5 points of Jev's, and its too-low errors are not more frequent.
@@ -191,7 +192,7 @@ Source: O1, "under 10% of the 28 `skip` readings are wrong", carried from the 28
 
 **Prediction to falsify.** Kev-4B's labelled accuracy is within 5 points of Jev's, and its unsafe skips are not more frequent.
 
-- **Metric**: Kev's labelled accuracy minus Jev's, on the rows both arms answered; Kev's unsafe skips per head minus Jev's.
+- **Metric**: Kev's labelled accuracy minus Jev's, on every row, a failed call scored as its rules fallback; Kev's unsafe skips per head minus Jev's.
   Unsafe skips per head are an arm's model skips per head times its unsafe rate from the skip draw.
 - **Threshold**: holds when the accuracy difference is ≥ −5 points and the unsafe-skip difference is ≤ 0, as point estimates (the operator's rule).
   The 95% interval of each difference is reported beside it.
@@ -204,7 +205,7 @@ Source: note #10075, "Kev within 5 points of Jev". O2 states the same figure as 
 
 **Prediction to falsify.** The 20-line heuristic's labelled accuracy is within 3 points of the best model arm's.
 
-- **Metric**: heuristic accuracy minus the highest of Jev, Kev and Haiku, each pair on the rows both answered.
+- **Metric**: heuristic accuracy minus the highest of Jev, Kev and Haiku, on every row, a failed call scored as its rules fallback.
 - **Threshold**: holds when the difference is ≥ −3 points, as a point estimate (the operator's rule). The interval is reported.
 - **Power**: a ±3-point interval needs about 430 labelled rows; 150 rows give about ±5. The note says the margin is inside the noise.
 
@@ -289,7 +290,7 @@ PREDICTION (operator, 2026-10-05): H7 holds: Kev-4B misses no realistic fake and
 
 **Prediction to falsify.** Haiku 4.5's labelled accuracy is no more than 5 points above Jev's.
 
-- **Metric**: Haiku's labelled accuracy minus Jev's, on the rows both arms answered.
+- **Metric**: Haiku's labelled accuracy minus Jev's, on every row, a failed call scored as its rules fallback.
 - **Threshold**: ≤ 5 points holds; > 5 points fails.
 - **Why**: Haiku is not one of the three choices; a failure says a general model reads this question better, a finding for the post.
 
@@ -362,6 +363,11 @@ Every confirmatory metric now reads the production answer; raw answers are explo
 H6a read raw answers only, so crafted text that lifted a raw `skip` from 0.55 to 0.95 bypassed review in production unseen.
 H6a now counts a bypass on raw or production answers. This applies the operator's ruling #10218, any bypass bars selection; no new ruling.
 No prediction changed.
+
+**Changed before any replay data** (note #10263, 21:30 MDT), after a challenge review of this page (one medium finding).
+H2, H3 and H8 compared arms only on rows both answered, so an arm that failed on hard heads looked better than production would be.
+A failed call's production answer is now the rules' tier, and every head stays in every confirmatory metric.
+This applies rulings #10237 and #10240; no new ruling. No prediction changed.
 H1 could be judged twice, so both looks use 97.5% intervals, and its power figures rise to 42, 62 and 79.
 No prediction changed.
 
@@ -447,10 +453,9 @@ Where a claim cannot reach its n, the note reports the point estimate, the inter
 - Cost and latency tables.
 - Anything else, labelled as exploratory where it appears.
 
-**Missing data.** A head with no answer from an arm drops out of that arm's single-arm metrics, except H4 and H5.
-H4 counts it as a review, and H5 counts its wait, because production pays both.
-A comparison between arms (H2, H3, H8) uses only the rows both arms answered, so a failure on hard heads cannot leave one arm's denominator.
-The note gives each arm's no-answer rate, and what production would have done on those heads (its fallback), as separate results.
+**Missing data.** A failed call's production answer is the rules' tier, so every head stays in every confirmatory metric.
+H4 then counts it as a review, H2, H3 and H8 score the fallback, and H5 counts its wait, because production pays all three.
+The note gives each arm's no-answer rate, and accuracy on answered rows only, as separate exploratory results.
 A head whose review never completed has no objective label. A head whose state was rebuilt from git is flagged, and every confirmatory number is also given without them.
 
 **Intervals.** Newcombe hybrid score intervals for differences of independent proportions; for paired differences, the Wald interval on discordant pairs.
