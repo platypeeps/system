@@ -46,6 +46,17 @@ OTHER_ARN = "arn:aws:iam::999988887777:user/someone-else"
 OLD_KEY = "AKIAOLDKEY"
 NEW_KEY = "AKIANEWKEY"
 NEW_SECRET = "s3cret-that-must-not-be-an-argument"
+# Every route from a managed disk to a reader the agent controls (sd:2870).
+DISK_READS = (
+    "ec2:CreateSnapshot", "ec2:CreateSnapshots", "ec2:CreateImage", "ec2:RegisterImage",
+    "ec2:CopySnapshot", "ec2:CopyImage", "ec2:ModifySnapshotAttribute", "ec2:ModifyImageAttribute",
+    "ec2:CreateVolume", "ec2:AttachVolume", "ec2:DetachVolume", "ec2:CreateReplaceRootVolumeTask",
+    "ec2:CreateStoreImageTask", "ec2:ExportImage", "ec2:CreateInstanceExportTask",
+    "ec2:CreateFleet", "ec2:RequestSpotInstances", "ec2:RequestSpotFleet",
+    "ebs:GetSnapshotBlock", "ebs:ListSnapshotBlocks", "ebs:ListChangedBlocks",
+    "ec2-instance-connect:SendSSHPublicKey", "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+    "ec2-instance-connect:OpenTunnel",
+)
 
 
 def render(level, buckets="", tag_key="claude-managed", pass_roles=""):
@@ -223,9 +234,9 @@ class PolicyCase(unittest.TestCase):
         # confuses the two denies nothing while looking as though it does.
         # Both shapes are checked: the grammar, and the services this script
         # is allowed to speak about at all.
-        grammar = re.compile(r"[a-z0-9]+:[A-Za-z0-9*]+")
-        services = {"account", "cloudtrail", "cloudwatch", "ec2", "iam",
-                    "kms", "organizations", "s3", "sts"}
+        grammar = re.compile(r"[a-z0-9-]+:[A-Za-z0-9*]+")
+        services = {"account", "cloudtrail", "cloudwatch", "ebs", "ec2",
+                    "ec2-instance-connect", "iam", "kms", "organizations", "s3", "sts"}
         for level in ("readonly", "operator", "sandbox"):
             for buckets in ("", "claude-managed-bucket"):
                 document = render(level, buckets=buckets)
@@ -287,7 +298,7 @@ class PolicyCase(unittest.TestCase):
         self.assertIn("StringNotEqualsIfExists", deny["Condition"])
         self.assertEqual(
             deny["Condition"]["StringNotEqualsIfExists"],
-            {"ec2:CreateAction": ["RunInstances", "CreateSnapshot", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"]},
+            {"ec2:CreateAction": ["RunInstances", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"]},
         )
 
     def test_the_managed_tag_key_reaches_every_statement_that_names_it(self):
@@ -714,6 +725,23 @@ class CommandCase(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("names no bucket to check", done.stderr)
 
+    def test_the_check_fails_when_a_disk_read_path_reopens(self):
+        # A simulator that allows everything stands for a policy that lost
+        # the deny: every route to a managed disk must then fail (sd:2870).
+        for level in ("readonly", "operator", "sandbox"):
+            with self.subTest(level=level):
+                box = self.sandbox(level=level)
+                box.profile("default", aws_access_key_id="AKIAADMIN")
+                box.identity("AKIAADMIN", ADMIN_ARN)
+                box.rule("simulate-custom-policy", stdout="allowed")
+                done = box.run("simulate", "x")
+                self.assertEqual(done.returncode, 1)
+                for action in DISK_READS:
+                    self.assertIn("FAIL want explicitDeny, got allowed: %s " % action, done.stdout)
+                for kind in ("snapshot", "image"):
+                    self.assertRegex(done.stdout, r"FAIL want explicitDeny, got allowed: ec2:RunInstances "
+                                                  r"arn:aws:ec2:eu-west-1::%s/\S+ \[aws:ResourceTag/claude-managed=true\]" % kind)
+
 
 
 class ConfigLocation(unittest.TestCase):
@@ -812,29 +840,39 @@ class LifecycleCase(unittest.TestCase):
                         self.assertEqual(self.decision(policy, "ec2:" + action, resource, context, broad=True), expected)
                         self.assertEqual(self.decision(policy, "ec2:" + action, resource, context), expected)
 
-    def test_lifecycle_scope_and_snapshot_both_resource_guards(self):
+    def test_cleanup_stays_in_the_configured_account(self):
         policy = render("sandbox")
-        for kind, key in (("volume", "aws:ResourceTag/claude-managed"), ("snapshot", "aws:RequestTag/claude-managed")):
-            account = "" if kind == "snapshot" else ACCOUNT_ID
-            resource = f"arn:aws:ec2:us-east-1:{account}:{kind}/probe"
-            self.assertEqual(self.decision(policy, "ec2:CreateSnapshot", resource, {key: "true"}), "allowed")
-            for context in ({}, {key: "false"}):
-                self.assertEqual(self.decision(policy, "ec2:CreateSnapshot", resource, context, broad=True), "explicitDeny")
-            elsewhere = resource.replace("us-east-1", "eu-west-1")
-            self.assertEqual(self.decision(policy, "ec2:CreateSnapshot", elsewhere, {key: "true"}), "implicitDeny")
         volume = f"arn:aws:ec2:us-east-1:999988887777:volume/probe"
         self.assertEqual(self.decision(policy, "ec2:DeleteVolume", volume, {"aws:ResourceTag/claude-managed": "true"}), "implicitDeny")
 
-    def test_snapshot_tagging_is_creation_only_and_retagging_stays_denied(self):
+    def test_snapshot_tags_cannot_change(self):
         policy = render("sandbox")
         resource = "arn:aws:ec2:us-east-1::snapshot/probe"
         context = {"aws:TagKeys": ["claude-managed"], "aws:RequestTag/claude-managed": "true"}
         for action in ("ec2:CreateTags", "ec2:DeleteTags"):
             self.assertEqual(self.decision(policy, action, resource, context, broad=True), "explicitDeny")
-        context["ec2:CreateAction"] = "CreateSnapshot"
-        self.assertEqual(self.decision(policy, "ec2:CreateTags", resource, context), "allowed")
-        context["ec2:CreateAction"] = "CreateVolume"
-        self.assertEqual(self.decision(policy, "ec2:CreateTags", resource, context, broad=True), "explicitDeny")
+        for operation in ("CreateSnapshot", "CreateVolume"):
+            context["ec2:CreateAction"] = operation
+            self.assertEqual(self.decision(policy, "ec2:CreateTags", resource, context, broad=True), "explicitDeny")
+
+    def test_no_level_reaches_a_managed_disk(self):
+        # A snapshot, image, volume or guest key turns a deployment's disk
+        # into something the agent can read (sd:2870). The deployer needs
+        # none of them; its launch from a public image stays allowed.
+        tagged = {"aws:ResourceTag/claude-managed": "true"}
+        for level in ("readonly", "operator", "sandbox"):
+            policy = render(level)
+            for action in DISK_READS:
+                with self.subTest(level=level, action=action):
+                    resource = "arn:aws:ec2:us-east-1::snapshot/probe"
+                    self.assertEqual(self.decision(policy, action, resource, tagged, broad=True), "explicitDeny")
+            for kind in ("snapshot/probe", "image/ami-probe"):
+                with self.subTest(level=level, kind=kind):
+                    resource = "arn:aws:ec2:us-east-1::" + kind
+                    self.assertEqual(self.decision(policy, "ec2:RunInstances", resource, tagged, broad=True), "explicitDeny")
+            public = "arn:aws:ec2:us-east-1::image/ami-public"
+            self.assertEqual(self.decision(policy, "ec2:RunInstances", public, {}),
+                             "allowed" if level == "sandbox" else "implicitDeny")
 
     def test_rendered_policies_fit_managed_policy_limit(self):
         for level in ("readonly", "operator", "sandbox"):

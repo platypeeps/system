@@ -71,12 +71,14 @@ Levels:
   operator  readonly + start/stop/reboot and read the console output of
             instances tagged MANAGED_TAG_KEY=true; put on listed buckets.
   sandbox   operator + launch instances tagged at launch, terminate tagged
-            instances; snapshot and clean up tagged resources in the configured
+            instances; clean up tagged resources in the configured
             account/region; delete on listed buckets.
   All levels deny IAM administration, role assumption, CloudTrail tampering including its
   event selectors, changing an instance attribute, bucket policy/ACL and
   public access block changes, KMS key deletion, changing the managed tag,
-  and acting on an instance that does not carry it.
+  and acting on an instance that does not carry it. They also deny every
+  route to a disk: snapshots, images, volume moves, EBS direct reads, EC2
+  Instance Connect, and a launch from a managed image or snapshot.
 
 Account file <config>/aws-setup/accounts/<name>.env, where <config> is
 $SYSTEM_TOOLS_CONFIG (default ~/.config/system); AWS_SETUP_ACCOUNTS_DIR
@@ -304,31 +306,11 @@ stmt_ec2_launch() {
 EOF
 }
 
-# Snapshot before termination; attribute changes remain explicitly denied.
+# Teardown of tagged resources. Attribute changes stay explicitly denied, and
+# so does a snapshot first (stmt_deny_disk_reads).
 stmt_ec2_lifecycle() {
   [ "$LEVEL" = sandbox ] || return 0
   cat <<EOF
-    {
-      "Sid": "SandboxSnapshotManagedVolume",
-      "Effect": "Allow",
-      "Action": "ec2:CreateSnapshot",
-      "Resource": "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:volume/*",
-      "Condition": { "StringEquals": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
-    },
-    {
-      "Sid": "SandboxCreateManagedSnapshot",
-      "Effect": "Allow",
-      "Action": "ec2:CreateSnapshot",
-      "Resource": "arn:aws:ec2:$AGENT_REGION::snapshot/*",
-      "Condition": { "StringEquals": { "aws:RequestTag/$MANAGED_TAG_KEY": "true" } }
-    },
-    {
-      "Sid": "SandboxTagSnapshotOnCreation",
-      "Effect": "Allow",
-      "Action": "ec2:CreateTags",
-      "Resource": "arn:aws:ec2:$AGENT_REGION::snapshot/*",
-      "Condition": { "StringEquals": { "ec2:CreateAction": "CreateSnapshot", "aws:RequestTag/$MANAGED_TAG_KEY": "true" } }
-    },
     {
       "Sid": "SandboxCleanupManagedResources",
       "Effect": "Allow",
@@ -428,19 +410,49 @@ stmt_deny_untagged_lifecycle() {
       "Resource": "*",
       "Condition": { "StringNotEqualsIfExists": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
     },
+EOF
+}
+
+# A snapshot, an image, a moved volume or a guest key turns a deployment's
+# disk into one the agent can read, so every level denies them (sd:2870).
+# Neither the agent nor the deployer needs one, and an untagged copy would
+# slip past a tag condition, so the first statement has none. A launch from a
+# public image stays allowed; a launch from a managed image or snapshot does not.
+stmt_deny_disk_reads() {
+  cat <<EOF
     {
-      "Sid": "DenySnapshotOfUnmanagedVolume",
+      "Sid": "DenyReadingManagedDisks",
       "Effect": "Deny",
-      "Action": "ec2:CreateSnapshot",
-      "Resource": "arn:aws:ec2:*:*:volume/*",
-      "Condition": { "StringNotEqualsIfExists": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
+      "Action": [
+        "ec2:CreateSnapshot",
+        "ec2:CreateSnapshots",
+        "ec2:CreateImage",
+        "ec2:RegisterImage",
+        "ec2:CopySnapshot",
+        "ec2:CopyImage",
+        "ec2:ModifySnapshotAttribute",
+        "ec2:ModifyImageAttribute",
+        "ec2:CreateVolume",
+        "ec2:AttachVolume",
+        "ec2:DetachVolume",
+        "ec2:CreateReplaceRootVolumeTask",
+        "ec2:CreateStoreImageTask",
+        "ec2:ExportImage",
+        "ec2:CreateInstanceExportTask",
+        "ec2:CreateFleet",
+        "ec2:RequestSpotInstances",
+        "ec2:RequestSpotFleet",
+        "ebs:*",
+        "ec2-instance-connect:*"
+      ],
+      "Resource": "*"
     },
     {
-      "Sid": "DenySnapshotWithoutManagedTag",
+      "Sid": "DenyLaunchFromManagedDisk",
       "Effect": "Deny",
-      "Action": "ec2:CreateSnapshot",
-      "Resource": "arn:aws:ec2:*::snapshot/*",
-      "Condition": { "StringNotEqualsIfExists": { "aws:RequestTag/$MANAGED_TAG_KEY": "true" } }
+      "Action": "ec2:RunInstances",
+      "Resource": ["arn:aws:ec2:*::image/*", "arn:aws:ec2:*::snapshot/*"],
+      "Condition": { "StringEquals": { "aws:ResourceTag/$MANAGED_TAG_KEY": "true" } }
     },
 EOF
 }
@@ -531,7 +543,7 @@ stmt_deny_tag_changes() {
   launch_exception=""
   if [ "$LEVEL" = sandbox ]; then
     launch_exception=',
-        "StringNotEqualsIfExists": { "ec2:CreateAction": ["RunInstances", "CreateSnapshot", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"] }'
+        "StringNotEqualsIfExists": { "ec2:CreateAction": ["RunInstances", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"] }'
   fi
   cat <<EOF
     {
@@ -563,7 +575,6 @@ stmt_hard_denies() {
   [ -z "$PASS_ROLE_ARNS" ] || iam_deny=""
   terminate='
         "ec2:TerminateInstances",
-        "ec2:CreateSnapshot",
         "ec2:DisassociateAddress",
         "ec2:ReleaseAddress",
         "ec2:DeleteSecurityGroup",
@@ -611,6 +622,7 @@ render_policy() {
   stmt_s3
   stmt_deny_untagged_ec2
   stmt_deny_untagged_lifecycle
+  stmt_deny_disk_reads
   stmt_deny_tag_changes
   stmt_hard_denies
   printf '  ]\n}\n'
@@ -1118,15 +1130,25 @@ expect_ec2() {
 expect_lifecycle() {
   tagged="aws:ResourceTag/$MANAGED_TAG_KEY=true"
   requested="aws:RequestTag/$MANAGED_TAG_KEY=true"
-  volume="arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:volume/vol-0123456789abcdef0"
-  snapshot="arn:aws:ec2:$AGENT_REGION::snapshot/snap-0123456789abcdef0"
+  image="arn:aws:ec2:$AGENT_REGION::image/ami-0123456789abcdef0"
   lifecycle_decision=explicitDeny
   [ "$LEVEL" != sandbox ] || lifecycle_decision=allowed
-  expect "$lifecycle_decision" ec2:CreateSnapshot "$volume" "$tagged"
-  expect explicitDeny ec2:CreateSnapshot "$volume"
-  expect "$lifecycle_decision" ec2:CreateSnapshot "$snapshot" "$requested"
-  expect explicitDeny ec2:CreateSnapshot "$snapshot"
-  expect "$lifecycle_decision" ec2:CreateTags "$snapshot" "$requested" "aws:TagKeys=$MANAGED_TAG_KEY" "ec2:CreateAction=CreateSnapshot"
+  # Every route from a managed disk to a reader, at every level (sd:2870).
+  # Listed here again, not read from the policy, so a dropped entry fails.
+  for disk_read in ec2:CreateSnapshot ec2:CreateSnapshots ec2:CreateImage ec2:RegisterImage \
+      ec2:CopySnapshot ec2:CopyImage ec2:ModifySnapshotAttribute ec2:ModifyImageAttribute \
+      ec2:CreateVolume ec2:AttachVolume ec2:DetachVolume ec2:CreateReplaceRootVolumeTask \
+      ec2:CreateStoreImageTask ec2:ExportImage ec2:CreateInstanceExportTask \
+      ec2:CreateFleet ec2:RequestSpotInstances ec2:RequestSpotFleet \
+      ebs:GetSnapshotBlock ebs:ListSnapshotBlocks ebs:ListChangedBlocks \
+      ec2-instance-connect:SendSSHPublicKey ec2-instance-connect:SendSerialConsoleSSHPublicKey \
+      ec2-instance-connect:OpenTunnel; do
+    expect explicitDeny "$disk_read" "*" "$tagged"
+  done
+  expect explicitDeny ec2:RunInstances "$image" "$tagged"
+  expect explicitDeny ec2:RunInstances "arn:aws:ec2:$AGENT_REGION::snapshot/snap-0123456789abcdef0" "$tagged"
+  # The deployer's launch from a public image.
+  expect "$(from_level sandbox)" ec2:RunInstances "$image"
   for pair in DisassociateAddress:elastic-ip DisassociateAddress:network-interface ReleaseAddress:elastic-ip DeleteSecurityGroup:security-group DeleteKeyPair:key-pair DeleteVolume:volume DeleteNetworkInterface:network-interface DeleteSnapshot:snapshot; do
     # Not `action`: expect() assigns that global, and the next probe would
     # ask for ec2:ec2:<Action>, which the simulator answers implicitDeny.

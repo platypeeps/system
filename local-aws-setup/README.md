@@ -52,12 +52,12 @@ truth; `./aws-setup.sh accounts` lists them.
 | Start/stop/reboot instances tagged `claude-managed=true`, and read their console output | — | yes | yes |
 | Launch instances | — | — | only tagged `claude-managed=true` at launch |
 | Terminate instances | denied | denied | tagged only |
-| Snapshot managed volumes | denied | denied | volume tagged; snapshot tagged during creation |
 | Disassociate/release Elastic IPs; delete security groups, key pairs, volumes, network interfaces, snapshots | denied | denied | tagged only, configured account/region |
 | Listed buckets | get | get, put | get, put, delete |
 | Start, stop, reboot, terminate, or read console output without `claude-managed=true` | denied | denied | denied |
 | Change the `claude-managed` tag on existing resources | denied | denied | denied |
 | IAM administration, role assumption, Organizations, account settings, CloudTrail tampering including its event selectors, changing an instance attribute, bucket deletion/policy/ACL/public access block, KMS key deletion | denied | denied | denied |
+| Create, copy or share snapshots and images; create, attach or detach volumes; EBS direct reads; EC2 Instance Connect; spot and fleet launches; launch from a `claude-managed=true` image or snapshot | denied | denied | denied |
 
 Console output is part of managing an instance: an agent that may stop and
 start one needs to read why it did not come up. It returns whatever the guest
@@ -103,7 +103,8 @@ Set the deployment wrapper's `AWS_PROFILE` to `deployer-sandbox`; keep that prof
 The agent's `sandbox.env` sets `EXTRA_POLICIES="agent-ssm-deny"`.
 Copy `accounts/agent-ssm-deny.json.example` to `sandbox.policies/agent-ssm-deny.json`.
 It denies every SSM command and session to the agent, whatever else is attached later.
-The agent's `sandbox` level can still snapshot managed volumes and launch from a snapshot; give an evaluated agent a lower level.
+Every level denies each route to a deployment's disk: snapshots, images, volume moves, EBS direct reads, Instance Connect (sd:2870).
+The deployer launches from a public Canonical image and needs none of them.
 
 The template allows `AWS-RunShellScript` for commands and `AWS-StartPortForwardingSession` for tunnels, in separate statements.
 Its instance statement sets `ssm:SessionDocumentAccessCheck`, so a session without a document cannot fall back to a shell.
@@ -158,17 +159,16 @@ Changing its default version affects all consumers, including automation.
 Then deliberately add `managed-by=local-aws-setup` with the admin profile, as shown below for the base policy.
 The same ownership requirement applies to supplemental policies.
 
-Sandbox teardown permits snapshots and cleanup only in the configured region; account-bearing resources use the configured account.
-AWS snapshot ARNs omit the account field. Their managed tags constrain snapshot creation and deletion.
-Both the source volume and new snapshot must satisfy their respective managed-tag conditions.
+Sandbox teardown permits cleanup only in the configured region; account-bearing resources use the configured account.
+AWS snapshot ARNs omit the account field, so the managed tag alone constrains deleting a snapshot.
 Elastic IP disassociation checks both the Elastic IP and its network interface; tag both during provisioning.
 Apply the managed tag during resource creation. Existing resources require deliberate tagging by an administrator.
-The creation exception covers `RunInstances`, `CreateSnapshot`, `CreateSecurityGroup`, `ImportKeyPair`, `AllocateAddress`, `AuthorizeSecurityGroupIngress`, and `AuthorizeSecurityGroupEgress`.
+The creation exception covers `RunInstances`, `CreateSecurityGroup`, `ImportKeyPair`, `AllocateAddress`, `AuthorizeSecurityGroupIngress`, and `AuthorizeSecurityGroupEgress`.
 It grants no standalone permission to retag existing resources.
 
-Create a tagged snapshot, wait for completion, then terminate the instance and clean up managed resources.
-`ec2:ModifyInstanceAttribute` stays explicitly denied. Teardown does not require changing disk deletion settings after a backup completes.
-Retained snapshots incur storage charges until deleted. Keep backups according to your retention requirements.
+Terminate the instance, then clean up managed resources.
+No level may snapshot a managed disk first: a snapshot is a copy of the deployment the agent could read.
+`ec2:ModifyInstanceAttribute` stays explicitly denied. Teardown does not require changing disk deletion settings.
 IAM self-management stays denied; an admin applies policy updates before the agent performs teardown.
 
 ### Deploying with an existing instance role
