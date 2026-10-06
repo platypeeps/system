@@ -885,6 +885,23 @@ ORDER BY stage, timestamp, id
 """
 
 
+#: The caller's own answer of each pair: the baseline row a shadow call
+#: (`--shadow`, or `jev shadow on`) writes beside the judgment (sd:2761).
+OLD_ANSWERS = """
+SELECT stage, pair, answer
+FROM judgment
+WHERE arm = 'baseline'
+  AND pair IS NOT NULL
+  AND primitive <> :gate
+  AND (:stage IS NULL OR stage = :stage)
+  AND (:since IS NULL OR timestamp >= :since)
+  AND (:until IS NULL OR timestamp < :until)
+"""
+
+#: How many disagreement pairs of values the report lists per arm.
+SPLIT_TOP = 5
+
+
 def _has_arms(connection: sqlite3.Connection) -> bool:
     """Whether migration 017 has run. A reader may open a schema 11-16
     database it does not migrate; that table holds no kev or haiku row and
@@ -968,8 +985,9 @@ def compare(
     since: str | None = None,
     until: str | None = None,
 ) -> list[dict]:
-    """Per stage, one entry per arm and provider: calls, latency, cost, and
-    how often the arm agreed with the Jev row of the same pair.
+    """Per stage, one entry per arm and provider: calls, latency, cost, how
+    often the arm agreed with the Jev row of the same pair, and how often it
+    agreed with the old mechanism's answer of that pair (sd:2761).
 
     A pair is one decision, and its label is read from its Jev row only.
     """
@@ -979,6 +997,8 @@ def compare(
         return []
     bounds = {"since": since, "until": until, "stage": stage, "gate": GATE_PRIMITIVE}
     rows = [dict(row) for row in connection.execute(COMPARE_ROWS, bounds)]
+    old = {(row["stage"], row["pair"]): row["answer"]
+           for row in connection.execute(OLD_ANSWERS, bounds)}
     reference: dict[tuple[str, str], dict] = {}
     labels: dict[tuple[str, str], str] = {}
     for row in rows:
@@ -998,7 +1018,8 @@ def compare(
             "arm": row["arm"], "provider": row["provider"], "calls": 0, "ok": 0,
             "declines": {}, "tokens_in": 0, "tokens_out": 0, "usd": None,
             "_ms": [], "_server": [], "paired": 0, "agree": None, "_dp": [],
-            "labelled": 0, "right": 0, "_brier": []})
+            "labelled": 0, "right": 0, "_brier": [],
+            "old_pairs": 0, "old_compared": 0, "old_agree": 0, "_split": {}})
         entry["calls"] += 1
         entry["ok"] += row["outcome"] == "ok"
         if row["cause"]:
@@ -1012,6 +1033,20 @@ def compare(
         if row["server_ms"] is not None:
             entry["_server"].append(row["server_ms"])
         mine = top(row)
+        if (row["stage"], row["pair"]) in old:
+            # The old answer is read in this row's primitive: a baseline row
+            # is `primitive=baseline`, and its number means what the
+            # judgment's would.
+            entry["old_pairs"] += 1
+            theirs = top({"answer": old[(row["stage"], row["pair"])],
+                          "primitive": row["primitive"]})
+            if theirs is not None and mine is not None:
+                entry["old_compared"] += 1
+                if theirs == mine:
+                    entry["old_agree"] += 1
+                else:
+                    split = entry["_split"]
+                    split[(theirs, mine)] = split.get((theirs, mine), 0) + 1
         if mine is None or row["pair"] is None:
             continue
         key = (row["stage"], row["pair"])
@@ -1046,6 +1081,12 @@ def compare(
             entry["accuracy"] = (entry["right"] / entry["labelled"]
                                  if entry["labelled"] else None)
             entry["brier"] = sum(scores) / len(scores) if scores else None
+            entry["old_agreement"] = (entry["old_agree"] / entry["old_compared"]
+                                      if entry["old_compared"] else None)
+            entry["old_disagreements"] = [
+                {"old": was, "arm": said, "n": n} for (was, said), n in sorted(
+                    entry.pop("_split").items(),
+                    key=lambda item: (-item[1], item[0]))[:SPLIT_TOP]]
             arms.append(entry)
         report.append({"stage": name, "arms": arms})
     return report
@@ -1069,6 +1110,18 @@ def _compare_line(entry: dict) -> str:
         if entry["mean_abs_dp"] is not None:
             agreement += f", mean |Δp| {entry['mean_abs_dp']:.3f}"
         parts.append(agreement)
+    if entry["old_pairs"] and not entry["old_compared"]:
+        parts.append(f"vs old: no comparable old answer in {entry['old_pairs']} pair(s)")
+    elif entry["old_pairs"]:
+        against = (f"vs old {entry['old_agree']}/{entry['old_compared']} agree"
+                   f" ({_rate(entry['old_agree'], entry['old_compared'])})")
+        if entry["old_pairs"] > entry["old_compared"]:
+            against += (f", {entry['old_pairs'] - entry['old_compared']} pair(s)"
+                        f" not comparable")
+        if entry["old_disagreements"]:
+            against += ", old→arm " + " ".join(
+                f"{d['old']}→{d['arm']} ×{d['n']}" for d in entry["old_disagreements"])
+        parts.append(against)
     if entry["labelled"]:
         parts.append(f"labelled {entry['right']}/{entry['labelled']} right"
                      + (f", Brier {entry['brier']:.3f}" if entry["brier"] is not None else ""))
@@ -1079,9 +1132,12 @@ def compare_text(report: list[dict]) -> str:
     """The comparison as a person reads it, one block per stage."""
     if not report:
         return "judgments compare: no calls recorded on the jev, kev or haiku arms\n"
-    lines = ["judgments compare: each arm against the jev row of the same pair"]
+    lines = ["judgments compare: each arm against the jev row and the old "
+             "mechanism of the same pair"]
     for entry in report:
-        lines.append(f"  {entry['stage']}:")
+        paired = any(arm["old_pairs"] for arm in entry["arms"])
+        lines.append(f"  {entry['stage']}:" + (
+            "" if paired else " no paired samples with the old mechanism"))
         lines.extend(_compare_line(arm) for arm in entry["arms"])
     return "\n".join(lines) + "\n"
 

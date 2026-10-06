@@ -1373,6 +1373,34 @@ if [ -n "$TRANSIENT_OUT" ]; then
   TRANSIENT_FOUND=$((TRANSIENT_FOUND + $(printf '%s\n' "$TRANSIENT_OUT" | wc -l)))
 fi
 
+# --- the local judgment of each hit (sd:2761) -------------------------------
+# Each durable pattern hit is asked of the local Kev, and of nothing else:
+# is it a real credential? The scanner's verdict, yes, is the shadow answer,
+# so the ledger gets a pair and nothing here changes: the answer is thrown
+# away, and no line of output or exit code depends on it. A hit is a
+# candidate credential, so it goes to Kev on loopback or nowhere
+# (`--local-only`, and JEV_SECRET_SCAN is a local-only stage in jev.py), and
+# it reaches jev on stdin, never in argv, where `ps` would show it.
+# Bounded: S4S_JEV_MAX_HITS hits per run (default 10), S4S_JEV_TIMEOUT
+# seconds per call (default 5), no retry. JEV_SECRET_SCAN=0 is the off-switch.
+judge_hits() {
+  JEV=$(command -v jev 2>/dev/null) || return 0
+  "$JEV" enabled JEV_SECRET_SCAN --local-only --record \
+    --caller local-scan-for-secrets >/dev/null 2>&1 || return 0
+  max=${S4S_JEV_MAX_HITS:-10}
+  case $max in ''|*[!0-9]*) max=10 ;; esac
+  wait_s=${S4S_JEV_TIMEOUT:-5}
+  case $wait_s in ''|*[!0-9]*) wait_s=5 ;; esac
+  printf '%s\n' "$1" | head -n "$max" | while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    printf '%s\n' "$hit" | JEV_TIMEOUT=$wait_s JEV_RETRIES=0 \
+      "$JEV" noul 'Is this a real credential, not a test value or placeholder?' \
+        --local-only --stage JEV_SECRET_SCAN --caller local-scan-for-secrets \
+        --gate 0.5 --shadow yes --state-format text >/dev/null 2>&1 || :
+  done
+}
+[ -n "$OUT" ] && { judge_hits "$OUT" </dev/null || :; }
+
 # --- pass 2: your keys anywhere, regardless of format ---------------------
 echo "== your keys (shell env exports)"
 if [ -n "$S4S_PAIRS" ]; then
