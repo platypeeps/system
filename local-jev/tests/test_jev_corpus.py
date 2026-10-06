@@ -133,6 +133,15 @@ class TheModule(unittest.TestCase):
         jev_corpus.append({"arm": "third"}, env)
         self.assertEqual([r["arm"] for r in records(self.folder)], ["first", "third"])
 
+    def test_a_tail_a_killed_writer_left_is_cut_before_the_next_line(self):
+        env = {"JEV_CORPUS_DIR": str(self.folder)}
+        jev_corpus.append({"arm": "first"}, env)
+        day, = self.folder.iterdir()
+        with day.open("a") as fh:
+            fh.write('{"arm": "torn", "sch')
+        jev_corpus.append({"arm": "next"}, env)
+        self.assertEqual([r["arm"] for r in records(self.folder)], ["first", "next"])
+
     def test_a_held_lock_drops_the_record_within_the_bound(self):
         env = {"JEV_CORPUS_DIR": str(self.folder)}
         jev_corpus.append({"arm": "first"}, env)

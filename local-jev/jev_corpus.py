@@ -87,6 +87,18 @@ def locked(fd) -> bool:
             time.sleep(LOCK_TRY)
 
 
+def whole_lines(fd, size: int) -> int:
+    """The length of the file up to and including its last newline."""
+    end = size
+    while end > 0:
+        chunk = os.pread(fd, min(4096, end), end - min(4096, end))
+        cut = chunk.rfind(b"\n")
+        if cut >= 0:
+            return end - len(chunk) + cut + 1
+        end -= len(chunk)
+    return 0
+
+
 def append(record: dict, env=None) -> str:
     """Append one record as a JSON line. Never raises; the return is for the
     suite."""
@@ -109,7 +121,7 @@ def append(record: dict, env=None) -> str:
         path = os.path.join(folder, now.strftime("%Y-%m-%d") + ".jsonl")
         # O_NONBLOCK so a FIFO in the file's place fails here instead of
         # waiting for a reader; the type check below then refuses it.
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+        fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
                      | os.O_NONBLOCK, 0o600)
         try:
             if not private(os.fstat(fd), stat.S_ISREG):
@@ -122,7 +134,10 @@ def append(record: dict, env=None) -> str:
             # leaves no fragment for the next line to run into.
             if not locked(fd):
                 return FAILED
-            start = os.fstat(fd).st_size
+            # A writer killed mid-line left a tail with no newline; cut it, or
+            # this line would be glued to it and both lost to a reader.
+            start = whole_lines(fd, os.fstat(fd).st_size)
+            os.ftruncate(fd, start)
             try:
                 done = 0
                 while done < len(data):
