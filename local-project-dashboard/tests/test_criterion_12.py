@@ -297,9 +297,9 @@ class OnTheWire(ScreenCase):
         host, port = self.listening.server_address[:2]
         self.base = f"http://{host}:{port}"
 
-    def fetch(self, path: str):
+    def fetch(self, path: str, timeout: float = 10):
         try:
-            answer = urllib.request.urlopen(self.base + path, timeout=10)
+            answer = urllib.request.urlopen(self.base + path, timeout=timeout)
             return answer.status, answer.headers, answer.read().decode("utf-8")
         except urllib.error.HTTPError as refused:
             with refused:
@@ -349,8 +349,16 @@ class OnTheWire(ScreenCase):
     def test_the_navigation_reads_the_fixture_fleet_and_not_this_machines(self):
         # Repos is one of the links above. Read against `~/repos` it ran git
         # across every checkout on the machine, under a 12-second budget that
-        # outlasts `fetch`'s 10, and timed out at load 18 (sd:2411).
-        _, _, body = self.fetch("/operations?area=repos")
+        # outlasts `fetch`'s 10, and timed out at load 18 (sd:2411). The fixture
+        # root is empty, yet the child's start alone outlasted 10 s under a
+        # loaded gate (sd:2752). So the child gets a budget no load reaches, and
+        # the fetch outlasts it: a slow start is a slow pass, not a timeout.
+        from unittest.mock import patch
+
+        from sd_dashboard import fleet
+
+        with patch.object(fleet, "FLEET_SECONDS", 60.0):
+            _, _, body = self.fetch("/operations?area=repos", timeout=90)
         self.assertIn(f"No checkouts under {Path(self.tmp.name) / 'repos'}.", body)
 
 

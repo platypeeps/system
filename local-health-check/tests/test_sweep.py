@@ -25,6 +25,7 @@ import tempfile
 import time
 import unittest
 
+from . import jev_pins
 from .procgroup import kill_group
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -67,6 +68,11 @@ def _fixture(root, folder, stem, body):
     path.write_text("#!/bin/sh\n" + body)
     path.chmod(0o755)
     return path
+
+
+def setUpModule():
+    # Every `check` here runs with this machine's HOME (sd:2799).
+    unittest.addModuleCleanup(jev_pins.isolate())
 
 
 class SweepAgainstFixtures(unittest.TestCase):

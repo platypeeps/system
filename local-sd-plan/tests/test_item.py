@@ -57,6 +57,16 @@ def sd_db_floor() -> tuple[int, int]:
     return int(found.group(1)), int(found.group(2))
 
 
+def setUpModule():
+    # Each case has its own HOME, but an inherited JEV_METER_DB or
+    # JEV_TRACES_URL still reaches the real `jev` that `item` calls (sd:2799).
+    patcher = mock.patch.dict(os.environ, {"JEV_METER": "0", "JEV_CORPUS": "0", "JEV_TRACES_URL": "0"})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+    for name in ("JEV_METER_DB", "JEV_CORPUS_DIR"):
+        os.environ.pop(name, None)
+
+
 class ItemCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
