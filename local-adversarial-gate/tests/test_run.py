@@ -15,11 +15,14 @@ the sibling suites: the CI wrapper asserts a unittest summary and refuses
 skips.
 """
 
+import http.server
 import os
 import pathlib
 import signal
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -42,6 +45,35 @@ CUT_OFF = 124
 GONE_MARGIN = 3
 
 REFUSAL = "adversarial-gate: run: --out is required"
+
+# A `run` that succeeds reaches the real `local-jev/jev.sh enabled --record`,
+# which writes a ledger row even unkeyed. Pinned so it leaves the operator's
+# ledger, corpus and collector alone (sd:2799); the trace URL is an off word,
+# not unset, because `jev.sh` lets `<config>/jev/.env` fill an unset one.
+JEV_PINS = {"JEV_METER": "0", "JEV_CORPUS": "0", "JEV_TRACES_URL": "0"}
+
+# `sd_db` as `local-jev`'s metering suite finds it: installed, or the folder
+# beside this one. It builds the fixture HOME's ledger.
+try:  # pragma: no cover - one branch per machine
+    import sd_db
+except ImportError:  # pragma: no cover - one branch per machine
+    sys.path.insert(0, str(HERE.parents[1] / "local-sd-db"))
+    import sd_db
+from sd_db.database import connect  # noqa: E402
+from sd_db.migrate import initialise  # noqa: E402
+
+
+class _Collector(http.server.BaseHTTPRequestHandler):
+    """A trace collector that keeps the path of every post it hears."""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.server.posts.append(self.path)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
 
 # A codex that never answers, and that has the shape of the real one: a
 # launcher with a process tree under it. It records that it was reached,
@@ -85,13 +117,15 @@ class RunAgainstAFakeCodex(unittest.TestCase):
         # and nothing that could stand in for codex or for the bound.
         return f"{self.bin}:/usr/bin:/bin"
 
-    def run_gate(self, *args, body="exit 0\n"):
+    def run_gate(self, *args, body="exit 0\n", extra=None):
         env = {
             "PATH": self.fake_codex(body),
             "HOME": os.environ.get("HOME", str(self.tmp)),
             "CODEX_ARGV": str(self.argv_log),
             "CODEX_STDIN": str(self.stdin_log),
             "CODEX_GRANDCHILD": str(self.grandchild),
+            **JEV_PINS,
+            **(extra or {}),
         }
         started = time.monotonic()
         # Its own session, so the guard below can kill the whole tree:
@@ -131,6 +165,41 @@ class RunAgainstAFakeCodex(unittest.TestCase):
         core = (HERE.parent / "core.md").read_text()
         first = next(line for line in core.splitlines() if line.strip())
         self.assertIn(first, self.stdin_log.read_text())
+
+    def test_the_real_jev_writes_nothing_to_the_operator_s_stores(self):
+        # sd:2799: this suite's happy path wrote an `unkeyed` row into the live
+        # ledger. The operator's stores sit in a fixture HOME: a ledger at the
+        # default path, and a config naming a trace collector. `PYTHON` is this
+        # interpreter, so `jev.sh` meters with the `sd_db` that built the ledger.
+        home = self.tmp / "home"
+        ledger = home / ".local" / "share" / "sd" / "sd.db"
+        ledger.parent.mkdir(parents=True)
+        initialise(ledger)
+        collector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
+        collector.posts = []
+        threading.Thread(target=collector.serve_forever, daemon=True).start()
+        self.addCleanup(collector.server_close)
+        self.addCleanup(collector.shutdown)
+        config = home / ".config" / "system" / "jev"
+        config.mkdir(parents=True)
+        (config / ".env").write_text(
+            f"JEV_TRACES_URL=http://127.0.0.1:{collector.server_address[1]}/v1/traces\n")
+        result, _ = self.run_gate(
+            "--repo", str(self.repo), "--out", str(self.tmp / "adversarial.md"),
+            extra={"HOME": str(home), "PYTHON": sys.executable,
+                   "PYTHONPATH": str(pathlib.Path(sd_db.__file__).parents[1])},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The control: the run reached `jev`, so the stores below were exposed.
+        self.assertIn("jev is off or unkeyed here", result.stderr)
+        db = connect(ledger, write=False)
+        try:
+            rows = [tuple(row) for row in db.execute("SELECT caller, cause FROM judgment")]
+        finally:
+            db.close()
+        self.assertEqual(rows, [], "the run wrote to the ledger")
+        self.assertFalse((ledger.parent / "jev-corpus").exists(), "the run wrote a corpus")
+        self.assertEqual(collector.posts, [], "the run posted spans")
 
     def test_timeout_cuts_off_a_codex_that_never_answers(self):
         # sd:790. Before, `--timeout` was parsed and never applied: this fake

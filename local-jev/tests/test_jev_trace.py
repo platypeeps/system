@@ -97,7 +97,7 @@ class TheEnvFile(TraceCase):
     def link(self):
         from .test_jev import TestEnvFile
         helper = TestEnvFile("test_the_config_env_is_found_through_the_symlink")
-        helper.url, helper.switch = self.url, self.switch
+        helper.url, helper.switch, helper.corpus = self.url, self.switch, self.corpus
         link = helper.copy("TYPESAFE_API_KEY=k\nJEV_TRACES_URL=%s\n" % self.traces_url)
         self.addCleanup(helper.doCleanups)
         trace = Path(__file__).resolve().parent.parent / "jev_trace.py"

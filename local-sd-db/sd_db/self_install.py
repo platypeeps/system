@@ -23,8 +23,8 @@ Two callers:
   loop): only the entrypoint knows whether its local work repeats safely.
 * `sd_db.satellite --apply`, the nightly machine-setup stage.
 
-Guards: `OFF` switches it off; a lock in the venv serialises two
-installers; a loopback hub (the hub's own machine) is left alone; a
+Guards: `OFF` switches it off; the pack's provisioning lock, then a lock
+in the venv, serialise two installers; a loopback hub (the hub's own machine) is left alone; a
 process that already opened a session does not rerun; a satellite newer
 than the hub is not downgraded; and a hub older than this module, whose
 refusal carries no digest, gets today's error plus the reason.
@@ -56,6 +56,12 @@ SOURCE = "SD_DB_SOURCE_CHECKOUT"
 MARKER = "sd-db-source"
 #: In the venv: held while one process installs.
 LOCK = "sd-db-self-install.lock"
+#: The command pack's machine-wide lock around every `sd_db` provisioning
+#: (`provisioning_lock` in the pack's `bin/sd_install.py`), under its state
+#: folder. Held outside `LOCK`, so a self-install never interleaves with a
+#: `make setup` or a merge reconcile (sd:2845).
+PACK_STATE_DIR = "sd-ai-command-pack"
+PACK_LOCK = "sd-db-provision.lock"
 BRANCH = "origin/main"
 LIBRARY = "local-sd-db"
 
@@ -192,14 +198,27 @@ def pip_install(python: Path, wheel: Path) -> None:
          f"pip install of {wheel.name}", STEP_TIMEOUT)
 
 
-def _locked(path: Path):
-    """Hold `path` exclusively, waiting up to `LOCK_WAIT` for another installer.
+def pack_lock(environ) -> Path:
+    """The pack's provisioning lock, by the pack's own rule, not its code.
+
+    The pack's `state_home` for the real home: an absolute
+    `$XDG_STATE_HOME`, else `~/.local/state`. Mirrored, not imported, so
+    this package runs with no pack installed.
+    """
+    configured = str(environ.get("XDG_STATE_HOME", ""))
+    root = (Path(configured) if configured and os.path.isabs(configured)
+            else Path(os.path.expanduser("~")) / ".local" / "state")
+    return root / PACK_STATE_DIR / PACK_LOCK
+
+
+def _locked(path: Path, holder: str = "another install"):
+    """Hold `path` exclusively, waiting up to `LOCK_WAIT` for `holder`.
 
     Through the one hardened lock opener both packages share.
     """
     return runner_journal.lock(
         path, blocking=False, noun="sd_db self-install", error=_Refused, wait=LOCK_WAIT, poll=_LOCK_POLL,
-        held=f"another install held the lock {path} for {LOCK_WAIT:g} s; nothing installed")
+        held=f"{holder} held the lock {path} for {LOCK_WAIT:g} s; nothing installed")
 
 
 def _export(checkout: Path, commit: str, into: Path) -> Path:
@@ -265,7 +284,7 @@ def install_hub_build(hub_build: str, *, venv: Path | None = None, source: Path 
     if checkout is None:
         return Outcome(False, why)
     try:
-        with _locked(venv / LOCK):
+        with _locked(pack_lock(environ), "the command pack's sd_db provisioning"), _locked(venv / LOCK):
             return _install_locked(hub_build, venv, checkout)
     except _Refused as refused:
         return Outcome(False, str(refused))

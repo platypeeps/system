@@ -255,8 +255,10 @@ other experiments. It carries the ledger's fields and nothing else, never
 raises, and waits `JEV_TRACES_TIMEOUT` seconds (default 0.5) at most.
 Unset sends nothing.
 
-**Nothing you submit is recorded.** No prompt, no state, no path, no subject,
-no body. The ledger holds identifiers and counts, and the two columns that
+**Nothing you submit reaches the ledger or a span.** No prompt, no state, no
+path, no subject, no body. The [trace corpus](#trace-corpus) is the one place
+that keeps them, in a private file on this machine. The ledger holds
+identifiers and counts, and the two columns that
 could carry content by accident are **shaped**, not merely capped: a length
 cap keeps a paragraph out and lets `/Users/someone/private.txt` straight in. The
 judgment is a number -- a probability, a score, or which of your own criteria
@@ -381,6 +383,13 @@ is answered as if Jev were down:
 So every caller runs its old mechanism with no edit, and the comparison arms
 still get the request. `jev status` prints `shadow=on`, and `jev enabled --why`
 says so too.
+
+**A satellite runs shadow by setup.** Its rows reach the hub's ledger, and a
+missing file means live, so a satellite once ran `sd-review` on Jev's answer
+(sd:2838). `machine-setup.sh update satellite` reports a missing shadow file
+as `MISSING` and, with `--apply`, runs `jev shadow on`. It leaves a written
+`off` alone, sets no comparison arm, and skips silently where `jev` is not on
+`PATH`. The hub has no `.satellite`, so the stage never touches its file.
 
 **The agreement needs the old answer, and a fallback is a marker.**
 `tests/test_jev_contract.py` keeps every `--fallback` distinct from a real
@@ -512,9 +521,83 @@ the settings are in `.env.example`. Read the comparison with:
 
     local-sd-db/sd-db.sh judgments compare [--stage S] [--since 2026-10] [--json]
 
+### Trace corpus
+
+Every call also writes what it sent and what came back, so the experiment
+can be rerun and relabelled from stored data when the success criteria
+change. One JSON line per call per arm, appended to
+`~/.local/share/sd/jev-corpus/YYYY-MM-DD.jsonl` (the UTC day), or under
+`JEV_CORPUS_DIR`. The folder is held to 0700 and each file to 0600, and a
+symlink, a FIFO or another user's file is refused. Keep it on the
+system disk: a volume mounted `noowners` ignores both modes. The corpus is
+never committed, and nothing here sends it anywhere. Nothing prunes it
+either: a day is one file, so removing old days is `rm` of those files.
+
+A record carries:
+
+- `schema`, `id` and `time`, and `call`: one id shared by the Jev record,
+  the baseline's and each arm's, with or without a pair;
+- `caller`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
+  `shadow`, and the ledger's fields: answer, confidence, distribution,
+  outcome, cause, tokens, duration, `changed`;
+- `request`: the payload as sent, after redaction. A local-only call sends
+  its payload unredacted, so the corpus redacts its copy. The Haiku arm
+  adds `prompts`, the message and schema each question became;
+- `response`: the whole parsed response, every distribution included; for
+  the Haiku arm, each question's reply text. Redacted, since a model can
+  echo what it was asked;
+- `settings`: the flags that shape the printed answer (`CORPUS_SETTINGS`
+  in `jev.py`), such as `--gate`, `--unsure-below` and `--model`, the one
+  that takes text and is redacted; the instructions and criteria are in
+  `request`, redacted;
+- `printed`: exactly what reached the caller's stdout, without its final
+  newline, or null when nothing did. In shadow mode that is the caller's
+  own answer; the judgment is `answer`;
+- `fallback` and `baseline`: the `--fallback` marker and the caller's own
+  answer;
+- `ledger`: the `judgment` row's id, or null when the meter wrote none.
+
+**A call that sent nothing stores no request.** Switched off, unkeyed, a
+setting that does not parse, or a redaction that refused the request: the
+record is written with `request` null, because the corpus keeps what was
+sent and nothing was. Building the request anyway would read stdin after
+the caller's answer is printed, which blocks a caller whose stdin is open.
+`jev enabled --record` and `jev record` store nothing here: they send
+nothing, and the ledger already holds all they know.
+
+**Every content field is redacted, or for the secret scanner hashed.**
+`request`, `response`, `prompts`, `answer`, `printed`, `fallback`,
+`baseline`, `model` and `settings.model` (`CORPUS_CONTENT` in `jev.py`;
+`--model` takes any text) go through the redaction a
+hosted request gets, on every record, so a local-only call stays
+replayable. A field the pass refuses, or every one when the pattern file
+does not load, is stored as null. A stage in `CORPUS_HASHED_STAGES`
+(`JEV_SECRET_SCAN`) stores each of those fields as `{"sha256": …}`
+instead, and the request adds `state_sha256`. A candidate credential
+copied into a file is what the scanner exists to find. Equal states hash
+equal, so a hit can be found again and labelled.
+
+A record that waits more than a second for another writer's lock is
+dropped, so a stuck writer never holds up a call.
+
+`JEV_CORPUS=0` (or another off-word) stores nothing; unset means on. The
+arms write their records from their own child, so they need the meter on
+as before. A folder that cannot be written loses the record and changes
+nothing a caller sees.
+
+Read it with `jq`; for example, every call of one stage with its arms:
+
+    jq -c 'select(.stage == "JEV_NOTIFY") | {call, arm, answer, outcome}' \
+        ~/.local/share/sd/jev-corpus/*.jsonl
+
 ## What it never does
 
 It never prints the key, never logs it, and never puts it in an error message.
+
+**It keeps what it sends.** Every call's request and response go to the
+[trace corpus](#trace-corpus), a private file on this machine. That copy is
+local, but it is a copy: switch it off with `JEV_CORPUS=0` where it is not
+wanted.
 
 **Nothing sensitive should be piped into it.** Every call leaves the machine,
 except a `--local-only` one. That is why `local-scan-for-secrets` calls only

@@ -19,13 +19,17 @@ The `demo` label is the real `cron-jobs.sh` reading a real record, not a stub
 that exits 1: the claim is about what the two programs do together.
 """
 
+import http.server
 import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 
+from . import jev_pins
 from .procgroup import kill_group
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -43,6 +47,33 @@ RUN_TIMEOUT = 300
 # verdict on the last run it spawned.
 LAUNCHD = {"demo": ("5", "0"), "hang": ("5", "0"), "legacy": ("2", "2"),
            "green": ("5", "1")}
+
+# `sd_db` as `local-jev`'s metering suite finds it: installed, or the folder
+# beside this one. It builds the fixture HOME's ledger (sd:2799).
+try:  # pragma: no cover - one branch per machine
+    import sd_db
+except ImportError:  # pragma: no cover - one branch per machine
+    sys.path.insert(0, str(HERE.parents[1] / "local-sd-db"))
+    import sd_db
+from sd_db.database import connect  # noqa: E402
+from sd_db.migrate import initialise  # noqa: E402
+
+
+def setUpModule():
+    unittest.addModuleCleanup(jev_pins.isolate())
+
+
+class _Collector(http.server.BaseHTTPRequestHandler):
+    """A trace collector that keeps the path of every post it hears."""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.server.posts.append(self.path)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
 
 
 class CronGuardAgainstFixtures(unittest.TestCase):
@@ -118,6 +149,27 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         # This suite is about the guard, not about Jev, and the ordering
         # spends real tokens labelling findings it never reads.
         env["JEV_HEALTH_CHECK"] = "0"
+        # The operator's stores, in the fixture HOME: a ledger at the default
+        # path, and a config naming a trace collector. `PYTHON` is this
+        # interpreter, so `jev.sh` meters with the `sd_db` that built the
+        # ledger; unpinned, `enabled --record` writes its row there.
+        cls.ledger = cls.home / ".local" / "share" / "sd" / "sd.db"
+        cls.ledger.parent.mkdir(parents=True)
+        initialise(cls.ledger)
+        cls.collector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
+        cls.collector.posts = []
+        threading.Thread(target=cls.collector.serve_forever, daemon=True).start()
+        jev_config = cls.home / ".config" / "system" / "jev"
+        jev_config.mkdir(parents=True)
+        # `JEV_METER=1` too: the suite's pin must beat the config's.
+        (jev_config / ".env").write_text(
+            "JEV_METER=1\n"
+            f"JEV_TRACES_URL=http://127.0.0.1:{cls.collector.server_address[1]}/v1/traces\n")
+        env.pop("SYSTEM_TOOLS_CONFIG", None)
+        env.pop("XDG_CONFIG_HOME", None)
+        env["PYTHON"] = sys.executable
+        env["PYTHONPATH"] = os.pathsep.join(
+            filter(None, [str(pathlib.Path(sd_db.__file__).parents[1]), env.get("PYTHONPATH")]))
         proc = subprocess.Popen(
             ["sh", str(SCRIPT), "check"], stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
@@ -131,6 +183,8 @@ class CronGuardAgainstFixtures(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.collector.shutdown()
+        cls.collector.server_close()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def findings(self):
@@ -189,3 +243,16 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         """sd:1201's own case, unchanged: `status` exits 0, launchd's counter
         says 1, and the counter is dropped."""
         self.assertEqual(self.about("green"), [], self.out)
+
+    def test_the_real_jev_writes_nothing_to_the_operator_s_stores(self):
+        """sd:2799: the sweep suite's run wrote a `switched-off` row into the
+        live ledger. Pinned, the run's `jev` leaves the HOME's ledger empty,
+        writes no corpus and posts nothing to the collector its config names."""
+        ledger = connect(self.ledger, write=False)
+        try:
+            rows = [tuple(row) for row in ledger.execute("SELECT caller, cause FROM judgment")]
+        finally:
+            ledger.close()
+        self.assertEqual(rows, [], "the run wrote to the ledger")
+        self.assertFalse((self.ledger.parent / "jev-corpus").exists(), "the run wrote a corpus")
+        self.assertEqual(self.collector.posts, [], "the run posted spans")

@@ -1056,6 +1056,18 @@ class ExtraPolicyCase(unittest.TestCase):
                 self.assertIn("EXTRA_POLICIES may hold only", done.stderr)
                 self.assertEqual(box.calls(), [])
 
+    def test_a_quote_or_backslash_in_a_name_never_calls_aws(self):
+        # The names reach unquoted loops and a JMESPath literal (sd:2848).
+        # Each value sits in single quotes in the account file: '\'' is one quote.
+        for name in ("it'\\''s", "a\\b"):
+            with self.subTest(name=name):
+                box = self.ready(EXTRA_POLICIES="provision " + name)
+                self.extra(box)
+                done = box.run("apply", "x")
+                self.assertEqual(done.returncode, 1, done.stderr)
+                self.assertIn("EXTRA_POLICIES may hold only IAM policy names", done.stderr)
+                self.assertEqual(box.calls(), [])
+
     def test_a_simulator_call_too_long_for_argv_fails_instead_of_passing(self):
         # Whitespace does not count toward IAM's limit, so a valid document can
         # outgrow ARG_MAX. The exec then fails as a whole; no subset reaches AWS.

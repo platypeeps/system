@@ -35,8 +35,10 @@ ENV_JEV_SHADOW="${JEV_SHADOW:-}"
 ENV_JEV_FLAG_FILE="${JEV_FLAG_FILE:-}"
 ENV_JEV_TRACES_URL="${JEV_TRACES_URL:-}"
 ENV_JEV_TRACES_TIMEOUT="${JEV_TRACES_TIMEOUT:-}"
-# The comparison arms' settings (jev_compare.py) follow the same rule.
-COMPARE_VARS="JEV_COMPARE_STAGES JEV_COMPARE_KEV JEV_COMPARE_KEV_URL JEV_COMPARE_KEV_MODEL KEV_API_KEY KEV_MODEL
+# The comparison arms' settings (jev_compare.py), the corpus's
+# (jev_corpus.py) and the meter's (jev_meter.py) follow the same rule: a
+# suite's JEV_METER=0 must beat a JEV_METER=1 in the .env (sd:2799).
+COMPARE_VARS="JEV_METER JEV_METER_DB JEV_CORPUS JEV_CORPUS_DIR JEV_COMPARE_STAGES JEV_COMPARE_KEV JEV_COMPARE_KEV_URL JEV_COMPARE_KEV_MODEL KEV_API_KEY KEV_MODEL
   JEV_COMPARE_HAIKU_VIA JEV_COMPARE_HAIKU_MODEL JEV_COMPARE_HAIKU_USD_IN JEV_COMPARE_HAIKU_USD_OUT
   JEV_COMPARE_ANTHROPIC_KEY JEV_COMPARE_ANTHROPIC_URL JEV_COMPARE_OPENROUTER_KEY
   JEV_COMPARE_OPENROUTER_URL OPENROUTER_API_KEY JEV_COMPARE_BASETEN_KEY JEV_COMPARE_BASETEN_URL
@@ -242,6 +244,10 @@ environment:
                      (off when unset; local-genai-traces takes
                      http://127.0.0.1:4338/v1/traces)
   JEV_TRACES_TIMEOUT seconds for that post (default 0.5)
+  JEV_CORPUS         0/off: store no trace corpus (unset means on)
+  JEV_CORPUS_DIR     where it goes (default ~/.local/share/sd/jev-corpus);
+                     one JSON line per call per arm, with the request and
+                     the response, so a run can be redone from stored data
   JEV_COMPARE_KEV    1/on/true/yes/enabled: run the Kev arm (unset means off)
   JEV_COMPARE_HAIKU_VIA  anthropic, openrouter, claude-cli or baseten: run
                      the second comparison arm (unset means off)

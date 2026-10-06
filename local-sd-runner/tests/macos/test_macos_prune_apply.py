@@ -53,6 +53,11 @@ class PruneApply(unittest.TestCase):
         # Runs before the temporary directory's own cleanup: a failed test
         # must not leave frozen files the cleanup cannot remove.
         self.addCleanup(subprocess.run, ["chflags", "-R", "nouchg", str(self.root)], check=False)
+        # The fixture run's ending reads the process table through the
+        # runner's `observer` seam; a `ps eww` past even the fixture's 120 s
+        # under a loaded gate held it `pending` (sd:2752). The prune's own
+        # holder checks below still read the real table.
+        self.fixture.runner.observer = lambda run: []
         request = self.fixture.claim()
         self.run_row = self.fixture.run_fixture(request)
         self.assertEqual(self.run_row["end_step"], "released", self.run_row)

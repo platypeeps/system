@@ -84,6 +84,7 @@ sh ~/repos/system/local-deploy/deploy.sh upgrade
    Each one imports `sd_db` lazily, so none may run while the library is replaced.
    The runner stops with `runner.sh stop` (the restart's drain and idle checks, then `launchctl bootout`); the others with `launchctl bootout`.
 8. It runs `local-sd-db/sd-db.sh install <venv>` once per venv, then `apply` for the agents still loaded.
+   Inside upgrade, `apply` prints no `needs sd_db install` report and no `skip` line for an agent upgrade stopped.
 9. It starts each stopped agent: sd-serve (a new listener), the dashboard (`health --wait`), the runner (`runner.sh start`).
    An agent whose wait fails after its bootstrap is booted out again, so it stays stopped.
 10. A failure after the first stop leaves every stopped agent stopped, never running on a mixed library.

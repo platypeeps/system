@@ -12,7 +12,8 @@ a listener that most machines do not run.
 
 **What leaves.** Only the event's fields: caller, stage, primitive, model,
 outcome, cause, the numeric answer, confidence, token counts and duration.
-The event never holds the question or the state, so neither can reach a span.
+The event never holds the question or the state, so neither can reach a span;
+`jev_corpus` keeps those, in a private file on this machine.
 A text field goes only when it is an identifier (`IDENTIFIER`); anything
 else, such as a path or a sentence passed to `jev record`, is dropped.
 

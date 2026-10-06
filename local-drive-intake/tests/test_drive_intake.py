@@ -15,11 +15,31 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import drive_intake as di  # noqa: E402
+
+#: A path no rule matches reaches the real sibling `jev.sh` with this
+#: process's environment (`test_unmatched_is_noise`). Switched off, it
+#: declines and sends nothing, whatever key `<config>/jev/.env` holds;
+#: unmetered and with no corpus, it writes nothing. Unpinned, an operator's
+#: run made a real hosted call and wrote it to their own ledger and trace
+#: corpus (sd:2790). The trace URL is an off word, not empty: `jev.sh` lets
+#: `<config>/jev/.env` fill an empty one (sd:2799).
+_ISOLATED = unittest.mock.patch.dict(os.environ, {
+    "JEV_ENABLED": "0", "TYPESAFE_API_KEY": "", "JEV_METER": "0", "JEV_CORPUS": "0",
+    "JEV_TRACES_URL": "0"})
+
+
+def setUpModule():
+    _ISOLATED.start()
+
+
+def tearDownModule():
+    _ISOLATED.stop()
 
 
 def snapshot(root: Path) -> dict:

@@ -63,6 +63,12 @@ except ImportError:                          # pragma: no cover - a copy alone
     # a judgment that did not happen.
     jev_trace = None
 
+try:
+    import jev_corpus
+except ImportError:                          # pragma: no cover - a copy alone
+    # And the same again for the corpus.
+    jev_corpus = None
+
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_UNCONFIGURED = 3
@@ -191,6 +197,25 @@ def shadow_on(env) -> bool:
 # for text that may not leave the machine, such as a secret scanner's hits.
 # A stage named here is local-only even when its caller forgets the flag.
 LOCAL_ONLY_STAGES = ("JEV_SECRET_SCAN",)
+
+#: Stages whose content the corpus keeps as SHA-256 digests and never as
+#: text. The secret scanner's state is a candidate credential, and a second
+#: copy of it in a file is what the scanner exists to find. Every other
+#: record, local-only ones included, is redacted instead, so it can be rerun.
+CORPUS_HASHED_STAGES = ("JEV_SECRET_SCAN",)
+
+#: The fields of a corpus record that can hold text a caller gave or a model
+#: echoed, `settings.model` among them: `--model` takes any text. Hashed for
+#: a stage above, redacted for every other record.
+CORPUS_CONTENT = ("request", "response", "prompts", "answer", "printed",
+                  "fallback", "baseline", "model")
+
+#: The flags a corpus record keeps under `settings`: the ones that shape the
+#: printed answer. Only `model` takes text, and `CORPUS_CONTENT` covers it. The instructions, criteria and levels
+#: are kept as sent, redacted, in `request`; a path to a file is not kept.
+CORPUS_SETTINGS = ("verb", "gate", "unsure_below", "json", "changed",
+                   "state_format", "model", "local_only", "shadow_ms",
+                   "baseline_ms")
 
 #: Kev's System One endpoint, the name a request asks it for, and the model a
 #: row records; `jev_compare`'s Kev arm reads the same three.
@@ -435,26 +460,105 @@ _EVENT = None
 _ENV = None
 
 
-def write_event(event: dict, env) -> str:
+def write_event(event: dict, env, corpus=None) -> str:
     """Hand one finished event to the recorder. Never raises.
 
     The one door to the ledger, so every caller of it -- a judgment, a
     decline, a caller's own report of its old path -- is refused, degraded and
     recorded in exactly the same way.
+
+    `corpus` is what the call sent and got back, for the trace corpus. It is
+    kept apart from `event` because every key of `event` is a ledger column
+    and a span attribute, and neither may hold content. Given, it is stored
+    with the event and the ledger row's id.
     """
     if jev_trace is not None:
         try:
             jev_trace.export(event, env)
         except Exception:                    # pragma: no cover - belt and brace
             pass
-    if jev_meter is None:
+    said, row = "", None
+    if jev_meter is not None:
+        try:
+            said, row = jev_meter.write(event, env)
+        except Exception:                    # pragma: no cover - belt and brace
+            # `jev_meter.write` promises not to raise. This is the promise
+            # being kept anyway, because the cost of being wrong about it is
+            # a caller that stopped working over its own bookkeeping.
+            pass
+    if corpus is not None:
+        to_corpus(dict(event, **corpus, ledger=row), env)
+    return said
+
+
+def sha256(value) -> str:
+    """A string's SHA-256, or a JSON value's over its sorted, compact
+    encoding, so equal values hash equal."""
+    import hashlib
+    text = value if isinstance(value, str) else json.dumps(
+        value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def each_content(record: dict, change) -> dict:
+    """`record` with `change(field, value)` applied to every content field
+    that holds a value, `settings.model` included."""
+    out = dict(record)
+    for field in CORPUS_CONTENT:
+        if out.get(field) is not None:
+            out[field] = change(field, out[field])
+    settings = out.get("settings")
+    if isinstance(settings, dict) and settings.get("model") is not None:
+        out["settings"] = dict(settings, model=change("model", settings["model"]))
+    return out
+
+
+def hashed(record: dict) -> dict:
+    """`record` with every content field replaced by its digest.
+
+    The request keeps the state's digest apart, so one hit can be found again
+    across calls and labelled; nothing in it can be read back.
+    """
+    def digest(field, value):
+        out = {"sha256": sha256(value)}
+        if field == "request" and isinstance(value, dict) and "state" in value:
+            out["state_sha256"] = sha256(value["state"])
+        return out
+    return each_content(record, digest)
+
+
+def scrubbed(record: dict, env) -> dict:
+    """`record` with every content field through the redaction a hosted
+    request gets. A field the pass refuses, or every field when the pattern
+    file does not load, is dropped: the record is kept, the text is not."""
+    patterns, problem = privacy_patterns(env)
+
+    def clean(field, value):
+        try:
+            return None if problem else redact(value, patterns, [0])
+        except JevError:
+            return None
+    return each_content(record, clean)
+
+
+def to_corpus(record: dict, env) -> str:
+    """Store one record in the trace corpus. Never raises.
+
+    The one door to the corpus, for `jev`'s own rows and the arms' alike, so
+    the hashing rule cannot be skipped by one of them.
+    """
+    if jev_corpus is None:
         return ""
     try:
-        return jev_meter.record(event, env)
+        # A local-only request was sent unredacted, a response can echo what
+        # it was asked, and the caller's answers never went through `post`:
+        # so every content field is handled here, on every path.
+        if record.get("stage") in CORPUS_HASHED_STAGES:
+            record = hashed(record)
+        else:
+            record = scrubbed(record, env)
+        return jev_corpus.append(record, env)
     except Exception:                        # pragma: no cover - belt and brace
-        # `jev_meter.record` promises not to raise. This is the promise being
-        # kept anyway, because the cost of being wrong about it is a caller
-        # that stopped working over its own bookkeeping.
         return ""
 
 
@@ -687,10 +791,10 @@ def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
     event, _EVENT = _EVENT, None
     if event is None:
         return ""
-    printed = event.pop("_printed", None)
-    declared = event.pop("_declared", None)
-    event.pop("_cause", None)
-    event.pop("_criteria", None)
+    # Every `_` key is this process's own note, never a column.
+    private = {key: event.pop(key) for key in [k for k in event if k.startswith("_")]}
+    printed = private.get("_printed")
+    declared = private.get("_declared")
     if fallback is not None and outcome != "ok":
         outcome = "fallback"
         cause = cause or "unavailable"
@@ -706,7 +810,18 @@ def flush(outcome: str, *, cause=None, fallback=None, baseline=None,
     against = fallback if baseline is None else baseline
     event["changed"] = _changed(outcome, declared, printed, against,
                                 numeric=event.get("primitive") != "choice")
-    return write_event(event, env)
+    # What the call sent and got back, for the corpus. A call that sent
+    # nothing -- switched off, unkeyed, a refused redaction -- has no request.
+    # `printed` is what reached the caller's stdout, which in shadow mode is
+    # its own answer; the judgment is `answer`.
+    corpus = {"arm": event.get("arm", "jev"), "call": private.get("_call"),
+              "local": private.get("_local", False),
+              "settings": private.get("_settings"),
+              "request": private.get("_request"),
+              "response": private.get("_response"),
+              "printed": private.get("_stdout"), "fallback": fallback,
+              "baseline": baseline}
+    return write_event(event, env, corpus=corpus)
 
 
 def baseline_answer(args, own) -> str | None:
@@ -760,7 +875,8 @@ def baseline_answer(args, own) -> str | None:
         return None
 
 
-def write_baseline(args, env, *, pair, own, shadow: bool, duration_ms) -> str:
+def write_baseline(args, env, *, pair, own, shadow: bool, duration_ms,
+                   corpus=None) -> str:
     """Write the control arm of one paired decision. Never raises.
 
     One writer for both modes, so a shadow pair and a live pair are the same
@@ -790,7 +906,7 @@ def write_baseline(args, env, *, pair, own, shadow: bool, duration_ms) -> str:
         # The baseline is what happened, so relative to itself it changed
         # nothing. The delta is on the judgment's row.
         "changed": "no",
-    }, env)
+    }, env, corpus=corpus)
 
 
 def cause_of(exc) -> str:
@@ -1112,6 +1228,8 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
         # After redaction and refusal, before the first attempt: the arms see
         # the bytes Jev sees, once per call however many retries follow.
         start_arms(payload)
+    # The bytes as sent, for the corpus: redacted for Jev, as given for Kev.
+    note(_request=payload)
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if conf["key"]:
@@ -1140,6 +1258,7 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                         # column exists to keep.
                         note(_cause="invalid")
                         raise
+                    note(_response=parsed)
                     if not conf.get("local"):
                         # Kev answers `kev-latest`; its row keeps the checkpoint.
                         note(model=parsed.get("model"))
@@ -1216,6 +1335,7 @@ def start_arms(payload: dict) -> str:
             _EVENT["pair"] = os.urandom(8).hex()
         job = {key: _EVENT.get(key) for key in
                ("caller", "stage", "pair", "question_id", "primitive", "questions")}
+        job["call"] = _EVENT.get("_call")
         job["payload"] = payload
         log = (env.get("JEV_COMPARE_LOG") or "").strip()
         with tempfile.TemporaryFile("w+", encoding="utf-8", prefix="jev-compare-") as fh:
@@ -1634,6 +1754,20 @@ def degrade(reason: str, fallback, out) -> int:
 LOCAL_VERBS = (cmd_enabled, set_flag, cmd_status, cmd_record)
 
 
+class Teed:
+    """`out`, keeping a copy of what was written to it, for the corpus."""
+
+    def __init__(self, out):
+        self.out, self.text = out, ""
+
+    def write(self, text):
+        self.text += text
+        return self.out.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self.out, name)
+
+
 def main(argv=None, out=None, env=None, **kw) -> int:
     out = sys.stdout if out is None else out
     env = os.environ if env is None else env
@@ -1685,8 +1819,15 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     if switched:
         declared = None if baseline is not None else "unknown"
     note(_declared=declared, pair=pair, shadow=shadowed)
+    # The corpus's join key: one per call, on `jev`'s record, the baseline's
+    # and each arm's, with or without a pair. The flags that shaped the
+    # printed answer are kept, so a record says which `--gate` produced it.
+    call = os.urandom(8).hex()
+    flags = {key: getattr(args, key) for key in CORPUS_SETTINGS if hasattr(args, key)}
+    note(_call=call, _local=local, _settings=flags)
     # In shadow mode the judgment is measured and not used, so it is written
     # to a sink and the caller is handed back its own answer instead.
+    out = Teed(out)
     sink = io.StringIO() if shadowed else out
     word, reason = why_unusable(conf, env)
     if switched and not reason:
@@ -1724,11 +1865,14 @@ def main(argv=None, out=None, env=None, **kw) -> int:
         # like, so only `--baseline` gives the pair an old answer to compare.
         answered = (None if switched and baseline is None
                     else baseline_answer(args, own))
+    note(_stdout=out.text.removesuffix("\n") if out.text else None)
     flush(outcome, cause=cause, fallback=fallback, baseline=own, env=env)
     if own is not None:
         write_baseline(args, env, pair=pair, own=answered, shadow=shadowed,
                        duration_ms=getattr(args, "baseline_ms" if baseline is not None
-                                           else "shadow_ms", None))
+                                           else "shadow_ms", None),
+                       corpus={"arm": "baseline", "call": call, "local": local,
+                               "settings": flags, "baseline": own})
     return code
 
 

@@ -35,6 +35,9 @@ class RetainedRemove(unittest.TestCase):
         self.fixture = fixtures.Fixture()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
+        # As in test_macos_prune_apply: the fixture run's ending reads no
+        # process table, which a loaded gate held `pending` (sd:2752).
+        self.fixture.runner.observer = lambda run: []
         self.root, self.db, self.config = self.fixture.root, self.fixture.db, self.fixture.config
         # Runs before the temporary directory's own cleanup: a failed test
         # must not leave frozen files the cleanup cannot remove.
