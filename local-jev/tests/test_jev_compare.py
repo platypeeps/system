@@ -17,6 +17,7 @@ The promises checked:
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -152,6 +153,8 @@ class CompareCase(MeteringCase):
     def env(self, **extra):
         settings = {
             "JEV_COMPARE_KEV": "1",
+            # Every stage these cases call under; an unlisted one runs no arm.
+            "JEV_COMPARE_STAGES": "unknown, JEV_NOTIFY,JEV_SD_REVIEW",
             "JEV_COMPARE_KEV_URL": self.base + "/v1/systemone",
             "JEV_COMPARE_HAIKU_VIA": "off",
             "JEV_COMPARE_ANTHROPIC_URL": self.base + "/v1/messages",
@@ -261,6 +264,25 @@ class TheKevArm(CompareCase):
         self.run_main(["noul", "is it?"], JEV_COMPARE_TIMEOUT="1")
         kev = self.by_arm(self.wait_rows(2))["kev"]
         self.assertEqual((kev["outcome"], kev["cause"]), ("timeout", "timeout"))
+
+    def test_a_kev_that_never_answers_writes_a_timeout_row_late(self):
+        """sd:2824: the live Kev took the connection and never answered. Its
+        row came a timeout after the Jev row, with the Jev row's pair."""
+        hung = socket.socket()
+        self.addCleanup(hung.close)
+        hung.bind(("127.0.0.1", 0))
+        hung.listen(8)          # connections queue here and are never accepted
+        code, out = self.run_main(
+            ["choice", "which tier?", "--criteria", "light,standard,deep",
+             "--fallback", "standard", "--stage", "JEV_SD_REVIEW"],
+            JEV_SHADOW="1", JEV_COMPARE_TIMEOUT="1",
+            JEV_COMPARE_KEV_URL="http://127.0.0.1:%d/v1/systemone" % hung.getsockname()[1])
+        self.assertEqual((code, out), (0, "standard\n"))
+        rows = self.by_arm(self.wait_rows(3))
+        kev = rows["kev"]
+        self.assertEqual((kev["outcome"], kev["cause"]), ("timeout", "timeout"))
+        self.assertEqual(kev["pair"], rows["jev"]["pair"])
+        self.assertGreaterEqual(kev["duration_ms"], 1000)
 
     def test_an_off_word_sends_nothing_and_writes_nothing(self):
         for word in ("0", "off", "False", "no", "disabled"):
@@ -603,11 +625,13 @@ class TheConfigFile(CompareCase):
         (folder / ".env").write_text(
             'JEV_COMPARE_KEV_URL="http://192.0.2.1:9/v1/systemone"\n'
             'JEV_COMPARE_HAIKU_VIA="openrouter"\n'
-            'JEV_COMPARE_OPENROUTER_KEY="or-key"\n')
+            'JEV_COMPARE_OPENROUTER_KEY="or-key"\n'
+            'JEV_COMPARE_STAGES="unknown"\n')
         Arm.reply = json.dumps({"probability": 0.6})
         env = dict(os.environ)
         env.update(self.env(PYTHON=sys.executable))
         del env["JEV_COMPARE_HAIKU_VIA"]
+        del env["JEV_COMPARE_STAGES"]
         result = subprocess.run(["sh", str(ENTRYPOINT), "noul", "is it?"],
                                 input="a sentence", capture_output=True, text=True,
                                 env=env, timeout=30)
@@ -691,7 +715,12 @@ class TheArmsAreOptIn(CompareCase):
         env = self.env()
         for name in ("JEV_COMPARE_KEV", "JEV_COMPARE_HAIKU_VIA"):
             env.pop(name, None)
-        env.update(settings)
+        # None unsets a variable, so a case can drop the default stage list.
+        for name, value in settings.items():
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
         spawned = []
         saved = sys.stdin
         with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as fake, \
@@ -730,6 +759,46 @@ class TheArmsAreOptIn(CompareCase):
         for word in ("", "off", "0", "disabled"):
             with self.subTest(word=word):
                 self.assertEqual(self.call_with(JEV_COMPARE_HAIKU_VIA=word), [])
+
+
+class TheStageList(TheArmsAreOptIn):
+    """sd:2824: an arm runs only for a stage `JEV_COMPARE_STAGES` lists."""
+
+    def test_an_unset_or_empty_list_starts_no_arm(self):
+        for stages in (None, "", " , "):
+            with self.subTest(stages=stages):
+                self.assertEqual(self.call_with(JEV_COMPARE_KEV="1",
+                                                JEV_COMPARE_STAGES=stages), [])
+
+    def test_only_a_listed_stage_starts_an_arm(self):
+        listed = self.call_with(JEV_COMPARE_KEV="1", JEV_STAGE="JEV_SD_REVIEW",
+                                JEV_COMPARE_STAGES="JEV_NOTIFY, JEV_SD_REVIEW")
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(self.call_with(JEV_COMPARE_KEV="1", JEV_STAGE="JEV_NOTIFY",
+                                        JEV_COMPARE_STAGES="JEV_SD_REVIEW"), [])
+
+    def child(self, stage, **settings):
+        """The child run as `jev.py` runs it; its arms finish before it returns."""
+        job = {"caller": "c", "stage": stage, "pair": "0123456789abcdef",
+               "question_id": None, "primitive": "noul", "questions": 1,
+               "payload": {"model": "jev-latest", "state": "x",
+                           "questions": {"q": {"type": "noul", "instructions": "is it?"}}}}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(job, fh)
+        env = self.env(JEV_COMPARE_HAIKU_VIA="anthropic", JEV_COMPARE_ANTHROPIC_KEY="k",
+                       **settings)
+        Arm.reply = json.dumps({"probability": 0.2})
+        self.assertEqual(jev_compare.main([fh.name], env=env), 0)
+        return sorted(s["path"] for s in Arm.seen)
+
+    def test_the_child_sends_nothing_for_an_unlisted_stage(self):
+        self.assertEqual(self.child("JEV_NOTIFY", JEV_COMPARE_STAGES="JEV_SD_REVIEW"), [])
+        self.assertEqual(self.rows(), [])
+
+    def test_the_child_asks_every_arm_for_a_listed_stage(self):
+        self.assertEqual(self.child("JEV_SD_REVIEW", JEV_COMPARE_STAGES="JEV_SD_REVIEW"),
+                         ["/v1/messages", "/v1/systemone"])
+        self.assertEqual(sorted(row["arm"] for row in self.rows()), ["haiku", "kev"])
 
 
 class TheOutputCap(CompareCase):
@@ -922,7 +991,7 @@ class TheRequestFile(unittest.TestCase):
                                  setattr(tempfile, "tempdir", saved[2])))
         jev._EVENT = {"caller": "c", "stage": "S", "primitive": "noul", "questions": 1}
         jev._ENV = {"JEV_METER": "1", "JEV_COMPARE_KEV": "1",
-                    "JEV_COMPARE_HAIKU_VIA": "off"}
+                    "JEV_COMPARE_HAIKU_VIA": "off", "JEV_COMPARE_STAGES": "S"}
         tempfile.tempdir = folder
         # A child that dies before it reads: Popen starts nothing.
         with mock.patch("subprocess.Popen",
