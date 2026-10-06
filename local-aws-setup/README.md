@@ -50,9 +50,10 @@ truth; `./aws-setup.sh accounts` lists them.
 |---|---|---|---|
 | Describe/list EC2, list buckets, CloudWatch metrics | yes | yes | yes |
 | Start/stop/reboot instances tagged `claude-managed=true`, and read their console output | — | yes | yes |
-| Launch instances | — | — | only tagged `claude-managed=true` at launch |
+| Launch instances | denied | denied | only tagged `claude-managed=true` at launch |
 | Terminate instances | denied | denied | tagged only |
 | Snapshot managed volumes | denied | denied | volume tagged; snapshot tagged during creation |
+| Copy, share, move or read a disk (images, volumes, snapshot copies, EBS direct reads), Instance Connect | denied | denied | — |
 | Disassociate/release Elastic IPs; delete security groups, key pairs, volumes, network interfaces, snapshots | denied | denied | tagged only, configured account/region |
 | Listed buckets | get | get, put | get, put, delete |
 | Start, stop, reboot, terminate, or read console output without `claude-managed=true` | denied | denied | denied |
@@ -88,7 +89,8 @@ A shell on a simulator deployment reads its ground truth, and in-instance checks
 Give the template to an operator-only deployer user instead:
 
 ```sh
-# sandbox-deployer.env: the same ACCOUNT_ID, LEVEL=sandbox and ADMIN_PROFILE as sandbox.env
+# sandbox-deployer.env: the same ACCOUNT_ID and ADMIN_PROFILE as sandbox.env
+LEVEL=sandbox
 AGENT_USER=deployer
 AGENT_PROFILE=deployer-sandbox
 POLICY_NAME=deployer-base   # its own name: a shared one overwrites the agent's base policy
@@ -100,10 +102,12 @@ Copy the template to `sandbox-deployer.policies/deployment-provisioning.json`.
 Create the `deployer` user as in step 2 of "Adding an account", then run `apply` and `keys` for `sandbox-deployer`.
 Set the deployment wrapper's `AWS_PROFILE` to `deployer-sandbox`; keep that profile out of agent and MCP settings.
 
-The agent's `sandbox.env` sets `EXTRA_POLICIES="agent-ssm-deny"`.
+The agent's `sandbox.env` sets `LEVEL=operator` and `EXTRA_POLICIES="agent-ssm-deny"`.
 Copy `accounts/agent-ssm-deny.json.example` to `sandbox.policies/agent-ssm-deny.json`.
 It denies every SSM command and session to the agent, whatever else is attached later.
-The agent's `sandbox` level can still snapshot managed volumes and launch from a snapshot; give an evaluated agent a lower level.
+At `sandbox` the agent could snapshot a managed volume and launch from the copy, which reads the deployment's disk (sd:2870).
+Below `sandbox`, every route to that disk is an explicit `Deny`: launch, snapshot, image, volume copy or move, EBS block reads,
+snapshot or image sharing, and Instance Connect keys. `check` probes each one.
 
 The template allows `AWS-RunShellScript` for commands and `AWS-StartPortForwardingSession` for tunnels, in separate statements.
 Its instance statement sets `ssm:SessionDocumentAccessCheck`, so a session without a document cannot fall back to a shell.

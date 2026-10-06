@@ -25,13 +25,14 @@ A render of `operator` on `origin/main` shows only `ec2:CreateSnapshot` explicit
 
 | Route | Actions |
 | --- | --- |
-| Launch from a copy | `ec2:RunInstances` |
-| Copy the disk | `ec2:CreateSnapshot` (already denied), `ec2:CopySnapshot`, `ec2:CreateImage`, `ec2:CreateVolume`, `ec2:CreateRestoreImageTask` |
+| Launch from a copy | `ec2:RunInstances`, `ec2:CreateFleet`, `ec2:RequestSpotInstances`, `ec2:RequestSpotFleet` |
+| Copy the disk | `ec2:CreateSnapshot` (already denied), `ec2:CreateSnapshots`, `ec2:CopySnapshot`, `ec2:CreateImage`, `ec2:CreateVolume`, `ec2:CreateRestoreImageTask`, `ec2:CreateStoreImageTask`, `ec2:ExportImage` |
 | Share a copy | `ec2:ModifySnapshotAttribute`, `ec2:ModifyImageAttribute` |
 | Move the disk | `ec2:AttachVolume`, `ec2:DetachVolume`, `ec2:CreateReplaceRootVolumeTask` |
+| Read an existing snapshot block by block | `ebs:GetSnapshotBlock`, `ebs:ListSnapshotBlocks`, `ebs:ListChangedBlocks` |
 | Reach the guest | `ec2-instance-connect:SendSSHPublicKey`, `ec2-instance-connect:SendSerialConsoleSSHPublicKey`, `ec2:GetConsoleScreenshot` |
 
-Below `sandbox`, `HardDenies` lists all of them.
+Below `sandbox`, `HardDenies` lists all of them; `DISK_ROUTES` in `local-aws-setup/aws-setup.sh` is the one list.
 That keeps requirement 1 true under a supplemental policy that grants `ec2:*`.
 The `stmt_hard_denies` block in `local-aws-setup/aws-setup.sh` already varies its list by level, so the change extends that list.
 `sandbox` is unchanged: the deployer launches and snapshots, and a sandbox agent is no longer the recommended setup.

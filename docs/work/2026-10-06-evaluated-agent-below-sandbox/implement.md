@@ -20,3 +20,8 @@ One pull request in this repository, then an operator rollout.
    Check: `all expectations met for sandbox (operator)`, with `explicitDeny` on every route action.
    `check sandbox-deployer` still passes.
 6. Post the check output on sd:2870 and sd:2851 so the owner can lift the rule in note #10729.
+
+## Log
+
+- 2026-10-06: step 5's config half ran first, on the owner's go: `sandbox.env` set `LEVEL=operator`, `apply sandbox`, and `check sandbox` reported `all expectations met for sandbox (operator)`.
+- 2026-10-06: steps 2 to 4 in one commit. Fail first: both new tests failed on `origin/main` (every route missing from `HardDenies`; `check` probed none). After: 67 tests OK.
