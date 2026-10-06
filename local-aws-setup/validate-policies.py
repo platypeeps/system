@@ -1,4 +1,5 @@
 """Validate configured IAM identity documents before aws-setup makes AWS calls."""
+import fnmatch
 import json
 import pathlib
 import re
@@ -19,6 +20,40 @@ def unique_keys(pairs):
             raise ValueError(f"duplicate JSON key: {key}")
         result[key] = value
     return result
+
+
+SHELL_DOCUMENT = "SSM-SessionManagerRunShell"
+
+
+def covers(item, key, value):
+    """Whether the statement's Action or Resource, or its Not form, covers value."""
+    patterns = item.get(key, item.get("Not" + key))
+    patterns = [patterns] if isinstance(patterns, str) else patterns
+    if key == "Action":
+        # IAM action names are case-insensitive.
+        value, patterns = value.lower(), [pattern.lower() for pattern in patterns]
+    else:
+        # Match any region and account: arn:partition:service:region:account:resource.
+        patterns = [":".join(fields[:3] + ["*", "*"] + fields[5:]) if len(fields) == 6 else pattern
+                    for pattern in patterns for fields in [pattern.split(":", 5)]]
+    return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns) != ("Not" + key in item)
+
+
+def grants_shell(item):
+    """An Allow that opens the interactive Session Manager shell (sd:2851).
+
+    StartSession without a document runs SSM-SessionManagerRunShell, and IAM
+    checks that document only when ssm:SessionDocumentAccessCheck is true.
+    """
+    if item["Effect"] != "Allow" or not covers(item, "Action", "ssm:StartSession"):
+        return False
+    if covers(item, "Resource", "arn:aws:ssm:region:account:document/" + SHELL_DOCUMENT):
+        return True
+    for operator, entries in item.get("Condition", {}).items():
+        check = entries.get("ssm:SessionDocumentAccessCheck") if isinstance(entries, dict) else None
+        if operator in ("Bool", "BoolIfExists") and str(check).lower() in ("true", "['true']"):
+            return False
+    return covers(item, "Resource", "arn:aws:ec2:region:account:instance/i-0")
 
 
 def validate(path):
@@ -47,6 +82,9 @@ def validate(path):
                 raise ValueError(f"{path}: exactly one valid {first}/{second} is required")
         if "Condition" in item and (not isinstance(item["Condition"], dict) or not item["Condition"]):
             raise ValueError(f"{path}: Condition must be a nonempty object")
+        if grants_shell(item):
+            raise ValueError(f"{path}: grants the interactive SSM shell ({SHELL_DOCUMENT}); allow named "
+                             "documents only, with ssm:SessionDocumentAccessCheck true on instance sessions")
     return document
 
 

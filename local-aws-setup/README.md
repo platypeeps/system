@@ -78,25 +78,49 @@ shared.
 
 List every additional attached policy in `EXTRA_POLICIES` before initial setup.
 Store each identity policy document at `<accounts>/<name>.policies/<policy-name>.json`.
-For example, `sandbox.env` can contain:
+Agent and deployer are separate IAM users, each with its own account file for the same account.
+
+### Agent and deployer
+
+The template `accounts/provisioning-policy.json.example` runs commands as root on deployment instances (`AWS-RunShellScript`).
+Never attach it to a user whose key an agent, an MCP server or an evaluated session holds.
+A shell on a simulator deployment reads its ground truth, and in-instance checks cannot see the call (sd:2851).
+Give the template to an operator-only deployer user instead:
 
 ```sh
-EXTRA_POLICIES="agent-provisioning"
+# sandbox-deployer.env: the same ACCOUNT_ID, LEVEL=sandbox and ADMIN_PROFILE as sandbox.env
+AGENT_USER=deployer
+AGENT_PROFILE=deployer-sandbox
+POLICY_NAME=deployer-base   # its own name: a shared one overwrites the agent's base policy
+EXTRA_POLICIES="deployment-provisioning"
+PASS_ROLE_ARNS="arn:aws:iam::123456789012:role/example-instance"
 ```
 
-Its document lives beside that file in `sandbox.policies/agent-provisioning.json`.
-For a fresh sandbox, copy `accounts/provisioning-policy.json.example` into that private document path.
-Replace every `{{...}}` placeholder before rendering or applying it:
+Copy the template to `sandbox-deployer.policies/deployment-provisioning.json`.
+Create the `deployer` user as in step 2 of "Adding an account", then run `apply` and `keys` for `sandbox-deployer`.
+Set the deployment wrapper's `AWS_PROFILE` to `deployer-sandbox`; keep that profile out of agent and MCP settings.
+
+The agent's `sandbox.env` sets `EXTRA_POLICIES="agent-ssm-deny"`.
+Copy `accounts/agent-ssm-deny.json.example` to `sandbox.policies/agent-ssm-deny.json`.
+It denies every SSM command and session to the agent, whatever else is attached later.
+The agent's `sandbox` level can still snapshot managed volumes and launch from a snapshot; give an evaluated agent a lower level.
+
+The template allows `AWS-RunShellScript` for commands and `AWS-StartPortForwardingSession` for tunnels, in separate statements.
+Its instance statement sets `ssm:SessionDocumentAccessCheck`, so a session without a document cannot fall back to a shell.
+`validate-policies.py` refuses a supplemental policy that grants the interactive `SSM-SessionManagerRunShell` document.
+It catches a grant by name, by wildcard, and as the default document of an unchecked instance session.
+
+Replace every `{{...}}` placeholder in the template before rendering or applying it:
 
 | Placeholder | Private deployment input |
 |---|---|
-| `ACCOUNT_ID`, `REGION`, `AGENT_USER` | Values from the account configuration |
+| `ACCOUNT_ID`, `REGION`, `AGENT_USER` | Values from the deployer's account configuration |
 | `VPC_ID` | Existing VPC where the deployment creates security groups |
 | `OWNER`, `PROJECT`, `PURPOSE`, `MANAGED_BY` | Exact resource-tag values sent by the deployment |
 | `DEPLOYMENT_KEY_PREFIX` | Key-name prefix used by the deployment, without the trailing hyphen |
 | `LEGACY_KEY_PREFIX` | Existing approved key-name prefix; remove its two statements when no legacy grant is needed |
 
-The template covers security groups, key import, Elastic IPs, and SSM commands and sessions.
+The template covers security groups, key import, Elastic IPs, SSM commands and port-forwarding sessions.
 The base policy supplies instance launch, rule tagging, teardown, and the optional exact-role grant.
 Set `LEVEL=sandbox`, configure `EXTRA_POLICIES`, and audit the instance role before setting `PASS_ROLE_ARNS`.
 Create the VPC, role, and instance profile with an administrator first; this tool grants no IAM provisioning permission.
@@ -108,14 +132,15 @@ Copy the existing default-version document exactly when adopting current permiss
 Keep account IDs, resource ARNs, and SSM scopes in private account configuration.
 Do not broaden those grants when moving them into configuration.
 Literal adoption preserves legacy grants; it does not apply the fresh template's stricter managed-tag conditions.
+An adopted document that grants the interactive shell fails validation; remove that grant first.
 Audit adopted SSM and address-association grants separately. The base policy denies untagged access only for its listed lifecycle actions.
 
 ```sh
-./aws-setup.sh render sandbox agent-provisioning
-./aws-setup.sh simulate sandbox
-DRY_RUN=1 ./aws-setup.sh apply sandbox
-./aws-setup.sh apply sandbox
-./aws-setup.sh check sandbox
+./aws-setup.sh render sandbox-deployer deployment-provisioning
+./aws-setup.sh simulate sandbox-deployer
+DRY_RUN=1 ./aws-setup.sh apply sandbox-deployer
+./aws-setup.sh apply sandbox-deployer
+./aws-setup.sh check sandbox-deployer
 ```
 
 `render <account>` prints the base policy; the optional policy name selects a configured supplemental document.
@@ -289,8 +314,10 @@ This is what `~/.claude/settings.json` holds (merge into existing lists):
     "Bash(aws iam:*)",
     "Bash(aws * --profile default*)",
     "Bash(aws * --profile admin-*)",
+    "Bash(aws * --profile deployer-*)",
     "Bash(* AWS_PROFILE=default*)",
     "Bash(* AWS_PROFILE=admin-*)",
+    "Bash(* AWS_PROFILE=deployer-*)",
     "Read(~/.aws/credentials)"
   ]
 }
@@ -299,7 +326,7 @@ This is what `~/.claude/settings.json` holds (merge into existing lists):
 - **Default is sandbox**, so a command that forgets to name an account lands
   where mistakes are cheapest. Use another account explicitly:
   `--profile agent-dev` for dev. An explicit `--profile` beats the default.
-- **The deny rules block the admin profiles** (`default`, `admin-*`) whether
+- **The deny rules block the admin and deployer profiles** (`default`, `admin-*`, `deployer-*`) whether
   chosen by flag or by environment variable, plus `aws configure`, all
   `aws iam` calls and reading the credentials file.
 - **Put `--profile` last** (`aws ec2 describe-instances --profile agent-dev`).

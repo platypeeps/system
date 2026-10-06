@@ -145,22 +145,23 @@
           "aws:ResourceTag/Project": "{{PROJECT}}",
           "aws:ResourceTag/Purpose": "{{PURPOSE}}",
           "aws:ResourceTag/claude-managed": "true"
+        },
+        "BoolIfExists": {
+          "ssm:SessionDocumentAccessCheck": "true"
         }
       }
     },
     {
-      "Sid": "ApprovedSsmDocuments",
+      "Sid": "RunApprovedCommandDocument",
       "Effect": "Allow",
-      "Action": [
-        "ssm:SendCommand",
-        "ssm:StartSession"
-      ],
-      "Resource": [
-        "arn:aws:ssm:{{REGION}}::document/AWS-RunShellScript",
-        "arn:aws:ssm:{{REGION}}::document/AWS-StartPortForwardingSession",
-        "arn:aws:ssm:{{REGION}}::document/SSM-SessionManagerRunShell",
-        "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:document/SSM-SessionManagerRunShell"
-      ]
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ssm:{{REGION}}::document/AWS-RunShellScript"
+    },
+    {
+      "Sid": "ForwardApprovedPorts",
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": "arn:aws:ssm:{{REGION}}::document/AWS-StartPortForwardingSession"
     },
     {
       "Sid": "ReadSsmExecutionState",
