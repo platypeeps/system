@@ -156,6 +156,23 @@ class FakeLsof(unittest.TestCase):
     def test_other_warning_refuses(self):
         self.refused(stderr="lsof: WARNING: compiled for macOS release 15; this is 26\n")
 
+    def test_an_error_lsof_prints_as_a_name_refuses(self):
+        # sd:2769. lsof reports a process it could not read as a file whose
+        # name is the error, on stdout with exit 0, so that process's files are unknown.
+        for record in ("fcwd\nncwd|rtd info error: Operation not permitted",
+                       "ferr\nnFD info error: Cannot allocate memory",
+                       "ftxt\nnregion info error: Operation not permitted"):
+            with self.subTest(record=record):
+                self.assertIn("could not read process 4646", self.refused(stderr="", stdout=self.table() + f"p4646\n{record}\n"))
+
+    def test_an_error_gone_on_a_second_read_is_not_a_refusal(self):
+        # A gate saw a region error for a process that was most likely
+        # exiting; the second read answers.
+        first = (self.table() + "p4646\nftxt\nnregion info error: Operation not permitted\n").encode()
+        with patch.object(processes, "_lsof", side_effect=[first, self.table().encode()]) as read:
+            self.assertEqual(processes.holders(self.clone), {4242, 4343})
+        self.assertEqual(read.call_count, 2)
+
     def test_unexpected_exit_status_refuses(self):
         self.refused(stderr="", rc=2)
 
