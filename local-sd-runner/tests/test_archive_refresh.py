@@ -144,8 +144,12 @@ class ArchiveRefresh(unittest.TestCase):
         self.survivors.side_effect = SURVIVORS
         for name in ("PS_SECONDS", "LSOF_SECONDS"):
             self.enterContext(patch.object(processes, name, PROBE_SECONDS))
-        child = subprocess.Popen([sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"],
-                                 cwd=self.clone, stdout=subprocess.PIPE, text=True, start_new_session=True)
+        # The holder lives until the test closes its stdin. A 30 s sleep
+        # exited while the probes ran under gate load, and the refresh then
+        # archived a clone nobody held any more (sd:2769).
+        child = subprocess.Popen([sys.executable, "-c", "import sys; print('ready', flush=True); sys.stdin.read()"],
+                                 cwd=self.clone, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                                 start_new_session=True)
         try:
             self.assertEqual(child.stdout.readline().strip(), "ready")
             report = self.refresh()
@@ -157,6 +161,7 @@ class ArchiveRefresh(unittest.TestCase):
         finally:
             child.terminate()
             child.wait(timeout=10)
+            child.stdin.close()
             child.stdout.close()
 
     def test_a_holder_that_arrives_after_the_archive_is_named_and_the_generation_kept(self):

@@ -63,6 +63,10 @@ def table() -> list[dict]:
 
 _UNSTATTABLE = re.compile(r"lsof: WARNING: can't stat\(\) \S+ file system (/.*)")
 _INCOMPLETE = "Output information may be incomplete."
+# lsof reports a process it could not read as a file named by the error, on
+# stdout and with exit 0 (Apple lsof 4.91, `dproc.c`): that process's working
+# directory, descriptors or mappings are unknown, so it may hold the clone (sd:2769).
+_UNREADABLE = re.compile(rb"(?:cwd\|rtd|FD|FILEPORT|region|thread) info error: ")
 _ASSUMED_DEVICE = re.compile(r'assuming "dev=([0-9a-fA-F]+)" from mount table')
 
 
@@ -243,6 +247,8 @@ def holders(path: Path) -> set[int]:
     held, aliases = set(), {}
     for pid, fields in _files(_lsof(path, "ptDin")):
         name = fields.get(b"n", b"")
+        if _UNREADABLE.match(name):
+            raise RunnerRefused(f"cannot verify clone holders: lsof could not read process {pid}: {os.fsdecode(name)}")
         if pid is None:
             continue
         if any(name == root or name.startswith(root + b"/") for root in prefixes):
