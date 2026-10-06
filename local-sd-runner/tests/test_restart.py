@@ -180,6 +180,24 @@ class Restart(unittest.TestCase):
         self.assertIn("booted the agent out again", result["reason"])
         self.assertEqual(self.calls()[-1], f"bootout gui/{os.getuid()}/{cli.LABEL}")
 
+    def test_a_wait_that_never_ends_is_refused_before_the_verb(self):
+        # A deadline of nan or inf is never reached, so the wait would never end (sd:2837).
+        for verb in ("start", "restart"):
+            for value in ("nan", "inf", "-inf", "0", "-5", "soon"):
+                with self.subTest(verb=verb, value=value), contextlib.redirect_stderr(io.StringIO()) as err, \
+                        patch.object(cli, "start") as start, patch.object(cli, "restart") as restart, \
+                        self.assertRaises(SystemExit) as raised:
+                    cli.main([verb, f"--wait={value}"])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("must be a finite number of seconds above 0", err.getvalue())
+                start.assert_not_called()
+                restart.assert_not_called()
+        with patch.object(cli, "start", return_value={"ok": True}) as start, \
+                patch.object(cli, "configuration", return_value=self.fixture.config), \
+                contextlib.redirect_stdout(io.StringIO()):
+            cli.main(["start", "--wait", "2.5"])
+        self.assertEqual(start.call_args.kwargs["wait"], 2.5)
+
     def test_the_load_limit_runs_as_a_script_without_sd_db(self):
         script = Path(cli.__file__).with_name("load.py")
         for limit, code in (("0.0", 1), ("100000", 0)):

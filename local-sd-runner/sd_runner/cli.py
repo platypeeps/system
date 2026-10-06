@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import getpass
 import json
+import math
 import os
 import plistlib
 import re
@@ -365,6 +366,17 @@ def stamped_stderr():
     stamped.close()
 
 
+def positive_seconds(text: str) -> float:
+    """A `--wait` value: a deadline of nan or inf is never reached, so the wait never ends (sd:2837)."""
+    try:
+        value = float(text)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError(f"must be a finite number of seconds above 0, not {text!r}")
+    return value
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Owned workflow queue runner")
     parser.add_argument("--config", type=Path)
@@ -377,13 +389,13 @@ def main(argv=None) -> int:
     command = sub.add_parser("restart")
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--max-load", type=float)
-    command.add_argument("--wait", type=float, default=RESTART_WAIT)
+    command.add_argument("--wait", type=positive_seconds, default=RESTART_WAIT)
     command = sub.add_parser("stop")
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--max-load", type=float)
     command = sub.add_parser("start")
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
-    command.add_argument("--wait", type=float, default=RESTART_WAIT)
+    command.add_argument("--wait", type=positive_seconds, default=RESTART_WAIT)
     command = sub.add_parser("prune-apply")
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--days", type=int, default=30)

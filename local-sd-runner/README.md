@@ -344,6 +344,7 @@ The verb then refuses with a reason, removes the marker, and leaves launchd alon
 
 `runner.sh stop` runs the same checks and the drain, then `launchctl bootout` instead of the kick.
 `runner.sh start` bootstraps the agent again and waits up to `--wait` seconds for a healthy heartbeat with a new pid.
+`--wait` must be a finite number above 0; `nan` or `inf` would wait forever, so both verbs refuse it.
 `local-deploy/deploy.sh upgrade` stops the runner before it replaces `sd_db`, and starts it after (sd:2812).
 `sd_runner/load.py` holds the load limit and imports no `sd_db`, so `deploy.sh` can ask it before that install.
 

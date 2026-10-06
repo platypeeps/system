@@ -397,6 +397,7 @@ The satellite then installs the hub's build itself (sd:2802); the plan is `docs/
 | `SD_SATELLITE_SELF_INSTALL=0` | switches it off; `off`, `false`, `no` and `disabled` do too |
 | `SD_DB_SOURCE_CHECKOUT` | the system checkout to install from; `machine-setup.sh` sets its own |
 | `<venv>/sd-db-source` | the checkout the last `sd-db.sh install` or self-install used |
+| `${XDG_STATE_HOME:-~/.local/state}/sd-ai-command-pack/sd-db-provision.lock` | the command pack's provisioning lock, taken first; a held lock waits up to 600 s, then installs nothing (sd:2845) |
 | `<venv>/sd-db-self-install.lock` | held during an install; a second installer waits up to 600 s |
 
 It installs nothing in these cases, and the error names the reason:
@@ -407,6 +408,10 @@ It installs nothing in these cases, and the error names the reason:
 - a satellite newer than the hub;
 - a hub too old to send its digest;
 - no known source checkout.
+
+A self-install builds a wheel, so pip records no VCS commit for it.
+The pack's ancestry guard reads that commit, so it cannot see a self-installed build (sd:2845).
+A stale `make setup` can then install older code once; the next hub call self-installs the hub's build again.
 
 ### Satellite gate offload: the satellite gates, the hub merges
 
