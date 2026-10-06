@@ -577,9 +577,9 @@ addEventListener('DOMContentLoaded', () => {
     </tbody></table></div>${list.pager(all.length, L, 'tasks')}`);
   }
   document.getElementById('view-list').addEventListener('click', e => {
-    if (window.shell.list.sortBy(e, L)) { renderList(); writeURL(); return; }
+    if (window.shell.list.sortBy(e, L)) { window.shell.list.keepFocus(e, renderList); writeURL(); return; }
     if (e.target.id === 'clear-f2') { clearFilters(); return; }
-    if (window.shell.list.paging(e, L)) { render(); return; }
+    if (window.shell.list.paging(e, L)) { window.shell.list.keepFocus(e, render); return; }
     const o = e.target.closest('[data-open]'); if (o) select(o.dataset.open, true);
   });
 

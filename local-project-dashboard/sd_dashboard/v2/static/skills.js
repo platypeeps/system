@@ -147,8 +147,8 @@ addEventListener('DOMContentLoaded', () => {
   // Each filter, sort or page change keeps the selection on a row the viewer can see (shell.reconcile).
   const reconcile = () => window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, keep: KEEP, select: id => select(id, false), clear: nothing });
   const redraw = () => { drawRows(); reconcile(); };
-  headEl.addEventListener('click', e => { if (DOC && window.shell.list.sortBy(e, L)) redraw(); });
-  pagerEl.addEventListener('click', e => { if (DOC && window.shell.list.paging(e, L)) redraw(); });
+  headEl.addEventListener('click', e => { if (DOC && window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, redraw); });
+  pagerEl.addEventListener('click', e => { if (DOC && window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, redraw); });
   const unfilter = keys => { keys.forEach(k => UNFILTER[k]()); L.page = 1; redraw(); };
   chipsEl.addEventListener('click', e => {
     const b = e.target.closest('[data-unfilter]'); if (b) return unfilter([b.dataset.unfilter]);

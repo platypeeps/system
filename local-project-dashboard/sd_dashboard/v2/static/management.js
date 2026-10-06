@@ -233,7 +233,7 @@ document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('.rowact')) return;
   const f = e.target.closest('[data-f]'), tr = e.target.closest('tr[data-repo]');
   if (e.target.closest('[data-clear]')) { RS.managed = RS.merge = null; text.q = ''; document.getElementById('shift').value = ''; RS.page = 1; renderRepos(); return setURL(); }
-  if (shell.list.sortBy(e, RS) || shell.list.paging(e, RS)) { renderRepos(); return setURL(); }
+  if (shell.list.sortBy(e, RS) || shell.list.paging(e, RS)) { shell.list.keepFocus(e, renderRepos); return setURL(); }
   if (f) { RS[f.dataset.f] = RS[f.dataset.f] === f.dataset.v ? null : f.dataset.v; RS.page = 1; renderRepos(); return setURL(); }
   if (tr) selectRow(tr.dataset.id, true);
 });
@@ -570,7 +570,7 @@ function renderLane() {
 }
 document.getElementById('view-lane').addEventListener('click', e => {
   if (e.target.closest('a')) return;
-  if (shell.list.sortBy(e, LS)) { renderLane(); return setURL(); }
+  if (shell.list.sortBy(e, LS)) { shell.list.keepFocus(e, renderLane); return setURL(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
@@ -661,7 +661,7 @@ function renderSchedules() {
       : html`<p class="empty">${CRON.length ? html`No job matches. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No launchd calendar job is installed.'}</p>`}`);
 }
 document.getElementById('view-schedules').addEventListener('click', e => {
-  if (shell.list.sortBy(e, SS) || shell.list.paging(e, SS)) { renderSchedules(); return setURL(); }
+  if (shell.list.sortBy(e, SS) || shell.list.paging(e, SS)) { shell.list.keepFocus(e, renderSchedules); return setURL(); }
   const f = e.target.closest('[data-state-f]');
   if (f) { const inp = document.getElementById('shift'); inp.value = /state:failed/.test(inp.value) ? inp.value.replace(/\s*state:failed/, '').trim() : (inp.value + ' state:failed').trim(); text.q = inp.value; SS.page = 1; renderSchedules(); return setURL(); }
   if (e.target.closest('.rowact')) return;

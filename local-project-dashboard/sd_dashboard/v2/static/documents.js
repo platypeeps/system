@@ -126,8 +126,8 @@ function render() {
   // build: the subhead names the reading's time from /api/documents, not a fixed observation.
   put(document.getElementById('subhead'), html`${plural(DOCS.length, 'document')} in ${plural(ROOTS.length, 'root')} · read ${DOC ? html`<time class="rel" datetime="${DOC.read}"></time>` : 'not yet'}`);
 }
-document.getElementById('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) render(); });
-document.getElementById('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) render(); });
+document.getElementById('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, render); });
+document.getElementById('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, render); });
 document.getElementById('chips').addEventListener('click', e => {
   if (e.target.closest('[data-unfilter-all]')) return clearAll();
   const b = e.target.closest('[data-unfilter]'); if (!b) return;

@@ -205,8 +205,8 @@ const COLS = [['s', html`<span class="sr">State</span>`, 'g'], ['what', 'Report'
 const order = (a, b) => { const x = SORTS[L.sort](a), y = SORTS[L.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * L.dir || Date.parse(b.at) - Date.parse(a.at); };
 let shown = [];
 const tbody = byId('rows');
-byId('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) renderRows(); });
-byId('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) renderRows(); });
+byId('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, renderRows); });
+byId('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, renderRows); });
 function matches(r) {
   if (F.job && r.job !== F.job) return false;
   if (F.kind && r.kind !== F.kind) return false;
