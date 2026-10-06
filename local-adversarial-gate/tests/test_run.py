@@ -19,7 +19,6 @@ import http.server
 import os
 import pathlib
 import signal
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -60,6 +59,7 @@ try:  # pragma: no cover - one branch per machine
 except ImportError:  # pragma: no cover - one branch per machine
     sys.path.insert(0, str(HERE.parents[1] / "local-sd-db"))
     import sd_db
+from sd_db.database import connect  # noqa: E402
 from sd_db.migrate import initialise  # noqa: E402
 
 
@@ -192,8 +192,11 @@ class RunAgainstAFakeCodex(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         # The control: the run reached `jev`, so the stores below were exposed.
         self.assertIn("jev is off or unkeyed here", result.stderr)
-        with sqlite3.connect(f"file:{ledger}?mode=ro", uri=True) as db:
-            rows = db.execute("SELECT caller, cause FROM judgment").fetchall()
+        db = connect(ledger, write=False)
+        try:
+            rows = [tuple(row) for row in db.execute("SELECT caller, cause FROM judgment")]
+        finally:
+            db.close()
         self.assertEqual(rows, [], "the run wrote to the ledger")
         self.assertFalse((ledger.parent / "jev-corpus").exists(), "the run wrote a corpus")
         self.assertEqual(collector.posts, [], "the run posted spans")

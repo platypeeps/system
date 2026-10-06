@@ -23,7 +23,6 @@ import http.server
 import os
 import pathlib
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -56,6 +55,7 @@ try:  # pragma: no cover - one branch per machine
 except ImportError:  # pragma: no cover - one branch per machine
     sys.path.insert(0, str(HERE.parents[1] / "local-sd-db"))
     import sd_db
+from sd_db.database import connect  # noqa: E402
 from sd_db.migrate import initialise  # noqa: E402
 
 
@@ -246,8 +246,11 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         """sd:2799: the sweep suite's run wrote a `switched-off` row into the
         live ledger. Pinned, the run's `jev` leaves the HOME's ledger empty,
         writes no corpus and posts nothing to the collector its config names."""
-        with sqlite3.connect(f"file:{self.ledger}?mode=ro", uri=True) as ledger:
-            rows = ledger.execute("SELECT caller, cause FROM judgment").fetchall()
+        ledger = connect(self.ledger, write=False)
+        try:
+            rows = [tuple(row) for row in ledger.execute("SELECT caller, cause FROM judgment")]
+        finally:
+            ledger.close()
         self.assertEqual(rows, [], "the run wrote to the ledger")
         self.assertFalse((self.ledger.parent / "jev-corpus").exists(), "the run wrote a corpus")
         self.assertEqual(self.collector.posts, [], "the run posted spans")
