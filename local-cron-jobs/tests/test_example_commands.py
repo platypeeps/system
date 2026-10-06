@@ -19,7 +19,7 @@ from tests.test_cron_jobs import FOLDER, Fixture
 
 EXAMPLES = FOLDER / "examples"
 
-# A pack interpreter and a pack `sd` that only say they were the ones run.
+# A pack interpreter, `sd` and `sd-ship` that only say they were the ones run.
 RECORDER = '#!/bin/sh\nprintf "%s\\n" "$0" >> "$PACK_MARKER"\n'
 
 
@@ -33,7 +33,7 @@ class PackRootFromEnvShTest(unittest.TestCase):
                 self.addCleanup(fx.destroy)
                 pack = fx.tmp / "custom-pack"
                 marker = fx.tmp / "pack-ran"
-                for relative in (".venv/bin/python", "bin/sd"):
+                for relative in (".venv/bin/python", "bin/sd", "bin/sd-ship"):
                     program = pack / relative
                     program.parent.mkdir(parents=True, exist_ok=True)
                     program.write_text(RECORDER)

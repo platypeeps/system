@@ -1,0 +1,26 @@
+# Hub-side merge lane for satellite requests (sd:2704). A satellite gates and
+# prepares an item, then writes a request with `sd-ship lane request`. This
+# job takes those requests in and merges them with no gate run on the hub.
+# `--satellite-only` claims satellite entries only; hub entries keep waiting
+# for an integrator's plain `lane run`. The flow and the opt-in are in
+# local-sd-db/README.md, "Satellite gate offload".
+#
+# Hub only: install it in `<config>/cron-jobs/jobs/<hub host>/`. A satellite
+# holds no lane to run.
+# One copy per opted-in repository: name it `satellite-lane-<repo>.job` and
+# set the checkout below. Install it only after `sd-db.sh repo satellite-gate
+# <path> accept`; with the opt-in `off`, intake refuses every request.
+#
+# `lane run` drains the queue and exits; it is not a poller. A start that
+# finds another runner on the lane exits 0 at once, so overlapping starts
+# cost nothing. A slot that finds this job's own run still active logs
+# `skipped` and exits 0.
+#
+# JOB_TIMEOUT is above the 5-minute interval on purpose: a limit below it
+# could stop a merge part way. 30m still frees a hung run's lock.
+#
+# SD_PACK_ROOT is escaped so the `bash -c` that runs the command reads it,
+# after ~/.config/shell/env.sh; this file is sourced before env.sh is.
+JOB_SCHEDULE="*/5 * * * *"
+JOB_TIMEOUT="30m"
+JOB_COMMAND="\"\${SD_PACK_ROOT:-\$HOME/repos/platypeeps/sd-ai-command-pack}/bin/sd-ship\" -C \"\$HOME/repos/change-me\" lane run --satellite-only"

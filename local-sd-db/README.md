@@ -374,6 +374,38 @@ The machine-setup `satellite` stage writes it.
 - `init` and `migrate` refuse with `HubOnly`.
 - `token_file` is for a loopback hub only; a satellite's file names none.
 
+### Satellite gate offload: the satellite gates, the hub merges
+
+In a repository with `repo.ci = local` and `repo.satellite_gate = accept`, a satellite runs the gate.
+The hub's lane merges the item and runs no `sd-check` for it.
+The merge compares the satellite's offload receipt under the pack's trust rule, under the hub's repository lock.
+The design record is the pack's, under sd:2704; the pack's `WORKFLOW.md` lists each step.
+
+Who does the work (sd:2724):
+
+| Work | Satellite | Hub |
+| --- | --- | --- |
+| Catch up with the base | `git merge origin/main`, or `sd-ship prepare --catch-up` | nothing |
+| Run `sd-check` | `sd gate check --base main`; it writes the offload receipt to the hub | nothing for this item |
+| Review, push, bind the pull request | `sd-ship prepare --item N --title T --body-file F` | nothing |
+| Post `sd/local-gate` | `prepare`, from the offload receipt | nothing |
+| Ask for the merge | `sd-ship lane request --item N --manual` | nothing |
+| Take requests in | nothing | `sd-ship -C <checkout> lane run --satellite-only`, from a scheduled job |
+| Merge | nothing | `sd-ship merge --satellite-gate`: accepts the receipt, posts no status, merges |
+| A refusal or a moved branch or base | reads the next action on the request row and the item, then gates and requests again | hands the item back |
+
+The opt-in is a `repo` column, set per repository on the hub:
+
+    ./sd-db.sh repo satellite-gate PATH accept   # the hub may merge on a satellite's pass
+    ./sd-db.sh repo satellite-gate PATH off      # the rollback
+
+- Every row starts at `off`, and a library older than the column reads `off`.
+- With `off`, intake refuses new requests, and the merge hands back any waiting entry.
+- Set no repository to `accept` before the adversarial review sd:2782 closes.
+  Reason: the hub then merges on a receipt it did not make, and sd:2782 reviews that binding.
+- Roll out one repository at a time: set `accept`, install the hub's job, then request from the satellite.
+- The job is `local-cron-jobs/examples/satellite-lane-run.job`, one copy per opted-in repository, on the hub only.
+
 ## `judgments`: what the judgment models cost, by stage
 
 `sd-db.sh judgments` compares the stages that route a decision through a
