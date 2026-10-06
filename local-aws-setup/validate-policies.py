@@ -53,7 +53,10 @@ def grants_shell(item):
         check = entries.get("ssm:SessionDocumentAccessCheck") if isinstance(entries, dict) else None
         if operator in ("Bool", "BoolIfExists") and str(check).lower() in ("true", "['true']"):
             return False
-    return covers(item, "Resource", "arn:aws:ec2:region:account:instance/i-0")
+    # Unchecked, any session target (instance, managed instance, wildcard) opens the default shell.
+    resources = item.get("Resource", item.get("NotResource"))
+    resources = [resources] if isinstance(resources, str) else resources
+    return "NotResource" in item or any(":document/" not in resource for resource in resources)
 
 
 def validate(path):

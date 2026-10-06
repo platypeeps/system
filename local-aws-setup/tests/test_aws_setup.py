@@ -990,6 +990,10 @@ class ExtraPolicyCase(unittest.TestCase):
             {"NotAction": "ec2:*", "Resource": "*"},
             {"Action": "ssm:StartSession", "NotResource": "arn:aws:ssm:us-east-1::document/AWS-StartPortForwardingSession"},
             {"Action": "ssm:StartSession", "Resource": instance},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:instance/i-0123456789abcdef0"},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:instance/i-abc*"},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:managed-instance/*"},
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:*:*:*"},
             {"Action": "ssm:StartSession", "Resource": instance, "Condition": {"BoolIfExists": {"ssm:SessionDocumentAccessCheck": "false"}}},
         ):
             with self.subTest(statement=statement):
