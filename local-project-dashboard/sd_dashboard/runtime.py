@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import http.client
 import json
+import math
 import os
 import plistlib
 import re
@@ -634,6 +635,8 @@ def main():
     # health: seconds to wait for a starting server; 0, the default, tries once.
     parser.add_argument("--wait", type=float, default=0.0)
     args = parser.parse_args()
+    if not (math.isfinite(args.wait) and args.wait >= 0):
+        parser.error("--wait needs a finite number of seconds, 0 or more")
     try:
         if args.action == "health":
             config = read_config(args.config)

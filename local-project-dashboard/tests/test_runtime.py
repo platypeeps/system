@@ -875,6 +875,15 @@ class HealthWait(unittest.TestCase):
         self.assertGreaterEqual(tries[-1], 30)
         self.assertLess(tries[-1], 30.5)
 
+    def test_health_refuses_a_wait_that_never_ends(self):
+        for value in ("nan", "inf", "-1"):
+            with self.subTest(wait=value), patch.object(sys, "argv", ["runtime", "health", "--wait", value]), \
+                    patch.object(runtime, "health_check") as health, patch("sys.stderr"):
+                with self.assertRaises(SystemExit) as exit:
+                    runtime.main()
+                self.assertEqual(exit.exception.code, 2)
+                health.assert_not_called()
+
     def test_no_wait_tries_once(self):
         result, tries = self.poll(1, wait=0)
         self.assertIsInstance(result, runtime.RuntimeRefused)

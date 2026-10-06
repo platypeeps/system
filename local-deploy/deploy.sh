@@ -276,8 +276,8 @@ EOF
 
 record() {
   mkdir -p "$(dirname "$STATE")"
-  printf '%s\n' "$1" > "$STATE.tmp"
-  mv "$STATE.tmp" "$STATE"
+  printf '%s\n' "$1" > "$STATE.$$"
+  mv "$STATE.$$" "$STATE"
   echo "deployed $1"
 }
 
