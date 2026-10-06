@@ -242,18 +242,53 @@ class TheScript(ScreenCase):
         self.assertIsNone(out["error"])
         return out
 
-    # Stand-in header cells that keep their attributes; each starts with a stale aria-sort, so a draw must clear the others.
-    THS = """var THS = ['title', 'repo', 'mod', 'size'].map(k => { const a = { 'aria-sort': 'ascending' }; return { dataset: { sort: k }, a, setAttribute(n, v) { a[n] = v; },
-  removeAttribute(n) { delete a[n]; }, querySelector: () => ({ setAttribute() {} }) }; });
-var QSA = document.querySelectorAll; document.querySelectorAll = sel => sel === '.ledger th[data-sort]' ? THS : QSA.call(document, sel);
-const sortedThs = () => THS.filter(t => t.a['aria-sort']).map(t => [t.dataset.sort, t.a['aria-sort']]);
-const clickTh = k => ELS.thead.listeners.click[0]({ target: { closest: s => s === 'th[data-sort]' ? THS.find(t => t.dataset.sort === k) : null } });
-"""
+    # The list grammar from shell.list (sd:2682, as Reports in sd:2527-2529). Each click goes to the listener the page put on its holder.
+    CLICK = "ELS['%s'].listeners.click[0]({ target: { closest: s => s === %s ? { dataset: %s } : null } });"
+    URL = "String(OUT.urls[OUT.urls.length - 1])"
 
-    def test_only_the_sorted_header_carries_aria_sort_and_a_click_moves_it(self):
-        """sd:2527: each column with an order sorts through its button; aria-sort is on the sorted th alone."""
-        out = self.run_page(self.THS + "clickTh('title'); R.a = sortedThs(); clickTh('title'); R.b = sortedThs(); clickTh('mod'); R.c = sortedThs();")
-        self.assertEqual([out["R"]["a"], out["R"]["b"], out["R"]["c"]], [[["title", "ascending"]], [["title", "descending"]], [["mod", "descending"]]])
+    def many(self, n):
+        brief = self.doc["documents"][0]
+        self.doc["documents"] += [{**brief, "file": f"n{i:02}.html", "href": f"/documents/civic/n{i:02}.html",
+                                   "modified": "2026-01-01T00:00:00Z"} for i in range(n)]
+
+    def test_every_column_with_an_order_sorts_through_the_shared_header(self):
+        """sd:2682: the header is shell.list's; aria-sort is on the sorted th alone, and the sort is in the URL."""
+        click = self.CLICK % ("rows-head", "'button[data-sort]'", "{ sort: 'title' }")
+        out = self.run_page(f"R.head = ELS['rows-head'].html; {click} R.head2 = ELS['rows-head'].html; R.url = {self.URL};"
+                            f" {click} R.url2 = {self.URL};")
+        sorted_th = r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"'
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["head"]), ["title", "repo", "mod", "size"])
+        self.assertEqual(re.findall(sorted_th, out["R"]["head"]), [("descending", "mod")])
+        self.assertEqual(re.findall(sorted_th, out["R"]["head2"]), [("ascending", "title")])
+        self.assertEqual((out["R"]["url"], out["R"]["url2"]), ("sort=title&dir=asc", "sort=title&dir=desc"))
+        # An older link's ?sort=col.dir still opens its order.
+        out = self.run_page("R.head = ELS['rows-head'].html;", search="?sort=size.asc")
+        self.assertEqual(re.findall(sorted_th, out["R"]["head"]), [("ascending", "size")])
+
+    def test_the_pager_numbers_pages_and_keeps_page_and_size_in_the_url(self):
+        self.many(60)
+        out = self.run_page("R.pager = ELS.pager.html;" + self.CLICK % ("pager", "'.list-pager [data-page]'", "{ page: '3' }")
+                            + f" R.pager2 = ELS.pager.html; R.url2 = {self.URL};"
+                            + self.CLICK % ("pager", "'.list-pager [data-size]'", "{ size: '100' }")
+                            + f" R.pager3 = ELS.pager.html; R.url3 = {self.URL};", search="?page=2&size=25")
+        total = len(self.doc["documents"])
+        self.assertIn(f'<span class="range">26–50 of {total}</span>', out["R"]["pager"])
+        self.assertEqual(re.findall(r'data-page="(\d+)"', out["R"]["pager"]), ["1", "2", "3"])
+        self.assertIn(f'<span class="range">51–{total} of {total}</span>', out["R"]["pager2"])
+        self.assertEqual(out["R"]["url2"], "page=3&size=25")
+        self.assertIn(f'<span class="range">1–{total} of {total}</span>', out["R"]["pager3"])
+        self.assertEqual(out["R"]["url3"], "size=100")
+
+    def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
+        out = self.run_page("R.chips = ELS.chips.html;" + self.CLICK % ("chips", "'[data-unfilter]'", "{ unfilter: 'kind:research' }")
+                            + f" R.chips2 = ELS.chips.html; R.url2 = {self.URL};"
+                            + " ELS.chips.listeners.click[0]({ target: { closest: s => s === '[data-unfilter-all]' ? {} : null } });"
+                            + f" R.chips3 = ELS.chips.html; R.url3 = {self.URL}; R.input = ELS.shift.value;", search="?kind=research&fresh=stale&q=plan")
+        self.assertEqual(re.findall(r'data-unfilter="([\w:]+)"', out["R"]["chips"]), ["kind:research", "fresh:stale", "q"])
+        self.assertIn("3 filters · 1 of ", out["R"]["chips"])
+        self.assertEqual(re.findall(r'data-unfilter="([\w:]+)"', out["R"]["chips2"]), ["fresh:stale", "q"])
+        self.assertEqual(out["R"]["url2"], "fresh=stale&q=plan")
+        self.assertEqual((out["R"]["chips3"], out["R"]["url3"], out["R"]["input"]), ("", "", ""))
 
     def test_the_design_commands_are_registered_with_their_ids_labels_keys_and_risks(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]);")
@@ -461,14 +496,12 @@ R.rows = ELS.rows.html; R.type = C.get('lab/plan.html').type; R.att = window.PAG
 
     def test_a_page_number_that_is_not_a_whole_number_reads_as_page_one(self):
         # ?page=1.5 sliced mid-page, pressed no pager button and stayed in the address (sd:2427).
-        brief = self.doc["documents"][0]
-        self.doc["documents"] += [{**brief, "file": f"n{i:02}.html", "href": f"/documents/civic/n{i:02}.html",
-                                   "modified": "2026-01-01T00:00:00Z"} for i in range(60)]
+        self.many(60)
         for search, page_no in (("?page=1.5", "1"), ("?page=0x2", "1"), ("?page=2", "2")):
-            out = self.run_page("R.pager = ELS.pager.html;", search=search)
+            out = self.run_page(f"R.pager = ELS.pager.html; R.url = {self.URL};", search=search)
             current = re.findall(r'data-page="(\d+)"[^>]*aria-current="page"', out["R"]["pager"])
             self.assertEqual(current, [page_no], search)
-            self.assertEqual(out["urls"][-1].get("page"), None if page_no == "1" else int(page_no), search)
+            self.assertEqual(re.findall(r"page=(\d+)", out["R"]["url"]), [] if page_no == "1" else [page_no], search)
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", DOCUMENTS_JS)

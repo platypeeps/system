@@ -378,6 +378,8 @@ Usage: sd-db.sh <command>
   install DIR Install the built wheel into the virtual environment at DIR.
               Never editable: the pack and this repository both install a
               copy, and an editable install would hide a missing file.
+              Writes DIR/sd-db-source, naming this checkout: a satellite
+              installs the hub's build from its origin/main by itself.
   check       What CI runs: `test` with no arguments, the whole suite.
   release [--dry-run]
               Cut the annotated tag `sd-db-v<version>` for this commit, with
@@ -578,6 +580,9 @@ case "${1:-}" in
         fi
         wheel="$("$0" build)"
         "$target/bin/python" -m pip install --no-index --force-reinstall "$DIR/dist/$wheel"
+        # The checkout this copy came from, for a satellite's self-install
+        # (sd_db.self_install, sd:2802): it fetches and exports origin/main there.
+        (cd "$DIR/.." && pwd -P) > "$target/sd-db-source"
         ;;
     -h|--help|help)
         usage

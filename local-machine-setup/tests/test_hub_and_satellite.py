@@ -348,6 +348,18 @@ class TheSatellite(Case):
                                  "personal.satellite"])
         self.assertFalse(self.hub_json.exists())
 
+    def test_the_stage_names_its_own_checkout_as_the_source_to_install_from(self):
+        # sd:2802: `--apply` installs the hub's build from origin/main of a
+        # system checkout; the stage names its own, and an exported value wins.
+        (self.profiles / "work.satellite").write_text("hub.example.test\n")
+        write_stub(self.root, "stub-python", 'echo "  ok      source=$SD_DB_SOURCE_CHECKOUT args=$*"\n')
+        python = self.root / "stub-python"
+        out = self.run_stage("satellite", "--apply", SD_DB_PYTHON=python)
+        self.assertIn(f"  ok      source={ROOT} args=-I -m sd_db.satellite --hub hub.example.test --apply", out)
+        chosen = self.root / "elsewhere"
+        out = self.run_stage("satellite", SD_DB_PYTHON=python, SD_DB_SOURCE_CHECKOUT=chosen)
+        self.assertIn(f"  ok      source={chosen} args=", out)
+
     def test_no_interpreter_is_missing(self):
         self.start_hub()
         out = self.run_stage("satellite", SD_DB_PYTHON=self.root / "no-python")

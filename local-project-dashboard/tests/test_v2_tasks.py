@@ -1392,14 +1392,15 @@ class TheFilterAddress(ScreenCase):
 
     def test_only_the_sorted_header_carries_aria_sort_and_a_click_moves_it(self):
         """sd:2527: each column with an order sorts through its button; aria-sort is on the sorted th alone."""
-        click = "ELS['view-list'].listeners.click[0]({ target: { closest: s => s === '[data-sort]' ? { dataset: { sort: 'due' } } : null } });"
-        sorted_ = r'<th scope="col" aria-sort="(\w+)"><button type="button" data-sort="(\w+)"'
+        click = "ELS['view-list'].listeners.click[0]({ target: { closest: s => s === 'button[data-sort]' ? { dataset: { sort: 'due' } } : null } });"
+        sorted_ = r'aria-sort="(\w+)"[^>]*><button class="sorter"[^>]*data-sort="(\w+)"'
         out = self.run_page(f"R.a = ELS['view-list'].html; {click} R.b = ELS['view-list'].html; {click} R.c = ELS['view-list'].html;"
                             " R.url = OUT.urls[OUT.urls.length - 1];", search="?view=list")
         for key, want in (("a", [("ascending", "p")]), ("b", [("ascending", "due")]), ("c", [("descending", "due")])):
             self.assertEqual(re.findall(sorted_, out["R"][key]), want, key)
             self.assertEqual(out["R"][key].count("aria-sort"), 1, key)
-        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["a"]), ["p", "due"])
+        # sd:2682: every column with an order sorts, through shell.list's header.
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["a"]), ["id", "title", "repo", "status", "p", "due"])
         self.assertIn("sort=due&dir=desc", out["R"]["url"])
 
     def test_status_age_and_active_narrow_as_v1_did(self):
@@ -1438,18 +1439,35 @@ class TheFilterAddress(ScreenCase):
                 shown, out = self.listed(search)
                 self.assertEqual(len(shown), count)
                 self.assertIn(words, out["R"]["list"])
-        click = "ELS['view-list'].listeners.click[0]({ target: { id: '', closest: s => s === '[data-page]' ? { dataset: { page: '2' } } : null } }); await flush();"
+        click = "ELS['view-list'].listeners.click[0]({ target: { id: '', closest: s => s === '.list-pager [data-page]' ? { dataset: { page: '2' } } : null } }); await flush();"
         shown, out = self.listed("?view=list", click)
         self.assertEqual(shown, {1000 + n for n in range(50, 60)})
         self.assertEqual(out["urls"][-1], "view=list&page=2")
-        self.assertIn('data-page="2" aria-pressed="true" aria-current="page"', out["R"]["list"])
+        self.assertIn('data-page="2" aria-label="Page 2" aria-current="page"', out["R"]["list"])
+        self.assertEqual(re.findall(r'data-size="(\d+)"', out["R"]["list"]), ["25", "50", "100", "200"])
         # A filter change starts the list at its first page again.
         chip = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'status', v: 'planning' } } : null } }); await flush();"
         _, out = self.listed("?view=list&page=2", chip)
         self.assertEqual(out["urls"][-1], "view=list&status=planning")
-        # A short list draws no pager; the board shows every filtered card, whatever the page.
-        self.assertNotIn('class="pager"', self.listed("?view=list&status=ready")[1]["R"]["list"])
+        # A short list draws its range and no page numbers; the board shows every filtered card, whatever the page.
+        short = self.listed("?view=list&q=row%2059")[1]["R"]["list"]
+        self.assertIn('<span class="range">1–1 of 1</span>', short)
+        self.assertNotIn("data-page=", short)
         self.assertEqual(len(self.listed("?view=board&page=2")[0]), 60)
+
+    def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
+        """sd:2682: one chip per active filter value above the list, with the count and one Clear all (shell.list)."""
+        unfilter = "ELS.filters.listeners.click[0]({ target: { id: '', closest: s => s === '[data-unfilter]' ? { dataset: { unfilter: 'status:ready_to_send' } } : null } }); await flush();"
+        clear = "ELS.filters.listeners.click[0]({ target: { id: '', closest: s => s === '[data-unfilter-all]' ? {} : null } }); await flush();"
+        _, out = self.listed("?view=list&status=ready_to_send&active=1&q=reply",
+                             f"R.chips = ELS.filters.html; {unfilter} R.chips2 = ELS.filters.html; R.url2 = OUT.urls[OUT.urls.length - 1];"
+                             f" {clear} R.chips3 = ELS.filters.html; R.url3 = OUT.urls[OUT.urls.length - 1]; R.box = ELS['find-in'].value;")
+        chips = lambda key: re.findall(r'data-unfilter="([\w:]+)"', out["R"][key])
+        self.assertEqual(chips("chips"), ["status:ready_to_send", "active:1", "q"])
+        self.assertIn("3 filters · 1 of 4", out["R"]["chips"])
+        self.assertEqual(chips("chips2"), ["active:1", "q"])
+        self.assertEqual(out["R"]["url2"], "view=list&active=1&q=reply")
+        self.assertEqual((chips("chips3"), out["R"]["url3"], out["R"]["box"]), ([], "view=list", ""))
 
     def test_a_linked_row_opens_the_page_that_holds_it(self):
         self.doc["rows"] = [self.made(1000 + n, f"row {n}", "planning", "0") for n in range(60)]

@@ -200,8 +200,7 @@ addEventListener('DOMContentLoaded', () => {
   const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set() };
   const FKEYS = Object.keys(F);
   const find = document.getElementById('find-in');
-  let Q = '', pageNo = 1, size = 50;
-  const SIZES = [25, 50, 100, 200];
+  let Q = '';
   const on = () => FKEYS.reduce((n, k) => n + F[k].size, 0) + (Q ? 1 : 0);
   const dueBucket = t => t.overdue || (t.due && days(t) < 0) ? 'overdue' : !t.due ? 'none' : withinWeek(t) ? 'week' : 'later';
   const DUE_OPTS = [['overdue', 'overdue'], ['week', '≤ 7 days'], ['later', 'later'], ['none', 'no due']];
@@ -217,18 +216,27 @@ addEventListener('DOMContentLoaded', () => {
       grp('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
       grp('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`)}${
       (SKILL ? html`<div class="fgroup"><span class="label">Run with</span><div class="chips"><button type="button" class="chip" data-skill-clear aria-pressed="true" aria-label="Run without ${SKILL}">${SKILL}${ICON('x')}</button></div><span class="why">${SKILLREV ? 'Pick tasks, then Run in the bar.' : `Run is off: ${SKILLWHY}.`}</span></div>` : '')}${
-      html`<div class="fsum">${ICON('filter')}<span>${on() ? `${visible().length} of ${tasks.length} shown` : `${tasks.length} tasks`}</span>${on() ? html`<button class="linkbtn" type="button" id="clear-f">Clear all</button>` : ''}</div>`}`);
+      (on() ? window.shell.list.chips(activeFilters(), visible().length, tasks.length) : html`<div class="fsum">${ICON('filter')}<span>${tasks.length} tasks</span></div>`)}`);
   }
+  // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
+  const FNAME = { kind: 'Kind', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope' };
+  const fvalue = (k, v) => k === 'p' ? (v ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
+    : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? 'open only' : v;
+  const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
   document.getElementById('filters').addEventListener('click', e => {
     if (e.target.closest('[data-skill-clear]')) { SKILL = ''; SKILLREV = null; SKILLWHY = null; render(); return; }
     const c = e.target.closest('[data-f]');
-    if (c) { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); pageNo = 1; render(); return; }
-    if (e.target.id === 'clear-f') clearFilters();
+    if (c) { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); L.page = 1; render(); return; }
+    if (e.target.closest('[data-unfilter-all]')) { clearFilters(); return; }
+    const u = e.target.closest('[data-unfilter]'); if (!u) return;
+    const [k, v] = u.dataset.unfilter.split(/:(.*)/);
+    if (k === 'q') { Q = ''; find.value = ''; } else F[k].delete(v);
+    L.page = 1; render();
   });
-  function clearFilters() { Object.values(F).forEach(s => s.clear()); Q = ''; find.value = ''; pageNo = 1; render(); }
+  function clearFilters() { Object.values(F).forEach(s => s.clear()); Q = ''; find.value = ''; L.page = 1; render(); }
   // The text filter narrows on what a row shows: id, title, repo, status and kind, as v1's ?q= read the visible columns.
-  find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); pageNo = 1; render(); });
-  find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; pageNo = 1; render(); } });
+  find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });
+  find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
   const words = t => `#${t.id ?? ''} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind}`.toLowerCase();
   const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
     && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && (!Q || words(t).includes(Q));
@@ -549,32 +557,29 @@ addEventListener('DOMContentLoaded', () => {
     </div>
     <p class="mnote">Done tasks and ops rows stay off the matrix. A drop edits the task: into Important sets P2, out of it sets P3; crossing into or out of Urgent asks you for the due date, because urgency comes from it. Cancel changes nothing.</p>`);
   }
-  let sortKey = 'p', sortDir = 1, seek = false;
+  // The list's sort, page and size (shell.list, sd:2682): priority first, 50 a page. Every column with an order sorts.
+  const LIST = { sort: 'p', dir: 1, size: 50 }, L = { ...LIST, page: 1 };
+  const ORDER = Object.fromEntries(STATUSES.map(([st], i) => [st, i]));
+  const SORTS = { id: t => t.id ?? Infinity, title: t => t.title.toLowerCase(), repo: t => t.repo.toLowerCase(), status: t => ORDER[t.status] ?? 99, p: t => t.p ?? 9,
+    due: t => t.overdue && !t.due ? -99 : t.due ? days(t) : 999 };
+  const COLS = [[null, html`<span class="sr">Select</span>`], [null, html`<span class="sr">State</span>`], ['id', 'Id', 'label'], ['title', 'Title', 'label'], ['repo', 'Repo', 'label'],
+    ['status', 'Status', 'label'], ['p', 'P', 'label'], ['due', 'Due', 'label'], [null, html`<span class="sr">Actions</span>`]];
+  let seek = false;
   function renderList() {
-    const all = visible().slice().sort((a, b) => {
-      const va = sortKey === 'p' ? (a.p ?? 9) : (a.overdue && !a.due ? -99 : a.due ? days(a) : 999);
-      const vb = sortKey === 'p' ? (b.p ?? 9) : (b.overdue && !b.due ? -99 : b.due ? days(b) : 999);
-      return (va - vb) * sortDir;
-    });
+    const list = window.shell.list, k = SORTS[L.sort];
+    const all = visible().slice().sort((a, b) => { const x = k(a), y = k(b); return (x < y ? -1 : x > y ? 1 : 0) * L.dir; });
     // build (sd:2589): the list pages as v1 /backlog paged, 50 a page; board and matrix show every filtered task. A ?row= with
     // no ?page= opens the page that holds it.
-    const pages = Math.max(1, Math.ceil(all.length / size));
-    if (seek) { seek = false; const i = all.findIndex(t => t.key === selected); if (i >= 0) pageNo = Math.floor(i / size) + 1; }
-    pageNo = Math.min(pageNo, pages);
-    const v = all.slice((pageNo - 1) * size, pageNo * size), from = all.length ? (pageNo - 1) * size + 1 : 0, to = Math.min(pageNo * size, all.length);
-    const th = (k, name) => html`<th scope="col"${sortKey === k ? html` aria-sort="${sortDir > 0 ? 'ascending' : 'descending'}"` : ''}><button type="button" data-sort="${k}">${name}${ICON(sortKey === k ? (sortDir > 0 ? 'arrow-up' : 'arrow-down') : 'arrow-up-down')}</button></th>`;
-    put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list"><caption class="sr">Tasks</caption><thead><tr><th scope="col"><span class="sr">Select</span></th><th scope="col"><span class="sr">State</span></th><th scope="col" class="label">Id</th><th scope="col" class="label">Title</th><th scope="col" class="label">Repo</th><th scope="col" class="label">Status</th>${th('p', 'P')}${th('due', 'Due')}<th scope="col" aria-label="Actions"></th></tr></thead><tbody>
+    if (seek) { seek = false; const i = all.findIndex(t => t.key === selected); if (i >= 0) L.page = Math.floor(i / L.size) + 1; }
+    const v = list.pageOf(all, L);
+    put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list"><caption class="sr">Tasks</caption><thead>${list.sortHead(COLS, L)}</thead><tbody>
       ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st}">${st ? GLYPH[st] : ''}</td><td class="mono">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button></td><td class="mono">${t.repo}</td><td>${slabel(t.status)}</td><td><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${dt}</td><td>${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="9" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
-    </tbody></table></div>${all.length > SIZES[0] ? html`<nav class="pager" aria-label="Pages"><span>${from}–${to} of ${all.length.toLocaleString()}</span>
-      <span class="pages">${Array.from({ length: pages }, (_, i) => html`<button class="chip" type="button" data-page="${i + 1}" aria-pressed="${String(i + 1 === pageNo)}"${i + 1 === pageNo ? html` aria-current="page"` : ''}>${i + 1}</button>`)}</span>
-      <span class="sizes"><span class="label">Per page</span>${SIZES.map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === size)}">${n}</button>`)}</span></nav>` : ''}`);
+    </tbody></table></div>${list.pager(all.length, L, 'tasks')}`);
   }
   document.getElementById('view-list').addEventListener('click', e => {
-    const s = e.target.closest('[data-sort]');
-    if (s) { if (sortKey === s.dataset.sort) sortDir *= -1; else { sortKey = s.dataset.sort; sortDir = 1; } pageNo = 1; renderList(); writeURL(); return; }
+    if (window.shell.list.sortBy(e, L)) { window.shell.list.keepFocus(e, renderList); writeURL(); return; }
     if (e.target.id === 'clear-f2') { clearFilters(); return; }
-    const pg = e.target.closest('[data-page]'); if (pg) { pageNo = +pg.dataset.page; render(); return; }
-    const sz = e.target.closest('[data-size]'); if (sz) { size = +sz.dataset.size; pageNo = 1; render(); return; }
+    if (window.shell.list.paging(e, L)) { window.shell.list.keepFocus(e, render); return; }
     const o = e.target.closest('[data-open]'); if (o) select(o.dataset.open, true);
   });
 
@@ -875,7 +880,7 @@ addEventListener('DOMContentLoaded', () => {
   const SUB = {
     board: 'Board of the framework statuses. Drag a card, or select it and press 1–5 or use Move to.',
     matrix: 'Importance is priority 1–2; urgency is derived from the due date. Drag, or press 1–4.',
-    list: 'Every task, sortable by priority and due.',
+    list: 'Every task, sortable by any column.',
   };
   function subhead() {
     put(document.getElementById('subhead'), html`${plural(tasks.length, 'task')} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}`);
@@ -902,20 +907,15 @@ addEventListener('DOMContentLoaded', () => {
     [...F.active].forEach(v => { if (v !== '1') F.active.delete(v); });
     find.value = (q.get('q') || '').trim(); Q = find.value.toLowerCase();
     // A page is decimal digits, as on Documents (sd:2427).
-    const page = q.get('page') || ''; if (/^[1-9]\d*$/.test(page) && Number.isSafeInteger(+page)) pageNo = +page;
-    else seek = !!selected;
-    if (SIZES.includes(+q.get('size'))) size = +q.get('size');
-    if (q.get('sort') === 'due') sortKey = 'due';
-    if (q.get('dir') === 'desc') sortDir = -1;
+    window.shell.list.listParams(q, L, { sorts: Object.keys(SORTS), size: LIST.size });
+    if (!/^[1-9]\d*$/.test(q.get('page') || '')) seek = !!selected;
     SKILL = (q.get('skill') || '').trim();
   }
   function writeURL() {
     const q = new URLSearchParams(); q.set('view', view);
     FKEYS.forEach(key => { if (F[key].size) q.set(key, [...F[key]].join(',')); });
     if (Q) q.set('q', Q);
-    if (view === 'list' && (sortKey !== 'p' || sortDir < 0)) { q.set('sort', sortKey); if (sortDir < 0) q.set('dir', 'desc'); }
-    if (view === 'list' && pageNo > 1) q.set('page', pageNo);
-    if (view === 'list' && size !== 50) q.set('size', size);
+    if (view === 'list') window.shell.list.listQuery(q, L, LIST);
     if (SKILL) q.set('skill', SKILL);
     shell.url(q); // the shell keeps ?row=
   }

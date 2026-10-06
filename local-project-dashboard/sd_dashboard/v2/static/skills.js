@@ -86,30 +86,34 @@ addEventListener('DOMContentLoaded', () => {
     ]}`);
   }
 
-  // ---------- Catalog ledger: filter, sort, page ----------
+  // ---------- Catalog ledger: filter, sort, page (shell.list, sd:2682) ----------
   const FACETS = () => [['all', 'All', S.length], ['path', 'Path', onPath.length], ['trial', 'Trial', trials.length], ['contrib', 'Contrib', contrib.length], ['unused', 'Unused on path', unusedPath.length]];
-  const KEYS = ['n', 'st', 'u'], SIZES = [25, 50, 100];
-  let filter = 'all', q = '', sortKey = 'u', sortDir = -1, page = 1, size = 25;
+  const KEYS = ['n', 'st', 'u'], LIST = { sort: 'u', dir: -1, size: 25 }, L = { ...LIST, page: 1 };
+  const COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['n', 'Skill'], ['st', 'Availability'], ['u', 'Use / week', 'use'], [null, html`<span class="sr">Actions</span>`, 'act']];
+  let filter = 'all', q = '';
   const facetsEl = document.getElementById('facets');
   function drawFacets() { put(facetsEl, html`${FACETS().map(([k, l, n]) => html`<button class="chip" type="button" data-facet="${k}" aria-pressed="${String(filter === k)}">${l} <span>${n}</span></button>`)}`); }
   function visible() {
     let v = S.filter(s => filter === 'all' || (filter === 'unused' ? s.status === 'path' && !total(s) : s.status === filter));
     if (q) v = v.filter(s => (s.name + ' ' + s.description + ' ' + s.paths.join(' ')).toLowerCase().includes(q));
     const ord = { path: 0, trial: 1, contrib: 2 };
-    const key = s => sortKey === 'n' ? s.name : sortKey === 'st' ? ord[s.status] : now(s) * 1000 + total(s);
-    return v.sort((a, b) => key(a) < key(b) ? -sortDir : key(a) > key(b) ? sortDir : a.name < b.name ? -1 : 1);
+    const key = s => L.sort === 'n' ? s.name : L.sort === 'st' ? ord[s.status] : now(s) * 1000 + total(s);
+    return v.sort((a, b) => key(a) < key(b) ? -L.dir : key(a) > key(b) ? L.dir : a.name < b.name ? -1 : 1);
   }
   function mini(s) {
     const max = Math.max(1, ...S.map(x => Math.max(...x.weeks)));
     const h = v => v ? Math.max(2, (v / max) * 14) : 0;
     return html`<svg class="mini" viewBox="0 0 36 16" aria-hidden="true"><line class="base" x1="0" x2="36" y1="15.5" y2="15.5"/>${s.weeks.map((v, i) => html`<rect class="bar${i === 2 ? ' now' : ''}" x="${i * 12 + 1}" y="${15 - h(v)}" width="10" height="${h(v)}" rx="1"/>`)}</svg>`;
   }
-  const tbody = document.getElementById('rows');
+  const tbody = document.getElementById('rows'), headEl = document.getElementById('rows-head'), chipsEl = document.getElementById('chips'), pagerEl = document.getElementById('pager');
+  // Active filters, one chip each; each remover leaves the list to draw once, after it.
+  const activeFilters = () => [filter !== 'all' && { key: 'facet', label: `Availability: ${FACETS().find(x => x[0] === filter)[1]}` }, q && { key: 'q', label: `Text: ${q}` }].filter(Boolean);
+  const UNFILTER = { facet: () => { filter = 'all'; }, q: () => { q = ''; input.value = ''; } };
   function drawRows() {
     const had = document.activeElement?.closest?.('tr[data-id]')?.dataset.id; // keep focus on the same row across a redraw
-    const v = visible(), pages = Math.max(1, Math.ceil(v.length / size));
-    page = Math.min(page, pages);
-    const shown = v.slice((page - 1) * size, page * size);
+    const list = window.shell.list, v = visible(), shown = list.pageOf(v, L);
+    put(headEl, list.sortHead(COLS, L));
+    put(chipsEl, DOC ? list.chips(activeFilters(), v.length, S.length) : html``);
     put(tbody, html`${shown.length ? shown.map(s => { const [g, st, why] = glyph(s); return html`<tr data-id="${s.name}" aria-selected="${String(s.name === selected)}"${picked.includes(s.name) ? html` data-picked` : ''}>
       <td class="g g-${st}" title="${why}">${g}<span class="sr">${why}</span></td>
       <td class="name"><button type="button">${s.name}</button><p>${s.description}</p></td>
@@ -117,20 +121,15 @@ addEventListener('DOMContentLoaded', () => {
       <td class="use" title="${s.weeks.map((n, i) => `${weekOf(i)}: ${n}`).join(' · ')}">${mini(s)}<b>${now(s)}</b><span class="sr"> this week; ${s.weeks[1]} the week before</span></td>
       <td class="act">${C.rowActions(s.name)}</td></tr>`; })
       : html`<tr class="lane"><td colspan="5">${DOC ? `No skill matches${q ? ` “${q}”` : ''}.` : `Not read: ${FAILED}`}</td></tr>`}`);
-    document.querySelectorAll('.ledger th[data-key]').forEach(th => th.dataset.key === sortKey ? th.setAttribute('aria-sort', sortDir > 0 ? 'ascending' : 'descending') : th.removeAttribute('aria-sort'));
-    const f = document.getElementById('filtered');
-    f.hidden = !DOC || !(q || filter !== 'all');
-    put(f, html`${v.length ? html`${v.length} of ${S.length} shown${filter !== 'all' ? ' · ' + FACETS().find(x => x[0] === filter)[1].toLowerCase() : ''}${q ? ` · “${q}”` : ''}. ` : html`No skill matches${q ? ` “${q}”` : ''}. `}<button class="btn quiet sm" type="button" id="clear">Clear filters</button>`);
-    const from = v.length ? (page - 1) * size + 1 : 0, to = Math.min(page * size, v.length);
-    put(document.getElementById('pager'), DOC ? html`<span>${from}–${to} of ${v.length}</span>
-      <span class="pages">${Array.from({ length: pages }, (_, i) => html`<button class="chip" type="button" data-page="${i + 1}" aria-pressed="${String(page === i + 1)}" aria-label="Page ${i + 1}">${i + 1}</button>`)}</span>
-      <span class="sizes">Rows ${SIZES.map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(size === n)}">${n}</button>`)}</span>` : html``);
+    put(pagerEl, DOC ? list.pager(v.length, L, 'skills') : html``);
     document.getElementById('tally').textContent = DOC ? `${DOC.totals[DOC.totals.length - 1]} uses this week · ${S.filter(s => now(s)).length} catalog skills used` : '';
     document.querySelectorAll('.cell[data-facet]').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.facet === filter)));
     if (had && window.CSS) tbody.querySelector(`tr[data-id="${CSS.escape(had)}"] .name button`)?.focus();
     drawFacets();
-    window.shell.url({ ...(filter !== 'all' && { facet: filter }), ...((sortKey !== 'u' || sortDir !== -1) && { sort: (sortDir > 0 ? '' : '-') + sortKey }),
-      ...(page > 1 && { page }), ...(size !== 25 && { size }), ...(q && { q }) }); // the shell keeps ?row=
+    const p = new URLSearchParams();
+    if (filter !== 'all') p.set('facet', filter);
+    if (q) p.set('q', q);
+    window.shell.url(list.listQuery(p, L, LIST)); // the shell keeps ?row=
   }
   function drawFoot() {
     const o = DOC.other;
@@ -148,18 +147,17 @@ addEventListener('DOMContentLoaded', () => {
   // Each filter, sort or page change keeps the selection on a row the viewer can see (shell.reconcile).
   const reconcile = () => window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, keep: KEEP, select: id => select(id, false), clear: nothing });
   const redraw = () => { drawRows(); reconcile(); };
-  document.querySelector('.ledger thead').addEventListener('click', e => {
-    const th = e.target.closest('th[data-key]'); if (!th || !DOC) return;
-    if (sortKey === th.dataset.key) sortDir = -sortDir; else { sortKey = th.dataset.key; sortDir = sortKey === 'u' ? -1 : 1; }
-    redraw();
+  headEl.addEventListener('click', e => { if (DOC && window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, redraw); });
+  pagerEl.addEventListener('click', e => { if (DOC && window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, redraw); });
+  const unfilter = keys => { keys.forEach(k => UNFILTER[k]()); L.page = 1; redraw(); };
+  chipsEl.addEventListener('click', e => {
+    const b = e.target.closest('[data-unfilter]'); if (b) return unfilter([b.dataset.unfilter]);
+    if (e.target.closest('[data-unfilter-all]')) unfilter(activeFilters().map(f => f.key));
   });
-  const setFacet = v => { if (!DOC) return; filter = v; page = 1; redraw(); };
+  const setFacet = v => { if (!DOC) return; filter = v; L.page = 1; redraw(); };
   document.addEventListener('skills:facet', e => setFacet(e.detail));
   document.addEventListener('click', e => {
     const c = e.target.closest?.('[data-facet]'); if (c) return setFacet(filter === c.dataset.facet && c.classList.contains('cell') ? 'all' : c.dataset.facet);
-    const p = e.target.closest?.('button[data-page]'); if (p) { page = +p.dataset.page; redraw(); return; }
-    const z = e.target.closest?.('[data-size]'); if (z) { size = +z.dataset.size; page = 1; redraw(); return; }
-    if (e.target.closest?.('#clear')) { filter = 'all'; q = ''; input.value = ''; render(); }
   });
   tbody.addEventListener('click', e => {
     if (e.target.closest('.rowact')) return;
@@ -280,7 +278,7 @@ addEventListener('DOMContentLoaded', () => {
     const name = (v.match(/^run\s+([\w-]+)/i) || [])[1];
     put(as, html`${mode === 'run' ? html`${I('play')} run ${name && byName[name] ? html`<b>${name}</b>` : html`<span>a skill name</span>`}`
       : mode === 'adopt' ? html`${I('download')} adopt from ${v}` : html`${I('filter')} filter the catalog`}`);
-    q = mode === 'filter' ? v.toLowerCase() : ''; page = 1;
+    q = mode === 'filter' ? v.toLowerCase() : ''; L.page = 1;
     if (DOC) redraw();
   }
   input.addEventListener('input', () => setMode(guess(input.value.trim())));
@@ -351,9 +349,8 @@ addEventListener('DOMContentLoaded', () => {
   // whose row is gone, and queues a reread behind a read that started before its write landed.
   const u = new URLSearchParams(location.search);
   if (['path', 'trial', 'contrib', 'unused'].includes(u.get('facet'))) filter = u.get('facet');
-  if (u.get('sort')) { const v = u.get('sort'); if (KEYS.includes(v.replace('-', ''))) { sortDir = v.startsWith('-') ? -1 : 1; sortKey = v.replace('-', ''); } }
-  if (SIZES.includes(+u.get('size'))) size = +u.get('size');
-  if (+u.get('page') > 1) page = +u.get('page');
+  window.shell.list.listParams(u, L, { sorts: KEYS, size: LIST.size });
+  if (/^-(n|st|u)$/.test(u.get('sort') || '')) { L.sort = u.get('sort').slice(1); L.dir = -1; } // an older link's ?sort=-key
   if (u.get('q')) { input.value = u.get('q'); q = u.get('q').toLowerCase(); }
   const reading = window.shell.read({
     source: '/api/skills', what: 'the skills', adopt, clear, draw,
