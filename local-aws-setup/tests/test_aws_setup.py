@@ -1194,5 +1194,21 @@ class RoleAndRuleCase(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(render("sandbox", pass_roles=self.role), separators=(",", ":"))), 6144)
 
 
+    def test_every_simulated_action_has_one_service_prefix(self):
+        # expect() assigns the global `action`, and the teardown loop used the
+        # same name: its second and third probe asked for ec2:ec2:<Action>,
+        # which the simulator answers implicitDeny (16 false FAILs, sd:2851).
+        box = self.ready(level="sandbox", PASS_ROLE_ARNS=self.role)
+        box.profile("default", aws_access_key_id="AKIAADMIN")
+        box.rule("simulate-custom-policy", stdout="allowed")
+        box.run("simulate", "x")
+        names = [c["rest"][c["rest"].index("--action-names") + 1] for c in box.calls()
+                 if "--action-names" in c["rest"]]
+        self.assertTrue(names)
+        malformed = sorted({n for n in names if not re.fullmatch(r"[a-z0-9-]+:[A-Za-z0-9*]+", n)})
+        self.assertEqual(malformed, [])
+        teardown = [n for n in names if n == "ec2:DeleteKeyPair"]
+        self.assertEqual(len(teardown), 3)
+
 if __name__ == "__main__":
     unittest.main()
