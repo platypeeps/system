@@ -53,8 +53,8 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           install` report runs `local-sd-db/sd-db.sh install <venv>` once per
           distinct venv behind the dashboard's and the runner's interpreters
           (from their plists). Then apply. It records the new sha only when
-          every step passed and sd-serve was not held back by a session, so
-          a rerun replays the same range.
+          every step passed, sd-serve was not held back by a session and no
+          LaunchAgent install is reported, so a rerun replays the same range.
   test    run the unittest suite (tests/); extra arguments go to unittest.
 
 env:
@@ -75,11 +75,11 @@ installs() {
   # ponytail: a plist is code in two tools (runtime.py, sd_runner/cli.py), so
   # this greps changed lines for launchd keys and the names that feed them; a
   # value computed elsewhere goes unseen. Upgrade: render each plist at both
-  # commits and compare.
+  # commits and compare. local-deploy names those keys but writes no plist.
   { changed '*.plist' '*.plist.template'
     git -C "$ROOT" diff --name-only "$RANGE" \
       -G'plistlib|ProgramArguments|EnvironmentVariables|KeepAlive|RunAtLoad|ProcessType|ThrottleInterval|Standard(Out|Error)Path|_launch_environment|PASSED_THROUGH|LAUNCH_PATH|SD_(RUNNER|DASHBOARD)_PYTHON' \
-      -- '*.py' '*.sh' ':!*/tests/*'
+      -- '*.py' '*.sh' ':!*/tests/*' ':!local-deploy/*'
   } | sort -u | while read -r path; do
     echo "report needs ${path%%/*} install ($path)"
   done
@@ -251,16 +251,26 @@ upgrade() {
     refuse "the range needs a migration; migrate and restart by hand, then record it: deploy.sh upgrade --from $to" ;;
   esac
   case "$actions" in *"report needs sd_db install"*)
-    # Assigned first, so a refusal inside venvs stops the script.
+    # Assigned first, so a refusal inside venvs stops the script; a
+    # here-document keeps the loop in this shell and each path whole.
     list=$(venvs)
-    for venv in $(printf '%s\n' "$list" | sort -u); do
+    while IFS= read -r venv; do
+      [ -n "$venv" ] || continue
       sh "$ROOT/local-sd-db/sd-db.sh" install "$venv" || fail "sd_db install into $venv"
       echo "installed sd_db into $venv"
-    done ;;
+    done <<EOF
+$(printf '%s\n' "$list" | sort -u)
+EOF
+    ;;
   esac
   held_back=""
   apply "$from" "$to"
   [ -z "$held_back" ] || { echo "deploy: sd-serve still runs the old code; $to not recorded; rerun upgrade" >&2; exit 1; }
+  # A restart keeps the old LaunchAgent: recording would drop the report.
+  case "$actions" in *"install ("*)
+    echo "deploy: a LaunchAgent install is pending (reports above); $to not recorded; install it, then record it: deploy.sh upgrade --from $to" >&2
+    exit 1 ;;
+  esac
   record "$to"
 }
 

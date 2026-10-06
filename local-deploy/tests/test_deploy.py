@@ -167,7 +167,8 @@ class DeployTest(unittest.TestCase):
     def test_plan_is_empty_for_tests_docs_and_other_folders(self):
         self.assertEqual(self.plan({"local-sd-db/tests/test_x.py": "x\n",
                                     "local-project-dashboard/README.md": "x\n",
-                                    "local-herdr/herdr.sh": "x\n"}), [])
+                                    "local-herdr/herdr.sh": "x\n",
+                                    "local-deploy/other.sh": "SD_RUNNER_PYTHON\n"}), [])
 
     def test_plan_reports_a_plist_template_and_restarts_nothing_for_it(self):
         path = "local-machine-setup/examples/launchagents/test.example.sd-serve.plist"
@@ -405,11 +406,11 @@ class DeployTest(unittest.TestCase):
 
     def test_upgrade_installs_sd_db_once_per_venv_before_any_restart(self):
         self.land({"local-sd-db/sd_db/remote.py": "x\n"})
-        other = self.tmp / "other" / "bin" / "python"
+        other = self.tmp / "other venv" / "bin" / "python"
         other.parent.mkdir(parents=True)
         shutil.copy(self.python, other)
         for runner_python, venvs in ((self.python, [self.tmp / "venv"]),
-                                     (other, sorted([self.tmp / "venv", self.tmp / "other"]))):
+                                     (other, sorted([self.tmp / "venv", self.tmp / "other venv"]))):
             with self.subTest(runner_python=runner_python):
                 self.calls.write_text("")
                 (self.tmp / "kicked").unlink(missing_ok=True)
@@ -462,6 +463,17 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("report sd-serve not restarted", result.stdout)
         self.assertIn("not recorded; rerun upgrade", result.stderr)
+        self.assertEqual(self.recorded(), self.base)
+
+    def test_upgrade_applies_but_does_not_record_a_pending_launchagent_install(self):
+        path = "local-sd-runner/sd_runner/cli.py"
+        self.land({path: '"EnvironmentVariables": {}\n'})
+        self.record(self.base)
+        result = self.run_upgrade()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"report needs local-sd-runner install ({path})", result.stdout)
+        self.assertIn("restarted runner", result.stdout)
+        self.assertIn("a LaunchAgent install is pending", result.stderr)
         self.assertEqual(self.recorded(), self.base)
 
     def test_upgrade_refuses_a_migration_and_keeps_the_record(self):

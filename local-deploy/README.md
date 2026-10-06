@@ -25,6 +25,7 @@ Changes under a `tests/` folder and to `*.md` files restart nothing.
 | `local-sd-db/sd_db/schema.py` or `local-sd-db/sd_db/schema/` | report `needs migration; restart after migrate`; nothing restarts, since new code may read a schema not yet there |
 
 The install check greps changed lines, because the dashboard and the runner write their plists in code.
+It skips `local-deploy/`, which names those keys but writes no plist.
 A plist value computed outside those lines goes unseen.
 
 The dashboard and the runner import an installed `sd_db`, not this checkout's.
@@ -79,6 +80,7 @@ sh ~/repos/system/local-deploy/deploy.sh upgrade
    The venvs come from the interpreters the dashboard's and the runner's plists name. A failed install stops.
 7. It runs `apply` over the range.
 8. It records the new sha only when every step passed and no session held sd-serve back.
+   A `needs <folder> install` report also holds the record: install the agent, then record with `upgrade --from <new sha>`.
    After a failure the old record stays, so a rerun replays the same range; the restarts are idempotent.
 
 The pull runs before the steps, but the steps run the `deploy.sh` read before the pull.
