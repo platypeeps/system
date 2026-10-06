@@ -29,9 +29,6 @@
 }
 .ffind input::placeholder { color: var(--color-muted); }
 .ffind input:focus-visible { outline: none; border-color: var(--color-focus); box-shadow: inset 0 0 0 1px var(--color-focus); }
-.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin-top: var(--space-sm); font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
-.pager .pages, .pager .sizes { display: flex; flex-wrap: wrap; gap: var(--space-2xs); align-items: center; }
-.pager .chip { min-width: 2rem; justify-content: center; }
 .linkbtn { border: 0; background: none; padding: var(--space-2xs); color: var(--color-ink-2); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .linkbtn:hover { color: var(--color-ink); }
 
@@ -127,7 +124,6 @@
 .list { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .list-wrap { overflow-x: auto; }
 .list th { text-align: left; padding: 0 var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
-.list th button { display: inline-flex; align-items: center; gap: var(--space-2xs); border: 0; background: none; padding: 0; color: inherit; font: inherit; cursor: pointer; }
 .list td { padding: 0 var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); white-space: nowrap; }
 .list td.title { white-space: normal; min-width: 14rem; }
 .list td.title button { border: 0; background: none; padding: var(--space-2xs) 0; color: var(--color-ink); font: inherit; text-align: left; cursor: pointer; }
@@ -139,9 +135,9 @@
 
 @media (pointer: coarse) {
   .pick { width: var(--row-touch); height: var(--row-touch); }
-  .fgroup .chip, .pager .chip { min-width: var(--row-touch); }
+  .fgroup .chip { min-width: var(--row-touch); }
   .ffind input { min-height: var(--row-touch); }
-  .linkbtn, .list th button { min-height: var(--row-touch); min-width: var(--row-touch); }
+  .linkbtn { min-height: var(--row-touch); min-width: var(--row-touch); }
   .details .actions .btn, .details .icon-btn { min-height: var(--row-touch); min-width: var(--row-touch); }
 }
 @media (max-width: 899px) {

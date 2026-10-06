@@ -1337,7 +1337,11 @@ stage_satellite() {
   set -- --hub "$host"
   [ -z "$port" ] || set -- "$@" --port "$port"
   if [ "$APPLY" -eq 1 ]; then set -- "$@" --apply; fi
-  if out=$("$SD_DB_PYTHON" -I -m sd_db.satellite "$@" 2>&1 </dev/null); then
+  # On a build mismatch, --apply installs the hub's build from origin/main of
+  # this checkout (sd:2802). An environment variable, not a flag: an older
+  # installed sd_db.satellite ignores it instead of refusing the flag.
+  if out=$(SD_DB_SOURCE_CHECKOUT="${SD_DB_SOURCE_CHECKOUT:-$ROOT}" \
+      "$SD_DB_PYTHON" -I -m sd_db.satellite "$@" 2>&1 </dev/null); then
     printf '%s\n' "$out"
   else
     rc=$?

@@ -34,8 +34,6 @@
 
 /* Ledger (Today's grammar, page-owned). */
 .ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
-.ledger th button { display: inline-flex; align-items: center; gap: var(--space-2xs); min-height: 1.75rem; padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
-.ledger th button .i { opacity: 0.6; }
 .ledger th[aria-sort] button { color: var(--color-ink); }
 .ledger th[aria-sort] button .i { opacity: 1; }
 .ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
@@ -62,16 +60,12 @@
 .ledger .unk { color: var(--color-ink-2); }
 .no { color: var(--color-muted); }
 
-/* Filters + pager (lists pattern). */
+/* Filters (lists pattern); sort, pager and chips are shell.list's. */
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); padding: var(--space-xs) 0; margin-bottom: var(--space-xs); border-top: var(--rule-hair) solid var(--color-rule-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); }
 .fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); }
 .fgroup > .label { margin-right: var(--space-2xs); }
 .fsum { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); font-size: var(--text-xs); color: var(--color-muted); }
 .linkbtn { min-height: 1.75rem; border: 0; background: none; padding: 0 var(--space-2xs); color: var(--color-ink-2); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
-.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin-top: var(--space-sm); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
-.pager .pages, .pager .sizes { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); }
-.pager button { min-width: 2rem; min-height: 2rem; padding: 0 var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-panel); color: var(--color-ink-2); font: inherit; cursor: pointer; }
-.pager button[aria-current="true"], .pager button[aria-pressed="true"] { border-color: var(--color-accent); background: var(--color-accent-bg); color: var(--color-ink); }
 
 /* Repo settings sheet. */
 .crumb { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-md); }
@@ -160,9 +154,8 @@ input.fld.num { width: 5rem; }
 [hidden] { display: none !important; }
 
 @media (pointer: coarse) {
-  .segctl button, .pager button, .ledger th button, .linkbtn, .ledger a.ext, .crumb .ext, .filters .chip { min-height: var(--row-touch); min-width: var(--row-touch); justify-content: center; }
+  .segctl button, .linkbtn, .ledger a.ext, .crumb .ext, .filters .chip { min-height: var(--row-touch); min-width: var(--row-touch); justify-content: center; }
   .ledger td { height: var(--row-touch); }
-  .pager button { min-width: var(--row-touch); }
   .fld { min-height: var(--row-touch); }
   .bar { min-height: var(--row-touch); }
 }
