@@ -161,7 +161,9 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         threading.Thread(target=cls.collector.serve_forever, daemon=True).start()
         jev_config = cls.home / ".config" / "system" / "jev"
         jev_config.mkdir(parents=True)
+        # `JEV_METER=1` too: the suite's pin must beat the config's.
         (jev_config / ".env").write_text(
+            "JEV_METER=1\n"
             f"JEV_TRACES_URL=http://127.0.0.1:{cls.collector.server_address[1]}/v1/traces\n")
         env.pop("SYSTEM_TOOLS_CONFIG", None)
         env.pop("XDG_CONFIG_HOME", None)
