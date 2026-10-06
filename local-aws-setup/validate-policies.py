@@ -47,6 +47,8 @@ def grants_shell(item):
     """
     if item["Effect"] != "Allow" or not covers(item, "Action", "ssm:StartSession"):
         return False
+    if "NotResource" in item:
+        return True  # an exclusion list leaves a shell document in some region or account
     if covers(item, "Resource", "arn:aws:ssm:region:account:document/" + SHELL_DOCUMENT):
         return True
     for operator, entries in item.get("Condition", {}).items():
@@ -54,9 +56,9 @@ def grants_shell(item):
         if operator in ("Bool", "BoolIfExists") and str(check).lower() in ("true", "['true']"):
             return False
     # Unchecked, any session target (instance, managed instance, wildcard) opens the default shell.
-    resources = item.get("Resource", item.get("NotResource"))
+    resources = item["Resource"]
     resources = [resources] if isinstance(resources, str) else resources
-    return "NotResource" in item or any(":document/" not in resource for resource in resources)
+    return any(":document/" not in resource for resource in resources)
 
 
 def validate(path):
