@@ -27,11 +27,14 @@ SCRIPT = FOLDER / "scan-for-secrets.sh"
 
 
 def isolate_jev(env: dict) -> None:
-    """Keep a `jev` on the inherited PATH out of the operator's ledger and
-    collector: `enabled --record` writes a row even with the stage off."""
+    """Keep a `jev` on the inherited PATH out of the operator's ledger,
+    collector and trace corpus: `enabled --record` writes a row even with the
+    stage off."""
     env["JEV_METER"] = "0"
     env.pop("JEV_METER_DB", None)
     env.pop("JEV_TRACES_URL", None)
+    env["JEV_CORPUS"] = "0"
+    env.pop("JEV_CORPUS_DIR", None)
 
 
 class RelativeInvocation(unittest.TestCase):
@@ -168,7 +171,7 @@ class TheLocalJudgment(unittest.TestCase):
         self.remote.seen.clear()
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name).resolve()
-        for name in ("home", "tree", "bin", "config"):
+        for name in ("home", "tree", "bin", "config", "corpus"):
             (self.root / name).mkdir()
         # Two hits in one file: ripgrep orders files differently run to run.
         (self.root / "tree" / "one.txt").write_text(f"token = {self.TOKEN}\nother = {self.TOKEN}\n",
@@ -186,7 +189,8 @@ class TheLocalJudgment(unittest.TestCase):
             # Listed and switched on: a local-only stage still reaches no arm.
             JEV_COMPARE_STAGES="JEV_SECRET_SCAN",
             JEV_COMPARE_KEV="1", JEV_COMPARE_HAIKU_VIA="anthropic",
-            JEV_COMPARE_ANTHROPIC_KEY="test-key", JEV_COMPARE_ANTHROPIC_URL=remote + "/v1/messages")
+            JEV_COMPARE_ANTHROPIC_KEY="test-key", JEV_COMPARE_ANTHROPIC_URL=remote + "/v1/messages",
+            JEV_CORPUS="1", JEV_CORPUS_DIR=str(self.root / "corpus"))
         self.env.pop("S4S_CONF", None)
         self.env.pop("JEV_SECRET_SCAN", None)
         # An inherited endpoint would send this suite's spans to the operator's collector.
@@ -220,6 +224,16 @@ class TheLocalJudgment(unittest.TestCase):
         self.assertEqual(len(self.kev.seen), 2)
         self.assertTrue(all(self.TOKEN in body["state"] for body in self.kev.seen))
         self.assertEqual(self.remote.seen, [])
+
+    def test_the_corpus_keeps_each_hit_as_a_hash_and_never_as_text(self):
+        self.scan()
+        files = list((self.root / "corpus").glob("*.jsonl"))
+        lines = [json.loads(line) for path in files for line in path.read_text().splitlines()]
+        # Each hit is a Kev call and its shadow: the scanner's own `yes`.
+        self.assertEqual(sorted((r["stage"], r["arm"]) for r in lines),
+                         [("JEV_SECRET_SCAN", "baseline")] * 2 + [("JEV_SECRET_SCAN", "kev")] * 2)
+        self.assertTrue(all(r["request"]["state_sha256"] for r in lines if r["arm"] == "kev"))
+        self.assertNotIn(self.TOKEN, "".join(path.read_text() for path in files))
 
     def test_the_stage_switched_off_asks_nobody(self):
         self.scan(JEV_SECRET_SCAN="0")

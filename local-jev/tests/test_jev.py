@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -118,6 +119,8 @@ class StubServer(unittest.TestCase):
         # The config root is pinned too, so the operator's own
         # privacy-patterns never shape what this suite sends.
         self.config = Path(tempfile.mkdtemp())
+        self.corpus = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.corpus, ignore_errors=True)
         Stub.status = 200
         Stub.throttle_first = 0
         Stub.noul_value = 0.97
@@ -142,9 +145,12 @@ class StubServer(unittest.TestCase):
         # the pin keeps a change of that default from sending this suite to
         # a real Kev or Haiku endpoint. `test_jev_compare` turns them on
         # against stubs of its own.
+        # JEV_CORPUS_DIR is pinned to a temp folder: the corpus is on by
+        # default, and unpinned this suite wrote 217 records of test calls
+        # into the operator's own ~/.local/share/sd/jev-corpus.
         env = {"TYPESAFE_API_KEY": "test-key", "JEV_URL": self.url,
                "JEV_RETRIES": "3", "JEV_TIMEOUT": "10",
-               "JEV_METER": "0",
+               "JEV_METER": "0", "JEV_CORPUS_DIR": str(self.corpus),
                "JEV_COMPARE_KEV": "0", "JEV_COMPARE_HAIKU_VIA": "off",
                "JEV_FLAG_FILE": self.switch,
                "SYSTEM_TOOLS_CONFIG": str(self.config)}
@@ -501,6 +507,8 @@ class TestEnvFile(StubServer):
         environ["JEV_URL"] = self.url
         environ["JEV_FLAG_FILE"] = self.switch
         environ["JEV_METER"] = "0"
+        environ.pop("JEV_CORPUS", None)
+        environ["JEV_CORPUS_DIR"] = str(self.corpus)
         environ["SYSTEM_TOOLS_CONFIG"] = str(self.config)
         environ.update(env)
         return subprocess.run([str(link)] + args, capture_output=True,

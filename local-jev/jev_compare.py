@@ -8,7 +8,8 @@ detached child and not a bounded wait.
 
 **It only records.** No answer from here reaches a caller. Each arm writes one
 `judgment` row through `jev_meter`, with the Jev row's pair id, and the report
-`sd-db.sh judgments compare` pairs them up.
+`sd-db.sh judgments compare` pairs them up. Each also writes one trace corpus
+record, through `jev.to_corpus`, with the request, the reply and the call id.
 
 **It sends what Jev was sent.** The request file holds the payload after
 `jev.py` redacted it and refused what it refuses. The Kev arm stays on this
@@ -528,6 +529,7 @@ def kev_arm(job: dict, env) -> dict:
     if key:
         headers["Authorization"] = f"Bearer {key}"
     payload = dict(job["payload"], model=KEV_REQUEST_MODEL)
+    event["_request"] = payload
     started = time.monotonic()
     try:
         try:
@@ -535,6 +537,7 @@ def kev_arm(job: dict, env) -> dict:
                                  payload, headers, timeout_of(env))
         finally:
             event["duration_ms"] = int(round((time.monotonic() - started) * 1000))
+        event["_response"] = response
         event.update(jev.usage_of(response))
         event["server_ms"] = millis(response.get("latency_ms"))
         answers = response.get("answers")
@@ -597,6 +600,10 @@ def haiku_arm(job: dict, env, via: str) -> dict:
 
 
 def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
+    # For the corpus: the request the arm was given, and below, the prompt
+    # each question became and what came back for it.
+    event["_request"] = job["payload"]
+    prompts = event["_prompts"] = {}
     started = time.monotonic()
     try:
         conf = haiku_conf(via, env)
@@ -629,6 +636,8 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
             try:
                 user, schema = prompt(state, question)
                 ask = dict(conf, max_tokens=output_cap(question))
+                prompts[qid] = {"system": SYSTEM, "user": user, "schema": schema,
+                                "max_tokens": ask["max_tokens"]}
                 reply = ASK[via](ask, user, schema)
                 reply["answer"] = to_answer(question, parse_reply(reply["reply"], question))
                 results[qid] = reply
@@ -652,6 +661,11 @@ def _haiku_arm(job: dict, env, via: str, event: dict) -> dict:
     finally:
         event["duration_ms"] = int(round((time.monotonic() - started) * 1000))
     replies = [results[qid] for qid in questions]
+    event["_response"] = {
+        qid: ({"reply": r.get("reply"), "answer": r.get("answer"),
+               "declined": str(r["declined"]) if "declined" in r else None}
+              if isinstance(r, dict) else {"declined": str(r)})
+        for qid, r in zip(questions, replies)}
     for name in ("tokens_in", "tokens_out"):
         counted = [r.get(name) for r in replies if isinstance(r, dict)]
         if any(c is not None for c in counted):
@@ -700,9 +714,14 @@ def run_arm(name: str, job: dict, env, work) -> None:
         event = {"provider": name, "outcome": "invalid", "cause": "invalid"}
         sys.stderr.write(f"jev-compare: {name}: {exc!r}\n")
     base.update(event)
+    corpus = {"call": job.get("call"), "request": base.pop("_request", None),
+              "response": base.pop("_response", None)}
+    if "_prompts" in base:
+        corpus["prompts"] = base.pop("_prompts")
     if jev_meter is not None:
-        did = jev_meter.record(base, env)
+        did, row = jev_meter.write(base, env)
         sys.stderr.write(f"jev-compare: {name}: {did}\n")
+        jev.to_corpus(dict(base, **corpus, ledger=row), env)
 
 
 def main(argv=None, env=None) -> int:
