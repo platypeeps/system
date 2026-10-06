@@ -260,7 +260,7 @@ class TheRefusal(unittest.TestCase):
     def fake_exec(self, path, argv, env):
         self.execs.append((path, list(argv), dict(env)))
 
-    def refuse(self, error, *, environ=None, loopback=False, installed=True):
+    def refuse(self, error, *, environ=None, loopback=False, installed=True, unsafe=None):
         def install(digest, **_):
             self.asked.append(digest)
             return self_install.Outcome(installed, "installed the hub's build" if installed
@@ -268,7 +268,16 @@ class TheRefusal(unittest.TestCase):
 
         return self_install.after_refusal(error, loopback=loopback,
                                           environ={} if environ is None else environ,
-                                          execve=self.fake_exec, err=self.err, install=install)
+                                          execve=self.fake_exec, err=self.err, install=install,
+                                          replay=lambda: unsafe)
+
+    def test_a_command_its_argv_cannot_replay_is_installed_for_but_not_rerun(self):
+        error = mismatch()
+        result = self.refuse(error, unsafe="this program was read from standard input")
+        self.assertEqual((self.asked, self.execs), (["b" * 16], []))
+        self.assertTrue(str(result).startswith(str(error)))
+        self.assertIn("installed the hub's build", str(result))
+        self.assertIn("read from standard input. Run it again", str(result))
 
     def test_an_install_runs_the_same_command_again_once(self):
         self.refuse(mismatch())
@@ -326,6 +335,52 @@ class TheRefusal(unittest.TestCase):
         self.assertEqual((result.field, result.hub), (error.field, error.hub))
         self.assertTrue(str(result).startswith(str(error)))
         self.assertIn("origin/main builds another digest", str(result))
+
+
+class TheReplayCheck(unittest.TestCase):
+    """Only a command whose argv runs it again is rerun."""
+
+    def setUp(self):
+        self.null = os.open(os.devnull, os.O_RDONLY)
+        self.addCleanup(os.close, self.null)
+
+    def test_a_program_read_from_standard_input_is_not_rerun(self):
+        for argv0 in ("-", ""):
+            self.assertIn("standard input", self_install.replay_refusal(argv0, self.null))
+
+    def test_a_program_file_that_is_gone_is_not_rerun(self):
+        self.assertIn("not there", self_install.replay_refusal("/nonexistent/sd", self.null))
+
+    def test_a_pipe_on_standard_input_is_not_rerun(self):
+        read, write = os.pipe()
+        self.addCleanup(os.close, read)
+        self.addCleanup(os.close, write)
+        self.assertIn("pipe", self_install.replay_refusal(__file__, read))
+
+    def test_a_script_or_dash_c_with_null_or_closed_input_is_rerun(self):
+        self.assertIsNone(self_install.replay_refusal(__file__, self.null))
+        self.assertIsNone(self_install.replay_refusal("-c", self.null))
+        closed = os.dup(self.null)
+        os.close(closed)
+        self.assertIsNone(self_install.replay_refusal(__file__, closed))
+
+    def test_python_dash_installs_and_says_run_it_again_instead_of_exiting_quietly(self):
+        """The review's reproduction (sd:2802): `python -` reran against an empty stdin."""
+        program = (
+            "import os, sys\n"
+            "from sd_db import remote, self_install\n"
+            "error = remote.BuildMismatch('build', 'a' * 16, 'b' * 16, hub_build='b' * 16)\n"
+            "def execve(*_):\n"
+            "    print('reran'); os._exit(0)\n"
+            "install = lambda digest, **_: self_install.Outcome(True, 'installed the hub build')\n"
+            "raise self_install.after_refusal(error, loopback=False, environ={}, execve=execve,"
+            " install=install)\n"
+        )
+        done = subprocess.run([sys.executable, "-"], input=program, capture_output=True, text=True,
+                              check=False, timeout=60, env={**os.environ, "PYTHONPATH": str(HERE)})
+        self.assertNotIn("reran", done.stdout)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("did not run again", done.stderr)
 
 
 class TheHubOpen(unittest.TestCase):

@@ -59,7 +59,14 @@ The refusal arrives in answer to the first frame, so the hub ran no statement of
 | No hub digest (older hub) | today's error and the reason |
 | `upgrade == "hub"` (satellite newer) | today's error and the reason: upgrade the hub |
 | Install refused | today's error and the outcome's reason |
-| Installed | one stderr line, then `execve(sys.executable, sys.orig_argv)` with the rerun variable set |
+| Installed, and argv cannot replay the command | today's error, the install line, and "run it again" |
+| Installed, and argv replays the command | one stderr line, then `execve(sys.executable, sys.orig_argv)` with the rerun variable set |
+
+`replay_refusal` decides whether argv replays the command.
+A program read from standard input (`python -`, an interactive interpreter) does not, nor does a missing program file.
+A pipe or a file on standard input may already have given this run its input, so it does not either.
+A terminal, `/dev/null` and a closed standard input do.
+Review of the first head found the `python -` case: the rerun read an empty stdin and exited 0 without the command (sd:2802).
 
 The session counter (`remote.sessions_opened`) guards the one case where a rerun could repeat hub writes.
 That case is a hub upgraded while a process already holds sessions.
@@ -76,7 +83,7 @@ An environment variable and not a flag: an older installed `sd_db.satellite` ign
 
 ## Known limits
 
-- A rerun repeats any local work the command did before its first hub session, and any standard input it consumed is gone.
+- A rerun repeats any local work the command did before its first hub session; the replay check covers standard input only.
 - The lock is per venv. The pack's own `sd_install.py` takes another lock, so the two installers do not serialise with each other.
 - A wheel install leaves no `vcs_info` in `direct_url.json`, as `sd-db.sh install` does today.
   The pack's ancestry guard then sees no installed commit.

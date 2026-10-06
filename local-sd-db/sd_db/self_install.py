@@ -288,10 +288,43 @@ def _why_not(mismatch: remote.BuildMismatch, environ) -> str | None:
 
 def _with_reason(mismatch: remote.BuildMismatch, reason: str) -> remote.BuildMismatch:
     """Today's refusal, same class and fields, with why nothing was installed."""
+    return _with_note(mismatch, f"This satellite did not install the hub's build: {reason}")
+
+
+def _with_note(mismatch: remote.BuildMismatch, note: str) -> remote.BuildMismatch:
     refused = type(mismatch).__new__(type(mismatch))
     refused.__dict__.update(vars(mismatch))
-    refused.args = (f"{mismatch}. This satellite did not install the hub's build: {reason}",)
+    refused.args = (f"{mismatch}. {note}",)
     return refused
+
+
+def replay_refusal(argv0: str | None = None, stdin: int = 0) -> str | None:
+    """Why running this process's argv again would not run the same command, or `None`.
+
+    A rerun replays argv and nothing else. A program read from standard
+    input (`python -`, or an interactive interpreter) is gone, and so is
+    any input a pipe or a file on standard input already gave this run. A
+    terminal, `/dev/null` and a closed standard input give the rerun what
+    they gave this run.
+    """
+    argv0 = sys.argv[0] if argv0 is None else argv0
+    if argv0 in ("", "-"):
+        return "this program was read from standard input, so a rerun would not run it"
+    if argv0 != "-c" and not Path(argv0).is_file():
+        return f"this program's file {argv0!r} is not there to run again"
+    try:
+        if os.isatty(stdin):
+            return None
+        details = os.fstat(stdin)
+    except OSError:
+        return None
+    try:
+        null = os.stat(os.devnull)
+    except OSError:
+        null = None
+    if null is not None and (details.st_dev, details.st_ino) == (null.st_dev, null.st_ino):
+        return None
+    return "its standard input is a pipe or a file this run may have read"
 
 
 def rerun(environ, execve=os.execve) -> None:
@@ -302,29 +335,36 @@ def rerun(environ, execve=os.execve) -> None:
 
 
 def after_refusal(mismatch: remote.BuildMismatch, *, loopback: bool, environ=None,
-                  execve=os.execve, err=None, install=None) -> BaseException:
+                  execve=os.execve, err=None, install=None, replay=None) -> BaseException:
     """Install the hub's build and rerun this command, or the error to raise.
 
     Called where the satellite's open met the refusal, so the hub ran no
-    statement of this command. On an install it does not return: the
-    process is replaced. `install` and `execve` are seams for tests.
+    statement of this command. It reruns only a command whose argv replays
+    it (`replay_refusal`); otherwise it installs and asks for a rerun. On a
+    rerun it does not return: the process is replaced. `install`, `execve`
+    and `replay` are seams for tests.
     """
     if loopback:
         return mismatch
     environ = os.environ if environ is None else environ
     err = sys.stderr if err is None else err
     install = install_hub_build if install is None else install
+    replay = replay_refusal if replay is None else replay
     reason = _why_not(mismatch, environ)
     if reason is not None:
         return _with_reason(mismatch, reason)
     outcome = install(hub_digest(mismatch), environ=environ)
     if not outcome.installed:
         return _with_reason(mismatch, outcome.text)
+    unsafe = replay()
+    if unsafe is not None:
+        return _with_note(mismatch, f"Self-install: {outcome.text}; the command did not run again, "
+                                    f"since {unsafe}. Run it again")
     err.write(f"sd_db: {outcome.text}; running the command again\n")
     err.flush()
     try:
         rerun(environ, execve)
     except OSError as error:
-        return _with_reason(mismatch, f"{outcome.text}, and the rerun failed ({error}); "
-                                      f"run the command again")
+        return _with_note(mismatch, f"Self-install: {outcome.text}; the rerun failed ({error}). "
+                                    f"Run the command again")
     return mismatch

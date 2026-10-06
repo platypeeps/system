@@ -34,6 +34,7 @@ The operator approved two triggers: "on refusal + nightly".
    A refusal from an older hub without the digest installs nothing and keeps today's error, plus the reason.
 9. On a refusal, the satellite's command installs, prints one stderr line, and runs the same argv again once.
    A refused install keeps today's error, plus the reason.
+   A command whose argv cannot replay it is installed for and not rerun; the error asks for a rerun.
 10. `sd_db.satellite --apply` installs on a mismatch; without `--apply` it prints the plan line.
 
 ## Acceptance criteria
