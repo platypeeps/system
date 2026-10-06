@@ -683,6 +683,14 @@ date and repository (`workflow.DETAIL_KINDS`), so `sd task edit ID --belongs-to 
 moves one. Followups filed before then carry no repository until someone moves
 them.
 
+`workflow.edit_item` also clears a row's `branch` (sd:2818), with a `comment`
+note reading `Updated branch by <who>`. It refuses any other value: setting a
+branch stays with `runner_controls.configure_item`, which checks it against
+git. A clear is how a stale branch name leaves a row, since nothing else
+writes the column back to empty. A row the runner owns keeps its branch: a
+clear is refused while it has an active assignment or an unreleased runner
+run, the same guards `configure_item` applies.
+
 **That is filing behaviour and not a constraint**, which matters if you are
 reasoning about what the store can hold rather than what it does hold.
 `item.repo` is a nullable `REFERENCES repo(path)` with no per-kind `CHECK`,
