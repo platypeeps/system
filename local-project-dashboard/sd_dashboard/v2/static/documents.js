@@ -20,7 +20,9 @@ const checkoutOf = d => rootOf(d).path.replace(/\/docs\/dashboard$/, '');
 
 // ---------- State ----------
 const F = { repo: new Set(), kind: new Set(), fresh: new Set(), text: '', pinned: false, hidden: false };
-let sort = { col: 'mod', dir: -1 }, pageNo = 1, size = 50, selected = null, picked = [];
+// The list's sort, page and size (shell.list, sd:2682): newest first, 50 a page.
+const LIST = { sort: 'mod', dir: -1, size: 50 }, L = { ...LIST, page: 1 };
+let selected = null, picked = [];
 
 function matches(d) {
   if (d.hidden !== F.hidden) return false;
@@ -33,8 +35,8 @@ function matches(d) {
 }
 const cmp = { title: d => d.title.toLowerCase(), repo: d => (LABEL[d.key] || d.key).toLowerCase(), mod: d => d.mod, size: d => d.bytes };
 function sorted(list) {
-  const k = cmp[sort.col];
-  return [...list].sort((a, b) => (b.pinned - a.pinned) || (k(a) < k(b) ? -1 : k(a) > k(b) ? 1 : 0) * sort.dir);
+  const k = cmp[L.sort];
+  return [...list].sort((a, b) => (b.pinned - a.pinned) || (k(a) < k(b) ? -1 : k(a) > k(b) ? 1 : 0) * L.dir);
 }
 
 // ---------- Facets ----------
@@ -72,11 +74,21 @@ facets.addEventListener('click', e => {
   if (c.id === 'f-pinned') F.pinned = !F.pinned;
   else if (c.id === 'f-hidden') F.hidden = !F.hidden;
   else { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); }
-  pageNo = 1; render();
+  L.page = 1; render();
 });
 
 // ---------- List ----------
 const tbody = document.getElementById('rows');
+const COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['title', 'Document'], ['repo', 'Repo'], [null, 'Kind', 'kind'], ['mod', 'Modified'], ['size', 'Size', 'num'], [null, html`<span class="sr">Actions</span>`, 'acts']];
+// Active filters, one chip each; the key names the field and, for a set, its value.
+function activeFilters() {
+  const act = [];
+  F.repo.forEach(v => act.push({ key: `repo:${v}`, label: `repo:${v}` })); F.kind.forEach(v => act.push({ key: `kind:${v}`, label: `kind:${v}` }));
+  F.fresh.forEach(v => act.push({ key: `fresh:${v}`, label: v === 'stale' ? 'is:stale' : `age:${v}` }));
+  if (F.pinned) act.push({ key: 'pinned', label: 'is:pinned' }); if (F.hidden) act.push({ key: 'hidden', label: 'is:hidden' });
+  if (F.text) act.push({ key: 'q', label: `“${F.text}”` });
+  return act;
+}
 function row(d) {
   // Every state cell carries its glyph and its words; no source means the render state is unknown, and the cell says why.
   const st = d.stale ? ['caution', '▲', 'render-stale: source newer than page'] : d.src ? ['ok', '●', 'rendered after its source'] : ['unknown', '▨', 'unknown: no source Markdown to compare'];
@@ -94,28 +106,15 @@ function row(d) {
 // build: no request is filed (document.request is copy only), so the list has no queued request rows.
 function render() {
   renderFacets();
-  const list = sorted(DOCS.filter(matches));
-  const pages = Math.max(1, Math.ceil(list.length / size)); pageNo = Math.min(pageNo, pages);
-  const slice = list.slice((pageNo - 1) * size, pageNo * size);
+  const L_ = window.shell.list, list = sorted(DOCS.filter(matches)), slice = L_.pageOf(list, L);
+  put(document.getElementById('rows-head'), L_.sortHead(COLS, L));
   put(tbody, html`${slice.map(row)}`);
   const empty = document.getElementById('empty');
   empty.hidden = list.length > 0;
   // build: nothing can be hidden until a store keeps it, and the empty Hidden view says so.
   put(empty, html`${F.hidden ? html`Nothing is hidden: ${STORE || 'no document store yet'}.` : html`No document matches these filters. <button class="linkish" type="button" data-clear>Clear filters</button>`}`);
-  // Active filter chips
-  const act = [];
-  F.repo.forEach(v => act.push(['repo', v, `repo:${v}`])); F.kind.forEach(v => act.push(['kind', v, `kind:${v}`]));
-  F.fresh.forEach(v => act.push(['fresh', v, v === 'stale' ? 'is:stale' : `age:${v}`]));
-  if (F.pinned) act.push(['pinned', 1, 'is:pinned']); if (F.hidden) act.push(['hidden', 1, 'is:hidden']);
-  if (F.text) act.push(['text', F.text, `“${F.text}”`]);
-  put(document.getElementById('active'), html`<span>${list.length.toLocaleString()} of ${DOCS.filter(d => d.hidden === F.hidden).length} ${F.hidden ? 'hidden' : 'shown'}</span>${
-    act.map(([f, v, l]) => html`<button class="chip" type="button" data-rm="${f}" data-v="${v}" aria-label="Remove filter ${l}">${l}${I('x')}</button>`)}${
-    act.length ? html`<button class="linkish" type="button" data-clear>Clear all</button>` : ''}`);
-  // Pager
-  const from = list.length ? (pageNo - 1) * size + 1 : 0, to = Math.min(pageNo * size, list.length);
-  put(document.getElementById('pager'), html`<span>${from}–${to} of ${list.length}</span>
-    <span class="pages">${Array.from({ length: pages }, (_, i) => html`<button class="chip" type="button" data-page="${i + 1}" aria-pressed="${String(i + 1 === pageNo)}"${i + 1 === pageNo ? html` aria-current="page"` : ''}>${i + 1}</button>`)}</span>
-    <span class="sizes"><span class="label">Per page</span>${[25, 50, 100, 200].map(s => html`<button class="chip" type="button" data-size="${s}" aria-pressed="${String(s === size)}">${s}</button>`)}</span>`);
+  put(document.getElementById('chips'), L_.chips(activeFilters(), list.length, DOCS.filter(d => d.hidden === F.hidden).length));
+  put(document.getElementById('pager'), L_.pager(list.length, L, 'documents'));
   // A filter that hides the selected row moves the selection to the first shown row, or clears it (design.md, Page contract).
   // No selection counts too: after an empty filter clears it, the next non-empty list selects its first row again.
   shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => show(id),
@@ -126,24 +125,19 @@ function render() {
   put(document.getElementById('tally'), html`<span class="g-caution">▲ ${stale} render-stale</span><span class="g-unknown">▨ ${nosrc} no source</span><span>${DOCS.filter(d => d.pinned).length} pinned</span>`);
   // build: the subhead names the reading's time from /api/documents, not a fixed observation.
   put(document.getElementById('subhead'), html`${plural(DOCS.length, 'document')} in ${plural(ROOTS.length, 'root')} · read ${DOC ? html`<time class="rel" datetime="${DOC.read}"></time>` : 'not yet'}`);
-  document.querySelectorAll('.ledger th[data-sort]').forEach(th => {
-    const on = th.dataset.sort === sort.col;
-    on ? th.setAttribute('aria-sort', sort.dir < 0 ? 'descending' : 'ascending') : th.removeAttribute('aria-sort');
-    th.querySelector('use').setAttribute('href', on ? (sort.dir < 0 ? '#i-arrow-down' : '#i-arrow-up') : '#i-arrow-up-down');
-  });
 }
-document.getElementById('thead').addEventListener('click', e => {
-  const th = e.target.closest('th[data-sort]'); if (!th) return;
-  sort = sort.col === th.dataset.sort ? { col: sort.col, dir: -sort.dir } : { col: th.dataset.sort, dir: th.dataset.sort === 'mod' || th.dataset.sort === 'size' ? -1 : 1 };
-  render();
+document.getElementById('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) render(); });
+document.getElementById('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) render(); });
+document.getElementById('chips').addEventListener('click', e => {
+  if (e.target.closest('[data-unfilter-all]')) return clearAll();
+  const b = e.target.closest('[data-unfilter]'); if (!b) return;
+  const [f, v] = b.dataset.unfilter.split(/:(.*)/);
+  if (f === 'pinned' || f === 'hidden') F[f] = false; else if (f === 'q') { F.text = ''; input.value = ''; } else F[f].delete(v);
+  L.page = 1; render();
 });
-function clearAll() { F.repo.clear(); F.kind.clear(); F.fresh.clear(); F.text = ''; F.pinned = false; F.hidden = false; input.value = ''; renderShift(); render(); }
+function clearAll() { F.repo.clear(); F.kind.clear(); F.fresh.clear(); F.text = ''; F.pinned = false; F.hidden = false; input.value = ''; L.page = 1; renderShift(); render(); }
 document.getElementById('main').addEventListener('click', e => {
   if (e.target.closest('[data-clear]')) return clearAll();
-  const rm = e.target.closest('[data-rm]');
-  if (rm) { const f = rm.dataset.rm; if (f === 'pinned' || f === 'hidden') F[f] = false; else if (f === 'text') { F.text = ''; input.value = ''; } else F[f].delete(rm.dataset.v); render(); return; }
-  const pg = e.target.closest('.pager [data-page]'); if (pg) { pageNo = +pg.dataset.page; render(); return; }
-  const sz = e.target.closest('[data-size]'); if (sz) { size = +sz.dataset.size; pageNo = 1; render(); return; }
 });
 
 tbody.addEventListener('click', e => {
@@ -230,25 +224,23 @@ function show(id) {
 function select(id, open) { show(id); writeURL(); if (open) shell.openPane('tab-details'); }
 // The URL carries facets, search, sort, page and the row, as on Tasks and Reports, so a filtered list can be bookmarked or sent.
 // Lists join with commas; defaults are left out. Unknown values are dropped on read.
-const SORTS = Object.keys(cmp), SIZES = [25, 50, 100, 200];
+const SORTS = Object.keys(cmp);
 function readURL() {
   const q = new URLSearchParams(location.search), list = k => (q.get(k) || '').split(',').filter(Boolean);
   F.repo = new Set(list('repo').filter(v => ROOTS.some(r => r.key === v)));
   F.kind = new Set(list('kind').filter(v => KINDS.includes(v)));
   F.fresh = new Set(list('fresh').filter(v => v in FRESH));
   F.text = (q.get('q') || '').trim().toLowerCase(); F.pinned = q.get('pinned') === '1'; F.hidden = q.get('hidden') === '1';
-  const [col, dir] = (q.get('sort') || '').split('.'); if (SORTS.includes(col)) sort = { col, dir: dir === 'asc' ? 1 : -1 };
-  if (SIZES.includes(+q.get('size'))) size = +q.get('size');
   // A page is decimal digits: ?page=1.5 sliced mid-page and pressed no pager button, and Number('0x2') is 2 (sd:2427).
-  const page = q.get('page') || ''; if (/^[1-9]\d*$/.test(page) && Number.isSafeInteger(+page)) pageNo = +page;
+  window.shell.list.listParams(q, L, { sorts: SORTS, size: LIST.size });
+  const [col, dir] = (q.get('sort') || '').split('.'); if (dir && SORTS.includes(col)) { L.sort = col; L.dir = dir === 'asc' ? 1 : -1; } // an older link's ?sort=col.dir
   if (F.text) input.value = F.text;
 }
 function writeURL() {
-  const q = {};
-  ['repo', 'kind', 'fresh'].forEach(k => { if (F[k].size) q[k] = [...F[k]].join(','); });
-  if (F.text) q.q = F.text; if (F.pinned) q.pinned = '1'; if (F.hidden) q.hidden = '1';
-  if (sort.col !== 'mod' || sort.dir !== -1) q.sort = `${sort.col}.${sort.dir < 0 ? 'desc' : 'asc'}`;
-  if (size !== 50) q.size = size; if (pageNo > 1) q.page = pageNo;
+  const q = new URLSearchParams();
+  ['repo', 'kind', 'fresh'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
+  if (F.text) q.set('q', F.text); if (F.pinned) q.set('pinned', '1'); if (F.hidden) q.set('hidden', '1');
+  window.shell.list.listQuery(q, L, LIST);
   shell.url(q); // the shell keeps ?row=
 }
 // build: no proposal card. The reference drafted a documents.conf line in chat; neither line it proposed stops a render.
@@ -299,7 +291,7 @@ function renderShift() {
     reqEl.hidden = true;
     F.text = p.words.join(' ').toLowerCase();
     F.repo = new Set(p.repo); F.kind = new Set(p.kind); F.fresh = new Set(p.fresh); F.pinned = p.pinned; F.hidden = p.hidden;
-    pageNo = 1; render();
+    L.page = 1; render();
   } else {
     const title = p.words.filter((w, i) => !(i === 0 && /^(request|need|write|generate|make)$/i.test(w))).join(' ').replace(/^(a|an)\s+/i, '');
     // A write names where it runs: repo:, else the row selected when typing began, never a silent default.
@@ -375,7 +367,7 @@ function attention() {
     : n ? { state: 'caution', n, what: 'render-stale documents' } : { state: 'ok', n: 0, what: 'render-stale documents' };
   window.shell.attention?.(window.PAGE_ATTENTION);
 }
-const shownPage = () => sorted(DOCS.filter(matches)).slice((pageNo - 1) * size, pageNo * size);
+const shownPage = () => sorted(DOCS.filter(matches)).slice((L.page - 1) * L.size, L.page * L.size);
 let reading = null, linked = false;
 function adopt(doc) {
   DOC = doc;
@@ -391,7 +383,7 @@ function adopt(doc) {
     const q = shell.row();
     readURL();
     const at = sorted(DOCS.filter(matches)).findIndex(d => d.id === q);
-    if (at >= 0) { pageNo = Math.floor(at / size) + 1; selected = q; }
+    if (at >= 0) { L.page = Math.floor(at / L.size) + 1; selected = q; }
   }
   const contested = DOC.contested || [];
   // build: a key two checkouts claim is served by neither (documents.py, contested); the state slot names each one.

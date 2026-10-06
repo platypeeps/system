@@ -58,21 +58,13 @@
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <p class="tally" id="tally"></p>
       </div>
-      <div class="active" id="active" aria-live="polite"></div>
+      <div id="chips" aria-live="polite"></div>
       <table class="ledger" aria-labelledby="list-h">
-        <thead id="thead"><tr>
-          <th scope="col" class="g"><span class="sr">State</span></th>
-          <th scope="col" data-sort="title"><button class="sort" type="button">Document<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
-          <th scope="col" data-sort="repo"><button class="sort" type="button">Repo<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
-          <th scope="col" class="kind">Kind</th>
-          <th scope="col" data-sort="mod" aria-sort="descending"><button class="sort" type="button">Modified<svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg></button></th>
-          <th scope="col" data-sort="size" class="num"><button class="sort" type="button">Size<svg class="i" aria-hidden="true"><use href="#i-arrow-up-down"/></svg></button></th>
-          <th scope="col" class="acts"><span class="sr">Actions</span></th>
-        </tr></thead>
+        <thead id="rows-head"></thead>
         <tbody id="rows"></tbody>
       </table>
       <p class="empty" id="empty" hidden></p>
-      <nav class="pager" id="pager" aria-label="Pages"></nav>
+      <div id="pager"></div>
     </section>
   </main>
 
