@@ -79,7 +79,8 @@
         "StringEquals": {
           "aws:ResourceTag/Owner": "{{OWNER}}",
           "aws:ResourceTag/Project": "{{PROJECT}}",
-          "aws:ResourceTag/Purpose": "{{PURPOSE}}"
+          "aws:ResourceTag/Purpose": "{{PURPOSE}}",
+          "aws:ResourceTag/claude-managed": "true"
         }
       }
     },

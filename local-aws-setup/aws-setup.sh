@@ -143,6 +143,11 @@ validate_account() {
   case "$MANAGED_TAG_KEY" in
     ""|*[!A-Za-z0-9_.:/+@-]*) die "invalid MANAGED_TAG_KEY: '$MANAGED_TAG_KEY'" ;;
   esac
+  # The names reach unquoted loops and a JMESPath literal, and the shell splits
+  # on fewer characters than Python's split(): only IAM name characters and
+  # space, tab or newline separators pass.
+  [ -z "$(printf '%s' "$EXTRA_POLICIES" | LC_ALL=C tr -d 'A-Za-z0-9_+=,.@ \t\n-')" ] ||
+    die "$ACCOUNT: EXTRA_POLICIES may hold only IAM policy names separated by spaces"
   for b in $S3_BUCKETS; do
     case "$b" in
       *[!a-z0-9.-]*) die "$ACCOUNT: invalid bucket name: '$b'" ;;

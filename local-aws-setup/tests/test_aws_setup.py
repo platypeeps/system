@@ -910,6 +910,10 @@ class ExtraPolicyCase(unittest.TestCase):
                 self.assertEqual(decision(self, policy, action, arn, context), "allowed")
         for action, kinds in (("ssm:SendCommand", ("instance",)),
                               ("ssm:StartSession", ("instance",)),
+                              ("ec2:AuthorizeSecurityGroupIngress", ("security-group",)),
+                              ("ec2:RevokeSecurityGroupIngress", ("security-group",)),
+                              ("ec2:AuthorizeSecurityGroupEgress", ("security-group",)),
+                              ("ec2:RevokeSecurityGroupEgress", ("security-group",)),
                               ("ec2:AssociateAddress", ("instance", "elastic-ip", "network-interface"))):
             for kind in kinds:
                 for managed in (None, "false"):
@@ -962,6 +966,33 @@ class ExtraPolicyCase(unittest.TestCase):
                 done = box.run("apply", "x")
                 self.assertNotEqual(done.returncode, 0)
                 self.assertEqual(box.calls(), [])
+
+    def test_names_python_splits_but_the_shell_does_not_never_call_aws(self):
+        # Python's split() also splits on \v, \f and \r; the shell does not, so
+        # the validator and the loops would read different names.
+        for separator in ("\v", "\f", "\r"):
+            with self.subTest(separator=repr(separator)):
+                box = self.ready(EXTRA_POLICIES="provision%sother" % separator)
+                self.extra(box)
+                self.extra(box, name="other")
+                done = box.run("apply", "x")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("EXTRA_POLICIES may hold only", done.stderr)
+                self.assertEqual(box.calls(), [])
+
+    def test_a_simulator_call_too_long_for_argv_fails_instead_of_passing(self):
+        # Whitespace does not count toward IAM's limit, so a valid document can
+        # outgrow ARG_MAX. The exec then fails as a whole; no subset reaches AWS.
+        box = self.ready(EXTRA_POLICIES="provision")
+        document = json.dumps({"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "ssm:DescribeInstanceInformation", "Resource": "*"}]})
+        self.extra(box)
+        (box.accounts / "x.policies" / "provision.json").write_text(document[:-1] + " " * (4 << 20) + "}")
+        box.profile("default", aws_access_key_id="AKIAADMIN")
+        box.rule("simulate-custom-policy", stdout="allowed")
+        done = box.run("simulate", "x")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertNotIn("PASS", done.stdout)
+        self.assertFalse([c for c in box.calls() if "simulate-custom-policy" in c["rest"]])
 
     def test_unconfigured_attachment_rejected_even_with_configured_extra(self):
         box = self.ready(EXTRA_POLICIES="provision")
