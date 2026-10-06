@@ -36,8 +36,9 @@ def covers(item, key, value):
         # A policy variable can expand to anything; match any region and account:
         # arn:partition:service:region:account:resource.
         patterns = [re.sub(r"\$\{[^}]*\}", "*", pattern) for pattern in patterns]
-        patterns = [":".join(fields[:3] + ["*", "*"] + fields[5:]) if len(fields) == 6 else pattern
-                    for pattern in patterns for fields in [pattern.split(":", 5)]]
+        # A short pattern ends in a wildcard that IAM lets cross colons.
+        patterns = [":".join(fields[:3] + ["*"] * len(fields[3:5]) + fields[5:])
+                    for fields in (pattern.split(":", 5) for pattern in patterns)]
     return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns) != ("Not" + key in item)
 
 
