@@ -208,13 +208,20 @@ class BuildMismatch(RemoteError):
     two builds can share `SCHEMA_VERSION` and send different SQL, so the
     package version is compared too, and the protocol version before both.
     `upgrade` names the side whose build is older, `hub` or `satellite`,
-    or `both` when the two differ without an order.
+    or `both` when the two differ without an order. `hub_build` is the
+    hub's build digest, which `sd_db.self_install` installs to match.
     """
 
-    def __init__(self, field: str, satellite, hub) -> None:
+    #: The hub's build digest, whatever field differs (sd:2802): the build a
+    #: satellite installs to match. `None` from a hub older than the field,
+    #: which a rebuilt error leaves at this class default.
+    hub_build: str | None = None
+
+    def __init__(self, field: str, satellite, hub, *, hub_build: str | None = None) -> None:
         self.field = field
         self.satellite = str(satellite)
         self.hub = str(hub)
+        self.hub_build = hub_build
         self.upgrade = older(satellite, hub)
         if self.upgrade == "hub":
             remedy = f"upgrade the hub's sd_db to {satellite}"
@@ -245,12 +252,29 @@ def older(satellite, hub) -> str:
 
 _digest: str | None = None
 
+#: Sessions this process opened on a hub. A refusal after one may follow
+#: statements the hub ran, so `sd_db.self_install` does not rerun it.
+_sessions = 0
+
+
+def sessions_opened() -> int:
+    return _sessions
+
 
 def _hash_files() -> str:
     """This package's Python and SQL as they are on disk right now."""
+    return tree_digest(Path(__file__).resolve().parent)
+
+
+def tree_digest(root: Path | str) -> str:
+    """The build digest of the `sd_db` package at `root`, as `build_digest` takes it.
+
+    One algorithm for both: the running package, and a package exported
+    from git that a satellite would install (sd:2802).
+    """
     import hashlib
 
-    root = Path(__file__).resolve().parent
+    root = Path(root)
     hashed = hashlib.sha256()
     for path in sorted(p for p in root.rglob("*") if p.suffix in (".py", ".sql")
                        and p.is_file() and "__pycache__" not in p.parts):
@@ -313,7 +337,7 @@ def check_handshake(frame: dict) -> None:
     names the side to upgrade; the digest has no order.
     """
     if frame.get("v") != PROTOCOL_VERSION:
-        raise BuildMismatch("protocol", frame.get("v"), PROTOCOL_VERSION)
+        raise BuildMismatch("protocol", frame.get("v"), PROTOCOL_VERSION, hub_build=build_digest())
     # Before the fields: a hub whose files moved under it would compare a
     # build it does not run, and name the wrong remedy.
     installed = _hash_files()
@@ -322,7 +346,7 @@ def check_handshake(frame: dict) -> None:
     ours = handshake()
     for field in ("package", "schema", "build"):
         if frame.get(field) != ours[field]:
-            raise BuildMismatch(field, frame.get(field), ours[field])
+            raise BuildMismatch(field, frame.get(field), ours[field], hub_build=ours["build"])
 
 
 # -- frames ----------------------------------------------------------------
@@ -608,6 +632,8 @@ class Connection:
                 raise
         self._call("open", path=None if path is None else str(path), write=write,
                    create=create, busy_timeout=busy_timeout, token=token, **handshake())
+        global _sessions
+        _sessions += 1
 
     def _call(self, op: str, **fields) -> dict:
         if self._socket is None:
