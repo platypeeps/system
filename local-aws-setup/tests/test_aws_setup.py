@@ -287,7 +287,7 @@ class PolicyCase(unittest.TestCase):
         self.assertIn("StringNotEqualsIfExists", deny["Condition"])
         self.assertEqual(
             deny["Condition"]["StringNotEqualsIfExists"],
-            {"ec2:CreateAction": "RunInstances"},
+            {"ec2:CreateAction": ["RunInstances", "CreateSnapshot", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress"]},
         )
 
     def test_the_managed_tag_key_reaches_every_statement_that_names_it(self):
@@ -449,7 +449,7 @@ class CommandCase(unittest.TestCase):
                 done = box.run("apply", "x")
                 self.assertEqual(done.returncode, 1, done.stdout)
                 self.assertIn(noise, done.stderr)
-                self.assertIn("carries more than agent-base", done.stderr)
+                self.assertIn("carries unconfigured permissions beyond agent-base", done.stderr)
 
     def test_keys_refuses_a_dry_run(self):
         # It has no printing path: it creates a real key whatever DRY_RUN says.
@@ -747,6 +747,172 @@ class ConfigLocation(unittest.TestCase):
                      "AWS_SETUP_ACCOUNTS_DIR": str(accounts)})
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("from-config-env", done.stdout)
+
+
+class LifecycleCase(unittest.TestCase):
+    def decision(self, document, action, resource, context, broad=False):
+        # Small independent evaluator for the renderer's supported conditions.
+        from fnmatch import fnmatchcase
+        allowed = broad
+        for item in document["Statement"]:
+            resources = item["Resource"]
+            if isinstance(resources, str):
+                resources = [resources]
+            if not any(fnmatchcase(action, pattern) for pattern in actions_of(item)):
+                continue
+            if not any(fnmatchcase(resource, pattern) for pattern in resources):
+                continue
+            matches = True
+            for operator, entries in item.get("Condition", {}).items():
+                for key, expected in entries.items():
+                    expected = expected if isinstance(expected, list) else [expected]
+                    actual = context.get(key)
+                    if operator == "StringEquals":
+                        matches &= actual in expected
+                    elif operator == "StringNotEqualsIfExists":
+                        matches &= actual not in expected
+                    elif operator == "ForAnyValue:StringEquals":
+                        matches &= any(value in expected for value in (actual or []))
+                    else:
+                        self.fail("unsupported condition " + operator)
+            if matches:
+                if item["Effect"] == "Deny":
+                    return "explicitDeny"
+                allowed = True
+        return "allowed" if allowed else "implicitDeny"
+
+    def test_cleanup_requires_tags_and_sandbox_even_with_broad_extra(self):
+        cases = {"DisassociateAddress": ["elastic-ip", "network-interface"],
+                 "ReleaseAddress": ["elastic-ip"], "DeleteSecurityGroup": ["security-group"],
+                 "DeleteKeyPair": ["key-pair"], "DeleteVolume": ["volume"],
+                 "DeleteNetworkInterface": ["network-interface"], "DeleteSnapshot": ["snapshot"]}
+        for level in ("readonly", "operator", "sandbox"):
+            policy = render(level)
+            for action, kinds in cases.items():
+                for kind in kinds:
+                    account = "" if kind == "snapshot" else ACCOUNT_ID
+                    resource = f"arn:aws:ec2:us-east-1:{account}:{kind}/probe"
+                    with self.subTest(level=level, action=action, kind=kind):
+                        for tag in (None, "false"):
+                            context = {} if tag is None else {"aws:ResourceTag/claude-managed": tag}
+                            self.assertEqual(self.decision(policy, "ec2:" + action, resource, context, broad=True), "explicitDeny")
+                        context = {"aws:ResourceTag/claude-managed": "true"}
+                        expected = "allowed" if level == "sandbox" else "explicitDeny"
+                        self.assertEqual(self.decision(policy, "ec2:" + action, resource, context, broad=True), expected)
+                        self.assertEqual(self.decision(policy, "ec2:" + action, resource, context), expected)
+
+    def test_lifecycle_scope_and_snapshot_both_resource_guards(self):
+        policy = render("sandbox")
+        for kind, key in (("volume", "aws:ResourceTag/claude-managed"), ("snapshot", "aws:RequestTag/claude-managed")):
+            account = "" if kind == "snapshot" else ACCOUNT_ID
+            resource = f"arn:aws:ec2:us-east-1:{account}:{kind}/probe"
+            self.assertEqual(self.decision(policy, "ec2:CreateSnapshot", resource, {key: "true"}), "allowed")
+            for context in ({}, {key: "false"}):
+                self.assertEqual(self.decision(policy, "ec2:CreateSnapshot", resource, context, broad=True), "explicitDeny")
+            elsewhere = resource.replace("us-east-1", "eu-west-1")
+            self.assertEqual(self.decision(policy, "ec2:CreateSnapshot", elsewhere, {key: "true"}), "implicitDeny")
+        volume = f"arn:aws:ec2:us-east-1:999988887777:volume/probe"
+        self.assertEqual(self.decision(policy, "ec2:DeleteVolume", volume, {"aws:ResourceTag/claude-managed": "true"}), "implicitDeny")
+
+    def test_snapshot_tagging_is_creation_only_and_retagging_stays_denied(self):
+        policy = render("sandbox")
+        resource = "arn:aws:ec2:us-east-1::snapshot/probe"
+        context = {"aws:TagKeys": ["claude-managed"], "aws:RequestTag/claude-managed": "true"}
+        for action in ("ec2:CreateTags", "ec2:DeleteTags"):
+            self.assertEqual(self.decision(policy, action, resource, context, broad=True), "explicitDeny")
+        context["ec2:CreateAction"] = "CreateSnapshot"
+        self.assertEqual(self.decision(policy, "ec2:CreateTags", resource, context), "allowed")
+        context["ec2:CreateAction"] = "CreateVolume"
+        self.assertEqual(self.decision(policy, "ec2:CreateTags", resource, context, broad=True), "explicitDeny")
+
+    def test_rendered_policies_fit_managed_policy_limit(self):
+        for level in ("readonly", "operator", "sandbox"):
+            self.assertLessEqual(len(json.dumps(render(level), separators=(",", ":"))), 6144)
+
+
+class ExtraPolicyCase(unittest.TestCase):
+    sandbox = CommandCase.sandbox
+    ready = CommandCase.ready
+    def extra(self, box, name="provision", document=None):
+        folder = box.accounts / "x.policies"
+        folder.mkdir(exist_ok=True)
+        document = document or {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "ssm:DescribeInstanceInformation", "Resource": "*"}]}
+        (folder / (name + ".json")).write_text(json.dumps(document))
+        return document
+
+    def test_extras_render_and_apply_with_base(self):
+        box = self.ready(EXTRA_POLICIES="provision")
+        document = self.extra(box)
+        done = box.run("render", "x", "provision")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), document)
+        box.rule("get-policy", exit=255)
+        done = box.run("apply", "x")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        calls = box.calls()
+        attached = [c for c in calls if "attach-user-policy" in c["rest"]]
+        self.assertEqual({c["rest"][-1] for c in attached}, {f"arn:aws:iam::{ACCOUNT_ID}:policy/{name}" for name in ("agent-base", "provision")})
+        query = next(c["argv"] for c in calls if "list-attached-user-policies" in c["rest"])
+        query = query[query.index("--query") + 1]
+        self.assertIn("policy/agent-base'", query)
+        self.assertIn("policy/provision'", query)
+
+    def test_all_ownership_checks_precede_every_write(self):
+        box = self.ready(EXTRA_POLICIES="provision")
+        self.extra(box)
+        box.rule("list-policy-tags", "policy/agent-base", stdout="local-aws-setup")
+        box.rule("list-policy-tags", "policy/provision", stdout="")
+        done = box.run("apply", "x")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("carries no managed-by", done.stderr)
+        self.assertFalse([c for c in box.calls() if any(verb in c["rest"] for verb in ("create-policy", "create-policy-version", "delete-policy-version", "attach-user-policy"))])
+
+    def test_invalid_configuration_never_calls_aws(self):
+        for names, raw in (("missing", None), ("provision provision", "{}"), ("agent-base", "{}"), ("../escape", "{}"), ("provision", "not json"), ("provision", '{"Version":"2012-10-17","Statement":[]}'), ("provision", "x" * 6145)):
+            with self.subTest(names=names, raw=raw and raw[:30]):
+                box = self.ready(EXTRA_POLICIES=names)
+                self.extra(box)
+                if raw is not None:
+                    (box.accounts / "x.policies" / "provision.json").write_text(raw)
+                done = box.run("apply", "x")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertEqual(box.calls(), [])
+
+    def test_unconfigured_attachment_rejected_even_with_configured_extra(self):
+        box = self.ready(EXTRA_POLICIES="provision")
+        self.extra(box)
+        box.rule("list-attached-user-policies", stdout="AdministratorAccess")
+        done = box.run("apply", "x")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("AdministratorAccess", done.stderr)
+        self.assertFalse([c for c in box.calls() if "get-policy" in c["rest"]])
+
+    def test_invalid_second_document_fails_before_any_aws_call(self):
+        box = self.ready(EXTRA_POLICIES="provision broken")
+        self.extra(box)
+        self.extra(box, name="broken", document={"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": "*", "Action": "ssm:*", "Resource": "*"}]})
+        done = box.run("apply", "x")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("Principal is forbidden", done.stderr)
+        self.assertEqual(box.calls(), [])
+
+    def test_custom_simulator_receives_all_documents(self):
+        box = self.ready(EXTRA_POLICIES="provision")
+        document = self.extra(box)
+        box.profile("default", aws_access_key_id="AKIAADMIN")
+        box.rule("simulate-custom-policy", stdout="allowed")
+        box.run("simulate", "x")
+        calls = [c for c in box.calls() if "simulate-custom-policy" in c["rest"]]
+        self.assertTrue(calls)
+        for call in calls:
+            args = call["rest"]
+            documents = args[args.index("--policy-input-list") + 1:args.index("--action-names")]
+            self.assertEqual(len(documents), 2)
+            self.assertIn(document, [json.loads(item) for item in documents])
+        actions = [c["rest"][c["rest"].index("--action-names") + 1] for c in calls]
+        self.assertIn("ec2:CreateSnapshot", actions)
+        self.assertIn("ec2:DisassociateAddress", actions)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,10 @@
 # local-aws-setup
 
 Scoped AWS access for coding agents (Claude Code) across several accounts.
-Every account gets its own agent IAM user (`agent`) with one managed
-policy (`agent-base` unless the account names another), rendered from the account's **access level**. Dangerous
-actions are explicitly denied at every level, so they stay denied even if a
+Each account gets an agent IAM user (`agent`) with a rendered base policy.
+Its name defaults to `agent-base`; the account may override it with `POLICY_NAME`.
+Private `EXTRA_POLICIES` documents reproduce additional provisioning and service permissions during initial setup.
+Dangerous actions are explicitly denied at every level, so they stay denied even if a
 broader policy is attached later.
 
 ## Two layers
@@ -36,6 +37,7 @@ takes. `<config>` is `$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`);
 | `AGENT_REGION` | region for that profile (default `us-east-1`) |
 | `S3_BUCKETS` | space-separated bucket names |
 | `POLICY_NAME` | managed policy name in this account; overrides the shared `POLICY_NAME` in `<config>/aws-setup/.env` (default `agent-base`) |
+| `EXTRA_POLICIES` | space-separated supplemental managed policy names; default empty |
 
 A typical setup: `dev` (operator, profile `agent-dev`) and `sandbox`
 (sandbox, profile `agent-sandbox`). The account files are the source of
@@ -49,6 +51,8 @@ truth; `./aws-setup.sh accounts` lists them.
 | Start/stop/reboot instances tagged `claude-managed=true`, and read their console output | — | yes | yes |
 | Launch instances | — | — | only tagged `claude-managed=true` at launch |
 | Terminate instances | denied | denied | tagged only |
+| Snapshot managed volumes | denied | denied | volume tagged; snapshot tagged during creation |
+| Disassociate/release Elastic IPs; delete security groups, key pairs, volumes, network interfaces, snapshots | denied | denied | tagged only, configured account/region |
 | Listed buckets | get | get, put | get, put, delete |
 | Anything at all on an instance that does not carry `claude-managed=true` | denied | denied | denied |
 | Change the `claude-managed` tag on existing resources | denied | denied | denied |
@@ -58,20 +62,71 @@ Console output is part of managing an instance: an agent that may stop and
 start one needs to read why it did not come up. It returns whatever the guest
 printed at boot, so treat a boot log as readable by the agent.
 
-The last three rows are explicit `Deny` statements, not gaps in an `Allow`.
+The restricted rows use explicit `Deny` statements, not gaps in an `Allow`.
 The difference only shows when a second policy is attached: a conditional
 `Allow` says nothing about what another policy grants, and an explicit `Deny`
 beats every `Allow` anywhere. That is why the untagged-instance denies render
 at `readonly` too, where nothing is allowed for them to contradict.
 
-Anything not listed is implicitly denied. Print the exact document with
+The base policy implicitly denies unlisted actions. Supplemental policies can add grants. Print the base document with
 `./aws-setup.sh render <name>`. Suggested mapping: `sandbox` for sandbox
 accounts, `operator` for dev, `readonly` for staging, prod and anything
 shared.
 
+## Supplemental policies and teardown
+
+List every additional attached policy in `EXTRA_POLICIES` before initial setup.
+Store each identity policy document at `<accounts>/<name>.policies/<policy-name>.json`.
+For example, `sandbox.env` can contain:
+
+```sh
+EXTRA_POLICIES="agent-provisioning"
+```
+
+Its document lives beside that file in `sandbox.policies/agent-provisioning.json`.
+Copy the existing default-version document exactly when adopting current permissions.
+Keep account IDs, resource ARNs, and SSM scopes in private account configuration.
+Do not broaden those grants when moving them into configuration.
+
+```sh
+./aws-setup.sh render sandbox agent-provisioning
+./aws-setup.sh simulate sandbox
+DRY_RUN=1 ./aws-setup.sh apply sandbox
+./aws-setup.sh apply sandbox
+./aws-setup.sh check sandbox
+```
+
+`render <account>` prints the base policy; the optional policy name selects a configured supplemental document.
+`simulate` evaluates all configured documents together; `check` evaluates the attached principal policies.
+These checks test the base permission boundaries, including teardown. Add service-specific expectations when supplemental behavior changes.
+
+Every supplemental document must contain valid identity-policy JSON within IAM's 6,144 non-whitespace character limit.
+Policy names must be valid IAM names, unique, and different from `POLICY_NAME`.
+Missing or invalid documents fail before AWS calls.
+`apply` checks ownership of every existing configured policy before its first IAM write.
+It refuses unconfigured attachments, group membership, and inline policies. It never adopts or detaches them automatically.
+
+Before adopting an existing policy, inspect its default document and every attached user, group, and role.
+Changing its default version affects all consumers, including automation.
+Then deliberately add `managed-by=local-aws-setup` with the admin profile, as shown below for the base policy.
+The same ownership requirement applies to supplemental policies.
+
+Sandbox teardown permits snapshots and cleanup only in the configured region; account-bearing resources use the configured account.
+AWS snapshot ARNs omit the account field. Their managed tags constrain snapshot creation and deletion.
+Both the source volume and new snapshot must satisfy their respective managed-tag conditions.
+Elastic IP disassociation checks both the Elastic IP and its network interface; tag both during provisioning.
+Apply the managed tag during resource creation. Existing resources require deliberate tagging by an administrator.
+The creation exception covers `RunInstances`, `CreateSnapshot`, `CreateSecurityGroup`, `ImportKeyPair`, and `AllocateAddress`.
+It grants no standalone permission to retag existing resources.
+
+Create a tagged snapshot, wait for completion, then terminate the instance and clean up managed resources.
+`ec2:ModifyInstanceAttribute` stays explicitly denied. Teardown does not require changing disk deletion settings after a backup completes.
+Retained snapshots incur storage charges until deleted. Keep backups according to your retention requirements.
+IAM self-management stays denied; an admin applies policy updates before the agent performs teardown.
+
 ## Adding an account
 
-Prerequisites: `aws` CLI v2 and an admin login for the account.
+Prerequisites: `aws` CLI v2, Python 3, and an admin login for the account.
 
 1. **Log in as admin** under a profile named for the account. `aws login`
    uses your console session, so make sure the browser is signed in to the
@@ -106,8 +161,7 @@ Prerequisites: `aws` CLI v2 and an admin login for the account.
    DRY_RUN=1 ./aws-setup.sh apply sandbox    # the IAM calls apply would make
    ```
 
-5. **Apply** — creates `agent-base` in the account (or a new default version)
-   and attaches it to the user:
+5. **Apply** — creates or versions `agent-base` and every configured supplemental policy, then attaches each to the user:
 
    ```sh
    ./aws-setup.sh apply sandbox
