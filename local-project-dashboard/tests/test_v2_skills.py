@@ -193,18 +193,54 @@ class TheScript(Pack, ScreenCase):
         self.assertIsNone(out["error"])
         return out
 
-    # Stand-in header cells that keep their attributes; each starts with a stale aria-sort, so a draw must clear the others.
-    THS = """var THS = ['n', 'st', 'u'].map(k => { const a = { 'aria-sort': 'ascending' }; return { dataset: { key: k }, a, setAttribute(n, v) { a[n] = v; },
-  removeAttribute(n) { delete a[n]; }, querySelector: () => ({ setAttribute() {} }) }; });
-var QSA = document.querySelectorAll; document.querySelectorAll = sel => sel === '.ledger th[data-key]' ? THS : QSA.call(document, sel);
-const sortedThs = () => THS.filter(t => t.a['aria-sort']).map(t => [t.dataset.key, t.a['aria-sort']]);
-const clickTh = k => ELS.thead.listeners.click[0]({ target: { closest: s => s === 'th[data-key]' ? THS.find(t => t.dataset.key === k) : null } });
-"""
+    # The list grammar from shell.list (sd:2682, as Reports in sd:2527-2529). Each click goes to the listener the page put on its holder.
+    CLICK = "ELS['%s'].listeners.click[0]({ target: { closest: s => s === %s ? { dataset: %s } : null } });"
+    URL = "String(OUT.urls[OUT.urls.length - 1])"
 
-    def test_only_the_sorted_header_carries_aria_sort_and_a_click_moves_it(self):
-        """sd:2527: each column with an order sorts through its button; aria-sort is on the sorted th alone."""
-        out = self.run_page(self.THS + "clickTh('n'); R.a = sortedThs(); clickTh('n'); R.b = sortedThs(); clickTh('u'); R.c = sortedThs();")
-        self.assertEqual([out["R"]["a"], out["R"]["b"], out["R"]["c"]], [[["n", "ascending"]], [["n", "descending"]], [["u", "descending"]]])
+    def many(self, n):
+        """The document with n path skills named sd-000 onward, none used."""
+        base = next(s for s in self.doc["skills"] if s["name"] == "sd-idle")
+        self.doc["skills"] = [dict(base, name=f"sd-{i:03d}") for i in range(n)]
+
+    def test_every_column_with_an_order_sorts_through_the_shared_header(self):
+        """sd:2682: the header is shell.list's; aria-sort is on the sorted th alone, and the sort is in the URL."""
+        click = self.CLICK % ("rows-head", "'button[data-sort]'", "{ sort: 'n' }")
+        out = self.run_page(f"R.head = ELS['rows-head'].html; {click} R.head2 = ELS['rows-head'].html; R.rows = ELS.rows.html; R.url = {self.URL};"
+                            f" {click} R.rows2 = ELS.rows.html; R.url2 = {self.URL};")
+        sorted_th = r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"'
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["head"]), ["n", "st", "u"])
+        self.assertEqual(re.findall(sorted_th, out["R"]["head"]), [("descending", "u")])
+        self.assertEqual(re.findall(sorted_th, out["R"]["head2"]), [("ascending", "n")])
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["sd-extra", "sd-idle", "sd-used"])
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows2"]), ["sd-used", "sd-idle", "sd-extra"])
+        self.assertEqual((out["R"]["url"], out["R"]["url2"]), ("sort=n&dir=asc", "sort=n&dir=desc"))
+
+    def test_the_pager_numbers_pages_and_keeps_page_and_size_in_the_url(self):
+        self.many(60)
+        out = self.run_page("R.pager = ELS.pager.html;" + self.CLICK % ("pager", "'.list-pager [data-page]'", "{ page: '3' }")
+                            + f" R.pager2 = ELS.pager.html; R.rows2 = ELS.rows.html; R.url2 = {self.URL};"
+                            + self.CLICK % ("pager", "'.list-pager [data-size]'", "{ size: '50' }")
+                            + f" R.pager3 = ELS.pager.html; R.url3 = {self.URL};", search="?page=2&sort=n")
+        self.assertIn('<span class="range">26–50 of 60</span>', out["R"]["pager"])
+        self.assertEqual(re.findall(r'data-page="(\d+)"', out["R"]["pager"]), ["1", "2", "3"])
+        self.assertEqual(re.findall(r'data-size="(\d+)"', out["R"]["pager"]), ["25", "50", "100", "200"])
+        self.assertIn('<span class="range">51–60 of 60</span>', out["R"]["pager2"])
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows2"])[0], "sd-050")
+        self.assertEqual(out["R"]["url2"], "page=3&sort=n&dir=asc")
+        self.assertIn('<span class="range">1–50 of 60</span>', out["R"]["pager3"])
+        self.assertEqual(out["R"]["url3"], "size=50&sort=n&dir=asc")
+
+    def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
+        out = self.run_page("R.chips = ELS.chips.html;" + self.CLICK % ("chips", "'[data-unfilter]'", "{ unfilter: 'facet' }")
+                            + f" R.chips2 = ELS.chips.html; R.url2 = {self.URL};"
+                            + " ELS.chips.listeners.click[0]({ target: { closest: s => s === '[data-unfilter-all]' ? {} : null } });"
+                            + f" R.chips3 = ELS.chips.html; R.url3 = {self.URL}; R.rows = ELS.rows.html;", search="?facet=path&q=sd")
+        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips"]), ["facet", "q"])
+        self.assertIn("2 filters · 2 of 3", out["R"]["chips"])
+        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips2"]), ["q"])
+        self.assertEqual(out["R"]["url2"], "q=sd")
+        self.assertEqual((out["R"]["chips3"], out["R"]["url3"]), ("", ""))
+        self.assertEqual(len(re.findall(r'<tr data-id=', out["R"]["rows"])), 3)
 
     def test_the_design_commands_are_registered_with_their_ids_labels_keys_and_risks(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]); R.bulk = REG.filter(c => c.bulk).map(c => c.id);")
@@ -258,9 +294,9 @@ shellRun(cmd('skill.run'), C.get('sd-used')); shellRun(cmd('skill.schedule'), C.
         self.assertIn("outside-skill (2)", out["html"]["foot"])
 
     def test_a_facet_filters_the_ledger_and_the_url_keeps_it(self):
-        out = self.run_page("document.dispatchEvent(new CustomEvent('skills:facet', { detail: 'unused' })); R.rows = ELS.rows.html;")
+        out = self.run_page("document.dispatchEvent(new CustomEvent('skills:facet', { detail: 'unused' })); R.rows = ELS.rows.html; R.url = String(OUT.urls[OUT.urls.length - 1]);")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["sd-idle"])
-        self.assertEqual(out["urls"][-1], {"facet": "unused"})
+        self.assertEqual(str(out["R"]["url"]), "facet=unused")
         out = self.run_page("R.rows = ELS.rows.html;", search="?facet=contrib")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["sd-extra"])
 

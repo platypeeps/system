@@ -148,6 +148,27 @@ class ThePager(unittest.TestCase):
         self.assertEqual(out["size"], [True, 1, 200])
         self.assertEqual(out["slice"], [20, 3])
 
+
+class TheFocusAfterARedraw(unittest.TestCase):
+    """sd:2682 review: a redraw replaces the header and the pager, so focus moves to the new copy of the clicked button."""
+
+    def test_focus_goes_to_the_redrawn_copy_of_the_clicked_control(self):
+        out = run_js("""const click = ds => {
+    const e = { target: { closest: () => ({ dataset: ds }) }, currentTarget: { querySelector: s => ({ focus: () => R.seen.push([s, R.drawn]) }) } };
+    keepFocus(e, () => R.drawn++);
+  };
+  R.seen = []; R.drawn = 0;
+  click({ sort: 'mod' }); click({ page: '3' }); click({ size: '100' });
+  keepFocus({ target: { closest: () => null }, currentTarget: null }, () => R.drawn++);""")
+        self.assertEqual(out["seen"], [['button[data-sort="mod"]', 1], ['button[data-page="3"]', 2], ['button[data-size="100"]', 3]])
+        self.assertEqual(out["drawn"], 4)
+
+    def test_every_page_redraws_a_sort_or_pager_click_through_keep_focus(self):
+        for name, js in PAGE_JS.items():
+            for line in re.findall(r"(?m)^.*\b(?:sortBy|paging)\(e, .*$", js):
+                with self.subTest(name, line=line.strip()[:80]):
+                    self.assertIn("keepFocus(e, ", line)
+
     def test_page_size_and_sort_round_trip_through_the_url_and_bad_values_are_ignored(self):
         out = run_js("""const opts = { sorts: ['at', 'what'], size: 50 }, defaults = { sort: 'at', dir: -1, size: 50 };
   const st = listParams(new URLSearchParams('?page=3&size=100&sort=what&dir=desc'), {}, opts);
