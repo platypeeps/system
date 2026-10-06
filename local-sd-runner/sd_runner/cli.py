@@ -24,6 +24,7 @@ from sd_db import runner_journal as journal
 from sd_db.database import connect, default_path
 from sd_db.errors import SdDbError
 
+from . import load as load_limit
 from . import maintenance, storage
 from .runtime import Config, Runner
 
@@ -128,7 +129,7 @@ def agent_pid(label: str = LABEL) -> int | None:
 
 
 def restart(config: Config, *, max_load: float | None = None, wait: float = RESTART_WAIT, label: str = LABEL,
-            clock=time.monotonic, sleep=time.sleep) -> dict:
+            clock=time.monotonic, sleep=time.sleep, stop: bool = False) -> dict:
     """Drain the runner, then kick its agent, and wait for the new daemon (sd:1951).
 
     A snapshot of an idle queue proves nothing about the moment of the
@@ -156,18 +157,19 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
     dies. The marker is written once and never renewed, so a lapsed token
     cannot come back. Just before the kick the verb checks that the marker
     still names its token; a removed or replaced marker refuses.
+
+    `stop` runs every check and the drain, then `launchctl bootout` in place
+    of the kick, and returns without a new daemon: `deploy.sh upgrade` replaces
+    sd_db while nothing imports it, then calls `start` (sd:2812).
     """
     if not agent_loaded(label):
         return {"ok": False, "reason": f"the {label} agent is not loaded; install it first (runner.sh install-plan)"}
     agent = agent_pid(label)
     if agent is None:
         return {"ok": False, "reason": f"the {label} agent has no running process to drain; start it with launchctl kickstart"}
-    limit = float(max_load if max_load is not None else os.cpu_count() or 1)
-    load = os.getloadavg()[0]
-    if load >= limit:
-        return {"ok": False, "reason": f"the 1-minute load average {load:.1f} is at or above {limit:g}; "
-                "a cold start under load can stall on diskutil, so restart when the machine is quieter",
-                "load": load, "max_load": limit}
+    refused = load_limit.refusal(max_load)
+    if refused:
+        return refused
     from .runtime import drain_path, restart_lock_path
     marker = drain_path(config.database)
     with contextlib.ExitStack() as held:
@@ -183,7 +185,7 @@ def restart(config: Config, *, max_load: float | None = None, wait: float = REST
         token = uuid.uuid4().hex
         _publish(marker, token)
         held.callback(_withdraw, marker, token)
-        return _drained_restart(config, token, agent, wait=wait, label=label, clock=clock, sleep=sleep)
+        return _drained_restart(config, token, agent, wait=wait, label=label, clock=clock, sleep=sleep, stop=stop)
 
 
 def _publish(marker: Path, token: str) -> None:
@@ -216,7 +218,7 @@ def _marker_names(marker: Path, token: str) -> bool:
         return False
 
 
-def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clock, sleep) -> dict:
+def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clock, sleep, stop=False) -> dict:
     deadline = clock() + wait
     while (state := heartbeat_state(config)).get("drain") != token:
         if clock() >= deadline:
@@ -246,10 +248,42 @@ def _drained_restart(config: Config, token: str, agent: int, *, wait, label, clo
     if not _marker_names(drain_path(config.database), token):
         return {"ok": False, "reason": "the drain marker was removed or replaced before the kick; the daemon may "
                 "have claimed work, so run runner.sh restart again"}
+    if stop:
+        out = subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+                             capture_output=True, text=True, check=False)
+        if out.returncode:
+            return {"ok": False, "reason": f"launchctl bootout exited {out.returncode}: {out.stderr.strip()}"}
+        return {"ok": True, "stopped": True, "previous_pid": agent}
     kick = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
                           capture_output=True, text=True, check=False)
     if kick.returncode:
         return {"ok": False, "reason": f"launchctl kickstart exited {kick.returncode}: {kick.stderr.strip()}"}
+    return _await_new(config, agent, wait=wait, clock=clock, sleep=sleep)
+
+
+def start(config: Config, *, wait: float = RESTART_WAIT, label: str = LABEL,
+          clock=time.monotonic, sleep=time.sleep) -> dict:
+    """Bootstrap the agent `stop` booted out, and wait for a healthy heartbeat with a new pid (sd:2812)."""
+    if agent_loaded(label):
+        return {"ok": False, "reason": f"the {label} agent is already loaded; use runner.sh restart"}
+    previous = heartbeat_state(config).get("pid")
+    plist = config.home / "Library/LaunchAgents" / f"{label}.plist"
+    boot = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)],
+                          capture_output=True, text=True, check=False)
+    if boot.returncode:
+        return {"ok": False, "reason": f"launchctl bootstrap exited {boot.returncode}: {boot.stderr.strip()}"}
+    result = _await_new(config, previous, wait=wait, clock=clock, sleep=sleep)
+    if not result["ok"]:
+        # Stopped is the state the caller knows how to finish from, not a
+        # loaded agent that never turned healthy.
+        out = subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+                             capture_output=True, text=True, check=False)
+        result["reason"] += ("; booted the agent out again, so it stays stopped" if out.returncode == 0
+                             else f"; launchctl bootout exited {out.returncode}, so the agent may still be loaded")
+    return result
+
+
+def _await_new(config: Config, agent, *, wait, clock, sleep) -> dict:
     deadline = clock() + wait
     while True:
         state = heartbeat_state(config)
@@ -344,6 +378,12 @@ def main(argv=None) -> int:
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--max-load", type=float)
     command.add_argument("--wait", type=float, default=RESTART_WAIT)
+    command = sub.add_parser("stop")
+    command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+    command.add_argument("--max-load", type=float)
+    command = sub.add_parser("start")
+    command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+    command.add_argument("--wait", type=float, default=RESTART_WAIT)
     command = sub.add_parser("prune-apply")
     command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     command.add_argument("--days", type=int, default=30)
@@ -408,6 +448,10 @@ def dispatch(args) -> int:
             result = storage.preflight(config.database, config.work, config.retention, floor_gb=config.floor_gb)
         elif args.verb == "restart":
             result = restart(config, max_load=args.max_load, wait=args.wait)
+        elif args.verb == "stop":
+            result = restart(config, max_load=args.max_load, stop=True)
+        elif args.verb == "start":
+            result = start(config, wait=args.wait)
         elif args.verb == "install-plan":
             result = install_plan(config, config_path=args.config)
         elif args.verb in {"prune", "discard-plan"}:

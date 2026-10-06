@@ -435,8 +435,17 @@ The opt-in is a `repo` column, set per repository on the hub:
 
 - Every row starts at `off`, and a library older than the column reads `off`.
 - With `off`, intake refuses new requests, and the merge hands back any waiting entry.
-- Set no repository to `accept` before the adversarial review sd:2782 closes.
-  Reason: the hub then merges on a receipt it did not make, and sd:2782 reviews that binding.
+- The adversarial review sd:2782 of that binding closed with pack #1385, so `accept` is open to a repository.
+- `accept` restricts every gate's environment in that repository, not only the satellite's (sd:2817).
+  - The hub's own gate, the merge gate, local reuse and a satellite's gate all run `sd-check` under one filter.
+  - The filter keeps `HOME`, `USER` and `PATH`, and the variables an offload view compares.
+  - A compared variable is in the pack's `OFFLOAD_VARIABLES`, or starts with an `OFFLOAD_VARIABLE_PREFIXES` prefix.
+  - A variable whose name contains a credential word (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `COOKIE`, `AUTH`) is dropped.
+  - The gate drops every other variable, such as `SKIP_TESTS`, `RUN_INTEGRATION`, `SSH_AUTH_SOCK` or `TMPDIR`.
+  - A check that needs a dropped variable fails on every machine; keep that repository at `off` until the pack allowlists it.
+  - The pack's `sd_gate_receipts.offload_environment` is the filter, and `offload_run` applies it to every gate.
+  - Each receipt binds an `environment_mode`, so a pass from before the opt-in does not stand after it.
+  Reason: the satellite and the hub then run the same check, and a dropped variable chooses no tests on either.
 - Roll out one repository at a time: set `accept`, install the hub's job, then request from the satellite.
 - The job is `local-cron-jobs/examples/satellite-lane-run.job`, one copy per opted-in repository, on the hub only.
 
