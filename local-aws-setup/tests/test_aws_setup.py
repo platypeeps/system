@@ -782,6 +782,8 @@ class LifecycleCase(unittest.TestCase):
                         matches &= actual not in expected
                     elif operator == "ForAnyValue:StringEquals":
                         matches &= any(value in expected for value in (actual or []))
+                    elif operator == "BoolIfExists":
+                        matches &= actual is None or actual in expected
                     else:
                         self.fail("unsupported condition " + operator)
             if matches:
@@ -903,6 +905,8 @@ class ExtraPolicyCase(unittest.TestCase):
             ("ec2:AssociateAddress", prefix + "network-interface/probe", resource),
             ("ssm:SendCommand", prefix + "instance/probe", resource),
             ("ssm:SendCommand", "arn:aws:ssm:eu-west-1::document/AWS-RunShellScript", {}),
+            ("ssm:StartSession", prefix + "instance/probe", {**resource, "ssm:SessionDocumentAccessCheck": "true"}),
+            ("ssm:StartSession", "arn:aws:ssm:eu-west-1::document/AWS-StartPortForwardingSession", {}),
             ("iam:PassRole", role, {"iam:PassedToService": "ec2.amazonaws.com"}),
             ("ec2:DeleteSecurityGroup", prefix + "security-group/probe", resource),
         ]:
@@ -945,6 +949,78 @@ class ExtraPolicyCase(unittest.TestCase):
                 self.assertEqual(decision(self, policy, action, prefix + "security-group-rule/probe", missing), "implicitDeny")
         self.assertEqual(decision(self, policy, "ec2:ImportKeyPair", key.replace("example-deployment", "unrelated"), request), "implicitDeny")
         self.assertEqual(decision(self, policy, "ec2:DeleteSecurityGroup", prefix + "security-group/probe", {}), "explicitDeny")
+        # Commands and tunnels only: no interactive shell, and no shell document for commands (sd:2851).
+        for action, document in (("ssm:StartSession", "AWS-RunShellScript"),
+                                 ("ssm:StartSession", "SSM-SessionManagerRunShell"),
+                                 ("ssm:SendCommand", "AWS-StartPortForwardingSession"),
+                                 ("ssm:SendCommand", "SSM-SessionManagerRunShell")):
+            for owner in ("", ACCOUNT_ID):
+                arn = f"arn:aws:ssm:eu-west-1:{owner}:document/{document}"
+                with self.subTest(action=action, arn=arn):
+                    self.assertEqual(decision(self, policy, action, arn, {}), "implicitDeny")
+        self.assertEqual(decision(self, policy, "ssm:StartSession", prefix + "instance/probe",
+                                  {**resource, "ssm:SessionDocumentAccessCheck": "false"}), "implicitDeny")
+
+    def test_agent_ssm_deny_example_overrides_deployment_grants(self):
+        # The agent user holds this beside anything else attached; the deployer never does (sd:2851).
+        deny = json.loads((HERE.parent / "accounts" / "agent-ssm-deny.json.example").read_text())
+        grants = json.loads((HERE.parent / "accounts" / "provisioning-policy.json.example").read_text())
+        box = self.ready(EXTRA_POLICIES="agent-ssm-deny")
+        self.extra(box, name="agent-ssm-deny", document=deny)
+        done = box.run("render", "x", "agent-ssm-deny")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        policy = {"Statement": grants["Statement"] + deny["Statement"]}
+        prefix = "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:"
+        tags = {"aws:ResourceTag/" + key: value for key, value in
+                {"Owner": "{{OWNER}}", "Project": "{{PROJECT}}", "Purpose": "{{PURPOSE}}", "claude-managed": "true"}.items()}
+        for action in ("ssm:SendCommand", "ssm:StartSession"):
+            for arn in (prefix + "instance/i-probe", "arn:aws:ssm:{{REGION}}::document/AWS-RunShellScript",
+                        "arn:aws:ssm:{{REGION}}::document/AWS-StartPortForwardingSession"):
+                with self.subTest(action=action, arn=arn):
+                    self.assertEqual(LifecycleCase.decision(self, policy, action, arn, tags, broad=True), "explicitDeny")
+
+    def test_interactive_shell_grant_never_calls_aws(self):
+        instance = f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:instance/*"
+        checked = {"BoolIfExists": {"ssm:SessionDocumentAccessCheck": "true"}}
+        for statement in (
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:us-east-1::document/SSM-SessionManagerRunShell"},
+            {"Action": ["ssm:SendCommand", "ssm:StartSession"], "Resource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:document/SSM-SessionManagerRunShell"},
+            {"Action": "ssm:startsession", "Resource": "arn:aws:ssm:*:*:document/SSM-*"},
+            {"Action": "ssm:*", "Resource": "*"},
+            {"NotAction": "ec2:*", "Resource": "*"},
+            {"Action": "ssm:StartSession", "NotResource": "arn:aws:ssm:us-east-1::document/AWS-StartPortForwardingSession"},
+            {"Action": "ssm:StartSession", "Resource": instance},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:instance/i-0123456789abcdef0"},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:instance/i-abc*"},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:managed-instance/*"},
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:*:*:*"},
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:us-east-1:*", "Condition": checked},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:*", "Condition": checked},
+            {"Action": "ssm:StartSession", "Resource": f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:inst*/i-ab*"},
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:*:us-east-1:*:*/*"},
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:us-east-1:%s:document/${aws:PrincipalTag/Doc, 'SSM-SessionManagerRunShell'}" % ACCOUNT_ID},
+            {"Action": "ssm:StartSession", "NotResource": "arn:aws:ssm:us-east-1::document/SSM-SessionManagerRunShell", "Condition": checked},
+            {"Action": "ssm:StartSession", "NotResource": f"arn:aws:ssm:us-east-1:{ACCOUNT_ID}:document/SSM-SessionManagerRunShell", "Condition": checked},
+            {"Action": "ssm:StartSession", "Resource": instance, "Condition": {"BoolIfExists": {"ssm:SessionDocumentAccessCheck": "false"}}},
+        ):
+            with self.subTest(statement=statement):
+                box = self.ready(EXTRA_POLICIES="provision")
+                self.extra(box, document={"Version": "2012-10-17", "Statement": [{"Effect": "Allow", **statement}]})
+                done = box.run("apply", "x")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("interactive SSM shell", done.stderr)
+                self.assertEqual(box.calls(), [])
+        for statement in (
+            {"Action": "ssm:StartSession", "Resource": instance, "Condition": checked},
+            {"Action": "ssm:StartSession", "Resource": "arn:aws:ssm:us-east-1::document/AWS-StartPortForwardingSession"},
+            {"Action": "ssm:SendCommand", "Resource": [instance, "arn:aws:ssm:us-east-1::document/AWS-RunShellScript"]},
+            {"Action": "*", "Resource": "arn:aws:s3:::example-bucket/*"},
+        ):
+            with self.subTest(statement=statement):
+                box = self.ready(EXTRA_POLICIES="provision")
+                self.extra(box, document={"Version": "2012-10-17", "Statement": [{"Effect": "Allow", **statement}]})
+                done = box.run("render", "x", "provision")
+                self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_all_ownership_checks_precede_every_write(self):
         box = self.ready(EXTRA_POLICIES="provision")

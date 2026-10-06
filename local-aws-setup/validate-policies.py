@@ -1,4 +1,5 @@
 """Validate configured IAM identity documents before aws-setup makes AWS calls."""
+import fnmatch
 import json
 import pathlib
 import re
@@ -19,6 +20,61 @@ def unique_keys(pairs):
             raise ValueError(f"duplicate JSON key: {key}")
         result[key] = value
     return result
+
+
+SHELL_DOCUMENT = "SSM-SessionManagerRunShell"
+
+
+def covers(item, key, value):
+    """Whether the statement's Action or Resource, or its Not form, covers value."""
+    patterns = item.get(key, item.get("Not" + key))
+    patterns = [patterns] if isinstance(patterns, str) else patterns
+    if key == "Action":
+        # IAM action names are case-insensitive.
+        value, patterns = value.lower(), [pattern.lower() for pattern in patterns]
+    else:
+        # A policy variable can expand to anything; match any region and account:
+        # arn:partition:service:region:account:resource.
+        patterns = [re.sub(r"\$\{[^}]*\}", "*", pattern) for pattern in patterns]
+        # A short pattern ends in a wildcard that IAM lets cross colons.
+        patterns = [":".join(fields[:3] + ["*"] * len(fields[3:5]) + fields[5:])
+                    for fields in (pattern.split(":", 5) for pattern in patterns)]
+    return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns) != ("Not" + key in item)
+
+
+def grants_shell(item):
+    """An Allow that opens the interactive Session Manager shell (sd:2851).
+
+    StartSession without a document runs SSM-SessionManagerRunShell, and IAM
+    checks that document only when ssm:SessionDocumentAccessCheck is true.
+    """
+    if item["Effect"] != "Allow" or not covers(item, "Action", "ssm:StartSession"):
+        return False
+    if "NotResource" in item:
+        return True  # an exclusion list leaves a shell document in some region or account
+    if covers(item, "Resource", "arn:aws:ssm:region:account:document/" + SHELL_DOCUMENT):
+        return True
+    for operator, entries in item.get("Condition", {}).items():
+        check = entries.get("ssm:SessionDocumentAccessCheck") if isinstance(entries, dict) else None
+        if operator in ("Bool", "BoolIfExists") and str(check).lower() in ("true", "['true']"):
+            return False
+    # Unchecked, any session target opens the default shell.
+    resources = item["Resource"]
+    return any(session_target(resource) for resource in ([resources] if isinstance(resources, str) else resources))
+
+
+def session_target(resource):
+    """Whether a Resource pattern may name an EC2 instance or an SSM managed instance.
+
+    A wildcard or a variable in the service or resource type counts as one.
+    """
+    fields = re.sub(r"\$\{[^}]*\}", "*", resource).split(":", 5)
+    if len(fields) < 6:
+        return True
+    service, kind = fields[2], fields[5].split("/", 1)[0]
+    if re.search(r"[*?]", service):
+        return True
+    return service in ("ec2", "ssm") and (bool(re.search(r"[*?]", kind)) or kind in ("instance", "managed-instance"))
 
 
 def validate(path):
@@ -47,6 +103,9 @@ def validate(path):
                 raise ValueError(f"{path}: exactly one valid {first}/{second} is required")
         if "Condition" in item and (not isinstance(item["Condition"], dict) or not item["Condition"]):
             raise ValueError(f"{path}: Condition must be a nonempty object")
+        if grants_shell(item):
+            raise ValueError(f"{path}: grants the interactive SSM shell ({SHELL_DOCUMENT}); allow named "
+                             "documents only, with ssm:SessionDocumentAccessCheck true on instance sessions")
     return document
 
 
