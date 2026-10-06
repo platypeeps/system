@@ -58,6 +58,15 @@ class OrdinaryTasks(WorkflowCase):
         self.assertIn("planning -> done by user", history[-1]["body"])
         self.assertTrue(history[-1]["timestamp"])
 
+    def test_an_unknown_status_points_to_the_cancel_verbs(self):
+        # sd:2741: 'dropped' listed the statuses and never named the verb that closes.
+        item = self.capture()["item"]["id"]
+        with self.assertRaises(TransitionRefused) as refused:
+            change_status(self.db, item, "dropped", who="operator")
+        self.assertIn("no status 'dropped'", str(refused.exception))
+        self.assertIn(f"sd task cancel {item} --reason", str(refused.exception))
+        self.assertIn("sd work cancel", str(refused.exception))
+
     def test_optional_repository_must_already_be_registered(self):
         with self.assertRaisesRegex(WorkflowError, "registered"):
             self.capture(repo="/repos/unknown")
