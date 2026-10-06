@@ -57,9 +57,10 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           lives there: the runner with `runner.sh stop` (drain), the others
           with `launchctl bootout`. Then `local-sd-db/sd-db.sh install
           <venv>`, apply, and a start of each stopped agent: sd-serve, the
-          dashboard (`health --wait`), the runner (`runner.sh start`). A
-          failure after the first stop leaves them stopped and names the
-          rerun that finishes. It records the new sha only when
+          dashboard (`health --wait`), the runner (`runner.sh start`); a
+          start whose wait fails boots its agent out again. A failure
+          after the first stop leaves them stopped and names the rerun
+          that finishes; it bootstraps only those launchd does not hold. It records the new sha only when
           every step passed, sd-serve was not held back by a session and no
           LaunchAgent install is reported, so a rerun replays the same range.
   test    run the unittest suite (tests/); extra arguments go to unittest.
@@ -124,6 +125,9 @@ refuse() {
 
 fail() {
   echo "deploy: $1 failed; stopped" >&2
+  # A start whose wait failed boots its agent out again, so the marker holds
+  # true and a rerun bootstraps it once.
+  [ -z "${starting:-}" ] || launchctl bootout "gui/$(id -u)/$starting" 2>/dev/null || true
   stopped_hint
   exit 1
 }
@@ -313,24 +317,32 @@ stop_agent() {
       fail "runner stop ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))" ;;
     *) launchctl bootout "gui/$(id -u)/$1" || fail "$1 bootout" ;;
   esac
-  echo "$1" >> "$STOPPED"
+  stopped "$1" || echo "$1" >> "$STOPPED"
   echo "stopped $1"
 }
 
+# A marked agent that launchd holds already is not bootstrapped again; the
+# others still pass their wait. runner.sh start boots out on its own failure.
 start_agent() {
   case "$1" in
     *.sd-runner)
-      library_current sd-runner SD_RUNNER_PYTHON
-      why=$(sh "$ROOT/local-sd-runner/runner.sh" start 2>&1) ||
-        fail "runner start ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))" ;;
+      if loaded "$1"; then
+        echo "skip runner start: $1 is loaded"
+      else
+        library_current sd-runner SD_RUNNER_PYTHON
+        why=$(sh "$ROOT/local-sd-runner/runner.sh" start 2>&1) ||
+          fail "runner start ($(printf '%s\n' "$why" | tail -3 | tr -s '\n ' '  '))"
+      fi ;;
     *)
       [ "$1" != "$PREFIX.sd-dashboard" ] || library_current sd-dashboard SD_DASHBOARD_PYTHON
-      launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist" || fail "$1 bootstrap"
+      loaded "$1" || launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist" || fail "$1 bootstrap"
+      starting="$1"
       case "$1" in
         *.sd-serve) await_listener ;;
         *.sd-dashboard) sh "$ROOT/local-project-dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" ||
           fail "dashboard health" ;;
-      esac ;;
+      esac
+      starting="" ;;
   esac
   grep -vxF "$1" "$STOPPED" > "$STOPPED.$$" || true
   mv "$STOPPED.$$" "$STOPPED"
@@ -355,7 +367,7 @@ upgrade() {
       *) echo "deploy: unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
   done
-  # The agents this upgrade stopped, one label a line; a rerun starts them.
+  # The agents this upgrade stopped, one label a line, each once; a rerun starts them.
   STOPPED="$(dirname "$STATE")/stopped"
   mkdir -p "$(dirname "$STATE")"
   [ "$(git -C "$ROOT" symbolic-ref -q --short HEAD)" = main ] || refuse "$ROOT is not on main"

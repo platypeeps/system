@@ -85,9 +85,11 @@ sh ~/repos/system/local-deploy/deploy.sh upgrade
    The runner stops with `runner.sh stop` (the restart's drain and idle checks, then `launchctl bootout`); the others with `launchctl bootout`.
 8. It runs `local-sd-db/sd-db.sh install <venv>` once per venv, then `apply` for the agents still loaded.
 9. It starts each stopped agent: sd-serve (a new listener), the dashboard (`health --wait`), the runner (`runner.sh start`).
+   An agent whose wait fails after its bootstrap is booted out again, so it stays stopped.
 10. A failure after the first stop leaves every stopped agent stopped, never running on a mixed library.
     It exits 1 and prints the rerun that finishes: `sh <checkout>/local-deploy/deploy.sh upgrade --from <from>`.
-    The file `stopped` beside the record lists them, so the rerun installs into their venvs and starts them.
+    The file `stopped` beside the record lists them, each label once, so the rerun installs into their venvs and starts them.
+    The rerun bootstraps only a listed agent that launchd does not hold; a held one still passes its wait.
 11. It records the new sha only when every step passed and no session held sd-serve back.
    A `needs <folder> install` report also holds the record: install the agent, then record with `upgrade --from <new sha>`.
    After a failure the old record stays, so a rerun replays the same range; the restarts are idempotent.

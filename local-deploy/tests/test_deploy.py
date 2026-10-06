@@ -24,15 +24,18 @@ RUNTIME = FOLDER.parent / "local-project-dashboard" / "sd_dashboard" / "runtime.
 
 # `print` fails for a label named in DEPLOY_TEST_UNLOADED or stopped: a file
 # in DEPLOY_TEST_OUT, which `bootout` and `runner.sh stop` write and
-# `bootstrap` and `runner.sh start` remove. `kickstart` and `bootstrap` mark
-# the restart so the lsof stub can answer with a new listener.
+# `bootstrap` and `runner.sh start` remove; like launchd, both refuse an
+# agent that is loaded. `kickstart` and `bootstrap` mark the restart so the
+# lsof stub can answer with a new listener.
 LAUNCHCTL = """#!/bin/sh
 echo "launchctl $*" >> "$DEPLOY_TEST_CALLS"
 case "$1" in
   print) case " $DEPLOY_TEST_UNLOADED " in *" ${2##*/} "*) exit 113 ;; esac
          [ ! -e "$DEPLOY_TEST_OUT/${2##*/}" ] || exit 113 ;;
   bootout) touch "$DEPLOY_TEST_OUT/${2##*/}" ;;
-  bootstrap) rm -f "$DEPLOY_TEST_OUT/$(basename "$3" .plist)"; touch "$DEPLOY_TEST_KICKED" ;;
+  bootstrap) label=$(basename "$3" .plist)
+             [ -e "$DEPLOY_TEST_OUT/$label" ] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
+             rm -f "$DEPLOY_TEST_OUT/$label"; touch "$DEPLOY_TEST_KICKED" ;;
   kickstart) touch "$DEPLOY_TEST_KICKED" ;;
 esac
 exit 0
@@ -109,7 +112,7 @@ RUNNER = """#!/bin/sh
 echo "runner.sh $*" >> "$DEPLOY_TEST_CALLS"
 case "$1" in
   stop) touch "$DEPLOY_TEST_OUT/$SYSTEM_TOOLS_LABEL_PREFIX.sd-runner" ;;
-  start) rm -f "$DEPLOY_TEST_OUT/$SYSTEM_TOOLS_LABEL_PREFIX.sd-runner" ;;
+  start) rm "$DEPLOY_TEST_OUT/$SYSTEM_TOOLS_LABEL_PREFIX.sd-runner" || exit 5 ;;
   *) exit "${DEPLOY_TEST_RUNNER:-0}" ;;
 esac
 """
@@ -508,6 +511,62 @@ class DeployTest(unittest.TestCase):
         self.assertFalse(list((self.tmp / "out").iterdir()))
         self.assertFalse(self.stopped.exists())
         self.assertEqual(self.recorded(), landed)
+
+    def starts(self):
+        """The plists bootstrapped and the runner starts, in call order."""
+        return [call.split()[-1].rsplit("/", 1)[-1] for call in self.calls.read_text().splitlines()
+                if "bootstrap" in call or call == "runner.sh start"]
+
+    def fail_a_start_then_rerun(self, label, serve_python="", **failing):
+        """A start whose wait fails boots its agent out; the rerun starts each agent once."""
+        landed = self.land({"local-sd-db/sd_db/remote.py": "x\n"})
+        self.record(self.base)
+        result = self.run_upgrade(DEPLOY_TEST_SERVE_PYTHON=serve_python, **failing)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        calls = self.calls.read_text().splitlines()
+        self.assertTrue(calls[-1].startswith("launchctl bootout") and calls[-1].endswith(label), calls)
+        self.assertIn(label, self.stopped.read_text().splitlines())
+        self.assertEqual(self.recorded(), self.base)
+        self.calls.write_text("")
+        # The rerun's sd-serve kickstart must see a listener change.
+        (self.tmp / "kicked").unlink()
+        result = self.run_upgrade(DEPLOY_TEST_SERVE_PYTHON=serve_python)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        starts = self.starts()
+        self.assertEqual(sorted(starts), sorted(set(starts)), starts)
+        self.assertIn(label + ".plist", starts)
+        self.assertEqual(starts[-1], "start")
+        self.assertFalse(list((self.tmp / "out").iterdir()))
+        self.assertFalse(self.stopped.exists())
+        self.assertEqual(self.recorded(), landed)
+
+    def test_a_failed_dashboard_health_after_bootstrap_boots_it_out_for_the_rerun(self):
+        self.fail_a_start_then_rerun("test.example.sd-dashboard", DEPLOY_TEST_HEALTH="1")
+
+    def test_a_missing_sd_serve_listener_after_bootstrap_boots_it_out_for_the_rerun(self):
+        self.fail_a_start_then_rerun("test.example.sd-serve", str(self.python), DEPLOY_TEST_NO_LISTENER="1")
+
+    def test_a_marked_agent_that_is_loaded_is_stopped_once_and_started_once(self):
+        self.land({"local-sd-db/sd_db/remote.py": "x\n"})
+        self.record(self.base)
+        self.stopped.write_text("test.example.sd-runner\ntest.example.sd-dashboard\n")
+        (self.tmp / "out" / "test.example.sd-runner").touch()
+        result = self.run_upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.starts(), ["test.example.sd-dashboard.plist", "start"])
+        self.assertEqual(result.stdout.count("started test.example.sd-dashboard"), 1, result.stdout)
+
+    def test_a_replay_bootstraps_no_marked_agent_that_launchd_holds(self):
+        self.origin()
+        self.record(self.base)
+        # Both marked agents are loaded: no file in out/.
+        self.stopped.write_text("test.example.sd-dashboard\ntest.example.sd-runner\n")
+        result = self.run_upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.starts(), [])
+        self.assertIn("dashboard.sh health --wait 1", self.calls.read_text().splitlines())
+        self.assertIn("skip runner start: test.example.sd-runner is loaded", result.stdout)
+        self.assertFalse(self.stopped.exists())
 
     def test_upgrade_stops_sd_serve_too_when_it_runs_from_the_venv(self):
         self.land({"local-sd-db/sd_db/remote.py": "x\n"})
