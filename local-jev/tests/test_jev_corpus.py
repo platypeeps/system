@@ -24,6 +24,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import jev
 import jev_corpus
@@ -70,6 +71,56 @@ class TheModule(unittest.TestCase):
         said = jev_corpus.append({}, {"JEV_CORPUS_DIR": str(self.folder.parent / "file")})
         self.assertEqual(said, jev_corpus.FAILED)
 
+    def test_an_existing_folder_and_file_are_held_to_the_private_modes(self):
+        self.folder.mkdir(mode=0o755)
+        day = self.folder / (time.strftime("%Y-%m-%d", time.gmtime()) + ".jsonl")
+        day.touch(mode=0o644)
+        os.chmod(self.folder, 0o755)
+        os.chmod(day, 0o644)
+        said = jev_corpus.append({}, {"JEV_CORPUS_DIR": str(self.folder)})
+        self.assertEqual(said, jev_corpus.WRITTEN)
+        self.assertEqual(stat.S_IMODE(self.folder.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(day.stat().st_mode), 0o600)
+
+    def test_a_symlinked_file_or_folder_is_refused(self):
+        target = self.folder.parent / "elsewhere"
+        target.mkdir()
+        self.folder.mkdir()
+        day = self.folder / (time.strftime("%Y-%m-%d", time.gmtime()) + ".jsonl")
+        day.symlink_to(target / "kept.jsonl")
+        self.assertEqual(jev_corpus.append({}, {"JEV_CORPUS_DIR": str(self.folder)}),
+                         jev_corpus.FAILED)
+        linked = self.folder.parent / "linked"
+        linked.symlink_to(target)
+        self.assertEqual(jev_corpus.append({}, {"JEV_CORPUS_DIR": str(linked)}),
+                         jev_corpus.FAILED)
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_a_short_write_still_leaves_a_whole_line(self):
+        real = os.write
+        with mock.patch.object(jev_corpus.os, "write",
+                               side_effect=lambda fd, data: real(fd, data[:1])):
+            said = jev_corpus.append({"arm": "jev"}, {"JEV_CORPUS_DIR": str(self.folder)})
+        self.assertEqual(said, jev_corpus.WRITTEN)
+        found, = records(self.folder)
+        self.assertEqual(found["arm"], "jev")
+
+    def test_a_write_that_fails_midway_leaves_no_fragment(self):
+        env = {"JEV_CORPUS_DIR": str(self.folder)}
+        jev_corpus.append({"arm": "first"}, env)
+        real, calls = os.write, []
+
+        def full_disk(fd, data):
+            calls.append(fd)
+            if len(calls) > 1:
+                raise OSError(28, "No space left on device")
+            return real(fd, data[:5])
+
+        with mock.patch.object(jev_corpus.os, "write", side_effect=full_disk):
+            self.assertEqual(jev_corpus.append({"arm": "second"}, env), jev_corpus.FAILED)
+        jev_corpus.append({"arm": "third"}, env)
+        self.assertEqual([r["arm"] for r in records(self.folder)], ["first", "third"])
+
     def test_the_default_folder_is_under_home(self):
         self.assertEqual(jev_corpus.directory({"HOME": "/home/example"}),
                          "/home/example/.local/share/sd/jev-corpus")
@@ -91,8 +142,9 @@ class ACall(MeteringCase):
         self.assertEqual((found["arm"], found["caller"], found["stage"], found["model"],
                           found["outcome"], found["printed"]),
                          ("jev", "local-notify", "JEV_NOTIFY", "jev-stub", "ok", "desk"))
-        self.assertEqual((found["settings"]["unsure_below"], found["settings"]["criteria"]),
-                         (0.5, "desk,phone"))
+        self.assertEqual(found["settings"]["unsure_below"], 0.5)
+        # The criteria are kept once, as sent, in the request.
+        self.assertNotIn("criteria", found["settings"])
         self.assertEqual(found["ledger"], self.only()["id"])
         self.assertRegex(found["call"], r"^[0-9a-f]{16}$")
 
@@ -113,6 +165,17 @@ class ACall(MeteringCase):
         self.assertEqual((mine["baseline"], theirs["baseline"]), ("no", "no"))
         rows = {row["arm"]: row["id"] for row in self.rows()}
         self.assertEqual((mine["ledger"], theirs["ledger"]), (rows["jev"], rows["baseline"]))
+
+    def test_no_text_the_caller_gave_is_stored_unredacted(self):
+        secret = "ghp_" + "b" * 36
+        self.run_main(["noul", f"is {secret} live?", "--fallback", secret,
+                       "--baseline", secret, "--gate", "0.5"],
+                      stdin="state", JEV_ENABLED="0")
+        self.run_main(["noul", f"is {secret} live?", "--fallback", secret])
+        stored = self.stored()
+        self.assertEqual(len(stored), 3)
+        self.assertNotIn(secret, json.dumps(stored))
+        self.assertIn("[REDACTED]", stored[0]["fallback"])
 
     def test_a_call_that_sent_nothing_stores_no_request(self):
         code, out = self.run_main(["noul", "is it?", "--fallback", "yes"], JEV_ENABLED="0")

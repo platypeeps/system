@@ -204,6 +204,16 @@ LOCAL_ONLY_STAGES = ("JEV_SECRET_SCAN",)
 #: hashed too, named here or not: its caller said the text is sensitive.
 CORPUS_HASHED_STAGES = ("JEV_SECRET_SCAN",)
 
+#: The flags a corpus record keeps under `settings`: the ones that shape the
+#: printed answer and carry no text. The instructions, criteria and levels
+#: are kept as sent, redacted, in `request`; a path to a file is not kept.
+CORPUS_SETTINGS = ("verb", "gate", "unsure_below", "json", "changed",
+                   "state_format", "model", "local_only", "shadow_ms",
+                   "baseline_ms")
+
+#: The caller's own text a record keeps, redacted as a request is.
+CORPUS_ANSWERS = ("printed", "fallback", "baseline")
+
 #: Kev's System One endpoint, the name a request asks it for, and the model a
 #: row records; `jev_compare`'s Kev arm reads the same three.
 KEV_URL = "http://127.0.0.1:8009/v1/systemone"
@@ -509,6 +519,12 @@ def to_corpus(record: dict, env) -> str:
     try:
         if record.get("local") or record.get("stage") in CORPUS_HASHED_STAGES:
             record = hashed(record)
+        # The caller's own answers never went through `post`, so they are
+        # redacted here; with a pattern file that does not load, dropped.
+        patterns, problem = privacy_patterns(env)
+        record = dict(record, **{
+            field: None if problem else redact(record[field], patterns, [0])
+            for field in CORPUS_ANSWERS if isinstance(record.get(field), str)})
         return jev_corpus.append(record, env)
     except Exception:                        # pragma: no cover - belt and brace
         return ""
@@ -1754,10 +1770,10 @@ def main(argv=None, out=None, env=None, **kw) -> int:
         declared = None if baseline is not None else "unknown"
     note(_declared=declared, pair=pair, shadow=shadowed)
     # The corpus's join key: one per call, on `jev`'s record, the baseline's
-    # and each arm's, with or without a pair. The parsed flags are kept whole,
-    # so a record says which `--gate`, criteria or fallback shaped the answer.
+    # and each arm's, with or without a pair. The flags that shaped the
+    # printed answer are kept, so a record says which `--gate` produced it.
     call = os.urandom(8).hex()
-    flags = {key: value for key, value in vars(args).items() if key != "run"}
+    flags = {key: getattr(args, key) for key in CORPUS_SETTINGS if hasattr(args, key)}
     note(_call=call, _local=local, _settings=flags)
     # In shadow mode the judgment is measured and not used, so it is written
     # to a sink and the caller is handed back its own answer instead.

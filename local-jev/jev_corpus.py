@@ -9,8 +9,10 @@ JSON line per call per arm, appended to one file per UTC day.
 
 **Where.** `JEV_CORPUS_DIR`, default `~/.local/share/sd/jev-corpus`. The
 folder is made 0700 and each file 0600, because a record holds the state as
-sent: paths, diffs, subjects. Keep it on the system disk; a volume mounted
-`noowners` ignores both modes. Nothing here is ever committed.
+sent: paths, diffs, subjects. An existing folder or file is held to the
+same modes, and a symlink or another user's file is refused. Keep it on the
+system disk; a volume mounted `noowners` ignores both modes. Nothing here is
+ever committed.
 
 **Switching it off.** `JEV_CORPUS=0` (or `off`, `false`, `no`, `disabled`)
 stores nothing. Unset means on, the default the meter uses.
@@ -28,8 +30,10 @@ here.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import stat
 import uuid
 from datetime import datetime, timezone
 
@@ -59,6 +63,11 @@ def directory(env) -> str:
     return os.path.join(home, ".local", "share", "sd", "jev-corpus")
 
 
+def private(info, kind) -> bool:
+    """Whether a path is of `kind`, not a symlink, and this user's own."""
+    return kind(info.st_mode) and info.st_uid == os.getuid()
+
+
 def append(record: dict, env=None) -> str:
     """Append one record as a JSON line. Never raises; the return is for the
     suite."""
@@ -72,13 +81,34 @@ def append(record: dict, env=None) -> str:
         data = (json.dumps(line, sort_keys=True, default=str) + "\n").encode("utf-8")
         folder = directory(env)
         os.makedirs(folder, mode=0o700, exist_ok=True)
+        # A folder or file that already exists is held to the same modes, and
+        # a symlink or someone else's file is refused: a record holds the
+        # state as sent.
+        if not private(os.lstat(folder), stat.S_ISDIR):
+            return FAILED
+        os.chmod(folder, 0o700)
         path = os.path.join(folder, now.strftime("%Y-%m-%d") + ".jsonl")
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
-            # ponytail: one write per line, so the arms' child and `jev`
-            # appending at once do not interleave on a local disk; add a
-            # `flock` if the folder ever moves to a network share.
-            os.write(fd, data)
+            if not private(os.fstat(fd), stat.S_ISREG):
+                return FAILED
+            os.fchmod(fd, 0o600)
+            # Locked, because `jev` and the arms' child append to the same
+            # file; and a line that could not be written whole is cut off
+            # again, so a full disk leaves no fragment for the next line to
+            # run into.
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            start = os.fstat(fd).st_size
+            try:
+                done = 0
+                while done < len(data):
+                    wrote = os.write(fd, data[done:])
+                    if wrote <= 0:
+                        raise OSError("no progress")
+                    done += wrote
+            except OSError:
+                os.ftruncate(fd, start)
+                return FAILED
         finally:
             os.close(fd)
         return WRITTEN

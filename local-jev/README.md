@@ -504,7 +504,8 @@ Every call also writes what it sent and what came back, so the experiment
 can be rerun and relabelled from stored data when the success criteria
 change. One JSON line per call per arm, appended to
 `~/.local/share/sd/jev-corpus/YYYY-MM-DD.jsonl` (the UTC day), or under
-`JEV_CORPUS_DIR`. The folder is made 0700 and each file 0600. Keep it on the
+`JEV_CORPUS_DIR`. The folder is held to 0700 and each file to 0600, and a
+symlink or another user's file is refused. Keep it on the
 system disk: a volume mounted `noowners` ignores both modes. The corpus is
 never committed, and nothing here sends it anywhere. Nothing prunes it
 either: a day is one file, so removing old days is `rm` of those files.
@@ -522,9 +523,11 @@ A record carries:
   message and schema each question became;
 - `response`: the whole parsed response, every distribution included; for
   the Haiku arm, each question's reply text;
-- `settings`: every flag the verb parsed, so `--gate`, `--unsure-below`,
-  the criteria and the `--fallback` marker that shaped the printed answer
-  are kept; `printed`, `fallback` and `baseline`, the caller's own answer;
+- `settings`: the flags that shape the printed answer and carry no text
+  (`CORPUS_SETTINGS` in `jev.py`), such as `--gate` and `--unsure-below`;
+  the instructions and criteria are in `request`, redacted;
+- `printed`, `fallback` and `baseline`: what the caller saw, its
+  `--fallback` marker and its own answer, redacted as a request is;
 - `ledger`: the `judgment` row's id, or null when the meter wrote none.
 
 **A call that sent nothing stores no request.** Switched off, unkeyed, a
