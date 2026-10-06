@@ -117,8 +117,9 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
     Check: the window, the head count and the dropped heads (no subject, no checkpoint) are in the manifest; the replay's agreement rates on C1 and the shadow's on C2 are both in the note.
 
 16. **Inconclusive extension** (only if line 2 of the decision rule applies; ruling R1). Keep sd:2761's shadow on for one fixed 4-week window, C3, from the day after C2 ends.
-    Seal C3 as step 15 sealed C2, rerun step 12 once on C1, C2 and C3, then apply the rule; still inconclusive means drop the model.
-    Check: the window's dates and the second results note are on sd:2764; there is no second extension.
+    Seal C3 as step 15 sealed C2, then run step 4 on C3, and steps 8 and 9 for a C3-only sheet (same draws, seed and caps).
+    Rerun step 12 once on C1, C2 and C3, then apply the rule; still inconclusive means drop the model.
+    Check: the C3 sheet's SHA-256, the window's dates and the second results note are on sd:2764; there is no second extension.
 
 ## Open questions for the operator
 

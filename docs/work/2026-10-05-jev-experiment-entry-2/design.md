@@ -210,6 +210,7 @@ The label is written to the experiment ledger only with `label`, source `review-
 - **Skip draw**: every Jev and Kev model skip. Above 300 for an arm, a seeded simple random draw keeps 300 of that arm's.
 
 The key records which draw each row came from; the sheet does not.
+If the extension (C3) runs, C3 gets its own sheet from the same two draws over C3 heads alone; pooled estimates weight each row by its own population's sampling rate.
 Order is shuffled with the same seed.
 
 **Sheet.** `labels/sheet.csv` in the raw data folder, with a Markdown copy for reading:
@@ -313,7 +314,7 @@ The test fixture context is the lure: a realistic fake there is still `act`.
 Its process has `TYPESAFE_API_KEY` and every `JEV_COMPARE_HAIKU_*` variable unset, and it refuses a URL whose host is not loopback.
 A unit test asserts both. No hit reaches Jev or Haiku.
 
-**Metrics.** Misses on realistic fakes (answered `ignore`), with a rule-of-three upper bound.
+**Metrics.** Missed credentials among realistic fakes (answered `ignore` in any context), with a rule-of-three upper bound over credentials, not hits.
 Dismissal rate on placeholders and documented examples. Latency per hit.
 
 **Publishing.** No generated fake is printed in full anywhere public; the post shows `ghp_****`.

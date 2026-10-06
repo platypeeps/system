@@ -57,6 +57,7 @@ Recorded on sd:2764. Times are the notes' recorded timestamps in MDT; each note'
 | #10183 | 18:01 MDT | the decision rule judges safety per selectable arm (Jev, Kev), after the lane's review |
 | #10190 | 18:12 MDT | an unlabelled skip is `unknown`, every Jev and Kev model skip is hand-labelled, and accuracy thresholds are points of the disagreement rows |
 | #10194 | 18:37 MDT | Kev or Jev is selected only if it holds H6 itself; the registration guard reads `PREDICTION` lines only |
+| #10205 | 19:22 MDT | C3 gets its own label sheet; H7 counts missed credentials, bound 1% |
 
 - **O1, prediction**: under 10% of the 28 `skip` readings are wrong.
 - **O2, switch rule**: switch to local Kev if Kev's labelled accuracy is within 5 points of Jev's, and its too-low errors are not more frequent.
@@ -245,8 +246,10 @@ PREDICTION (operator, 2026-10-05): H6 holds: no model arm moves down on more tha
 
 **Prediction to falsify.** Kev-4B answers `act` for every realistic fake, in every context.
 
-- **Metric**: misses among 300 realistic fakes × 4 contexts; dismissal rate on the 400 placeholders and documented examples × 4 contexts.
-- **Threshold**: holds with 0 misses (rule-of-three bound 0.25% over 1,200 hits) **and** at least 50% of placeholders dismissed.
+- **Metric**: missed credentials among 300 realistic fakes; a credential is missed if Kev answers `ignore` in any of its 4 contexts.
+  Per-context misses (1,200 hits) are reported as a robustness check and decide nothing. Dismissal rate on the 400 placeholders and documented examples × 4 contexts.
+- **Threshold**: holds with 0 missed credentials (rule-of-three bound 1% over 300 independent credentials) **and** at least 50% of placeholders dismissed.
+  The 4 contexts of one credential are not independent trials, so the bound counts credentials.
 - **Why**: a dismissed real credential is the one error a scanner exists to prevent; dismissing under half of the noise saves too little.
 - **Effect**: feeds sd:2761's scanner caller, not the review-tier decision.
 - **Draft question**, used until sd:2761's caller defines its own (a `noul`, yes when the probability is at least 0.5):
@@ -305,6 +308,11 @@ The lane's review of this page found it (one high finding); the operator adopted
 Lines 4 and 5 could select an arm that crafted path names or finding text steer down, while H6 was only reported.
 A selected arm's skips pass the floor, so lines 4 and 5 now also require H6 for that arm; one that fails it falls to line 6.
 The operator's H6 prediction is unchanged.
+
+**Changed before any replay data** (note #10205, 19:22 MDT), after a challenge review of this page.
+The extension collected C3 answers but no C3 labels, so it could not add H1 evidence; C3 now gets its own label sheet.
+H7's 0.25% bound counted 1,200 hits as independent; they are 300 credentials in 4 contexts, so the bound is 1% per credential.
+The operator's H7 prediction is unchanged.
 The operator's prediction below is unchanged under it: Jev holds H1 and fails H4, so line 2 applies.
 
 A decision to keep or switch implies a follow-up that lets that model allow `skip` past the floor; this item ships no such change.
@@ -333,7 +341,7 @@ Recorded on note #10075, 12:11 MDT. The note words R1 in the earlier draft's num
 | H2: Kev within 5 points | about 150 labelled rows for ±5 at 10% discordance | ≤ 150 |
 | H3: heuristic within 3 points | about 430 labelled rows for ±3 | ≤ 150 |
 | H4: 5% of reviewed heads skipped | an H1-passing arm | follows H1 |
-| H7: miss rate below 0.25% | 1,200 realistic hits with 0 misses | 1,200 |
+| H7: miss rate below 1% per credential | 300 realistic credentials with 0 missed | 300 |
 | X1: under 10% wrong | 36 readings with 0 wrong | 28 or 8 |
 
 Where a claim cannot reach its n, the note reports the point estimate, the interval and the shortfall. It does not call the claim confirmed.
@@ -343,6 +351,8 @@ Where a claim cannot reach its n, the note reports the point estimate, the inter
 - **Faithfulness first.** The full replay starts only after the faithfulness gate passes.
 - **Unseen until sealed.** C1 outcomes are read only after C1's replay answers are sealed; C2 outcomes only after the 14 days end and C2's answers are sealed.
 - **Inconclusive extension (R1).** One fixed 4-week shadow window, C3, starting the day after C2 ends. Its outcomes stay unseen until it is sealed.
+  C3 gets objective labels and its own sealed hand-label sheet: the same two draws over C3 heads alone, seed `2764`, caps 150 and 300 per arm.
+  C1 and C2 labels are kept, not redrawn. Each draw's rows are weighted by their own population's sampling rate when pooled.
   The same analysis runs once on C1, C2 and C3 together; a still-inconclusive result drops the model. No second extension.
 - **One pass per arm.** Each arm is asked once per head. A failed call is retried once after 30 s.
   A second failure is recorded as no answer, counted, and not asked again.
