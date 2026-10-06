@@ -72,7 +72,7 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
 
 5. **Replay harness** (`replay --arm jev|kev|haiku`). Step 1's call path, extended to Kev and Haiku in-process on the same redacted payload.
    Ledger isolation, traces, cost cap, privacy halt and the one-retry rule are in this step.
-   It refuses to start while a `PREDICTION (operator` line in the pre-registration is blank or any line carries `UNCONFIRMED`, records the registration SHA, and skips heads step 1 already asked.
+   It refuses to start while a `PREDICTION (operator` line in the pre-registration is blank or any `PREDICTION` line carries `UNCONFIRMED`, records the registration SHA, and skips heads step 1 already asked.
    Every arm runs on all 2,222 heads, hosted ones included, as ruling R2 allows. The `anthropic` transport only.
    It hashes `local-jev/jev_experiment_heuristic.py` and refuses unless the SHA-256 equals the one registered in the pre-registration.
    It writes through `JEV_METER_DB` to `experiment.db` and refuses to start if `jev_meter.ready` refuses that database.
@@ -80,7 +80,7 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
    Check: `jev.sh test` green; a 5-head dry run against the stubs writes 15 answers and 15 spans.
 
 6. **Registration** (operator). Confirm or rewrite the drafted predictions, fill the blank ones, and commit, in one pass.
-   Check: `grep -cE '^PREDICTION \(operator\): _*$|UNCONFIRMED' docs/experiments/2026-10-05-jev-entry-2-preregistration.md` prints 0; the SHA is on sd:2764.
+   Check: `grep -cE '^PREDICTION \(operator[^)]*\): _*$|^PREDICTION .*UNCONFIRMED' docs/experiments/2026-10-05-jev-entry-2-preregistration.md` prints 0; the SHA is on sd:2764.
 
 7. **Replay run.** `genai-traces.sh status` and `kev.sh status` exit 0 first. Local arms run on every head; Kev first, then Jev, then Haiku.
    Run in the foreground or watch the log with Monitor.
