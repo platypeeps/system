@@ -18,14 +18,14 @@ ever committed.
 stores nothing. Unset means on, the default the meter uses.
 
 **What a caller pays.** One append after the answer is printed. A folder
-that cannot be made, a file that cannot be opened, a disk that is full: each
-is the same answer to the caller, which is nothing. Stdlib only, like
-`jev.py`.
+that cannot be made, a file that cannot be opened, a lock held past
+`LOCK_WAIT`, a disk that is full: each is the same answer to the caller,
+which is nothing. Stdlib only, like `jev.py`.
 
 The record's shape belongs to `jev.py`, which builds it; this module stamps
-`schema`, `id` and `time` and writes it down. `jev.py` also applies the one
-rule about what may not be stored (`CORPUS_HASHED_STAGES`) before it gets
-here.
+`schema`, `id` and `time` and writes it down. `jev.py` also applies the
+rules about what may not be stored as text (`CORPUS_HASHED_STAGES`, and the
+redaction of every other record) before it gets here.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ import fcntl
 import json
 import os
 import stat
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -48,6 +49,11 @@ SCHEMA = 1
 WRITTEN = "written"
 SWITCHED_OFF = "switched off"
 FAILED = "the corpus did not take the record"
+
+#: How long an append waits for another writer's lock before it drops the
+#: record, and how often it tries. A held lock may never hold up a call.
+LOCK_WAIT = 1.0
+LOCK_TRY = 0.05
 
 
 def switched_on(env) -> bool:
@@ -66,6 +72,19 @@ def directory(env) -> str:
 def private(info, kind) -> bool:
     """Whether a path is of `kind`, not a symlink, and this user's own."""
     return kind(info.st_mode) and info.st_uid == os.getuid()
+
+
+def locked(fd) -> bool:
+    """Take the file's lock within `LOCK_WAIT`, or report that it is held."""
+    deadline = time.monotonic() + LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(LOCK_TRY)
 
 
 def append(record: dict, env=None) -> str:
@@ -94,10 +113,12 @@ def append(record: dict, env=None) -> str:
                 return FAILED
             os.fchmod(fd, 0o600)
             # Locked, because `jev` and the arms' child append to the same
-            # file; and a line that could not be written whole is cut off
-            # again, so a full disk leaves no fragment for the next line to
-            # run into.
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            # file, but never waited on for long: a writer that stopped while
+            # holding it costs one record, not every later call. A line that
+            # could not be written whole is cut off again, so a full disk
+            # leaves no fragment for the next line to run into.
+            if not locked(fd):
+                return FAILED
             start = os.fstat(fd).st_size
             try:
                 done = 0

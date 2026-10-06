@@ -198,11 +198,16 @@ def shadow_on(env) -> bool:
 # A stage named here is local-only even when its caller forgets the flag.
 LOCAL_ONLY_STAGES = ("JEV_SECRET_SCAN",)
 
-#: Stages whose state the corpus keeps as a SHA-256 and never as text. The
-#: secret scanner's state is a candidate credential, and a second copy of it
-#: in a file is what the scanner exists to find. Every local-only call is
-#: hashed too, named here or not: its caller said the text is sensitive.
+#: Stages whose content the corpus keeps as SHA-256 digests and never as
+#: text. The secret scanner's state is a candidate credential, and a second
+#: copy of it in a file is what the scanner exists to find. Every other
+#: record, local-only ones included, is redacted instead, so it can be rerun.
 CORPUS_HASHED_STAGES = ("JEV_SECRET_SCAN",)
+
+#: The fields of a corpus record that can hold text a caller gave or a model
+#: echoed. Hashed for a stage above, redacted for every other record.
+CORPUS_CONTENT = ("request", "response", "prompts", "answer", "printed",
+                  "fallback", "baseline")
 
 #: The flags a corpus record keeps under `settings`: the ones that shape the
 #: printed answer and carry no text. The instructions, criteria and levels
@@ -210,9 +215,6 @@ CORPUS_HASHED_STAGES = ("JEV_SECRET_SCAN",)
 CORPUS_SETTINGS = ("verb", "gate", "unsure_below", "json", "changed",
                    "state_format", "model", "local_only", "shadow_ms",
                    "baseline_ms")
-
-#: The caller's own text a record keeps, redacted as a request is.
-CORPUS_ANSWERS = ("printed", "fallback", "baseline")
 
 #: Kev's System One endpoint, the name a request asks it for, and the model a
 #: row records; `jev_compare`'s Kev arm reads the same three.
@@ -488,23 +490,46 @@ def write_event(event: dict, env, corpus=None) -> str:
     return said
 
 
-def hashed(record: dict) -> dict:
-    """`record` with the state as its SHA-256 and the prompts left out.
-
-    The prompts are left out because a prompt embeds the state. JSON state
-    is hashed as its sorted, compact encoding, so equal states hash equal.
-    """
+def sha256(value) -> str:
+    """A string's SHA-256, or a JSON value's over its sorted, compact
+    encoding, so equal values hash equal."""
     import hashlib
+    text = value if isinstance(value, str) else json.dumps(
+        value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def hashed(record: dict) -> dict:
+    """`record` with every content field replaced by its digest.
+
+    The request keeps the state's digest apart, so one hit can be found again
+    across calls and labelled; nothing in it can be read back.
+    """
     out = dict(record)
-    out.pop("prompts", None)
-    request = out.get("request")
-    if isinstance(request, dict) and "state" in request:
-        request = dict(request)
-        state = request.pop("state")
-        text = state if isinstance(state, str) else json.dumps(
-            state, sort_keys=True, separators=(",", ":"))
-        request["state_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        out["request"] = request
+    for field in CORPUS_CONTENT:
+        value = out.get(field)
+        if value is None:
+            continue
+        digest = {"sha256": sha256(value)}
+        if field == "request" and isinstance(value, dict) and "state" in value:
+            digest["state_sha256"] = sha256(value["state"])
+        out[field] = digest
+    return out
+
+
+def scrubbed(record: dict, env) -> dict:
+    """`record` with every content field through the redaction a hosted
+    request gets. A field the pass refuses, or every field when the pattern
+    file does not load, is dropped: the record is kept, the text is not."""
+    patterns, problem = privacy_patterns(env)
+    out = dict(record)
+    for field in CORPUS_CONTENT:
+        if out.get(field) is None:
+            continue
+        try:
+            out[field] = None if problem else redact(out[field], patterns, [0])
+        except JevError:
+            out[field] = None
     return out
 
 
@@ -517,14 +542,13 @@ def to_corpus(record: dict, env) -> str:
     if jev_corpus is None:
         return ""
     try:
-        if record.get("local") or record.get("stage") in CORPUS_HASHED_STAGES:
+        # A local-only request was sent unredacted, a response can echo what
+        # it was asked, and the caller's answers never went through `post`:
+        # so every content field is handled here, on every path.
+        if record.get("stage") in CORPUS_HASHED_STAGES:
             record = hashed(record)
-        # The caller's own answers never went through `post`, so they are
-        # redacted here; with a pattern file that does not load, dropped.
-        patterns, problem = privacy_patterns(env)
-        record = dict(record, **{
-            field: None if problem else redact(record[field], patterns, [0])
-            for field in CORPUS_ANSWERS if isinstance(record.get(field), str)})
+        else:
+            record = scrubbed(record, env)
         return jev_corpus.append(record, env)
     except Exception:                        # pragma: no cover - belt and brace
         return ""

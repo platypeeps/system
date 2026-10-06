@@ -10,16 +10,17 @@ The promises checked:
   the flags that shaped the printed answer, and its ledger row's id;
 * `jev`'s record, the baseline's and each arm's share one call id;
 * a call that sent nothing stores no request;
-* the secret scanner's state, and any local-only state, is stored as a
-  SHA-256 and never as text;
-* `JEV_CORPUS=0` stores nothing, and a corpus that cannot be written costs
-  the caller nothing.
+* every content field is redacted, a local-only call's included, and the
+  secret scanner's is stored as SHA-256 digests and never as text;
+* `JEV_CORPUS=0` stores nothing, and a corpus that cannot be written, or
+  whose lock is held, costs the caller nothing.
 """
 
 import hashlib
 import json
 import os
 import stat
+import fcntl
 import tempfile
 import time
 import unittest
@@ -32,6 +33,9 @@ import jev_corpus
 from .test_jev import Stub
 from .test_jev_compare import Arm, CompareCase
 from .test_jev_metering import SENTINEL, MeteringCase
+
+#: A credential `redact` knows by its shape, with no pattern file needed.
+SECRET = "ghp_" + "c" * 36
 
 
 def records(folder) -> list:
@@ -121,6 +125,22 @@ class TheModule(unittest.TestCase):
         jev_corpus.append({"arm": "third"}, env)
         self.assertEqual([r["arm"] for r in records(self.folder)], ["first", "third"])
 
+    def test_a_held_lock_drops_the_record_within_the_bound(self):
+        env = {"JEV_CORPUS_DIR": str(self.folder)}
+        jev_corpus.append({"arm": "first"}, env)
+        day, = self.folder.iterdir()
+        holder = os.open(day, os.O_WRONLY)
+        self.addCleanup(os.close, holder)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        began = time.monotonic()
+        said = jev_corpus.append({"arm": "second"}, env)
+        took = time.monotonic() - began
+        self.assertEqual(said, jev_corpus.FAILED)
+        self.assertLess(took, jev_corpus.LOCK_WAIT + 1.0)
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        jev_corpus.append({"arm": "third"}, env)
+        self.assertEqual([r["arm"] for r in records(self.folder)], ["first", "third"])
+
     def test_the_default_folder_is_under_home(self):
         self.assertEqual(jev_corpus.directory({"HOME": "/home/example"}),
                          "/home/example/.local/share/sd/jev-corpus")
@@ -198,25 +218,54 @@ class ACall(MeteringCase):
         self.only()
 
 
-class HashedState(CompareCase):
-    """The secret scanner's hits are candidate credentials; a second copy in
-    a file is what the scanner exists to find."""
+class LocalContent(CompareCase):
+    """A local-only call sends its text unredacted, and Kev can echo it. The
+    corpus copy is redacted, or for the secret scanner hashed, field by
+    field: instructions, criteria, state and response alike."""
 
-    def test_a_local_only_call_stores_the_state_as_its_hash(self):
-        state = f"token {SENTINEL} here"
-        for argv in (["--local-only", "--stage", "JEV_DOCS"], ["--stage", "JEV_SECRET_SCAN"]):
-            with self.subTest(argv=argv):
-                for path in self.corpus.glob("*"):
-                    path.unlink()
-                code, out = self.run_main(["noul", "is it?", *argv], stdin=state)
-                self.assertEqual((code, out), (0, "0.81\n"))
-                found, = records(self.corpus)
-                self.assertEqual(found["request"]["state_sha256"],
-                                 hashlib.sha256(state.encode()).hexdigest())
-                self.assertNotIn("state", found["request"])
-                self.assertNotIn(SENTINEL, json.dumps(found))
-                # Kev did get it, so this proves a filter, not an absence.
-                self.assertIn(SENTINEL, str(Arm.seen))
+    state = f"token {SECRET} here"
+
+    def planted(self, stage):
+        """Two calls with a credential in every content field: noul's
+        instructions, state and Kev's echo, and choice's criteria."""
+        for path in self.corpus.glob("*"):
+            path.unlink()
+        Arm.kev_answer = {"type": "noul", "noul": 0.81, "echo": self.state}
+        code, out = self.run_main(["noul", f"is {SECRET} live?", "--local-only",
+                                   "--stage", stage], stdin=self.state)
+        self.assertEqual((code, out), (0, "0.81\n"))
+        Arm.kev_answer = None
+        code, _ = self.run_main(["choice", "where?", "--local-only", "--stage", stage,
+                                 "--criteria", f"desk=near {SECRET},phone=elsewhere"],
+                                stdin=self.state)
+        self.assertEqual(code, 0)
+        # Kev did get it, so each check below proves a filter, not an absence.
+        self.assertIn(SECRET, str(Arm.seen))
+        text = "".join(p.read_text() for p in self.corpus.glob("*.jsonl"))
+        self.assertNotIn(SECRET, text)
+        return records(self.corpus)
+
+    def test_a_local_only_call_is_redacted_and_stays_replayable(self):
+        noul, choice = self.planted("JEV_DOCS")
+        self.assertEqual(noul["request"]["state"], "token [REDACTED] here")
+        self.assertEqual(noul["request"]["questions"]["answer"]["instructions"],
+                         "is [REDACTED] live?")
+        self.assertEqual(noul["response"]["answers"]["answer"]["echo"],
+                         "token [REDACTED] here")
+        self.assertEqual(choice["request"]["questions"]["answer"]["criteria"]["desk"],
+                         "near [REDACTED]")
+        self.assertEqual(choice["printed"], "phone")
+
+    def test_the_secret_scanner_stores_only_digests(self):
+        noul, choice = self.planted("JEV_SECRET_SCAN")
+        for found in (noul, choice):
+            for field in jev.CORPUS_CONTENT:
+                value = found.get(field)
+                if value is not None:
+                    self.assertEqual(sorted(value), ["sha256"] if field != "request"
+                                     else ["sha256", "state_sha256"], field)
+        self.assertEqual(noul["request"]["state_sha256"],
+                         hashlib.sha256(self.state.encode()).hexdigest())
 
     def test_a_named_stage_is_hashed_on_any_path(self):
         said = []

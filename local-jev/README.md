@@ -517,17 +517,17 @@ A record carries:
 - `caller`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
   `shadow`, and the ledger's fields: answer, confidence, distribution,
   outcome, cause, tokens, duration, `changed`;
-- `request`: the payload as sent. For Jev and both comparison arms that is
-  after redaction. A local-only call sends its payload unredacted, so its
-  state is stored as a hash (below). The Haiku arm adds `prompts`, the
-  message and schema each question became;
+- `request`: the payload as sent, after redaction. A local-only call sends
+  its payload unredacted, so the corpus redacts its copy. The Haiku arm
+  adds `prompts`, the message and schema each question became;
 - `response`: the whole parsed response, every distribution included; for
-  the Haiku arm, each question's reply text;
+  the Haiku arm, each question's reply text. Redacted, since a model can
+  echo what it was asked;
 - `settings`: the flags that shape the printed answer and carry no text
   (`CORPUS_SETTINGS` in `jev.py`), such as `--gate` and `--unsure-below`;
   the instructions and criteria are in `request`, redacted;
 - `printed`, `fallback` and `baseline`: what the caller saw, its
-  `--fallback` marker and its own answer, redacted as a request is;
+  `--fallback` marker and its own answer, redacted too;
 - `ledger`: the `judgment` row's id, or null when the meter wrote none.
 
 **A call that sent nothing stores no request.** Switched off, unkeyed, a
@@ -538,11 +538,19 @@ the caller's answer is printed, which blocks a caller whose stdin is open.
 `jev enabled --record` and `jev record` store nothing here: they send
 nothing, and the ledger already holds all they know.
 
-**The secret scanner's state is stored as a hash.** A stage in
-`CORPUS_HASHED_STAGES` in `jev.py` (`JEV_SECRET_SCAN`), and every
-local-only call, stores `request.state_sha256` in place of `state`, and no
-prompts. A candidate credential copied into a file is what the scanner
-exists to find. Equal states hash equal, so repeats can still be counted.
+**Every content field is redacted, or for the secret scanner hashed.**
+`request`, `response`, `prompts`, `answer`, `printed`, `fallback` and
+`baseline` (`CORPUS_CONTENT` in `jev.py`) go through the redaction a
+hosted request gets, on every record, so a local-only call stays
+replayable. A field the pass refuses, or every one when the pattern file
+does not load, is stored as null. A stage in `CORPUS_HASHED_STAGES`
+(`JEV_SECRET_SCAN`) stores each of those fields as `{"sha256": …}`
+instead, and the request adds `state_sha256`. A candidate credential
+copied into a file is what the scanner exists to find. Equal states hash
+equal, so a hit can be found again and labelled.
+
+A record that waits more than a second for another writer's lock is
+dropped, so a stuck writer never holds up a call.
 
 `JEV_CORPUS=0` (or another off-word) stores nothing; unset means on. The
 arms write their records from their own child, so they need the meter on
