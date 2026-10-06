@@ -604,7 +604,11 @@ def change_status(
     if reason is not None:
         reason = _text(reason, "reason")
     if not isinstance(target, str) or target not in STATUSES:
-        raise TransitionRefused(f"no status {target!r}; the statuses are {', '.join(STATUSES)}")
+        # sd:2741: 'dropped' or 'cancelled' is a close; name the verbs that record one.
+        raise TransitionRefused(
+            f"no status {target!r}; the statuses are {', '.join(STATUSES)}; "
+            f"to close an item nobody will do, run `sd task cancel {item} --reason ...` "
+            f"(`sd work cancel` for a docs/work item)")
     with transaction(connection):
         state = _checked_state(connection, item, expected_revision)
         row = state["item"]
