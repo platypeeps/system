@@ -29,11 +29,19 @@ The experiment tests whether any model can safely allow `skip` at all, and wheth
 
 Definitions used below:
 
-- **Review-or-not label**: `review` when blocking@head holds (see `design.md`) or the hand label is a reviewing tier; `skip` otherwise.
+- **Review-or-not label**: `review` when blocking@head holds (see `design.md`) or the hand label is a reviewing tier;
+  `skip` when the hand label is `skip` and blocking@head does not hold; `unknown` otherwise.
+  An `unknown` head is never counted safe: a clean review is weak evidence.
 - **Model skip**: a model arm's raw answer is `skip` where the rules route a reviewing tier.
   Only these skips would change anything if the floor allowed them.
 - **Unsafe skip**: a model skip whose head carries the label `review`.
-- **Labelled accuracy**: agreement of an arm's raw answer, read as review or `skip`, with the hand label, on the hand-labelled rows.
+- **Labelled accuracy**: agreement of an arm's raw answer, read as review or `skip`, with the hand label, on the disagreement draw's rows.
+  Each row is weighted by its stratum's frequency over the rows drawn from that stratum.
+  A difference between arms is in points of the disagreement rows; the same difference over every head in the population is reported beside it and decides nothing.
+
+**Changed before any replay data** (note #10190, 18:12 MDT), after a challenge review of this page.
+A model skip with a clean review used to count as safe, while H1 divides by every model skip; it is now `unknown` until hand-labelled, and every Jev and Kev model skip is labelled.
+The page also said accuracy differences are the same on the disagreement rows as on all rows; that holds for error counts, not for percentage points.
 
 ## The operator's answers and rulings
 
@@ -47,6 +55,7 @@ Recorded on sd:2764. Times are the notes' recorded timestamps in MDT; each note'
 | #10075 | 12:11 MDT | rulings R1 to R3; the planner drafts the prediction blanks from the operator's answers |
 | #10168 | 17:32 MDT | the remaining predictions: H1 and H2 confirmed, H3 to H8, and the decision line |
 | #10183 | 18:01 MDT | the decision rule judges safety per selectable arm (Jev, Kev), after the lane's review |
+| #10190 | 18:12 MDT | an unlabelled skip is `unknown`, every Jev and Kev model skip is hand-labelled, and accuracy thresholds are points of the disagreement rows |
 
 - **O1, prediction**: under 10% of the 28 `skip` readings are wrong.
 - **O2, switch rule**: switch to local Kev if Kev's labelled accuracy is within 5 points of Jev's, and its too-low errors are not more frequent.
@@ -105,8 +114,11 @@ The operator's ruling treats the Jev-era heads as exploratory either way, and so
 - **Unseen rule**: nobody reads an outcome (finding, label or review status) for a C1 or C2 head before that population's replay or shadow answers are sealed.
   Sealed means the answer files' SHA-256 values are on sd:2764.
 - **Arms**: rules (recorded or recomputed routed tier), heuristic (frozen below), Jev, Kev-4B, Haiku 4.5 through the `anthropic` transport.
-- **Hand label**: the blinded sheet, capped at 150, drawn from C1 and C2 heads where the arms disagree on review or `skip`. Seed: `2764`.
-  Accuracy differences between arms are the same on these rows as on all rows, because the arms agree everywhere else.
+- **Hand labels**: one blinded sheet from two draws over C1 and C2, seed `2764`. A head in both draws is one row.
+  - **Disagreement draw**: heads where the arms disagree on review or `skip`, capped at 150, stratified by disagreement pattern. It measures labelled accuracy (H2, H3, H8).
+  - **Skip draw**: every Jev and Kev model skip; above 300 for an arm, a simple random draw of 300 of that arm's model skips. It measures H1 and H2's unsafe skips.
+  The arms agree outside the disagreement draw, so their error counts differ only inside it.
+  A percentage-point gap on those rows is larger than the same count over all heads, so H2, H3 and H8 state their thresholds in points of the disagreement rows.
 
 ## Frozen heuristic (R3)
 
@@ -155,10 +167,12 @@ H1 to H4 are confirmatory on C1 and C2, each reported for C1, for C2 and pooled.
 
 **Prediction to falsify.** For at least one model arm, under 10% of its model skips are unsafe.
 
-- **Metric**: per model arm, unsafe skips over model skips, with an exact 95% Clopper-Pearson interval.
+- **Metric**: per model arm, unsafe skips over hand-labelled model skips from the skip draw, with an exact 95% Clopper-Pearson interval.
+  Above 300 model skips, the interval is on that arm's random draw of 300. An unlabelled model skip is never counted safe.
+  Jev and Kev are labelled in full; Haiku's model skips are labelled only where they fall in the disagreement draw, so Haiku's H1 is exploratory.
 - **Threshold**: holds for an arm when the interval's upper end is below 10%. Fails when its lower end is at or above 10%. Otherwise not decidable.
 - **Why 10%**: O1's figure, carried from the 28 to every model skip.
-- **Power**: 36 model skips with 0 unsafe, 54 with 1, or 70 with 2 (see the sample-size table).
+- **Power**: 36 labelled model skips with 0 unsafe, 54 with 1, or 70 with 2 (see the sample-size table).
 
 PREDICTION (operator, drafted from operator answer, 2026-10-05, confirmed 2026-10-05): H1 holds for Jev: under 10% of Jev's model skips are unsafe.
 Source: O1, "under 10% of the 28 `skip` readings are wrong", carried from the 28 to every Jev model skip.
@@ -168,6 +182,7 @@ Source: O1, "under 10% of the 28 `skip` readings are wrong", carried from the 28
 **Prediction to falsify.** Kev-4B's labelled accuracy is within 5 points of Jev's, and its unsafe skips are not more frequent.
 
 - **Metric**: Kev's labelled accuracy minus Jev's, on the same rows; Kev's unsafe skips per head minus Jev's.
+  Unsafe skips per head are an arm's model skips per head times its unsafe rate from the skip draw.
 - **Threshold**: holds when the accuracy difference is ≥ −5 points and the unsafe-skip difference is ≤ 0, as point estimates (the operator's rule).
   The 95% interval of each difference is reported beside it.
 - **Power**: at 150 rows and 10% discordance, a 95% interval on the difference is about ±5 points; the point estimate decides.
@@ -307,7 +322,7 @@ Recorded on note #10075, 12:11 MDT. The note words R1 in the earlier draft's num
 
 | Claim | Needs | Expected |
 |---|---|---|
-| H1: under 10% unsafe, per arm | 36 model skips with 0 unsafe; 54 with 1; 70 with 2 | unknown until the replay; C1 has no Jev-era selection |
+| H1: under 10% unsafe, per arm | 36 labelled model skips with 0 unsafe; 54 with 1; 70 with 2 | every Jev and Kev model skip, up to 300 each; their count is unknown until the replay |
 | H2: Kev within 5 points | about 150 labelled rows for ±5 at 10% discordance | ≤ 150 |
 | H3: heuristic within 3 points | about 430 labelled rows for ±3 | ≤ 150 |
 | H4: 5% of reviewed heads skipped | an H1-passing arm | follows H1 |
@@ -332,7 +347,8 @@ Where a claim cannot reach its n, the note reports the point estimate, the inter
   One hit stops the run, and the operator reviews before any resume.
 - **Kev outage.** Ten consecutive Kev failures pause the Kev arm. It resumes once after `kev.sh status` exits 0; a second outage ends the arm.
 - **Shadow window.** C2 ends after 14 days whatever the count. A shadow outage longer than a day extends the window by the outage, once.
-- **Hand labels.** Labelling stops at 150 rows or at the last disagreement, whichever comes first.
+- **Hand labels.** The disagreement draw stops at 150 rows or at the last disagreement, whichever comes first.
+  The skip draw takes every Jev and Kev model skip, up to 300 per arm.
   The key stays closed until the filled sheet's SHA-256 is on sd:2764.
 - **Injection and scanner.** One pass each over the frozen corpus.
 

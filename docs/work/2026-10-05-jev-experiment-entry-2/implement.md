@@ -27,7 +27,7 @@ Step 15 needs sd:2761 merged and its shadow switch on for 14 days.
 | 6 | Registration of the remaining predictions (operator) | 0.5 | after 1–5 |
 | 7 | Replay run | 3 wall | after 1 passes and 6 |
 | 8 | Blinded label kit | 1.5 | after 7 |
-| 9 | Hand labelling (operator) | 3 | after 8 |
+| 9 | Hand labelling (operator) | 3 to 15 | after 8 |
 | 10 | Scanner benchmark | 3 | now |
 | 10b | Scanner question from sd:2761 | 0.5 | after sd:2761 |
 | 11 | Injection test | 2 | after 5 |
@@ -87,10 +87,10 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
    Check: each arm's file has one line per head in its scope; no-answer counts are in the manifest; spend is under $10.
    Then seal C1: the SHA-256 of each arm's C1 answer file goes on sd:2764 before step 4 runs on C1.
 
-8. **Blinded label kit** (`labels sheet`). Sheet, Markdown copy and sealed key per `design.md`, seed 2764, from C1 and C2 heads where the arms disagree on review or `skip`.
+8. **Blinded label kit** (`labels sheet`). Sheet, Markdown copy and sealed key per `design.md`, seed 2764, from C1 and C2: the disagreement draw and the skip draw, merged by head.
    C1 rows can be labelled after step 7; C2 rows join after step 15.
    Tests: no arm name and no finding in the sheet; the key maps every row; the order is stable for the seed.
-   Check: the row count is min(150, disagreements).
+   Check: the disagreement draw has min(150, disagreements) rows, and the skip draw min(300, model skips) for each of Jev and Kev.
 
 9. **Hand labelling** (operator). Fill `label` and `sure`; put the sheet's SHA-256 on sd:2764; only then open the key.
 

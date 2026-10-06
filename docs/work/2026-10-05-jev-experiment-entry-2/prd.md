@@ -54,7 +54,7 @@ The operator fills the pre-registration's open predictions and rulings before th
 0. Reconcile entry 1's extraction with the second one, before anything is published.
 1. Re-ask Jev on 50 rebuilt states and match the recorded answers before the full replay (O4).
 2. Replay every head once per arm: rules, a heuristic of about 20 lines, Jev, Kev-4B, and Claude Haiku 4.5 through the `anthropic` transport.
-3. Label each head review-or-not from the review that ran at that head, then hand-label a blinded sample of disagreements: cap 150, shuffled, arm names hidden.
+3. Label each head review-or-not from the review that ran at that head, then hand-label, in one blinded sheet, a sample of disagreements (cap 150) and every Jev and Kev model skip (up to 300 per arm), shuffled, arm names hidden.
 4. Test whether a model can safely allow `skip`, and whether its safe skips are worth having.
 5. Test injection: crafted path names, and crafted finding text, that try to push an answer down.
 6. Benchmark scanner triage on synthetic credentials, through local Kev only.

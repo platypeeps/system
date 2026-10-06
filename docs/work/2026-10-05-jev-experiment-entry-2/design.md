@@ -182,6 +182,7 @@ Its findings sit in the same checkpoint: `report.findings`, each with `dispositi
   This is the confirmatory error. The four-tier "too low" for `cheap` (a `high` blocking finding) is reported on E only, as exploratory.
 - **Not shown wrong**: an arm answers lower than the rules and the review found nothing blocking.
   This is not "right"; a clean review is weak evidence.
+  Such a model skip is `unknown` until hand-labelled, and is never counted safe; the skip draw below labels every Jev and Kev model skip.
 - A finding at a later head of the same branch is never used. A later fix in a shared file is not evidence of the right tier (sd:2107).
 
 The label measures "a reviewer found something it would block on", not a verified defect.
@@ -202,8 +203,13 @@ The label is written to the experiment ledger only with `label`, source `review-
 
 ### Blinded hand labels second
 
-**Sample.** Every C1 and C2 head where the five arms disagree on review or `skip`: at least one answers `skip` and at least one does not.
-Above 150, a seeded random draw stratified by disagreement pattern keeps 150; the seed is in the pre-registration (`docs/experiments/2026-10-05-jev-entry-2-preregistration.md`).
+**Sample.** Two draws over C1 and C2, merged into one sheet; a head in both is one row. The seed is in the pre-registration (`docs/experiments/2026-10-05-jev-entry-2-preregistration.md`).
+
+- **Disagreement draw**: every head where the five arms disagree on review or `skip`: at least one answers `skip` and at least one does not.
+  Above 150, a seeded random draw stratified by disagreement pattern keeps 150, and each row carries its stratum weight.
+- **Skip draw**: every Jev and Kev model skip. Above 300 for an arm, a seeded simple random draw keeps 300 of that arm's.
+
+The key records which draw each row came from; the sheet does not.
 Order is shuffled with the same seed.
 
 **Sheet.** `labels/sheet.csv` in the raw data folder, with a Markdown copy for reading:
@@ -249,7 +255,7 @@ For each rule:
 Only Jev, Kev and Haiku report distributions.
 Two curves per arm, binned in tenths with the ledger's `band_of`:
 
-1. **Skip safety**: the probability mass on `skip` against the review-or-not label being `skip`.
+1. **Skip safety**: the probability mass on `skip` against the review-or-not label being `skip`, on hand-labelled heads only, each weighted by its draw's sampling rate; `unknown` heads are left out.
    Reported with the Brier score and the expected calibration error.
 2. **Top-choice confidence** against agreement with the hand label, on the labelled sample.
 
