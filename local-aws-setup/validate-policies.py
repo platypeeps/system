@@ -54,7 +54,16 @@ def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--document":
         validate(pathlib.Path(sys.argv[2]))
         return
-    folder, base, configured = sys.argv[1:]
+    folder, base, configured, account, level, pass_roles = sys.argv[1:]
+    roles = pass_roles.split()
+    if roles and level != "sandbox":
+        raise ValueError("PASS_ROLE_ARNS requires LEVEL=sandbox")
+    if len(set(roles)) != len(roles):
+        raise ValueError("duplicate role in PASS_ROLE_ARNS")
+    for role in roles:
+        if not re.fullmatch(r"arn:aws:iam::" + re.escape(account) + r":role/[A-Za-z0-9_+=,.@/-]+", role):
+            raise ValueError("PASS_ROLE_ARNS requires exact same-account role ARNs without wildcards")
+
     names = [base, *configured.split()]
     if len(set(names)) != len(names):
         raise ValueError("duplicate or base policy name in EXTRA_POLICIES")

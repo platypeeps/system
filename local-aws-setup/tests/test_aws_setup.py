@@ -48,7 +48,7 @@ NEW_KEY = "AKIANEWKEY"
 NEW_SECRET = "s3cret-that-must-not-be-an-argument"
 
 
-def render(level, buckets="", tag_key="claude-managed"):
+def render(level, buckets="", tag_key="claude-managed", pass_roles=""):
     """The policy document for a level, parsed."""
     with tempfile.TemporaryDirectory() as home:
         root = pathlib.Path(home)
@@ -56,7 +56,7 @@ def render(level, buckets="", tag_key="claude-managed"):
         accounts.mkdir(parents=True)
         (accounts / "x.env").write_text(
             "ACCOUNT_ID=%s\nLEVEL=%s\nADMIN_PROFILE=admin-x\n"
-            "AGENT_PROFILE=agent-x\nS3_BUCKETS='%s'\n" % (ACCOUNT_ID, level, buckets)
+            "AGENT_PROFILE=agent-x\nS3_BUCKETS='%s'\nPASS_ROLE_ARNS='%s'\n" % (ACCOUNT_ID, level, buckets, pass_roles)
         )
         done = subprocess.run(
             ["/bin/sh", str(SCRIPT), "render", "x"],
@@ -287,7 +287,7 @@ class PolicyCase(unittest.TestCase):
         self.assertIn("StringNotEqualsIfExists", deny["Condition"])
         self.assertEqual(
             deny["Condition"]["StringNotEqualsIfExists"],
-            {"ec2:CreateAction": ["RunInstances", "CreateSnapshot", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress"]},
+            {"ec2:CreateAction": ["RunInstances", "CreateSnapshot", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"]},
         )
 
     def test_the_managed_tag_key_reaches_every_statement_that_names_it(self):
@@ -755,12 +755,21 @@ class LifecycleCase(unittest.TestCase):
         from fnmatch import fnmatchcase
         allowed = broad
         for item in document["Statement"]:
-            resources = item["Resource"]
+            resources = item.get("Resource", item.get("NotResource"))
             if isinstance(resources, str):
                 resources = [resources]
-            if not any(fnmatchcase(action, pattern) for pattern in actions_of(item)):
+            action_patterns = item.get("Action", item.get("NotAction"))
+            if isinstance(action_patterns, str):
+                action_patterns = [action_patterns]
+            matches_action = any(fnmatchcase(action, pattern) for pattern in action_patterns)
+            if "NotAction" in item:
+                matches_action = not matches_action
+            if not matches_action:
                 continue
-            if not any(fnmatchcase(resource, pattern) for pattern in resources):
+            matches_resource = any(fnmatchcase(resource, pattern) for pattern in resources)
+            if "NotResource" in item:
+                matches_resource = not matches_resource
+            if not matches_resource:
                 continue
             matches = True
             for operator, entries in item.get("Condition", {}).items():
@@ -857,6 +866,58 @@ class ExtraPolicyCase(unittest.TestCase):
         self.assertIn("policy/agent-base'", query)
         self.assertIn("policy/provision'", query)
 
+    def test_fresh_provisioning_example_renders_complete_scoped_setup(self):
+        values = {"ACCOUNT_ID": ACCOUNT_ID, "REGION": "eu-west-1", "VPC_ID": "vpc-example",
+                  "OWNER": "example-owner", "PROJECT": "example-project", "PURPOSE": "example-purpose",
+                  "MANAGED_BY": "example-deployer", "DEPLOYMENT_KEY_PREFIX": "example-deployment",
+                  "LEGACY_KEY_PREFIX": "example-legacy", "AGENT_USER": "agent"}
+        raw = (HERE.parent / "accounts" / "provisioning-policy.json.example").read_text()
+        self.assertEqual(set(re.findall(r"{{([A-Z_]+)}}", raw)), set(values))
+        for name, value in values.items():
+            raw = raw.replace("{{" + name + "}}", value)
+        role = f"arn:aws:iam::{ACCOUNT_ID}:role/example-instance"
+        box = self.ready(level="sandbox", EXTRA_POLICIES="provision", PASS_ROLE_ARNS=role)
+        extra = self.extra(box, document=json.loads(raw))
+        rendered = box.run("render", "x", "provision")
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        self.assertEqual(json.loads(rendered.stdout), extra)
+        base = box.run("render", "x")
+        self.assertEqual(base.returncode, 0, base.stderr)
+        policy = json.loads(base.stdout)
+        policy["Statement"].extend(extra["Statement"])
+        decision = LifecycleCase.decision
+        prefix = f"arn:aws:ec2:eu-west-1:{ACCOUNT_ID}:"
+        tags = {"Owner": values["OWNER"], "Project": values["PROJECT"], "Purpose": values["PURPOSE"],
+                "ManagedBy": values["MANAGED_BY"], "claude-managed": "true"}
+        request = {"aws:RequestTag/" + key: value for key, value in tags.items()}
+        resource = {"aws:ResourceTag/" + key: value for key, value in tags.items()}
+        for action, arn, context in [
+            ("ec2:ImportKeyPair", prefix + "key-pair/example-deployment-123", request),
+            ("ec2:ImportKeyPair", prefix + "key-pair/example-legacy-123", request),
+            ("ec2:CreateSecurityGroup", prefix + "vpc/vpc-example", {}),
+            ("ec2:CreateSecurityGroup", prefix + "security-group/probe", request),
+            ("ec2:AuthorizeSecurityGroupIngress", prefix + "security-group/probe", resource),
+            ("ec2:AuthorizeSecurityGroupIngress", prefix + "security-group-rule/probe", request),
+            ("ec2:AuthorizeSecurityGroupEgress", prefix + "security-group-rule/probe", request),
+            ("ec2:AllocateAddress", prefix + "elastic-ip/probe", request),
+            ("ec2:AssociateAddress", prefix + "network-interface/probe", resource),
+            ("ssm:SendCommand", prefix + "instance/probe", resource),
+            ("ssm:SendCommand", "arn:aws:ssm:eu-west-1::document/AWS-RunShellScript", {}),
+            ("iam:PassRole", role, {"iam:PassedToService": "ec2.amazonaws.com"}),
+            ("ec2:DeleteSecurityGroup", prefix + "security-group/probe", resource),
+        ]:
+            with self.subTest(action=action, arn=arn):
+                self.assertEqual(decision(self, policy, action, arn, context), "allowed")
+        key = prefix + "key-pair/example-deployment-123"
+        for tag in request:
+            missing = dict(request)
+            del missing[tag]
+            self.assertEqual(decision(self, policy, "ec2:ImportKeyPair", key, missing), "implicitDeny")
+            for action in ("ec2:AuthorizeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress"):
+                self.assertEqual(decision(self, policy, action, prefix + "security-group-rule/probe", missing), "implicitDeny")
+        self.assertEqual(decision(self, policy, "ec2:ImportKeyPair", key.replace("example-deployment", "unrelated"), request), "implicitDeny")
+        self.assertEqual(decision(self, policy, "ec2:DeleteSecurityGroup", prefix + "security-group/probe", {}), "explicitDeny")
+
     def test_all_ownership_checks_precede_every_write(self):
         box = self.ready(EXTRA_POLICIES="provision")
         self.extra(box)
@@ -912,6 +973,79 @@ class ExtraPolicyCase(unittest.TestCase):
         actions = [c["rest"][c["rest"].index("--action-names") + 1] for c in calls]
         self.assertIn("ec2:CreateSnapshot", actions)
         self.assertIn("ec2:DisassociateAddress", actions)
+
+
+class RoleAndRuleCase(unittest.TestCase):
+    decision = LifecycleCase.decision
+    sandbox = CommandCase.sandbox
+    ready = CommandCase.ready
+    role = f"arn:aws:iam::{ACCOUNT_ID}:role/application/ssm-instance"
+
+    def test_pass_role_is_opt_in_and_exact(self):
+        policy = render("sandbox", pass_roles=self.role)
+        context = {"iam:PassedToService": "ec2.amazonaws.com"}
+        self.assertEqual(self.decision(policy, "iam:PassRole", self.role, context), "allowed")
+        for resource in (self.role + "-other", self.role.replace(ACCOUNT_ID, "999988887777")):
+            self.assertEqual(self.decision(policy, "iam:PassRole", resource, context, broad=True), "explicitDeny")
+        for context in ({}, {"iam:PassedToService": "lambda.amazonaws.com"}):
+            self.assertEqual(self.decision(policy, "iam:PassRole", self.role, context, broad=True), "explicitDeny")
+        self.assertEqual(self.decision(render("sandbox"), "iam:PassRole", self.role,
+                                      {"iam:PassedToService": "ec2.amazonaws.com"}, broad=True), "explicitDeny")
+
+    def test_iam_administration_and_assumption_stay_explicitly_denied(self):
+        policy = render("sandbox", pass_roles=self.role)
+        for action in ("iam:CreateAccessKey", "iam:CreateRole", "iam:AttachRolePolicy", "iam:PutRolePolicy",
+                       "iam:UpdateAssumeRolePolicy", "iam:PassRole", "iam:CreatePolicyVersion", "sts:AssumeRole"):
+            self.assertEqual(self.decision(policy, action, self.role, {}, broad=True), "explicitDeny", action)
+            if action != "iam:PassRole":
+                for resource in (self.role, "*"):
+                    self.assertEqual(self.decision(policy, action, resource,
+                                                  {"iam:PassedToService": "ec2.amazonaws.com"}, broad=True), "explicitDeny", action)
+
+    def test_invalid_role_config_fails_before_aws_calls(self):
+        for level, roles in (("readonly", self.role), ("operator", self.role),
+                             ("sandbox", self.role + "*"), ("sandbox", self.role + "?"),
+                             ("sandbox", self.role.replace(ACCOUNT_ID, "999988887777")),
+                             ("sandbox", self.role + " " + self.role)):
+            with self.subTest(level=level, roles=roles):
+                box = self.ready(level=level, PASS_ROLE_ARNS=roles)
+                done = box.run("apply", "x")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("PASS_ROLE_ARNS", done.stderr)
+                self.assertEqual(box.calls(), [])
+
+    def test_security_rule_managed_tags_only_at_creation(self):
+        resource = f"arn:aws:ec2:us-east-1:{ACCOUNT_ID}:security-group-rule/sgr-probe"
+        policy = render("sandbox")
+        for operation in ("AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"):
+            context = {"ec2:CreateAction": operation, "aws:RequestTag/claude-managed": "true", "aws:TagKeys": ["claude-managed"]}
+            self.assertEqual(self.decision(policy, "ec2:CreateTags", resource, context), "allowed")
+            for value in (None, "false"):
+                probe = dict(context)
+                if value is None:
+                    del probe["aws:RequestTag/claude-managed"]
+                else:
+                    probe["aws:RequestTag/claude-managed"] = value
+                self.assertNotEqual(self.decision(policy, "ec2:CreateTags", resource, probe), "allowed")
+            for wrong in (resource.replace("us-east-1", "eu-west-1"), resource.replace(ACCOUNT_ID, "999988887777")):
+                self.assertNotEqual(self.decision(policy, "ec2:CreateTags", wrong, context), "allowed")
+            for level in ("readonly", "operator"):
+                self.assertEqual(self.decision(render(level), "ec2:CreateTags", resource, context, broad=True), "explicitDeny")
+        self.assertEqual(self.decision(policy, "ec2:CreateTags", resource,
+                                      {"aws:TagKeys": ["claude-managed"]}, broad=True), "explicitDeny")
+
+    def test_simulator_checks_approved_role_and_denial_boundaries(self):
+        box = self.ready(level="sandbox", PASS_ROLE_ARNS=self.role)
+        box.profile("default", aws_access_key_id="AKIAADMIN")
+        box.rule("simulate-custom-policy", stdout="allowed")
+        box.run("simulate", "x")
+        calls = [c for c in box.calls() if "simulate-custom-policy" in c["rest"]]
+        approved = [c for c in calls if "iam:PassRole" in c["rest"] and self.role in c["rest"]]
+        self.assertEqual(len(approved), 3)
+        self.assertTrue(any("ContextKeyValues=ec2.amazonaws.com" in " ".join(c["rest"]) for c in approved))
+        self.assertTrue(any("ContextKeyValues=lambda.amazonaws.com" in " ".join(c["rest"]) for c in approved))
+        self.assertTrue(any("arn:aws:iam::000000000000:role/unapproved" in c["rest"] for c in calls))
+        self.assertLessEqual(len(json.dumps(render("sandbox", pass_roles=self.role), separators=(",", ":"))), 6144)
 
 
 if __name__ == "__main__":

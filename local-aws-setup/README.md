@@ -38,6 +38,7 @@ takes. `<config>` is `$SYSTEM_TOOLS_CONFIG` (default `~/.config/system`);
 | `S3_BUCKETS` | space-separated bucket names |
 | `POLICY_NAME` | managed policy name in this account; overrides the shared `POLICY_NAME` in `<config>/aws-setup/.env` (default `agent-base`) |
 | `EXTRA_POLICIES` | space-separated supplemental managed policy names; default empty |
+| `PASS_ROLE_ARNS` | exact same-account instance role ARNs; sandbox only, passed to EC2 only; default empty |
 
 A typical setup: `dev` (operator, profile `agent-dev`) and `sandbox`
 (sandbox, profile `agent-sandbox`). The account files are the source of
@@ -56,7 +57,7 @@ truth; `./aws-setup.sh accounts` lists them.
 | Listed buckets | get | get, put | get, put, delete |
 | Anything at all on an instance that does not carry `claude-managed=true` | denied | denied | denied |
 | Change the `claude-managed` tag on existing resources | denied | denied | denied |
-| IAM, role assumption, Organizations, account settings, CloudTrail tampering including its event selectors, changing an instance attribute, bucket deletion/policy/ACL/public access block, KMS key deletion | denied | denied | denied |
+| IAM administration, role assumption, Organizations, account settings, CloudTrail tampering including its event selectors, changing an instance attribute, bucket deletion/policy/ACL/public access block, KMS key deletion | denied | denied | denied |
 
 Console output is part of managing an instance: an agent that may stop and
 start one needs to read why it did not come up. It returns whatever the guest
@@ -84,6 +85,23 @@ EXTRA_POLICIES="agent-provisioning"
 ```
 
 Its document lives beside that file in `sandbox.policies/agent-provisioning.json`.
+For a fresh sandbox, copy `accounts/provisioning-policy.json.example` into that private document path.
+Replace every `{{...}}` placeholder before rendering or applying it:
+
+| Placeholder | Private deployment input |
+|---|---|
+| `ACCOUNT_ID`, `REGION`, `AGENT_USER` | Values from the account configuration |
+| `VPC_ID` | Existing VPC where the deployment creates security groups |
+| `OWNER`, `PROJECT`, `PURPOSE`, `MANAGED_BY` | Exact resource-tag values sent by the deployment |
+| `DEPLOYMENT_KEY_PREFIX` | Key-name prefix used by the deployment, without the trailing hyphen |
+| `LEGACY_KEY_PREFIX` | Existing approved key-name prefix; remove its two statements when no legacy grant is needed |
+
+The template covers security groups, key import, Elastic IPs, and SSM commands and sessions.
+The base policy supplies instance launch, rule tagging, teardown, and the optional exact-role grant.
+Set `LEVEL=sandbox`, configure `EXTRA_POLICIES`, and audit the instance role before setting `PASS_ROLE_ARNS`.
+Create the VPC, role, and instance profile with an administrator first; this tool grants no IAM provisioning permission.
+Review SSM document permissions and ownership tags for the intended deployment before applying the template.
+
 Copy the existing default-version document exactly when adopting current permissions.
 Keep account IDs, resource ARNs, and SSM scopes in private account configuration.
 Do not broaden those grants when moving them into configuration.
@@ -116,13 +134,30 @@ AWS snapshot ARNs omit the account field. Their managed tags constrain snapshot 
 Both the source volume and new snapshot must satisfy their respective managed-tag conditions.
 Elastic IP disassociation checks both the Elastic IP and its network interface; tag both during provisioning.
 Apply the managed tag during resource creation. Existing resources require deliberate tagging by an administrator.
-The creation exception covers `RunInstances`, `CreateSnapshot`, `CreateSecurityGroup`, `ImportKeyPair`, and `AllocateAddress`.
+The creation exception covers `RunInstances`, `CreateSnapshot`, `CreateSecurityGroup`, `ImportKeyPair`, `AllocateAddress`, `AuthorizeSecurityGroupIngress`, and `AuthorizeSecurityGroupEgress`.
 It grants no standalone permission to retag existing resources.
 
 Create a tagged snapshot, wait for completion, then terminate the instance and clean up managed resources.
 `ec2:ModifyInstanceAttribute` stays explicitly denied. Teardown does not require changing disk deletion settings after a backup completes.
 Retained snapshots incur storage charges until deleted. Keep backups according to your retention requirements.
 IAM self-management stays denied; an admin applies policy updates before the agent performs teardown.
+
+### Deploying with an existing instance role
+
+Enable `PASS_ROLE_ARNS` only after auditing the instance role's current permissions, EC2 trust, and existing consumers.
+Use exact role ARNs from the configured account. Wildcards, duplicate roles, and lower access levels are rejected.
+This permits `iam:PassRole` only for those roles and only to `ec2.amazonaws.com`.
+Other roles, other services, IAM administration, and role assumption remain explicitly denied.
+The agent can run code with the passed role's permissions. Do not pass a role with broader privileges than intended.
+An existing `AmazonSSMManagedInstanceCore` attachment includes parameter reads across resources; review that scope before permitting role passage.
+No role is created or changed by this setting. Leave it empty to preserve the complete IAM deny.
+AWS describes these controls in its [PassRole guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html).
+
+Sandbox permits managed tags during security-group rule creation in the configured account and region.
+The supplemental policy must allow rule creation on both its intended security groups and new rule ARNs.
+Tagged rule creation checks ownership request tags on the new rule; the example includes both resource permissions.
+Key import policies must match the deployment's configured key-name prefix and ownership request tags.
+Test the actual creation request with `DryRun=true`; an allowed EC2 request returns `DryRunOperation` without creating resources.
 
 ## Adding an account
 
@@ -328,7 +363,7 @@ A single hub user assuming a role in each account would mean one key and
 short-lived credentials, but it breaks when an account's organization blocks
 principals from outside it. A user per account always works; the cost is one
 long-lived key per account, which is what `rotate` is for, and why every
-level denies `iam:*` (the agent cannot mint itself more keys).
+level denies IAM administration (the agent cannot mint itself more keys).
 
 ## CLI or MCP server?
 

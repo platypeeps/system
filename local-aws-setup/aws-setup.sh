@@ -73,7 +73,7 @@ Levels:
   sandbox   operator + launch instances tagged at launch, terminate tagged
             instances; snapshot and clean up tagged resources in the configured
             account/region; delete on listed buckets.
-  All levels deny IAM, role assumption, CloudTrail tampering including its
+  All levels deny IAM administration, role assumption, CloudTrail tampering including its
   event selectors, changing an instance attribute, bucket policy/ACL and
   public access block changes, KMS key deletion, changing the managed tag,
   and acting on an instance that does not carry it.
@@ -93,6 +93,8 @@ names another folder. Start from local-aws-setup/accounts/example.env.example:
                  setting below, e.g. where another agent-base already exists
   EXTRA_POLICIES space-separated managed policy names         (default: none)
                  JSON in <accounts>/<name>.policies/<policy-name>.json
+  PASS_ROLE_ARNS exact same-account role ARNs passed only to EC2 (default: none)
+                 sandbox only; audit role privileges and consumers before use
 
 Shared settings (environment, or <config>/aws-setup/.env — see .env.example):
   POLICY_NAME       managed policy name            (default: agent-base;
@@ -112,7 +114,7 @@ load_account() {
   file="$ACCOUNTS_DIR/$ACCOUNT.env"
   [ -f "$file" ] || die "no account file $file (copy local-aws-setup/accounts/example.env.example to $file)"
   ACCOUNT_ID="" LEVEL="" ADMIN_PROFILE="" AGENT_USER="" AGENT_PROFILE=""
-  AGENT_REGION="" S3_BUCKETS="" AGENT_USER_ARN="" EXTRA_POLICIES=""
+  AGENT_REGION="" S3_BUCKETS="" AGENT_USER_ARN="" EXTRA_POLICIES="" PASS_ROLE_ARNS=""
   # shellcheck disable=SC1090
   . "$file"
   AGENT_USER="${AGENT_USER:-agent}"
@@ -153,7 +155,7 @@ validate_account() {
 
 # Validate every supplemental document before any AWS call or mutation.
 validate_extra_policies() {
-  "${PYTHON:-python3}" "$DIR/validate-policies.py" "$ACCOUNTS_DIR/$ACCOUNT.policies" "$POLICY_NAME" "$EXTRA_POLICIES" ||
+  "${PYTHON:-python3}" "$DIR/validate-policies.py" "$ACCOUNTS_DIR/$ACCOUNT.policies" "$POLICY_NAME" "$EXTRA_POLICIES" "$ACCOUNT_ID" "$LEVEL" "$PASS_ROLE_ARNS" ||
     die "$ACCOUNT: invalid supplemental policy configuration"
 }
 
@@ -345,6 +347,72 @@ stmt_ec2_lifecycle() {
 EOF
 }
 
+# Rule creation has its own CreateTags authorization and managed-tag exception.
+stmt_ec2_rule_tags() {
+  [ "$LEVEL" = sandbox ] || return 0
+  cat <<EOF
+    {
+      "Sid": "SandboxTagManagedRulesAtCreation",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:security-group-rule/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": ["AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"],
+          "aws:RequestTag/$MANAGED_TAG_KEY": "true"
+        }
+      }
+    },
+EOF
+}
+
+# Split the IAM deny by resource and action; only PassRole on approved roles
+# reaches the service check. No other IAM action can use this exception.
+stmt_pass_role() {
+  [ -n "$PASS_ROLE_ARNS" ] || return 0
+  # Role ARNs have been validated as exact same-account names, without globs.
+  # shellcheck disable=SC2086
+  role_lines=$(json_strings '        ' $PASS_ROLE_ARNS)
+  cat <<EOF
+    {
+      "Sid": "DenyIamOutsideApprovedRoles",
+      "Effect": "Deny",
+      "Action": "iam:*",
+      "NotResource": [
+$role_lines
+      ]
+    },
+    {
+      "Sid": "DenyApprovedRoleActionsExceptPassRole",
+      "Effect": "Deny",
+      "NotAction": "iam:PassRole",
+      "Resource": [
+$role_lines
+      ]
+    },
+    {
+      "Sid": "DenyPassingRolesToOtherServices",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEqualsIfExists": { "iam:PassedToService": "ec2.amazonaws.com" }
+      }
+    },
+    {
+      "Sid": "PassApprovedRolesToEc2",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+$role_lines
+      ],
+      "Condition": {
+        "StringEquals": { "iam:PassedToService": "ec2.amazonaws.com" }
+      }
+    },
+EOF
+}
+
 # These denies survive broader supplemental policies at every access level.
 stmt_deny_untagged_lifecycle() {
   cat <<EOF
@@ -458,7 +526,7 @@ stmt_deny_tag_changes() {
   launch_exception=""
   if [ "$LEVEL" = sandbox ]; then
     launch_exception=',
-        "StringNotEqualsIfExists": { "ec2:CreateAction": ["RunInstances", "CreateSnapshot", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress"] }'
+        "StringNotEqualsIfExists": { "ec2:CreateAction": ["RunInstances", "CreateSnapshot", "CreateSecurityGroup", "ImportKeyPair", "AllocateAddress", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"] }'
   fi
   cat <<EOF
     {
@@ -486,6 +554,8 @@ EOF
 # DeletePublicAccessBlock API, so setting and deleting the block are both
 # denied by it. There is no s3:DeleteBucketPublicAccessBlock action to name.
 stmt_hard_denies() {
+  iam_deny='"iam:*",'
+  [ -z "$PASS_ROLE_ARNS" ] || iam_deny=""
   terminate='
         "ec2:TerminateInstances",
         "ec2:CreateSnapshot",
@@ -502,7 +572,7 @@ stmt_hard_denies() {
       "Sid": "HardDenies",
       "Effect": "Deny",
       "Action": [$terminate
-        "iam:*",
+        $iam_deny
         "sts:AssumeRole",
         "organizations:*",
         "account:*",
@@ -531,6 +601,8 @@ render_policy() {
   stmt_ec2_tagged
   stmt_ec2_launch
   stmt_ec2_lifecycle
+  stmt_ec2_rule_tags
+  stmt_pass_role
   stmt_s3
   stmt_deny_untagged_ec2
   stmt_deny_untagged_lifecycle
@@ -1061,6 +1133,11 @@ expect_lifecycle() {
     expect explicitDeny "ec2:$action" "$resource" "aws:ResourceTag/$MANAGED_TAG_KEY=false"
   done
   expect explicitDeny ec2:ModifyInstanceAttribute "arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:instance/probe" "$tagged"
+  rule="arn:aws:ec2:$AGENT_REGION:$ACCOUNT_ID:security-group-rule/sgr-probe"
+  for operation in AuthorizeSecurityGroupIngress AuthorizeSecurityGroupEgress; do
+    expect "$lifecycle_decision" ec2:CreateTags "$rule" "$requested" "aws:TagKeys=$MANAGED_TAG_KEY" "ec2:CreateAction=$operation"
+  done
+  expect explicitDeny ec2:CreateTags "$rule" "aws:TagKeys=$MANAGED_TAG_KEY"
 }
 
 # Every bucket the account file names, not the first word of the list. Taking
@@ -1090,6 +1167,15 @@ run_expectations() {
   expect_s3
   expect explicitDeny iam:CreateAccessKey "*"
   expect explicitDeny sts:AssumeRole "*"
+  for role in $PASS_ROLE_ARNS; do
+    expect allowed iam:PassRole "$role" "iam:PassedToService=ec2.amazonaws.com"
+    expect explicitDeny iam:PassRole "$role" "iam:PassedToService=lambda.amazonaws.com"
+    expect explicitDeny iam:PassRole "$role"
+    expect explicitDeny iam:UpdateAssumeRolePolicy "$role"
+  done
+  if [ -n "$PASS_ROLE_ARNS" ]; then
+    expect explicitDeny iam:PassRole "arn:aws:iam::000000000000:role/unapproved" "iam:PassedToService=ec2.amazonaws.com"
+  fi
   if [ "$FAILURES" -gt 0 ]; then
     die "$FAILURES expectation(s) failed for $ACCOUNT ($LEVEL)"
   fi
