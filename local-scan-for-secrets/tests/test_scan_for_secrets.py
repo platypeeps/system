@@ -12,11 +12,14 @@ so nothing is deleted and the operator's config is never read.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -242,6 +245,98 @@ class TheLocalJudgment(unittest.TestCase):
     def test_the_hits_asked_per_run_are_capped(self):
         self.scan(S4S_JEV_MAX_HITS="1")
         self.assertEqual(len(self.kev.seen), 1)
+
+
+def load_mask_files():
+    spec = importlib.util.spec_from_file_location("mask_files", FOLDER / "mask_files.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class MaskRewrite(unittest.TestCase):
+    """`mask --apply` never loses a line a live session appends (sd:1254).
+
+    The rewrite reads a file, then writes the masked bytes back and truncates.
+    A session log can grow in between. Two guards stop that: a file modified
+    inside the settle window is skipped, and a file whose size or mtime moved
+    since the read is skipped. A skipped file counts as busy; the next run
+    masks it. Every file here is a synthetic fixture in a temporary folder.
+    """
+
+    #: Joined here, so this file is not a finding of the repository scan.
+    TOKEN = "ghp_" + "Zq7" * 12
+    PATTERN = "ghp_[0-9A-Za-z]{36}"
+    SETTLED = 20 * 60
+
+    def setUp(self):
+        self.mod = load_mask_files()
+        self.pats = self.mod.parse_patterns(self.PATTERN)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def log(self, name: str, age_seconds: float) -> Path:
+        path = self.root / name
+        path.write_bytes(('{"line": 1, "text": "token %s"}\n' % self.TOKEN).encode())
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_a_concurrent_append_survives_the_rewrite(self):
+        path = self.log("session.jsonl", self.SETTLED)
+        appended = b'{"line": 2, "text": "written by the live session"}\n'
+
+        def session_appends(target):
+            with open(target, "ab") as f:
+                f.write(appended)
+
+        result = self.mod.mask_file(str(path), [], self.pats, True, before_write=session_appends)
+        self.assertIn(appended, path.read_bytes())
+        self.assertTrue(result.busy)
+
+    def test_a_file_inside_the_settle_window_is_left_alone(self):
+        path = self.log("session.jsonl", 60)
+        before = path.read_bytes()
+        result = self.mod.mask_file(str(path), [], self.pats, True, settle_s=600)
+        self.assertTrue(result.busy)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_a_settled_file_is_masked(self):
+        path = self.log("session.jsonl", self.SETTLED)
+        result = self.mod.mask_file(str(path), [], self.pats, True, settle_s=600)
+        self.assertFalse(result.busy)
+        self.assertEqual(result.pcount, 1)
+        self.assertNotIn(self.TOKEN.encode(), path.read_bytes())
+        self.assertIn(b"<masked:pattern>", path.read_bytes())
+
+    def run_main(self, paths, apply):
+        env = dict(os.environ, S4S_PATTERNS=self.PATTERN, S4S_PAIRS="", S4S_MASK_SETTLE_MIN="10",
+                   S4S_APPLY="1" if apply else "0")
+        return subprocess.run([sys.executable, str(FOLDER / "mask_files.py")],
+                              input="\n".join(str(p) for p in paths) + "\n",
+                              env=env, capture_output=True, text=True, timeout=60)
+
+    def test_the_summary_counts_busy_files(self):
+        settled = self.log("old.jsonl", self.SETTLED)
+        recent = self.log("new.jsonl", 60)
+        result = self.run_main([settled, recent], apply=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("  busy %s" % recent, result.stdout)
+        self.assertIn("in 1 file(s); 1 busy", result.stdout)
+        self.assertIn(self.TOKEN.encode(), recent.read_bytes())
+        self.assertNotIn(self.TOKEN.encode(), settled.read_bytes())
+
+    def test_a_dry_run_reports_busy_files_and_writes_nothing(self):
+        settled = self.log("old.jsonl", self.SETTLED)
+        recent = self.log("new.jsonl", 60)
+        result = self.run_main([settled, recent], apply=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("  busy %s" % recent, result.stdout)
+        self.assertIn("in 1 file(s); 1 busy (dry run", result.stdout)
+        self.assertIn(self.TOKEN.encode(), settled.read_bytes())
 
 
 if __name__ == "__main__":
