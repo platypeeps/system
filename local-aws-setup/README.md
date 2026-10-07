@@ -50,14 +50,14 @@ truth; `./aws-setup.sh accounts` lists them.
 |---|---|---|---|
 | Describe/list EC2, list buckets, CloudWatch metrics | yes | yes | yes |
 | Start/stop/reboot instances tagged `claude-managed=true`, and read their console output | — | yes | yes |
-| Launch instances | — | — | only tagged `claude-managed=true` at launch |
+| Launch instances | denied | denied | only tagged `claude-managed=true` at launch |
 | Terminate instances | denied | denied | tagged only |
 | Disassociate/release Elastic IPs; delete security groups, key pairs, volumes, network interfaces, snapshots | denied | denied | tagged only, configured account/region |
 | Listed buckets | get | get, put | get, put, delete |
 | Start, stop, reboot, terminate, or read console output without `claude-managed=true` | denied | denied | denied |
 | Change the `claude-managed` tag on existing resources | denied | denied | denied |
 | IAM administration, role assumption, Organizations, account settings, CloudTrail tampering including its event selectors, changing an instance attribute, bucket deletion/policy/ACL/public access block, KMS key deletion | denied | denied | denied |
-| Create, copy or share snapshots and images; create, attach or detach volumes; EBS direct reads; EC2 Instance Connect; spot and fleet launches; launch from an image or snapshot that `amazon` or Canonical (`099720109477`) does not own | denied | denied | denied |
+| Create, copy or share snapshots and images; create, attach or detach volumes; EBS direct reads; console screenshots; EC2 Instance Connect; spot and fleet launches; launch from an image or snapshot that `amazon` or Canonical (`099720109477`) does not own | denied | denied | denied |
 
 Console output is part of managing an instance: an agent that may stop and
 start one needs to read why it did not come up. It returns whatever the guest
@@ -88,7 +88,8 @@ A shell on a simulator deployment reads its ground truth, and in-instance checks
 Give the template to an operator-only deployer user instead:
 
 ```sh
-# sandbox-deployer.env: the same ACCOUNT_ID, LEVEL=sandbox and ADMIN_PROFILE as sandbox.env
+# sandbox-deployer.env: the same ACCOUNT_ID and ADMIN_PROFILE as sandbox.env
+LEVEL=sandbox
 AGENT_USER=deployer
 AGENT_PROFILE=deployer-sandbox
 POLICY_NAME=deployer-base   # its own name: a shared one overwrites the agent's base policy
@@ -100,10 +101,12 @@ Copy the template to `sandbox-deployer.policies/deployment-provisioning.json`.
 Create the `deployer` user as in step 2 of "Adding an account", then run `apply` and `keys` for `sandbox-deployer`.
 Set the deployment wrapper's `AWS_PROFILE` to `deployer-sandbox`; keep that profile out of agent and MCP settings.
 
-The agent's `sandbox.env` sets `EXTRA_POLICIES="agent-ssm-deny"`.
+The agent's `sandbox.env` sets `LEVEL=operator` and `EXTRA_POLICIES="agent-ssm-deny"`.
 Copy `accounts/agent-ssm-deny.json.example` to `sandbox.policies/agent-ssm-deny.json`.
 It denies every SSM command and session to the agent, whatever else is attached later.
-Every level denies each route to a deployment's disk: snapshots, images, volume moves, EBS direct reads, Instance Connect (sd:2870).
+The agent runs at `operator`: below `sandbox` it cannot launch at all.
+Every level denies each other route to a deployment's disk (sd:2870): snapshots, images, volume copies or moves,
+EBS block reads, snapshot or image sharing, console screenshots and Instance Connect. `check` probes each one.
 The deployer launches from a public Canonical image and needs none of them.
 A launch source must be owned by `amazon` or Canonical, so an untagged private backup is denied too.
 

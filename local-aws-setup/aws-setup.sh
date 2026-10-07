@@ -29,6 +29,19 @@ KEY_PROPAGATION_SLEEP="${KEY_PROPAGATION_SLEEP:-5}"
 # before a later run replaces that policy's default version.
 POLICY_OWNER_TAG_KEY="${POLICY_OWNER_TAG_KEY:-managed-by}"
 POLICY_OWNER_TAG_VALUE="${POLICY_OWNER_TAG_VALUE:-local-aws-setup}"
+# Every route to a deployment's disk (sd:2870): launch from a copy, copy or
+# share it, move or read it block by block, or reach the guest outside SSM.
+# Every level denies them all, except that sandbox keeps ec2:RunInstances for
+# the deployer, from an approved source only. Space-separated IAM actions; no
+# globs. The policy and `check` both read this one list.
+DISK_ROUTES="ec2:RunInstances ec2:CreateFleet ec2:RequestSpotInstances ec2:RequestSpotFleet
+  ec2:CreateSnapshot ec2:CreateSnapshots ec2:CopySnapshot ec2:CreateImage ec2:RegisterImage ec2:CopyImage
+  ec2:CreateVolume ec2:CreateRestoreImageTask ec2:CreateStoreImageTask ec2:ExportImage ec2:CreateInstanceExportTask
+  ec2:ModifySnapshotAttribute ec2:ModifyImageAttribute
+  ec2:AttachVolume ec2:DetachVolume ec2:CreateReplaceRootVolumeTask
+  ebs:GetSnapshotBlock ebs:ListSnapshotBlocks ebs:ListChangedBlocks
+  ec2-instance-connect:SendSSHPublicKey ec2-instance-connect:SendSerialConsoleSSHPublicKey
+  ec2-instance-connect:OpenTunnel ec2:GetConsoleScreenshot"
 
 usage() {
   echo "usage: $(basename "$0") accounts | test | render|simulate|apply|keys|rotate|check <account>" >&2
@@ -70,6 +83,7 @@ Levels:
   readonly  describe/list/metrics; get on listed buckets.
   operator  readonly + start/stop/reboot and read the console output of
             instances tagged MANAGED_TAG_KEY=true; put on listed buckets.
+            The level for an evaluated agent beside a deployer user.
   sandbox   operator + launch instances tagged at launch, terminate tagged
             instances; clean up tagged resources in the configured
             account/region; delete on listed buckets.
@@ -79,7 +93,7 @@ Levels:
   and acting on an instance that does not carry it. They also deny every
   route to a disk: snapshots, images, volume moves, EBS direct reads, EC2
   Instance Connect, and a launch from an image or snapshot that amazon or
-  Canonical does not own.
+  Canonical does not own. Below sandbox they deny every launch.
 
 Account file <config>/aws-setup/accounts/<name>.env, where <config> is
 $SYSTEM_TOOLS_CONFIG (default ~/.config/system); AWS_SETUP_ACCOUNTS_DIR
@@ -415,9 +429,10 @@ EOF
 }
 
 # A snapshot, an image, a moved volume or a guest key turns a deployment's
-# disk into one the agent can read, so every level denies them (sd:2870).
-# Neither the agent nor the deployer needs one, and an untagged copy would
-# slip past a tag condition, so the first statement has none.
+# disk into one the agent can read, so every level denies DISK_ROUTES
+# (sd:2870). Neither the agent nor the deployer needs one, and an untagged
+# copy would slip past a tag condition, so the first statement has none.
+# Below sandbox it denies the launch too; at sandbox the second one guards it.
 #
 # A launch source is an allowlist of owners, not a tag: an untagged private
 # backup image or snapshot is denied like a tagged one. Snapshots take the
@@ -428,31 +443,19 @@ EOF
 # ponytail: owners are fixed to amazon and Canonical; make them a setting when
 # an account needs another publisher.
 stmt_deny_disk_reads() {
+  routes=""
+  for route in $DISK_ROUTES; do
+    [ "$LEVEL:$route" != sandbox:ec2:RunInstances ] || continue
+    routes="$routes $route"
+  done
+  # shellcheck disable=SC2086 # a fixed list of IAM actions, no globs
+  routes=$(json_strings '        ' $routes)
   cat <<EOF
     {
       "Sid": "DenyReadingManagedDisks",
       "Effect": "Deny",
       "Action": [
-        "ec2:CreateSnapshot",
-        "ec2:CreateSnapshots",
-        "ec2:CreateImage",
-        "ec2:RegisterImage",
-        "ec2:CopySnapshot",
-        "ec2:CopyImage",
-        "ec2:ModifySnapshotAttribute",
-        "ec2:ModifyImageAttribute",
-        "ec2:CreateVolume",
-        "ec2:AttachVolume",
-        "ec2:DetachVolume",
-        "ec2:CreateReplaceRootVolumeTask",
-        "ec2:CreateStoreImageTask",
-        "ec2:ExportImage",
-        "ec2:CreateInstanceExportTask",
-        "ec2:CreateFleet",
-        "ec2:RequestSpotInstances",
-        "ec2:RequestSpotFleet",
-        "ebs:*",
-        "ec2-instance-connect:*"
+$routes
       ],
       "Resource": "*"
     },
@@ -1123,7 +1126,9 @@ expect_ec2() {
   # explicitDeny, not implicitDeny: an untagged instance is outside the
   # conditional Allow either way, but only the Deny survives a second policy.
   expect explicitDeny ec2:StopInstances "$instance" "$untagged"
-  expect "$(from_level sandbox)" ec2:RunInstances "$instance" "aws:RequestTag/$MANAGED_TAG_KEY=true"
+  launch=explicitDeny
+  [ "$LEVEL" != sandbox ] || launch=allowed
+  expect "$launch" ec2:RunInstances "$instance" "aws:RequestTag/$MANAGED_TAG_KEY=true"
   expect explicitDeny ec2:RunInstances "$instance"
   if [ "$LEVEL" = sandbox ]; then
     expect allowed ec2:TerminateInstances "$instance" "$tagged"
@@ -1142,24 +1147,20 @@ expect_lifecycle() {
   image="arn:aws:ec2:$AGENT_REGION::image/ami-0123456789abcdef0"
   lifecycle_decision=explicitDeny
   [ "$LEVEL" != sandbox ] || lifecycle_decision=allowed
+  launch=explicitDeny
+  [ "$LEVEL" != sandbox ] || launch=allowed
   # Every route from a managed disk to a reader, at every level (sd:2870).
-  # Listed here again, not read from the policy, so a dropped entry fails.
-  for disk_read in ec2:CreateSnapshot ec2:CreateSnapshots ec2:CreateImage ec2:RegisterImage \
-      ec2:CopySnapshot ec2:CopyImage ec2:ModifySnapshotAttribute ec2:ModifyImageAttribute \
-      ec2:CreateVolume ec2:AttachVolume ec2:DetachVolume ec2:CreateReplaceRootVolumeTask \
-      ec2:CreateStoreImageTask ec2:ExportImage ec2:CreateInstanceExportTask \
-      ec2:CreateFleet ec2:RequestSpotInstances ec2:RequestSpotFleet \
-      ebs:GetSnapshotBlock ebs:ListSnapshotBlocks ebs:ListChangedBlocks \
-      ec2-instance-connect:SendSSHPublicKey ec2-instance-connect:SendSerialConsoleSSHPublicKey \
-      ec2-instance-connect:OpenTunnel; do
-    expect explicitDeny "$disk_read" "*" "$tagged"
+  # Sandbox keeps the launch, guarded by owner below.
+  for route in $DISK_ROUTES; do
+    [ "$LEVEL:$route" != sandbox:ec2:RunInstances ] || continue
+    expect explicitDeny "$route" "*" "$tagged" "$requested"
   done
   # A private source is denied with or without the tag; the deployer's
   # Canonical image, and the snapshot behind it, still launch.
   for source in "$image" "arn:aws:ec2:$AGENT_REGION::snapshot/snap-0123456789abcdef0"; do
     expect explicitDeny ec2:RunInstances "$source" "$tagged" "ec2:Owner=$ACCOUNT_ID"
     expect explicitDeny ec2:RunInstances "$source" "ec2:Owner=$ACCOUNT_ID"
-    expect "$(from_level sandbox)" ec2:RunInstances "$source" "ec2:Owner=099720109477"
+    expect "$launch" ec2:RunInstances "$source" "ec2:Owner=099720109477"
   done
   for pair in DisassociateAddress:elastic-ip DisassociateAddress:network-interface ReleaseAddress:elastic-ip DeleteSecurityGroup:security-group DeleteKeyPair:key-pair DeleteVolume:volume DeleteNetworkInterface:network-interface DeleteSnapshot:snapshot; do
     # Not `action`: expect() assigns that global, and the next probe would

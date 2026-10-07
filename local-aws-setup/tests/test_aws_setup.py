@@ -46,17 +46,24 @@ OTHER_ARN = "arn:aws:iam::999988887777:user/someone-else"
 OLD_KEY = "AKIAOLDKEY"
 NEW_KEY = "AKIANEWKEY"
 NEW_SECRET = "s3cret-that-must-not-be-an-argument"
-# Every route from a managed disk to a reader the agent controls (sd:2870).
-DISK_READS = (
-    "ec2:CreateSnapshot", "ec2:CreateSnapshots", "ec2:CreateImage", "ec2:RegisterImage",
-    "ec2:CopySnapshot", "ec2:CopyImage", "ec2:ModifySnapshotAttribute", "ec2:ModifyImageAttribute",
-    "ec2:CreateVolume", "ec2:AttachVolume", "ec2:DetachVolume", "ec2:CreateReplaceRootVolumeTask",
-    "ec2:CreateStoreImageTask", "ec2:ExportImage", "ec2:CreateInstanceExportTask",
-    "ec2:CreateFleet", "ec2:RequestSpotInstances", "ec2:RequestSpotFleet",
+
+# Every route to a deployment's disk (sd:2870), in the script's order. Every
+# level denies them, except that sandbox keeps ec2:RunInstances for the deployer.
+DISK_ROUTES = (
+    "ec2:RunInstances", "ec2:CreateFleet", "ec2:RequestSpotInstances", "ec2:RequestSpotFleet",
+    "ec2:CreateSnapshot", "ec2:CreateSnapshots", "ec2:CopySnapshot", "ec2:CreateImage", "ec2:RegisterImage", "ec2:CopyImage",
+    "ec2:CreateVolume", "ec2:CreateRestoreImageTask", "ec2:CreateStoreImageTask", "ec2:ExportImage", "ec2:CreateInstanceExportTask",
+    "ec2:ModifySnapshotAttribute", "ec2:ModifyImageAttribute",
+    "ec2:AttachVolume", "ec2:DetachVolume", "ec2:CreateReplaceRootVolumeTask",
     "ebs:GetSnapshotBlock", "ebs:ListSnapshotBlocks", "ebs:ListChangedBlocks",
     "ec2-instance-connect:SendSSHPublicKey", "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
-    "ec2-instance-connect:OpenTunnel",
+    "ec2-instance-connect:OpenTunnel", "ec2:GetConsoleScreenshot",
 )
+
+
+def disk_routes(level):
+    """The routes a level denies outright."""
+    return [r for r in DISK_ROUTES if not (level == "sandbox" and r == "ec2:RunInstances")]
 
 
 def render(level, buckets="", tag_key="claude-managed", pass_roles=""):
@@ -236,7 +243,8 @@ class PolicyCase(unittest.TestCase):
         # is allowed to speak about at all.
         grammar = re.compile(r"[a-z0-9-]+:[A-Za-z0-9*]+")
         services = {"account", "cloudtrail", "cloudwatch", "ebs", "ec2",
-                    "ec2-instance-connect", "iam", "kms", "organizations", "s3", "sts"}
+                    "ec2-instance-connect", "iam", "kms", "organizations",
+                    "s3", "sts"}
         for level in ("readonly", "operator", "sandbox"):
             for buckets in ("", "claude-managed-bucket"):
                 document = render(level, buckets=buckets)
@@ -736,8 +744,8 @@ class CommandCase(unittest.TestCase):
                 box.rule("simulate-custom-policy", stdout="allowed")
                 done = box.run("simulate", "x")
                 self.assertEqual(done.returncode, 1)
-                for action in DISK_READS:
-                    self.assertIn("FAIL want explicitDeny, got allowed: %s " % action, done.stdout)
+                for action in disk_routes(level):
+                    self.assertIn("FAIL want explicitDeny, got allowed: %s * " % action, done.stdout)
                 for kind in ("snapshot", "image"):
                     for context in ("aws:ResourceTag/claude-managed=true ec2:Owner=%s" % ACCOUNT_ID, "ec2:Owner=%s" % ACCOUNT_ID):
                         self.assertRegex(done.stdout, r"FAIL want explicitDeny, got allowed: ec2:RunInstances "
@@ -871,15 +879,19 @@ class LifecycleCase(unittest.TestCase):
 
     def test_no_level_reaches_a_managed_disk(self):
         # A snapshot, image, volume or guest key turns a deployment's disk
-        # into something the agent can read (sd:2870). The deployer needs
-        # none of them; its launch from a public image stays allowed.
-        tagged = {"aws:ResourceTag/claude-managed": "true"}
+        # into something the agent can read (sd:2870). Every level denies
+        # each route in one statement, so the levels cannot drift apart, and
+        # a missing Allow says nothing once a broader policy is attached.
+        tagged = {"aws:ResourceTag/claude-managed": "true",
+                  "aws:RequestTag/claude-managed": "true"}
         for level in ("readonly", "operator", "sandbox"):
             policy = render(level)
-            for action in DISK_READS:
-                with self.subTest(level=level, action=action):
-                    resource = "arn:aws:ec2:us-east-1::snapshot/probe"
-                    self.assertEqual(self.decision(policy, action, resource, tagged, broad=True), "explicitDeny")
+            self.assertEqual(actions_of(statement(policy, "DenyReadingManagedDisks")), disk_routes(level))
+            self.assertEqual([a for a in DISK_ROUTES if a in actions_of(statement(policy, "HardDenies"))], [])
+            for action in disk_routes(level):
+                for resource in ("arn:aws:ec2:us-east-1::snapshot/probe", "arn:aws:ec2:us-east-1:%s:volume/probe" % ACCOUNT_ID):
+                    with self.subTest(level=level, action=action, resource=resource):
+                        self.assertEqual(self.decision(policy, action, resource, tagged, broad=True), "explicitDeny")
 
     def test_launch_sources_are_an_owner_allowlist(self):
         # A tag names only the disks someone remembered to tag: an untagged
@@ -895,7 +907,7 @@ class LifecycleCase(unittest.TestCase):
                 for owner in ("amazon", "099720109477"):
                     with self.subTest(level=level, kind=kind, owner=owner):
                         self.assertEqual(self.decision(policy, "ec2:RunInstances", resource, {"ec2:Owner": owner}),
-                                         "allowed" if level == "sandbox" else "implicitDeny")
+                                         "allowed" if level == "sandbox" else "explicitDeny")
 
     def test_rendered_policies_fit_managed_policy_limit(self):
         for level in ("readonly", "operator", "sandbox"):
@@ -1270,6 +1282,16 @@ class RoleAndRuleCase(unittest.TestCase):
         self.assertEqual(malformed, [])
         teardown = [n for n in names if n == "ec2:DeleteKeyPair"]
         self.assertEqual(len(teardown), 3)
+
+    def test_check_proves_every_disk_route_denied_below_sandbox(self):
+        # The live check, not only the render, has to show the routes closed:
+        # it is what the owner reads before lifting the evaluation rule.
+        box = self.ready(level="operator")
+        box.profile("default", aws_access_key_id="AKIAADMIN")
+        box.rule("simulate-custom-policy", stdout="explicitDeny")
+        done = box.run("simulate", "x")
+        for action in DISK_ROUTES:
+            self.assertIn("PASS explicitDeny " + action + " ", done.stdout)
 
 if __name__ == "__main__":
     unittest.main()
