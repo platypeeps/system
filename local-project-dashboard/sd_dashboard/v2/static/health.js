@@ -1,9 +1,10 @@
 // Health v2 (sd:2115): the page script. It loads before shell.js, which reads what it declares.
 // Rows: /api/health, the document health_screen.document builds from the fleet child (worktree registrations),
-// reads.trailer_scan (attribution), Operations > Ports' reader (ports), protection.rows (branch protection) and
+// reads.trailer_scan (attribution), Operations > Ports' reader (ports), protection.rows (branch protection, and the
+// alerts behind Dependencies and Security, sd:2205 and sd:2206), the nightly credentials heartbeat (sd:2203) and
 // health_collectors (disk and merged branches, sd:2202 and sd:2204).
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
-// The design's other areas have no reader yet: each shows as unknown with what it does not read, never as a clean lamp.
+// An area with no reader shows as unknown with what it does not read, never as a clean lamp.
 // Nothing here writes. Every fix is a CLI line for Copy; Re-check reads the document again.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
@@ -18,7 +19,7 @@
     attr: ['signature', '<b>Who wrote each commit.</b> Every commit carries <code>Authored-with:</code> in its last paragraph; sd-review reads a missing one as “authored unknown” and blocks readiness. The count is your commits (each repo’s user.email) of the last 5 weeks on each default branch (origin/HEAD), merges left out. It walks every repo inside a 10 s budget; past it the area says it stopped rather than waited on, and shows no count.'],
     wt: ['folder-x', '<b>Registered is not present.</b> A worktree whose directory is gone still holds its branch. Prune clears the registration only; it never touches a directory that exists.'],
     br: ['git-branch', '<b>Merged but not deleted.</b> Local branches already contained in origin’s default branch. <code>git branch -d</code> refuses any branch that is not merged, so the fix cannot lose work.'],
-    dep: ['package', '<b>Dependabot, per repo.</b> Open alerts on the unarchived repos. A repo whose alerts could not be read is unknown, never clean.'],
+    dep: ['package', '<b>Dependabot, per repo.</b> Open alerts on the unarchived managed repos, as the nightly sync stored them. A repo whose alerts could not be read is unknown, never clean.'],
     sec: ['shield-alert', '<b>Secret scanning, public repos only.</b> Private repos are not scanned, by policy. A public repo with scanning off is a finding.'],
     ports: ['link-2', '<b>Who holds which port.</b> Configured service ports, then every other TCP listener the Mac shows. <b>Unknown is not free</b>: an uninspected listener says nothing about the port.'],
     prot: ['lock', '<b>What each default branch enforces.</b> One column per registered repo, one line per check: a filled cell is a gap, a short mark passes, an empty cell does not apply. <b>Unknown is not protected</b>: a hatched column was not read and shows no cells. Every column opens its repo; the table below carries the same cells.'],
@@ -44,6 +45,13 @@
   const fullest = a => { const v = (a.extra.volumes || []).reduce((w, x) => !w || x.capacity > w.capacity ? x : w, null);
     return v ? html`<span class="ph"><b>${v.capacity}%</b> fullest</span> <span class="ph">${v.name}</span>` : html`<span class="ph">no volume</span>`; };
   const sumFact = (a, key) => a.rows.reduce((s, r) => s + (+(r.facts?.[key]) || 0), 0);
+  // An unread repo is not zero alerts, and a list cut at its page size is "N+", as in the rows' Shown fact.
+  const alerts = a => {
+    const unread = a.rows.some(r => r.state === 'unknown');
+    if (unread && a.rows.every(r => r.state === 'unknown')) return html`<span class="ph">not read</span>`;
+    const more = a.rows.some(r => String(r.facts?.Shown || '').endsWith('+')) ? '+' : '';
+    return html`<span class="ph"><b>${sumFact(a, 'Open')}${more}</b> open alerts</span>${unread ? html` · <span class="ph">not all read</span>` : ''}`;
+  };
   const lampValue = a => !a.read ? html`<span class="ph">no reader</span>`
     : a.error ? html`<span class="ph">not read</span>`
     : a.id === 'wt' ? html`<span class="ph"><b>${sumFact(a, 'Registered')}</b> dir gone</span>`
@@ -51,6 +59,8 @@
     : a.id === 'attr' ? html`<span class="ph"><b>${sumFact(a, 'Missing')}</b> missing</span> <span class="ph">your commits · 5 weeks · default branch</span>`
     : a.id === 'disk' ? fullest(a)
     : a.id === 'br' ? html`<span class="ph"><b>${sumFact(a, 'Merged')}</b> merged</span> <span class="ph">not deleted</span>`
+    : a.id === 'dep' || a.id === 'sec' ? alerts(a)
+    : a.id === 'cred' ? html`<span class="ph"><b>${a.rows.filter(r => r.state === 'warning' || r.state === 'caution').length}</b> need you</span>`
     : a.id === 'ports' ? html`<span class="ph"><b>${a.extra.counts.unknown}</b> unknown</span> · <span class="ph">${a.extra.counts.listening} listening</span>`
     : html`<span class="ph"><b>${a.rows.length}</b> rows</span>`;
 
@@ -187,7 +197,7 @@
       const failed = AREAS.filter(a => a.error || a.stale);
       const [w, c] = attention(), unread = AREAS.filter(a => !a.read).length;
       const want = [w ? `${w} warning` : '', c ? `${c} caution` : ''].filter(Boolean).join(', ') || 'no';
-      put($('subhead'), html`${AREAS.length} areas · ${want} ${w + c === 1 ? 'row wants' : 'rows want'} you · ${plural(unread, 'area')} with no reader yet · read <time class="rel" datetime="${doc.read}"></time>`);
+      put($('subhead'), html`${AREAS.length} areas · ${want} ${w + c === 1 ? 'row wants' : 'rows want'} you${unread ? ` · ${plural(unread, 'area')} with no reader yet` : ''} · read <time class="rel" datetime="${doc.read}"></time>`);
       return { objects: ROWS.map(r => ({ ...r, label: r.what })),
         state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source: '/api/health' } : null };
     },
@@ -253,6 +263,13 @@
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
       { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: () => 'sd shadow sync', run: copyOnly },
+      // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows; each line is copy only.
+      { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
+        executes: false, cli: o => o.cli, run: copyOnly },
+      { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
+        executes: false, cli: o => o.cli, run: copyOnly },
+      { id: 'credential.probe', on: 'credential', label: 'Probe again', key: 'r', risk: 'safe', primary: () => true, executes: false,
+        cli: o => o.cli, run: copyOnly },
     );
     // Snooze sits on every type that wants you, as the design declares it; sd has no snooze verb, so it stays off.
     ['storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'attribution gap', 'merged branches', 'port', 'branch protection'].forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', key: 'z', risk: 'undo', bulk: true,
