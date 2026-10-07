@@ -1124,6 +1124,9 @@ explicitly after refreshing the source. The nightly backup job uses this
 folder's `backup --keep all` verb and the shared cron failure log; the hourly
 one uses `backup --require-mount /Volumes/local --keep-days 7 --no-row-prune`;
 shadow sync uses the pack's `sd shadow sync --strict`.
+Every shadow sync holds `operation-locks/shadow-sync.lock` beside the database for its whole run.
+A second sync, such as the dashboard's Re-run collector, raises `SyncBusy` and collects nothing.
+A satellite refuses with `HubOnly`, so `shadow-sync-nightly` is a hub-only job.
 The search watermark advances only after complete search coverage and durable staging of contribution identities.
 Incomplete search coverage keeps that cursor and retains valid observations.
 Contribution details refresh separately through a durable queue, on the same request and time budget as the search,

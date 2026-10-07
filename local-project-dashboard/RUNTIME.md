@@ -180,8 +180,8 @@ read-only collectors; research configuration is parsed as data, never executed.
 The obsolete Obsidian Skill Proposals action is replaced by the Skills workflow.
 Contributions' Re-run collector runs `sd_db.sync_shadow` for each tracker in a server thread (sd:2207, `shadow_run`).
 A run has one 120-second deadline; a Jira request in flight may take 30 seconds more.
-A second start is refused while a run is live, or while `pgrep` finds an `sd shadow sync` process.
-A satellite refuses a start: the run reopens the database by its file path.
+A second start is refused while a run is live, or while another `sd shadow sync` holds the library's shadow-sync lock.
+A satellite refuses a start: the lock sits beside the hub's database file.
 The run calls `gh` with the LaunchAgent's environment; gh's keychain login under launchd is not yet verified.
 
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
