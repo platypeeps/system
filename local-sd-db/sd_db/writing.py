@@ -26,7 +26,7 @@ from .database import refuse_hub_only, transaction
 from .progress import _fields, _git
 from .sources.frontmatter import split as split_frontmatter
 from .workflow import StaleItem, WorkflowError, _checked_state, _text, item_state
-from .writes import _transition, add_note, create_item, now, record_state, resolve_state, set_item_fields, upsert_repo
+from .writes import PROMOTED_COLUMNS, _transition, add_note, create_item, now, record_state, resolve_state, set_item_fields, upsert_repo
 from .yaml_lite import _Flow
 
 STAGES = ("inbox", "accepted", "researching", "drafting", "review", "ready", "published", "declined")
@@ -609,7 +609,8 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
             fields = _fields(row["fields"])
             fields["writing"] = metadata
             fields["writing_source"] = {"sha256": _hash(text.encode("utf-8")), "path": relative, "base_commit": None}
-            fields["promoted_from"] = {"source": row["source"], "external_id": row["external_id"]}
+            fields["promoted_from"] = {"source": row["source"], "external_id": row["external_id"],
+                                       "row": {key: row[key] for key in PROMOTED_COLUMNS}}
             set_item_fields(connection, item, repo=target, piece=piece, path=relative, stage="accepted",
                             source=SOURCE, external_id=f"{target}::{piece}", fields=fields,
                             body={"source": text}, source_commit=None)

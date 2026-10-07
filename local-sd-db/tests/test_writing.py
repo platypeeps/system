@@ -404,8 +404,9 @@ class Promote(WritingCase):
         self.assertIn(f"created: {now()[:10]}\n", text)
         self.assertIn("type: blog        # blog | research | article\n", text)
         self.assertIn("---\n\nThe angle.\n\n## Notes / angle\n\n## Draft\n", text)
-        self.assertEqual(json.loads(row["fields"])["promoted_from"],
-                         {"source": "drafts", "external_id": "Blog Ideas/an-idea.md"})
+        origin = json.loads(row["fields"])["promoted_from"]
+        self.assertEqual((origin["source"], origin["external_id"], origin["row"]["title"]),
+                         ("drafts", "Blog Ideas/an-idea.md", "An idea: Über café!"))
         self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
 
     def test_a_slug_override_names_the_piece(self):
@@ -488,7 +489,7 @@ class Promote(WritingCase):
         note = vault / "System/Databases/Blog Ideas/vault-idea.md"
         note.parent.mkdir(parents=True)
         (vault / "System/Databases/Topics").mkdir(parents=True)
-        note.write_text("---\ntitle: Vault idea\nstatus: inbox\n---\nThe angle.\n")
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
         reader = VaultReader.at(vault)
         reader.land(self.db, reader.freeze())
         idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
@@ -516,7 +517,7 @@ class Promote(WritingCase):
         note = vault / "System/Databases/Blog Ideas/vault-idea.md"
         note.parent.mkdir(parents=True)
         (vault / "System/Databases/Topics").mkdir(parents=True)
-        note.write_text("---\ntitle: Vault idea\nstatus: inbox\n---\nThe angle.\n")
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
         reader = VaultReader.at(vault)
         reader.land(self.db, reader.freeze())
         promote(self.db, self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0], who="operator")
@@ -527,7 +528,7 @@ class Promote(WritingCase):
         note = vault / "System/Databases/Blog Ideas/vault-idea.md"
         note.parent.mkdir(parents=True)
         (vault / "System/Databases/Topics").mkdir(parents=True)
-        note.write_text("---\ntitle: Vault idea\nstatus: inbox\n---\nThe angle.\n")
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
         identity = "blog-idea:System/Databases/Blog Ideas/vault-idea.md"
         create_item(self.db, kind="idea", title="Decoy", source="vault", external_id="decoy",
                     fields={"promoted_from": {"source": "vault", "external_id": identity}})
@@ -535,6 +536,25 @@ class Promote(WritingCase):
         missing = [d.identity for d in verify_source(self.db, reader, reader.freeze()) if d.what == "missing from the rows"]
         self.assertEqual(missing, [identity])
         self.assertEqual(reader.land(self.db, reader.freeze()).inserted, 1)
+
+    def test_an_edit_to_a_promoted_vault_note_is_reported_not_written(self):
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
+        reader = VaultReader.at(vault)
+        reader.land(self.db, reader.freeze())
+        idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
+        promote(self.db, idea, who="operator")
+        before = piece_state(self.db, idea)
+        note.write_text("---\ntitle: Vault idea, retitled\nstatus: accepted\ndateCreated: 2026-01-02\n---\nA new angle.\n")
+        counts = reader.land(self.db, reader.freeze())
+        self.assertEqual((counts.promoted_changed, counts.unchanged, counts.inserted), (1, 0, 0))
+        self.assertEqual(piece_state(self.db, idea), before)
+        changed = {d.what for d in verify_source(self.db, reader, reader.freeze())
+                   if d.identity == "blog-idea:System/Databases/Blog Ideas/vault-idea.md"}
+        self.assertEqual(changed, {"title", "stage", "status", "fields", "body"})
 
     def test_an_open_outer_transaction_is_refused(self):
         self.db.execute("BEGIN")

@@ -50,7 +50,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..writes import upsert_item
+from ..writes import PROMOTED_COLUMNS, promoted_rows, upsert_item
 from . import Counts, Frozen, MigrationRefused, Record, digest
 from .frontmatter import read as read_frontmatter
 
@@ -231,9 +231,15 @@ class Reader:
 
     def rows(self, connection: sqlite3.Connection) -> dict[str, Record]:
         held: dict[str, Record] = {}
-        for row in connection.execute(
+        found = [dict(row) for row in connection.execute(
             "SELECT * FROM item WHERE source = ? ORDER BY external_id", (SOURCE,)
-        ):
+        )]
+        # A promoted idea answers with the row it was promoted from (sd:1994).
+        for promoted in promoted_rows(connection, SOURCE):
+            origin = json.loads(promoted["fields"])["promoted_from"]
+            found.append({**dict.fromkeys(PROMOTED_COLUMNS), **(origin.get("row") or {}),
+                          "external_id": origin["external_id"]})
+        for row in found:
             held[row["external_id"]] = Record(
                 identity=row["external_id"],
                 payload={

@@ -150,6 +150,8 @@ class Counts:
     inserted: int = 0
     updated: int = 0
     unchanged: int = 0
+    #: Records of an idea promoted to a writing piece that changed since; reported, not written.
+    promoted_changed: int = 0
 
     def record(self, what: str) -> None:
         self.seen += 1
@@ -161,6 +163,7 @@ class Counts:
             "inserted": self.inserted,
             "updated": self.updated,
             "unchanged": self.unchanged,
+            "promoted_changed": self.promoted_changed,
         }
 
 
@@ -225,14 +228,8 @@ def verify(
     construct themselves.
     """
     held = source.rows(connection)
-    # An idea promoted to a writing piece left the source's rows; the piece
-    # owns it now and keeps the identity in `promoted_from` (sd:1994).
-    promoted = {row[0] for row in connection.execute(
-        "SELECT json_extract(fields, '$.promoted_from.external_id') FROM item WHERE "
-        "source = 'writing-piece' AND piece IS NOT NULL AND CASE WHEN json_valid(fields) THEN json_extract(fields, '$.promoted_from.source') = ? END",
-        (source.name,))}
     differences: list[Difference] = []
-    for identity in sorted(set(frozen.records) - set(held) - promoted):
+    for identity in sorted(set(frozen.records) - set(held)):
         differences.append(Difference(identity, "missing from the rows", "present", None))
     for identity in sorted(set(held) - set(frozen.records)):
         differences.append(Difference(identity, "no longer in the source", None, "present"))
@@ -274,6 +271,8 @@ class Sitting:
             f"{self.source}: {self.counts.seen} seen, "
             f"{self.counts.inserted} inserted, {self.counts.updated} updated, "
             f"{self.counts.unchanged} unchanged"
+            + (f", {self.counts.promoted_changed} promoted and changed since, not written"
+               if self.counts.promoted_changed else "")
         ]
         lines.extend(self.notes)
         if self.clean:

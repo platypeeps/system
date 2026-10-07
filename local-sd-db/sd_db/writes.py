@@ -317,6 +317,23 @@ def item_by_external(
     ).fetchone()
 
 
+#: The columns of an idea's row that promotion keeps in `promoted_from.row` (sd:1994).
+PROMOTED_COLUMNS = ("kind", "title", "status", "stage", "path", "created_at", "fields", "body")
+
+
+def promoted_rows(connection: sqlite3.Connection, source: str, external_id: str | None = None) -> list[sqlite3.Row]:
+    """Writing-piece rows promoted from `source`, or from its one record `external_id`.
+
+    Only a piece row counts: an imported note can carry any frontmatter.
+    """
+    query = ("SELECT id, fields FROM item WHERE source = 'writing-piece' AND piece IS NOT NULL "
+             "AND CASE WHEN json_valid(fields) THEN json_extract(fields, '$.promoted_from.source') = ? END")
+    if external_id is None:
+        return list(connection.execute(query, (source,)))
+    return list(connection.execute(query + " AND json_extract(fields, '$.promoted_from.external_id') = ?",
+                                   (source, external_id)))
+
+
 def upsert_item(
     connection: sqlite3.Connection,
     *,
@@ -353,18 +370,16 @@ def upsert_item(
         columns["repo"] = paths.key(columns["repo"])
     found = item_by_external(connection, source, external_id)
     if found is None:
-        # An idea promoted to a writing piece took the piece's identity and
-        # kept its own in `promoted_from`; the piece owns that row now (sd:1994).
-        # Only a piece row counts: an imported note can carry any frontmatter.
-        promoted = connection.execute(
-            "SELECT id FROM item WHERE source = 'writing-piece' AND piece IS NOT NULL "
-            "AND CASE WHEN json_valid(fields) THEN "
-            "json_extract(fields, '$.promoted_from.source') = ? "
-            "AND json_extract(fields, '$.promoted_from.external_id') = ? END",
-            (source, external_id),
-        ).fetchone()
-        if promoted is not None:
-            return int(promoted[0]), "unchanged"
+        # An idea promoted to a writing piece kept its source identity and the
+        # row it was then in `promoted_from`; the piece owns the row now, so a
+        # changed record is reported, not written (sd:1994).
+        promoted = promoted_rows(connection, source, external_id)
+        if promoted:
+            snapshot = json.loads(promoted[0]["fields"])["promoted_from"].get("row") or {}
+            incoming = {"kind": kind, "title": title, "status": status, **columns}
+            same = all(snapshot[key] == (_json(value) if key in ("fields", "body") and not isinstance(
+                value, (str, type(None))) else value) for key, value in incoming.items() if key in snapshot)
+            return int(promoted[0]["id"]), "unchanged" if same else "promoted_changed"
         item = create_item(
             connection,
             kind=kind,
