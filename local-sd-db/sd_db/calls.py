@@ -13,10 +13,10 @@ at the bound, then `claim`, then exactly one HTTP POST, then `settle` with
 the usage the response carries, or `lose` when the response cannot cost the
 call. The bound is the prompt's estimated tokens at the entry's input price
 plus the entry's `max_tokens` at its output price, per million tokens. The
-estimate is four bytes of UTF-8 to a token -- the pack has no estimator of
+estimate is three bytes of UTF-8 to a token -- the pack has no estimator of
 its own to port, so this is the assumption, stated here and in
-`BYTES_PER_TOKEN`; a fixed ratio errs the same way for every call and the
-settlement corrects it from the vendor's own count.
+`BYTES_PER_TOKEN`. It errs high on purpose: the bound is what the call may
+cost, and the settlement corrects it from the vendor's own count.
 
 What is `run` and what is `bound`. A response whose body carries `usage`
 with integer `prompt_tokens` and `completion_tokens` settles the row to
@@ -86,7 +86,10 @@ MAX_RESPONSE_BYTES = 2_000_000
 #: carries no per-entry timeout (measured: `Provider` has no such field).
 DEFAULT_TIMEOUT = 1800
 #: The estimate's ratio. An assumption, not a measurement of any tokenizer.
-BYTES_PER_TOKEN = 4
+#: Three, not four, so the input side errs high: on 2026-10-07 three calls ran
+#: up to 6% more input tokens than four bytes a token predicted (3.77 bytes a
+#: token) and overshot their bounds (sd:1016, sd:1799, sd:1804).
+BYTES_PER_TOKEN = 3
 #: The largest token count a usage field is believed at.
 MAX_TOKENS_FIELD = 10**12
 #: The wire: `(request, timeout) -> (status, body)`, raising `OSError` when

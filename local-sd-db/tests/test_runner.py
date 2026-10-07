@@ -23,7 +23,7 @@ from .test_calls import ENVIRON, PROMPT, REGISTRY, Wire, answer
 CALLED = (REGISTRY.replace("  author:   [kimi, mini, claude]", "  author:   [mini, kimi]")
           .replace("  reviewer: [mini, kimi, bare, plain]", "  reviewer: [kimi, mini, bare, plain]"))
 #: A brief of a million tokens, so the budget line's two-decimal amounts read.
-BRIEF = "x" * 4_000_000
+BRIEF = "x" * 3_000_000
 
 
 class Queue(unittest.TestCase):

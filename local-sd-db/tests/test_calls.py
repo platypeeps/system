@@ -64,7 +64,7 @@ roles:
 
 ENVIRON = {"MOONSHOT_API_KEY": "moon-key", "MINIMAX_API_KEY": "mini-key",
            "BARE_API_KEY": "bare-key", "PLAIN_API_KEY": "plain-key"}
-PROMPT = "x" * 4000  # 1000 tokens at four bytes each
+PROMPT = "x" * 3000  # 1000 tokens at three bytes each
 ME = os.getpid()
 
 
@@ -138,14 +138,22 @@ class CallCase(unittest.TestCase):
 
 
 class TheBound(CallCase):
-    def test_the_estimate_is_four_bytes_a_token_and_the_bound_prices_it_with_max_tokens(self):
+    def test_the_estimate_is_three_bytes_a_token_and_the_bound_prices_it_with_max_tokens(self):
         """`mini`: 1000 prompt tokens at $1/M plus 1000 `max_tokens` at $2/M
         is $0.003. The ratio is the module's stated assumption."""
-        self.assertEqual(BYTES_PER_TOKEN, 4)
+        self.assertEqual(BYTES_PER_TOKEN, 3)
         self.assertEqual(estimate_tokens(PROMPT), 1000)
         self.assertEqual(estimate_tokens("é" * 2), 1)
         self.assertAlmostEqual(bound_for(self.entry("mini"), PROMPT), 0.003)
         self.assertAlmostEqual(bound_for(self.entry("kimi"), PROMPT), (1000 * 3.0 + 16384 * 15.0) / 1e6)
+
+    def test_a_prompt_at_the_observed_ratio_stays_within_its_bound(self):
+        """sd:1016: a kimi call hit `max_tokens` with 35342 input tokens,
+        about 6% over the old four-byte estimate, so 133370 bytes (3.77 a
+        token). Its actual cost must not exceed the bound reserved for it."""
+        prompt = "x" * 133370
+        actual = (35342 * 3.0 + 16384 * 15.0) / 1e6
+        self.assertGreaterEqual(bound_for(self.entry("kimi"), prompt), actual)
 
     @hub_only
     def test_prices_multiply_as_the_decimals_the_registry_wrote(self):
