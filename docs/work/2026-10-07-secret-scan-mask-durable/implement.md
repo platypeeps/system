@@ -31,6 +31,18 @@ Changes found in the build are marked "Changed in the build" in `design.md`.
 
 ## Rollout
 
-The operator runs the first mask by hand (design section 4), then reinstalls the job:
+Ruled 2026-10-07 ~14:25 MDT. After both pull requests merge, on the machine that runs the weekly job:
 
-    sh local-cron-jobs/cron-jobs.sh install secret-scan-weekly
+1. Dry run; the operator reads the per-file counts and the busy list:
+
+       sh local-scan-for-secrets/scan-for-secrets.sh mask --no-prune
+
+2. Apply by hand at a quiet time:
+
+       sh local-scan-for-secrets/scan-for-secrets.sh mask --apply --no-prune
+
+3. Reinstall the job, so launchd runs the new command:
+
+       sh local-cron-jobs/cron-jobs.sh install secret-scan-weekly
+
+Settling hits from the your-keys pass print as `transient:` lines (ruled the same time).
