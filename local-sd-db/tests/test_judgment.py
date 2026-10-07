@@ -134,6 +134,31 @@ roles:
 """
 
 
+class TheLocation(JudgmentCase):
+    """Where a call came from (sd:2950). The one field a bad value does not
+    refuse: it is stored as NULL and the row is written."""
+
+    def test_a_location_is_stored(self):
+        row_id = self.write(location="local-mail-intake/mail_intake.py:triage")
+        self.assertEqual(self.row(row_id)["location"],
+                         "local-mail-intake/mail_intake.py:triage")
+
+    def test_an_omitted_location_is_null(self):
+        self.assertIsNone(self.row(self.write())["location"])
+
+    def test_the_longest_location_is_kept(self):
+        value = "x" * judgment.MAX_LOCATION
+        self.assertEqual(self.row(self.write(location=value))["location"], value)
+
+    def test_a_bad_location_is_null_and_the_row_is_still_written(self):
+        for value in ("x" * (judgment.MAX_LOCATION + 1), "one\ntwo", "tab\there",
+                      "nul\x00", "bell\x07", "del\x7f", "", 42):
+            with self.subTest(value=value):
+                row = self.row(self.write(location=value))
+                self.assertIsNotNone(row)
+                self.assertIsNone(row["location"])
+                self.assertEqual(row["caller"], "local-mail-intake")
+
 class ThePrice(JudgmentCase):
     """A row's cost from the price `providers.yaml` registers for its
     provider (sd:2358). The price is the operator's to enter; with none

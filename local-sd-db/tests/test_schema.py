@@ -982,7 +982,10 @@ class TheSatelliteGateColumn(SchemaCase):
 
     def test_the_reverse_returns_the_file_to_nineteen(self):
         self._at_version_nineteen()
-        migrate(self.path)
+        # Through 20 only: 21 adds a `judgment` column 20's reverse leaves.
+        through = [m for m in schema_module.migrations() if m[0] <= 20]
+        with mock.patch("sd_db.migrate.migrations", return_value=through):
+            migrate(self.path)
         text = dict(schema_module.migrations())[20].read_text(encoding="utf-8")
         raw = sqlite3.connect(self.path, isolation_level=None)
         self.addCleanup(raw.close)
@@ -990,6 +993,67 @@ class TheSatelliteGateColumn(SchemaCase):
         self.assertEqual(schema_version(raw), 19)
         self.assertNotIn("satellite_gate", [row[1] for row in raw.execute("PRAGMA table_info(repo)")])
 
+
+class TheJudgmentLocationColumn(SchemaCase):
+    """Migration 21. `judgment.location`, the call site a row came from
+    (sd:2950).
+
+    Added, not rebuilt, as 20 was: every existing row reads NULL and keeps
+    its other values, and the reverse returns the file to 20.
+    """
+
+    def _at_version_twenty(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                # 20 literally, for the reason `_at_version_nine` gives.
+                if version > 20:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.executemany(
+                "INSERT INTO judgment (timestamp, caller, stage, arm, provider, "
+                "primitive, outcome, answer) VALUES ('t', ?, ?, ?, 'typesafe', 'noul', 'ok', ?)",
+                [("one", "JEV_ONE", "jev", "0.9"), ("two", "JEV_TWO", "baseline", "1")])
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _dump(self):
+        raw = sqlite3.connect(self.path)
+        try:
+            return list(raw.iterdump())
+        finally:
+            raw.close()
+
+    def test_every_existing_row_arrives_at_null_and_keeps_its_values(self):
+        self._at_version_twenty()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied),
+                         (20, list(range(21, SCHEMA_VERSION + 1))))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        self.assertIn(("location", "TEXT", 0, None), [
+            (row[1], row[2], row[3], row[4])
+            for row in connection.execute("PRAGMA table_info(judgment)")])
+        rows = [tuple(row) for row in connection.execute(
+            "SELECT caller, stage, arm, answer, location FROM judgment ORDER BY id")]
+        self.assertEqual(rows, [("one", "JEV_ONE", "jev", "0.9", None),
+                                ("two", "JEV_TWO", "baseline", "1", None)])
+
+    def test_the_reverse_returns_the_file_to_twenty(self):
+        self._at_version_twenty()
+        before = self._dump()
+        migrate(self.path)
+        text = dict(schema_module.migrations())[21].read_text(encoding="utf-8")
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        self.assertEqual(schema_version(raw), 20)
+        self.assertNotIn("location", [row[1] for row in raw.execute("PRAGMA table_info(judgment)")])
+        self.assertEqual(self._dump(), before)
 
 class TheConnection(SchemaCase):
     def test_wal_and_foreign_keys_are_on(self):

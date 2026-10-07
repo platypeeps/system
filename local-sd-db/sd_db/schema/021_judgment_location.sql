@@ -1,0 +1,22 @@
+-- `judgment.location`: where the call came from (sd:2950).
+--
+-- `caller` and `stage` say which program asked and for which decision; they
+-- do not say from where. `location` names the call site, so two callers that
+-- share a stage can be told apart in the ledger. It is free text the caller
+-- sets: `sd_db.judgment.record` stores a value of at most 255 characters with
+-- no control character, and NULL for any other value, so a bad location costs
+-- the row its location and never the row.
+--
+-- The column only, and every existing row reads NULL: no row recorded one.
+--
+-- `ADD COLUMN` for 016's reason: SQLite adds a nullable column in place,
+-- touches no other table and moves no row.
+-- The reverse, run by hand with the runner, the dashboard and the serve agent
+-- stopped:
+--
+--   BEGIN;
+--   ALTER TABLE judgment DROP COLUMN location;
+--   PRAGMA user_version = 20;
+--   COMMIT;
+
+ALTER TABLE judgment ADD COLUMN location TEXT;

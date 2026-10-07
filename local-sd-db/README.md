@@ -65,6 +65,10 @@ backup, and the fixture harness both repositories test against.
                     gate pass. The column only, every row starts at `off`,
                     set with `repo satellite-gate`. Carries its reverse in
                     its header, run before 019's (sd:2704)
+      schema/021_judgment_location.sql  `judgment.location`: the call site
+                    a row came from, free text, NULL on every older row.
+                    The column only. Carries its reverse in its header, run
+                    before 020's (sd:2950)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -483,6 +487,11 @@ they are caller-controlled and a cap alone accepts `--stage
 `model` are exempt on purpose: they carry vendor names such as
 `anthropic/claude-opus-5`, which come from a vendor and not from a subject
 line.
+
+`location` is the call site: where the call came from, beside `caller`, who
+asked. It is free text of at most 255 printable characters, and the one field
+a bad value does not refuse: `record` stores NULL and keeps the row. No shape
+guards it, so a caller names its own code there, never anything it was given.
 
 A gate event is not a decision. A caller that declines at the gate and then
 records what its own mechanism did writes two rows for one decision, so the

@@ -51,6 +51,14 @@ source says the answer should have been, a number like `answer`. A row is
 right when the two are equal. `label` is the one write path for it, and it
 holds the label to the same shapes a row is held to: a number, and a source
 that is an identifier naming the rule that produced it (sd:2107).
+
+**`location` is the call site, and the one field a bad value does not
+refuse.** It says where the call came from, beside `caller`, which says who
+asked. A value over `MAX_LOCATION` characters, or one with a character
+`str.isprintable` rejects, is stored as NULL and the row is kept: a call site
+is a convenience for the reader, not a fact the metering depends on (sd:2950).
+It is the one column no shape guards, so a caller names its own code there,
+never anything it was given.
 """
 
 from __future__ import annotations
@@ -75,6 +83,7 @@ __all__ = [
     "MAX_NAME",
     "NUMBER",
     "MAX_DISTRIBUTION",
+    "MAX_LOCATION",
     "MAX_OPTIONS",
     "MAX_ORDERING",
     "OUTCOMES",
@@ -173,6 +182,9 @@ MAX_OPTIONS = 255
 #: Room for `MAX_OPTIONS` values of up to 15 characters each, plus commas.
 #: Sized from the option count; `MAX_ORDERING` is a different thing's bound.
 MAX_DISTRIBUTION = MAX_OPTIONS * 16
+
+#: The longest call site `record` keeps. A longer one is stored as NULL.
+MAX_LOCATION = 255
 
 
 class JudgmentRefused(SdDbError):
@@ -304,6 +316,16 @@ def _answer(value: object) -> str | None:
     return value
 
 
+def _location(value: object) -> str | None:
+    """The call site, or None for a value the ledger does not keep: not a
+    string, empty, over `MAX_LOCATION`, or carrying a control character.
+    Never refuses; a bad location costs the row its location, not the row."""
+    if not isinstance(value, str) or not value or len(value) > MAX_LOCATION \
+            or not value.isprintable():
+        return None
+    return value
+
+
 def record(
     connection: sqlite3.Connection,
     *,
@@ -329,6 +351,7 @@ def record(
     changed: str = "unknown",
     server_ms: int | None = None,
     probabilities: str | None = None,
+    location: str | None = None,
     now: str | None = None,
 ) -> int:
     """Write one row and return its id.
@@ -367,6 +390,7 @@ def record(
     questions = _count("questions", questions)
     server_ms = _count("server_ms", server_ms)
     probabilities = _probabilities(probabilities)
+    location = _location(location)
     if usd is not None and (type(usd) not in (int, float) or not math.isfinite(usd)
                             or usd < 0):
         raise JudgmentRefused(f"usd must be a finite number of zero or more; got {usd!r}")
@@ -378,13 +402,13 @@ def record(
             "INSERT INTO judgment (timestamp, caller, stage, arm, pair, shadow, "
             "provider, model, primitive, question_id, questions, outcome, cause, "
             "answer, confidence, ordering, tokens_in, tokens_out, duration_ms, "
-            "usd, changed, server_ms, probabilities) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "usd, changed, server_ms, probabilities, location) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (moment, caller, stage, arm, pair, 1 if shadow else 0, provider,
              model, primitive, question_id, questions, outcome, cause, answer,
              confidence, ordering, tokens_in, tokens_out, duration_ms,
              None if usd is None else float(usd), changed, server_ms,
-             probabilities),
+             probabilities, location),
         )
     return int(cursor.lastrowid)
 
