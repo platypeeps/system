@@ -400,7 +400,7 @@ def budget_book(env, change):
                 if time.monotonic() > deadline:
                     raise OSError("another call holds the counter")
                 time.sleep(0.02)
-        today = time.strftime("%Y-%m-%d", time.gmtime())
+        today = utc_day()
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         except FileNotFoundError:
@@ -411,12 +411,13 @@ def budget_book(env, change):
         # Only a well-formed book of another day rolls over. Anything else is
         # refused as it stands, because resetting it could drop spent counts.
         if not (isinstance(book, dict) and isinstance(book.get("day"), str)
-                and isinstance(book.get("stages"), dict)):
+                and isinstance(book.get("stages"), dict)
+                and all(whole_counts(used) for used in book["stages"].values())):
             raise ValueError("the counter file is not a budget book")
         if book["day"] != today:
             book = {"day": today, "stages": {}}
-        absorbed = absorb_charges(folder, book["stages"])
-        result, dirty = change(book["stages"])
+        absorbed = absorb_charges(folder, book["stages"], today)
+        result, dirty = change(book["stages"], today)
         if dirty or absorbed:
             temp = os.path.join(folder, f".budget-{os.urandom(8).hex()}.tmp")
             fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
@@ -441,10 +442,24 @@ def budget_book(env, change):
         os.close(lock)
 
 
-def absorb_charges(folder: str, stages: dict) -> list:
+def utc_day() -> str:
+    """The day a budget counts, `YYYY-MM-DD` in UTC."""
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def whole_counts(used) -> bool:
+    """Whether one stage's entry holds counts only: whole numbers from 0, not
+    `True`, which `int()` and `>=` would read as 1."""
+    return isinstance(used, dict) and all(
+        type(n) is int and n >= 0 for n in used.values())
+
+
+def absorb_charges(folder: str, stages: dict, today: str) -> list:
     """Add the charges `budget_charge` could not write to `stages`, and
-    return their files. A file that does not parse is left uncounted and
-    kept; `budget_charge` publishes each one whole, by rename."""
+    return their files. Only a charge made on `today` counts; an older one
+    is returned uncounted, a later one is kept. A file that does not parse
+    is left uncounted and kept; `budget_charge` publishes each one whole,
+    by rename."""
     found = []
     for name in sorted(os.listdir(folder)):
         if not (name.startswith(PENDING) and name.endswith(".json")):
@@ -453,23 +468,26 @@ def absorb_charges(folder: str, stages: dict) -> list:
         try:
             with open(where, encoding="utf-8") as fh:
                 charge = json.load(fh)
-            stage, tokens = charge["stage"], charge["tokens"]
+            stage, tokens, day = charge["stage"], charge["tokens"], charge["day"]
         except (OSError, ValueError, TypeError, KeyError):
             continue
-        if isinstance(stage, str) and type(tokens) is int and tokens > 0:
+        if not isinstance(day, str) or day > today:
+            continue
+        if day == today and isinstance(stage, str) and type(tokens) is int and tokens > 0:
             used = stages.get(stage) or {}
             stages[stage] = dict(used, tokens=int(used.get("tokens", 0)) + tokens)
         found.append(where)
     return found
 
 
-def budget_spent(stage: str, env, *, reserve: bool) -> tuple:
+def budget_spent(stage: str, env, *, reserve: bool, counted=None) -> tuple:
     """("budget", prose) when the stage may not call today, else ("", "").
 
     With `reserve`, a call that fits is counted before it is sent, so two
     callers racing for the last call cannot both have it. Tokens are known
     only afterwards (`budget_charge`), so a token ceiling stops the call
-    after the one that crossed it.
+    after the one that crossed it. `counted`, a list, gets the UTC day the
+    call was counted on, which is the day its tokens are charged to.
     """
     limits, problem = budget_limits(stage, env)
     if problem:
@@ -477,7 +495,7 @@ def budget_spent(stage: str, env, *, reserve: bool) -> tuple:
     if not limits:
         return "", ""
 
-    def check(stages):
+    def check(stages, today):
         used = stages.get(stage) or {}
         for counter, ceiling in limits.items():
             if int(used.get(counter, 0)) >= ceiling:
@@ -485,6 +503,8 @@ def budget_spent(stage: str, env, *, reserve: bool) -> tuple:
                         f"({int(used.get(counter, 0))} of {ceiling})"), False
         if not reserve:
             return "", False
+        if counted is not None:
+            counted.append(today)
         stages[stage] = dict(used, calls=int(used.get("calls", 0)) + 1)
         return "", True
     try:
@@ -495,12 +515,18 @@ def budget_spent(stage: str, env, *, reserve: bool) -> tuple:
     return ("budget", reason) if reason else ("", "")
 
 
-def budget_charge(stage: str, env, tokens: int) -> None:
-    """Add a finished call's tokens to the stage's counter. Never raises."""
+def budget_charge(stage: str, env, tokens: int, day: str) -> None:
+    """Add a finished call's tokens to the stage's counter for `day`, the
+    UTC day the call was counted on. Never raises.
+
+    A call that crosses midnight charges nothing to the new day: the day it
+    belongs to is gone, and the new day did not admit it."""
     if not tokens or not budget_limits(stage, env)[0]:
         return
 
-    def add(stages):
+    def add(stages, today):
+        if day != today:
+            return None, False
         used = stages.get(stage) or {}
         stages[stage] = dict(used, tokens=int(used.get("tokens", 0)) + tokens)
         return None, True
@@ -519,7 +545,7 @@ def budget_charge(stage: str, env, tokens: int) -> None:
             fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                          os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"stage": stage, "tokens": tokens}, fh)
+                json.dump({"stage": stage, "tokens": tokens, "day": day}, fh)
             os.rename(temp, os.path.join(folder, f"{PENDING}{name}.json"))
         except Exception:
             pass
@@ -2035,8 +2061,9 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     sink = io.StringIO() if shadowed else out
     word, reason = why_unusable(conf, env)
     stage = whose(args, env, "stage")
+    counted = []
     if not reason:
-        word, reason = budget_spent(stage, env, reserve=True)
+        word, reason = budget_spent(stage, env, reserve=True, counted=counted)
     if switched and not reason:
         sys.stderr.write("jev: shadow on; Jev is asked and recorded, and its "
                          "answer is not used\n")
@@ -2058,7 +2085,7 @@ def main(argv=None, out=None, env=None, **kw) -> int:
                 code = EXIT_ERROR
         spent = _EVENT or {}
         budget_charge(stage, env, (spent.get("tokens_in") or 0) +
-                      (spent.get("tokens_out") or 0))
+                      (spent.get("tokens_out") or 0), counted[0] if counted else "")
     if shadow is not None:
         # The caller's own answer, always, and exit 0. A stage in shadow mode
         # changes no behaviour, and that has to hold on the run where the call

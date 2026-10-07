@@ -206,6 +206,10 @@ old path runs, and the ledger counts the decline under that cause.
   limit you set is never lifted silently.
 - A token charge that cannot take the lock is left beside the counter as a
   `pending-*.json` file; the next call that holds the lock adds it.
+- Tokens count toward the UTC day their call was counted on. A call that
+  crosses midnight charges nothing to the new day.
+- Every counter in the book must be a whole number from 0; a book holding
+  anything else declines, like a book that does not parse.
 - The counter is one file, `~/.local/state/jev/budget.json`
   (`XDG_STATE_HOME`, or `JEV_BUDGET_DIR`), locked through `budget.json.lock`
   beside it. It holds the current UTC day only, and each write replaces it

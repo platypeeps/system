@@ -1097,7 +1097,7 @@ class TestBudget(StubServer):
         env = self.env(**{self.STAGE + "_MAX_TOKENS": "5"})
         real = jev.budget_book
         with mock.patch.object(jev, "budget_book", side_effect=OSError("locked")):
-            jev.budget_charge(self.STAGE, env, 100)
+            jev.budget_charge(self.STAGE, env, 100, jev.utc_day())
         self.assertEqual(real, jev.budget_book)
         self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True)[0], "budget")
 
@@ -1116,3 +1116,19 @@ class TestBudget(StubServer):
         with mock.patch.object(jev.json, "dump", side_effect=OSError("disk full")):
             self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True)[0], "budget")
         self.assertEqual(path.read_text(), before)
+
+    def test_a_charge_applies_only_to_the_day_it_was_made(self):
+        env = self.env(**{self.STAGE + "_MAX_TOKENS": "5"})
+        (self.budget / "pending-old.json").write_text(json.dumps(
+            {"stage": self.STAGE, "tokens": 100, "day": "2000-01-01"}))
+        jev.budget_charge(self.STAGE, env, 100, "2000-01-01")
+        self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True), ("", ""))
+
+    def test_a_counter_that_is_not_a_whole_number_refuses_the_book(self):
+        today = __import__("time").strftime("%Y-%m-%d", __import__("time").gmtime())
+        for bad in (-100, [], 1.5, True, "3"):
+            with self.subTest(bad=bad):
+                (self.budget / "budget.json").write_text(json.dumps(
+                    {"day": today, "stages": {self.STAGE: {"calls": bad}}}))
+                env = self.env(**{self.STAGE + "_MAX_CALLS": "1"})
+                self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True)[0], "budget")
