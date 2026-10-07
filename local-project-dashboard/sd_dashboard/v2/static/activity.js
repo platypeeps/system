@@ -340,6 +340,8 @@ addEventListener('DOMContentLoaded', () => {
   // build: "Open item" goes to the item on Tasks, by the shell's section map (no page names another page's address).
   const openItem = item => { const to = window.shell.pages?.Tasks; if (!to) return 'Tasks is not built yet'; location.href = `${to}?row=${item}`; return `sd:${item} opens in Tasks`; };
   const open = u => { window.open(u, '_blank', 'noopener'); return 'Opens in a new tab'; };
+  const openSchedule = job => { const to = window.shell.pages?.Management; if (!to) return 'Management is not built yet';
+    location.href = `${to}?view=schedules&q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}`; return `${job} opens in Management > Schedules`; };
   const requeue = o => window.shell.post(`/api/runner/${o.n}/requeue`, { revision: ev(o).revision }).then(out => reread().then(() => out));
   C.register(
     { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
@@ -364,8 +366,9 @@ addEventListener('DOMContentLoaded', () => {
         : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
       run: o => landing(window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => reread()), () => `Retry started · ${o.job}`) },
-    // build: Management is not built, so the log is a line to copy.
-    { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => `Copy the line to read the log of ${o.job}` },
+    // build (sd:2392): Show log opens the job's row on Management > Schedules, as ruled; Management has no log reader, so its
+    // Details show the exit and the schedule, and the line to copy still reads the log. The filter puts the row on page one.
+    { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => openSchedule(o.job) },
     // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
     { id: 'command.output', on: 'command', label: 'Show output', key: 'o', risk: 'safe', primary: () => true,
       when: o => ev(o).source === 'runner' ? 'a runner record keeps its log in the retained clone, not in the execution log directory'

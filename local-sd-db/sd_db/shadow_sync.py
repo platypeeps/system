@@ -42,10 +42,13 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from .database import transaction
+from .database import refuse_hub_only, transaction
+from .errors import SdDbError
 from .writes import record_state, resolve_state, upsert_shadow
 
 TRACKER = "github"
@@ -576,7 +579,51 @@ class Synced:
         return lines
 
 
-def sync(
+class SyncBusy(SdDbError):
+    """Another `sync` holds this database's shadow-sync lock."""
+
+
+@contextmanager
+def sync_lock(connection: sqlite3.Connection):
+    """Hold this database's shadow-sync lock, or raise `SyncBusy` at once.
+
+    Every `sync` runs inside it, so the nightly job, a terminal and the
+    dashboard never collect at once (sd:2207 review): `store` writes rows
+    before the cursor recheck, and an older run finishing second would leave
+    its older observations over a newer run's. The lock is an flock on a file
+    beside the database, so it is the hub's alone; a satellite refuses with
+    `HubOnly`, as the control gate does. An in-memory database has no file
+    another process could reach, and takes no lock.
+    """
+    from .runner import RunnerRefused
+    from .runner_journal import lock
+
+    refuse_hub_only(connection, "shadow sync")
+    filename = next((row[2] for row in connection.execute("PRAGMA database_list") if row[1] == "main"), "")
+    if not filename:
+        yield
+        return
+    path = Path(filename).resolve().parent / "operation-locks" / "shadow-sync.lock"
+    entered = False
+    try:
+        with lock(path, blocking=False, noun="shadow sync"):
+            entered = True
+            yield
+    except RunnerRefused as error:
+        if entered:
+            raise
+        if not isinstance(error.__cause__, BlockingIOError):
+            raise SdDbError(str(error)) from error
+        raise SyncBusy("another shadow sync is already running against this database; wait for it to finish") from error
+
+
+def sync(connection: sqlite3.Connection, **options) -> Synced:
+    """`_sync` under `sync_lock`: one collect at a time per database, whoever calls it."""
+    with sync_lock(connection):
+        return _sync(connection, **options)
+
+
+def _sync(
     connection: sqlite3.Connection,
     *,
     now: datetime | None = None,

@@ -347,14 +347,50 @@ const gone = C.get('github:""" + EXTERNAL + """'); R.gone = [gone.type, gone.lab
 
     def test_the_copy_only_commands_post_nothing(self):
         out = self.run_page("""const ext = C.get('github:""" + EXTERNAL + """');
-R.exec = ['contribution.nudge', 'contribution.open', 'collector.sync'].map(id => cmd(id).executes);
-R.cli = [cmd('contribution.nudge').cli(ext), cmd('contribution.open').cli(ext), cmd('collector.sync').cli(C.get('collector'))];
-shellRun(cmd('contribution.nudge'), ext); shellRun(cmd('contribution.open'), ext); shellRun(cmd('collector.sync'), C.get('collector')); await flush();""")
-        self.assertEqual(out["R"]["exec"], [False, False, False])
-        self.assertEqual(out["R"]["cli"], [f"gh pr comment {EXTERNAL} --body-file nudge.md", f"gh pr view --web {EXTERNAL}", "sd shadow sync"])
+R.exec = ['contribution.nudge', 'contribution.open'].map(id => cmd(id).executes);
+R.cli = [cmd('contribution.nudge').cli(ext), cmd('contribution.open').cli(ext)];
+shellRun(cmd('contribution.nudge'), ext); shellRun(cmd('contribution.open'), ext); await flush();""")
+        self.assertEqual(out["R"]["exec"], [False, False])
+        self.assertEqual(out["R"]["cli"], [f"gh pr comment {EXTERNAL} --body-file nudge.md", f"gh pr view --web {EXTERNAL}"])
         self.assertEqual((out["posts"], out["confirms"]), ([], []))
         # Review 2 of PR #72 (8af737dffde4): the shell calls run for a copy-only command too, and run opened a tab.
         self.assertEqual(out["opened"], [])
+
+    def sync_answer(self, finished):
+        """The page's document, a started sync, and its state: running on the first read, then `finished`."""
+        return ("""(() => { let n = 0; return (path, body) => path === '/api/contributions/page' ? [200, DOC]
+          : path === '/api/shadow/sync' ? [202, { running: true }] : path === '/api/shadow/state' ? (n++ ? [200, %s] : [200, { running: true }])
+          : [404, { error: 'no answer' }]; })()""" % json.dumps(finished))
+
+    def test_rerun_collector_starts_the_servers_sync_and_reads_the_page_again_when_it_ends(self):
+        # sd:2207: the route runs sd shadow sync in a server thread; the page asks until it ends, then reads again. A quiet
+        # success says nothing more, and an unconfigured Jira is not a problem.
+        done = {"running": False, "error": None, "trackers": [
+            {"tracker": "github", "ok": True, "configured": True, "reason": "", "lines": ["shadow sync: 3 row(s)"]},
+            {"tracker": "jira", "ok": False, "configured": False, "reason": "JIRA_URL is not set", "lines": []}]}
+        out = self.run_page("""R.exec = cmd('collector.sync').executes; R.cli = cmd('collector.sync').cli(C.get('collector'));
+shellRun(cmd('collector.sync'), C.get('collector')); await flush();""", answer=self.sync_answer(done))
+        self.assertIn(out["R"].get("exec"), (None, True))
+        self.assertEqual(out["R"]["cli"], "sd shadow sync --max-seconds 120")
+        self.assertEqual(out["posts"], [["/api/shadow/sync", {}, 64]])
+        self.assertEqual(out["gets"], ["/api/contributions/page", "/api/shadow/state", "/api/shadow/state", "/api/contributions/page"])
+        self.assertEqual([t[0] for t in out["toasts"]], ["Shadow sync started · the page reads again when it ends"])
+
+    def test_a_sync_that_ends_with_a_failed_tracker_or_a_broken_run_says_why(self):
+        failed = {"running": False, "error": None, "trackers": [
+            {"tracker": "github", "ok": False, "configured": True, "reason": "gh: not logged in", "lines": []}]}
+        out = self.run_page("shellRun(cmd('collector.sync'), C.get('collector')); await flush();", answer=self.sync_answer(failed))
+        self.assertEqual(out["toasts"][-1][0], "Shadow sync ended with a problem: github: gh: not logged in")
+        broken = {"running": False, "error": "OperationalError: database is locked", "trackers": []}
+        out = self.run_page("shellRun(cmd('collector.sync'), C.get('collector')); await flush();", answer=self.sync_answer(broken))
+        self.assertEqual(out["toasts"][-1][0], "Shadow sync ended with a problem: OperationalError: database is locked")
+
+    def test_a_refused_start_names_the_live_run(self):
+        answer = """(path, body) => path === '/api/contributions/page' ? [200, DOC]
+          : [409, { error: 'A shadow sync started at 2026-10-06T15:00:00Z is still running. Wait for it to finish.' }]"""
+        out = self.run_page("shellRun(cmd('collector.sync'), C.get('collector')); await flush();", answer=answer)
+        self.assertIn("is still running", out["toasts"][-1][0])
+        self.assertNotIn("/api/shadow/state", out["gets"])
 
     def test_off_commands_name_their_reason(self):
         out = self.run_page("""const w = (id, key) => cmd(id).when(C.get(key));
@@ -442,7 +478,7 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         # Review 4 of PR #72 (0435ca1e4fbb): the help and the page note still said a followup through /api/items.
         page = (V2 / "contributions.html").read_text(encoding="utf-8")
         routes = re.findall(r"post\('(/api/[^']+)'", PAGE_JS)
-        self.assertEqual(routes, ["/api/contributions/acknowledge", "/api/contributions/task"])
+        self.assertEqual(routes, ["/api/contributions/acknowledge", "/api/contributions/task", "/api/shadow/sync"])
         for route in routes:
             self.assertIn(f"POST {route}", page)
         self.assertNotIn("/api/items", page)
@@ -498,7 +534,8 @@ class TheSharedReader(Script):
         self.assertIn("window.shell.read(", PAGE_JS)
         self.assertNotIn("++generation", PAGE_JS)
         self.assertNotRegex(PAGE_JS, r"function retire\(")
-        self.assertNotIn("getJSON", PAGE_JS)
+        # The one other GET is the sync's state (sd:2207), which is not the page's document.
+        self.assertEqual(re.findall(r"getJSON\(([^)]*)\)", PAGE_JS), ["'/api/shadow/state'"])
 
     def test_a_refused_write_whose_read_fails_clears_the_rows_and_their_commands(self):
         answer = """(() => { let n = 0; return path => path === '/api/contributions/page' ? (n++ ? [500, { error: 'gone' }] : [200, DOC])
@@ -555,7 +592,7 @@ shellRun(cmd('contribution.ack'), C.get('{ONE}')); await flush(); R.on = where()
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "contributions", "Contributions", "/contributions", ("/api/contributions/page", "/api/contributions/task")
+    page, section, route, api = "contributions", "Contributions", "/contributions", ("/api/contributions/page", "/api/contributions/task", "/api/shadow/sync", "/api/shadow/state")
 
 
 if __name__ == "__main__":
