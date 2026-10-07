@@ -208,9 +208,19 @@ touched, and a caller that only works from an interactive shell is a caller
 that quietly stops running at 06:45. `DRIVE_INTAKE_JEV` overrides the path,
 which is how the test suite injects a fake and stays offline.
 
-One call is made per unmatched path, so a first run against a large tree is a
-lot of calls. That is the reason to reach for `JEV_DRIVE_INTAKE=0` on one, and
-the reason a declined probe says so once per run rather than once per path.
+Unmatched paths are asked in batches of up to eight, one `jev ask` per batch
+(sd:1160); a batch of one is the `choice` above. Eight is the most the Haiku
+comparison arm takes. The state is the batch's paths under the keys `p1`,
+`p2`, ..., and nothing else; the questions file names the keys and the routes.
+A batch answer is used whole or not at all. One that misses a path, answers a
+key nobody asked, or names something outside the criteria routes every path in
+that batch to noise and says so, so no answer is ever read against the wrong
+path. A failed batch leaves the other batches alone: each path's route depends
+only on its own answer.
+
+A first run against a large tree is still a lot of calls. That is the reason to
+reach for `JEV_DRIVE_INTAKE=0` on one, and the reason a declined probe says so
+once per run rather than once per path.
 
 ## Config
 

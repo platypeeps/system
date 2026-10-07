@@ -69,6 +69,12 @@ an interrupted run may not have finished and carries the same retry; an
 unloaded job never runs until it is loaded again; an unknown one is a job
 launchd could not describe. None is a failure on its own record, so none
 outranks a failed job.
+
+**A failed job says why it looks failed** (sd:1166, sd:2095). Its detail
+ends with `job_failures.classify`'s label, from launchd's record and the last
+run's log, and the row carries it as `triage`. The label is advisory: the
+rank, the order and the retry are what they were. Jev is asked the same
+question in shadow and its answer is recorded, never shown (`job_failures`).
 """
 
 from __future__ import annotations
@@ -81,6 +87,7 @@ from sd_db import operations, progress
 from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
+from . import job_failures
 from .markup import join, tag
 from .operations_screen import _signal_name
 
@@ -251,7 +258,9 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
     guess, and still gets its row. The retry line is in the detail, where
     the page shows it, and in `retry`, for a script that acts on it. Only a
     failed or interrupted job has one: Operations refuses retry for the rest.
-    `state` is the job's own, for a page that words the rows by it.
+    `state` is the job's own, for a page that words the rows by it. A
+    failed job also carries `triage`, `job_failures.classify`'s label, at the
+    end of its detail; it changes neither the rank nor the retry.
     """
     out = []
     for job in jobs:
@@ -261,15 +270,18 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
         name, code, killed = job["name"], job.get("last_exit"), job.get("last_signal")
         service = job.get("service")
         row = {"rank": FAILED if state == "failed" else ATTENTION, "kind": "job", "state": state, "source": "jobs"}
+        log = None if cron_root is None else cron_root / "logs" / f"{name}.log"
         if state in ("failed", "interrupted"):
-            logged = _log_time(None if cron_root is None else cron_root / "logs" / f"{name}.log")
+            logged = _log_time(log)
             retry = f"launchctl kickstart {service}" if service else "retry from Operations Jobs"
             row.update(detail=f"{logged} · retry: {retry}", retry=retry)
         if state == "failed":
             # launchd can report `last exit code = 0` beside a terminating signal;
             # the signal is the cause, so it names the row.
             outcome = _signal_name(killed) if killed is not None else f"exit {code}" if code is not None else "no exit code"
-            row.update(id=f"job:{name}:{f'signal{killed}' if killed is not None else code}", what=f"{name} failed with {outcome}")
+            triage = job_failures.classify(job, log)
+            row.update(id=f"job:{name}:{f'signal{killed}' if killed is not None else code}", what=f"{name} failed with {outcome}",
+                       job=name, triage=triage, detail=f"{row['detail']} · triage: {triage['class']}, {triage['why']}")
         elif state == "interrupted":
             stop = _signal_name(killed) if killed is not None else "a stop with no signal recorded"
             row.update(id=f"job:{name}:interrupted{killed if killed is not None else ''}",
@@ -339,7 +351,7 @@ def _jobs(connection, backend) -> list[dict]:
                     Path(root) if isinstance(root, (str, Path)) else None)
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None) -> dict:
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, jev=None) -> dict:
     """The merged, ranked, banded rows, and what each source said if it said nothing.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, and the seam
@@ -348,6 +360,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None)
     on its own so one collector's failure is one row and the others still
     answer. `sources` carries the empty string for a source that was read
     and the reason for one that was not, the same text its row shows.
+    `jev` is the command `job_failures.shadow` asks about failed jobs, in
+    the background and without changing a row; None, the default, asks nothing.
     """
     read = fleet or fleet_module.collect
     rows: list[dict] = []
@@ -365,6 +379,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None)
             continue
         sources[source] = ""
         rows.extend(found)
+    job_failures.shadow(rows, jev)
     return {"now": now, "sources": sources,
             "rows": [{**row, "band": band(row["rank"])} for row in merge(rows)]}
 

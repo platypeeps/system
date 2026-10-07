@@ -67,6 +67,9 @@ def runner_status(body, code=0, err=""):
 SCHEDULE = {"last_completed_at": "2026-09-06T03:00:00+00:00", "next_due_at": "2026-09-07T03:00:00+00:00", "due": False,
             "cadence_seconds": 86400}
 REFRESHED = runner_status({"ok": True, "interval_seconds": 10, "archive_refresh_schedule": SCHEDULE})
+#: `sd config get sd.assistant_merge` stand-in: exit code, stdout, stderr (sd:1629).
+GRANTED = lambda: (0, "controlled\n", "")  # noqa: E731
+UNSET = (1, "", "sd: sd.assistant_merge is not set (controlled: merge ...). Run:\n    sd config set sd.assistant_merge <value>\n")
 
 
 def stamp(backend, name, text):
@@ -101,14 +104,14 @@ class TheDocument(ScreenCase):
         self.ids = seed(self)
         self.jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
 
-    def document(self, read=fleet, runner=REFRESHED):
+    def document(self, read=fleet, runner=REFRESHED, grant=GRANTED):
         return management_screen.document(self.connection, now=NOW, fleet=read, jobs=self.jobs, services=NoServices(),
-                                          runner=runner)
+                                          runner=runner, grant=grant)
 
     def test_every_source_is_read_and_says_so(self):
         doc = self.document()
         self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "services", "jobs",
-                                                          "archive")})
+                                                          "archive", "grant")})
         self.assertEqual(doc["read"], NOW)
 
     def test_a_job_carries_its_last_run_from_the_wrappers_stamp(self):
@@ -247,6 +250,166 @@ class TheDocument(ScreenCase):
         rows = {row["path"]: row for row in self.document()["repos"]}
         self.assertEqual((rows[self.ids["checkout"]]["runner_merge"], rows[self.ids["checkout"]]["managed"]), ("auto", "yes"))
 
+    def test_a_repo_carries_its_required_checks_and_its_runtime_pins(self):
+        """sd:1629: the overview's columns. Required checks are the protection reading's; runtimes are the checkout's pins."""
+        checkout = Path(self.ids["checkout"])
+        (checkout / ".python-version").write_text("3.14\n")
+        (checkout / "package.json").write_text('{"engines": {"node": ">=22"}}')
+        body = {"gaps": [], "detail": {"required_contexts": ["ci", "sd/local-gate"], "strict": True}}
+        self.connection.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
+                                "VALUES (?, '2026-10-04T01:00:00Z', 'protected', 'main', ?)", (str(checkout), json.dumps(body)))
+        self.connection.commit()
+        rows = {row["path"]: row for row in self.document()["repos"]}
+        row = rows[str(checkout)]
+        self.assertEqual((row["protection"]["required"], row["protection"]["strict"]), (["ci", "sd/local-gate"], True))
+        self.assertEqual(row["runtimes"], {"python": {"value": "3.14", "source": ".python-version"},
+                                           "node": {"value": ">=22", "source": "package.json engines.node"}})
+        # A checkout not on disk has no runtime reading, and no protection observation has no required list.
+        self.assertIsNone(rows["/repos/system"]["runtimes"])
+        self.assertIsNone(rows["/repos/system"]["protection"]["required"])
+
+    def test_a_runtime_pin_comes_from_the_first_file_that_names_one(self):
+        cases = (
+            ({".python-version": "3.12\n", ".tool-versions": "python 3.13.1\n"}, {"value": "3.12", "source": ".python-version"}, None),
+            ({".tool-versions": "nodejs 22.1.0\npython 3.13.1\n", "pyproject.toml": '[project]\nrequires-python = ">=3.11"\n'},
+             {"value": "3.13.1", "source": ".tool-versions"}, {"value": "22.1.0", "source": ".tool-versions"}),
+            ({"pyproject.toml": '[project]\nrequires-python = ">=3.13"\n', ".nvmrc": "v20\n"},
+             {"value": ">=3.13", "source": "pyproject.toml requires-python"}, {"value": "v20", "source": ".nvmrc"}),
+            ({".node-version": "\n", "README.md": "python 3.9"}, None, None),
+            ({"package.json": "{not json", "pyproject.toml": "[project"},
+             {"error": "pyproject.toml is not valid TOML"}, {"error": "package.json is not valid JSON"}),
+        )
+        for number, (files, python, node) in enumerate(cases):
+            with self.subTest(files=sorted(files)):
+                root = Path(self.tmp.name) / f"pins-{number}"
+                root.mkdir()
+                for name, text in files.items():
+                    (root / name).write_text(text)
+                self.assertEqual(management_screen._runtimes(str(root)), {"python": python, "node": node})
+
+    def test_a_pin_that_is_not_a_regular_file_is_refused_without_blocking(self):
+        """sd:2911: a FIFO, or a link to one, is refused before any read; reading one would hang /api/management."""
+        import os
+        import threading
+
+        root = Path(self.tmp.name) / "fifo-pins"
+        root.mkdir()
+        os.mkfifo(root / ".python-version")
+        os.symlink(root / ".python-version", root / ".nvmrc")
+        got = {}
+        reader = threading.Thread(target=lambda: got.update(management_screen._runtimes(str(root))), daemon=True)
+        reader.start()
+        reader.join(5)
+        self.assertFalse(reader.is_alive(), "reading a FIFO pin blocked the document")
+        self.assertEqual(got, {"python": {"error": ".python-version is not a regular file"},
+                               "node": {"error": ".nvmrc is not a regular file"}})
+
+    def test_a_pin_file_past_the_limit_is_refused_after_a_bounded_read(self):
+        root = Path(self.tmp.name) / "big-pins"
+        root.mkdir()
+        (root / "pyproject.toml").write_text("#" * (management_screen.PIN_BYTES + 10))
+        reads = []
+        real = management_screen.os.read
+
+        def counted(fd, n):
+            reads.append(n)
+            return real(fd, n)
+
+        with patch.object(management_screen.os, "read", counted):
+            got = management_screen._runtimes(str(root))
+        self.assertEqual(got["python"], {"error": "pyproject.toml is larger than a pin file"})
+        self.assertLessEqual(sum(reads), 2 * (management_screen.PIN_BYTES + 1))
+
+    def test_a_deeply_nested_manifest_is_that_repos_error_not_the_documents(self):
+        """sd:2911: tomllib raises RecursionError on deep nesting, which no FAILURES entry caught; the whole document failed."""
+        checkout = Path(self.ids["checkout"])
+        depth = 15000
+        self.assertLess(depth * 2 + 20, management_screen.PIN_BYTES)
+        (checkout / "pyproject.toml").write_text("[project]\nx = " + "[" * depth + "]" * depth + "\n")
+        doc = self.document()
+        self.assertEqual(doc["sources"]["repos"], "")
+        rows = {row["path"]: row for row in doc["repos"]}
+        self.assertEqual(rows[str(checkout)]["runtimes"]["python"], {"error": "pyproject.toml nests too deeply to read"})
+
+    def test_a_json_parser_that_recurses_too_deep_is_a_reason_too(self):
+        """The C JSON scanner takes the nesting these sizes allow; a pure-Python one raises RecursionError (sd:2911)."""
+        checkout = Path(self.ids["checkout"])
+        (checkout / "package.json").write_text("{}")
+        real = json.loads
+
+        def deep(text, *args, **kwargs):
+            # The two checkout files only: package.json is "{}", and _review hands json.loads bytes.
+            if text == "{}" or isinstance(text, bytes):
+                raise RecursionError("maximum recursion depth exceeded")
+            return real(text, *args, **kwargs)
+
+        with patch.object(management_screen.json, "loads", deep):
+            doc = self.document()
+        self.assertEqual(doc["sources"]["repos"], "")
+        row = {row["path"]: row for row in doc["repos"]}[str(checkout)]
+        self.assertEqual(row["runtimes"]["node"], {"error": "package.json nests too deeply to read"})
+        self.assertEqual(row["review"]["error"], "nests too deeply to read")
+
+    def test_a_setting_of_the_wrong_type_is_that_repos_error_not_a_value(self):
+        """sd:1629 round 2: one checkout's `{"toString": null}` reached the page, and String() of it stopped every view."""
+        checkout = Path(self.ids["checkout"])
+        (checkout / ".github" / "sd-review.json").write_text(
+            '{"severity_floor": 7, "copilot_review": {"automatic_deep": {"toString": null}}}')
+        body = {"gaps": [], "detail": {"required_contexts": ["ci", {"toString": None}], "strict": True}}
+        self.connection.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
+                                "VALUES (?, '2026-10-04T01:00:00Z', 'protected', 'main', ?)", (str(checkout), json.dumps(body)))
+        self.connection.commit()
+        doc = self.document()
+        self.assertEqual(doc["sources"]["repos"], "")
+        row = {row["path"]: row for row in doc["repos"]}[str(checkout)]
+        review, guarded = row["review"], row["protection"]
+        self.assertEqual((review["severity_floor"], review["automatic_deep"]), (None, None))
+        self.assertEqual(review["error"], "severity_floor is not a string; copilot_review.automatic_deep is not true or false")
+        self.assertEqual((guarded["required"], guarded["required_error"]), (None, "a required check is not a name"))
+
+    def test_the_machine_merge_grant_is_what_sd_config_answers(self):
+        """sd:1629: sd.assistant_merge is machine-wide, so the document carries it once; unset is a reading, not a failure."""
+        self.assertEqual(self.document()["grant"], {"assistant_merge": "controlled"})
+        doc = self.document(grant=lambda: UNSET)
+        self.assertEqual((doc["grant"], doc["sources"]["grant"]), ({"assistant_merge": None}, ""))
+        for answer, reason in (((2, "", "sd: invalid sd.assistant_merge policy\n"),
+                                "sd config get sd.assistant_merge exited 2: sd: invalid sd.assistant_merge policy"),
+                               ((0, "sometimes\n", ""), "sd config get sd.assistant_merge printed sometimes, not controlled or ask")):
+            with self.subTest(reason=reason):
+                doc = self.document(grant=lambda answer=answer: answer)
+                self.assertIsNone(doc["grant"])
+                self.assertEqual(doc["sources"]["grant"], reason)
+                self.assertEqual(doc["sources"]["repos"], "")
+
+    def test_assistant_merge_runs_sd_config_get_within_its_ceiling(self):
+        calls = []
+
+        def ran(argv, **options):
+            calls.append((argv, options.get("timeout")))
+            return subprocess.CompletedProcess(argv, 0, "ask\n", "")
+
+        with patch.object(management_screen.subprocess, "run", ran):
+            self.assertEqual(management_screen.assistant_merge(), (0, "ask\n", ""))
+        self.assertEqual(calls, [(["sd", "config", "get", "sd.assistant_merge"], management_screen.SD_SECONDS)])
+
+        def missing(argv, **options):
+            raise FileNotFoundError(argv[0])
+
+        with patch.object(management_screen.subprocess, "run", missing):
+            doc = self.document(grant=management_screen.assistant_merge)
+        self.assertEqual(doc["sources"]["grant"], "sd is not on the dashboard's PATH, so the machine merge grant was not read")
+
+    def test_a_satellite_refuses_the_repo_verb_and_writes_nothing(self):
+        """sd:1629: the repo settings change on the hub; a satellite's dashboard refuses before it reads or writes the row."""
+        from sd_db.remote import HubOnly
+
+        with patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
+            with self.assertRaises(HubOnly) as refused:
+                management_screen.set_repo(self.connection, "runner-merge", self.ids["checkout"], "auto", "manual")
+        self.assertIn("repo runner-merge runs on the sd hub only", str(refused.exception))
+        rows = {row["path"]: row for row in self.document()["repos"]}
+        self.assertEqual(rows[self.ids["checkout"]]["runner_merge"], "manual")
+
     def test_the_stale_check_and_the_write_hold_one_write_transaction(self):
         """Copilot on PR #50: two requests could read the same old value, and the late one overwrote.
 
@@ -289,6 +452,9 @@ class ThePage(BrowserSession):
         runner = patch.object(management_screen, "runner_status", REFRESHED)
         runner.start()
         self.addCleanup(runner.stop)
+        grant = patch.object(management_screen, "assistant_merge", GRANTED)
+        grant.start()
+        self.addCleanup(grant.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.backend = JobsBackend(self.tmp.name, jobs=[("quiet", "idle", 0, None)])
@@ -326,6 +492,16 @@ class ThePage(BrowserSession):
         self.assertEqual(self.post("/api/repos/managed", {"path": self.ids["checkout"], "value": "yes", "before": "yes"})[0], 400)
         self.assertEqual(self.post("/api/repos/mode", {"path": self.ids["checkout"], "value": "x", "before": "y"})[0], 404)
 
+    def test_the_repo_write_is_refused_on_a_satellite(self):
+        """sd:1629: the POST passes the session and CSRF checks, then the verb refuses: a 400 naming the hub, no change."""
+        body = {"path": self.ids["checkout"], "value": "yes", "before": "no"}
+        with patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
+            status, _, got = self.post("/api/repos/managed", body)
+        self.assertEqual(status, 400)
+        self.assertIn("runs on the sd hub only", got["error"])
+        status, _, got = self.post("/api/repos/managed", body)
+        self.assertEqual((status, got["value"], got["before"]), (200, "yes", "no"))
+
 
 # The Management stand-in adds what the page reads beyond Tasks': a <main> to listen on, CSS.escape, and the shell's
 # row and context calls.
@@ -358,7 +534,7 @@ class PageScript(ScreenCase):
         jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
         stamp(jobs, "nightly-sync", "started=2026-09-06T02:15:00Z\nended=2026-09-06T02:16:30Z\nexit=7\n")
         self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices(),
-                                              runner=REFRESHED)
+                                              runner=REFRESHED, grant=GRANTED)
 
     def run_page(self, body, answer="null", doc=None, search="", extra=""):
         script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA + READ_SHELL + extra
@@ -458,6 +634,56 @@ class TheScript(PageScript):
         self.assertEqual(chips("b"), ["q"])
         self.assertEqual(out["qs"][-2], "view=repos&q=busy")
         self.assertEqual((chips("c"), out["qs"][-1], out["R"]["box"]), ([], "view=repos", ""))
+
+    def settings_doc(self):
+        """The document with the seeded checkout managed, protected with two required checks, and pinned to Python 3.14."""
+        doc = json.loads(json.dumps(self.doc))
+        row = next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])
+        row["managed"] = "yes"
+        row["protection"] = dict(row["protection"], status="protected", required=["ci", "sd/local-gate"], strict=True)
+        row["runtimes"] = {"python": {"value": "3.14", "source": ".python-version"}, "node": None}
+        return doc
+
+    def test_the_settings_columns_condense_each_managed_repo_to_one_row(self):
+        """sd:1629: ?cols=settings swaps the git columns for the settings; floor and Copilot are read, never edited, here."""
+        out = self.run_page("R.repos = ELS['view-repos'].html;", doc=self.settings_doc(), search="?view=repos&cols=settings&managed=yes")
+        repos = out["R"]["repos"]
+        self.assertEqual(re.findall(r'<tr data-id="repo:([^"]+)"', repos), [self.ids["checkout"]])
+        cells = dict(re.findall(r'data-k="(\w+)">(.*?)</td>', repos))
+        self.assertEqual(set(cells), {"managed", "merge", "floor", "copilot", "checks", "python", "node"})
+        self.assertEqual((cells["managed"], cells["merge"], cells["floor"], cells["copilot"]), ("yes", "manual", "high", "false"))
+        self.assertEqual(re.findall(r"<code>([^<]+)</code>", cells["checks"]), ["ci", "sd/local-gate"])
+        self.assertIn("3.14", cells["python"])
+        self.assertIn("not pinned", cells["node"])
+        self.assertIn("machine merge grant <b>controlled</b>", repos)
+        self.assertIn("change through a pull request", repos)
+        self.assertNotIn("data-set=", repos)
+        self.assertNotIn("<select", repos)
+
+    def test_the_column_set_is_a_control_kept_in_the_url(self):
+        click = ("ELS['view-repos'].listeners.click[0]({ target: { closest: s => s === '[data-cols]' ? { dataset: { cols: '%s' } } : null } });"
+                 " R.%s = ELS['view-repos'].html;")
+        out = self.run_page(click % ("settings", "a") + click % ("git", "b"), doc=self.settings_doc())
+        self.assertIn('data-k="floor"', out["R"]["a"])
+        self.assertIn('data-cols="settings" aria-pressed="true"', out["R"]["a"])
+        self.assertIn('data-k="branch"', out["R"]["b"])
+        self.assertNotIn('data-k="floor"', out["R"]["b"])
+        self.assertEqual(out["qs"][-2:], ["view=repos&cols=settings", "view=repos"])
+
+    def test_a_grant_or_a_reading_that_failed_is_unknown_with_its_reason(self):
+        doc = self.settings_doc()
+        doc["grant"] = None
+        doc["sources"]["grant"] = "sd is not on the dashboard's PATH"
+        row = next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])
+        row["protection"] = dict(row["protection"], status="unknown", reason="not yet observed", required=None)
+        row["runtimes"] = {"python": {"error": "pyproject.toml is not valid TOML"}, "node": None}
+        out = self.run_page("R.repos = ELS['view-repos'].html;", doc=doc, search="?view=repos&cols=settings&managed=yes")
+        repos = out["R"]["repos"]
+        self.assertIn("machine merge grant not read: sd is not on the dashboard&#39;s PATH", repos)
+        cells = dict(re.findall(r'data-k="(\w+)">(.*?)</td>', repos))
+        self.assertIn("▨", cells["checks"])
+        self.assertIn("not yet observed", cells["checks"])
+        self.assertIn("pyproject.toml is not valid TOML", cells["python"])
 
     def test_a_source_that_failed_renders_unknown_with_its_reason(self):
         doc = dict(self.doc, git=None, sessions=None, sources=dict(self.doc["sources"], git="stopped at its budget", sessions="stopped at its budget"))

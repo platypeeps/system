@@ -85,6 +85,15 @@ an equality test would have gone on reporting success. After a reconcile the
 updated conf sits in `<config>/repo-sync/`; the email is the record of what
 changed.
 
+After the hygiene mail, `nightly` asks local-jev, in shadow, whether each
+listed line holds live, abandoned or superseded work (sd:2094). Jev's
+answers go to its ledger and corpus beside the report's own order; the
+report is mailed first and unchanged. The request holds fixed words, counts
+and the tip's age in days only: no repository, branch, sha or path. Stage
+`JEV_REPO_SYNC_HYGIENE`; set it to `0` to switch this off. Unset means on,
+and `jev off`, no key or a spent budget skip it too. The suite stubs
+`local-jev` and never reaches it.
+
 ## Profiles
 
 The work and personal machines carry different repo lists, so the list lives in

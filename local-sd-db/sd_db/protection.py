@@ -123,6 +123,7 @@ from typing import Any
 from urllib.parse import quote
 
 from . import paths as sdpaths
+from . import workflow_yaml
 from .database import transaction
 
 GAP_IDS = (
@@ -291,7 +292,8 @@ def _fleet_size(connection: sqlite3.Connection, *, managed: bool = False) -> int
 # construct it cannot resolve rather than a silent wrong answer. PyYAML is not
 # stdlib and this package has no dependencies; `yaml_lite` parses the provider
 # registry's two-level shape and refuses block sequences, which every workflow
-# file has.
+# file has. The aggregate check alone reads the file as structure, through
+# `workflow_yaml` (sd:1820), because it credits a gate; names stay line reads.
 
 _KEY_RE = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_.\-]*):\s*(?P<value>.*?)\s*$")
 _ITEM_RE = re.compile(r"^(?P<indent>\s*)-\s*(?P<rest>.*?)\s*$")
@@ -506,96 +508,101 @@ def _needs(body: list[str]) -> list[str]:
 #: skips on the failure it names (review round 3), and a condition this
 #: cannot evaluate is not taken as proof.
 _RUNS_AFTER_FAILURE = frozenset({"!cancelled()", "always()"})
-#: A line that is a condition, a job's or a step's.
-_CONDITION_LINE = re.compile(r"^\s*(?:-\s*)?if:")
-#: A job or step that lets a failure pass; its value, unless `false`.
-_TOLERATES = re.compile(r"^\s*(?:-\s*)?continue-on-error:\s*(.*)$")
+#: The keys the aggregate job and its one step may carry. Any other key --
+#: `env` or `defaults` on the job, `shell`, `uses` or `if` on the step --
+#: can change what runs or whether it runs, so it is refused, not read.
+_AGGREGATE_JOB_KEYS = frozenset({"name", "needs", "if", "runs-on", "timeout-minutes", "steps", "continue-on-error"})
+_AGGREGATE_STEP_KEYS = frozenset({"name", "env", "run", "continue-on-error", "timeout-minutes"})
 #: The aggregate step `design.md` ("The `ci` job") prescribes, the only
 #: one this reader credits (review round 6): the results of every need,
 #: then a loop that fails on the first that is not `success`. Lines are
 #: compared with runs of whitespace collapsed; the echo text may vary.
-_AGGREGATE_ENV = re.compile(r"""^\s*(?:-\s*)?RESULTS:\s*\$\{\{\s*join\(\s*needs\.\*\.result\s*,\s*'\s'\s*\)\s*\}\}$""")
+_AGGREGATE_ENV = re.compile(r"""^\$\{\{\s*join\(\s*needs\.\*\.result\s*,\s*'\s'\s*\)\s*\}\}$""")
 _AGGREGATE_LOOP = (
     re.compile(r"^for result in \$RESULTS; do$"),
     re.compile(r"""^\[ "\$result" = success \] \|\| \{ echo "[^"`$\\;]*(?:\$result)?"; exit 1; \}$"""),
     re.compile(r"^done$"),
 )
-_ASSIGNS_RESULTS = re.compile(r"\bRESULTS\s*[:=]")
-_RUN_BLOCK = re.compile(r"^\s*(?:-\s*)?run:\s*\|\s*$")
-#: The only line shapes the aggregate job may hold outside its loop: a
-#: template key in plain form, or an item of a block `needs:` list. A line
-#: match cannot follow YAML's other spellings of a key -- quoted
-#: (`"continue-on-error": true`, the extra review pass), explicit (`? k`),
-#: a flow mapping, a merge key -- so they are not read, they are refused.
-_TEMPLATE_LINE = re.compile(
-    r"^\s*(?:-\s+)?(?:(?:name|needs|if|runs-on|timeout-minutes|steps|env|run|continue-on-error|RESULTS):(?:\s.*)?"
-    r"|[A-Za-z0-9_.-]+)$")
-#: `${{ }}` spans, whose text GitHub evaluates and YAML does not read.
-_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
-#: YAML syntax that can add or alias a key once expressions are removed:
-#: flow mappings, anchors, aliases, tags.
-_YAML_SYNTAX = re.compile(r"[{}&*!]")
-#: The workflow keys that leave the aggregate as written, plain or quoted
-#: (`"on":` is common), and a document start. Any other top-level line --
-#: `defaults:` in any spelling (quoted, the extra pass on dd81109), an
-#: explicit or merge key -- can change what every step runs, so it is
-#: refused, not read.
-_WORKFLOW_LINE = re.compile(
-    r"""^(?:---|(?P<q>["']?)(?:name|run-name|on|permissions|concurrency|env|jobs)(?P=q):(?:\s.*)?)$""")
-#: Keys that change what a step runs or which steps run.
-_STEP_KEYS = re.compile(r"^\s*(?:-\s*)?(run|uses|shell):")
+#: The workflow keys that leave the aggregate as written. Any other key --
+#: `defaults:` above all -- can change what every step runs (review round 6).
+_WORKFLOW_KEYS = frozenset({"name", "run-name", "on", "permissions", "concurrency", "env", "jobs"})
 
 
-def _condition(value: str | None) -> str:
-    """A job's `if:` without quotes, `${{ }}` and whitespace."""
-    text = _scalar(value or "")
+def _workflow(text: str) -> tuple[dict[str, Any] | None, str]:
+    """The workflow file read structurally, or None and the reason it was not.
+
+    The aggregate check reads keys and values, not line shapes: YAML spells
+    one key many ways (quoted, flow, explicit, merged), and a line match
+    missed one per review round (sd:1820). `workflow_yaml` refuses what it
+    cannot read, and a refused file credits no aggregate."""
+    try:
+        document = workflow_yaml.load(text)
+    except workflow_yaml.Refused as error:
+        return None, str(error)
+    if not isinstance(document, dict):
+        return None, "the top level is not a mapping"
+    unknown = sorted(key for key in document if key not in _WORKFLOW_KEYS)
+    if unknown:
+        return None, f"top-level {', '.join(unknown)} is not a key the aggregate survives"
+    return document, ""
+
+
+def _condition(value: str) -> str:
+    """A job's `if:` without `${{ }}` and whitespace."""
+    text = value.strip()
     if text.startswith("${{") and text.endswith("}}"):
         text = text[3:-2]
     return "".join(text.split())
 
 
-def _gated_needs(body: list[str], needs: list[str]) -> list[str]:
-    """The jobs among `needs` whose failure this job makes its own.
+def _gated_needs(job: Any) -> list[str]:
+    """The jobs among the job's `needs` whose failure it makes its own.
 
     `needs` alone does not: a failed need skips the job, and GitHub counts a
     skipped required check as passing (sd:1741 review). Textual signs of a
     result check -- a result read, an `exit` -- did not hold either: `echo
     "${{ needs.x.result }}; exit 1"` shows both and passes (review rounds
     1 to 6). So only the design's aggregate is credited, and then for every
-    need: the whole job `if:` is `!cancelled()` or `always()`, no other
-    `if:` and no `continue-on-error` other than `false` in the job, one
-    step that is a `run: |` block, no `uses:` or `shell:`, the
-    `RESULTS` join of `needs.*.result` in its own `env:` (round 7), every
-    other line a template key in plain form (the extra pass), and the block is exactly the loop
-    `_AGGREGATE_LOOP` matches. Any other aggregate reads as not gating,
-    which reports a gap that is not there rather than hide one that is. A
-    workflow-level `defaults:` is refused by the caller.
+    need: the whole job `if:` is `!cancelled()` or `always()`; no key
+    outside `_AGGREGATE_JOB_KEYS` and `_AGGREGATE_STEP_KEYS`; no
+    `continue-on-error` other than `false`; one step, whose `env` is only
+    the `RESULTS` join of `needs.*.result` (round 7) and whose `run` is
+    exactly the loop `_AGGREGATE_LOOP` matches. `job` is the structural
+    read (`_workflow`), so every spelling of a key is the key. Any other
+    aggregate reads as not gating, which reports a gap that is not there
+    rather than hide one that is.
     """
-    if _condition(_field(body, "if")) not in _RUNS_AFTER_FAILURE:
+    if not isinstance(job, dict) or not set(job) <= _AGGREGATE_JOB_KEYS:
         return []
-    loop = {child for start, line in enumerate(body) if _RUN_BLOCK.match(line)
-            for child in range(start + 1, start + 1 + len(_children(body, start)))}
-    for index, line in enumerate(body):
-        if index in loop:
-            continue
-        if not _TEMPLATE_LINE.match(line) or _YAML_SYNTAX.search(_EXPRESSION.sub("", line)):
+    needs = job.get("needs")
+    needs = [needs] if isinstance(needs, str) else needs
+    if not isinstance(needs, list) or not all(isinstance(need, str) and need for need in needs):
+        return []
+    condition = job.get("if")
+    if not isinstance(condition, str) or _condition(condition) not in _RUNS_AFTER_FAILURE:
+        return []
+    steps = job.get("steps")
+    if not isinstance(steps, list) or len(steps) != 1 or not isinstance(steps[0], dict):
+        return []
+    step = steps[0]
+    if not set(step) <= _AGGREGATE_STEP_KEYS:
+        return []
+    for part in (job, step):
+        tolerates = part.get("continue-on-error", "false")
+        if not isinstance(tolerates, str) or tolerates.lower() != "false":
             return []
-    if sum(1 for line in body if _CONDITION_LINE.match(line)) != 1:
+    # The step's own `env` wins over the job's and the workflow's, so its
+    # RESULTS is the one the loop reads (review round 7).
+    env = step.get("env")
+    if not isinstance(env, dict) or set(env) != {"RESULTS"}:
         return []
-    if any((match := _TOLERATES.match(line)) and _scalar(match.group(1)).lower() != "false" for line in body):
+    if not isinstance(env["RESULTS"], str) or not _AGGREGATE_ENV.match(env["RESULTS"]):
         return []
-    keys = [index for index, line in enumerate(body) if _STEP_KEYS.match(line)]
-    if len(keys) != 1 or not _RUN_BLOCK.match(body[keys[0]]):
+    run = step.get("run")
+    if not isinstance(run, str):
         return []
-    # One assignment of RESULTS in the job, the join, in the step's own
-    # `env:` (deeper than its `run:`), so no job-level value or override
-    # replaces it (review round 7). A step's env wins over a workflow's.
-    assigns = [line for line in body if _ASSIGNS_RESULTS.search(line)]
-    if len(assigns) != 1 or not _AGGREGATE_ENV.match(assigns[0]):
-        return []
-    if _indent(assigns[0]) <= _indent(body[keys[0]]):
-        return []
-    block = [" ".join(line.split()) for line in _children(body, keys[0])]
+    lines = (" ".join(line.split()) for line in run.split("\n"))
+    block = [line for line in lines if line and not line.startswith("#")]
     if len(block) != len(_AGGREGATE_LOOP):
         return []
     if not all(pattern.match(line) for pattern, line in zip(_AGGREGATE_LOOP, block)):
@@ -704,7 +711,8 @@ def produced_contexts(root: Path | str, *, ci: str | None = None) -> tuple[set[s
     producers: dict[str, list[set[str]]] = {}
     for path in paths:
         try:
-            lines = _significant(path.read_text(encoding="utf-8", errors="replace"))
+            text = path.read_text(encoding="utf-8", errors="replace")
+            lines = _significant(text)
         except OSError as error:
             notes.append(f"{path.name}: unreadable ({error})")
             complete = False
@@ -719,17 +727,22 @@ def produced_contexts(root: Path | str, *, ci: str | None = None) -> tuple[set[s
             complete = _job_names(path.name, job_id, body, names[job_id], notes) and complete
             produced |= names[job_id]
         gating: dict[str, list[str]] = {}
-        # A workflow-level `defaults:` can change every step's shell, which
-        # the aggregate template does not survive (review round 6). Only
-        # plain known keys pass, so no other spelling of it gets through.
-        # The top level is the smallest indent, not column 0: YAML reads a
-        # workflow indented as a whole the same (re-review of 923fdcf).
-        base = min((_indent(line) for line in lines), default=0)
-        defaults = any(_indent(line) == base and not _WORKFLOW_LINE.match(line[base:])
-                       for line in lines)
+        structure, refused = _workflow(text)
+        read = structure.get("jobs") if structure else None
+        if refused and any(_needs(body) for _, body in jobs):
+            notes.append(f"{path.name}: not read as structure ({refused}), so no job in it gates its needs")
         for job_id, body in jobs:
             needs = _needs(body)
-            gating[job_id] = [] if defaults else _gated_needs(body, needs)
+            job = read.get(job_id) if isinstance(read, dict) else None
+            gating[job_id] = _gated_needs(job)
+            # The names the aggregate covers for are line reads; credit it
+            # only when they are the name its structure reports, or a quoted
+            # or folded `name:` would lend its coverage to `ci` (sd:1820 r1).
+            reported = job.get("name", job_id) if isinstance(job, dict) else None
+            if gating[job_id] and names[job_id] != {reported}:
+                notes.append(f"{path.name}: job {job_id} reports {reported!r}, which the name read "
+                             f"did not derive, so it is not counted as gating its needs")
+                gating[job_id] = []
             ungated = [need for need in needs if need not in gating[job_id]]
             if ungated:
                 notes.append(

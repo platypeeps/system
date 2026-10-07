@@ -3,11 +3,13 @@
 import contextlib
 import re
 import signal
+from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from sd_db import operations, reads, registry, usage
 from sd_db.errors import SdDbError
 
+from . import job_failures
 from .charts import age_histogram_svg
 from .controls import field, form, select
 from .listing import Column, Listing
@@ -265,7 +267,7 @@ def _schedule(schedule):
     return "; ".join(descriptions) + " · Mac local time"
 
 
-def _job(job):
+def _job(job, cron_root=None):
     request = job["last_request"]
     previous = (tag("div", tag("strong", "Last request: "),
         f"{request['action']} · {request['status']}",
@@ -276,10 +278,18 @@ def _job(job):
             # A last run that ended in a signal has no exit code; launchd records the
             # signal instead. .get(): the served sd_db may predate the field (sd:1344).
             f" · Last signal {_signal_name(job['last_signal'])}" if job.get("last_signal") is not None else ""),
-        tag("p", _schedule(job["schedule"]), class_="hint"), previous,
+        _triage(job, cron_root), tag("p", _schedule(job["schedule"]), class_="hint"), previous,
         tag("div", _action("jobs", job["name"], "retry", job["capabilities"]["retry"], job["revision"], "Retry job"),
             _action("jobs", job["name"], "cancel", job["capabilities"]["cancel"], job["revision"], "Stop job"),
             class_="operation-actions"), class_="operation-card")
+
+
+def _triage(job, cron_root):
+    """A failed job's rule-based class (sd:1166): a label only, and nothing acts on it."""
+    if job["state"] != "failed":
+        return ""
+    found = job_failures.classify(job, None if cron_root is None else cron_root / "logs" / f"{job['name']}.log")
+    return tag("p", f"Triage: {found['class']}, {found['why']}. Advisory only; nothing retries it.", class_="hint")
 
 
 def _assignment(assignment, connection):
@@ -297,6 +307,9 @@ def _assignment(assignment, connection):
 def _jobs(connection, backend):
     from .runner_screen import jobs_panel
 
+    backend = backend or operations.LaunchdBackend()
+    root = getattr(backend, "cron_root", None)
+    cron_root = Path(root) if isinstance(root, (str, Path)) else None
     current = operations.inventory(connection, backend=backend)
     jobs = current["jobs"]
     needs_attention = [job for job in jobs if job["state"] in ("failed", "interrupted", "unknown", "unloaded")]
@@ -310,7 +323,7 @@ def _jobs(connection, backend):
         tag("p", "Job state is observed from this Mac. An accepted request is not proof that a job finished.", class_="hint"),
         tag("p", tag("a", "Refresh observations", href="/operations?area=jobs")),
         tag("section", tag("h2", "Jobs needing attention"),
-            tag("div", join(_job(job) for job in needs_attention), class_="operations-grid")
+            tag("div", join(_job(job, cron_root) for job in needs_attention), class_="operations-grid")
             if needs_attention else tag("p", "No installed jobs need attention.")),
         tag("section", tag("h2", "Running jobs"),
             tag("div", join(_job(job) for job in running), class_="operations-grid")

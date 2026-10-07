@@ -803,6 +803,13 @@ class LaunchEnvironment(unittest.TestCase):
         self.assertEqual(environment["SYSTEM_TOOLS_CONFIG"], "/config/system")
         self.assertEqual(environment["CRON_JOBS_EXTRA_DIRS"], "/more/jobs")
 
+    def test_the_job_triage_stage_switch_passes_through(self):
+        # Only the installing shell or <config>/project-dashboard/.env can switch
+        # the failed-job Jev shadow off for the server (sd:2095).
+        with patch.dict(os.environ, {"JEV_JOB_TRIAGE": "off"}, clear=False):
+            environment = runtime._launch_environment()
+        self.assertEqual(environment["JEV_JOB_TRIAGE"], "off")
+
 
 class QuickNoteEnvironment(unittest.TestCase):
     """sd:2549: Notes runs `sd store`, so the LaunchAgent gets sd's directory and OBSIDIAN_VAULT from the installing shell."""

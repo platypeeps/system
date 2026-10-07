@@ -428,6 +428,8 @@ class Dashboard(BaseHTTPRequestHandler):
     runner_backend = None
     #: `now_screen.document`'s fleet seam, `area -> document`; None runs the child.
     fleet_backend = None
+    #: `now_screen.document`'s Jev command for the failed-job shadow; None asks nothing.
+    jev_command = None
     frontdoor: auth.FrontDoor | None = None
     frontdoor_check = None
     direct_listener = False
@@ -585,7 +587,7 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Now does not accept query parameters."})
                     return self._json(200, now_screen.document(connection, now=self.clock(), fleet=self.fleet_backend,
-                                                           jobs=self.operations_backend))
+                                                           jobs=self.operations_backend, jev=self.jev_command))
                 if path == "/api/usage":
                     from .usage_screen import document
 
@@ -788,7 +790,9 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._json(400, {"error": str(problem)})
         except (FileNotFoundError, sqlite3.Error) as problem:
             return self._json(503, {"error": str(problem)})
-        self._json(201 if path.path == "/api/items" else 200, result)
+        # A write that answers its own status (sd:2207: 202 started, 409 refused) returns `(status, document)`, as a read can.
+        status, result = result if isinstance(result, tuple) else (201 if path.path == "/api/items" else 200, result)
+        self._json(status, result)
 
     def _document(self, tail: str) -> None:
         """One generated report, handed over whole.
@@ -934,7 +938,7 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
           host: str = "127.0.0.1", operations_backend=None,
           frontdoor: auth.FrontDoor | None = None, frontdoor_check=None,
           services_backend=None, ports_backend=None, runner_backend=None,
-          peer_lookup=None, fleet_backend=None) -> ThreadingHTTPServer:
+          peer_lookup=None, fleet_backend=None, jev=None) -> ThreadingHTTPServer:
     """Build the loopback server and optional, separately authenticated IP socket."""
     if host != "127.0.0.1":
         raise ValueError("The dashboard binds 127.0.0.1 only.")
@@ -952,6 +956,7 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         "ports_backend": ports_backend,
         "runner_backend": staticmethod(runner_backend) if runner_backend else None,
         "fleet_backend": staticmethod(fleet_backend) if fleet_backend else None,
+        "jev_command": list(jev) if jev else None,
         "frontdoor": frontdoor,
         "frontdoor_check": staticmethod(frontdoor_check) if frontdoor_check else None,
         "peer_lookup": staticmethod(peer_lookup) if peer_lookup else None,
@@ -995,6 +1000,8 @@ def main(argv: list[str] | None = None) -> int:
             return runtime.load_frontdoor(arguments.config, arguments.port) == frontdoor
 
         options = {"frontdoor": frontdoor, "frontdoor_check": private_frontdoor_unchanged}
+    # Only the served dashboard asks Jev; every test build passes no command.
+    options["jev"] = runtime.jev_command()
     server = build(arguments.database, port=arguments.port, **options)
     host, port = server.server_address[:2]
     print(f"sd-dashboard on http://{host}:{port}", flush=True)
