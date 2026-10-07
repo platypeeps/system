@@ -46,6 +46,7 @@ Every path that writes, replaces, resolves or deletes a claim or episode row:
 | `alert` | old episode resolved, new one open | insert fails after the resolve | one transaction; the old episode stays | `test_a_failed_watermark_replacement_keeps_the_old_episode` |
 | `retention.compact_heartbeats` | resolved claim rows deleted | the open row carries an older timestamp (satellite clock behind) and is deleted | an open row ranks first, whatever its timestamp | `test_the_prune_keeps_an_open_claim_written_by_a_clock_behind` |
 | `open_claims` read | none | a row `claim` did not write stops every check | the row is skipped | `test_one_malformed_claim_does_not_stop_the_others` |
+| `assess`, episode check | none | a failed fetch exposes older progress, which reads as a new episode | progress at or before the watermark instant is the same episode | `test_a_dropped_signal_does_not_alert_again_on_older_progress` |
 
 A replacement resets `since` and `host`, and sets `quiet_until` only when given: a new claim is the satellite acting, so it counts as progress.
 

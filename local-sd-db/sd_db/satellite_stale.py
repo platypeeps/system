@@ -201,8 +201,20 @@ def assess(connection: sqlite3.Connection, *, at: datetime, hours: float,
         else:
             state = "fresh"
         verdicts.append(Verdict(held, item["title"], item["status"], item["repo"], branch, state, progress,
-                                source, age, _alerted_on(connection, held.item) == progress))
+                                source, age, _covered(_alerted_on(connection, held.item), progress)))
     return verdicts
+
+
+def _covered(watermark: str | None, progress: str | None) -> bool:
+    """True when an alert went out for `progress` or later. A failed fetch can
+    drop the newest signal and expose older progress; that is the same
+    episode, not a new one."""
+    if watermark is None or progress is None:
+        return False
+    try:
+        return _instant(progress) <= _instant(watermark)
+    except (TypeError, ValueError):
+        return False
 
 
 def describe(verdict: Verdict) -> Alert:

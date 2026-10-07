@@ -265,6 +265,19 @@ class TheEpisode(Database):
         satellite_stale.alert(self.connection, self.assess(4), send=sent.append)
         self.assertEqual(len(sent), 1)
 
+    def test_a_dropped_signal_does_not_alert_again_on_older_progress(self):
+        item = self.item()
+        satellite_stale.claim(self.connection, item, host="laptop", branch="sd-1-x", at=at(0))
+        sent = []
+
+        def pushed(_repo, _branch):
+            return at(4)
+
+        satellite_stale.alert(self.connection, self.assess(8, branch_time=pushed), send=sent.append)
+        satellite_stale.alert(self.connection, self.assess(9), send=sent.append)
+        satellite_stale.alert(self.connection, self.assess(10, branch_time=pushed), send=sent.append)
+        self.assertEqual(len(sent), 1, "a failed fetch exposed older progress and alerted again")
+
     def test_a_failed_watermark_replacement_keeps_the_old_episode(self):
         item = self.item()
         satellite_stale.claim(self.connection, item, host="laptop", at=at(0))
