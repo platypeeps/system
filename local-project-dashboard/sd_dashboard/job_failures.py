@@ -16,7 +16,7 @@ the same four levels and passes the rule's answer as `--shadow`, so `jev`
 prints the rule's answer back whatever it judged, and records both as one
 pair in the judgment ledger. What Jev sees is the job name, its state, the
 outcome and the rule's class and reason: no log line leaves the machine.
-The call runs in a background thread, once per failure id per server, so a
+The call runs in a background thread, once per failed run per server, so a
 page load never waits on it. `jev enabled JEV_JOB_TRIAGE --record` gates it:
 switched off, unkeyed or absent, nothing is asked and the page is the same.
 """
@@ -108,7 +108,7 @@ def classify(job: dict, log: Path | None) -> dict:
     return {"score": score, "class": LEVELS[score], "why": why}
 
 
-_asked: set[str] = set()
+_asked: set[tuple] = set()
 _lock = threading.Lock()
 
 
@@ -144,8 +144,10 @@ def shadow(rows: list[dict], jev: list[str] | None) -> threading.Thread | None:
     if not jev:
         return None
     with _lock:
-        fresh = [row for row in rows if "triage" in row and row["id"] not in _asked]
-        _asked.update(row["id"] for row in fresh)
+        # Keyed on the run, not the row id: the id names the outcome, and a
+        # later run that fails the same way is a new question (sd:2904).
+        fresh = [row for row in rows if "triage" in row and (row["id"], row.get("run")) not in _asked]
+        _asked.update((row["id"], row.get("run")) for row in fresh)
     if not fresh:
         return None
     worker = threading.Thread(target=_ask, args=(jev, fresh), daemon=True)

@@ -165,6 +165,16 @@ class Shadow(ScreenCase):
         self.assertEqual(threads, [None])
         self.assertEqual(len(self.calls_made()), 2)
 
+    def test_a_later_run_with_the_same_outcome_is_asked_again(self):
+        """The memo keys on the run, not on the outcome (sd:2904)."""
+        self.document([str(self.stub)])
+        seen = self.jobs.inspect
+        # launchd's run counter moved; the exit code, and so the row id, did not.
+        with patch.object(self.jobs, "inspect", lambda name: {**seen(name), "runs": 2,
+                                                             "_observation": name + "run 2"}):
+            self.document([str(self.stub)])
+        self.assertEqual([call.split()[0] for call in self.calls_made()], ["enabled", "score"] * 2)
+
     def test_no_command_asks_nothing(self):
         _, threads = self.document(None)
         self.assertEqual(threads, [None])
