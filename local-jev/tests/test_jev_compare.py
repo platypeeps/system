@@ -203,6 +203,16 @@ class TheKevArm(CompareCase):
         self.assertEqual(kev["outcome"], "ok")
         self.assertIsNotNone(kev["duration_ms"])
 
+    def test_the_kev_row_carries_the_jev_row_s_call_context(self):
+        """sd:2952: filtering the ledger by a run keeps its comparison rows."""
+        self.run_main(["noul", "is it?", "--gate", "0.8", "--stage", "JEV_NOTIFY"],
+                      JEV_RUN="sd-review-20261007T2000-ab12")
+        rows = self.by_arm(self.wait_rows(2))
+        for key in ("location", "run_id", "threshold", "prompt_hash"):
+            self.assertEqual(rows["kev"][key], rows["jev"][key], key)
+        self.assertEqual(rows["kev"]["run_id"], "sd-review-20261007T2000-ab12")
+        self.assertIsInstance(rows["kev"]["load_avg"], float)
+
     def test_under_the_shadow_switch_the_kev_row_joins_the_pair(self):
         """sd:2761: the arm, the judgment and the caller's own answer are one pair."""
         code, out = self.run_main(["score", "how urgent?", "--levels", "a,b,c",
