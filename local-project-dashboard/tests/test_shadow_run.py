@@ -1,7 +1,7 @@
 """`sd shadow sync` from the dashboard (sd:2207, ruling #8765).
 
 What this promises: POST /api/shadow/sync starts one run in a server thread and answers 202 at once; the run calls
-`sd_db.sync_shadow` once per tracker in `sd_db.TRACKERS` with `max_seconds=120`; a second start while one is live is
+`sd_db.sync_shadow` once per tracker in `sd_db.TRACKERS` inside one 120-second deadline; a second start while one is live is
 refused with 409; GET /api/shadow/state says how the run went. `sync_shadow` is stubbed throughout: nothing reaches gh or
 the network. Whether gh is authenticated under the LaunchAgent is a live check these tests do not make.
 """
@@ -31,12 +31,14 @@ def synced(ok=True, reason="", configured=True):
 class Stub:
     """`sync_shadow` stand-in: records each call, and waits on `gate` when one is set."""
 
-    def __init__(self, answers=None, gate=None, raises=None):
-        self.calls, self.answers, self.gate, self.raises = [], answers or {}, gate, raises
+    def __init__(self, answers=None, gate=None, raises=None, spend=None):
+        self.calls, self.answers, self.gate, self.raises, self.spend = [], answers or {}, gate, raises, spend
 
-    def __call__(self, connection, *, tracker, max_seconds):
+    def __call__(self, connection, *, tracker, max_seconds, runner=None):
         self.calls.append((threading.current_thread().name, tracker, max_seconds,
-                           connection.execute("PRAGMA database_list").fetchone()[2]))
+                           connection.execute("PRAGMA database_list").fetchone()[2], runner))
+        if self.spend:
+            self.spend(tracker)
         if self.gate is not None:
             self.gate.wait(5)
         if self.raises:
@@ -56,8 +58,9 @@ class TheRun(ScreenCase):
         run, stub = shadow_run.Run(), Stub(answers={"jira": synced(ok=False, reason="JIRA_URL is not set", configured=False)})
         status, answer = self.start(run, stub)
         self.assertEqual((status, answer["running"], answer["max_seconds"]), (202, True, 120))
-        self.assertEqual([call[:3] for call in stub.calls],
-                         [("sd-shadow-sync", tracker, 120) for tracker in sd_db.TRACKERS])
+        self.assertEqual([call[:2] for call in stub.calls], [("sd-shadow-sync", tracker) for tracker in sd_db.TRACKERS])
+        self.assertTrue(all(100 < call[2] <= 120 for call in stub.calls), [call[2] for call in stub.calls])
+        self.assertEqual([callable(call[4]) for call in stub.calls], [tracker == "jira" for tracker in sd_db.TRACKERS])
         self.assertTrue(all(Path(call[3]).samefile(self.path) for call in stub.calls), "the run opened another database")
         state = run.status()
         self.assertFalse(state["running"])
@@ -66,6 +69,34 @@ class TheRun(ScreenCase):
         self.assertEqual([(t["tracker"], t["ok"], t["configured"]) for t in state["trackers"]],
                          [("github", True, True), ("jira", False, False)])
         self.assertEqual(state["trackers"][1]["reason"], "JIRA_URL is not set")
+
+    def test_the_run_has_one_deadline_and_jira_gets_what_github_left(self):
+        # Review round 1: 120 s per tracker let a run hold the slot for minutes. GitHub here spends 100 of the 120 s.
+        clock = [1000.0]
+
+        def spend(tracker):
+            if tracker == "github":
+                clock[0] += 100
+
+        stub = Stub(spend=spend)
+        with patch.object(shadow_run.time, "monotonic", lambda: clock[0]):
+            self.start(shadow_run.Run(), stub)
+        self.assertEqual([call[2] for call in stub.calls], [120, 20])
+        transport = stub.calls[1][4]
+        with patch("sd_db.shadow_jira._http", lambda *a: ({"ok": 1}, "")) as _:
+            with patch.object(shadow_run.time, "monotonic", lambda: 1119.0):
+                self.assertEqual(transport("https://jira.example.test/x", {}, None), ({"ok": 1}, ""))
+            with patch.object(shadow_run.time, "monotonic", lambda: 1120.0):
+                self.assertEqual(transport("https://jira.example.test/x", {}, None),
+                                 (None, "the dashboard's 120-second sync budget ran out"))
+
+    def test_a_start_answers_running_even_when_the_run_ends_at_once(self):
+        # Review round 1: the answer was read after the thread started, so a fast run answered its start "finished".
+        run = shadow_run.Run()
+        with patch.object(sd_db, "sync_shadow", Stub()), patch.object(shadow_run.threading.Thread, "start", lambda t: t.run()):
+            status, answer = run.start(self.connection)
+        self.assertEqual((status, answer["running"], answer["finished"]), (202, True, None))
+        self.assertFalse(run.status()["running"])
 
     def test_a_start_while_a_run_is_live_is_refused_and_the_next_one_after_it_runs(self):
         run, gate = shadow_run.Run(), threading.Event()
@@ -114,7 +145,7 @@ class TheRoute(BrowserSession):
         status, _, body = self.request("/api/shadow/state", headers={"Cookie": self.cookie})
         state = json.loads(body)
         self.assertEqual((status, state["running"], [t["tracker"] for t in state["trackers"]]), (200, False, list(sd_db.TRACKERS)))
-        self.assertEqual([call[2] for call in stub.calls], [120] * len(sd_db.TRACKERS))
+        self.assertTrue(all(100 < call[2] <= 120 for call in stub.calls), [call[2] for call in stub.calls])
 
     def test_a_start_with_arguments_is_refused_before_anything_runs(self):
         stub = Stub()

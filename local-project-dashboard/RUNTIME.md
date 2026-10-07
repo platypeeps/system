@@ -179,7 +179,8 @@ complete proposal passes the author/reviewer guard. Resources reuse bounded
 read-only collectors; research configuration is parsed as data, never executed.
 The obsolete Obsidian Skill Proposals action is replaced by the Skills workflow.
 Contributions' Re-run collector runs `sd_db.sync_shadow` for each tracker in a server thread (sd:2207, `shadow_run`).
-A run has 120 seconds, and a second start is refused while one is live.
+A run has one 120-second deadline; a Jira request in flight may take 30 seconds more.
+A second start is refused while a run is live.
 The run calls `gh` with the LaunchAgent's environment; gh's keychain login under launchd is not yet verified.
 
 Completed scheduled jobs call `sd reports ingest` once with their run identity,

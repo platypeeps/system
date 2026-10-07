@@ -6,7 +6,7 @@
   capped, settled rows counted per repository, and the GitHub tracker's freshness), read when the page opens and after a write.
   Writes: Acknowledge (POST /api/contributions/acknowledge) and Make task (POST /api/contributions/task, a task linked to the
   contribution by its GitHub URL), each asked first. Re-run collector (POST /api/shadow/sync, sd:2207) asks the server to run
-  sd shadow sync in a thread, at most 120 s and one run at a time; the page reads GET /api/shadow/state until it ends.
+  sd shadow sync in a thread, on one 120 s deadline and one run at a time; the page reads GET /api/shadow/state until it ends.
   The page reads nothing from GitHub itself, and nothing here is sample data. The design's Trackers view opens the classic Operations > Trackers.
 -->
 <html lang="en">
