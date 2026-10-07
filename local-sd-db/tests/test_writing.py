@@ -593,6 +593,9 @@ class Promote(WritingCase):
         self.assertFalse(self.file().parent.exists())
         self.assertEqual(promote(self.db, self.idea, who="operator")["item"]["piece"], f"{self.year}/an-idea-uber-cafe")
         self.assertIn("The angle.", self.file().read_text())
+        umask = os.umask(0)
+        os.umask(umask)
+        self.assertEqual(self.file().stat().st_mode & 0o777, 0o666 & ~umask)
 
     def test_the_target_is_the_one_repository_that_registers_pieces(self):
         other = self.root / "other"

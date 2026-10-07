@@ -365,14 +365,14 @@ def _rewrite(text: str, changes: dict, *, remove: tuple[str, ...] = ()) -> str:
     return head + separator + body
 
 
-def _replace(path: Path, data: bytes) -> None:
+def _replace(path: Path, data: bytes, *, mode: int | None = None) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.sd-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, path.stat().st_mode & 0o777 if path.exists() else 0o600)
+        os.chmod(temporary, mode if mode is not None else path.stat().st_mode & 0o777 if path.exists() else 0o600)
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
@@ -620,7 +620,10 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
                 folder.mkdir(parents=True)
                 created = folder / "index.md"
                 # Whole or absent: a write that fails leaves no partial index.md.
-                _replace(created, written.encode("utf-8"))
+                # A new piece is content other tools read, so it takes the umask mode.
+                umask = os.umask(0)
+                os.umask(umask)
+                _replace(created, written.encode("utf-8"), mode=0o666 & ~umask)
             return piece_state(connection, item)
     except BaseException as error:
         if created is not None and _file_hash(created) not in (None, _hash(written.encode("utf-8"))):
