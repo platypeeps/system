@@ -51,7 +51,10 @@ with the provider they identify.
                ~/.zsh_history), the AI-assistant session logs listed
                above, and the agent scratchpad dirs. Masking rewrites in
                place on the same inode, so a scratchpad a live session is
-               still using keeps working. Also prunes AI session log
+               still using keeps working. A file modified in the last
+               S4S_MASK_SETTLE_MIN minutes (10), or one that grows while
+               it is rewritten, is skipped and listed as busy; the next
+               run masks it. Also prunes AI session log
                files past their directory's retention (30 days, 7 for the
                codex shell-snapshot cache)
                and removes derived build output dirs under ~/repos
@@ -572,67 +575,11 @@ TARGETS_EOF
     [ "$APPLY" = 0 ] && [ "$PRUNE_FOUND" = 1 ] && exit 2
     exit 0
   fi
-  # In-place, same-inode rewrite (open r+, write, truncate) so files being
-  # appended to by a live session keep working. Values reach python only via
-  # the environment, never argv or disk. Besides your literal values, the
-  # well-known credential patterns are masked too — with two adaptations:
-  # the URL-credentials class must not swallow quotes/backslashes (would
-  # corrupt JSONL), and PEM masking covers the whole BEGIN..END block, not
-  # just the header line.
-  printf '%s\n' "$ALLFILES" | S4S_APPLY="$APPLY" S4S_PATTERNS="$PATTERNS" python3 -c '
-import os, re, sys
-apply_mode = os.environ.get("S4S_APPLY") == "1"
-pairs = []
-for p in os.environ["S4S_PAIRS"].split("\n"):
-    if "=" in p:
-        name, val = p.split("=", 1)
-        pairs.append((name, val.encode()))
-pem = re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----(?:[\s\S]{0,10000}?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----)?")
-pats = []
-for line in os.environ["S4S_PATTERNS"].splitlines():
-    line = line.strip()
-    if not line:
-        continue
-    if "PRIVATE KEY" in line:
-        pats.append(pem)
-        continue
-    pats.append(re.compile(line.encode()))
-MARK = b"<masked:pattern>"
-total = ptotal = files = 0
-for path in sys.stdin.read().splitlines():
-    if not path:
-        continue
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError as e:
-        print("  skip %s: %s" % (path, e), file=sys.stderr)
-        continue
-    new, count = data, 0
-    for name, val in pairs:
-        c = new.count(val)
-        if c:
-            new = new.replace(val, b"<masked:$" + name.encode() + b">")
-            count += c
-    pcount = 0
-    for pat in pats:
-        new, n = pat.subn(MARK, new)
-        pcount += n
-    if count or pcount:
-        files += 1
-        total += count
-        ptotal += pcount
-        print("  %s: %d your-key value(s), %d pattern match(es)" % (path, count, pcount))
-        if apply_mode:
-            with open(path, "r+b") as f:
-                f.write(new)
-                f.truncate()
-if apply_mode:
-    print("== masked %d your-key value(s) + %d pattern match(es) in %d file(s)" % (total, ptotal, files))
-    sys.exit(0)
-print("== would mask %d your-key value(s) + %d pattern match(es) in %d file(s) (dry run; add --apply)" % (total, ptotal, files))
-sys.exit(2 if (total or ptotal) else 0)
-' || MASK_RC=$?
+  # The rewrite lives in mask_files.py, which says how it masks and why it
+  # rewrites in place. Values reach python only via the environment, never
+  # argv or disk.
+  printf '%s\n' "$ALLFILES" | S4S_APPLY="$APPLY" S4S_PATTERNS="$PATTERNS" \
+    python3 "$DIR/mask_files.py" || MASK_RC=$?
   MASK_RC=${MASK_RC:-0}
   [ "$MASK_RC" != 0 ] && [ "$MASK_RC" != 2 ] && exit "$MASK_RC"
   if [ "$APPLY" = 0 ] && { [ "$MASK_RC" = 2 ] || [ "$PRUNE_FOUND" = 1 ]; }; then
