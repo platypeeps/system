@@ -733,7 +733,16 @@ def produced_contexts(root: Path | str, *, ci: str | None = None) -> tuple[set[s
             notes.append(f"{path.name}: not read as structure ({refused}), so no job in it gates its needs")
         for job_id, body in jobs:
             needs = _needs(body)
-            gating[job_id] = _gated_needs(read.get(job_id)) if isinstance(read, dict) else []
+            job = read.get(job_id) if isinstance(read, dict) else None
+            gating[job_id] = _gated_needs(job)
+            # The names the aggregate covers for are line reads; credit it
+            # only when they are the name its structure reports, or a quoted
+            # or folded `name:` would lend its coverage to `ci` (sd:1820 r1).
+            reported = job.get("name", job_id) if isinstance(job, dict) else None
+            if gating[job_id] and names[job_id] != {reported}:
+                notes.append(f"{path.name}: job {job_id} reports {reported!r}, which the name read "
+                             f"did not derive, so it is not counted as gating its needs")
+                gating[job_id] = []
             ungated = [need for need in needs if need not in gating[job_id]]
             if ungated:
                 notes.append(

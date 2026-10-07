@@ -1352,6 +1352,34 @@ class NeedsClosure(unittest.TestCase):
                 self.assertEqual(produced.needed_by, {})
                 self.assertIn(f"a.yml: not read as structure ({reason}", " ".join(notes))
 
+    def test_an_aggregate_whose_name_the_line_read_misses_gates_nothing(self):
+        """sd:1820 review round 1: the gate is a structural read and the
+        names are line reads. A quoted or folded `name:`, or a job written
+        as a flow mapping, reports `other` while the line read derives
+        `ci`, so requiring `ci` would have hidden the ungated `test`."""
+        top = "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n"
+        job = "    needs: test\n    if: always()\n    runs-on: x\n"
+        flow = ("  ci: {name: other, needs: test, if: always(), runs-on: x, steps: [{env: {RESULTS: "
+                "\"${{ join(needs.*.result, ' ') }}\"}, run: \"for result in $RESULTS; do\\n[ \\\"$result\\\" = "
+                "success ] || { echo \\\"a needed job ended\\\"; exit 1; }\\ndone\"}]}\n")
+        cases = {
+            "double-quoted name": top + "  ci:\n    \"name\": other\n" + job + PROPAGATE,
+            "single-quoted name": top + "  ci:\n    'name': other\n" + job + PROPAGATE,
+            "folded name": top + "  ci:\n    name: >-\n      other\n" + job + PROPAGATE,
+            "flow job": top + flow,
+        }
+        for name, workflow in cases.items():
+            with self.subTest(name=name):
+                (self.root / ".github" / "workflows" / "a.yml").write_text(workflow, encoding="utf-8")
+                produced, notes = protection.produced_contexts(self.root)
+                self.assertEqual(produced.needed_by, {})
+                # The line read names the folded job `>-`; only `test` is asserted.
+                self.assertIn("test", self.classify(produced, notes)["detail"]["produced_not_required"])
+                self.assertIn("a.yml: job ci reports 'other'", " ".join(notes))
+        (self.root / ".github" / "workflows" / "a.yml").write_text(
+            top + "  ci:\n    name: ci\n" + job + PROPAGATE, encoding="utf-8")
+        self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {"test": {"ci"}})
+
     def test_a_name_two_jobs_produce_is_covered_only_when_both_are(self):
         """sd:1741 review round 5: `test` gated by `ci` in a.yml says nothing
         of another `test` in b.yml."""
