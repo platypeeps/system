@@ -101,7 +101,7 @@ def _now(options: dict[str, str]) -> datetime:
 
 def _line(verdict: stale.Verdict) -> str:
     age = f"{verdict.age_hours:.1f}h" if verdict.age_hours is not None else "-"
-    unfetched = " (not fetched)" if verdict.unfetched else ""
+    unfetched = " (not read)" if verdict.unread else " (not fetched)" if verdict.unfetched else ""
     return (f"{verdict.state:<7} sd:{verdict.claim.item}  {verdict.claim.host}  "
             f"{verdict.branch or '-'}{unfetched}  {age} ({verdict.source})  {verdict.title}")
 
@@ -119,7 +119,7 @@ def _status(options: dict[str, str]) -> int:
     connection = connect(path, write=False)
     try:
         verdicts = stale.assess(connection, at=_now(options), hours=hours,
-                                branch_time=stale.branch_time_last_fetched)
+                                branch_time=stale.BranchReader(0, read_budget=stale.STATUS_BUDGET))
     finally:
         connection.close()
     if not verdicts:
@@ -179,7 +179,8 @@ def command_satellite_stale(argv: list[str]) -> int:
     reader = stale.BranchReader()
     _, connection = _open(write=notify)
     try:
-        verdicts = [replace(v, unfetched=(v.repo, v.branch) in reader.unfetched)
+        verdicts = [replace(v, unfetched=(v.repo, v.branch) in reader.unfetched,
+                            unread=(v.repo, v.branch) in reader.unread)
                     for v in stale.assess(connection, at=moment, hours=hours, branch_time=reader)]
         for verdict in verdicts:
             print(_line(verdict))

@@ -13,6 +13,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import time
 import unittest
@@ -22,6 +23,7 @@ from unittest import mock
 
 from sd_db import add_note, create_item, initialise, retention, satellite_stale
 from sd_db.database import connect, default_path
+from sd_db.writes import upsert_repo
 from sd_db.jobs import cli, satellite_cli
 
 from tests.support import commit, git, push, repository
@@ -365,7 +367,9 @@ class TheRunBudget(unittest.TestCase):
         job = (Path(__file__).resolve().parents[2] / "local-cron-jobs" / "examples" / "satellite-stale.job").read_text()
         limit = int(next(line for line in job.splitlines() if line.startswith("JOB_TIMEOUT=")).split('"')[1][:-1]) * 60
         self.assertLess(satellite_stale.RUN_BUDGET, limit)
-        self.assertLess(satellite_stale.FETCH_BUDGET, satellite_stale.RUN_BUDGET)
+        self.assertLess(satellite_stale.FETCH_BUDGET, satellite_stale.READ_BUDGET)
+        self.assertLess(satellite_stale.READ_BUDGET, satellite_stale.RUN_BUDGET)
+        self.assertLess(satellite_stale.STATUS_BUDGET, 30, "the health check's status bound")
 
 
 class TheBranchTime(unittest.TestCase):
@@ -542,6 +546,87 @@ class TheNotifyVerb(Cli):
         code, out, _ = self.run_cli("satellite-stale")
         self.assertEqual(code, 0)
         self.assertRegex(out, rf"^stale\s+sd:{item}\s+laptop")
+
+
+class TheRunDeadline(Cli):
+    """Every git call in one run sits inside one budget, so no number of
+    claims delays the first send (sd:2918 round 7). Budgets are scaled down."""
+
+    def fifty_claims(self) -> list[int]:
+        self.hub_database()
+        connection = connect(default_path(self.home))
+        items = []
+        try:
+            upsert_repo(connection, "~/repos/example", status_source="row")
+            for n in range(50):
+                item = create_item(connection, kind="task", title=f"t{n}", status="in_progress",
+                                   created_at=at(0), repo="~/repos/example")
+                connection.execute("UPDATE item SET updated_at = ? WHERE id = ?", (at(0), item))
+                connection.execute("UPDATE note SET timestamp = ? WHERE item = ?", (at(0), item))
+                connection.commit()
+                satellite_stale.claim(connection, item, host="laptop", branch=f"sd-{item}-x", at=at(0))
+                items.append(item)
+        finally:
+            connection.close()
+        return items
+
+    @staticmethod
+    def hung(_checkout, _branch, *, bound, fetch=True):
+        time.sleep(bound)
+        return None
+
+    def test_fifty_hung_claims_send_before_the_budget_and_are_all_named(self):
+        items = self.fifty_claims()
+        hung = self.hung
+        sent = []
+        real = satellite_cli._sender
+
+        def timed(notifier, *, deadline):
+            send = real(notifier, deadline=deadline)
+
+            def record(alert):
+                sent.append(time.monotonic())
+                send(alert)
+
+            return record
+
+        script = self.root / "notify.sh"
+        script.write_text("#!/bin/sh\nexit 0\n")
+        budgets = {"FETCH_BUDGET": 0.4, "READ_BUDGET": 0.8, "FETCH_BOUND": 0.2, "READ_BOUND": 0.1, "RUN_BUDGET": 60}
+        started = time.monotonic()
+        with mock.patch.multiple(satellite_stale, fetch_branch_time=hung, **budgets), \
+                mock.patch.object(satellite_cli, "_sender", timed):
+            code, out, err = self.run_cli("satellite-stale", "--notify", env={
+                "SD_NOTIFY": str(script), "SD_SATELLITE_STALE_WINDOW": "0-24"})
+        self.assertEqual(code, 0, err)
+        self.assertTrue(sent, out)
+        self.assertLess(sent[0] - started, 0.8 + 1.0, "the first send waited on branch reads past the budget")
+        self.assertEqual(len(sent), 50)
+        for item in items:
+            self.assertRegex(out, rf"sd:{item}\s")
+        self.assertIn("(not read)", out)
+
+    def test_status_reads_end_inside_the_health_check_bound(self):
+        self.fifty_claims()
+        started = time.monotonic()
+        with mock.patch.multiple(satellite_stale, fetch_branch_time=self.hung, STATUS_BUDGET=0.5, READ_BOUND=0.1):
+            code, out, err = self.run_cli("satellite-stale", "status", env={})
+        self.assertEqual(code, 1, out + err)
+        self.assertLess(time.monotonic() - started, 0.5 + 1.0, "status read past its budget")
+
+    def test_a_fetch_and_its_read_share_one_bound(self):
+        calls = []
+
+        def slow(command, *, timeout, **_):
+            calls.append(command[3])
+            time.sleep(timeout)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        started = time.monotonic()
+        with mock.patch.object(satellite_stale.subprocess, "run", slow):
+            satellite_stale.fetch_branch_time(self.root, "sd-1-x", bound=0.3)
+        self.assertEqual(calls, ["fetch"], "the read ran after the fetch spent the bound")
+        self.assertLess(time.monotonic() - started, 0.45)
 
 
 class TheThreshold(Cli):

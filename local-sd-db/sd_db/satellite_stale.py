@@ -40,9 +40,15 @@ DEFAULT_HOURS = 3.0
 DEFAULT_WINDOW = (7, 22)
 FETCH_BOUND = 60
 #: One run's limits, in seconds, inside the cron job's 10 minutes: every
-#: fetch ends by FETCH_BUDGET, and no send starts after RUN_BUDGET.
+#: fetch ends by FETCH_BUDGET, every git call by READ_BUDGET, so the first
+#: send starts by then whatever the number of claims, and no send starts
+#: after RUN_BUDGET.
 FETCH_BUDGET = 180
+READ_BUDGET = 240
 RUN_BUDGET = 480
+#: `status` reads stored refs for at most this long, inside the health
+#: check's 30 s bound.
+STATUS_BUDGET = 20
 #: A read of a ref already on disk; no network.
 READ_BOUND = 10
 #: One notifier call.
@@ -87,6 +93,9 @@ class Verdict:
     #: True when the branch was read as last fetched: its fetch failed or
     #: the run's fetch budget was spent.
     unfetched: bool = False
+    #: True when the run's git budget was spent before this branch was read:
+    #: the verdict stands on notes and item updates alone.
+    unread: bool = False
 
 
 @dataclass(frozen=True)
@@ -236,7 +245,9 @@ def describe(verdict: Verdict) -> Alert:
         f"sd:{item} {verdict.title}",
         f"host {verdict.claim.host}, branch {verdict.branch or '(none)'}, status {verdict.status}",
         f"newest progress: {verdict.progress} ({verdict.source}), {age} ago",
-        *(["branch not fetched this run (fetch failed or budget spent); read as last fetched"]
+        *(["branch not read this run (git budget spent); judged on notes and item updates"]
+          if verdict.unread else
+          ["branch not fetched this run (fetch failed or budget spent); read as last fetched"]
           if verdict.unfetched else []),
         f"silence until a time: sd-db.sh claim {item} --quiet-until <ISO time> (on the satellite)",
         f"release the claim: sd-db.sh unclaim {item}",
@@ -303,6 +314,8 @@ def fetch_branch_time(checkout: Path, branch: str, *, bound: int = FETCH_BOUND, 
         return None
     environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     ref = f"refs/remotes/origin/{branch}"
+    # `bound` covers both calls, so a caller's budget holds.
+    end = time.monotonic() + bound
     try:
         if fetch:
             fetched = subprocess.run(
@@ -310,8 +323,11 @@ def fetch_branch_time(checkout: Path, branch: str, *, bound: int = FETCH_BOUND, 
                 capture_output=True, text=True, timeout=bound, env=environment)
             if fetched.returncode != 0:
                 return None
+        left = min(end - time.monotonic(), READ_BOUND)
+        if left <= 0:
+            return None
         shown = subprocess.run(["git", "-C", str(checkout), "log", "-1", "--format=%cI", ref],
-                               capture_output=True, text=True, timeout=min(bound, READ_BOUND), env=environment)
+                               capture_output=True, text=True, timeout=left, env=environment)
     except (OSError, subprocess.TimeoutExpired):
         return None
     stamp = shown.stdout.strip()
@@ -320,16 +336,21 @@ def fetch_branch_time(checkout: Path, branch: str, *, bound: int = FETCH_BOUND, 
 
 class BranchReader:
     """`branch_time` for one `run`: fetch each branch until `budget` seconds
-    have passed, then read the ref the last fetch left. A branch whose fetch
-    failed, or that the budget did not reach, lands in `unfetched`, so its
-    alert can say so. Ten hung fetches at FETCH_BOUND each would otherwise
-    spend the cron job's whole limit before the first send."""
+    have passed, then read the ref the last fetch left until `read_budget`,
+    then read nothing. Every call is bounded by its own cap and the budget
+    left, so the git calls end by `read_budget` whatever the number of
+    claims. A branch read as last fetched lands in `unfetched`, one not read
+    at all in `unread`, so its alert can say so."""
 
-    def __init__(self, budget: float = FETCH_BUDGET, *, fetch=None, clock=time.monotonic):
+    def __init__(self, budget: float | None = None, *, read_budget: float | None = None, fetch=None,
+                 clock=time.monotonic):
+        start = clock()
         self.clock = clock
-        self.deadline = clock() + budget
+        self.deadline = start + (FETCH_BUDGET if budget is None else budget)
+        self.read_deadline = start + (READ_BUDGET if read_budget is None else read_budget)
         self.fetch = fetch or fetch_branch_time
         self.unfetched: set[tuple[str, str]] = set()
+        self.unread: set[tuple[str, str]] = set()
 
     def __call__(self, repo: str | None, branch: str) -> str | None:
         if not repo:
@@ -341,12 +362,9 @@ class BranchReader:
             if stamp is not None:
                 return stamp
         self.unfetched.add((repo, branch))
-        return self.fetch(checkout, branch, bound=READ_BOUND, fetch=False)
-
-
-def branch_time_last_fetched(repo: str | None, branch: str) -> str | None:
-    """The same, reading what the last fetch left, with no network."""
-    if not repo:
-        return None
-    return fetch_branch_time(paths.disk(repo), branch, fetch=False)
+        left = self.read_deadline - self.clock()
+        if left <= 0:
+            self.unread.add((repo, branch))
+            return None
+        return self.fetch(checkout, branch, bound=min(READ_BOUND, left), fetch=False)
 

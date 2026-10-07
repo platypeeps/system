@@ -83,21 +83,25 @@ A hub note on the item counts too. The hub lead writing to the item is attention
 
 The health-check sweep runs nightly, too seldom for a 3-hour threshold alone; the job is the alarm, the sweep the backstop.
 
-## Run budget (review round 5)
+## Run budget (review rounds 5 and 7)
 
 Class: slow or failed I/O uses the run budget before delivery.
-Every network or subprocess call in one `satellite-stale.sh run`, against the job's 600 s `JOB_TIMEOUT`:
+Every network, subprocess and database call in one `satellite-stale.sh run`, against the job's 600 s `JOB_TIMEOUT`.
+Each row is bounded in total, not per call, so no number of claims moves the first send.
 
-| Call | Count | Bound | Worst case | On failure or bound | Test |
+| Call | Count | Bound | Total worst case | On failure or bound | Test |
 | --- | --- | --- | --- | --- | --- |
-| database open and reads | 1 | SQLite busy timeout, 5 s | 5 s | run fails, exit 1 | existing CLI suite |
-| `git fetch` | per claimed branch | `min(60 s, budget left)`; no fetch starts after `FETCH_BUDGET`, 180 s | 190 s, with the last fetch's read | read the stored ref; alert names the branch "not fetched" | `test_fetches_stop_at_the_budget_and_read_stored_refs` |
-| `git log` of a stored ref | per claimed branch | `READ_BOUND`, 10 s | 10 s per claim | no branch signal | `test_fetches_stop_at_the_budget_and_read_stored_refs` |
-| `local-notify/notify.sh` | per new stale episode | `min(60 s, deadline left)`; no send starts after `RUN_BUDGET`, 480 s | ends by 540 s | `SendFailed`, no watermark, exit 1; the next run retries, the cron failure push covers it | `test_a_hung_notifier_is_cut_at_its_bound`, `test_no_send_starts_after_the_run_deadline` |
+| database open | 1 | SQLite busy timeout, 5 s | 5 s | run fails, exit 1 | existing CLI suite |
+| claim and item reads | per claim | none needed: a WAL read takes no lock | local reads | - | existing CLI suite |
+| `git fetch` | per claimed branch | `min(60 s, fetch budget left)`; none starts after `FETCH_BUDGET`, 180 s | ends by 180 s | read the stored ref; alert says "not fetched" | `test_fetches_stop_at_the_budget_and_read_stored_refs` |
+| `git log` after a fetch | per fetched branch | inside its fetch's bound, and 10 s | inside the fetch row | no branch signal | `test_a_fetch_and_its_read_share_one_bound` |
+| `git log` of a stored ref | per unfetched branch | `min(10 s, read budget left)`; none starts after `READ_BUDGET`, 240 s | ends by 240 s | branch not read; judged on notes and item updates; alert says "not read" | `test_fifty_hung_claims_send_before_the_budget_and_are_all_named` |
+| `local-notify/notify.sh` | per new stale episode | `min(60 s, deadline left)`; none starts after `RUN_BUDGET`, 480 s | ends by 540 s | `SendFailed`, no watermark, exit 1; the next run retries | `test_a_hung_notifier_is_cut_at_its_bound`, `test_no_send_starts_after_the_run_deadline` |
+| watermark write | per sent alert, after its send | SQLite busy timeout, 5 s | the last ends by 545 s | run fails, exit 1; the next run alerts again | existing CLI suite |
 
-The budgets are constants in `sd_db/satellite_stale.py`; `test_the_budgets_fit_inside_the_cron_limit` reads `JOB_TIMEOUT` from the example job.
-Reads cost 10 s per claim at worst, so a run with more than 30 claims could pass 480 s before its first send; a hub holds a handful.
-`status` makes no fetch and its reads take the same 10 s bound.
+The budgets are constants in `sd_db/satellite_stale.py`; `test_the_budgets_fit_inside_the_cron_limit` checks their order against `JOB_TIMEOUT` in the example job.
+The first send starts by 240 s whatever the number of claims; every claim is assessed and named.
+`status` makes no fetch, and its reads stop at `STATUS_BUDGET`, 20 s, inside the health check's 30 s bound (`test_status_reads_end_inside_the_health_check_bound`).
 
 ## How the alert is delivered
 
