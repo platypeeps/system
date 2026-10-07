@@ -99,10 +99,13 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
         return Result(0, 0, busy=True)
     # Any OSError once the rewrite starts, up to and including the close
     # that flushes what the buffer still holds, may leave the file half
-    # masked; before it, the file is untouched and a skip is right.
-    started = False
+    # masked; before it, the file is untouched and a skip is right. A file
+    # that will not open to write fails only when it holds a match: the
+    # value stays on disk, so the run must not read as a success.
+    started = opened = False
     try:
         with open(path, "r+b" if apply else "rb") as f:
+            opened = True
             seen = os.fstat(f.fileno())
             data = f.read()
             new, count, pcount = masked(data, pairs, pats)
@@ -121,6 +124,12 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
     except OSError as e:
         if started:
             raise WriteFailed("%s: %s" % (path, e)) from e
+        if apply and not opened:
+            left = mask_file(path, pairs, pats, False)
+            if left.count or left.pcount:
+                raise WriteFailed("%s: %s; %d match(es) left unmasked"
+                                  % (path, e, left.count + left.pcount)) from e
+            return left
         raise
     return Result(count, pcount)
 

@@ -388,6 +388,19 @@ class MaskRewrite(unittest.TestCase):
                 self.assertEqual(code, 1, err.getvalue())
                 self.assertIn("FAILED", err.getvalue())
 
+    def test_an_unwritable_file_fails_only_when_it_holds_a_match(self):
+        held = self.log("held.jsonl", self.SETTLED)
+        clean = self.root / "clean.jsonl"
+        clean.write_bytes(b'{"line": 1}\n')
+        for path in (held, clean):
+            path.chmod(0o444)
+        result = self.run_main([held], apply=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED %s" % held, result.stderr)
+        self.assertIn(self.TOKEN.encode(), held.read_bytes())
+        result = self.run_main([clean], apply=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_a_dry_run_reports_busy_files_and_writes_nothing(self):
         settled = self.log("old.jsonl", self.SETTLED)
         recent = self.log("new.jsonl", 60)

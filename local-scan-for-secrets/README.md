@@ -107,7 +107,8 @@ last `S4S_MASK_SETTLE_MIN` minutes (default 10), and a file whose size or
 mtime changed between its read and its write. Each skipped file prints as
 `busy <path>` and counts in the summary line; the next run masks it. A
 write that fails partway, such as a full disk, prints `FAILED <path>` and
-exits 1, since the file may be half masked. The rewrite is in `mask_files.py`.
+exits 1, since the file may be half masked. A file that will not open to
+write fails the same way when it holds a match, and passes when it holds none. The rewrite is in `mask_files.py`.
 
 Caveats: quit vim before masking `.viminfo` (vim rewrites it
 on exit from memory), same idea for open shells and history files, and
