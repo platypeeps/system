@@ -261,8 +261,8 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
     `state` is the job's own, for a page that words the rows by it. A
     failed job also carries `triage`, `job_failures.classify`'s label, at the
     end of its detail; it changes neither the rank nor the retry. Its `run`
-    is the job's `revision`, which moves with each run launchd records, so
-    Jev's shadow asks once per run and not once per outcome (sd:2904).
+    is the job's, launchd's last run, so Jev's shadow asks once per run and
+    not once per outcome (sd:2904).
     """
     out = []
     for job in jobs:
@@ -283,7 +283,7 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
             outcome = _signal_name(killed) if killed is not None else f"exit {code}" if code is not None else "no exit code"
             triage = job_failures.classify(job, log)
             row.update(id=f"job:{name}:{f'signal{killed}' if killed is not None else code}", what=f"{name} failed with {outcome}",
-                       job=name, run=job.get("revision"), triage=triage, detail=f"{row['detail']} · triage: {triage['class']}, {triage['why']}")
+                       job=name, run=job.get("run"), triage=triage, detail=f"{row['detail']} · triage: {triage['class']}, {triage['why']}")
         elif state == "interrupted":
             stop = _signal_name(killed) if killed is not None else "a stop with no signal recorded"
             row.update(id=f"job:{name}:interrupted{killed if killed is not None else ''}",

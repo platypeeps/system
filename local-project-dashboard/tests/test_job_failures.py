@@ -170,10 +170,18 @@ class Shadow(ScreenCase):
         self.document([str(self.stub)])
         seen = self.jobs.inspect
         # launchd's run counter moved; the exit code, and so the row id, did not.
-        with patch.object(self.jobs, "inspect", lambda name: {**seen(name), "runs": 2,
-                                                             "_observation": name + "run 2"}):
+        with patch.object(self.jobs, "inspect", lambda name: {**seen(name), "runs": 2}):
             self.document([str(self.stub)])
         self.assertEqual([call.split()[0] for call in self.calls_made()], ["enabled", "score"] * 2)
+
+    def test_the_same_run_seen_again_is_not_asked_again(self):
+        """A revision moves on a request or a restore too; the run does not."""
+        self.document([str(self.stub)])
+        seen = self.jobs.inspect
+        with patch.object(self.jobs, "inspect", lambda name: {**seen(name), "_observation": "changed"}):
+            _, threads = self.document([str(self.stub)])
+        self.assertEqual(threads, [None])
+        self.assertEqual(len(self.calls_made()), 2)
 
     def test_no_command_asks_nothing(self):
         _, threads = self.document(None)

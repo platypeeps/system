@@ -388,7 +388,10 @@ def _job_state(connection, name, backend, *, observed=None):
             reason = "an unresolved restore prevents starting jobs"
         capabilities[action] = {"allowed": not reason, "reason": reason}
     public = {key: observed[key] for key in ("name", "label", "service", "schedule", "state", "pid", "last_exit", "last_signal")}
-    public.update(state=state, capabilities=capabilities, last_request=_request_public(request))
+    # Which run launchd last recorded, by the identity a cancel is matched on;
+    # `revision` moves on a request or a restore too (sd:2904).
+    public.update(state=state, capabilities=capabilities, last_request=_request_public(request),
+                  run=[observed.get(key) for key in _RUN_IDENTITY])
     public["revision"] = _digest({"observed": observed["_observation"], "request": request, "restore": restoring})
     return public, observed
 

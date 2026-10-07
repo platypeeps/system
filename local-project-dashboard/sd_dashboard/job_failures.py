@@ -112,6 +112,11 @@ _asked: set[tuple] = set()
 _lock = threading.Lock()
 
 
+def _run(row: dict) -> tuple:
+    """The memo key: the row's outcome and launchd's run, which is a list."""
+    return row["id"], json.dumps(row.get("run"))
+
+
 def _ask(jev: list[str], rows: list[dict]) -> None:
     """The gate once, then one shadow `score` per row; every failure is swallowed."""
     try:
@@ -146,8 +151,8 @@ def shadow(rows: list[dict], jev: list[str] | None) -> threading.Thread | None:
     with _lock:
         # Keyed on the run, not the row id: the id names the outcome, and a
         # later run that fails the same way is a new question (sd:2904).
-        fresh = [row for row in rows if "triage" in row and (row["id"], row.get("run")) not in _asked]
-        _asked.update((row["id"], row.get("run")) for row in fresh)
+        fresh = [row for row in rows if "triage" in row and _run(row) not in _asked]
+        _asked.update(_run(row) for row in fresh)
     if not fresh:
         return None
     worker = threading.Thread(target=_ask, args=(jev, fresh), daemon=True)
