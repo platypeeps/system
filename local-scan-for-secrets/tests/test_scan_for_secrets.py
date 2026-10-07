@@ -12,7 +12,10 @@ so nothing is deleted and the operator's config is never read.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -23,6 +26,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 FOLDER = Path(__file__).resolve().parent.parent
 REPO = FOLDER.parent
@@ -328,6 +332,37 @@ class MaskRewrite(unittest.TestCase):
         self.assertIn("in 1 file(s); 1 busy", result.stdout)
         self.assertIn(self.TOKEN.encode(), recent.read_bytes())
         self.assertNotIn(self.TOKEN.encode(), settled.read_bytes())
+
+    def test_a_failed_write_exits_nonzero(self):
+        path = self.log("old.jsonl", self.SETTLED)
+        real_open = open
+
+        class Full:
+            """A file whose disk fills on the masked write."""
+
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self.handle.close()
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+            def write(self, _data):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        env = {"S4S_PATTERNS": self.PATTERN, "S4S_PAIRS": "", "S4S_MASK_SETTLE_MIN": "10", "S4S_APPLY": "1"}
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, env), mock.patch.object(sys, "stdin", io.StringIO("%s\n" % path)), \
+                mock.patch.object(self.mod, "open", lambda *a, **k: Full(real_open(*a, **k)), create=True), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = self.mod.main()
+        self.assertEqual(code, 1, err.getvalue())
+        self.assertIn("No space left on device", err.getvalue())
 
     def test_a_dry_run_reports_busy_files_and_writes_nothing(self):
         settled = self.log("old.jsonl", self.SETTLED)

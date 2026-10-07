@@ -44,6 +44,11 @@ MARK = b"<masked:pattern>"
 SETTLE_MIN_DEFAULT = 10
 
 
+class WriteFailed(Exception):
+    """A rewrite that failed after it began; the file may be half masked.
+    Not an OSError, so the read-time skip in `main` does not swallow it."""
+
+
 class Result(NamedTuple):
     count: int
     pcount: int
@@ -103,9 +108,13 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
         now = os.fstat(f.fileno())
         if (now.st_size, now.st_mtime_ns) != (seen.st_size, seen.st_mtime_ns):
             return Result(0, 0, busy=True)
-        f.seek(0)
-        f.write(new)
-        f.truncate()
+        try:
+            f.seek(0)
+            f.write(new)
+            f.truncate()
+            f.flush()
+        except OSError as e:
+            raise WriteFailed("%s: %s" % (path, e)) from e
     return Result(count, pcount)
 
 
@@ -124,7 +133,7 @@ def main() -> int:
     pairs = parse_pairs(os.environ.get("S4S_PAIRS", ""))
     pats = parse_patterns(os.environ.get("S4S_PATTERNS", ""))
     settle_s = settle_seconds(os.environ.get("S4S_MASK_SETTLE_MIN", str(SETTLE_MIN_DEFAULT)))
-    total = ptotal = files = busy = 0
+    total = ptotal = files = busy = failed = 0
     for path in sys.stdin.read().splitlines():
         if not path:
             continue
@@ -132,6 +141,10 @@ def main() -> int:
             result = mask_file(path, pairs, pats, apply, settle_s)
         except OSError as e:
             print("  skip %s: %s" % (path, e), file=sys.stderr)
+            continue
+        except WriteFailed as e:
+            print("  FAILED %s" % e, file=sys.stderr)
+            failed += 1
             continue
         if result.busy:
             busy += 1
@@ -144,9 +157,9 @@ def main() -> int:
             ptotal += pcount
             print("  %s: %d your-key value(s), %d pattern match(es)" % (path, count, pcount))
     if apply:
-        print("== masked %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy"
-              % (total, ptotal, files, busy))
-        return 0
+        print("== masked %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy; %d failed"
+              % (total, ptotal, files, busy, failed))
+        return 1 if failed else 0
     print("== would mask %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy"
           " (dry run; add --apply)" % (total, ptotal, files, busy))
     return 2 if (total or ptotal) else 0
