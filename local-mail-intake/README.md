@@ -171,6 +171,13 @@ given, so a report is never half in Jev's order and half in today's (sd:2551).
 `report --all` stops asking after 25 questions and leaves the rest in today's
 order.
 
+Threads are asked in batches of up to eight, one `jev ask` per batch (sd:1160);
+a batch of one is the `noul` above, gated the same way. The state is each
+thread's own payload under the keys `q1`, `q2`, ..., so a batch sends what one
+question per thread sent. A batch answer counts only when every thread in it
+has a probability and nothing else came back; anything less is a failure, and
+the all-or-nothing rule above puts the whole report back in today's order.
+
 ### What leaves the machine
 
 Every Jev call goes to a third party, and this mailbox carries real names and

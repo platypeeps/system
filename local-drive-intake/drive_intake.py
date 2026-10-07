@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import csv
 import fnmatch
+import json
 import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -156,14 +158,43 @@ def parse_config(text: str) -> tuple[list[Root], list[Rule], list[str]]:
 def classify(rel_path: str, rules: list[Rule], environ: dict[str, str] | None = None, run=None) -> str:
     """Which route a file rides. First matching rule wins; default is noise.
 
+    One path is `classify_many` of one; see there.
+    """
+    return classify_many([rel_path], rules, environ, run)[rel_path]
+
+
+def classify_many(
+    paths: list[str],
+    rules: list[Rule],
+    environ: dict[str, str] | None = None,
+    run=None,
+) -> dict[str, str]:
+    """The route of each path, keyed by path.
+
+    The rules run first and unchanged. Every miss goes to `jev_routes`
+    together, so a run that sees several unmatched paths asks once per batch
+    and not once per path (sd:1160). Each miss is `noise` when JEV_DRIVE_INTAKE
+    switches this stage off or Jev cannot answer.
+    """
+    routes: dict[str, str] = {}
+    misses: list[str] = []
+    for rel_path in paths:
+        route = rule_route(rel_path, rules)
+        if route is None:
+            misses.append(rel_path)
+        else:
+            routes[rel_path] = route
+    routes.update(jev_routes(list(dict.fromkeys(misses)), rules, environ, run))
+    return routes
+
+
+def rule_route(rel_path: str, rules: list[Rule]) -> str | None:
+    """The route of the first rule that matches, or None.
+
     Matched case-insensitively against the whole relative path, so a rule can
     name a folder (`Operations/Telemetry Data/*`) or an extension (`*.pdf`), and
     the same syntax covers both. `fnmatch` rather than a regex because the conf
     is meant to be edited by whoever is on the board that year.
-
-    A rule miss falls to `jev_route`, which is `noise` when JEV_DRIVE_INTAKE
-    switches this stage off or Jev cannot answer. The rules are unchanged and
-    run first either way.
     """
     lowered = rel_path.lower()
     # Matched against the path and against a leading-slash form of it, so a
@@ -177,7 +208,7 @@ def classify(rel_path: str, rules: list[Rule], environ: dict[str, str] | None = 
         pattern = rule.pattern.lower()
         if fnmatch.fnmatch(lowered, pattern) or fnmatch.fnmatch(rooted, pattern):
             return rule.route
-    return jev_route(rel_path, rules, environ, run)
+    return None
 
 
 # -------------------------------------------------------- the optional Jev step
@@ -251,9 +282,15 @@ def route_names(rules: list[Rule]) -> list[str]:
     return seen
 
 
-#: Set once the declined-probe reason has been printed. `jev_route` runs once
-#: per unmatched path, so an unkeyed machine sweeping a Drive would otherwise
-#: print the same line thousands of times -- which is how a true statement
+#: Paths per `jev ask`. Eight is the most the Haiku comparison arm takes
+#: (`MAX_HAIKU_QUESTIONS` in `local-jev/jev_compare.py`); a bigger batch declines it.
+JEV_BATCH = 8
+
+
+#: Set once the declined-probe reason has been printed. `jev_routes` probes
+#: once per call, and a caller that classifies one path at a time on an
+#: unkeyed machine would otherwise print the same line thousands of times --
+#: which is how a true statement
 #: becomes noise nobody reads. Said once, on the first path that asks.
 _SAID: set[str] = set()
 
@@ -265,25 +302,31 @@ def _say_once(reason: str) -> None:
     print(f"jev: {reason}; unmatched paths stay noise", file=sys.stderr)
 
 
-def jev_route(
-    rel_path: str,
+def jev_routes(
+    paths: list[str],
     rules: list[Rule],
     environ: dict[str, str] | None = None,
     run=None,
-) -> str:
-    """Ask Jev which route an unmatched path belongs to. Never raises.
+) -> dict[str, str]:
+    """Ask Jev which route each unmatched path belongs to. Never raises.
 
-    Returns `noise` -- the answer today -- when this stage is switched off, when
-    Jev is switched off or unkeyed, when the call fails, and when the answer is
-    not a route this config defines. Every one of those degradations says so on
-    stderr: a lane that silently stops running is the defect this shape exists
-    to avoid.
+    Every path is `noise` -- the answer today -- when this stage is switched
+    off, when Jev is switched off or unkeyed, when the call for its batch
+    fails, and when that batch's answer is not a route this config defines
+    for every path in it. Every one of those degradations says so on stderr:
+    a lane that silently stops running is the defect this shape exists to
+    avoid.
 
-    Only the relative path is sent. Never the file's contents: every call leaves
-    the machine, and this module reads two Drives full of governance paper.
+    Only the relative paths are sent. Never the files' contents: every call
+    leaves the machine, and this module reads two Drives full of governance
+    paper.
     """
+    if not paths:
+        return {}
     environ = os.environ if environ is None else environ
     runner = subprocess.run if run is None else run
+    noise = dict.fromkeys(paths, "noise")
+    named = paths[0] if len(paths) == 1 else f"{len(paths)} unmatched paths"
     # Both halves in one call, and it costs nothing: Jev can answer on this
     # machine, and JEV_DRIVE_INTAKE has not been used to switch this stage
     # off. Unset means on -- a per-caller switch defaulting to off makes every
@@ -295,17 +338,15 @@ def jev_route(
         # instead of answering, and this runs inside other people's pipelines.
         # `--record` so the decline is counted. It costs nothing extra: the
         # row is written by the process this call already starts, which is
-        # why the decline is recorded here and nowhere else. `jev_route` runs
-        # once per unmatched path, and a second subprocess per path is the
-        # cost `_SAID` exists to avoid.
+        # why the decline is recorded here and nowhere else.
         probe = runner([*jev_command(environ), "enabled", JEV_STAGE, "--why",
                         "--record", "--caller", JEV_CALLER],
                        input="", capture_output=True, text=True, timeout=30,
                        env={**os.environ, **environ})
     except Exception as failure:  # a missing interpreter, a timeout, anything
         print(f"jev: could not be asked whether it is enabled ({failure}); "
-              f"{rel_path} stays noise", file=sys.stderr)
-        return "noise"
+              f"{named} stay noise", file=sys.stderr)
+        return noise
     if probe.returncode != 0:
         # Said out loud, which the flip is the reason for. While this was an
         # opt-in, a silent return here meant "nobody asked" and saying so would
@@ -316,12 +357,24 @@ def jev_route(
         # `--why` carries the reason on stdout, and `capture_output` means
         # nothing of jev's reaches a terminal unless this prints it.
         _say_once(probe.stdout.strip() or f"jev enabled exited {probe.returncode}")
-        return "noise"
+        return noise
 
     routes = route_names(rules)
     if not routes:
-        return "noise"
+        return noise
 
+    found: dict[str, str] = {}
+    for start in range(0, len(paths), JEV_BATCH):
+        batch = paths[start:start + JEV_BATCH]
+        if len(batch) == 1:
+            found[batch[0]] = _route_one(batch[0], routes, environ, runner)
+        else:
+            found.update(_route_batch(batch, routes, environ, runner))
+    return found
+
+
+def _route_one(rel_path: str, routes: list[str], environ, runner) -> str:
+    """One path, one `choice`: a batch of one keeps the ledger row its answer."""
     criteria = ",".join([*routes, f"{JEV_NO_MATCH}=no route here fits this path"])
     command = [
         *jev_command(environ),
@@ -372,6 +425,87 @@ def jev_route(
     if answer and answer != JEV_NO_MATCH:
         print(f"jev: {rel_path}: answered {answer!r}, not a route here; routed noise", file=sys.stderr)
     return "noise"
+
+
+def _route_batch(paths: list[str], routes: list[str], environ, runner) -> dict[str, str]:
+    """Several paths, one `ask`: a route for every path, or noise for every path.
+
+    The state is the paths under ordinal keys, `p1`, `p2`, ..., and nothing
+    else. The questions go in a private temporary file because the state
+    holds stdin; it carries the route names and the keys, never a path.
+    A batch answer is used whole or not at all: one that misses a path,
+    answers a key nobody asked, or names something outside the criteria
+    routes every path in the batch to noise, so no answer is ever read
+    against the wrong path.
+    """
+    noise = dict.fromkeys(paths, "noise")
+    keys = [f"p{n}" for n in range(1, len(paths) + 1)]
+    criteria = jev_criteria(routes)
+    questions = {key: {"type": "choice",
+                       "instructions": f"In the state, {key} is one file path. "
+                                       "Which intake route does it belong to?",
+                       "criteria": criteria}
+                 for key in keys}
+    with tempfile.TemporaryDirectory(prefix="drive-intake-jev-") as folder:
+        file = Path(folder) / "questions.json"
+        file.write_text(json.dumps(questions), encoding="utf-8")
+        try:
+            done = runner(
+                [*jev_command(environ), "ask", "--questions", str(file),
+                 "--state", "-", "--state-format", "json",
+                 "--caller", JEV_CALLER, "--stage", JEV_STAGE,
+                 "--fallback", JEV_DEGRADED],
+                input=json.dumps(dict(zip(keys, paths))),
+                capture_output=True, text=True, timeout=60,
+                env={**os.environ, **environ})
+        except Exception as problem:  # noqa: BLE001 - any failure is the same answer
+            print(f"jev: {len(paths)} paths: call failed ({problem}); routed noise",
+                  file=sys.stderr)
+            return noise
+
+    reason = (done.stderr or "").strip()
+    if reason:
+        print(reason, file=sys.stderr)
+    if done.returncode != 0:
+        print(f"jev: {len(paths)} paths: exit {done.returncode}; routed noise",
+              file=sys.stderr)
+        return noise
+    answer = (done.stdout or "").strip()
+    if answer == JEV_DEGRADED:
+        return noise
+    picks = read_batch(answer, keys, criteria)
+    if picks is None:
+        print(f"jev: {len(paths)} paths: no route for every path in the answer; "
+              "routed noise", file=sys.stderr)
+        return noise
+    return {path: pick if pick in routes else "noise"
+            for path, pick in zip(paths, picks)}
+
+
+def jev_criteria(routes: list[str]) -> dict[str, str | None]:
+    """The criteria a batch question offers: the routes and the way out."""
+    return {**dict.fromkeys(routes), JEV_NO_MATCH: "no route here fits this path"}
+
+
+def read_batch(answer: str, keys: list[str], criteria: dict) -> list[str] | None:
+    """The choice for each key from a `jev ask` response, or None.
+
+    None unless every key has a choice the criteria offer and no other key
+    came back. A partial answer is no answer.
+    """
+    try:
+        answers = json.loads(answer)["answers"]
+    except (ValueError, TypeError, KeyError):
+        return None
+    if not isinstance(answers, dict) or set(answers) != set(keys):
+        return None
+    picks = []
+    for key in keys:
+        pick = answers[key].get("choice") if isinstance(answers[key], dict) else None
+        if not isinstance(pick, str) or pick not in criteria:
+            return None
+        picks.append(pick)
+    return picks
 
 
 # ------------------------------------------------------------------- walk
@@ -548,6 +682,7 @@ def arrival_rows(
     environ: dict[str, str] | None = None,
 ) -> list[dict]:
     """Turn a diff into arrival rows, route included."""
+    routes = classify_many([entry.rel_path for entry, _, _ in changes], rules, environ)
     rows = []
     for entry, change, origin in changes:
         mtime = datetime.fromtimestamp(entry.mtime_ns / 1e9, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -555,7 +690,7 @@ def arrival_rows(
             "detected_at": detected_at,
             "root": entry.root,
             "rel_path": entry.rel_path,
-            "route": classify(entry.rel_path, rules, environ),
+            "route": routes[entry.rel_path],
             "change": change,
             "size": entry.size,
             "mtime": mtime,

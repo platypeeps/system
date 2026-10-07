@@ -7,6 +7,7 @@ real format.
 """
 
 import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -519,7 +520,7 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
         def answers(args, state, environ=None):
             if args[1] == "enabled":
                 return 0, ""
-            return 0, "yes" if "fence variance" in state else "no"
+            return batch_reply(state, lambda text: "fence variance" in text)
 
         with mock.patch.object(mi, "run_jev", side_effect=answers):
             code, text, _ = self.report({})
@@ -557,11 +558,17 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("no answer", err)
 
-    def answers_then(self, failure):
-        """Jev says the variance thread asks, then `failure` answers the third thread.
+    def more_threads(self, count):
+        """`count` more threads that ask for nothing, so a report takes two batches."""
+        mi.append_arrivals(self.state / "mail-arrivals.csv", [
+            self.row(f"m{n}", f"t{n}", f"Newsletter {n}", "you")
+            for n in range(4, 4 + count)])
 
-        The third thread is the last asked, so a run that keeps the answers
-        before a failure sorts the variance thread first and marks it.
+    def answers_then(self, failure):
+        """Jev answers the first batch, then `failure` answers the second.
+
+        The variance thread is in the first batch, so a run that keeps the
+        answers before a failure sorts it first and marks it.
         """
         calls = []
 
@@ -569,15 +576,16 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
             if args[1] in ("enabled", "record"):
                 calls.append(args[1])
                 return 0, ""
-            calls.append("noul")
-            if "Thanks all" in state:
+            calls.append(args[1])
+            if "Newsletter 9" in state:
                 return failure()
-            return 0, "yes" if "fence variance" in state else "no"
+            return batch_reply(state, lambda text: "fence variance" in text)
 
         return fake, calls
 
     def test_a_failure_after_an_answer_drops_every_answer(self):
-        """All or nothing (sd:2551): one thread Jev could not answer puts the whole report back in today's order."""
+        """All or nothing (sd:2551): one batch Jev could not answer puts the whole report back in today's order."""
+        self.more_threads(7)
         _, expected, _ = self.baseline()
 
         def boom():
@@ -590,9 +598,10 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("boom", err)
         self.assertIn("today's order", err)
-        self.assertEqual(calls, ["enabled", "noul", "noul", "noul", "record"])
+        self.assertEqual(calls, ["enabled", "ask", "ask", "record"])
 
     def test_an_unreadable_answer_after_an_answer_drops_every_answer(self):
+        self.more_threads(7)
         _, expected, _ = self.baseline()
         fake, calls = self.answers_then(lambda: (0, "maybe"))
         with mock.patch.object(mi, "run_jev", side_effect=fake):
@@ -601,7 +610,155 @@ class TestAsksIsOptionalAndOnUnlessSwitchedOff(unittest.TestCase):
         self.assertEqual(code, mi.EXIT_FOUND)
         self.assertIn("no answer", err)
         # Today's order is what the report carried, so the control arm gets its row.
-        self.assertEqual(calls, ["enabled", "noul", "noul", "noul", "record"])
+        self.assertEqual(calls, ["enabled", "ask", "ask", "record"])
+
+
+def batch_reply(state, asks, drop=(), **extra):
+    """What `jev ask` prints for a batch state: a probability per key.
+
+    `asks(text)` says whether a thread asks. `drop` names keys left out of the
+    answer, and `extra` adds answers nobody asked for.
+    """
+    answers = {key: {"noul": 0.9 if asks(text) else 0.1}
+               for key, text in json.loads(state).items() if key not in drop}
+    answers.update(extra)
+    return 0, json.dumps({"answers": answers})
+
+
+class TestBatching(unittest.TestCase):
+    """Several threads, one call, and every failure is today's order exactly (sd:1160).
+
+    A batch answer is used whole or not at all. One that omits a thread,
+    answers one nobody asked about, or carries a probability that is not one
+    puts the report back in today's order: a partial answer is never applied
+    to the threads it did answer, let alone the ones it did not.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        (self.state / "threads.csv").write_text("thread_id\n", encoding="utf-8")
+        subjects = ["Minutes from August", "Please approve the fence variance",
+                    "Thanks all"]
+        mi.append_arrivals(self.state / "mail-arrivals.csv", [
+            TestAsksIsOptionalAndOnUnlessSwitchedOff.row(
+                self, f"m{n}", f"t{n}", subject, "you")
+            for n, subject in enumerate(subjects, start=1)])
+
+    def report(self, fake):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(mi, "run_jev", side_effect=fake):
+            code = mi.cmd_report(self.state, out, environ={}, err=err)
+        return code, out.getvalue(), err.getvalue()
+
+    def todays_report(self):
+        _, text, _ = self.report(lambda a, s, e=None: (3, ""))
+        self.assertNotIn("(asks)", text)
+        return text
+
+    def replying(self, reply):
+        calls = []
+
+        def fake(args, state, environ=None):
+            calls.append(args)
+            if args[1] in ("enabled", "record"):
+                return 0, ""
+            return reply(state)
+
+        return fake, calls
+
+    def variance(self, text):
+        return "fence variance" in text
+
+    def test_three_threads_are_one_call(self):
+        fake, calls = self.replying(lambda state: batch_reply(state, self.variance))
+        _, text, _ = self.report(fake)
+        verbs = [args[1] for args in calls]
+        self.assertEqual(verbs, ["enabled", "ask"])
+        self.assertLess(text.index("fence variance"), text.index("Minutes from August"))
+        self.assertIn("(asks)", text)
+
+    def test_a_batch_that_omits_a_thread_is_todays_order(self):
+        expected = self.todays_report()
+        fake, calls = self.replying(
+            lambda state: batch_reply(state, self.variance, drop=("q3",)))
+        code, text, err = self.report(fake)
+        self.assertEqual(text, expected)
+        self.assertEqual(code, mi.EXIT_FOUND)
+        self.assertIn("no answer", err)
+        self.assertEqual([args[1] for args in calls], ["enabled", "ask", "record"])
+
+    def test_a_batch_that_answers_an_unasked_thread_is_todays_order(self):
+        expected = self.todays_report()
+        fake, _ = self.replying(
+            lambda state: batch_reply(state, self.variance, q4={"noul": 0.9}))
+        _, text, _ = self.report(fake)
+        self.assertEqual(text, expected)
+
+    def test_a_malformed_probability_is_todays_order(self):
+        expected = self.todays_report()
+        for bad in ("0.9", True, 1.5, -0.1, None, float("nan")):
+            fake, _ = self.replying(
+                lambda state: batch_reply(state, self.variance, q2={"noul": bad}))
+            _, text, _ = self.report(fake)
+            self.assertEqual(text, expected, f"noul={bad!r} was used")
+
+    def test_unreadable_responses_are_todays_order(self):
+        expected = self.todays_report()
+        for reply in ("", "{}", "[]", "5", '{"answers": []}', "not json",
+                      mi.JEV_DEGRADED):
+            fake, _ = self.replying(lambda state: (0, reply))
+            _, text, _ = self.report(fake)
+            self.assertEqual(text, expected, f"{reply!r} was used")
+
+    def test_a_failing_exit_is_todays_order_even_with_a_full_answer(self):
+        expected = self.todays_report()
+        fake, _ = self.replying(lambda state: (1, batch_reply(state, self.variance)[1]))
+        _, text, _ = self.report(fake)
+        self.assertEqual(text, expected)
+
+    def test_the_gate_is_applied_to_each_probability(self):
+        self.assertEqual(mi.read_batch(json.dumps({"answers": {
+            "q1": {"noul": 0.7}, "q2": {"noul": 0.69}}}), 2), ["yes", "no"])
+
+    def test_the_batch_passes_a_fallback_after_the_verb(self):
+        fake, calls = self.replying(lambda state: batch_reply(state, self.variance))
+        self.report(fake)
+        argv = calls[1]
+        self.assertEqual(argv[1], "ask")
+        self.assertEqual(argv[argv.index("--fallback") + 1], mi.JEV_DEGRADED)
+        self.assertEqual(argv[argv.index("--state") + 1], "-")
+        self.assertNotEqual(argv[argv.index("--questions") + 1], "-")
+
+    def test_a_long_report_is_asked_in_batches_of_at_most_eight(self):
+        mi.append_arrivals(self.state / "mail-arrivals.csv", [
+            TestAsksIsOptionalAndOnUnlessSwitchedOff.row(
+                self, f"m{n}", f"t{n}", f"Newsletter {n}", "you")
+            for n in range(4, 30)])
+        sizes = []
+
+        def reply(state):
+            if state.startswith("{"):
+                sizes.append(len(json.loads(state)))
+                return batch_reply(state, self.variance)
+            sizes.append(1)
+            return 0, "no"
+
+        fake, calls = self.replying(reply)
+        _, text, err = self.report(fake)
+        self.assertEqual(sizes, [8, 8, 8, 1])
+        self.assertEqual([args[1] for args in calls[1:]], ["ask", "ask", "ask", "noul"])
+        self.assertIn("(asks)", text)
+        self.assertIn(f"first {mi.JEV_MAX_QUESTIONS} threads", err)
+
+    def test_a_batch_of_one_is_the_noul_it_always_was(self):
+        fake, calls = self.replying(lambda state: (0, "yes"))
+        rows = [{"subject": "Please approve", "direction": "received"}]
+        with mock.patch.object(mi, "run_jev", side_effect=fake):
+            mi.judge_asks(rows, {}, io.StringIO())
+        self.assertEqual([args[1] for args in calls], ["enabled", "noul"])
+        self.assertEqual(rows[0]["asks"], "yes")
 
 
 class TestTheSwitchReachesTheChild(unittest.TestCase):
@@ -691,6 +848,42 @@ class TestNothingPrivateLeavesTheMachine(unittest.TestCase):
             self.assertNotIn(forbidden, everything,
                              f"{forbidden!r} must never leave the machine")
         self.assertIn("Fence variance decision", everything)
+
+    def test_a_batch_sends_no_address_name_body_or_id_either(self):
+        """The batch state and the questions file, read while the call runs."""
+        sent = []
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state_dir = Path(tmp.name)
+        (state_dir / "threads.csv").write_text("thread_id\n", encoding="utf-8")
+        mi.append_arrivals(state_dir / "mail-arrivals.csv", [
+            self.ROW, {**self.ROW, "thread_id": "t7c1", "message_id": "m6de",
+                       "subject": "Budget", "direction": "sent"}])
+
+        def capture(args, state, environ=None):
+            if args[1] == "ask":
+                path = Path(args[args.index("--questions") + 1])
+                sent.append(path.read_text(encoding="utf-8"))
+            sent.append(" ".join(args) + "\n" + state)
+            return (0, "") if args[1] != "ask" else batch_reply(state, lambda t: True)
+
+        with mock.patch.object(mi, "run_jev", side_effect=capture):
+            mi.cmd_report(state_dir, io.StringIO(), environ={},
+                          err=io.StringIO())
+
+        everything = "\n".join(sent)
+        self.assertIn("--state-format json", everything)
+        for forbidden in ("Pat", "Quimby", "@", "t9f3", "m8ab", "t7c1", "m6de",
+                          "example.org", "pat.quimby"):
+            self.assertNotIn(forbidden, everything,
+                             f"{forbidden!r} must never leave the machine")
+        self.assertIn("Fence variance decision", everything)
+        self.assertIn("Budget", everything)
+
+    def test_the_batch_state_is_the_one_thread_payload_under_ordinal_keys(self):
+        state = json.loads(mi.state_for_batch([self.ROW, {**self.ROW, "direction": "sent"}]))
+        self.assertEqual(state, {"q1": mi.state_for_jev(self.ROW),
+                                 "q2": mi.state_for_jev({**self.ROW, "direction": "sent"})})
 
     def test_the_sibling_is_reached_by_path_and_not_by_name(self):
         """cron and CI have no `jev` on PATH, so the name would silently stop."""

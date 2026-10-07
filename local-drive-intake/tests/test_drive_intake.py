@@ -10,6 +10,7 @@ for write" would pass forever while someone added os.utime.
 import contextlib
 import hashlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -907,3 +908,163 @@ class TestJevFallback(unittest.TestCase):
         self.assertEqual(len(command), 1)
         self.assertTrue(command[0].endswith("/local-jev/jev.sh"))
         self.assertTrue(Path(command[0]).is_absolute())
+
+
+class TestJevBatching(unittest.TestCase):
+    """Unmatched paths go to Jev together, and a bad batch answer is noise for all of it (sd:1160).
+
+    The runner is injected, so nothing is spawned. `reply(state)` answers an
+    `ask` given the state it was sent; `choice` and `enabled` have their own
+    canned answers.
+    """
+
+    CONF = TestJevFallback.CONF
+
+    def setUp(self):
+        _, self.rules, _ = di.parse_config(self.CONF)
+        self.calls = []
+        self.questions = []
+
+    def runner(self, reply, choice="document", probe=0):
+        def run(args, **kwargs):
+            self.calls.append((args, kwargs))
+            verb = args[1]
+            if verb == "enabled":
+                return subprocess.CompletedProcess(args, probe, "jev: off\n", "")
+            if verb == "choice":
+                return subprocess.CompletedProcess(args, 0, choice + "\n", "")
+            self.questions.append(
+                Path(args[args.index("--questions") + 1]).read_text(encoding="utf-8"))
+            return reply(kwargs["input"])
+        return run
+
+    @staticmethod
+    def answered(picks, drop=(), **extra):
+        """A reply that picks `picks(path)` for each key, minus `drop`, plus `extra`."""
+        def reply(state):
+            answers = {key: {"choice": picks(path)}
+                       for key, path in json.loads(state).items() if key not in drop}
+            answers.update(extra)
+            return subprocess.CompletedProcess(
+                [], 0, json.dumps({"answers": answers}) + "\n", "")
+        return reply
+
+    def route(self, paths, reply, **kwargs):
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            routes = di.classify_many(paths, self.rules, {}, self.runner(reply, **kwargs))
+        return routes, errors.getvalue()
+
+    def verbs(self):
+        return [args[1] for args, _ in self.calls]
+
+    PATHS = ["weird/a.xyz", "weird/b.xyz", "weird/c.xyz"]
+
+    def test_three_unmatched_paths_are_one_probe_and_one_call(self):
+        routes, _ = self.route(self.PATHS, self.answered(
+            lambda path: "data-export" if path.endswith("b.xyz") else "document"))
+        self.assertEqual(self.verbs(), ["enabled", "ask"])
+        self.assertEqual(routes, {"weird/a.xyz": "document",
+                                  "weird/b.xyz": "data-export",
+                                  "weird/c.xyz": "document"})
+
+    def test_a_batch_that_omits_a_path_is_noise_for_every_path(self):
+        routes, errors = self.route(self.PATHS, self.answered(
+            lambda path: "document", drop=("p2",)))
+        self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"))
+        self.assertIn("routed noise", errors)
+
+    def test_a_batch_that_answers_a_key_nobody_asked_is_noise_for_every_path(self):
+        routes, _ = self.route(self.PATHS, self.answered(
+            lambda path: "document", p4={"choice": "document"}))
+        self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"))
+
+    def test_a_pick_outside_the_criteria_is_noise_for_every_path(self):
+        for bad in ("invoice", "", None, 3, di.JEV_DEGRADED):
+            routes, _ = self.route(self.PATHS, self.answered(
+                lambda path: "document", p3={"choice": bad}))
+            self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"), repr(bad))
+
+    def test_none_of_these_is_an_answer_and_noise_for_that_path_only(self):
+        routes, errors = self.route(self.PATHS, self.answered(
+            lambda path: di.JEV_NO_MATCH if path.endswith("a.xyz") else "document"))
+        self.assertEqual(routes, {"weird/a.xyz": "noise",
+                                  "weird/b.xyz": "document",
+                                  "weird/c.xyz": "document"})
+        self.assertEqual(errors, "")
+
+    def test_unreadable_degraded_and_failing_replies_are_noise_for_every_path(self):
+        for code, out in ((0, ""), (0, "{}"), (0, "[]"), (0, "not json"),
+                          (0, '{"answers": []}'), (0, di.JEV_DEGRADED),
+                          (1, json.dumps({"answers": {k: {"choice": "document"}
+                                                      for k in ("p1", "p2", "p3")}}))):
+            routes, _ = self.route(
+                self.PATHS, lambda state: subprocess.CompletedProcess([], code, out, ""))
+            self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"), out)
+
+    def test_a_call_that_raises_is_noise_for_every_path(self):
+        def boom(state):
+            raise subprocess.TimeoutExpired("jev", 60)
+        routes, errors = self.route(self.PATHS, boom)
+        self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"))
+        self.assertIn("call failed", errors)
+
+    def test_batches_hold_at_most_eight_and_a_failed_one_leaves_the_others(self):
+        paths = [f"weird/{n:02}.xyz" for n in range(10)]
+
+        def reply(state):
+            if "weird/09.xyz" in json.loads(state).values():
+                return subprocess.CompletedProcess([], 1, "", "boom")
+            return self.answered(lambda path: "document")(state)
+
+        routes, _ = self.route(paths, reply)
+        sizes = [len(json.loads(kw["input"])) for args, kw in self.calls if args[1] == "ask"]
+        self.assertEqual(sizes, [8, 2])
+        self.assertEqual([routes[p] for p in paths], ["document"] * 8 + ["noise"] * 2)
+
+    def test_a_last_batch_of_one_is_the_choice_it_always_was(self):
+        paths = [f"weird/{n}.xyz" for n in range(9)]
+        routes, _ = self.route(paths, self.answered(lambda path: "document"),
+                               choice="correspondence")
+        self.assertEqual(self.verbs(), ["enabled", "ask", "choice"])
+        self.assertEqual(routes["weird/8.xyz"], "correspondence")
+
+    def test_rule_hits_are_never_sent_and_a_repeated_path_is_sent_once(self):
+        paths = ["board/minutes/2026-09.pdf", "weird/a.xyz", "weird/b.xyz", "weird/a.xyz"]
+        routes, _ = self.route(paths, self.answered(lambda path: "document"))
+        ask = [kw["input"] for args, kw in self.calls if args[1] == "ask"]
+        self.assertEqual(json.loads(ask[0]), {"p1": "weird/a.xyz", "p2": "weird/b.xyz"})
+        self.assertEqual(routes["board/minutes/2026-09.pdf"], "correspondence")
+
+    def test_only_the_paths_are_sent_and_the_questions_name_none(self):
+        self.route(self.PATHS, self.answered(lambda path: "document"))
+        args, kwargs = self.calls[1]
+        self.assertEqual(json.loads(kwargs["input"]), dict(zip(["p1", "p2", "p3"], self.PATHS)))
+        questions = json.loads(self.questions[0])
+        self.assertEqual(sorted(questions), ["p1", "p2", "p3"])
+        for path in self.PATHS:
+            self.assertNotIn(path, self.questions[0])
+        self.assertEqual(list(questions["p1"]["criteria"]),
+                         [*di.route_names(self.rules), di.JEV_NO_MATCH])
+        self.assertEqual(args[args.index("--fallback") + 1], di.JEV_DEGRADED)
+        self.assertEqual(args[args.index("--state") + 1], "-")
+        self.assertLess(args.index("ask"), args.index("--fallback"))
+        self.assertEqual(args[args.index("--stage") + 1], "JEV_DRIVE_INTAKE")
+
+    def test_the_stage_switched_off_asks_the_probe_once_and_sends_nothing(self):
+        di._SAID.clear()
+        self.addCleanup(di._SAID.clear)
+        routes, _ = self.route(self.PATHS, self.answered(lambda path: "document"), probe=3)
+        self.assertEqual(self.verbs(), ["enabled"])
+        self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"))
+
+    def test_arrival_rows_probe_once_for_every_unmatched_path(self):
+        changes = [(di.Entry("r", path, 1, 0), "new", "") for path in self.PATHS]
+        with unittest.mock.patch.object(
+                di, "classify_many", wraps=di.classify_many) as spy, \
+                unittest.mock.patch.object(di.subprocess, "run",
+                                           self.runner(self.answered(lambda path: "document"))):
+            rows = di.arrival_rows(changes, self.rules, "2026-10-07T00:00:00", {})
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(self.verbs(), ["enabled", "ask"])
+        self.assertEqual([row["route"] for row in rows], ["document"] * 3)
