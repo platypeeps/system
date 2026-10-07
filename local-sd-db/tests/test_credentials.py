@@ -61,6 +61,11 @@ class Probes(unittest.TestCase):
         body = credentials.check(self.db, env=env, get=fake.get, run=fake.run, now="2026-10-06T09:10:00Z")
         return {probe["id"]: probe for probe in body["probes"]}, fake
 
+    def test_a_rate_limited_answer_is_a_reason_not_a_rejection(self):
+        probes, _ = self.check(github=(403, {}), ha=(403, {}))
+        for key in ("github_pat", "ha_token"):
+            self.assertEqual((probes[key]["valid"], probes[key]["reason"]), (None, "answered HTTP 403"), key)
+
     def test_each_probe_records_presence_validity_and_expiry(self):
         probes, fake = self.check()
         self.assertEqual(probes["github_pat"], {"id": "github_pat", "name": "GitHub PAT (GITHUB_PERSONAL_ACCESS_TOKEN)",

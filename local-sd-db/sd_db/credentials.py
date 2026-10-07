@@ -71,7 +71,10 @@ def _expiry(value: str | None) -> str | None:
 
 
 def _token_probe(probe: dict[str, Any], token: str | None, url: str | None, get) -> dict[str, Any]:
-    """`present`, then `valid` from one GET: True on 200, False on 401 or 403, else a reason."""
+    """`present`, then `valid` from one GET: True on 200, False on 401, else a reason.
+
+    Both endpoints answer 401 to a bad token. A 403 is a rate limit or a block, so it is unknown, not rejected.
+    """
     probe["present"] = bool(token)
     if not token or not url:
         return probe
@@ -80,7 +83,7 @@ def _token_probe(probe: dict[str, Any], token: str | None, url: str | None, get)
     except (OSError, ValueError) as error:
         probe["reason"] = f"not reached: {type(error).__name__}"
         return probe
-    probe["valid"] = True if status == 200 else False if status in (401, 403) else None
+    probe["valid"] = True if status == 200 else False if status == 401 else None
     if probe["valid"] is None:
         probe["reason"] = f"answered HTTP {status}"
     probe["headers"] = headers
