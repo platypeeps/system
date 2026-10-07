@@ -65,6 +65,11 @@ backup, and the fixture harness both repositories test against.
                     gate pass. The column only, every row starts at `off`,
                     set with `repo satellite-gate`. Carries its reverse in
                     its header, run before 019's (sd:2704)
+      schema/021_judgment_call_context.sql  five `judgment` columns
+                    for the context of a call: `location` (a `~/` key like
+                    `skill_use.cwd`), `threshold`, `run_id`, `prompt_hash`
+                    and `load_avg`, NULL on every older row. Carries its
+                    reverse in its header, run before 020's (sd:2950)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -460,6 +465,19 @@ The opt-in is a `repo` column, set per repository on the hub:
 - Roll out one repository at a time: set `accept`, install the hub's job, then request from the satellite.
 - The job is `local-cron-jobs/examples/satellite-lane-run.job`, one copy per opted-in repository, on the hub only.
 
+## Satellite claims and the staleness alarm
+
+A satellite session claims the item it works on, and the hub alarms when the claim goes quiet (sd:2918).
+
+    ./sd-db.sh claim ITEM [--branch B] [--quiet-until ISO]   # on a satellite; refused on the hub
+    ./sd-db.sh unclaim ITEM                                  # release; closes the alert episode
+    ./sd-db.sh satellite-stale [status | --notify]           # on the hub
+
+- A claim is a `heartbeat` row keyed `satellite-claim:<item>`; no migration. The nightly prune keeps one row per key and ranks an open row first, so the open claim survives whatever its timestamp.
+- An alert episode is a `watermark` row keyed `satellite-stale:<item>`, holding the progress instant it alerted on.
+- `local-satellite-stale/satellite-stale.sh` is the convention 1 entrypoint, its `status` the convention 6 one, and its `run` the cron job's verb.
+- The record is `docs/work/2026-10-07-satellite-staleness-alarm/`.
+
 ## `judgments`: what the judgment models cost, by stage
 
 `sd-db.sh judgments` compares the stages that route a decision through a
@@ -483,6 +501,24 @@ they are caller-controlled and a cap alone accepts `--stage
 `model` are exempt on purpose: they carry vendor names such as
 `anthropic/claude-opus-5`, which come from a vendor and not from a subject
 line.
+
+`location` is where the call came from, beside `caller`, who asked: the git
+toplevel of the caller's working directory, else that directory. It is a key
+column, as `skill_use.cwd` is: `record` stores a path under `$HOME` as `~/`
+plus the relative path, and any other path absolute, and `status` counts a
+value absolute under this home. It is the one field a bad value does not
+refuse: a value over 255 characters, or one with a control character, is
+stored as NULL and the row is kept. It names a directory, never submitted
+content.
+
+Four more columns record the conditions of a call, under the same rule: a
+value that fails its shape is stored as NULL and the row is kept.
+`threshold` is the cut-off the caller applied (`--gate`, `--unsure-below`),
+from 0 to 1. `run_id` groups the calls of one run, such as one review, and
+is an identifier. `prompt_hash` is 16 lowercase hex digits hashing the
+question definition -- instructions, criteria, levels -- and never the state.
+`load_avg` is the one-minute load average when the call was made, zero or
+more.
 
 A gate event is not a decision. A caller that declines at the gate and then
 records what its own mechanism did writes two rows for one decision, so the

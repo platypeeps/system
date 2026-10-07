@@ -100,6 +100,22 @@ byte corrupts the object store (`MASK_EXCLUDE_DIRS`). That list is
 deliberately narrower than the scan's `EXCLUDE_DIRS`: a key sitting in a
 `logs/`, `storage/` or `OLD/` dir still gets masked, because that is
 exactly what mask is for.
+
+A live session may append to a log while `mask --apply` rewrites it, and the
+rewrite would drop that line (sd:1254). So `mask` skips a file modified in the
+last `S4S_MASK_SETTLE_MIN` minutes (default 10), and a file whose size or
+mtime changed between its read and its write. Each skipped file prints as
+`busy <path>` and counts in the summary line; the next run masks it. A
+write that fails partway, such as a full disk, prints `FAILED <path>` and
+exits 1. A file left half masked gets its original bytes back, and the line
+says whether that worked; a file that holds either version stays as it is,
+so a rewrite that landed is not undone (sd:2971). The restore touches only
+the inode it read, and only bytes that a cut-short write leaves, so a
+rotated log or a line appended since stays as it is. It writes over the
+original length and never truncates, so a line appended while it writes
+stays too. A file that will not open to
+write fails the same way when it holds a match, and passes when it holds none. The rewrite is in `mask_files.py`.
+
 Caveats: quit vim before masking `.viminfo` (vim rewrites it
 on exit from memory), same idea for open shells and history files, and
 masking is cleanup, not un-leaking — rotate any key that sat in these

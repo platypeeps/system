@@ -51,6 +51,23 @@ source says the answer should have been, a number like `answer`. A row is
 right when the two are equal. `label` is the one write path for it, and it
 holds the label to the same shapes a row is held to: a number, and a source
 that is an identifier naming the rule that produced it (sd:2107).
+
+**`location` is the caller's directory, and the one field a bad value does
+not refuse.** It says where the call came from, beside `caller`, which says
+who asked: the git toplevel of the caller's working directory, else that
+directory. It is a repository key in the sense of `paths`, as
+`skill_use.cwd` is: a path under `$HOME` is stored `~/`-relative, and any
+other path stays absolute. A value over `MAX_LOCATION` characters, or one
+with a character `str.isprintable` rejects, is stored as NULL and the row is
+kept: a location is a convenience for the reader, not a fact the metering
+depends on (sd:2950).
+
+**The rest of a call's context follows the same rule.** `threshold` is the
+cut-off the caller applied, from 0 to 1; `run_id` groups the calls of one
+run, in the identifier grammar; `prompt_hash` is 16 lowercase hex digits
+hashing the question definition, never the state; `load_avg` is the
+one-minute load average, zero or more. Each value that fails its shape is
+stored as NULL and the row is kept.
 """
 
 from __future__ import annotations
@@ -61,6 +78,7 @@ import re
 import sqlite3
 from decimal import Decimal
 
+from . import paths
 from .database import transaction
 from .errors import SdDbError
 from .writes import now as _now
@@ -75,6 +93,7 @@ __all__ = [
     "MAX_NAME",
     "NUMBER",
     "MAX_DISTRIBUTION",
+    "MAX_LOCATION",
     "MAX_OPTIONS",
     "MAX_ORDERING",
     "OUTCOMES",
@@ -173,6 +192,13 @@ MAX_OPTIONS = 255
 #: Room for `MAX_OPTIONS` values of up to 15 characters each, plus commas.
 #: Sized from the option count; `MAX_ORDERING` is a different thing's bound.
 MAX_DISTRIBUTION = MAX_OPTIONS * 16
+
+#: The longest location `record` keeps. A longer one is stored as NULL.
+MAX_LOCATION = 255
+
+#: A prompt hash: the first 16 lowercase hex digits of a SHA-256, as `jev`
+#: writes it.
+PROMPT_HASH = re.compile(r"[0-9a-f]{16}")
 
 
 class JudgmentRefused(SdDbError):
@@ -304,6 +330,43 @@ def _answer(value: object) -> str | None:
     return value
 
 
+def _location(value: object) -> str | None:
+    """The caller's directory as a `paths` key, or None for a value the
+    ledger does not keep: not a string, empty, over `MAX_LOCATION`, or
+    carrying a control character. Never refuses; a bad location costs the
+    row its location, not the row."""
+    if not isinstance(value, str) or not value or len(value) > MAX_LOCATION \
+            or not value.isprintable():
+        return None
+    try:
+        value = paths.key(value)
+    except paths.PathRefused:        # no usable $HOME: keep it as given
+        return value
+    except Exception:                # a location may not cost the ledger its row
+        return None
+    # Resolving follows symlinks, so the key is held to the rule again.
+    return value if len(value) <= MAX_LOCATION and value.isprintable() else None
+
+
+def _soft_number(value: object, low: float, high: float) -> float | None:
+    """A finite number from `low` to `high`, or None. Never refuses."""
+    if type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:            # an int past a float's range
+        return None
+    return number if math.isfinite(number) and low <= number <= high else None
+
+
+def _soft_match(value: object, shape: re.Pattern, limit: int) -> str | None:
+    """A string of at most `limit` characters that `shape` matches whole, or
+    None. Never refuses."""
+    if not isinstance(value, str) or len(value) > limit or not shape.fullmatch(value):
+        return None
+    return value
+
+
 def record(
     connection: sqlite3.Connection,
     *,
@@ -329,6 +392,11 @@ def record(
     changed: str = "unknown",
     server_ms: int | None = None,
     probabilities: str | None = None,
+    location: str | None = None,
+    threshold: float | None = None,
+    run_id: str | None = None,
+    prompt_hash: str | None = None,
+    load_avg: float | None = None,
     now: str | None = None,
 ) -> int:
     """Write one row and return its id.
@@ -367,6 +435,11 @@ def record(
     questions = _count("questions", questions)
     server_ms = _count("server_ms", server_ms)
     probabilities = _probabilities(probabilities)
+    location = _location(location)
+    threshold = _soft_number(threshold, 0.0, 1.0)
+    run_id = _soft_match(run_id, IDENTIFIER, MAX_NAME)
+    prompt_hash = _soft_match(prompt_hash, PROMPT_HASH, 16)
+    load_avg = _soft_number(load_avg, 0.0, math.inf)
     if usd is not None and (type(usd) not in (int, float) or not math.isfinite(usd)
                             or usd < 0):
         raise JudgmentRefused(f"usd must be a finite number of zero or more; got {usd!r}")
@@ -378,13 +451,15 @@ def record(
             "INSERT INTO judgment (timestamp, caller, stage, arm, pair, shadow, "
             "provider, model, primitive, question_id, questions, outcome, cause, "
             "answer, confidence, ordering, tokens_in, tokens_out, duration_ms, "
-            "usd, changed, server_ms, probabilities) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "usd, changed, server_ms, probabilities, location, threshold, run_id, "
+            "prompt_hash, load_avg) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?)",
             (moment, caller, stage, arm, pair, 1 if shadow else 0, provider,
              model, primitive, question_id, questions, outcome, cause, answer,
              confidence, ordering, tokens_in, tokens_out, duration_ms,
              None if usd is None else float(usd), changed, server_ms,
-             probabilities),
+             probabilities, location, threshold, run_id, prompt_hash, load_avg),
         )
     return int(cursor.lastrowid)
 
