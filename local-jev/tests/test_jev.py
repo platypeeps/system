@@ -54,6 +54,8 @@ class Stub(BaseHTTPRequestHandler):
     drop_answers = False
     # A 200 whose answers are null: a shape no verb can read.
     null_answers = False
+    # A 200 that reports no token counts at all.
+    drop_usage = False
 
     def log_message(self, *args):
         pass
@@ -96,9 +98,10 @@ class Stub(BaseHTTPRequestHandler):
             answers = {}
         if Stub.null_answers:
             answers = {qid: None for qid in answers}
+        usage = None if Stub.drop_usage else {"input_tokens": Stub.input_tokens,
+                                              "output_tokens": Stub.output_tokens}
         body = json.dumps({"model": "jev-stub", "answers": answers,
-                           "usage": {"input_tokens": Stub.input_tokens,
-                                     "output_tokens": Stub.output_tokens}}).encode()
+                           "usage": usage}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -137,6 +140,7 @@ class StubServer(unittest.TestCase):
         Stub.output_tokens = 1
         Stub.drop_answers = False
         Stub.null_answers = False
+        Stub.drop_usage = False
         Stub.seen = []
 
     def env(self, **extra):
@@ -1061,6 +1065,16 @@ class TestBudget(StubServer):
         self.assertEqual(self.call(**limit)[0], 0)
         self.assertEqual(self.call(**limit)[0], 3)
         self.assertEqual(len(Stub.seen), 1)
+
+    def test_a_response_without_usage_is_charged_an_estimate(self):
+        """Not zero, or a token ceiling never trips (sd:2916)."""
+        Stub.drop_usage = True
+        limit = {self.STAGE + "_MAX_TOKENS": "5"}
+        rows = self.events(["noul", "q", "--stage", self.STAGE], **limit)
+        self.assertEqual(self.call(**limit)[0], 3)
+        self.assertEqual(len(Stub.seen), 1)
+        # The ledger keeps what the vendor reported, which is nothing.
+        self.assertEqual([(r["tokens_in"], r["tokens_out"]) for r in rows], [(None, None)])
 
     def test_one_stage_spent_leaves_another_alone(self):
         limit = {self.STAGE + "_MAX_CALLS": "0"}

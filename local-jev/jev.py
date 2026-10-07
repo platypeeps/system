@@ -352,6 +352,11 @@ BUDGET_LOCK_S = 1.0
 #: The prefix of a charge `budget_charge` left beside the counter.
 PENDING = "pending-"
 
+#: Bytes of UTF-8 to a token, for a side of a call its response does not
+#: count: `sd_db.calls.BYTES_PER_TOKEN`, mirrored because `jev` runs without
+#: `sd_db`, and checked by the suite. It errs high, as a ceiling should.
+BYTES_PER_TOKEN = 3
+
 WHOLE = re.compile(r"^[0-9]{1,15}$")
 
 
@@ -1490,6 +1495,11 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
             try:
                 with send(request, timeout=conf["timeout"]) as response:
                     raw = response.read().decode("utf-8")
+                    # What a budget charges for a side the response does not
+                    # count: the bytes each way, never zero (sd:2916).
+                    note(_estimate={
+                        "tokens_in": len(body) // BYTES_PER_TOKEN,
+                        "tokens_out": len(raw.encode("utf-8")) // BYTES_PER_TOKEN})
                     try:
                         parsed = json.loads(raw)
                     except json.JSONDecodeError:
@@ -2107,9 +2117,10 @@ def main(argv=None, out=None, env=None, **kw) -> int:
             # In `finally`: an answer no verb can read still reported its
             # usage, and an uncharged call would lift a token ceiling.
             spent = _EVENT or {}
-            budget_charge(stage, env, (spent.get("tokens_in") or 0) +
-                          (spent.get("tokens_out") or 0),
-                          counted[0] if counted else "")
+            guess = spent.get("_estimate") or {}
+            tokens = sum(guess.get(side, 0) if spent.get(side) is None else spent[side]
+                         for side in ("tokens_in", "tokens_out"))
+            budget_charge(stage, env, tokens, counted[0] if counted else "")
     if shadow is not None:
         # The caller's own answer, always, and exit 0. A stage in shadow mode
         # changes no behaviour, and that has to hold on the run where the call

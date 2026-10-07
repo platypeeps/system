@@ -202,6 +202,9 @@ old path runs, and the ledger counts the decline under that cause.
   arguments, a redacted key) counts nothing, and neither does `enabled`.
 - Tokens are known only after the answer, so a token ceiling stops the call
   after the one that crossed it.
+- A response that does not report a side's tokens is charged an estimate
+  for it, three bytes of the request or response to a token, never zero.
+  The ledger still records only the counts the response reported.
 - A ceiling that is not a whole number declines, and so does a counter that
   cannot be read or locked within a second, or that is not a budget book. A
   limit you set is never lifted silently.
