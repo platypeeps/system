@@ -674,8 +674,11 @@ admin_mutate() {
 # real key whatever DRY_RUN says, so the skip left exactly the two commands
 # that mutate an account unguarded. The caller that really prints instead of
 # calling now decides for itself.
+#
+# grep -x, not -qx: -q exits at the first match and closes the pipe while aws
+# is still writing, and aws prints a BrokenPipeError on stderr (sd:2878).
 require_admin_account() {
-  aws configure list-profiles | grep -qx "$ADMIN_PROFILE" ||
+  aws configure list-profiles | grep -x "$ADMIN_PROFILE" >/dev/null ||
     die "ADMIN_PROFILE '$ADMIN_PROFILE' does not exist yet; create it with: aws login --profile $ADMIN_PROFILE"
   got=$(admin sts get-caller-identity --query Account --output text) ||
     die "ADMIN_PROFILE '$ADMIN_PROFILE' has no valid session (try: aws login --profile $ADMIN_PROFILE)"

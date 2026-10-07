@@ -415,6 +415,18 @@ class CommandCase(unittest.TestCase):
         self.assertIn("--region eu-west-1", done.stderr)
         self.assertIn("DRY_RUN: aws --profile admin-x --region eu-west-1", done.stderr)
 
+    def test_the_admin_profile_probe_reads_every_listed_profile(self):
+        # grep -q stops at its first match and closes the pipe while aws is
+        # still writing the list; aws then prints a BrokenPipeError on stderr
+        # (sd:2878). The list must outgrow the pipe buffer to show it.
+        box = self.ready()
+        for n in range(60000):
+            box.profile("zz-profile-%04d" % n)
+        done = box.run("apply", "x")
+        self.assertTrue(any(c["rest"][:2] == ["configure", "list-profiles"] for c in box.calls()))
+        self.assertNotIn("Broken pipe", done.stderr)
+        self.assertNotIn("BrokenPipeError", done.stderr)
+
     def test_an_account_policy_name_overrides_the_shared_one(self):
         box = self.ready(POLICY_NAME="account-policy")
         (box.config / "aws-setup" / ".env").write_text("POLICY_NAME=shared-policy\n")
