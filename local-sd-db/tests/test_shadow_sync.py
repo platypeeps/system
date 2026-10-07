@@ -24,11 +24,14 @@ from sd_db.shadow_sync import (
     NO_AUTH,
     OVERLAP,
     TRACKER,
+    SyncBusy,
+    _sync,
     iso,
     parse_iso,
     read_watermark,
     search,
     sync,
+    sync_lock,
     window_start,
     write_watermark,
 )
@@ -402,12 +405,13 @@ class CompleteCoverage(SyncCase):
         newer = self.now + timedelta(hours=1)
         completed = []
 
+        # `_sync`, under the lock `sync` takes: the cursor recheck still guards a collect the lock does not cover.
         def runner(argv):
             if not completed:
-                completed.append(sync(other, now=newer, runner=Gh()))
+                completed.append(_sync(other, now=newer, runner=Gh()))
             return Gh()(argv)
 
-        result = sync(self.connection, now=self.now, runner=runner)
+        result = _sync(self.connection, now=self.now, runner=runner)
         self.assertTrue(completed[0].ok)
         self.assertTrue(completed[0].watermark_moved)
         self.assertTrue(result.ok)
@@ -482,6 +486,63 @@ class CompleteCoverage(SyncCase):
                     sync(self.connection, now=self.now, runner=runner, **options)
                 self.assertEqual(runner.calls, [])
                 self.assertEqual(self.connection.total_changes, before)
+
+
+class TheLock(SyncCase):
+    """One collect at a time per database, whichever caller starts first (sd:2207 review)."""
+
+    def other(self):
+        other = connect(Path(self.tmp.name) / "sd.db")
+        self.addCleanup(other.close)
+        return other
+
+    def test_a_sync_while_another_caller_holds_the_lock_is_refused_before_it_collects(self):
+        gh = Gh()
+        with sync_lock(self.other()):
+            with self.assertRaisesRegex(SyncBusy, "already running"):
+                sync(self.connection, now=self.now, runner=gh)
+        self.assertEqual(gh.calls, [])
+        self.assertIsNone(read_watermark(self.connection))
+
+    def test_a_second_caller_during_a_sync_is_refused_and_the_first_completes(self):
+        other, refused = self.other(), []
+
+        def runner(argv):
+            if not refused:
+                with self.assertRaises(SyncBusy) as busy:
+                    sync(other, now=self.now + timedelta(hours=1), runner=Gh())
+                refused.append(str(busy.exception))
+            return Gh()(argv)
+
+        result = sync(self.connection, now=self.now, runner=runner)
+        self.assertIn("already running", refused[0])
+        self.assertTrue(result.ok)
+        self.assertEqual(read_watermark(self.connection), iso(self.now))
+
+    def test_the_lock_is_free_again_after_a_sync_ends_well_or_badly(self):
+        self.assertFalse(sync(self.connection, now=self.now, runner=Gh(fail="boom")).ok)
+        self.assertTrue(sync(self.other(), now=self.now, runner=Gh()).ok)
+        with sync_lock(self.connection):
+            pass
+
+    def test_a_satellite_refuses_before_it_locks_or_collects(self):
+        from sd_db.remote import HubOnly
+
+        gh = Gh()
+        with patch("sd_db.database.served_by", return_value="hub.example.test:8770"):
+            with self.assertRaises(HubOnly):
+                sync(self.connection, now=self.now, runner=gh)
+        self.assertEqual(gh.calls, [])
+        self.assertFalse((Path(self.tmp.name) / "operation-locks").exists())
+
+    def test_an_in_memory_database_takes_no_lock(self):
+        import sqlite3
+
+        memory = sqlite3.connect(":memory:")
+        self.addCleanup(memory.close)
+        with patch("sd_db.runner_journal.lock") as lock, sync_lock(memory):
+            pass
+        lock.assert_not_called()
 
 
 class TheTrackerDispatch(SyncCase):

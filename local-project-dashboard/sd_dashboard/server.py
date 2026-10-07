@@ -788,7 +788,9 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._json(400, {"error": str(problem)})
         except (FileNotFoundError, sqlite3.Error) as problem:
             return self._json(503, {"error": str(problem)})
-        self._json(201 if path.path == "/api/items" else 200, result)
+        # A write that answers its own status (sd:2207: 202 started, 409 refused) returns `(status, document)`, as a read can.
+        status, result = result if isinstance(result, tuple) else (201 if path.path == "/api/items" else 200, result)
+        self._json(status, result)
 
     def _document(self, tail: str) -> None:
         """One generated report, handed over whole.

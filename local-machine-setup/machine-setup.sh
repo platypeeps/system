@@ -1191,10 +1191,11 @@ sd_in_profile() { manifest agent | grep -qxF -e "$LABEL_PREFIX.sd-dashboard" -e 
 SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # The hub's own launchd jobs, by label suffix: the one list of what a
 # satellite never runs (prd R5 of the second-machine plan). The cron jobs
-# are the backups, installed by the cron stage under `<prefix>.cron.`.
+# are the backups and the nightly shadow sync, whose lock sits beside the
+# database; the cron stage installs them under `<prefix>.cron.`.
 # The satellite stage reports each one present as EXTRA; the agents stage
 # skips each one while hub.json exists.
-SD_HUB_ONLY_AGENTS="sd-dashboard sd-runner sd-serve task-actions cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly"
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-runner sd-serve task-actions cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
