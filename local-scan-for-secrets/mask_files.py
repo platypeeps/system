@@ -123,7 +123,7 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
             f.flush()
     except OSError as e:
         if started:
-            raise WriteFailed("%s: %s" % (path, e)) from e
+            raise WriteFailed("%s: %s; %s" % (path, e, recover(path, data, new, (seen.st_dev, seen.st_ino)))) from e
         if apply and not opened:
             left = mask_file(path, pairs, pats, False)
             if left.count or left.pcount:
@@ -132,6 +132,54 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
             return left
         raise
     return Result(count, pcount)
+
+
+def cut_short(on_disk: bytes, data: bytes, new: bytes) -> bool:
+    """True when `on_disk` is `new[:k] + data[k:]` for some k at the
+    original length: what an in-place write leaves when it stops partway.
+    A cut-short write that grew the file is not one: putting it back would
+    need a truncate, and a truncate removes what a session appended."""
+    if len(on_disk) != len(data):
+        return False
+    written = len(os.path.commonprefix([on_disk, new]))
+    kept = len(os.path.commonprefix([on_disk[::-1], data[::-1]]))
+    return len(data) - kept <= written
+
+
+def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> str:
+    """After a failed rewrite, leave the file whole: as it was, or masked.
+
+    It runs once the buffered handle is closed, since a close flushes what
+    the buffer held over anything written before it. Only the file that was
+    read is touched (same device and inode), and only when its bytes are
+    exactly what a write cut short leaves: a session's append since, or a
+    rotated log, stays as it is. A file that holds either version stays too,
+    since undoing a rewrite that landed would put the value back. A cut-short
+    write gets the original bytes back over the same length, with no
+    truncate, so a line a session appends meanwhile lands after them and
+    stays; the run still fails, and the next one masks it.
+    """
+    try:
+        fd = os.open(path, os.O_RDWR)
+        with os.fdopen(fd, "r+b", buffering=0) as raw:
+            st = os.fstat(fd)
+            if (st.st_dev, st.st_ino) != identity:
+                return "file replaced after the failed write; left as is"
+            on_disk = raw.read()
+            if on_disk == new:
+                return "the masked bytes landed"
+            if on_disk == data:
+                return "file unchanged"
+            if not cut_short(on_disk, data, new):
+                return "file changed after the failed write; left as is, and it may be half masked"
+            raw.seek(0)
+            view = memoryview(data)
+            while view:
+                view = view[raw.write(view):]
+            os.fsync(fd)
+    except OSError as e:
+        return "restore failed (%s); the file may be half masked" % e
+    return "original restored"
 
 
 def settle_seconds(text: str) -> float:
