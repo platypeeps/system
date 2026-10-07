@@ -24,6 +24,10 @@ reported one of them.
 state. It no longer loses anything, because the arrivals log is append-only,
 but `peek` is the verb that answers "what is new" without touching a thing.
 
+`peek` and `report` print one line per file. A file that arrived more than once
+shows its count, `(new, 16 arrivals)`: a Drive-hosted Doc re-syncs without
+changing. The arrivals log still keeps every row.
+
 Exit codes follow the repo convention, and `local-cron-jobs` depends on them:
 **0** something changed, **3** nothing to do, **1** a real error. A quiet day
 must be 3 and not 1 — a nightly job that fails every quiet day trains everyone
