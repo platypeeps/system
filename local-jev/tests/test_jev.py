@@ -1033,6 +1033,19 @@ class TestBudget(StubServer):
         self.assertEqual(self.call(**limit)[0], 3)
         self.assertEqual(Stub.seen, [])
 
+    def test_a_call_refused_before_sending_spends_no_call(self):
+        """Counted after every local refusal, right before the send (sd:2910)."""
+        limit = {self.STAGE + "_MAX_CALLS": "1"}
+        (self.config / "privacy-patterns").write_text("private-host\n")
+        for refused in (["choice", "q", "--criteria", " , "],
+                        ["noul", "q", "--state", str(self.budget / "absent")],
+                        ["choice", "q", "--criteria", "private-host,other"]):
+            with self.subTest(refused=refused[-1]):
+                code = self.run_verbose([*refused, "--stage", self.STAGE], **limit)[0]
+                self.assertEqual(code, 1)
+        self.assertEqual(Stub.seen, [])
+        self.assertEqual(self.call(**limit)[:2], (0, "0.97\n"))
+
     def test_enabled_answers_three_once_spent_and_counts_nothing(self):
         limit = {self.STAGE + "_MAX_CALLS": "1"}
         for _ in range(3):

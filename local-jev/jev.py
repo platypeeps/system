@@ -132,6 +132,10 @@ class JevError(RuntimeError):
     """Something the caller can act on, printed without the key in it."""
 
 
+class BudgetSpent(JevError):
+    """The stage may not call today; nothing was sent (`budget_spent`)."""
+
+
 # --- the switch --------------------------------------------------------------
 
 def flag_file(env) -> str:
@@ -1439,12 +1443,15 @@ def retry_after(headers, attempt: int) -> float:
     return BACKOFF * (2 ** attempt)
 
 
-def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
+def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
+         reserve=None) -> dict:
     """POST the payload, retrying the statuses the API says to retry.
 
     `opener` and `sleep` are injected so the suite can drive a throttled
-    server and a doubling backoff without waiting for either.
+    server and a doubling backoff without waiting for either. `reserve`
+    counts the call against its stage's budget, or raises `BudgetSpent`.
     """
+    taken = 0
     if conf.get("local"):
         # Checked again here, at the one place a request is sent, so no path
         # into `post` can reach a remote host in local-only mode.
@@ -1453,8 +1460,13 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                            "not a loopback address")
     else:
         payload, taken = redacted_payload(payload, conf.get("privacy", ()))
-        if taken:
-            sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
+    # After the last local refusal and before anything leaves: a call this
+    # machine refuses spends none of its stage's budget (sd:2910).
+    if reserve is not None:
+        reserve()
+    if taken:
+        sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
+    if not conf.get("local"):
         # After redaction and refusal, before the first attempt: the arms see
         # the bytes Jev sees, once per call however many retries follow.
         start_arms(payload)
@@ -2062,8 +2074,12 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     word, reason = why_unusable(conf, env)
     stage = whose(args, env, "stage")
     counted = []
-    if not reason:
-        word, reason = budget_spent(stage, env, reserve=True, counted=counted)
+
+    def reserve():
+        # Called by `post`, after the last local refusal (sd:2910).
+        spent = budget_spent(stage, env, reserve=True, counted=counted)[1]
+        if spent:
+            raise BudgetSpent(spent)
     if switched and not reason:
         sys.stderr.write("jev: shadow on; Jev is asked and recorded, and its "
                          "answer is not used\n")
@@ -2075,7 +2091,11 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     else:
         outcome, cause = "ok", None
         try:
-            code = args.run(args, conf, sink, **kw)
+            code = args.run(args, conf, sink, reserve=reserve, **kw)
+        except BudgetSpent as exc:
+            # Nothing was sent: the stage's budget is spent, or its counter
+            # cannot be used. A decline like the ones above, under `budget`.
+            code, outcome, cause = degrade(str(exc), fallback, sink), "unavailable", "budget"
         except (JevError, OSError, json.JSONDecodeError) as exc:
             outcome = cause = cause_of(exc)
             if fallback is not None:

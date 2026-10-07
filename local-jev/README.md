@@ -197,8 +197,9 @@ decline with cause `budget`, exactly like Jev off: `jev enabled STAGE` exits
 old path runs, and the ledger counts the decline under that cause.
 
 - Unset means no ceiling. A stage with none reads and writes no file.
-- A call counts itself before it is sent, so two callers cannot share the
-  last call. `enabled` reads the counter and counts nothing.
+- A call counts itself after its last local check and before it is sent,
+  so two callers cannot share the last call. A call refused here (bad
+  arguments, a redacted key) counts nothing, and neither does `enabled`.
 - Tokens are known only after the answer, so a token ceiling stops the call
   after the one that crossed it.
 - A ceiling that is not a whole number declines, and so does a counter that
