@@ -11,7 +11,7 @@ const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknow
 const SDDB = '~/repos/system/local-sd-db/sd-db.sh';
 
 // ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
-let DOC = null, READ = '';
+let DOC = null, READ = '', GRANT = null;
 let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, SERVICES = [], CRON = [];
 const tilde = p => { const h = GIT?.root ? GIT.root.replace(/\/repos\/?$/, '') : ''; return h && p.startsWith(h + '/') ? '~' + p.slice(h.length) : p; };
 const nameOf = p => p.replace(/^~\/(repos\/)?/, '');
@@ -26,13 +26,17 @@ function absorb(doc) {
   REPOS = (doc.repos || []).map(r => {
     const m = (r.remote || '').match(/github\.com[:/]([^/]+)\/(.+?)(\.git)?$/);
     return { path: r.path, remote: r.remote, source: r.status_source, managed: r.managed, merge: r.runner_merge, mode: r.mode, ci: r.ci,
-      pieces: r.pieces_source, created: r.created_at, updated: r.updated_at, review: r.review, protection: r.protection,
+      pieces: r.pieces_source, created: r.created_at, updated: r.updated_at, review: r.review, protection: r.protection, runtimes: r.runtimes,
       owner: m ? m[1] : '?', slug: m ? `${m[1]}/${m[2]}` : '', name: nameOf(r.path), registered: true, git: gitBy[r.path] || null };
   });
   const unreg = (GIT?.repos || []).filter(g => !REPOS.some(r => r.path === tilde(g.path)))
     .map(g => ({ path: tilde(g.path), remote: '', source: '—', managed: '—', merge: '—', mode: '—', owner: '—', slug: '', name: nameOf(tilde(g.path)), registered: false, git: g }));
   ALL = [...REPOS, ...unreg];
   ALL.forEach(r => { const g = r.git; r.branch = g ? g.branch : '—'; r.lag = g && g.behind_default !== null ? g.behind_default : -1; r.fetched = g ? g.fetched_iso || '' : ''; });
+  // build (sd:1629): the settings columns sort on their shown words.
+  ALL.forEach(r => { const rv = r.review || {}, rt = r.runtimes || {}; r.floor = rv.severity_floor || ''; r.copilot = rv.automatic_deep == null ? '' : String(rv.automatic_deep);
+    r.python = rt.python?.value || ''; r.node = rt.node?.value || ''; });
+  GRANT = doc.grant || null;
   LANE = doc.lane; ASG = doc.assignments; SESS = doc.sessions; SERVICES = doc.services || [];
   CRON = (doc.jobs || []).map(j => ({ ...j, next: nextRun(j.schedule), rank: stateOf(j) }));
 }
@@ -113,7 +117,7 @@ const repoParam = params.get('repo');
 // build: the view comes from the URL, so it is checked against the five names before anything indexes by it.
 const VIEWS = ['repos', 'lane', 'sessions', 'deploys', 'schedules'];
 let view = VIEWS.includes(params.get('view')) ? params.get('view') : 'repos';
-const LIST_STATE = () => ({ repos: [RS, 'name', 1, REPO_COLS], lane: [LS, 'id', -1, MERGE_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
+const LIST_STATE = () => ({ repos: [RS, 'name', 1, repoCols()], lane: [LS, 'id', -1, MERGE_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
 function setURL() {
   const p = new URLSearchParams();
   p.set('view', view);
@@ -122,10 +126,12 @@ function setURL() {
   const L = LIST_STATE();
   if (L) { const [st, sort, dir] = L; shell.list.listQuery(p, st, { sort, dir, size: 25 }); }
   if (view === 'repos') ['managed', 'merge'].forEach(k => RS[k] && p.set(k, RS[k]));
+  if (view === 'repos' && RS.cols === 'settings') p.set('cols', 'settings');
   shell.url(p);
 }
 function readURL() {
   if (params.get('q')) { text.q = params.get('q'); input.value = text.q; }
+  if (params.get('cols') === 'settings') RS.cols = 'settings';
   const L = LIST_STATE(); if (!L) return;
   const [st, , , cols] = L;
   shell.list.listParams(params, st, { sorts: cols.map(c => c[0]).filter(Boolean), size: 25 });
@@ -175,6 +181,9 @@ function lamps() {
 // build: a page from the URL or an older reading can pass the last page; shell.list clamps it before the slice, and the URL follows.
 function pageOf(rows, st) { const was = st.page, slice = shell.list.pageOf(rows, st); if (st.page !== was) setURL(); return slice; }
 const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']];
+// build (sd:1629): the condensed overview, one row per repo with its settings, swaps the git columns for these.
+const SETTING_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['floor', html`Floor<span class="sr"> (review severity floor)</span>`], ['copilot', html`Copilot<span class="sr"> automatic deep review</span>`], [null, 'Required checks'], ['python', 'Python'], ['node', 'Node'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const repoCols = () => RS.cols === 'settings' ? SETTING_COLS : REPO_COLS;
 const MERGE_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['id', 'Assignment'], [null, 'Repo'], ['at', 'Ended'], [null, 'Status'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const SCHED_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
 // The text filter is one chip on every list; Repos adds its managed and merge filters.
@@ -188,7 +197,7 @@ function tokens() {
 }
 
 // ---------- Repos list ----------
-const RS = { sort: 'name', dir: 1, page: 1, size: 25, managed: null, merge: null };
+const RS = { sort: 'name', dir: 1, page: 1, size: 25, managed: null, merge: null, cols: 'git' };
 function repoRows() {
   const { chips, free } = tokens();
   const managed = chips.managed || RS.managed, merge = chips.merge || RS.merge, source = chips.source;
@@ -203,6 +212,34 @@ function gitCells(r) {
   return html`<td class="d mono" data-k="branch">${g.branch || '?'}${g.dirty === null ? html` <span class="unk">· dirty ?</span>` : g.dirty ? html` <span class="dirty">· ${g.dirty} dirty</span>` : ''}</td>
     <td class="d mono" data-k="±">${lag}</td><td class="d mono" data-k="fetched">${age(g.fetched_iso)}</td>`;
 }
+// build (sd:1629): the settings cells. Floor and Copilot are read here and change through a pull request; a reading that
+// failed or was not taken is unknown with its reason, and nothing pinned is a dash that says so.
+const unk = words => html`<span class="unk"><span class="g-unknown" aria-hidden="true">▨</span> ${words}</span>`;
+function reviewCell(rv, key) {
+  if (!rv) return unk('no checkout here');
+  if (!rv.file) return rv.error ? unk(rv.error) : html`<span class="no">no file</span>`;
+  if (rv.error) return unk(rv.error);
+  const v = key === 'floor' ? rv.severity_floor : rv.automatic_deep;
+  return v == null ? html`<span class="no">unset</span>` : String(v);
+}
+function checksCell(pr) {
+  if (!pr || pr.status === 'unknown' || !Array.isArray(pr.required)) return unk(pr?.reason || why('repos') || 'no protection reading');
+  if (!pr.required.length) return html`<span class="no">none</span>`;
+  return html`<span class="checks">${pr.required.map(c => html`<code>${c}</code>`)}</span>${pr.strict ? html`<span class="sr"> (branch must be up to date)</span>` : ''}`;
+}
+function pinCell(rt, key) {
+  if (!rt) return unk('no checkout here');
+  const pin = rt[key];
+  if (!pin) return html`<span class="no" aria-hidden="true">—</span><span class="sr">not pinned</span>`;
+  return pin.error ? unk(pin.error) : html`<span title="${pin.source}">${pin.value}</span>`;
+}
+function settingCells(r) {
+  if (!r.registered) return html`<td class="d mono" data-k="settings" colspan="7"><span class="no">not registered in sd-db</span></td>`;
+  return html`<td class="d mono" data-k="floor">${reviewCell(r.review, 'floor')}</td><td class="d mono" data-k="copilot">${reviewCell(r.review, 'copilot')}</td>
+    <td class="d mono" data-k="checks">${checksCell(r.protection)}</td><td class="d mono" data-k="python">${pinCell(r.runtimes, 'python')}</td><td class="d mono" data-k="node">${pinCell(r.runtimes, 'node')}</td>`;
+}
+const grantTally = () => DOC?.grant ? html`<span>machine merge grant <b>${GRANT.assistant_merge || 'unset'}</b>${GRANT.assistant_merge ? '' : ' (reads ask)'}</span>`
+  : html`<span><span class="g-unknown" aria-hidden="true">▨</span> machine merge grant not read: ${why('grant')}</span>`;
 function renderRepos() {
   const el = document.getElementById('view-repos');
   if (!DOC.repos) { put(el, unknown('The repo table was not read', why('repos'), 'sd-db.sh repo list')); return; }
@@ -211,26 +248,30 @@ function renderRepos() {
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, <code>.github/sd-review.json</code> and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
-      <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} runner merge auto</span></p>
+      <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} runner merge auto</span>${grantTally()}</p>
       <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${hhmm(READ)} UTC` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
     <div class="filters" aria-label="Filters">
       <div class="fgroup" role="group" aria-label="Managed"><span class="label">Managed</span>${['yes', 'no'].map(v => html`<button class="chip" type="button" data-f="managed" data-v="${v}" aria-pressed="${String(RS.managed === v)}">${v}</button>`)}</div>
       <div class="fgroup" role="group" aria-label="Runner merge"><span class="label">Runner merge</span>${['auto', 'manual'].map(v => html`<button class="chip" type="button" data-f="merge" data-v="${v}" aria-pressed="${String(RS.merge === v)}">${v}</button>`)}</div>
+      <div class="fgroup" role="group" aria-label="Columns"><span class="label">Columns</span>${['git', 'settings'].map(v => html`<button class="chip" type="button" data-cols="${v}" aria-pressed="${String(RS.cols === v)}">${v}</button>`)}</div>
       ${repoChips().length ? shell.list.chips(repoChips(), rows.length, ALL.length) : html`<p class="fsum"><span>${rows.length} of ${ALL.length}</span></p>`}
     </div>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h"><thead>${shell.list.sortHead(REPO_COLS, RS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h"><thead>${shell.list.sortHead(repoCols(), RS)}</thead>
       <tbody>${shown.map(r => html`<tr data-id="${'repo:' + r.path}" data-repo="${r.path}">
         <td class="g" aria-hidden="true">${I(r.registered ? 'settings' : 'folder-code')}</td>
         <td class="what"><button type="button">${r.name}</button>${r.registered ? '' : html`<span class="unreg">not registered</span>`}</td>
         <td class="d mono ${r.managed}" data-k="managed">${r.managed}</td>
         <td class="d mono ${r.merge === 'auto' ? 'yes' : 'no'}" data-k="merge">${r.merge}</td>
-        ${gitCells(r)}
+        ${RS.cols === 'settings' ? settingCells(r) : gitCells(r)}
         <td class="act end">${shell.commands.rowActions('repo:' + r.path)}</td></tr>`)}</tbody></table>${shell.list.pager(rows.length, RS, 'repos')}`
       : html`<p class="empty">No repo matches ${text.q ? `“${text.q}”` : 'these filters'}. <button class="linkbtn" type="button" data-clear>Clear filters</button></p>`}
-    <p class="note">${I('settings')} opens a registered repo's settings. Owner and status source sit in Details. Git state is as read at ${hhmm(READ)} UTC; nothing here fetches.</p>`);
+    ${RS.cols === 'settings' ? html`<p class="note">Managed and Merge switch from a row's actions, each one sd-db repo verb on the hub. Floor and Copilot are read-only here: they change through a pull request to the repo's <code>.github/sd-review.json</code>, drafted from its ${I('settings')} settings page. Required checks are the nightly protection reading; Python and Node are the versions the checkout pins.</p>`
+      : html`<p class="note">${I('settings')} opens a registered repo's settings. Owner and status source sit in Details. Git state is as read at ${hhmm(READ)} UTC; nothing here fetches.</p>`}`);
 }
 document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('.rowact')) return;
+  const cols = e.target.closest('[data-cols]');
+  if (cols) { RS.cols = cols.dataset.cols === 'settings' ? 'settings' : 'git'; if (!repoCols().some(c => c[0] === RS.sort)) RS.sort = 'name'; renderRepos(); return setURL(); }
   const f = e.target.closest('[data-f]'), tr = e.target.closest('tr[data-repo]');
   if (e.target.closest('[data-clear]')) { RS.managed = RS.merge = null; text.q = ''; document.getElementById('shift').value = ''; RS.page = 1; renderRepos(); return setURL(); }
   if (shell.list.sortBy(e, RS) || shell.list.paging(e, RS)) { shell.list.keepFocus(e, renderRepos); return setURL(); }
