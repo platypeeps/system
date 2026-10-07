@@ -129,11 +129,18 @@ def claim(connection: sqlite3.Connection, item: int, *, host: str, branch: str |
         _instant(quiet_until)
     when = at or now()
     key = f"{CLAIM_PREFIX}{item}"
-    body = {"host": host, "branch": branch, "since": when, "quiet_until": quiet_until}
     # One transaction: a failed insert keeps the old claim, and BEGIN
     # IMMEDIATE orders two replacements so only one claim stays open.
+    # A replacement that names no branch keeps the stored one, so
+    # `claim ITEM --quiet-until T` does not drop the branch signal.
     with transaction(connection):
-        _resolve(connection, _open_rows(connection, "heartbeat", key), when)
+        held = _open_rows(connection, "heartbeat", key)
+        if branch is None and held:
+            stored = _claim(connection.execute("SELECT id, key, timestamp, body FROM state WHERE id = ?",
+                                               (held[-1],)).fetchone())
+            branch = stored.branch if stored else None
+        _resolve(connection, held, when)
+        body = {"host": host, "branch": branch, "since": when, "quiet_until": quiet_until}
         return record_state(connection, "heartbeat", key=key, body=body, timestamp=when)
 
 

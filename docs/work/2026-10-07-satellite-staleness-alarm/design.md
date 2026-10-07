@@ -31,6 +31,24 @@ Alternatives not chosen:
 | Read the serve log | A log is not a record; it rotates, and it names a session, not an item. |
 | Hook `sd task status` in the pack | Right end state, but a pack change; a later item after the verbs prove out. |
 
+### Claim state across writes (review rounds 1 and 2)
+
+Class: a claim write, replacement or compaction loses the active claim's state.
+Every path that writes, replaces, resolves or deletes a claim or episode row:
+
+| Step | State moved | Failure | Recovery | Test |
+| --- | --- | --- | --- | --- |
+| `claim`, first | one open claim row | insert fails | one transaction; nothing written, rerun `claim` | `test_a_failed_replacement_keeps_the_old_claim` |
+| `claim`, replace | old row resolved, new row open | insert fails after the resolve | resolve and insert in one transaction; the old claim stays | `test_a_failed_replacement_keeps_the_old_claim` |
+| `claim`, replace | as above | a second writer replaces at once: two open claims | `BEGIN IMMEDIATE` holds the read, resolve and insert; the second writer waits | `test_a_second_writer_waits_for_the_whole_replacement` |
+| `claim`, replace without `--branch` | branch | the stored branch drops, so pushed commits stop counting | carry the stored branch; an explicit `--branch` replaces it | `test_a_replacement_without_a_branch_keeps_the_stored_branch` |
+| `unclaim` | claim and episode resolved | a failure between the two | one transaction; it reads its rows inside it | `test_unclaim_resolves_the_claim_and_its_episode` |
+| `alert` | old episode resolved, new one open | insert fails after the resolve | one transaction; the old episode stays | `test_a_failed_watermark_replacement_keeps_the_old_episode` |
+| `retention.compact_heartbeats` | resolved claim rows deleted | the open row carries an older timestamp (satellite clock behind) and is deleted | an open row ranks first, whatever its timestamp | `test_the_prune_keeps_an_open_claim_written_by_a_clock_behind` |
+| `open_claims` read | none | a row `claim` did not write stops every check | the row is skipped | `test_one_malformed_claim_does_not_stop_the_others` |
+
+A replacement resets `since` and `host`, and sets `quiet_until` only when given: a new claim is the satellite acting, so it counts as progress.
+
 ## What counts as progress
 
 The newest of:
@@ -87,7 +105,7 @@ The next run alerts again only when the item's newest progress is later than tha
 | Piece | Used for |
 | --- | --- |
 | `state` table, kinds `heartbeat` and `watermark` | claim and episode records, no migration |
-| `retention.compact_heartbeats` | keeps the newest row per key, which is the open claim |
+| `retention.compact_heartbeats` | keeps one row per key, an open row first, so the open claim survives a satellite clock behind |
 | `local-notify` | ntfy and email delivery |
 | `local-cron-jobs` and its watchdog | schedule and job-silence detection |
 | `local-health-check` status sweep | nightly backstop through convention 6 |

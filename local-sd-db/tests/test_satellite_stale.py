@@ -106,6 +106,45 @@ class TheClaim(Database):
         retention.compact_heartbeats(self.connection)
         self.assertEqual([c.host for c in satellite_stale.open_claims(self.connection)], ["two"])
 
+    def test_the_prune_keeps_an_open_claim_written_by_a_clock_behind(self):
+        item = self.item()
+        satellite_stale.claim(self.connection, item, host="one", at=at(1))
+        satellite_stale.claim(self.connection, item, host="two", at=at(0))
+        retention.compact_heartbeats(self.connection)
+        self.assertEqual([c.host for c in satellite_stale.open_claims(self.connection)], ["two"])
+
+    def test_a_replacement_without_a_branch_keeps_the_stored_branch(self):
+        item = self.item()
+        satellite_stale.claim(self.connection, item, host="laptop", branch="sd-1-x", at=at(0))
+        satellite_stale.claim(self.connection, item, host="laptop", quiet_until=at(6), at=at(1))
+        [held] = satellite_stale.open_claims(self.connection)
+        self.assertEqual((held.branch, held.quiet_until), ("sd-1-x", at(6)))
+        satellite_stale.claim(self.connection, item, host="laptop", branch="sd-1-y", at=at(2))
+        self.assertEqual(satellite_stale.open_claims(self.connection)[0].branch, "sd-1-y")
+
+    def test_a_second_writer_waits_for_the_whole_replacement(self):
+        item = self.item()
+        satellite_stale.claim(self.connection, item, host="one", at=at(0))
+        other = connect(self.path, busy_timeout=0)
+        self.addCleanup(other.close)
+        real = satellite_stale.record_state
+        raced = []
+
+        def insert_then_race(*args, **kwargs):
+            if not raced:
+                raced.append("tried")
+                try:
+                    satellite_stale.claim(other, item, host="three", at=at(1))
+                except sqlite3.OperationalError as error:
+                    raced.append(str(error))
+            return real(*args, **kwargs)
+
+        with mock.patch.object(satellite_stale, "record_state", side_effect=insert_then_race):
+            satellite_stale.claim(self.connection, item, host="two", at=at(1))
+        self.assertEqual(len(raced), 2, "the second writer got in while the first held its claim open")
+        self.assertIn("locked", raced[1])
+        self.assertEqual([c.host for c in satellite_stale.open_claims(self.connection)], ["two"])
+
     def test_a_failed_replacement_keeps_the_old_claim(self):
         item = self.item()
         satellite_stale.claim(self.connection, item, host="one", at=at(0))

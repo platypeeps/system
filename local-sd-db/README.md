@@ -468,7 +468,7 @@ A satellite session claims the item it works on, and the hub alarms when the cla
     ./sd-db.sh unclaim ITEM                                  # release; closes the alert episode
     ./sd-db.sh satellite-stale [status | --notify]           # on the hub
 
-- A claim is a `heartbeat` row keyed `satellite-claim:<item>`; no migration. The nightly prune keeps the newest row per key, which is the open claim.
+- A claim is a `heartbeat` row keyed `satellite-claim:<item>`; no migration. The nightly prune keeps one row per key and ranks an open row first, so the open claim survives whatever its timestamp.
 - An alert episode is a `watermark` row keyed `satellite-stale:<item>`, holding the progress instant it alerted on.
 - `local-satellite-stale/satellite-stale.sh` is the convention 1 entrypoint, its `status` the convention 6 one, and its `run` the cron job's verb.
 - The record is `docs/work/2026-10-07-satellite-staleness-alarm/`.
