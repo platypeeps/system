@@ -452,6 +452,35 @@ class Promote(WritingCase):
         self.assertFalse((outside / self.year / "an-idea-uber-cafe").exists())
         self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
 
+    def orphan(self, extra=""):
+        """The untouched scaffold a promote stopped before its commit leaves, dated another day."""
+        text = TEMPLATE.replace('title: ""', 'title: "An idea: Über café!"').replace("YYYY-MM-DD", "2026-01-02") + extra
+        self.file().parent.mkdir(parents=True, exist_ok=True)
+        self.file().write_text(text)
+        return text
+
+    def test_a_retry_adopts_the_untouched_scaffold_a_stopped_promote_left(self):
+        text = self.orphan()
+        state = promote(self.db, self.idea, who="operator")
+        self.assertEqual(self.file().read_text(), text)
+        self.assertEqual(state["writing"]["metadata"]["created"], "2026-01-02")
+        self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
+
+    def test_an_edited_scaffold_is_not_adopted(self):
+        text = self.orphan("Prose someone wrote.\n")
+        with self.assertRaisesRegex(WorkflowError, "already exists"):
+            promote(self.db, self.idea, who="operator")
+        self.assertEqual(self.file().read_text(), text)
+
+    def test_an_open_outer_transaction_is_refused(self):
+        self.db.execute("BEGIN")
+        try:
+            with self.assertRaisesRegex(WorkflowError, "own transaction"):
+                promote(self.db, self.idea, who="operator")
+        finally:
+            self.db.execute("ROLLBACK")
+        self.assertFalse(self.file().parent.exists())
+
     def test_a_failure_after_the_scaffold_removes_it_and_keeps_the_row(self):
         with patch("sd_db.writing.piece_state", side_effect=RuntimeError("late")), self.assertRaises(RuntimeError):
             promote(self.db, self.idea, who="operator")

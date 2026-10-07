@@ -533,9 +533,13 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
     The row keeps its id, history and body; it takes the piece identity a
     registration would give it, so verification and recovery read it as one.
     The piece is `<current year>/<slug>`, the slug from the title unless given.
-    The file lands in the active `checkout`, and a failure removes it again.
+    The file lands in the active `checkout`, and a failure removes it again;
+    an untouched scaffold left by a stopped promote is adopted on retry.
     """
     who = _text(who, "who")
+    if connection.in_transaction:
+        # An outer rollback would undo the row and leave the scaffold behind.
+        raise WorkflowError("promote commits its own transaction; call it with none open")
     created = None
     try:
         with transaction(connection):
@@ -559,13 +563,33 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
             today = now()[:10]
             piece = _key(f"{today[:4]}/{slug}")
             disk = _disk(target)
-            if piece_for_key(connection, target, piece) is not None or any(
-                    (disk / tree / piece).exists() for tree in ("content", "content-parked")):
-                raise WorkflowError(f"piece {piece} already exists in {target}; pass another slug")
+            folder = disk / "content" / piece
+            if not folder.resolve().is_relative_to(disk):
+                raise WorkflowError(f"content/{piece} escapes the repository")
             template = disk / TEMPLATE
             if not template.resolve().is_relative_to(disk) or not template.is_file():
                 raise WorkflowError(f"{target} has no {TEMPLATE} to scaffold from")
-            text = _rewrite(template.read_text(encoding="utf-8"), {"title": title, "created": today, "updated": today})
+
+            def scaffold(day: str) -> tuple[str, str]:
+                """The registered source and the file it writes, dated `day`."""
+                source = _rewrite(template.read_text(encoding="utf-8"), {"title": title, "created": day, "updated": day})
+                return source, _rewrite(source, {}, remove=("status", "published")) if owner == "row" else source
+
+            text, written = scaffold(today)
+            orphan = None
+            if folder.exists() and piece_for_key(connection, target, piece) is None:
+                # A promote stopped between its file write and its commit leaves
+                # an untouched scaffold; adopt it, since it holds no prose.
+                try:
+                    found = (folder / "index.md").read_text(encoding="utf-8")
+                    day = str(_metadata(found).get("created"))
+                    if [entry.name for entry in folder.iterdir()] == ["index.md"] and scaffold(day)[1] == found:
+                        orphan, (text, written) = found, scaffold(day)
+                except (OSError, UnicodeError, WorkflowError):
+                    pass
+            if orphan is None and (piece_for_key(connection, target, piece) is not None or any(
+                    (disk / tree / piece).exists() for tree in ("content", "content-parked"))):
+                raise WorkflowError(f"piece {piece} already exists in {target}; pass another slug")
             metadata = _metadata(text)
             if FILE_STAGES.get(metadata.get("status")) != "accepted":
                 raise WorkflowError(f"{TEMPLATE} must start a piece at status idea")
@@ -579,14 +603,10 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
                             body={**_fields(row["body"]), "source": text}, source_commit=None)
             _transition(connection, item, STAGE_STATUS["accepted"], who=who, reason=f"promoted to piece {piece}")
             add_note(connection, item, "decision", f"Promoted to piece {piece} in {target} by {who}", session=who)
-            if owner == "row":
-                text = _rewrite(text, {}, remove=("status", "published"))
-            folder = disk / "content" / piece
-            if not folder.resolve().is_relative_to(disk):
-                raise WorkflowError(f"content/{piece} escapes the repository")
-            folder.mkdir(parents=True)
-            created = folder / "index.md"
-            created.write_text(text, encoding="utf-8")
+            if orphan is None:
+                folder.mkdir(parents=True)
+                created = folder / "index.md"
+                created.write_text(written, encoding="utf-8")
             return piece_state(connection, item)
     except BaseException:
         if created is not None:
