@@ -457,7 +457,7 @@ def _unread_reason(repo: dict, part: dict | None) -> str:
     name = repo.get("slug") or repo["repo"]
     if repo.get("alerts") is None:
         return f"{name}: {repo.get('reason') or 'not read yet; the next sd shadow sync reads it'}"
-    return f"{name}: {(part or {}).get('reason') or 'not read'}"
+    return f"{name}: {part.get('reason') or 'not read'}" if isinstance(part, dict) else f"{name}: stored alerts are malformed"
 
 
 def _dependency_rows(found: list[dict]) -> tuple[list[dict], dict]:
@@ -573,7 +573,9 @@ def _credential_row(probe: dict, now: datetime) -> dict:
             facts[label] = "—" if probe[key] is None else str(probe[key]).lower() if isinstance(probe[key], bool) else probe[key]
     servers = probe.get("servers")
     if isinstance(servers, list):
-        down = [server for server in servers if isinstance(server, dict) and server.get("status") != "connected"]
+        # An entry that is not a server object is not a connected server.
+        down = [server if isinstance(server, dict) else {"name": "?", "status": "unreadable"}
+                for server in servers if not isinstance(server, dict) or server.get("status") != "connected"]
         facts["Servers"] = str(len(servers))
         if down:
             return {**row, "state": "caution", "what": f"{len(down)} of {len(servers)} MCP servers not connected",
@@ -607,7 +609,15 @@ def _credential_rows(found: tuple[str, dict] | None, *, now: str) -> tuple[list[
                  "kind": "Credentials", "facts": {"Heartbeat": "credentials:nightly"}, "cli": CREDENTIALS_CLI}], {"at": None}
     stamp, body = found
     moment = _when(now)
-    rows = [_credential_row(probe, moment) for probe in body["probes"] if isinstance(probe, dict)]
+    rows = [_credential_row(probe, moment) if isinstance(probe, dict) else
+            {"id": f"cred:bad{index}", "state": "unknown", "type": "check", "what": "A credential probe is unreadable",
+             "detail": "the heartbeat holds an entry that is not a probe", "kind": "Credentials", "facts": {},
+             "cli": CREDENTIALS_CLI}
+            for index, probe in enumerate(body["probes"])]
+    if not rows:
+        # No probe is not a clean bill.
+        rows.append({"id": "cred:empty", "state": "unknown", "type": "check", "what": "The credentials heartbeat names no probe",
+                     "detail": f"recorded {stamp}", "kind": "Credentials", "facts": {"Observed": stamp}, "cli": CREDENTIALS_CLI})
     age = (moment - _when(stamp)).total_seconds() / 3600
     if age > CREDENTIALS_STALE_HOURS:
         rows.append({"id": "cred:stale", "state": "caution", "type": "check",

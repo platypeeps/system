@@ -455,6 +455,20 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual(area["rows"], [])
         self.assertIn("has no credentials module", area["error"])
 
+    def test_malformed_stored_data_is_unknown_never_clean(self):
+        bad = [{**ALERTED[0], "alerts": {"dependabot": ["bad"], "secret_scanning": ["bad"]}}, ALERTED[4]]
+        for key in ("dep", "sec"):
+            area = self.area(key, protection=protection_of(bad))
+            rows = {row["id"]: row for row in area["rows"]}
+            self.assertEqual(area["error"], "")
+            self.assertEqual(rows[f"{key}:unread"]["list"], ["group/alpha: stored alerts are malformed"])
+            self.assertEqual(len(rows), 2, rows)
+        self.heartbeat([{"id": "mcp", "name": "MCP servers", "servers": [None]}, "junk"])
+        self.assertEqual({row["id"]: row["state"] for row in self.area("cred")["rows"]},
+                         {"cred:mcp": "caution", "cred:bad1": "unknown"})
+        self.heartbeat([], stamp="2026-09-06T04:10:00Z")
+        self.assertEqual([(row["id"], row["state"]) for row in self.area("cred")["rows"]], [("cred:empty", "unknown")])
+
     def test_a_credentials_row_without_a_probe_list_is_the_area_error(self):
         record_state(self.connection, "heartbeat", key=credentials.HEARTBEAT_KEY, body={"oops": 1})
         area = self.area("cred")
