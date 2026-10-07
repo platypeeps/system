@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -500,6 +501,100 @@ def import_pieces(connection: sqlite3.Connection, repo: str, *, who: str) -> dic
         return {"items": items, "warnings": [f"{state['item']['piece']}: historical readiness needs fresh gate evidence"
                                                for state in items if state["item"]["stage"] in ("ready", "published")
                                                and not state["writing"]["gates"]["ok"]]}
+
+
+TEMPLATE = "templates/piece-template.md"
+
+
+def _pieces_repo(connection: sqlite3.Connection, repo: str | None) -> str:
+    """`repo`, else the one repository that registers pieces (sd:1994)."""
+    if repo is not None:
+        repo = _canonical(connection, repo)
+        pieces_owner(connection, repo)
+        return repo
+    found = [row[0] for row in connection.execute(
+        "SELECT path FROM repo WHERE pieces_source != 'file' "
+        "UNION SELECT repo FROM item WHERE piece IS NOT NULL AND repo IS NOT NULL ORDER BY 1")]
+    if len(found) != 1:
+        named = f"several repositories register pieces ({', '.join(found)})" if found else "no repository registers pieces"
+        raise WorkflowError(f"{named}; name the target repository")
+    return found[0]
+
+
+def _slug(title: str) -> str:
+    plain = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", plain.lower()).strip("-")
+
+
+def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = None, repo: str | None = None,
+            who: str, expected_revision: str | None = None) -> dict:
+    """Make an idea row a registered piece, scaffolded from the repository's own template (sd:1994).
+
+    The row keeps its id, history and body; it takes the piece identity a
+    registration would give it, so verification and recovery read it as one.
+    The piece is `<current year>/<slug>`, the slug from the title unless given.
+    The file lands in the active `checkout`, and a failure removes it again.
+    """
+    who = _text(who, "who")
+    created = None
+    try:
+        with transaction(connection):
+            row = _checked_state(connection, item, expected_revision)["item"]
+            if row["kind"] != "idea":
+                raise WorkflowError(f"item {item} is not an idea")
+            if row["piece"]:
+                raise WorkflowError(f"item {item} is already piece {row['piece']}")
+            if row["status"] == "done":
+                raise WorkflowError(f"idea {item} is done; reopen it before promoting it")
+            title = _text(row["title"], "title")
+            if any(ord(char) < 32 or ord(char) == 127 for char in title):
+                raise WorkflowError("title must be one line of text without control characters")
+            target = _pieces_repo(connection, repo)
+            owner = pieces_owner(connection, target)
+            if owner == "retiring":
+                raise WorkflowError("writing cutover is in progress")
+            slug = _slug(title) if slug is None else slug
+            if not slug:
+                raise WorkflowError(f"title {title!r} gives no slug; pass one")
+            today = now()[:10]
+            piece = _key(f"{today[:4]}/{slug}")
+            disk = _disk(target)
+            if piece_for_key(connection, target, piece) is not None or any(
+                    (disk / tree / piece).exists() for tree in ("content", "content-parked")):
+                raise WorkflowError(f"piece {piece} already exists in {target}; pass another slug")
+            template = disk / TEMPLATE
+            if not template.resolve().is_relative_to(disk) or not template.is_file():
+                raise WorkflowError(f"{target} has no {TEMPLATE} to scaffold from")
+            text = _rewrite(template.read_text(encoding="utf-8"), {"title": title, "created": today, "updated": today})
+            metadata = _metadata(text)
+            if FILE_STAGES.get(metadata.get("status")) != "accepted":
+                raise WorkflowError(f"{TEMPLATE} must start a piece at status idea")
+            relative = f"content/{piece}/index.md"
+            fields = _fields(row["fields"])
+            fields["writing"] = metadata
+            fields["writing_source"] = {"sha256": _hash(text.encode("utf-8")), "path": relative, "base_commit": None}
+            fields["promoted_from"] = {"source": row["source"], "external_id": row["external_id"]}
+            set_item_fields(connection, item, repo=target, piece=piece, path=relative, stage="accepted",
+                            source=SOURCE, external_id=f"{target}::{piece}", fields=fields,
+                            body={**_fields(row["body"]), "source": text}, source_commit=None)
+            _transition(connection, item, STAGE_STATUS["accepted"], who=who, reason=f"promoted to piece {piece}")
+            add_note(connection, item, "decision", f"Promoted to piece {piece} in {target} by {who}", session=who)
+            if owner == "row":
+                text = _rewrite(text, {}, remove=("status", "published"))
+            folder = disk / "content" / piece
+            folder.mkdir(parents=True)
+            created = folder / "index.md"
+            created.write_text(text, encoding="utf-8")
+            return piece_state(connection, item)
+    except BaseException:
+        if created is not None:
+            created.unlink(missing_ok=True)
+            for folder in (created.parent, created.parent.parent):
+                try:
+                    folder.rmdir()
+                except OSError:
+                    break
+        raise
 
 
 def record_gate(connection: sqlite3.Connection, item: int, artifact: str, *, verdict: str,
