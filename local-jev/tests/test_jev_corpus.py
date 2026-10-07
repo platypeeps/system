@@ -12,8 +12,10 @@ The promises checked:
 * a call that sent nothing stores no request;
 * every content field is redacted, a local-only call's included, and the
   secret scanner's is stored as SHA-256 digests and never as text;
-* `JEV_CORPUS=0` stores nothing, and a corpus that cannot be written, or
-  whose lock is held, costs the caller nothing.
+* `JEV_CORPUS=0` stores nothing and redacts nothing, and a corpus that
+  cannot be written, or whose lock is held, costs the caller nothing;
+* a day's first line removes the day files older than `JEV_CORPUS_DAYS`
+  (sd:2858).
 """
 
 import hashlib
@@ -24,6 +26,7 @@ import fcntl
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -161,6 +164,63 @@ class TheModule(unittest.TestCase):
     def test_the_default_folder_is_under_home(self):
         self.assertEqual(jev_corpus.directory({"HOME": "/home/example"}),
                          "/home/example/.local/share/sd/jev-corpus")
+
+    def test_switched_off_the_door_redacts_and_hashes_nothing(self):
+        for stage in ("JEV_DOCS", "JEV_SECRET_SCAN"):
+            with self.subTest(stage=stage), \
+                    mock.patch.object(jev, "scrubbed") as scrubbed, \
+                    mock.patch.object(jev, "hashed") as hashed:
+                said = jev.to_corpus({"stage": stage, "request": {"state": SENTINEL}},
+                                     {"JEV_CORPUS": "0", "JEV_CORPUS_DIR": str(self.folder)})
+                self.assertEqual(said, jev_corpus.SWITCHED_OFF)
+                scrubbed.assert_not_called()
+                hashed.assert_not_called()
+
+    def day_file(self, folder, days_ago):
+        """A day file `days_ago` UTC days before today's, with one line."""
+        day = datetime.now(timezone.utc).date() - timedelta(days=days_ago)
+        path = folder / f"{day.isoformat()}.jsonl"
+        path.write_text('{"arm": "old"}\n')
+        return path
+
+    def test_a_day_s_first_line_removes_the_days_past_the_bound(self):
+        self.folder.mkdir(mode=0o700)
+        kept = self.day_file(self.folder, jev_corpus.KEEP_DAYS)
+        gone = self.day_file(self.folder, jev_corpus.KEEP_DAYS + 1)
+        other = [self.folder / "notes.txt", self.folder / "not-a-day.jsonl",
+                 self.folder / "2020-1-2.jsonl"]
+        for path in other:
+            path.write_text("x")
+        said = jev_corpus.append({"arm": "jev"}, {"JEV_CORPUS_DIR": str(self.folder)})
+        self.assertEqual(said, jev_corpus.WRITTEN)
+        self.assertFalse(gone.exists())
+        self.assertTrue(all(p.exists() for p in [kept, *other]))
+
+    def test_jev_corpus_days_sets_the_bound_and_a_bad_value_is_the_default(self):
+        for value, keep in (("2", 2), (" 7 ", 7), ("0", jev_corpus.KEEP_DAYS),
+                            ("-3", jev_corpus.KEEP_DAYS), ("soon", jev_corpus.KEEP_DAYS)):
+            with self.subTest(value=value):
+                folder = Path(tempfile.mkdtemp()) / "corpus"
+                folder.mkdir(mode=0o700)
+                kept = self.day_file(folder, keep)
+                gone = self.day_file(folder, keep + 1)
+                jev_corpus.append({}, {"JEV_CORPUS_DIR": str(folder), "JEV_CORPUS_DAYS": value})
+                self.assertEqual((kept.exists(), gone.exists()), (True, False))
+
+    def test_a_bound_past_the_calendar_keeps_every_day_and_the_line(self):
+        self.folder.mkdir(mode=0o700)
+        old = self.day_file(self.folder, jev_corpus.KEEP_DAYS + 1)
+        said = jev_corpus.append({}, {"JEV_CORPUS_DIR": str(self.folder),
+                                      "JEV_CORPUS_DAYS": "10000000"})
+        self.assertEqual(said, jev_corpus.WRITTEN)
+        self.assertTrue(old.exists())
+
+    def test_a_day_already_written_does_not_sweep_again(self):
+        env = {"JEV_CORPUS_DIR": str(self.folder)}
+        jev_corpus.append({"arm": "first"}, env)
+        old = self.day_file(self.folder, jev_corpus.KEEP_DAYS + 1)
+        jev_corpus.append({"arm": "second"}, env)
+        self.assertTrue(old.exists())
 
 
 class ACall(MeteringCase):

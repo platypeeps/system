@@ -530,8 +530,14 @@ change. One JSON line per call per arm, appended to
 `JEV_CORPUS_DIR`. The folder is held to 0700 and each file to 0600, and a
 symlink, a FIFO or another user's file is refused. Keep it on the
 system disk: a volume mounted `noowners` ignores both modes. The corpus is
-never committed, and nothing here sends it anywhere. Nothing prunes it
-either: a day is one file, so removing old days is `rm` of those files.
+never committed, and nothing here sends it anywhere.
+
+**It keeps 30 days.** A day's first line removes the day files more than
+`JEV_CORPUS_DAYS` UTC days older than today's (default 30; a value that is
+not a positive whole number means 30). The sweep runs on that one append, so
+nothing else is scheduled, and it removes only this user's regular files
+named `YYYY-MM-DD.jsonl`. Raise the value before a run whose corpus must
+outlive the bound, or copy those files elsewhere.
 
 A record carries:
 
@@ -580,7 +586,8 @@ equal, so a hit can be found again and labelled.
 A record that waits more than a second for another writer's lock is
 dropped, so a stuck writer never holds up a call.
 
-`JEV_CORPUS=0` (or another off-word) stores nothing; unset means on. The
+`JEV_CORPUS=0` (or another off-word) stores nothing, and redacts nothing
+first; unset means on. The
 arms write their records from their own child, so they need the meter on
 as before. A folder that cannot be written loses the record and changes
 nothing a caller sees.

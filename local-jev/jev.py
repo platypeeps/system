@@ -550,6 +550,9 @@ def to_corpus(record: dict, env) -> str:
     if jev_corpus is None:
         return ""
     try:
+        # Switched off, a record is not worth redacting or hashing (sd:2858).
+        if not jev_corpus.switched_on(env):
+            return jev_corpus.SWITCHED_OFF
         # A local-only request was sent unredacted, a response can echo what
         # it was asked, and the caller's answers never went through `post`:
         # so every content field is handled here, on every path.

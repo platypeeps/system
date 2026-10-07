@@ -434,7 +434,8 @@ machine that has broken in a way worth knowing about tonight.
   as tables in the script — a hand-maintained copy is what goes stale when a
   service is added. Container names that differ from the folder suffix
   (`local-milvus` → `zilliz`) come from `container_for()`, the same mapping the
-  `services` stage uses.
+  `services` stage uses. A service with several containers
+  (`local-genai-traces`) counts as running only while all of them are up.
 
 ## macOS settings
 
