@@ -10,7 +10,7 @@
 --  from 0 to 1.
 -- - `run_id`: an identifier grouping the calls of one run: one review, one
 --  lint pass, one batch job.
--- - `prompt_hash`: 12 to 64 lowercase hex digits, a hash of the question
+-- - `prompt_hash`: 16 lowercase hex digits, a hash of the question
 --  definition (instructions, criteria, levels), never the state.
 -- - `load_avg`: the one-minute load average when the call was made.
 --

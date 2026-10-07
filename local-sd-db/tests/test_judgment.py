@@ -210,8 +210,8 @@ class TheCallContext(JudgmentCase):
 
     def test_the_edges_are_kept(self):
         for field, value in (("threshold", 0), ("threshold", 1), ("load_avg", 0),
-                             ("run_id", "a" * MAX_NAME), ("prompt_hash", "a" * 12),
-                             ("prompt_hash", "f" * 64)):
+                             ("run_id", "a" * MAX_NAME), ("prompt_hash", "0" * 16),
+                             ("prompt_hash", "f" * 16)):
             with self.subTest(field=field, value=value):
                 self.assertEqual(self.context(**{field: value})[field], value)
 
@@ -219,7 +219,8 @@ class TheCallContext(JudgmentCase):
         bad = {
             "threshold": (-0.01, 1.01, math.nan, math.inf, True, "0.5"),
             "run_id": ("", "-leading", "has space", "a/b", "line\n", "a" * (MAX_NAME + 1), 7),
-            "prompt_hash": ("a" * 11, "a" * 65, "ABCDEF012345", "0123456789ag", "", 123456789012),
+            "prompt_hash": ("a" * 15, "a" * 17, "a" * 64, "ABCDEF0123456789",
+                            "0123456789abcdeg", "0123456789abcdef\n", "", 1234567890123456),
             "load_avg": (-0.1, math.nan, math.inf, False, "1.0"),
         }
         for field, values in bad.items():

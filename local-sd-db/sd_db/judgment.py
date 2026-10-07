@@ -64,8 +64,8 @@ depends on (sd:2950).
 
 **The rest of a call's context follows the same rule.** `threshold` is the
 cut-off the caller applied, from 0 to 1; `run_id` groups the calls of one
-run, in the identifier grammar; `prompt_hash` is 12 to 64 lowercase hex
-digits hashing the question definition, never the state; `load_avg` is the
+run, in the identifier grammar; `prompt_hash` is 16 lowercase hex digits
+hashing the question definition, never the state; `load_avg` is the
 one-minute load average, zero or more. Each value that fails its shape is
 stored as NULL and the row is kept.
 """
@@ -196,8 +196,9 @@ MAX_DISTRIBUTION = MAX_OPTIONS * 16
 #: The longest location `record` keeps. A longer one is stored as NULL.
 MAX_LOCATION = 255
 
-#: A prompt hash: lowercase hex, from a 48-bit prefix to a full SHA-256.
-PROMPT_HASH = re.compile(r"[0-9a-f]{12,64}")
+#: A prompt hash: the first 16 lowercase hex digits of a SHA-256, as `jev`
+#: writes it.
+PROMPT_HASH = re.compile(r"[0-9a-f]{16}")
 
 
 class JudgmentRefused(SdDbError):
@@ -434,7 +435,7 @@ def record(
     location = _location(location)
     threshold = _soft_number(threshold, 0.0, 1.0)
     run_id = _soft_match(run_id, IDENTIFIER, MAX_NAME)
-    prompt_hash = _soft_match(prompt_hash, PROMPT_HASH, 64)
+    prompt_hash = _soft_match(prompt_hash, PROMPT_HASH, 16)
     load_avg = _soft_number(load_avg, 0.0, math.inf)
     if usd is not None and (type(usd) not in (int, float) or not math.isfinite(usd)
                             or usd < 0):

@@ -502,7 +502,7 @@ Four more columns record the conditions of a call, under the same rule: a
 value that fails its shape is stored as NULL and the row is kept.
 `threshold` is the cut-off the caller applied (`--gate`, `--unsure-below`),
 from 0 to 1. `run_id` groups the calls of one run, such as one review, and
-is an identifier. `prompt_hash` is 12 to 64 lowercase hex digits hashing the
+is an identifier. `prompt_hash` is 16 lowercase hex digits hashing the
 question definition -- instructions, criteria, levels -- and never the state.
 `load_avg` is the one-minute load average when the call was made, zero or
 more.
