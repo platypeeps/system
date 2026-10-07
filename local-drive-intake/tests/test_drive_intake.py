@@ -1009,6 +1009,20 @@ class TestJevBatching(unittest.TestCase):
         self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"))
         self.assertIn("call failed", errors)
 
+    def test_no_temporary_storage_is_noise_for_every_path(self):
+        """The questions file cannot be written: a failed call, not a failed fetch.
+
+        `cmd_fetch` has already moved its state on when this runs, so a raise
+        here would lose these arrivals for good.
+        """
+        for failure in (FileNotFoundError("no temporary directory"),
+                        OSError(28, "No space left on device")):
+            with unittest.mock.patch.object(
+                    di.tempfile, "TemporaryDirectory", side_effect=failure):
+                routes, errors = self.route(self.PATHS, self.answered(lambda path: "document"))
+            self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"))
+            self.assertIn("routed noise", errors)
+
     def test_batches_hold_at_most_eight_and_a_failed_one_leaves_the_others(self):
         paths = [f"weird/{n:02}.xyz" for n in range(10)]
 

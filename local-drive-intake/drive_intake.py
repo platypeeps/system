@@ -446,10 +446,13 @@ def _route_batch(paths: list[str], routes: list[str], environ, runner) -> dict[s
                                        "Which intake route does it belong to?",
                        "criteria": criteria}
                  for key in keys}
-    with tempfile.TemporaryDirectory(prefix="drive-intake-jev-") as folder:
-        file = Path(folder) / "questions.json"
-        file.write_text(json.dumps(questions), encoding="utf-8")
-        try:
+    # The temporary file is inside the handler too: a full or unwritable
+    # temporary volume is a failed call, and `cmd_fetch` has already moved
+    # its state on, so a raise here would lose these arrivals for good.
+    try:
+        with tempfile.TemporaryDirectory(prefix="drive-intake-jev-") as folder:
+            file = Path(folder) / "questions.json"
+            file.write_text(json.dumps(questions), encoding="utf-8")
             done = runner(
                 [*jev_command(environ), "ask", "--questions", str(file),
                  "--state", "-", "--state-format", "json",
@@ -458,10 +461,10 @@ def _route_batch(paths: list[str], routes: list[str], environ, runner) -> dict[s
                 input=json.dumps(dict(zip(keys, paths))),
                 capture_output=True, text=True, timeout=60,
                 env={**os.environ, **environ})
-        except Exception as problem:  # noqa: BLE001 - any failure is the same answer
-            print(f"jev: {len(paths)} paths: call failed ({problem}); routed noise",
-                  file=sys.stderr)
-            return noise
+    except Exception as problem:  # noqa: BLE001 - any failure is the same answer
+        print(f"jev: {len(paths)} paths: call failed ({problem}); routed noise",
+              file=sys.stderr)
+        return noise
 
     reason = (done.stderr or "").strip()
     if reason:

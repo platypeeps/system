@@ -718,6 +718,16 @@ class TestBatching(unittest.TestCase):
         _, text, _ = self.report(fake)
         self.assertEqual(text, expected)
 
+    def test_no_temporary_storage_is_todays_order(self):
+        expected = self.todays_report()
+        fake, _ = self.replying(lambda state: batch_reply(state, self.variance))
+        with mock.patch.object(mi.tempfile, "TemporaryDirectory",
+                               side_effect=OSError(28, "No space left on device")):
+            code, text, err = self.report(fake)
+        self.assertEqual(text, expected)
+        self.assertEqual(code, mi.EXIT_FOUND)
+        self.assertIn("No space left", err)
+
     def test_the_gate_is_applied_to_each_probability(self):
         self.assertEqual(mi.read_batch(json.dumps({"answers": {
             "q1": {"noul": 0.7}, "q2": {"noul": 0.69}}}), 2), ["yes", "no"])
