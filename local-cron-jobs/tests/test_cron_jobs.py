@@ -2585,5 +2585,50 @@ class JobTimeoutTest(unittest.TestCase):
         run.wait(timeout=10)
 
 
+class JobPathTest(unittest.TestCase):
+    """The PATH a plist gives its job, built from this machine's Homebrew.
+
+    The script probes the fixed prefix /opt/homebrew, so the copy under test
+    names a fixture folder there instead, holding an executable `brew`.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.prefix = self.fx.tmp / "brew"
+        (self.prefix / "bin").mkdir(parents=True)
+        brew = self.prefix / "bin" / "brew"
+        brew.write_text("#!/bin/sh\n")
+        brew.chmod(brew.stat().st_mode | stat.S_IXUSR)
+        script = self.fx.folder / "cron-jobs.sh"
+        script.write_text(script.read_text().replace("/opt/homebrew", str(self.prefix)))
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+
+    def job_path(self):
+        env = {"PATH": self.fx.path(stub_bin(self.fx.tmp)), "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "CRON_TEST_HELD": "0"}
+        result = subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "demo"],
+                                env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plist = self.fx.home / "Library" / "LaunchAgents" / f"{LABEL_PREFIX}.cron.demo.plist"
+        return plistlib.loads(plist.read_bytes())["EnvironmentVariables"]["PATH"].split(":")
+
+    def test_rustup_proxies_come_before_brew_bin(self):
+        """REGRESSION (pack sd:2881). brew bin can hold the rust formula's
+        cargo, which ignores rust-toolchain.toml; a login shell finds the
+        rustup proxy first, and the job has to find the same one."""
+        rustup = self.prefix / "opt" / "rustup" / "bin"
+        rustup.mkdir(parents=True)
+        path = self.job_path()
+        self.assertIn(str(rustup), path)
+        self.assertEqual(path.index(str(rustup)) + 1, path.index(str(self.prefix / "bin")))
+
+    def test_no_rustup_entry_without_the_folder(self):
+        """PIN. A machine without Homebrew's rustup gets no entry that does not exist."""
+        path = self.job_path()
+        self.assertNotIn(str(self.prefix / "opt" / "rustup" / "bin"), path)
+        self.assertIn(str(self.prefix / "bin"), path)
+
+
 if __name__ == "__main__":
     unittest.main()

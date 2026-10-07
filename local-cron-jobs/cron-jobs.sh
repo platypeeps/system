@@ -111,9 +111,14 @@ fi
 # Without it a PATH-drift check reported "PATH MISSING" every night from the
 # cron job while an interactive run of the same command was clean — the drift
 # was in the job's environment, not on the machine.
+# Homebrew's rustup proxies go before brew bin when they are installed, as a
+# login shell puts them. brew bin can hold the rust formula's cargo, a real
+# binary that ignores rust-toolchain.toml, so a job ran a different cargo than
+# the operator's shell and compared the wrong one (pack sd:2881).
 JOB_PATH=""
 [ -d "$HOME/bin/common" ] && JOB_PATH="$HOME/bin/common:"
 JOB_PATH="$JOB_PATH$HOME/.local/bin"
+[ -n "$BREW_PREFIX" ] && [ -d "$BREW_PREFIX/opt/rustup/bin" ] && JOB_PATH="$JOB_PATH:$BREW_PREFIX/opt/rustup/bin"
 [ -n "$BREW_PREFIX" ] && JOB_PATH="$JOB_PATH:$BREW_PREFIX/bin:$BREW_PREFIX/sbin"
 [ "$BREW_PREFIX" = /usr/local ] || JOB_PATH="$JOB_PATH:/usr/local/bin"
 JOB_PATH="$JOB_PATH:/usr/bin:/bin:/usr/sbin:/sbin"
