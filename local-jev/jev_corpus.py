@@ -17,6 +17,10 @@ Nothing here is ever committed.
 **Switching it off.** `JEV_CORPUS=0` (or `off`, `false`, `no`, `disabled`)
 stores nothing. Unset means on, the default the meter uses.
 
+**How long.** A day's first line removes the day files more than
+`JEV_CORPUS_DAYS` UTC days older than today's (default `KEEP_DAYS`), so the
+sweep runs once a day on the append path and needs no scheduler.
+
 **What a caller pays.** One append after the answer is printed. A folder
 that cannot be made, a file that cannot be opened, a lock held past
 `LOCK_WAIT`, a disk that is full: each is the same answer to the caller,
@@ -36,7 +40,7 @@ import os
 import stat
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 #: The words that switch the corpus off, the same set the meter accepts.
 OFF = ("0", "off", "false", "no", "disabled")
@@ -55,6 +59,10 @@ FAILED = "the corpus did not take the record"
 LOCK_WAIT = 1.0
 LOCK_TRY = 0.05
 
+#: How many UTC days before today's the corpus keeps when `JEV_CORPUS_DAYS`
+#: names no positive whole number.
+KEEP_DAYS = 30
+
 
 def switched_on(env) -> bool:
     return (env.get("JEV_CORPUS") or "").strip().lower() not in OFF
@@ -67,6 +75,32 @@ def directory(env) -> str:
         return named
     home = env.get("HOME") or os.path.expanduser("~")
     return os.path.join(home, ".local", "share", "sd", "jev-corpus")
+
+
+def keep_days(env) -> int:
+    """`JEV_CORPUS_DAYS` when it is a positive whole number, else `KEEP_DAYS`."""
+    try:
+        days = int((env.get("JEV_CORPUS_DAYS") or "").strip())
+    except ValueError:
+        return KEEP_DAYS
+    return days if days > 0 else KEEP_DAYS
+
+
+def sweep(folder: str, today, env) -> None:
+    """Remove the day files more than `keep_days` before `today`. Only this
+    user's regular files named `YYYY-MM-DD.jsonl` go; anything else stays."""
+    oldest = (today - timedelta(days=keep_days(env))).strftime("%Y-%m-%d")
+    for name in os.listdir(folder):
+        day, _, rest = name.partition(".")
+        if rest != "jsonl" or day >= oldest:
+            continue
+        try:
+            datetime.strptime(day, "%Y-%m-%d")
+            path = os.path.join(folder, name)
+            if private(os.lstat(path), stat.S_ISREG):
+                os.unlink(path)
+        except (ValueError, OSError):
+            continue
 
 
 def private(info, kind) -> bool:
@@ -150,6 +184,12 @@ def append(record: dict, env=None) -> str:
                 return FAILED
         finally:
             os.close(fd)
+        # The day's first line: the one append a day that sweeps old days.
+        if start == 0:
+            try:
+                sweep(folder, now, env)
+            except OSError:
+                pass
         return WRITTEN
     except Exception:
         # Bare `Exception`, as in `jev_meter.record`: the corpus is
