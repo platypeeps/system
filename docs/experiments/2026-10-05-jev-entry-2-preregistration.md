@@ -495,10 +495,10 @@ Each of the four topics below came from those reads or from the article's review
 
 ### A1, availability
 
-**Why.** Kev's launch agent ran as `ProcessType=Background`; under load macOS starved it.
+**Why.** Kev's launch agent ran as `ProcessType=Background`, which may let macOS deprioritise it under load.
 474 Kev rows from 2026-10-06T03:03Z held 64 timeouts (note #11385).
 The plist moved to `Interactive` at 2026-10-07T19:12:02Z (note #11437).
-After it, 21 docs-lint Kev calls from 19:12Z to 20:22Z still ended `unavailable`; sd:2943 traces them to caller-side refusals, tracked in sd:2973.
+After it, 21 docs-lint Kev calls from 19:12Z to 20:22Z still ended `unavailable`. sd:2973 tracks them; the working diagnosis is a caller-side refusal, unconfirmed.
 Haiku failed on a zero-credit key early in C2 until the operator replaced the key (note #10565).
 
 **Report.** Per arm, the share of attempted calls that returned an answer, and the rest by cause: `timeout`, `unavailable`, other.
