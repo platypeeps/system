@@ -700,6 +700,7 @@ def run_arm(name: str, job: dict, env, work) -> None:
         "caller": job["caller"], "stage": job["stage"], "arm": name,
         "pair": job["pair"], "question_id": job.get("question_id"),
         "location": job.get("location"),
+        "threshold": job.get("threshold"), "prompt_hash": job.get("prompt_hash"),
         "primitive": job["primitive"], "questions": job.get("questions"),
         "changed": "no",
     }

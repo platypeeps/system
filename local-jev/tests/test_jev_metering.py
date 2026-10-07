@@ -1196,3 +1196,42 @@ class WhereTheCallCameFrom(MeteringCase):
         with unittest.mock.patch.object(jev, "parent_args", lambda: None):
             events = self.written(["noul", "is it?"], Path.cwd())
         self.assertEqual(events[-1]["caller"], jev.UNNAMED)
+
+
+class TheCallContext(MeteringCase):
+    """The run, the cut-off, the question's version and the machine's load
+    ride on every row, so an analysis can group, split and explain them."""
+
+    written = WhereTheCallCameFrom.written
+
+    def last(self, argv, **env):
+        return self.written(argv, Path.cwd(), **env)[-1]
+
+    def test_a_run_groups_its_calls(self):
+        event = self.last(["noul", "is it?"], JEV_RUN="sd-review-20261007T2000-ab12")
+        self.assertEqual(event["run_id"], "sd-review-20261007T2000-ab12")
+
+    def test_a_run_id_that_is_not_an_identifier_is_dropped(self):
+        self.assertIsNone(self.last(["noul", "is it?"], JEV_RUN="a run/with spaces")["run_id"])
+
+    def test_the_cut_off_is_recorded(self):
+        self.assertEqual(self.last(["noul", "is it?", "--gate", "0.8"])["threshold"], 0.8)
+        self.assertEqual(self.last(["choice", "where?", "--criteria", "desk,phone",
+                                    "--unsure-below", "0.6"])["threshold"], 0.6)
+        self.assertIsNone(self.last(["noul", "is it?"])["threshold"])
+
+    def test_the_question_version_follows_the_question_not_the_state(self):
+        first, second = (Path(tempfile.mkdtemp()) / name for name in ("first", "second"))
+        first.write_text("one state")
+        second.write_text("another state")
+        one = self.last(["noul", "is it?", "--state", str(first)])["prompt_hash"]
+        two = self.last(["noul", "is it?", "--state", str(second)])["prompt_hash"]
+        other = self.last(["noul", "is it not?", "--state", str(first)])["prompt_hash"]
+        self.assertRegex(one, r"^[0-9a-f]{16}$")
+        self.assertEqual(one, two)
+        self.assertNotEqual(one, other)
+
+    def test_the_load_is_a_number(self):
+        load = self.last(["noul", "is it?"])["load_avg"]
+        self.assertIsInstance(load, float)
+        self.assertGreaterEqual(load, 0.0)

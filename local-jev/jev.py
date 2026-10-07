@@ -708,7 +708,8 @@ def write_event(event: dict, env, corpus=None) -> str:
     and a span attribute, and neither may hold content. Given, it is stored
     with the event and the ledger row's id.
     """
-    event = dict(event, location=event.get("location") or location())
+    event = dict(event, location=event.get("location") or location(),
+                 run_id=named(env.get("JEV_RUN")), load_avg=load_avg())
     if jev_trace is not None:
         try:
             jev_trace.export(event, env)
@@ -820,6 +821,9 @@ def measure(args, env) -> None:
         "model": None,
         "question_id": subject_of(args),
         "questions": None,
+        # The cut-off the caller applied, so the report can tell the printed
+        # `unsure` or `no` from what the model chose.
+        "threshold": getattr(args, "unsure_below" if args.verb == "choice" else "gate", None),
         "answer": None,
         "confidence": None,
         "tokens_in": None,
@@ -965,6 +969,14 @@ def program_of(args: str | None) -> str | None:
             continue
         return name
     return os.path.basename(first.lstrip("-"))
+
+
+def load_avg() -> float | None:
+    """The machine's one-minute load average, which explains a slow local arm."""
+    try:
+        return float(os.getloadavg()[0])
+    except (OSError, AttributeError):
+        return None
 
 
 def location() -> str | None:
@@ -1437,6 +1449,9 @@ def redacted_payload(payload: dict, patterns) -> tuple[dict, int]:
 def build_payload(state, questions: dict, model: str) -> dict:
     if not questions:
         raise JevError("no questions to ask")
+    # The question's version: the definition without the state, so a reworded
+    # question starts a new series and a new state does not.
+    note(prompt_hash=sha256(questions)[:16])
     return {"state": state, "model": model, "questions": questions}
 
 
@@ -1634,7 +1649,8 @@ def start_arms(payload: dict) -> str:
         if not _EVENT.get("pair"):
             _EVENT["pair"] = os.urandom(8).hex()
         job = {key: _EVENT.get(key) for key in
-               ("caller", "stage", "pair", "question_id", "primitive", "questions")}
+               ("caller", "stage", "pair", "question_id", "primitive", "questions",
+                "threshold", "prompt_hash")}
         job["call"] = _EVENT.get("_call")
         job["location"] = location()
         job["payload"] = payload

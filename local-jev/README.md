@@ -291,6 +291,11 @@ reaches this script through a wrapper that already exports its own variables.
 Every row also carries `location`: the repository the caller's working
 directory sits in, else that directory, with the home directory as `~`. The
 ledger stores it once `sd_db` has the column; an older one drops it.
+Four more ride the same way: `run_id` from `JEV_RUN`, which a caller
+exports once per run so its calls group together; `threshold`, the
+`--gate` or `--unsure-below` it applied; `prompt_hash`, 16 hex of the
+question definition without the state, so a reworded question starts a new
+series; and `load_avg`, the one-minute load when the row was written.
 
 **The same row can go to a trace collector.** With `JEV_TRACES_URL` set,
 `jev_trace.py` posts it as one OTLP/HTTP JSON span, service `jev`, after the
@@ -588,7 +593,7 @@ A record carries:
 
 - `schema`, `id` and `time`, and `call`: one id shared by the Jev record,
   the baseline's and each arm's, with or without a pair;
-- `caller`, `location`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
+- `caller`, `location`, `run_id`, `threshold`, `prompt_hash`, `load_avg`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
   `shadow`, and the ledger's fields: answer, confidence, distribution,
   outcome, cause, tokens, duration, `changed`;
 - `request`: the payload as sent, after redaction. A local-only call sends
