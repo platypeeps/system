@@ -19,7 +19,8 @@ calls no service and reads no credential.
 - Dependencies (sd:2205) and Security (sd:2206) read the `alerts` the nightly
   `sd shadow sync` stores in each managed repository's `repo_protection` row.
   Dependencies is a row per repository with open Dependabot alerts, a warning
-  when one is critical or high; an archived repository is left out. Security
+  when one is critical or high or the list ran past its first page; an
+  archived repository is left out. Security
   is a row per public repository with open secret-scanning alerts (warning) or
   with scanning off (caution); a private repository is not scanned, by policy.
   The sync reads one page of 100 alerts, so a longer list shows as `100+`.

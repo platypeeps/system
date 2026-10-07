@@ -478,13 +478,15 @@ def _dependency_rows(found: list[dict]) -> tuple[list[dict], dict]:
         else:
             count = f"{part['open']}{'+' if part.get('more') else ''}"
             severity = part.get("severity") if isinstance(part.get("severity"), dict) else {}
-            grave = sum(severity.get(level, 0) for level in ("critical", "high"))
+            # The severity of alerts past the first page is unread, so a page cut short counts as grave.
+            grave = sum(severity.get(level, 0) for level in ("critical", "high")) or part.get("more")
             rows.append({
                 "id": f"dep:{repo['repo']}", "state": "warning" if grave else "caution", "type": "dependabot alerts",
                 "slug": repo.get("slug"),
                 "what": f"{name}: {count} open Dependabot {_plural(part['open'], 'alert', 'alerts')}",
-                "detail": " · ".join(f"{severity[level]} {level}" for level in ("critical", "high", "medium", "low", "unknown")
-                                     if severity.get(level)) or "severity not read",
+                "detail": " · ".join([f"{severity[level]} {level}" for level in ("critical", "high", "medium", "low", "unknown")
+                                      if severity.get(level)] + ["severity past the first page not read"] * bool(part.get("more")))
+                          or "severity not read",
                 "kind": "Dependencies · open alerts",
                 "facts": {"Repository": repo["repo"], "Open": str(part["open"]), "Shown": count,
                           "Observed": repo.get("observed_at") or "never"},

@@ -360,10 +360,15 @@ class TheDocument(Collectors, ScreenCase):
             "dep:/checkouts/delta": ("caution", "group/delta: 2 open Dependabot alerts"),
             "dep:unread": ("unknown", "2 managed repos: dependencies not read"),
         })
-        self.assertEqual(rows["dep:/checkouts/alpha"]["detail"], "1 critical · 99 low")
+        self.assertEqual(rows["dep:/checkouts/alpha"]["detail"], "1 critical · 99 low · severity past the first page not read")
         self.assertEqual(rows["dep:unread"]["list"], ["group/gamma: token does not reach it",
                                                       "group/epsilon: API HTTP 403; retry on a later collection"])
         self.assertEqual(self.area("dep", protection=protection_of(ALERTED))["at"], "2026-09-05T08:00:00Z")
+
+    def test_a_page_cut_short_is_a_warning_since_the_rest_may_be_grave(self):
+        paged = {**ALERTED[3], "alerts": {"dependabot": {"open": 100, "more": True, "severity": {"low": 100}}}}
+        (row,) = self.area("dep", protection=protection_of([paged]))["rows"]
+        self.assertEqual((row["state"], row["detail"]), ("warning", "100 low · severity past the first page not read"))
 
     def test_of_sibling_checkouts_the_newest_observation_counts(self):
         stale = {**ALERTED[0], "repo": "/checkouts/aardvark", "observed_at": "2026-09-01T08:00:00Z",
