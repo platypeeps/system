@@ -207,6 +207,14 @@ class TheModule(unittest.TestCase):
                 jev_corpus.append({}, {"JEV_CORPUS_DIR": str(folder), "JEV_CORPUS_DAYS": value})
                 self.assertEqual((kept.exists(), gone.exists()), (True, False))
 
+    def test_a_bound_past_the_calendar_keeps_every_day_and_the_line(self):
+        self.folder.mkdir(mode=0o700)
+        old = self.day_file(self.folder, jev_corpus.KEEP_DAYS + 1)
+        said = jev_corpus.append({}, {"JEV_CORPUS_DIR": str(self.folder),
+                                      "JEV_CORPUS_DAYS": "10000000"})
+        self.assertEqual(said, jev_corpus.WRITTEN)
+        self.assertTrue(old.exists())
+
     def test_a_day_already_written_does_not_sweep_again(self):
         env = {"JEV_CORPUS_DIR": str(self.folder)}
         jev_corpus.append({"arm": "first"}, env)

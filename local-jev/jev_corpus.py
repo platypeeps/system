@@ -187,11 +187,13 @@ def append(record: dict, env=None) -> str:
                 return FAILED
         finally:
             os.close(fd)
-        # The day's first line: the one append a day that sweeps old days.
+        # The day's first line: the one append a day that sweeps old days. A
+        # sweep that fails, or a bound past the calendar, keeps every day and
+        # leaves the line written.
         if start == 0:
             try:
                 sweep(folder, now, env)
-            except OSError:
+            except Exception:
                 pass
         return WRITTEN
     except Exception:
