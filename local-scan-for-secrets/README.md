@@ -109,7 +109,9 @@ mtime changed between its read and its write. Each skipped file prints as
 write that fails partway, such as a full disk, prints `FAILED <path>` and
 exits 1. A file left half masked gets its original bytes back, and the line
 says whether that worked; a file that holds either version stays as it is,
-so a rewrite that landed is not undone (sd:2971). A file that will not open to
+so a rewrite that landed is not undone (sd:2971). The restore touches only
+the inode it read, and only bytes that a cut-short write leaves, so a
+rotated log or a line appended since stays as it is. A file that will not open to
 write fails the same way when it holds a match, and passes when it holds none. The rewrite is in `mask_files.py`.
 
 Caveats: quit vim before masking `.viminfo` (vim rewrites it

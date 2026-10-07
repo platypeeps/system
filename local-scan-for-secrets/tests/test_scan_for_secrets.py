@@ -446,6 +446,78 @@ class MaskRewrite(unittest.TestCase):
         self.assertEqual(path.read_bytes(), original, "a half-masked file was left in place")
         self.assertIn("original restored", err)
 
+    def half_way_then(self, after_close):
+        """A handle that fills the disk halfway through the masked write,
+        then runs `after_close` once it is closed, before recovery."""
+
+        class HalfWay:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self.handle.close()
+                if "+" in self.handle.mode:
+                    after_close(Path(self.handle.name))
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+            def write(self, data):
+                if "+" in self.handle.mode:
+                    self.handle.write(data[: len(data) // 2])
+                    self.handle.flush()
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                return self.handle.write(data)
+
+        return HalfWay
+
+    def token_first(self) -> Path:
+        path = self.log("old.jsonl", self.SETTLED)
+        path.write_bytes(("%s and the rest of the line\n" % self.TOKEN).encode())
+        os.utime(path, (time.time() - self.SETTLED,) * 2)
+        return path
+
+    def test_recovery_keeps_an_append_that_landed_after_the_failed_write(self):
+        path = self.token_first()
+        event = b'{"line": 2, "text": "written by the live session"}\n'
+
+        def session_appends(target):
+            with open(target, "ab") as f:
+                f.write(event)
+
+        code, err = self.apply_through(path, self.half_way_then(session_appends))
+        self.assertEqual(code, 1, err)
+        self.assertTrue(path.read_bytes().endswith(event), "recovery dropped the appended event")
+        self.assertIn("changed after the failed write", err)
+
+    def test_recovery_leaves_a_replacement_file_alone(self):
+        path = self.token_first()
+        rotated = b'{"line": 1, "text": "a new log after rotation"}\n'
+
+        def rotate(target):
+            fresh = target.with_suffix(".new")
+            fresh.write_bytes(rotated)
+            fresh.replace(target)
+
+        code, err = self.apply_through(path, self.half_way_then(rotate))
+        self.assertEqual(code, 1, err)
+        self.assertEqual(path.read_bytes(), rotated, "recovery wrote into a file it never read")
+        self.assertIn("replaced after the failed write", err)
+
+    def test_the_cut_short_shape(self):
+        cut = self.mod.cut_short
+        data, new = b"SECRETSECRET tail", b"<m> tail"
+        self.assertTrue(cut(b"<m>RETSECRET tail", data, new), "a prefix of the masked bytes, then the original")
+        self.assertTrue(cut(b"<m> tailCRET tail", data, new), "all masked bytes, no truncate")
+        self.assertFalse(cut(b"<m>RETSECRET tail+event", data, new), "an append since")
+        self.assertFalse(cut(b"<m>RETSECRXT tail", data, new), "a change past the written prefix")
+        longer = b"<masked:$NAME> tail"
+        self.assertTrue(cut(b"<masked:$NAME> ta", b"abc tail", longer), "a longer write, cut short")
+        self.assertFalse(cut(b"abc tail and more", b"abc tail", longer))
+
     def test_a_rewrite_that_landed_is_not_undone(self):
         path = self.log("old.jsonl", self.SETTLED)
 
