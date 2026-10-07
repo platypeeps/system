@@ -361,6 +361,8 @@ class TheDocument(Collectors, ScreenCase):
             "dep:unread": ("unknown", "2 managed repos: dependencies not read"),
         })
         self.assertEqual(rows["dep:/checkouts/alpha"]["detail"], "1 critical · 99 low · severity past the first page not read")
+        self.assertEqual(rows["dep:/checkouts/alpha"]["cli"],
+                         "gh api --paginate 'repos/group/alpha/dependabot/alerts?state=open' --jq '.[].html_url'")
         self.assertEqual(rows["dep:unread"]["list"], ["group/gamma: token does not reach it",
                                                       "group/epsilon: API HTTP 403; retry on a later collection"])
         self.assertEqual(self.area("dep", protection=protection_of(ALERTED))["at"], "2026-09-05T08:00:00Z")
@@ -399,6 +401,8 @@ class TheDocument(Collectors, ScreenCase):
             "sec:off:/checkouts/delta": ("caution", "group/delta: public, secret scanning off"),
             "sec:unread": ("unknown", "2 managed repos: security not read"),
         })
+        self.assertEqual(rows["sec:/checkouts/alpha"]["cli"],
+                         "gh api --paginate 'repos/group/alpha/secret-scanning/alerts?state=open' --jq '.[].html_url'")
         clean = [{**ALERTED[0], "alerts": {"secret_scanning": {"visibility": "public", "setting": "enabled", "open": 0}}},
                  {**ALERTED[3], "alerts": {"secret_scanning": {"visibility": "private"}}}]
         (row,) = self.area("sec", protection=protection_of(clean))["rows"]

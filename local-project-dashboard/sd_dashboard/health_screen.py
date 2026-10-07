@@ -490,7 +490,7 @@ def _dependency_rows(found: list[dict]) -> tuple[list[dict], dict]:
                 "kind": "Dependencies · open alerts",
                 "facts": {"Repository": repo["repo"], "Open": str(part["open"]), "Shown": count,
                           "Observed": repo.get("observed_at") or "never"},
-                "cli": f"gh api {shlex.quote(f'repos/{name}/dependabot/alerts?state=open')} --jq '.[].html_url'",
+                "cli": f"gh api --paginate {shlex.quote(f'repos/{name}/dependabot/alerts?state=open')} --jq '.[].html_url'",
             })
     if unread:
         rows.append(_not_read("dep", "Dependencies", unread))
@@ -533,7 +533,7 @@ def _security_rows(found: list[dict]) -> tuple[list[dict], dict]:
                          "detail": "rotate the secret first, then close the alert", "kind": "Security · open alerts",
                          "facts": {"Repository": repo["repo"], "Open": str(part["open"]), "Shown": count,
                                    "Observed": repo.get("observed_at") or "never"},
-                         "cli": f"gh api {shlex.quote(f'repos/{name}/secret-scanning/alerts?state=open')} --jq '.[].html_url'"})
+                         "cli": f"gh api --paginate {shlex.quote(f'repos/{name}/secret-scanning/alerts?state=open')} --jq '.[].html_url'"})
     if unread:
         rows.append(_not_read("sec", "Security", unread))
     if clean and not any(row["type"] == "secret scanning" for row in rows):
