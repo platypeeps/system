@@ -33,7 +33,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import reads, upsert_repo
+from sd_db import credentials, reads, upsert_repo
+from sd_db.writes import record_state
 
 from sd_dashboard import health_collectors, health_screen, server, v2
 
@@ -98,8 +99,33 @@ PROTECTION = [
 ]
 
 
+# `protection.rows` since sd:2205 carries `managed` and `alerts`; none of these is managed.
+PROTECTION = [{**repo, "managed": False, "alerts": None} for repo in PROTECTION]
+
+
 def protection_of(rows):
     return lambda connection: rows
+
+
+#: Managed repositories with alerts as the nightly sync stores them (sd:2205, sd:2206); beta is not managed, and
+#: alpha-copy is a second checkout of group/alpha.
+ALERTED = [
+    {**PROTECTION[0], "managed": True, "alerts": {
+        "dependabot": {"open": 100, "more": True, "severity": {"critical": 1, "low": 99}},
+        "secret_scanning": {"visibility": "public", "setting": "enabled", "open": 1, "more": False}}},
+    {**PROTECTION[0], "repo": "/checkouts/alpha-copy", "managed": True, "alerts": PROTECTION[0].get("alerts")},
+    {**PROTECTION[1], "managed": False, "alerts": None},
+    {**PROTECTION[2], "managed": True, "alerts": None},
+    {**PROTECTION[3], "managed": True, "alerts": {
+        "dependabot": {"open": 2, "more": False, "severity": {"medium": 2}},
+        "secret_scanning": {"visibility": "public", "setting": "disabled"}}},
+    {"repo": "/checkouts/epsilon", "slug": "group/epsilon", "status": "protected", "observed_at": "2026-09-04T08:00:00Z",
+     "reason": None, "managed": True, "alerts": {
+         "dependabot": {"reason": "API HTTP 403; retry on a later collection"},
+         "secret_scanning": {"visibility": "public", "setting": None, "reason": "security_and_analysis not shown"}}},
+    {"repo": "/checkouts/zeta", "slug": "group/zeta", "status": "protected", "observed_at": "2026-09-05T08:00:00Z",
+     "reason": None, "managed": True, "alerts": {"dependabot": {"archived": True}, "secret_scanning": {"visibility": "private"}}},
+]
 
 
 GIB = 1024 ** 2
@@ -193,10 +219,10 @@ class TheDocument(Collectors, ScreenCase):
     def test_every_design_area_is_there_in_order_and_says_whether_a_reader_covers_it(self):
         areas = self.doc()["areas"]
         self.assertEqual([(a["id"], a["read"]) for a in areas],
-                         [("disk", True), ("cred", False), ("attr", True), ("wt", True),
-                          ("br", True), ("dep", False), ("sec", False), ("ports", True), ("prot", True)])
+                         [("disk", True), ("cred", True), ("attr", True), ("wt", True),
+                          ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True)])
         for area in areas:
-            if area["id"] not in ("br", "ports", "prot"):
+            if area["id"] not in ("br", "ports", "prot", "cred", "dep", "sec"):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
@@ -322,6 +348,156 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual(rows["prot:/checkouts/widget-copy"]["status"], "protected")
         self.assertEqual(rows["prot:/checkouts/widget-copy"]["facts"]["Borrowed from"], "/checkouts/widget")
         self.assertNotIn("Borrowed from", rows["prot:/checkouts/widget"]["facts"])
+
+    def area(self, key, **kwargs):
+        return next(area for area in self.doc(**kwargs)["areas"] if area["id"] == key)
+
+    def test_dependencies_are_a_row_per_managed_repo_with_open_alerts_and_unread_is_never_clean(self):
+        """sd:2205: the stored alerts of managed repositories; a sibling checkout is not counted twice."""
+        rows = {row["id"]: row for row in self.area("dep", protection=protection_of(ALERTED))["rows"]}
+        self.assertEqual({key: (row["state"], row["what"]) for key, row in rows.items()}, {
+            "dep:/checkouts/alpha": ("warning", "group/alpha: 100+ open Dependabot alerts"),
+            "dep:/checkouts/delta": ("caution", "group/delta: 2 open Dependabot alerts"),
+            "dep:unread": ("unknown", "2 managed repos: dependencies not read"),
+        })
+        self.assertEqual(rows["dep:/checkouts/alpha"]["detail"], "1 critical · 99 low · severity past the first page not read")
+        self.assertEqual(rows["dep:/checkouts/alpha"]["cli"],
+                         "gh api --paginate 'repos/group/alpha/dependabot/alerts?state=open' --jq '.[].html_url'")
+        self.assertEqual(rows["dep:unread"]["list"], ["group/gamma: token does not reach it",
+                                                      "group/epsilon: API HTTP 403; retry on a later collection"])
+        self.assertEqual(self.area("dep", protection=protection_of(ALERTED))["at"], "2026-09-05T08:00:00Z")
+
+    def test_a_page_cut_short_is_a_warning_since_the_rest_may_be_grave(self):
+        paged = {**ALERTED[4], "alerts": {"dependabot": {"open": 100, "more": True, "severity": {"low": 100}}}}
+        (row,) = self.area("dep", protection=protection_of([paged]))["rows"]
+        self.assertEqual((row["state"], row["detail"]), ("warning", "100 low · severity past the first page not read"))
+
+    def test_a_repo_not_re_read_in_48_hours_is_a_caution_even_beside_a_fresh_one(self):
+        old = {**ALERTED[4], "observed_at": "2026-09-04T08:00:00Z",
+               "alerts": {"dependabot": {"open": 0, "more": False}, "secret_scanning": {"visibility": "private"}}}
+        fresh = {**ALERTED[0], "alerts": {"dependabot": {"open": 0, "more": False}, "secret_scanning": {"visibility": "private"}}}
+        for key, name in (("dep", "dependencies"), ("sec", "security")):
+            rows = {row["id"]: row for row in self.area(key, protection=protection_of([old, fresh]))["rows"]}
+            self.assertEqual((rows[f"{key}:stale"]["state"], rows[f"{key}:stale"]["what"]),
+                             ("caution", f"1 managed repo: {name} not re-read in 48 hours"), key)
+            self.assertEqual(rows[f"{key}:stale"]["list"], ["group/delta: observed 2026-09-04T08:00:00Z"])
+
+    def test_of_sibling_checkouts_the_newest_observation_counts(self):
+        stale = {**ALERTED[0], "repo": "/checkouts/aardvark", "observed_at": "2026-09-01T08:00:00Z",
+                 "alerts": {"dependabot": {"open": 0, "more": False}}}
+        rows = [row["id"] for row in self.area("dep", protection=protection_of([stale, ALERTED[0]]))["rows"]]
+        self.assertEqual(rows, ["dep:/checkouts/alpha"])
+
+    def test_no_open_alert_is_an_ok_row_and_no_managed_repo_is_unknown(self):
+        clean = [{**repo, "alerts": {"dependabot": {"open": 0, "more": False}}} for repo in ALERTED[:2]]
+        (row,) = self.area("dep", protection=protection_of(clean))["rows"]
+        self.assertEqual((row["id"], row["state"], row["what"]), ("dep:ok", "ok", "No open Dependabot alert in 1 managed repo"))
+        for key in ("dep", "sec"):
+            (row,) = self.area(key)["rows"]
+            self.assertEqual((row["id"], row["state"]), (f"{key}:none", "unknown"))
+
+    def test_an_older_library_without_the_managed_flag_is_the_area_error_not_an_empty_fleet(self):
+        older = [{key: value for key, value in repo.items() if key not in ("managed", "alerts")} for repo in PROTECTION]
+        for key in ("dep", "sec"):
+            area = self.area(key, protection=protection_of(older))
+            self.assertEqual(area["rows"], [])
+            self.assertIn("reports no managed flag", area["error"])
+
+    def test_security_is_open_secret_alerts_and_public_repos_with_scanning_off(self):
+        """sd:2206: private repos are not scanned, by policy, and are counted, not flagged."""
+        rows = {row["id"]: row for row in self.area("sec", protection=protection_of(ALERTED))["rows"]}
+        self.assertEqual({key: (row["state"], row["what"]) for key, row in rows.items()}, {
+            "sec:/checkouts/alpha": ("warning", "group/alpha: 1 open secret-scanning alert"),
+            "sec:off:/checkouts/delta": ("caution", "group/delta: public, secret scanning off"),
+            "sec:unread": ("unknown", "2 managed repos: security not read"),
+        })
+        self.assertEqual(rows["sec:/checkouts/alpha"]["cli"],
+                         "gh api --paginate 'repos/group/alpha/secret-scanning/alerts?state=open' --jq '.[].html_url'")
+        clean = [{**ALERTED[0], "alerts": {"secret_scanning": {"visibility": "public", "setting": "enabled", "open": 0}}},
+                 {**ALERTED[4], "alerts": {"secret_scanning": {"visibility": "private"}}}]
+        (row,) = self.area("sec", protection=protection_of(clean))["rows"]
+        self.assertEqual((row["state"], row["facts"]), ("ok", {"Clean": "1", "Private": "1"}))
+
+    def test_the_default_reader_finds_the_alerts_the_nightly_sync_stored(self):
+        upsert_repo(self.connection, "/checkouts/widget", remote="git@github.com:example/widget.git")
+        self.connection.execute("UPDATE repo SET managed = 1")
+        body = {"alerts": {"dependabot": {"open": 1, "more": False, "severity": {"high": 1}},
+                           "secret_scanning": {"visibility": "public", "setting": "disabled"}}}
+        self.connection.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
+                                "VALUES ('/checkouts/widget', '2026-09-05T02:20:00Z', 'protected', 'main', ?)",
+                                (json.dumps(body),))
+        self.connection.commit()
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0), ports=ports_snapshot)
+        areas = {area["id"]: area for area in doc["areas"]}
+        self.assertEqual([(row["id"], row["state"]) for row in areas["dep"]["rows"]], [("dep:/checkouts/widget", "warning")])
+        self.assertEqual([(row["id"], row["state"]) for row in areas["sec"]["rows"]], [("sec:off:/checkouts/widget", "caution")])
+
+    def heartbeat(self, probes, stamp="2026-09-06T03:10:00Z"):
+        record_state(self.connection, "heartbeat", key=credentials.HEARTBEAT_KEY, timestamp=stamp, body={"probes": probes})
+
+    def test_credentials_light_by_presence_rejection_and_days_to_expiry(self):
+        """sd:2203. NOW is 2026-09-06T12:00Z: 3 days left is a warning, 19 a caution, 86 fine."""
+        self.heartbeat([
+            {"id": "github_pat", "name": "GitHub PAT (GITHUB_PERSONAL_ACCESS_TOKEN)", "present": True, "valid": True,
+             "expires": "2026-09-10T00:00:00Z"},
+            {"id": "soon", "name": "Soon", "present": True, "valid": True, "expires": "2026-09-26T00:00:00Z"},
+            {"id": "later", "name": "Later", "present": True, "valid": True, "expires": "2026-12-01T00:00:00Z"},
+            {"id": "gh", "name": "gh CLI sign-in (gh auth status)", "signed_in": False},
+            {"id": "ha_token", "name": "Home Assistant token (HA_TOKEN)", "present": False},
+            {"id": "unreached", "name": "Unreached", "present": True, "reason": "not reached: OSError"},
+            {"id": "mcp", "name": "MCP servers (claude mcp list)",
+             "servers": [{"name": "github", "status": "connected"}, {"name": "slack", "status": "needs_auth"}]},
+        ])
+        area = self.area("cred")
+        self.assertEqual(area["at"], "2026-09-06T03:10:00Z")
+        self.assertEqual({row["id"]: (row["state"], row["what"]) for row in area["rows"]}, {
+            "cred:github_pat": ("warning", "GitHub PAT (GITHUB_PERSONAL_ACCESS_TOKEN): expires in 3 days"),
+            "cred:soon": ("caution", "Soon: expires in 19 days"),
+            "cred:later": ("ok", "Later: expires in 85 days"),
+            "cred:gh": ("warning", "gh CLI sign-in (gh auth status): rejected"),
+            "cred:ha_token": ("warning", "Home Assistant token (HA_TOKEN): absent"),
+            "cred:unreached": ("unknown", "Unreached: not read"),
+            "cred:mcp": ("caution", "1 of 2 MCP servers not connected"),
+        })
+
+    def test_an_expiry_exactly_on_a_threshold_lights_that_threshold(self):
+        self.heartbeat([{"id": "week", "name": "Week", "present": True, "valid": True, "expires": "2026-09-13T12:00:00Z"},
+                        {"id": "month", "name": "Month", "present": True, "valid": True, "expires": "2026-10-06T12:00:00Z"}])
+        self.assertEqual({row["id"]: row["state"] for row in self.area("cred")["rows"]},
+                         {"cred:week": "warning", "cred:month": "caution"})
+
+    def test_credentials_never_observed_or_gone_stale_say_so(self):
+        (row,) = self.area("cred")["rows"]
+        self.assertEqual((row["id"], row["state"]), ("cred:none", "unknown"))
+        self.heartbeat([{"id": "gh", "name": "gh", "signed_in": True}], stamp="2026-09-01T03:10:00Z")
+        rows = {row["id"]: row for row in self.area("cred")["rows"]}
+        self.assertEqual((rows["cred:gh"]["state"], rows["cred:stale"]["state"]), ("ok", "caution"))
+        self.assertEqual(rows["cred:stale"]["what"], "Credentials last observed 5 days ago")
+
+    def test_an_older_library_without_the_credentials_module_is_the_area_error(self):
+        with patch.dict("sys.modules", {"sd_db.credentials": None}):
+            area = self.area("cred")
+        self.assertEqual(area["rows"], [])
+        self.assertIn("has no credentials module", area["error"])
+
+    def test_malformed_stored_data_is_unknown_never_clean(self):
+        bad = [{**ALERTED[0], "alerts": {"dependabot": ["bad"], "secret_scanning": ["bad"]}}, ALERTED[4]]
+        for key in ("dep", "sec"):
+            area = self.area(key, protection=protection_of(bad))
+            rows = {row["id"]: row for row in area["rows"]}
+            self.assertEqual(area["error"], "")
+            self.assertEqual(rows[f"{key}:unread"]["list"], ["group/alpha: stored alerts are malformed"])
+            self.assertEqual(len(rows), 2, rows)
+        self.heartbeat([{"id": "mcp", "name": "MCP servers", "servers": [None]}, "junk"])
+        self.assertEqual({row["id"]: row["state"] for row in self.area("cred")["rows"]},
+                         {"cred:mcp": "caution", "cred:bad1": "unknown"})
+        self.heartbeat([], stamp="2026-09-06T04:10:00Z")
+        self.assertEqual([(row["id"], row["state"]) for row in self.area("cred")["rows"]], [("cred:empty", "unknown")])
+
+    def test_a_credentials_row_without_a_probe_list_is_the_area_error(self):
+        record_state(self.connection, "heartbeat", key=credentials.HEARTBEAT_KEY, body={"oops": 1})
+        area = self.area("cred")
+        self.assertEqual((area["rows"], area["error"]), ([], "the credentials heartbeat has no probe list"))
 
     def test_a_slow_git_walk_is_stopped_at_its_budget_and_is_the_attribution_error(self):
         stub = self.stub("git", self.stalled())
@@ -545,7 +721,7 @@ class TheDocument(Collectors, ScreenCase):
         doc = self.doc(fleet=slow(fleet_of(TREES)), trailers=slow(trailers_of(3)), ports=slow(ports_snapshot),
                        disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
         self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
-                         [(key, "", True) for key in ("disk", "attr", "wt", "br", "ports", "prot")])
+                         [(key, "", True) for key in ("disk", "cred", "attr", "wt", "br", "dep", "sec", "ports", "prot")])
 
     def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
         # The reader answers only once the page has returned, so a page that
@@ -714,6 +890,9 @@ class TheScript(Collectors, ScreenCase):
             ["port.inspect", "port", "safe", "i", False, False],
             ["protection.settings", "branch protection", "safe", "o", False, False],
             ["collector.sync", "collector", "safe", "r", False, False],
+            ["dependabot alerts.review", "dependabot alerts", "safe", "o", False, False],
+            ["secret scanning.review", "secret scanning", "safe", "o", False, False],
+            ["credential.probe", "credential", "safe", "r", False, False],
             ["storage folder.snooze", "storage folder", "undo", "z", None, True],
             ["build output.snooze", "build output", "undo", "z", None, True],
             ["volume.snooze", "volume", "undo", "z", None, True],
@@ -726,11 +905,17 @@ class TheScript(Collectors, ScreenCase):
         ])
 
     def test_an_area_with_no_reader_is_an_unknown_lamp_that_names_what_it_does_not_read(self):
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html; R.sub = ELS.subhead.html;")
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(3),
+                                     ports=ports_snapshot, protection=protection_of(PROTECTION))
+        cred = next(area for area in doc["areas"] if area["id"] == "cred")
+        cred.update(read=False, source=None, rows=[], at=None,
+                    missing=["GitHub PAT presence and expiry", "gh CLI sign-in"])
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html; R.sub = ELS.subhead.html;", doc)
         self.assertEqual(out["gets"], ["/api/health"])
         lamps = out["R"]["lamps"]
-        for area in ("cred", "dep", "sec"):
-            self.assertRegex(lamps, rf'data-area="{area}" data-state="unknown"[^>]*>.*?no reader', area)
+        self.assertRegex(lamps, r'data-area="cred" data-state="unknown"[^>]*>.*?no reader')
+        for area in ("dep", "sec"):
+            self.assertRegex(lamps, rf'data-area="{area}" data-state="unknown"[^>]*><span class="lbl">[^<]*<svg[^>]*><use[^>]*/></svg></span><span class="val"><span class="ph">not read</span>', area)
         self.assertRegex(lamps, r'data-area="wt" data-state="caution"[^>]*>.*?<b>2</b> dir gone')
         self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?<b>3</b> missing')
         self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?your commits · 5 weeks · default branch')
@@ -741,9 +926,16 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
         self.assertIn("<b>Not read here:</b> build output sizes", areas)
         self.assertIn('data-id="gone:group/alpha"', areas)
-        self.assertIn("9 areas · 1 warning, 6 caution rows want you · 3 areas with no reader yet", out["R"]["sub"])
+        self.assertIn("9 areas · 1 warning, 6 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
+
+    def test_an_alert_lamp_keeps_a_paged_total_and_says_when_a_repo_was_not_read(self):
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(3),
+                                     ports=ports_snapshot, protection=protection_of(ALERTED))
+        lamps = self.run_page("R.lamps = ELS.annunciator.html;", doc)["R"]["lamps"]
+        self.assertRegex(lamps, r'data-area="dep"[^>]*>.*?<b>102\+</b> open alerts</span> · <span class="ph">not all read</span>')
+        self.assertRegex(lamps, r'data-area="sec"[^>]*>.*?<b>1</b> open alerts</span> · <span class="ph">not all read</span>')
 
     def test_a_failed_reader_is_a_partial_read_and_its_lamp_is_unknown(self):
         def broken(area):
@@ -848,10 +1040,12 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = ELS.areas.html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("No row matches Credentials only.", out["R"]["note"])
-        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown), ["wt", "br", "ports", "prot"])
+        self.assertIn("Filtered to Credentials only: 1 of 21 rows.", out["R"]["note"])
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown),
+                         ["cred", "wt", "br", "dep", "sec", "ports", "prot"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown),
-                         ["unread:beta", "br:no_default", "port:svc-b:9020", "prot:/checkouts/gamma"])
+                         ["cred:none", "unread:beta", "br:no_default", "dep:none", "sec:none", "port:svc-b:9020",
+                          "prot:/checkouts/gamma"])
 
     def test_a_second_lamp_adds_its_area_and_pressing_one_again_takes_it_out(self):
         click = "ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === 'button.cell' ? {{ id: '', dataset: {{ area: '{a}' }} }} : null }} }});"

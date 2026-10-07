@@ -22,9 +22,14 @@ port adds no collector:
 - Disk and Branches: `health_collectors.disk_scan` and `branch_scan`
   (sd:2202, sd:2204), each inside its own budget; that module says what
   each reads and leaves out.
+- Dependencies and Security (sd:2205, sd:2206): the same `protection.rows`,
+  each managed repository's `alerts`, which the nightly sync stores beside
+  its protection. Health makes no GitHub call.
+- Credentials (sd:2203): the latest `credentials:nightly` heartbeat that
+  `sd-db.sh credentials` writes each night: presence, validity and expiry,
+  never a value. Expiry is judged against the request's time.
 
-The design source shows nine areas. Three -- Credentials, Dependencies,
-Security -- and the parts of the others no reader covers are in the
+The design source shows nine areas. The parts no reader covers are in the
 document as `missing`, by name, so
 the page says what it does not read instead of showing a clean lamp. A
 reader that fails is its area's `error`, never an empty area: a fleet
@@ -36,10 +41,12 @@ prunes a worktree or attributes a commit.
 
 from __future__ import annotations
 
+import importlib
 import shlex
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
@@ -60,15 +67,14 @@ __all__ = ["AREAS", "document"]
 AREAS = (
     ("disk", "Disk", "df -kPl · du -k -d 1 per disk.conf storage folder · git worktree list per registered repo",
      ("build output sizes (its presence is read, not its size)", "build output in worktrees not yet merged")),
-    ("cred", "Credentials", None,
-     ("GitHub PAT presence and expiry", "gh CLI sign-in", "HA_TOKEN test", "MCP server status (claude mcp list)")),
+    ("cred", "Credentials", "sd-db.sh credentials (nightly) → state heartbeat credentials:nightly", ()),
     ("attr", "Attribution", "git log origin/HEAD --no-merges --since='5 weeks ago' --author='<user.email>' -i -F per registered repo · %(trailers)",
      ("counts per repo", "the per-week history")),
     ("wt", "Worktrees", "the fleet's .git/worktrees registrations",
      ("merged worktrees still on disk (merge-base --is-ancestor)",)),
     ("br", "Branches", "git for-each-ref --merged=origin/HEAD refs/heads per registered repo", ()),
-    ("dep", "Dependencies", None, ("open Dependabot alerts per repo",)),
-    ("sec", "Security", None, ("open secret-scanning alerts", "repos with scanning off")),
+    ("dep", "Dependencies", "sd shadow sync → repo_protection alerts · dependabot/alerts?state=open per managed repo", ()),
+    ("sec", "Security", "sd shadow sync → repo_protection alerts · security_and_analysis · secret-scanning/alerts per public managed repo", ()),
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
     ("prot", "Protection", "sd shadow sync → repo_protection", ()),
 )
@@ -413,10 +419,243 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
     return rows, {"volumes": volumes}
 
 
+def _managed(found: list[dict]) -> list[dict]:
+    """The managed repositories, one per GitHub repository: of sibling checkouts, the newest observation."""
+    if found and not any("managed" in repo for repo in found):
+        # An installed sd_db older than sd:2205 reports neither flag nor alerts: not "no managed repository".
+        raise ValueError("the installed sd_db reports no managed flag; install the build that stores alerts (sd:2205)")
+    newest: dict[str, dict] = {}
+    for repo in found:
+        key = repo.get("slug") or repo["repo"]
+        if repo.get("managed") and (key not in newest or (repo.get("observed_at") or "") > (newest[key].get("observed_at") or "")):
+            newest[key] = repo
+    return list(newest.values())
+
+
+def _alert_extra(managed: list[dict]) -> dict:
+    observed = [repo["observed_at"] for repo in managed if repo.get("observed_at")]
+    return {"at": max(observed) if observed else None}
+
+
+#: An alert observation older than this means the nightly sync has stopped reading that repository.
+ALERTS_STALE_HOURS = 48
+
+
+def _stale(area: str, name: str, managed: list[dict], unread: set[str], now: str) -> list[dict]:
+    """A caution row naming each read repository whose observation is stale: a stopped sync is not a clean fleet."""
+    moment = _when(now)
+    stale = [f"{repo.get('slug') or repo['repo']}: observed {repo['observed_at']}" for repo in managed
+             if repo["repo"] not in unread and repo.get("observed_at")
+             and (moment - _when(repo["observed_at"])).total_seconds() / 3600 > ALERTS_STALE_HOURS]
+    if not stale:
+        return []
+    return [{"id": f"{area}:stale", "state": "caution", "type": "check",
+             "what": f"{len(stale)} managed {_plural(len(stale), 'repo', 'repos')}: {name.lower()} not re-read in {ALERTS_STALE_HOURS} hours",
+             "detail": "the nightly sd shadow sync has not observed them since", "kind": f"{name} · stale",
+             "facts": {"Repos": str(len(stale))}, "list": stale, "cli": "sd shadow sync"}]
+
+
+def _no_managed(area: str, name: str) -> dict:
+    # An empty list is not a clean fleet.
+    return {"id": f"{area}:none", "state": "unknown", "type": "check",
+            "what": f"No managed repository: {name} has nothing to read",
+            "detail": "the nightly sync reads alerts for managed repositories only",
+            "kind": name, "facts": {"Managed": "0"}, "cli": "sd-db.sh repo managed PATH yes && sd shadow sync"}
+
+
+def _not_read(area: str, name: str, unread: list[str]) -> dict:
+    count = len(unread)
+    return {"id": f"{area}:unread", "state": "unknown", "type": "check",
+            "what": f"{count} managed {_plural(count, 'repo', 'repos')}: {name.lower()} not read",
+            "detail": "a read that failed is not a count of zero", "kind": f"{name} · not read",
+            "facts": {"Repos": str(count)}, "list": unread, "cli": "sd shadow sync"}
+
+
+def _unread_reason(repo: dict, part: dict | None) -> str:
+    name = repo.get("slug") or repo["repo"]
+    if repo.get("alerts") is None:
+        return f"{name}: {repo.get('reason') or 'not read yet; the next sd shadow sync reads it'}"
+    return f"{name}: {part.get('reason') or 'not read'}" if isinstance(part, dict) else f"{name}: stored alerts are malformed"
+
+
+def _dependency_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
+    """A row per managed repository with open Dependabot alerts, one for those not read, and the clean count."""
+    managed = _managed(found)
+    if not managed:
+        return [_no_managed("dep", "Dependencies")], {}
+    rows, unread, clean, archived, skipped = [], [], 0, 0, set()
+    for repo in managed:
+        part = (repo.get("alerts") or {}).get("dependabot")
+        name = repo.get("slug") or repo["repo"]
+        if isinstance(part, dict) and part.get("archived"):
+            archived += 1
+        elif not isinstance(part, dict) or not isinstance(part.get("open"), int):
+            unread.append(_unread_reason(repo, part))
+            skipped.add(repo["repo"])
+        elif not part["open"]:
+            clean += 1
+        else:
+            count = f"{part['open']}{'+' if part.get('more') else ''}"
+            severity = part.get("severity") if isinstance(part.get("severity"), dict) else {}
+            # The severity of alerts past the first page is unread, so a page cut short counts as grave.
+            grave = sum(severity.get(level, 0) for level in ("critical", "high")) or part.get("more")
+            rows.append({
+                "id": f"dep:{repo['repo']}", "state": "warning" if grave else "caution", "type": "dependabot alerts",
+                "slug": repo.get("slug"),
+                "what": f"{name}: {count} open Dependabot {_plural(part['open'], 'alert', 'alerts')}",
+                "detail": " · ".join([f"{severity[level]} {level}" for level in ("critical", "high", "medium", "low", "unknown")
+                                      if severity.get(level)] + ["severity past the first page not read"] * bool(part.get("more")))
+                          or "severity not read",
+                "kind": "Dependencies · open alerts",
+                "facts": {"Repository": repo["repo"], "Open": str(part["open"]), "Shown": count,
+                          "Observed": repo.get("observed_at") or "never"},
+                "cli": f"gh api --paginate {shlex.quote(f'repos/{name}/dependabot/alerts?state=open')} --jq '.[].html_url'",
+            })
+    if unread:
+        rows.append(_not_read("dep", "Dependencies", unread))
+    rows += _stale("dep", "Dependencies", managed, skipped, now)
+    if clean and not any(row["type"] == "dependabot alerts" for row in rows):
+        rows.append({"id": "dep:ok", "state": "ok", "type": "check",
+                     "what": f"No open Dependabot alert in {clean} managed {_plural(clean, 'repo', 'repos')}",
+                     "detail": f"archived repos left out: {archived}", "kind": "Dependencies",
+                     "facts": {"Clean": str(clean), "Archived": str(archived)}})
+    return rows, _alert_extra(managed)
+
+
+def _security_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
+    """Per public managed repository: open secret-scanning alerts, or scanning off; private ones are not scanned."""
+    managed = _managed(found)
+    if not managed:
+        return [_no_managed("sec", "Security")], {}
+    rows, unread, clean, private, skipped = [], [], 0, 0, set()
+    for repo in managed:
+        part = (repo.get("alerts") or {}).get("secret_scanning")
+        name = repo.get("slug") or repo["repo"]
+        settings = f"https://github.com/{name}/settings/security_analysis"
+        if isinstance(part, dict) and part.get("visibility") == "private":
+            private += 1
+        elif isinstance(part, dict) and part.get("setting") == "disabled":
+            rows.append({"id": f"sec:off:{repo['repo']}", "state": "caution", "type": "secret scanning",
+                         "slug": repo.get("slug"), "what": f"{name}: public, secret scanning off",
+                         "detail": "a public repo with scanning off is a finding", "kind": "Security · scanning off",
+                         "facts": {"Repository": repo["repo"], "Setting": "disabled",
+                                   "Observed": repo.get("observed_at") or "never"},
+                         "cli": f"open {settings}"})
+        elif not isinstance(part, dict) or not isinstance(part.get("open"), int):
+            unread.append(_unread_reason(repo, part))
+            skipped.add(repo["repo"])
+        elif not part["open"]:
+            clean += 1
+        else:
+            count = f"{part['open']}{'+' if part.get('more') else ''}"
+            rows.append({"id": f"sec:{repo['repo']}", "state": "warning", "type": "secret scanning",
+                         "slug": repo.get("slug"),
+                         "what": f"{name}: {count} open secret-scanning {_plural(part['open'], 'alert', 'alerts')}",
+                         "detail": "rotate the secret first, then close the alert", "kind": "Security · open alerts",
+                         "facts": {"Repository": repo["repo"], "Open": str(part["open"]), "Shown": count,
+                                   "Observed": repo.get("observed_at") or "never"},
+                         "cli": f"gh api --paginate {shlex.quote(f'repos/{name}/secret-scanning/alerts?state=open')} --jq '.[].html_url'"})
+    if unread:
+        rows.append(_not_read("sec", "Security", unread))
+    rows += _stale("sec", "Security", managed, skipped, now)
+    if clean and not any(row["type"] == "secret scanning" for row in rows):
+        rows.append({"id": "sec:ok", "state": "ok", "type": "check",
+                     "what": f"Scanning on, no open alert, in {clean} public managed {_plural(clean, 'repo', 'repos')}",
+                     "detail": f"private repos are not scanned, by policy: {private}", "kind": "Security",
+                     "facts": {"Clean": str(clean), "Private": str(private)}})
+    return rows, _alert_extra(managed)
+
+
+#: Days before a credential's expiry that Health lights caution, then warning.
+EXPIRY_CAUTION, EXPIRY_WARNING = 30, 7
+#: A heartbeat older than this means the nightly job has stopped.
+CREDENTIALS_STALE_HOURS = 48
+CREDENTIALS_CLI = "local-sd-db/sd-db.sh credentials"
+
+
+def read_credentials(connection: sqlite3.Connection) -> tuple[str, dict] | None:
+    """`sd_db.credentials.read`, imported here so an installed library older than sd:2203 is the area's error."""
+    try:
+        credentials = importlib.import_module("sd_db.credentials")
+    except ImportError as missing:
+        raise ValueError("the installed sd_db has no credentials module; install the build with sd:2203") from missing
+    return credentials.read(connection)
+
+
+def _when(stamp: str) -> datetime:
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _credential_row(probe: dict, now: datetime) -> dict:
+    """One probe as a ledger row: absent or rejected is a warning, an expiry near or past lights by `EXPIRY_*`."""
+    name, pid = probe.get("name") or probe.get("id") or "?", probe.get("id") or "?"
+    row = {"id": f"cred:{pid}", "type": "credential", "kind": "Credentials · " + name.split(" (")[0],
+           "facts": {"Credential": name}, "cli": CREDENTIALS_CLI}
+    facts = row["facts"]
+    for key, label in (("present", "Present"), ("valid", "Accepted"), ("signed_in", "Signed in"), ("expires", "Expires")):
+        if key in probe:
+            facts[label] = "—" if probe[key] is None else str(probe[key]).lower() if isinstance(probe[key], bool) else probe[key]
+    servers = probe.get("servers")
+    if isinstance(servers, list):
+        # An entry that is not a server object is not a connected server.
+        down = [server if isinstance(server, dict) else {"name": "?", "status": "unreadable"}
+                for server in servers if not isinstance(server, dict) or server.get("status") != "connected"]
+        facts["Servers"] = str(len(servers))
+        if down:
+            return {**row, "state": "caution", "what": f"{len(down)} of {len(servers)} MCP servers not connected",
+                    "detail": " · ".join(f"{s.get('name')} {s.get('status')}" for s in down[:4]),
+                    "list": [f"{s.get('name')} · {s.get('status')}" for s in down], "cli": "claude mcp list"}
+        return {**row, "state": "ok", "what": f"All {len(servers)} MCP servers connected", "detail": name}
+    if probe.get("present") is False:
+        return {**row, "state": "warning", "what": f"{name}: absent", "detail": "not set in the job's environment (env.sh)"}
+    if probe.get("valid") is False or probe.get("signed_in") is False:
+        return {**row, "state": "warning", "what": f"{name}: rejected",
+                "detail": "the service refused it" if "valid" in probe else "gh auth status failed"}
+    if probe.get("reason"):
+        return {**row, "state": "unknown", "what": f"{name}: not read", "detail": probe["reason"]}
+    if probe.get("expires"):
+        days = (_when(probe["expires"]) - now).days
+        state = "warning" if days <= EXPIRY_WARNING else "caution" if days <= EXPIRY_CAUTION else "ok"
+        return {**row, "state": state, "what": f"{name}: expired" if days < 0 else f"{name}: expires in {days} days",
+                "detail": f"expires {probe['expires']}",
+                "note": f"Health lights caution {EXPIRY_CAUTION} days before expiry and warning at {EXPIRY_WARNING}."}
+    if probe.get("valid") or probe.get("signed_in"):
+        return {**row, "state": "ok", "what": f"{name}: accepted",
+                "detail": "no expiry reported" if "expires" in probe else name}
+    return {**row, "state": "unknown", "what": f"{name}: not read", "detail": "the probe recorded no answer"}
+
+
+def _credential_rows(found: tuple[str, dict] | None, *, now: str) -> tuple[list[dict], dict]:
+    """A row per probe of the last nightly run, and a caution row when that run is stale."""
+    if found is None:
+        return [{"id": "cred:none", "state": "unknown", "type": "check", "what": "Credentials not yet observed",
+                 "detail": "the nightly job writes presence and expiry: local-cron-jobs/examples/credentials-nightly.job",
+                 "kind": "Credentials", "facts": {"Heartbeat": "credentials:nightly"}, "cli": CREDENTIALS_CLI}], {"at": None}
+    stamp, body = found
+    moment = _when(now)
+    rows = [_credential_row(probe, moment) if isinstance(probe, dict) else
+            {"id": f"cred:bad{index}", "state": "unknown", "type": "check", "what": "A credential probe is unreadable",
+             "detail": "the heartbeat holds an entry that is not a probe", "kind": "Credentials", "facts": {},
+             "cli": CREDENTIALS_CLI}
+            for index, probe in enumerate(body["probes"])]
+    if not rows:
+        # No probe is not a clean bill.
+        rows.append({"id": "cred:empty", "state": "unknown", "type": "check", "what": "The credentials heartbeat names no probe",
+                     "detail": f"recorded {stamp}", "kind": "Credentials", "facts": {"Observed": stamp}, "cli": CREDENTIALS_CLI})
+    age = (moment - _when(stamp)).total_seconds() / 3600
+    if age > CREDENTIALS_STALE_HOURS:
+        rows.append({"id": "cred:stale", "state": "caution", "type": "check",
+                     "what": f"Credentials last observed {round(age / 24)} days ago",
+                     "detail": f"the nightly job has not recorded since {stamp}", "kind": "Credentials",
+                     "facts": {"Observed": stamp}, "cli": CREDENTIALS_CLI})
+    return rows, {"at": stamp}
+
+
 #: The whole document's budget. The readers run at once, each inside its own budget, the fleet's 12 seconds the
 #: longest, so this is that figure and a margin; a reader still running at it is its area's error.
 PAGE_SECONDS = 13.0
-#: The areas whose reader walks subprocesses, each on its own scan thread; Protection reads only the database, on this thread.
+#: The areas whose reader walks subprocesses, each on its own scan thread; Protection, Dependencies, Security and
+#: Credentials read only the database, on this thread.
 POOLED = ("disk", "attr", "wt", "br", "ports")
 
 
@@ -485,13 +724,14 @@ def _settle(area: dict, name: str, read) -> None:
 
 
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=None, ports=None, protection=None,
-             disk=None, branches=None) -> dict:
+             disk=None, branches=None, credentials=None) -> dict:
     """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, `trailers`
     `reads.trailer_scan`'s, `ports` `collect_ports`' (no argument) and
     `protection` `protection.rows`', and `disk` and `branches`
-    `health_collectors.disk_scan`'s and `branch_scan`'s; each is a seam a test fills. Each reader
+    `health_collectors.disk_scan`'s and `branch_scan`'s, and `credentials`
+    `read_credentials`'; each is a seam a test fills. Each reader
     is guarded on its own, so one failure is its area's `error` and the
     others still answer. A reader returns its rows, or its rows and what the
     page draws above them (`extra`).
@@ -522,6 +762,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
         connection, now=now, within=TRAILER_SECONDS, repo_paths=registered()))
     collect_ports = ports or ports_screen._collect
     read_protection = protection or protection_module.rows
+    read_creds = credentials or read_credentials
     scan_disk = disk or (lambda connection: health_collectors.disk_scan(connection, repo_paths=registered()))
     scan_branches = branches or (lambda connection: health_collectors.branch_scan(connection, repo_paths=registered()))
     readers = {
@@ -531,6 +772,9 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
         "br": lambda: _branch_rows(scan_branches(connection)),
         "ports": lambda: _port_rows(collect_ports()),
         "prot": lambda: _protection_rows(read_protection(connection)),
+        "dep": lambda: _dependency_rows(read_protection(connection), now=now),
+        "sec": lambda: _security_rows(read_protection(connection), now=now),
+        "cred": lambda: _credential_rows(read_creds(connection), now=now),
     }
     running = {key: _SCANS.start(key, readers[key], now=now) for key in POOLED}
     stop = time.monotonic() + PAGE_SECONDS

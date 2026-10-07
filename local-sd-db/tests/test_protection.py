@@ -1408,6 +1408,103 @@ class Rows(SyncCase):
                          ("unknown", protection.NOT_OBSERVED, None))
 
 
+def alert(number, severity):
+    return {"number": number, "security_advisory": {"severity": severity}}
+
+
+class Alerts(SyncCase):
+    """sd:2205, sd:2206: a managed repository's alerts land in its row's body, read after every basic observation."""
+
+    def managed(self, name):
+        path = self.register(name, f"git@github.com:platypeeps/{name}.git", PR_WORKFLOW)
+        with self.db:
+            self.db.execute("UPDATE repo SET managed = 1 WHERE path = ?", (path,))
+        return path
+
+    def protected(self, name, **repo):
+        payload = repo_payload(private=False, security_and_analysis={"secret_scanning": {"status": "enabled"}})
+        payload.update(repo)
+        return {f"repos/platypeeps/{name}": payload,
+                f"repos/platypeeps/{name}/branches/{MAIN}/protection": full_protection(),
+                protection.rules_path("platypeeps", name, MAIN): []}
+
+    def alerts(self, path):
+        return json.loads(self.stored()[path]["body"]).get("alerts")
+
+    def test_a_managed_public_repository_stores_its_open_alerts_by_severity_after_every_basic_observation(self):
+        mine = self.managed("mine")
+        other = self.register("other", "git@github.com:platypeeps/other.git", PR_WORKFLOW)
+        next_page = {"Link": '<https://api.github.com/repositories/1/dependabot/alerts?after=x>; rel="next"'}
+        rows = {**self.protected("mine"), **self.protected("other"),
+                protection.alert_path("platypeeps", "mine", "dependabot"):
+                    Response(200, next_page, json.dumps([alert(1, "critical"), alert(2, "low"), alert(3, "low")])),
+                protection.alert_path("platypeeps", "mine", "secret-scanning"): [{"number": 7}]}
+        client, transport = self.client(rows)
+        protection.sync(self.db, client=client, observed_at=AT)
+        self.assertEqual(self.alerts(mine), {
+            "dependabot": {"open": 3, "more": True, "severity": {"critical": 1, "low": 2}},
+            "secret_scanning": {"visibility": "public", "setting": "enabled", "open": 1, "more": False}})
+        self.assertIsNone(self.alerts(other), "an unmanaged repository's alerts were read")
+        self.assertEqual(transport.calls[-2:], [protection.alert_path("platypeeps", "mine", "dependabot"),
+                                                protection.alert_path("platypeeps", "mine", "secret-scanning")])
+        self.assertEqual(len(transport.calls), 8, "alerts were read before the other repository's observation")
+        row = {row["repo"]: row for row in protection.rows(self.db)}
+        self.assertEqual((row[mine]["managed"], row[mine]["alerts"]["dependabot"]["open"]), (True, 3))
+        self.assertEqual((row[other]["managed"], row[other]["alerts"]), (False, None))
+
+    def test_a_failed_read_is_a_reason_never_zero_and_private_or_archived_reads_nothing(self):
+        failed, private, archived, hidden, off = (self.managed(name) for name in ("failed", "private", "archived",
+                                                                                   "hidden", "off"))
+        rows = {**self.protected("failed"), **self.protected("private", private=True),
+                **self.protected("archived", archived=True), **self.protected("hidden"),
+                **self.protected("off", security_and_analysis={"secret_scanning": {"status": "disabled"}}),
+                protection.alert_path("platypeeps", "failed", "dependabot"): Response(403, {}, "{}"),
+                protection.alert_path("platypeeps", "failed", "secret-scanning"): Response(404, {}, "{}"),
+                protection.alert_path("platypeeps", "private", "dependabot"): [],
+                protection.alert_path("platypeeps", "hidden", "dependabot"): [alert(1, None)],
+                protection.alert_path("platypeeps", "off", "dependabot"): []}
+        rows["repos/platypeeps/hidden"].pop("security_and_analysis")
+        client, transport = self.client(rows)
+        protection.sync(self.db, client=client, observed_at=AT)
+        self.assertEqual(self.alerts(failed), {
+            "dependabot": {"reason": "API HTTP 403; retry on a later collection"},
+            "secret_scanning": {"visibility": "public", "setting": "enabled",
+                                "reason": "API HTTP 404; retry on a later collection"}})
+        self.assertEqual(self.alerts(private)["secret_scanning"], {"visibility": "private"})
+        self.assertEqual(self.alerts(archived)["dependabot"], {"archived": True})
+        self.assertEqual(self.alerts(hidden), {
+            "dependabot": {"open": 1, "more": False, "severity": {"unknown": 1}},
+            "secret_scanning": {"visibility": "public", "setting": None,
+                                "reason": "security_and_analysis not shown: the token does not administer the repository"}})
+        self.assertEqual(self.alerts(off)["secret_scanning"], {"visibility": "public", "setting": "disabled"})
+        self.assertNotIn(protection.alert_path("platypeeps", "archived", "dependabot"), transport.calls)
+        for name in ("private", "hidden", "off"):
+            self.assertNotIn(protection.alert_path("platypeeps", name, "secret-scanning"), transport.calls)
+
+    def test_an_entry_that_is_not_an_alert_is_a_reason_not_a_count(self):
+        mine = self.managed("mine")
+        client, _ = self.client({**self.protected("mine"),
+                                 protection.alert_path("platypeeps", "mine", "dependabot"): [],
+                                 protection.alert_path("platypeeps", "mine", "secret-scanning"): [None, "invalid"]})
+        protection.sync(self.db, client=client, observed_at=AT)
+        self.assertEqual(self.alerts(mine)["secret_scanning"]["reason"], "alert list holds an entry that is not an alert")
+        self.assertNotIn("open", self.alerts(mine)["secret_scanning"])
+
+    def test_alerts_spend_only_what_the_basic_observations_left(self):
+        mine = self.managed("mine")
+        other = self.register("other", "git@github.com:platypeeps/other.git", PR_WORKFLOW)
+        client, _ = self.client({**self.protected("mine"), **self.protected("other")}, requests=6)
+        protection.sync(self.db, client=client, observed_at=AT)
+        stored = self.stored()
+        self.assertEqual((stored[mine]["status"], stored[other]["status"]), ("protected", "protected"))
+        self.assertEqual(self.alerts(mine)["dependabot"], {"reason": protection.REQUESTS_EXHAUSTED})
+
+    def test_the_reserve_holds_two_alert_reads_per_managed_repository(self):
+        self.managed("mine")
+        self.register("other", "git@github.com:platypeeps/other.git")
+        self.assertEqual(protection.reserve(self.db), 2 * 4 + 2)
+
+
 class Slugs(unittest.TestCase):
     def test_the_github_spellings_and_the_others(self):
         for remote in ("git@github.com:platypeeps/system.git", "git@github.com:platypeeps/system",

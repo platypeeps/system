@@ -110,7 +110,12 @@ backup, and the fixture harness both repositories test against.
       contribution_sync.py  durable refresh queue and notification delivery
       protection.py  the fleet's branch protection, one `repo_protection`
                     row per registered GitHub repository, observed on the
-                    tracker's budget and classified as `sd-status` classifies
+                    tracker's budget and classified as `sd-status` classifies;
+                    a managed one's open Dependabot and secret-scanning
+                    alerts ride in the same row (sd:2205, sd:2206)
+      credentials.py  `sd-db.sh credentials`: credential presence and
+                    expiry as the `credentials:nightly` heartbeat, never a
+                    value (sd:2203)
       sources/      the five migrations: freeze, import, verify, and the one
                     retire that exists -- `docs/work`'s
         frontmatter.py  the block at the top of a prd and a vault note
@@ -138,6 +143,7 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh status         # the path, the schema version, what is unresolved
     ./sd-db.sh restore DIR    # put a dated backup directory back
     ./sd-db.sh backup         # snapshot, then restore the snapshot to prove it
+    ./sd-db.sh credentials    # record credential presence and expiry for Health
 
     ./sd-db.sh repo seed      # register what <config>/repo-sync/
                               # repos.common.conf and repos.<profile>.conf

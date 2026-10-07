@@ -342,6 +342,12 @@ Usage: sd-db.sh <command>
               same side of 0.5 and the mean |dp|), and accuracy and Brier on
               pairs that carry a label. The old `judgments` report reads only
               the jev and baseline arms. A read only.
+  credentials Probe credential presence and expiry and record them as the
+              `credentials:nightly` heartbeat, which Health reads: the
+              GitHub PAT (GET /user, its expiry header), gh auth status,
+              HA_TOKEN against HA_URL, and claude mcp list. One line per
+              probe. Never writes, prints, logs or hashes a value.
+              Nightly: local-cron-jobs/examples/credentials-nightly.job.
   serve [--loopback] [--port N] [--database PATH]
               Serve the database to `sd_db.remote` connections (default
               port 8769, 0 picks a free one). With --loopback: bind
@@ -452,7 +458,7 @@ case "${1:-}" in
         fi
         echo "$output"
         ;;
-    init|migrate|status|restore|repo|item|work|import|verify|retire|usage|judgments)
+    init|migrate|status|restore|repo|item|work|import|verify|retire|usage|judgments|credentials)
         # Convention 1 for every verb here: `-h` or `--help` anywhere prints
         # the usage and acts on nothing. `init --help` ran init on the live
         # database (sd:2716): `sd_db.jobs.cli` reads no flags of its own.
