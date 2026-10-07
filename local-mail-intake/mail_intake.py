@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -403,9 +404,19 @@ JEV_STAGE = "JEV_MAIL_INTAKE"
 JEV_CALLER = "local-mail-intake"
 JEV_QUESTION = ("Does the newest message in this email thread ask its "
                 "recipients for a decision or an action?")
-JEV_GATE = "0.7"
-JEV_TIMEOUT = 20        # seconds for one question; jev does its own retries
+#: The same question inside a batch, which names its thread by the neutral key
+#: `state_for_batch` files it under: one state carries every thread.
+JEV_BATCH_QUESTION = ("In the state, {key} is one email thread. Does its newest "
+                      "message ask its recipients for a decision or an action?")
+JEV_GATE = 0.7
+JEV_TIMEOUT = 20        # seconds for one call; jev does its own retries
 JEV_MAX_QUESTIONS = 25  # a bound, so `report --all` cannot turn into a bill
+#: Threads per `jev ask`. Eight is the most the Haiku comparison arm takes
+#: (`MAX_HAIKU_QUESTIONS` in `local-jev/jev_compare.py`); a bigger batch declines it.
+JEV_BATCH = 8
+#: What `--fallback` prints when the call degrades. Not `yes` or `no`, so it
+#: can never read as a judgment, and not JSON, so a batch cannot parse it.
+JEV_DEGRADED = "unknown"
 
 
 def jev_script() -> Path:
@@ -429,6 +440,38 @@ def state_for_jev(row: dict) -> str:
     subject = " ".join((row.get("subject") or "").split())
     direction = "outbound" if (row.get("direction") or "") == "sent" else "inbound"
     return f"direction: {direction}\nsubject: {subject}\n"
+
+
+def state_for_batch(rows: list[dict]) -> str:
+    """Several threads in one state: `state_for_jev` of each, under `q1`, `q2`, ...
+
+    The keys are ordinals and nothing else, so a batch sends exactly what one
+    question per thread sent, and no thread id.
+    """
+    return json.dumps({f"q{n}": state_for_jev(row)
+                       for n, row in enumerate(rows, start=1)})
+
+
+def read_batch(answer: str, count: int) -> list[str] | None:
+    """`yes` or `no` per thread from a `jev ask` response, or None.
+
+    None unless every thread asked has a probability and nothing else came
+    back. A partial answer is no answer: the caller drops the whole batch.
+    """
+    try:
+        answers = json.loads(answer)["answers"]
+    except (ValueError, TypeError, KeyError):
+        return None
+    keys = [f"q{n}" for n in range(1, count + 1)]
+    if not isinstance(answers, dict) or set(answers) != set(keys):
+        return None
+    verdicts = []
+    for key in keys:
+        p = answers[key].get("noul") if isinstance(answers[key], dict) else None
+        if isinstance(p, bool) or not isinstance(p, (int, float)) or not 0 <= p <= 1:
+            return None
+        verdicts.append("yes" if p >= JEV_GATE else "no")
+    return verdicts
 
 
 def run_jev(args: list[str], state: str,
@@ -489,7 +532,8 @@ def judge_asks(rows: list[dict], environ: dict[str, str], err) -> None:
     report is complete either way.
 
     All or nothing (sd:2551). One thread Jev could not answer -- a failed
-    call, an unreadable answer -- drops every answer already given, so the
+    call, an unreadable answer, a batch that answers some threads and not
+    others (sd:1160) -- drops every answer already given, so the
     report is today's order exactly. Keeping them would sort some threads by
     Jev and the rest by arrival, an order neither arm of the comparison is.
     """
@@ -514,18 +558,14 @@ def judge_asks(rows: list[dict], environ: dict[str, str], err) -> None:
         # already started, and `judgment.py` counts gate events on their own.
         return
 
-    asked = 0
-    for row in rows:
-        if asked >= JEV_MAX_QUESTIONS:
-            print(f"jev: stopped after {JEV_MAX_QUESTIONS} questions; the rest "
-                  "keep today's order", file=err)
-            break
+    if len(rows) > JEV_MAX_QUESTIONS:
+        print(f"jev: asking about the first {JEV_MAX_QUESTIONS} threads only; "
+              "the rest keep today's order", file=err)
+    asked = rows[:JEV_MAX_QUESTIONS]
+    for start in range(0, len(asked), JEV_BATCH):
+        batch = asked[start:start + JEV_BATCH]
         try:
-            code, answer = run_jev(
-                [str(script), "noul", JEV_QUESTION, "--state", "-",
-                 "--gate", JEV_GATE, "--caller", JEV_CALLER,
-                 "--stage", JEV_STAGE, "--fallback", "unknown"],
-                state_for_jev(row), environ)
+            code, verdicts = ask_batch(script, batch, environ)
         except Exception as error:
             print(f"jev: {error}; the report keeps today's order", file=err)
             # A call was made and did not answer, so the old path -- today's
@@ -537,23 +577,53 @@ def judge_asks(rows: list[dict], environ: dict[str, str], err) -> None:
             # `run_jev` puts `JEV_TIMEOUT` on the call and the timeout kills
             # it, or it never started. Either way `jev` wrote nothing, so the
             # cause belongs here. A `jev` that returns unusably goes to the
-            # `code != 0` branch below, where it has already written its own.
+            # `verdicts is None` branch below, where it has already written its own.
             record_baseline(
                 script, environ,
                 "timeout" if isinstance(error, subprocess.TimeoutExpired)
                 else "unavailable")
             _drop_answers(rows)
             return
-        asked += 1
-        if code != 0 or answer not in ("yes", "no"):
-            print(f"jev: no answer for one thread (rc={code}); the report "
-                  "keeps today's order", file=err)
+        if verdicts is None:
+            print(f"jev: no answer for every thread in a batch of {len(batch)} "
+                  f"(rc={code}); the report keeps today's order", file=err)
             # `jev` returned, so it has written its own cause; this row says
             # only that today's order is what the report carried.
             record_baseline(script, environ)
             _drop_answers(rows)
             return
-        row["asks"] = answer
+        for row, verdict in zip(batch, verdicts):
+            row["asks"] = verdict
+
+
+def ask_batch(script: Path, batch: list[dict],
+              environ: dict[str, str]) -> tuple[int, list[str] | None]:
+    """One call for up to JEV_BATCH threads: the exit code and a verdict each, or None.
+
+    A batch of one is the `noul` it always was, so its ledger row keeps the
+    answer; `ask` records only how many questions a call carried. Several go
+    in one `ask`, the questions in a private temporary file because the state
+    holds stdin. The file holds the question and the keys, never a subject.
+    """
+    if len(batch) == 1:
+        code, answer = run_jev(
+            [str(script), "noul", JEV_QUESTION, "--state", "-",
+             "--gate", str(JEV_GATE), "--caller", JEV_CALLER,
+             "--stage", JEV_STAGE, "--fallback", JEV_DEGRADED],
+            state_for_jev(batch[0]), environ)
+        return code, [answer] if code == 0 and answer in ("yes", "no") else None
+    questions = {f"q{n}": {"type": "noul",
+                           "instructions": JEV_BATCH_QUESTION.format(key=f"q{n}")}
+                 for n in range(1, len(batch) + 1)}
+    with tempfile.TemporaryDirectory(prefix="mail-intake-jev-") as folder:
+        path = Path(folder) / "questions.json"
+        path.write_text(json.dumps(questions), encoding="utf-8")
+        code, answer = run_jev(
+            [str(script), "ask", "--questions", str(path), "--state", "-",
+             "--state-format", "json", "--caller", JEV_CALLER,
+             "--stage", JEV_STAGE, "--fallback", JEV_DEGRADED],
+            state_for_batch(batch), environ)
+    return code, read_batch(answer, len(batch)) if code == 0 else None
 
 
 def _drop_answers(rows: list[dict]) -> None:

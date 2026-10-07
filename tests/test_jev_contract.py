@@ -93,7 +93,7 @@ LOCAL_ONLY_CALLERS = frozenset({"local-scan-for-secrets"})
 #: cannot grow silently. `drive_intake.py` reads its route names from the
 #: user's conf on purpose -- a hand-kept list would offer a route the conf no
 #: longer defines -- so the collision it risks is a runtime one, and
-#: `jev_route` refuses it there instead.
+#: `jev_routes` refuses it there instead.
 RUNTIME_CRITERIA = frozenset({"local-drive-intake"})
 
 #: This file names `jev` on nearly every line, so discovery finds it and
@@ -890,7 +890,7 @@ class EveryCallerNamesItselfInTheLedger(unittest.TestCase):
 
         `local-drive-intake` is in neither case and is skipped by
         `records_baseline`: it writes no control-arm row anywhere, because
-        `jev_route` runs once per unmatched path and a `jev record`
+        `jev_routes` asks once per batch of unmatched paths and a `jev record`
         subprocess per path is the cost that shape exists to avoid. Its
         timeouts are unrecorded, which is a known gap and not this rule's.
         """
