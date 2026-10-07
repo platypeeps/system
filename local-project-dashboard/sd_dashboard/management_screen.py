@@ -27,28 +27,39 @@ source guarded on its own so one that fails is a reason and not an empty list
   status` prints them (sd:2209). The dashboard does not know the runner's
   config or retention folder, so it runs this checkout's `runner.sh status`
   and reads its one-line body.
+- `grant`: the machine merge grant, `sd config get sd.assistant_merge`
+  (sd:1629). It is machine-wide, so the document carries it once, not per
+  repo; unset is a reading (`None`), not a failure.
+
+Each repo also carries the overview's columns (sd:1629): its required checks
+and `strict` from the protection reading, and `runtimes`, the Python and Node
+versions its checkout pins (`_runtimes`).
 
 Every write the page makes goes through a route `server.action_route`
 answers: runner requeue and cancel, job retry, service start, stop and
 restart, and the two sd-db repo verbs (`repos.set_runner_merge`,
-`repos.set_managed`), which refuse a stale `before`.
+`repos.set_managed`), which refuse a stale `before` and, on a satellite,
+refuse with `HubOnly` (sd:1629).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import subprocess
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sd_db import operations, protection, reads, repos, runner, workflow
+from sd_db import database, operations, protection, reads, repos, runner, workflow
 from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
 from .repos_screen import primary
 
-__all__ = ["document", "last_run", "runner_status", "set_repo"]
+__all__ = ["assistant_merge", "document", "last_run", "runner_status", "set_repo"]
 
 #: How many assignments and merges the page lists; the history counts every row.
 LATEST = 40
@@ -61,6 +72,10 @@ STAMP_BYTES = 512
 #: `runner.sh status`'s ceiling: one Python start and one database read.
 RUNNER_SECONDS = 15.0
 RUNNER = Path(__file__).resolve().parents[2] / "local-sd-runner" / "runner.sh"
+#: `sd config get`'s ceiling: one pack start and one small file read.
+SD_SECONDS = 5.0
+#: The largest pin file read; a version file is one line, a manifest a few KiB.
+PIN_BYTES = 65536
 
 
 def _review(path: str) -> dict | None:
@@ -80,18 +95,144 @@ def _review(path: str) -> dict | None:
         body = json.loads(raw)
     except ValueError:
         return {"file": text, "error": "not valid JSON" if len(raw) <= REVIEW_BYTES else "too large to show"}
+    except RecursionError:
+        # A pure-Python JSON scanner recurses per nesting level (sd:2911); this repo's file, not the document, fails.
+        return {"file": text, "error": "nests too deeply to read"}
     body = body if isinstance(body, dict) else {}
     copilot = body.get("copilot_review") if isinstance(body.get("copilot_review"), dict) else {}
     schema = body.get("$schema") if isinstance(body.get("$schema"), str) else None
-    return {"file": text, "severity_floor": body.get("severity_floor"), "automatic_deep": copilot.get("automatic_deep"),
-            "schema": schema}
+    floor, deep = body.get("severity_floor"), copilot.get("automatic_deep")
+    # Only the types the page renders pass; any other value is this repo's error, never a value (sd:1629).
+    wrong = [words for value, kind, words in ((floor, str, "severity_floor is not a string"),
+                                              (deep, bool, "copilot_review.automatic_deep is not true or false"))
+             if value is not None and not isinstance(value, kind)]
+    out = {"file": text, "severity_floor": floor if isinstance(floor, str) else None,
+           "automatic_deep": deep if isinstance(deep, bool) else None, "schema": schema}
+    return out | {"error": "; ".join(wrong)} if wrong else out
 
 
 def _protection(row: dict) -> dict:
+    detail = row.get("detail") or {}
+    required = detail.get("required_contexts")
+    names = isinstance(required, list) and all(isinstance(name, str) for name in required)
     return {"status": row["status"], "observed_at": row["observed_at"], "default_branch": row["default_branch"],
             "reason": row["reason"], "gaps": [{"id": gap.get("id"), "gap": gap.get("gap")} for gap in row["gaps"]],
             # An older installed `sd_db` returns no `borrowed_from` (sd:1607): its row is the checkout's own.
-            "borrowed_from": row.get("borrowed_from")}
+            "borrowed_from": row.get("borrowed_from"),
+            # None when no observation names them, which is not "none required" (sd:1629).
+            "required": required if names else None,
+            "required_error": "a required check is not a name" if isinstance(required, list) and not names else None,
+            "strict": detail.get("strict") is True}
+
+
+def _pin_text(root: Path, name: str) -> str | None:
+    """A pin file's text, or None when it is absent; ValueError when it cannot be read.
+
+    Opened without blocking and checked to be a regular file before any read,
+    then read to `PIN_BYTES` + 1 at most (sd:2911): a FIFO, or a link to one,
+    would hang `/api/management`, and a huge file would be loaded whole.
+    """
+    try:
+        fd = os.open(root / name, os.O_RDONLY | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as error:
+        raise ValueError(f"{name} is unreadable: {error.strerror or error}") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"{name} is not a regular file")
+        raw = b""
+        while len(raw) <= PIN_BYTES:
+            part = os.read(fd, PIN_BYTES + 1 - len(raw))
+            if not part:
+                break
+            raw += part
+    except OSError as error:
+        raise ValueError(f"{name} is unreadable: {error.strerror or error}") from None
+    finally:
+        os.close(fd)
+    if len(raw) > PIN_BYTES:
+        raise ValueError(f"{name} is larger than a pin file")
+    return raw.decode("utf-8", "replace")
+
+
+def _first_line(root, name):
+    lines = (_pin_text(root, name) or "").strip().splitlines()
+    return lines[0].strip() if lines else None
+
+
+def _tool_versions(root, tool):
+    for line in (_pin_text(root, ".tool-versions") or "").splitlines():
+        words = line.split("#")[0].split()
+        if len(words) > 1 and words[0] == tool:
+            return words[1]
+    return None
+
+
+def _requires_python(root):
+    text = _pin_text(root, "pyproject.toml")
+    if text is None:
+        return None
+    try:
+        project = tomllib.loads(text).get("project")
+    except tomllib.TOMLDecodeError:
+        raise ValueError("pyproject.toml is not valid TOML") from None
+    except RecursionError:
+        # tomllib recurses per nesting level; a file under PIN_BYTES can pass the interpreter's limit (sd:2911).
+        raise ValueError("pyproject.toml nests too deeply to read") from None
+    value = project.get("requires-python") if isinstance(project, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _engines_node(root):
+    text = _pin_text(root, "package.json")
+    if text is None:
+        return None
+    try:
+        body = json.loads(text)
+    except ValueError:
+        raise ValueError("package.json is not valid JSON") from None
+    except RecursionError:
+        raise ValueError("package.json nests too deeply to read") from None
+    engines = body.get("engines") if isinstance(body, dict) else None
+    value = engines.get("node") if isinstance(engines, dict) else None
+    return value if isinstance(value, str) else None
+
+
+#: Where a checkout pins each runtime, first match wins: the version managers' files, then the manifest's range.
+PINS = {
+    "python": ((".python-version", lambda root: _first_line(root, ".python-version")),
+               (".tool-versions", lambda root: _tool_versions(root, "python")),
+               ("pyproject.toml requires-python", _requires_python)),
+    "node": ((".node-version", lambda root: _first_line(root, ".node-version")),
+             (".nvmrc", lambda root: _first_line(root, ".nvmrc")),
+             (".tool-versions", lambda root: _tool_versions(root, "nodejs")),
+             ("package.json engines.node", _engines_node)),
+}
+
+
+def _runtimes(path: str) -> dict | None:
+    """The Python and Node versions the checkout pins (sd:1629): None when it is not on disk.
+
+    Each runtime is `{"value", "source"}`, `{"error"}` when a file that could
+    name it cannot be read, or None when nothing pins it.
+    """
+    root = Path(path).expanduser()
+    if not root.is_dir():
+        return None
+    out = {}
+    for runtime, sources in PINS.items():
+        out[runtime] = None
+        for source, read in sources:
+            try:
+                value = read(root)
+            except ValueError as error:
+                out[runtime] = {"error": str(error)}
+                break
+            if value:
+                out[runtime] = {"value": value, "source": source}
+                break
+    return out
 
 
 def _repos(connection) -> list[dict]:
@@ -103,7 +244,7 @@ def _repos(connection) -> list[dict]:
             "runner_merge": row["runner_merge"], "managed": "yes" if row["managed"] else "no",
             "status_source": row["status_source"], "pieces_source": row["pieces_source"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
-            "review": _review(row["path"]), "protection": guarded.get(row["path"]),
+            "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
         })
     return out
 
@@ -233,6 +374,32 @@ def runner_status() -> tuple[int, str, str]:
     return done.returncode, done.stdout, done.stderr
 
 
+def assistant_merge() -> tuple[int, str, str]:
+    """`sd config get sd.assistant_merge`: its exit code, stdout and stderr, within `SD_SECONDS` (sd:1629)."""
+    try:
+        done = subprocess.run(["sd", "config", "get", "sd.assistant_merge"], capture_output=True, text=True,
+                              timeout=SD_SECONDS, check=False)
+    except FileNotFoundError:
+        raise ValueError("sd is not on the dashboard's PATH, so the machine merge grant was not read") from None
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"sd config get ran past its {SD_SECONDS:g} seconds") from None
+    return done.returncode, done.stdout, done.stderr
+
+
+def _grant(read) -> dict:
+    """The machine merge grant: `controlled`, `ask`, or None when unset (which reads as ask)."""
+    code, out, err = read()
+    said = (err.strip().splitlines() or [""])[0]
+    if code == 1 and "is not set" in said:
+        return {"assistant_merge": None}
+    if code:
+        raise ValueError(f"sd config get sd.assistant_merge exited {code}" + (f": {said}" if said else ""))
+    value = out.strip()
+    if value not in ("controlled", "ask"):
+        raise ValueError(f"sd config get sd.assistant_merge printed {value or 'nothing'}, not controlled or ask")
+    return {"assistant_merge": value}
+
+
 def _archive(status) -> dict:
     """The last and next archive refresh from `runner.sh status`'s body; ValueError names what it does not say.
 
@@ -269,15 +436,18 @@ def _archive(status) -> dict:
     return {"last": last, "next": upcoming, "due": schedule.get("due") is True}
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None, runner=None) -> dict:
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None, runner=None,
+             grant=None) -> dict:
     """Every source the page reads, and the reason for each one that could not be read.
 
     `fleet` is `fleet.collect`'s shape, the seam a test fills; `jobs` and
     `services` are the operations and services backends, the launchd ones
-    by default; `runner` is `runner_status`'s shape.
+    by default; `runner` is `runner_status`'s shape and `grant`
+    `assistant_merge`'s.
     """
     read = fleet or fleet_module.collect
     status = runner or runner_status
+    config = grant or assistant_merge
     out: dict = {"read": now, "sources": {}}
     for source, collect in (("repos", lambda: _repos(connection)),
                             ("git", lambda: _git(read, now)),
@@ -286,7 +456,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
                             ("sessions", lambda: _sessions(read)),
                             ("services", lambda: _services(connection, services)),
                             ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend())),
-                            ("archive", lambda: _archive(status))):
+                            ("archive", lambda: _archive(status)),
+                            ("grant", lambda: _grant(config))):
         try:
             out[source] = collect()
         except FAILURES as failure:
@@ -313,6 +484,8 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value: str, 
     not both write.
     """
     setter, column = SETTERS[field]
+    # The runner that reads these columns runs on the hub; a satellite's page reads them and changes nothing (sd:1629).
+    database.refuse_hub_only(connection, f"repo {field}")
     with workflow.transaction(connection):
         row = repos.row_for(connection, path)
         if row is None:
