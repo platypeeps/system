@@ -123,7 +123,7 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
             f.flush()
     except OSError as e:
         if started:
-            raise WriteFailed("%s: %s" % (path, e)) from e
+            raise WriteFailed("%s: %s; %s" % (path, e, recover(path, data, new))) from e
         if apply and not opened:
             left = mask_file(path, pairs, pats, False)
             if left.count or left.pcount:
@@ -132,6 +132,36 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
             return left
         raise
     return Result(count, pcount)
+
+
+def recover(path: str, data: bytes, new: bytes) -> str:
+    """After a failed rewrite, leave the file whole: as it was, or masked.
+
+    It runs once the buffered handle is closed, since a close flushes what
+    the buffer held over anything written before it. A file that holds either
+    version stays as it is: undoing a rewrite that landed would put the value
+    back. A mix of the two gets the original bytes back through a raw
+    descriptor; the run still fails, and the next one masks it.
+    """
+    try:
+        with open(path, "rb") as f:
+            on_disk = f.read()
+        if on_disk == new:
+            return "the masked bytes landed"
+        if on_disk == data:
+            return "file unchanged"
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.ftruncate(fd, len(data))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        return "restore failed (%s); the file may be half masked" % e
+    return "original restored"
 
 
 def settle_seconds(text: str) -> float:
