@@ -50,7 +50,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..writes import PROMOTED_COLUMNS, promoted_rows, upsert_item
+from ..writes import promoted_rows, upsert_item
 from . import Counts, Frozen, MigrationRefused, Record, digest
 from .frontmatter import read as read_frontmatter
 
@@ -237,8 +237,7 @@ class Reader:
         # A promoted idea answers with the row it was promoted from (sd:1994).
         for promoted in promoted_rows(connection, SOURCE):
             origin = json.loads(promoted["fields"])["promoted_from"]
-            found.append({**dict.fromkeys(PROMOTED_COLUMNS), **(origin.get("row") or {}),
-                          "external_id": origin["external_id"]})
+            found.append({**origin["row"], "external_id": origin["external_id"]})
         for row in found:
             held[row["external_id"]] = Record(
                 identity=row["external_id"],

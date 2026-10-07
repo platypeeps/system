@@ -556,6 +556,38 @@ class Promote(WritingCase):
                    if d.identity == "blog-idea:System/Databases/Blog Ideas/vault-idea.md"}
         self.assertEqual(changed, {"title", "stage", "status", "fields", "body"})
 
+    def broken_snapshot(self, snapshot):
+        """A promoted vault idea whose `promoted_from.row` is not a whole snapshot."""
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
+        reader = VaultReader.at(vault)
+        reader.land(self.db, reader.freeze())
+        idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
+        promote(self.db, idea, who="operator")
+        fields = json.loads(self.db.execute("SELECT fields FROM item WHERE id = ?", (idea,)).fetchone()[0])
+        if snapshot is None:
+            del fields["promoted_from"]["row"]
+        else:
+            fields["promoted_from"]["row"] = snapshot
+        self.db.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), idea))
+        identity = "blog-idea:System/Databases/Blog Ideas/vault-idea.md"
+        missing = [d.identity for d in verify_source(self.db, reader, reader.freeze()) if d.what == "missing from the rows"]
+        self.assertEqual(missing, [identity])
+        self.assertEqual(reader.land(self.db, reader.freeze()).inserted, 1)
+        self.assertEqual(verify_source(self.db, reader, reader.freeze()), [])
+
+    def test_a_promotion_with_no_snapshot_imports_normally(self):
+        self.broken_snapshot(None)
+
+    def test_a_promotion_with_an_empty_snapshot_imports_normally(self):
+        self.broken_snapshot({})
+
+    def test_a_promotion_with_an_array_snapshot_imports_normally(self):
+        self.broken_snapshot([1])
+
     def test_an_open_outer_transaction_is_refused(self):
         self.db.execute("BEGIN")
         try:
