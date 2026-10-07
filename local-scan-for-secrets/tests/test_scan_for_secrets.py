@@ -706,6 +706,14 @@ class Settling(unittest.TestCase):
         result = self.critical()
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
+    def test_a_file_named_like_a_whole_hit_line_settles_nothing(self):
+        # The pattern pass prints `x:1:<match>`; a recent file of exactly that
+        # name must not stand in for the settled `x` (review, sd:1254).
+        self.plant(".codex/sessions/x", self.SETTLED)
+        (self.home / ".codex" / "sessions" / ("x:1:" + self.TOKEN)).write_text("clean\n", encoding="utf-8")
+        result = self.critical()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
     def test_a_window_of_zero_settles_nothing(self):
         self.plant(".codex/sessions/2026/10/07/rollout.jsonl", 60)
         self.env["S4S_MASK_SETTLE_MIN"] = "0"

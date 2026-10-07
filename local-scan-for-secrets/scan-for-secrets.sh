@@ -1299,13 +1299,15 @@ TRANSIENT_PATH_RE='/claude-[^/]*/[^/]*/[^/]*/scratchpad/|^\.codex/shell_snapshot
 # exits 2: mask should have reached it. mask_files.py decides, from the same
 # target and exclusion lists mask uses, passed here so the two cannot drift.
 # Prints each hit line on stdin as `S|line` (settling) or `D|line` (durable).
+# $1 is the line form: `lines` for `path:line:match`, `paths` for `rg -l`.
 # A classifier that fails marks every line durable: it fails toward paging.
 settling_split() {
+  _form=$1
   _hits=$(cat)
   printf '%s\n' "$_hits" \
     | S4S_MASK_FILES="$MASK_FILES" S4S_MASK_DIRS="$AI_LOG_DIRS" \
       S4S_MASK_EXCLUDE_DIRS="$MASK_EXCLUDE_DIRS" S4S_MASK_EXCLUDE_GLOBS="$MASK_EXCLUDE_GLOBS" \
-      S4S_MASK_EXCLUDE_PATHS="$MASK_EXCLUDE_PATHS" python3 "$DIR/mask_files.py" settling \
+      S4S_MASK_EXCLUDE_PATHS="$MASK_EXCLUDE_PATHS" python3 "$DIR/mask_files.py" settling "$_form" \
     || printf '%s\n' "$_hits" | sed 's/^/D|/'
 }
 
@@ -1343,7 +1345,7 @@ if [ "$MODE" = critical ] && [ -n "$OUT" ]; then
 fi
 SETTLING_OUT=""
 if [ "$MODE" = critical ] && [ -n "$OUT" ]; then
-  SPLIT=$(printf '%s\n' "$OUT" | settling_split)
+  SPLIT=$(printf '%s\n' "$OUT" | settling_split lines)
   SETTLING_OUT=$(printf '%s\n' "$SPLIT" | sed -n 's/^S|//p')
   OUT=$(printf '%s\n' "$SPLIT" | sed -n 's/^D|//p')
 fi
@@ -1424,7 +1426,7 @@ TARGETS_EOF
         HITS=$(printf '%s\n' "$HITS" | grep -Ev "$TRANSIENT_PATH_RE" || true)
       fi
       if [ "$MODE" = critical ] && [ -n "$HITS" ]; then
-        SPLIT=$(printf '%s\n' "$HITS" | settling_split)
+        SPLIT=$(printf '%s\n' "$HITS" | settling_split paths)
         S_HITS=$(printf '%s\n' "$SPLIT" | sed -n 's/^S|//p')
         HITS=$(printf '%s\n' "$SPLIT" | sed -n 's/^D|//p')
         T_HITS=$(printf '%s\n%s\n' "$T_HITS" "$S_HITS" | awk 'NF')

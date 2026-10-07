@@ -207,13 +207,15 @@ def lines(name: str) -> list[str]:
 LINE_NUMBER = re.compile(r":(?=[0-9]+:)")
 
 
-def hit_paths(line: str) -> list[str]:
-    """Every file a hit line may name: the line itself (`rg -l`), else each
-    prefix that is a file and is followed by `:<line>:` (`rg -n -o` and
-    `grep -n`). A name that holds `:<digits>:` makes the split ambiguous,
-    so every reading is returned and the caller settles only when all agree."""
-    if os.path.isfile(line):
-        return [line]
+def hit_paths(line: str, form: str) -> list[str]:
+    """Every file a hit line may name. `paths` lines are a file name each
+    (`rg -l`). `lines` lines are `path:line:match` (`rg -n -o`, `grep -n`):
+    each prefix that is a file and is followed by `:<line>:`, never the whole
+    line, which a file could be named after. A name that holds `:<digits>:`
+    makes the split ambiguous, so every reading is returned and the caller
+    settles only when all agree."""
+    if form == "paths":
+        return [line] if os.path.isfile(line) else []
     return [line[:m.start()] for m in LINE_NUMBER.finditer(line) if os.path.isfile(line[:m.start()])]
 
 
@@ -233,14 +235,15 @@ def mask_would_rewrite(path: str) -> bool:
     return not any(path == p or path.startswith(p + "/") for p in words("S4S_MASK_EXCLUDE_PATHS"))
 
 
-def settling(settle_s: float) -> int:
+def settling(settle_s: float, form: str) -> int:
     """Prefix each stdin hit line with `S|` when its file is settling (a mask
-    target modified inside the window) and `D|` when it is durable."""
+    target modified inside the window) and `D|` when it is durable. `form`
+    is `lines` or `paths`, as `hit_paths` reads them."""
     now = time.time()
     for line in sys.stdin.read().splitlines():
         if not line:
             continue
-        paths = hit_paths(line)
+        paths = hit_paths(line, form)
         recent = bool(paths) and all(
             mask_would_rewrite(path) and now - os.stat(path).st_mtime < settle_s for path in paths)
         print(("S|" if recent else "D|") + line)
@@ -248,8 +251,10 @@ def settling(settle_s: float) -> int:
 
 
 def main() -> int:
-    if sys.argv[1:] == ["settling"]:
-        return settling(settle_seconds(os.environ.get("S4S_MASK_SETTLE_MIN", str(SETTLE_MIN_DEFAULT))))
+    if sys.argv[1:2] == ["settling"]:
+        if sys.argv[2:] not in (["lines"], ["paths"]):
+            sys.exit("usage: mask_files.py settling lines|paths")
+        return settling(settle_seconds(os.environ.get("S4S_MASK_SETTLE_MIN", str(SETTLE_MIN_DEFAULT))), sys.argv[2])
     apply = os.environ.get("S4S_APPLY") == "1"
     pairs = parse_pairs(os.environ.get("S4S_PAIRS", ""))
     pats = parse_patterns(os.environ.get("S4S_PATTERNS", ""))
