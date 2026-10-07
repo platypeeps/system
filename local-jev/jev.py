@@ -30,6 +30,7 @@ and never included in an error message.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import ipaddress
 import json
@@ -344,6 +345,9 @@ BUDGET_LIMITS = (("calls", "_MAX_CALLS"), ("tokens", "_MAX_TOKENS"))
 #: How long a call waits for another call's hold on the counter.
 BUDGET_LOCK_S = 1.0
 
+#: The prefix of a charge `budget_charge` left beside the counter.
+PENDING = "pending-"
+
 WHOLE = re.compile(r"^[0-9]{1,15}$")
 
 
@@ -393,18 +397,48 @@ def budget_book(env, change):
                 time.sleep(0.02)
         text = fh.read()
         today = time.strftime("%Y-%m-%d", time.gmtime())
-        book = json.loads(text) if text.strip() else {}
-        if not isinstance(book, dict) or book.get("day") != today:
-            book = {"day": today, "stages": {}}
-        if not isinstance(book.get("stages"), dict):
+        book = json.loads(text) if text.strip() else {"day": today, "stages": {}}
+        # Only a well-formed book of another day rolls over. Anything else is
+        # refused as it stands, because resetting it could drop spent counts.
+        if not (isinstance(book, dict) and isinstance(book.get("day"), str)
+                and isinstance(book.get("stages"), dict)):
             raise ValueError("the counter file is not a budget book")
+        if book["day"] != today:
+            book = {"day": today, "stages": {}}
+        absorbed = absorb_charges(os.path.dirname(path), book["stages"])
         result, dirty = change(book["stages"])
-        if dirty:
+        if dirty or absorbed:
             fh.seek(0)
             fh.truncate()
             json.dump(book, fh, sort_keys=True)
             fh.flush()
+        for done in absorbed:
+            # After the write: a crash between the two counts a charge twice,
+            # which errs toward declining.
+            with contextlib.suppress(OSError):
+                os.unlink(done)
         return result
+
+
+def absorb_charges(folder: str, stages: dict) -> list:
+    """Add the charges `budget_charge` could not write to `stages`, and
+    return their files. A file that does not parse is returned uncounted."""
+    found = []
+    for name in sorted(os.listdir(folder)):
+        if not (name.startswith(PENDING) and name.endswith(".json")):
+            continue
+        where = os.path.join(folder, name)
+        found.append(where)
+        try:
+            with open(where, encoding="utf-8") as fh:
+                charge = json.load(fh)
+            stage, tokens = charge["stage"], charge["tokens"]
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        if isinstance(stage, str) and type(tokens) is int and tokens > 0:
+            used = stages.get(stage) or {}
+            stages[stage] = dict(used, tokens=int(used.get("tokens", 0)) + tokens)
+    return found
 
 
 def budget_spent(stage: str, env, *, reserve: bool) -> tuple:
@@ -451,7 +485,18 @@ def budget_charge(stage: str, env, tokens: int) -> None:
     try:
         budget_book(env, add)
     except Exception:
-        pass
+        # The counter is locked or unreadable. Leave the charge beside it in
+        # a file of its own, which needs no lock; the next call that holds
+        # the lock adds it, so a lost write cannot lift a token ceiling.
+        try:
+            where = os.path.join(os.path.dirname(budget_file(env)),
+                                 f"{PENDING}{os.urandom(8).hex()}.json")
+            fd = os.open(where, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"stage": stage, "tokens": tokens}, fh)
+        except Exception:
+            pass
 
 
 def cmd_enabled(args, conf, out, env=None, **kw) -> int:

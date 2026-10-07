@@ -202,8 +202,10 @@ old path runs, and the ledger counts the decline under that cause.
 - Tokens are known only after the answer, so a token ceiling stops the call
   after the one that crossed it.
 - A ceiling that is not a whole number declines, and so does a counter that
-  cannot be read or locked within a second. A limit you set is never lifted
-  silently.
+  cannot be read or locked within a second, or that is not a budget book. A
+  limit you set is never lifted silently.
+- A token charge that cannot take the lock is left beside the counter as a
+  `pending-*.json` file; the next call that holds the lock adds it.
 - The counter is one file, `~/.local/state/jev/budget.json`
   (`XDG_STATE_HOME`, or `JEV_BUDGET_DIR`). It holds the current UTC day only.
 - `status` and the comparison arms are not counted; `JEV_COMPARE_STAGES`

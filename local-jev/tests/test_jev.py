@@ -1079,3 +1079,24 @@ class TestBudget(StubServer):
         self.assertEqual([(r["outcome"], r["cause"]) for r in rows], [("fallback", "budget")])
         rows = self.events(["enabled", self.STAGE, "--record"], **limit)
         self.assertEqual([r["cause"] for r in rows], ["budget"])
+
+    def test_a_malformed_book_declines_and_keeps_its_counts(self):
+        today = __import__("time").strftime("%Y-%m-%d", __import__("time").gmtime())
+        for book in ([], {"stages": {self.STAGE: {"calls": 9}}},
+                     {"day": today, "stages": []}):
+            with self.subTest(book=book):
+                path = self.budget / "budget.json"
+                path.write_text(json.dumps(book))
+                code, out = self.call("--fallback", "0.5",
+                                      **{self.STAGE + "_MAX_CALLS": "5"})[:2]
+                self.assertEqual((code, out), (0, "0.5\n"))
+                self.assertEqual(json.loads(path.read_text()), book)
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_charge_that_cannot_be_written_still_counts(self):
+        env = self.env(**{self.STAGE + "_MAX_TOKENS": "5"})
+        real = jev.budget_book
+        with mock.patch.object(jev, "budget_book", side_effect=OSError("locked")):
+            jev.budget_charge(self.STAGE, env, 100)
+        self.assertEqual(real, jev.budget_book)
+        self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True)[0], "budget")
