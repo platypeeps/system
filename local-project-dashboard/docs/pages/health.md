@@ -23,6 +23,7 @@ calls no service and reads no credential.
   archived repository is left out. Security
   is a row per public repository with open secret-scanning alerts (warning) or
   with scanning off (caution); a private repository is not scanned, by policy.
+  A repository whose alerts were not re-read in 48 hours is a caution row.
   The sync reads one page of 100 alerts, so a longer list shows as `100+`.
 - Credentials (sd:2203) reads the latest `credentials:nightly` heartbeat that
   `sd-db.sh credentials` writes from `credentials-nightly.job`: the GitHub PAT

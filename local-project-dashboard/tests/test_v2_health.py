@@ -123,7 +123,7 @@ ALERTED = [
      "reason": None, "managed": True, "alerts": {
          "dependabot": {"reason": "API HTTP 403; retry on a later collection"},
          "secret_scanning": {"visibility": "public", "setting": None, "reason": "security_and_analysis not shown"}}},
-    {"repo": "/checkouts/zeta", "slug": "group/zeta", "status": "protected", "observed_at": "2026-09-04T08:00:00Z",
+    {"repo": "/checkouts/zeta", "slug": "group/zeta", "status": "protected", "observed_at": "2026-09-05T08:00:00Z",
      "reason": None, "managed": True, "alerts": {"dependabot": {"archived": True}, "secret_scanning": {"visibility": "private"}}},
 ]
 
@@ -368,9 +368,19 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual(self.area("dep", protection=protection_of(ALERTED))["at"], "2026-09-05T08:00:00Z")
 
     def test_a_page_cut_short_is_a_warning_since_the_rest_may_be_grave(self):
-        paged = {**ALERTED[3], "alerts": {"dependabot": {"open": 100, "more": True, "severity": {"low": 100}}}}
+        paged = {**ALERTED[4], "alerts": {"dependabot": {"open": 100, "more": True, "severity": {"low": 100}}}}
         (row,) = self.area("dep", protection=protection_of([paged]))["rows"]
         self.assertEqual((row["state"], row["detail"]), ("warning", "100 low · severity past the first page not read"))
+
+    def test_a_repo_not_re_read_in_48_hours_is_a_caution_even_beside_a_fresh_one(self):
+        old = {**ALERTED[4], "observed_at": "2026-09-04T08:00:00Z",
+               "alerts": {"dependabot": {"open": 0, "more": False}, "secret_scanning": {"visibility": "private"}}}
+        fresh = {**ALERTED[0], "alerts": {"dependabot": {"open": 0, "more": False}, "secret_scanning": {"visibility": "private"}}}
+        for key, name in (("dep", "dependencies"), ("sec", "security")):
+            rows = {row["id"]: row for row in self.area(key, protection=protection_of([old, fresh]))["rows"]}
+            self.assertEqual((rows[f"{key}:stale"]["state"], rows[f"{key}:stale"]["what"]),
+                             ("caution", f"1 managed repo: {name} not re-read in 48 hours"), key)
+            self.assertEqual(rows[f"{key}:stale"]["list"], ["group/delta: observed 2026-09-04T08:00:00Z"])
 
     def test_of_sibling_checkouts_the_newest_observation_counts(self):
         stale = {**ALERTED[0], "repo": "/checkouts/aardvark", "observed_at": "2026-09-01T08:00:00Z",
@@ -404,7 +414,7 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual(rows["sec:/checkouts/alpha"]["cli"],
                          "gh api --paginate 'repos/group/alpha/secret-scanning/alerts?state=open' --jq '.[].html_url'")
         clean = [{**ALERTED[0], "alerts": {"secret_scanning": {"visibility": "public", "setting": "enabled", "open": 0}}},
-                 {**ALERTED[3], "alerts": {"secret_scanning": {"visibility": "private"}}}]
+                 {**ALERTED[4], "alerts": {"secret_scanning": {"visibility": "private"}}}]
         (row,) = self.area("sec", protection=protection_of(clean))["rows"]
         self.assertEqual((row["state"], row["facts"]), ("ok", {"Clean": "1", "Private": "1"}))
 

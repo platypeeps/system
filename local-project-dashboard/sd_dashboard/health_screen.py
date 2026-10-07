@@ -437,6 +437,24 @@ def _alert_extra(managed: list[dict]) -> dict:
     return {"at": max(observed) if observed else None}
 
 
+#: An alert observation older than this means the nightly sync has stopped reading that repository.
+ALERTS_STALE_HOURS = 48
+
+
+def _stale(area: str, name: str, managed: list[dict], unread: set[str], now: str) -> list[dict]:
+    """A caution row naming each read repository whose observation is stale: a stopped sync is not a clean fleet."""
+    moment = _when(now)
+    stale = [f"{repo.get('slug') or repo['repo']}: observed {repo['observed_at']}" for repo in managed
+             if repo["repo"] not in unread and repo.get("observed_at")
+             and (moment - _when(repo["observed_at"])).total_seconds() / 3600 > ALERTS_STALE_HOURS]
+    if not stale:
+        return []
+    return [{"id": f"{area}:stale", "state": "caution", "type": "check",
+             "what": f"{len(stale)} managed {_plural(len(stale), 'repo', 'repos')}: {name.lower()} not re-read in {ALERTS_STALE_HOURS} hours",
+             "detail": "the nightly sd shadow sync has not observed them since", "kind": f"{name} · stale",
+             "facts": {"Repos": str(len(stale))}, "list": stale, "cli": "sd shadow sync"}]
+
+
 def _no_managed(area: str, name: str) -> dict:
     # An empty list is not a clean fleet.
     return {"id": f"{area}:none", "state": "unknown", "type": "check",
@@ -460,12 +478,12 @@ def _unread_reason(repo: dict, part: dict | None) -> str:
     return f"{name}: {part.get('reason') or 'not read'}" if isinstance(part, dict) else f"{name}: stored alerts are malformed"
 
 
-def _dependency_rows(found: list[dict]) -> tuple[list[dict], dict]:
+def _dependency_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
     """A row per managed repository with open Dependabot alerts, one for those not read, and the clean count."""
     managed = _managed(found)
     if not managed:
         return [_no_managed("dep", "Dependencies")], {}
-    rows, unread, clean, archived = [], [], 0, 0
+    rows, unread, clean, archived, skipped = [], [], 0, 0, set()
     for repo in managed:
         part = (repo.get("alerts") or {}).get("dependabot")
         name = repo.get("slug") or repo["repo"]
@@ -473,6 +491,7 @@ def _dependency_rows(found: list[dict]) -> tuple[list[dict], dict]:
             archived += 1
         elif not isinstance(part, dict) or not isinstance(part.get("open"), int):
             unread.append(_unread_reason(repo, part))
+            skipped.add(repo["repo"])
         elif not part["open"]:
             clean += 1
         else:
@@ -494,6 +513,7 @@ def _dependency_rows(found: list[dict]) -> tuple[list[dict], dict]:
             })
     if unread:
         rows.append(_not_read("dep", "Dependencies", unread))
+    rows += _stale("dep", "Dependencies", managed, skipped, now)
     if clean and not any(row["type"] == "dependabot alerts" for row in rows):
         rows.append({"id": "dep:ok", "state": "ok", "type": "check",
                      "what": f"No open Dependabot alert in {clean} managed {_plural(clean, 'repo', 'repos')}",
@@ -502,12 +522,12 @@ def _dependency_rows(found: list[dict]) -> tuple[list[dict], dict]:
     return rows, _alert_extra(managed)
 
 
-def _security_rows(found: list[dict]) -> tuple[list[dict], dict]:
+def _security_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
     """Per public managed repository: open secret-scanning alerts, or scanning off; private ones are not scanned."""
     managed = _managed(found)
     if not managed:
         return [_no_managed("sec", "Security")], {}
-    rows, unread, clean, private = [], [], 0, 0
+    rows, unread, clean, private, skipped = [], [], 0, 0, set()
     for repo in managed:
         part = (repo.get("alerts") or {}).get("secret_scanning")
         name = repo.get("slug") or repo["repo"]
@@ -523,6 +543,7 @@ def _security_rows(found: list[dict]) -> tuple[list[dict], dict]:
                          "cli": f"open {settings}"})
         elif not isinstance(part, dict) or not isinstance(part.get("open"), int):
             unread.append(_unread_reason(repo, part))
+            skipped.add(repo["repo"])
         elif not part["open"]:
             clean += 1
         else:
@@ -536,6 +557,7 @@ def _security_rows(found: list[dict]) -> tuple[list[dict], dict]:
                          "cli": f"gh api --paginate {shlex.quote(f'repos/{name}/secret-scanning/alerts?state=open')} --jq '.[].html_url'"})
     if unread:
         rows.append(_not_read("sec", "Security", unread))
+    rows += _stale("sec", "Security", managed, skipped, now)
     if clean and not any(row["type"] == "secret scanning" for row in rows):
         rows.append({"id": "sec:ok", "state": "ok", "type": "check",
                      "what": f"Scanning on, no open alert, in {clean} public managed {_plural(clean, 'repo', 'repos')}",
@@ -750,8 +772,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
         "br": lambda: _branch_rows(scan_branches(connection)),
         "ports": lambda: _port_rows(collect_ports()),
         "prot": lambda: _protection_rows(read_protection(connection)),
-        "dep": lambda: _dependency_rows(read_protection(connection)),
-        "sec": lambda: _security_rows(read_protection(connection)),
+        "dep": lambda: _dependency_rows(read_protection(connection), now=now),
+        "sec": lambda: _security_rows(read_protection(connection), now=now),
         "cred": lambda: _credential_rows(read_creds(connection), now=now),
     }
     running = {key: _SCANS.start(key, readers[key], now=now) for key in POOLED}
