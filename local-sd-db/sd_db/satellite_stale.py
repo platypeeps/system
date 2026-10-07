@@ -23,6 +23,7 @@ import math
 import os
 import sqlite3
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,14 @@ EPISODE_PREFIX = "satellite-stale:"
 DEFAULT_HOURS = 3.0
 DEFAULT_WINDOW = (7, 22)
 FETCH_BOUND = 60
+#: One run's limits, in seconds, inside the cron job's 10 minutes: every
+#: fetch ends by FETCH_BUDGET, and no send starts after RUN_BUDGET.
+FETCH_BUDGET = 180
+RUN_BUDGET = 480
+#: A read of a ref already on disk; no network.
+READ_BOUND = 10
+#: One notifier call.
+NOTIFY_BOUND = 60
 #: Statuses that wait on someone other than the satellite, or are over.
 NOT_CHECKED = ("done", "blocked", "ready_to_send")
 
@@ -75,6 +84,9 @@ class Verdict:
     age_hours: float | None
     #: True when an alert already went out for this `progress`.
     alerted: bool
+    #: True when the branch was read as last fetched: its fetch failed or
+    #: the run's fetch budget was spent.
+    unfetched: bool = False
 
 
 @dataclass(frozen=True)
@@ -224,6 +236,8 @@ def describe(verdict: Verdict) -> Alert:
         f"sd:{item} {verdict.title}",
         f"host {verdict.claim.host}, branch {verdict.branch or '(none)'}, status {verdict.status}",
         f"newest progress: {verdict.progress} ({verdict.source}), {age} ago",
+        *(["branch not fetched this run (fetch failed or budget spent); read as last fetched"]
+          if verdict.unfetched else []),
         f"silence until a time: sd-db.sh claim {item} --quiet-until <ISO time> (on the satellite)",
         f"release the claim: sd-db.sh unclaim {item}",
     ])
@@ -297,18 +311,37 @@ def fetch_branch_time(checkout: Path, branch: str, *, bound: int = FETCH_BOUND, 
             if fetched.returncode != 0:
                 return None
         shown = subprocess.run(["git", "-C", str(checkout), "log", "-1", "--format=%cI", ref],
-                               capture_output=True, text=True, timeout=bound, env=environment)
+                               capture_output=True, text=True, timeout=min(bound, READ_BOUND), env=environment)
     except (OSError, subprocess.TimeoutExpired):
         return None
     stamp = shown.stdout.strip()
     return stamp if shown.returncode == 0 and stamp else None
 
 
-def branch_time_on_disk(repo: str | None, branch: str) -> str | None:
-    """`fetch_branch_time` for a stored repository key."""
-    if not repo:
-        return None
-    return fetch_branch_time(paths.disk(repo), branch)
+class BranchReader:
+    """`branch_time` for one `run`: fetch each branch until `budget` seconds
+    have passed, then read the ref the last fetch left. A branch whose fetch
+    failed, or that the budget did not reach, lands in `unfetched`, so its
+    alert can say so. Ten hung fetches at FETCH_BOUND each would otherwise
+    spend the cron job's whole limit before the first send."""
+
+    def __init__(self, budget: float = FETCH_BUDGET, *, fetch=None, clock=time.monotonic):
+        self.clock = clock
+        self.deadline = clock() + budget
+        self.fetch = fetch or fetch_branch_time
+        self.unfetched: set[tuple[str, str]] = set()
+
+    def __call__(self, repo: str | None, branch: str) -> str | None:
+        if not repo:
+            return None
+        checkout = paths.disk(repo)
+        left = self.deadline - self.clock()
+        if left > 0:
+            stamp = self.fetch(checkout, branch, bound=min(FETCH_BOUND, left))
+            if stamp is not None:
+                return stamp
+        self.unfetched.add((repo, branch))
+        return self.fetch(checkout, branch, bound=READ_BOUND, fetch=False)
 
 
 def branch_time_last_fetched(repo: str | None, branch: str) -> str | None:

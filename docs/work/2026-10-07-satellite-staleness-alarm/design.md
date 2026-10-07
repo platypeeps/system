@@ -59,7 +59,8 @@ The newest of:
 3. The committer date of `origin/<branch>`, when the claim names a branch.
    The hub runs `git fetch origin <branch>` in the repository's checkout, bounded at 60 s by a subprocess timeout.
    (Changed in the build: the logic is Python, so `lib/bounded.sh` does not apply; the bound is the same.)
-   A fetch that fails or times out drops this signal and says so in the output; it never fails the run.
+   A fetch that fails or times out reads the ref the last fetch left, and the output and the alert say "not fetched"; it never fails the run.
+   (Changed in review round 5: the fetch failure read no branch signal at all, and fetches had no shared budget.)
 
 A hub note on the item counts too. The hub lead writing to the item is attention, and the alarm is for silence.
 
@@ -77,10 +78,26 @@ A hub note on the item counts too. The hub lead writing to the item is attention
 - A cron job, `local-cron-jobs/examples/satellite-stale.job`, runs the wrapper's `run` every 30 minutes.
   `cron-jobs.sh` takes no hour ranges, so the verb holds the window: `SD_SATELLITE_STALE_WINDOW`, default `7-22` local hours.
   It installs in `<config>/cron-jobs/jobs/<hub host>/` only, like `satellite-lane-run.job`.
-  `JOB_TIMEOUT` is 10 minutes; the git fetches are the only slow step.
+  `JOB_TIMEOUT` is 10 minutes; "Run budget" below shows how one run fits inside it.
 - `cron-jobs.sh watchdog` already flags the job if launchd stops firing it.
 
 The health-check sweep runs nightly, too seldom for a 3-hour threshold alone; the job is the alarm, the sweep the backstop.
+
+## Run budget (review round 5)
+
+Class: slow or failed I/O uses the run budget before delivery.
+Every network or subprocess call in one `satellite-stale.sh run`, against the job's 600 s `JOB_TIMEOUT`:
+
+| Call | Count | Bound | Worst case | On failure or bound | Test |
+| --- | --- | --- | --- | --- | --- |
+| database open and reads | 1 | SQLite busy timeout, 5 s | 5 s | run fails, exit 1 | existing CLI suite |
+| `git fetch` | per claimed branch | `min(60 s, budget left)`; no fetch starts after `FETCH_BUDGET`, 180 s | 190 s, with the last fetch's read | read the stored ref; alert names the branch "not fetched" | `test_fetches_stop_at_the_budget_and_read_stored_refs` |
+| `git log` of a stored ref | per claimed branch | `READ_BOUND`, 10 s | 10 s per claim | no branch signal | `test_fetches_stop_at_the_budget_and_read_stored_refs` |
+| `local-notify/notify.sh` | per new stale episode | `min(60 s, deadline left)`; no send starts after `RUN_BUDGET`, 480 s | ends by 540 s | `SendFailed`, no watermark, exit 1; the next run retries, the cron failure push covers it | `test_a_hung_notifier_is_cut_at_its_bound`, `test_no_send_starts_after_the_run_deadline` |
+
+The budgets are constants in `sd_db/satellite_stale.py`; `test_the_budgets_fit_inside_the_cron_limit` reads `JOB_TIMEOUT` from the example job.
+Reads cost 10 s per claim at worst, so a run with more than 30 claims could pass 480 s before its first send; a hub holds a handful.
+`status` makes no fetch and its reads take the same 10 s bound.
 
 ## How the alert is delivered
 

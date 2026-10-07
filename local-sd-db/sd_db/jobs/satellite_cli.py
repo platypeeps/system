@@ -13,6 +13,8 @@ import os
 import socket
 import subprocess
 import sys
+import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -99,8 +101,9 @@ def _now(options: dict[str, str]) -> datetime:
 
 def _line(verdict: stale.Verdict) -> str:
     age = f"{verdict.age_hours:.1f}h" if verdict.age_hours is not None else "-"
+    unfetched = " (not fetched)" if verdict.unfetched else ""
     return (f"{verdict.state:<7} sd:{verdict.claim.item}  {verdict.claim.host}  "
-            f"{verdict.branch or '-'}  {age} ({verdict.source})  {verdict.title}")
+            f"{verdict.branch or '-'}{unfetched}  {age} ({verdict.source})  {verdict.title}")
 
 
 def _status(options: dict[str, str]) -> int:
@@ -131,12 +134,24 @@ def _status(options: dict[str, str]) -> int:
     return 1
 
 
-def _sender(notifier: str):
+def _sender(notifier: str, *, deadline: float):
+    """Send through `notifier`, each call bounded, none started after
+    `deadline`: an alert left unsent writes no watermark, so the next run
+    retries it, and the exit 1 reaches the cron failure push."""
     channels = os.environ.get("SD_SATELLITE_STALE_CHANNELS") or "ntfy,email"
 
     def send(alert: stale.Alert) -> None:
-        done = subprocess.run(["sh", notifier, "-t", alert.title, "-k", "status", "-F", "-c", channels, "-b",
-                               alert.body], capture_output=True, text=True)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise stale.SendFailed(f"alert for sd:{alert.item} not sent: the run deadline passed; "
+                                   "the next run retries it")
+        try:
+            done = subprocess.run(["sh", notifier, "-t", alert.title, "-k", "status", "-F", "-c", channels, "-b",
+                                   alert.body], capture_output=True, text=True,
+                                  timeout=min(stale.NOTIFY_BOUND, left))
+        except subprocess.TimeoutExpired:
+            raise stale.SendFailed(f"alert for sd:{alert.item} not delivered: the notifier ran past "
+                                   f"{min(stale.NOTIFY_BOUND, left):.0f}s") from None
         if done.returncode != 0:
             raise stale.SendFailed(f"alert for sd:{alert.item} not delivered: "
                                    f"{(done.stderr or done.stdout).strip() or f'exit {done.returncode}'}")
@@ -160,9 +175,12 @@ def command_satellite_stale(argv: list[str]) -> int:
         raise SdDbError("--notify needs SD_NOTIFY, the notifier to run; "
                         "local-satellite-stale/satellite-stale.sh run sets it")
     moment = _now(options)
+    deadline = time.monotonic() + stale.RUN_BUDGET
+    reader = stale.BranchReader()
     _, connection = _open(write=notify)
     try:
-        verdicts = stale.assess(connection, at=moment, hours=hours, branch_time=stale.branch_time_on_disk)
+        verdicts = [replace(v, unfetched=(v.repo, v.branch) in reader.unfetched)
+                    for v in stale.assess(connection, at=moment, hours=hours, branch_time=reader)]
         for verdict in verdicts:
             print(_line(verdict))
         if not notify:
@@ -170,7 +188,7 @@ def command_satellite_stale(argv: list[str]) -> int:
         if not stale.in_window(moment, window):
             print(f"satellite-stale: outside the alert window {window[0]:02d}-{window[1]:02d}; nothing sent")
             return 0
-        sent = stale.alert(connection, verdicts, send=_sender(str(notifier)))
+        sent = stale.alert(connection, verdicts, send=_sender(str(notifier), deadline=deadline))
         print(f"satellite-stale: {len(sent)} alert(s) sent")
         return 0
     finally:

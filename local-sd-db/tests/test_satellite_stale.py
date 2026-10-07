@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,7 +22,7 @@ from unittest import mock
 
 from sd_db import add_note, create_item, initialise, retention, satellite_stale
 from sd_db.database import connect, default_path
-from sd_db.jobs import cli
+from sd_db.jobs import cli, satellite_cli
 
 from tests.support import commit, git, push, repository
 from tests.test_hub import Satellite
@@ -306,6 +307,65 @@ class TheWindow(unittest.TestCase):
         for text in ("7", "22-7", "a-b", "7-25"):
             with self.assertRaises(satellite_stale.ClaimRefused, msg=text):
                 satellite_stale.parse_window(text)
+
+
+class TheRunBudget(unittest.TestCase):
+    """One run's fetches, reads and sends fit inside the cron job's limit
+    (sd:2918 round 5): slow or failed I/O must not spend the time an alert
+    needs."""
+
+    def test_fetches_stop_at_the_budget_and_read_stored_refs(self):
+        calls = []
+
+        def hung(checkout, branch, *, bound, fetch=True):
+            calls.append((branch, fetch))
+            if fetch:
+                time.sleep(min(bound, 0.3))
+                return None
+            return at(3)
+
+        reader = satellite_stale.BranchReader(budget=0.5, fetch=hung)
+        started = time.monotonic()
+        with mock.patch.object(satellite_stale.paths, "disk", side_effect=Path):
+            stamps = [reader("repo", f"sd-{n}-x") for n in range(10)]
+        self.assertLess(time.monotonic() - started, 1.5, "fetches ran past the budget")
+        self.assertEqual(stamps, [at(3)] * 10, "a branch not fetched reads the stored ref")
+        self.assertLessEqual(sum(1 for _, fetched in calls if fetched), 3)
+        self.assertEqual(reader.unfetched, {("repo", f"sd-{n}-x") for n in range(10)})
+
+    def test_a_fetched_branch_is_not_named(self):
+        reader = satellite_stale.BranchReader(budget=5, fetch=lambda *_a, **_k: at(3))
+        with mock.patch.object(satellite_stale.paths, "disk", side_effect=Path):
+            self.assertEqual(reader("repo", "sd-1-x"), at(3))
+        self.assertEqual(reader.unfetched, set())
+
+    def test_the_alert_names_a_branch_read_without_a_fetch(self):
+        claim = satellite_stale.Claim(1, 7, "laptop", "sd-7-x", at(0), None)
+        verdict = satellite_stale.Verdict(claim, "t", "in_progress", "repo", "sd-7-x", "stale", at(0), "claim",
+                                          4.0, False, unfetched=True)
+        self.assertIn("not fetched", satellite_stale.describe(verdict).body)
+
+    def test_a_hung_notifier_is_cut_at_its_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "notify.sh"
+            script.write_text("#!/bin/sh\nsleep 30\n")
+            send = satellite_cli._sender(str(script), deadline=time.monotonic() + 1)
+            started = time.monotonic()
+            with self.assertRaises(satellite_stale.SendFailed):
+                send(satellite_stale.Alert(7, "title", "body"))
+            self.assertLess(time.monotonic() - started, 5)
+
+    def test_no_send_starts_after_the_run_deadline(self):
+        send = satellite_cli._sender("/nonexistent/notify.sh", deadline=time.monotonic() - 1)
+        with self.assertRaises(satellite_stale.SendFailed) as raised:
+            send(satellite_stale.Alert(7, "title", "body"))
+        self.assertIn("deadline", str(raised.exception))
+
+    def test_the_budgets_fit_inside_the_cron_limit(self):
+        job = (Path(__file__).resolve().parents[2] / "local-cron-jobs" / "examples" / "satellite-stale.job").read_text()
+        limit = int(next(line for line in job.splitlines() if line.startswith("JOB_TIMEOUT=")).split('"')[1][:-1]) * 60
+        self.assertLess(satellite_stale.RUN_BUDGET, limit)
+        self.assertLess(satellite_stale.FETCH_BUDGET, satellite_stale.RUN_BUDGET)
 
 
 class TheBranchTime(unittest.TestCase):
