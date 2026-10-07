@@ -114,7 +114,7 @@ BASELINE_PROVIDER = "local"
 #: a defect, an endpoint is chased, and a budget is raised. `no-path` is named
 #: separately because it has already caused a silent outage here -- every gate
 #: on, the key working, the probe answering, and every PATH consumer skipping
-#: its step. `budget` is in the vocabulary before anything writes it.
+#: its step. `budget` is a stage's daily ceiling spent (`budget_spent`).
 DECLINES = ("switched-off", "unkeyed", "no-path", "timeout", "invalid",
             "unavailable", "budget")
 
@@ -328,6 +328,132 @@ def stage_off(name: str, env) -> bool:
     return word in FLAG_OFF
 
 
+# --- budgets (sd:1239) --------------------------------------------------------
+#
+# A stage may carry a ceiling per UTC day: `<STAGE>_MAX_CALLS` requests and
+# `<STAGE>_MAX_TOKENS` input plus output tokens. A spent budget is a decline
+# with cause `budget`, so the caller takes its old path exactly as when Jev
+# is off: `enabled STAGE` exits 3 and a `--fallback` is printed. Unset is no
+# ceiling, and a stage with none touches no file. A ceiling that does not
+# parse, or a counter that cannot be read, declines too: a limit the operator
+# set is never silently lifted, and a decline costs a caller nothing.
+
+#: The two ceilings, as (counter, variable suffix).
+BUDGET_LIMITS = (("calls", "_MAX_CALLS"), ("tokens", "_MAX_TOKENS"))
+
+#: How long a call waits for another call's hold on the counter.
+BUDGET_LOCK_S = 1.0
+
+WHOLE = re.compile(r"^[0-9]{1,15}$")
+
+
+def budget_file(env) -> str:
+    """`JEV_BUDGET_DIR`/budget.json, else under `XDG_STATE_HOME` or ~/.local/state."""
+    if env.get("JEV_BUDGET_DIR"):
+        return os.path.join(env["JEV_BUDGET_DIR"], "budget.json")
+    base = env.get("XDG_STATE_HOME") or os.path.join(
+        env.get("HOME", os.path.expanduser("~")), ".local", "state")
+    return os.path.join(base, "jev", "budget.json")
+
+
+def budget_limits(stage: str, env) -> tuple[dict, str]:
+    """({counter: ceiling} for the ceilings set, what does not parse)."""
+    limits = {}
+    for counter, suffix in BUDGET_LIMITS:
+        raw = (env.get(stage + suffix) or "").strip()
+        if not raw:
+            continue
+        if not WHOLE.match(raw):
+            return {}, f"{stage}{suffix} is not a whole number: {raw[:40]!r}"
+        limits[counter] = int(raw)
+    return limits, ""
+
+
+def budget_book(env, change):
+    """Run `change(stages)` on today's counters under an exclusive lock.
+
+    `change` returns (result, dirty); a dirty book is written back. The file
+    holds one UTC day, so the first call of a new day starts from zero.
+    Raises on any failure; the callers below turn that into a decline or
+    into nothing.
+    """
+    import fcntl
+    path = budget_file(env)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+", encoding="utf-8") as fh:
+        deadline = time.monotonic() + BUDGET_LOCK_S
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise OSError("another call holds the counter")
+                time.sleep(0.02)
+        text = fh.read()
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        book = json.loads(text) if text.strip() else {}
+        if not isinstance(book, dict) or book.get("day") != today:
+            book = {"day": today, "stages": {}}
+        if not isinstance(book.get("stages"), dict):
+            raise ValueError("the counter file is not a budget book")
+        result, dirty = change(book["stages"])
+        if dirty:
+            fh.seek(0)
+            fh.truncate()
+            json.dump(book, fh, sort_keys=True)
+            fh.flush()
+        return result
+
+
+def budget_spent(stage: str, env, *, reserve: bool) -> tuple:
+    """("budget", prose) when the stage may not call today, else ("", "").
+
+    With `reserve`, a call that fits is counted before it is sent, so two
+    callers racing for the last call cannot both have it. Tokens are known
+    only afterwards (`budget_charge`), so a token ceiling stops the call
+    after the one that crossed it.
+    """
+    limits, problem = budget_limits(stage, env)
+    if problem:
+        return "budget", problem
+    if not limits:
+        return "", ""
+
+    def check(stages):
+        used = stages.get(stage) or {}
+        for counter, ceiling in limits.items():
+            if int(used.get(counter, 0)) >= ceiling:
+                return (f"{stage} spent today's {counter} budget "
+                        f"({int(used.get(counter, 0))} of {ceiling})"), False
+        if not reserve:
+            return "", False
+        stages[stage] = dict(used, calls=int(used.get("calls", 0)) + 1)
+        return "", True
+    try:
+        reason = budget_book(env, check)
+    except Exception as exc:
+        return "budget", f"{stage} has a budget and its counter " \
+                         f"{budget_file(env)} cannot be used: {exc}"
+    return ("budget", reason) if reason else ("", "")
+
+
+def budget_charge(stage: str, env, tokens: int) -> None:
+    """Add a finished call's tokens to the stage's counter. Never raises."""
+    if not tokens or not budget_limits(stage, env)[0]:
+        return
+
+    def add(stages):
+        used = stages.get(stage) or {}
+        stages[stage] = dict(used, tokens=int(used.get("tokens", 0)) + tokens)
+        return None, True
+    try:
+        budget_book(env, add)
+    except Exception:
+        pass
+
+
 def cmd_enabled(args, conf, out, env=None, **kw) -> int:
     """`jev enabled [STAGE]` -- can Jev answer here, and is that stage on?
 
@@ -342,6 +468,10 @@ def cmd_enabled(args, conf, out, env=None, **kw) -> int:
     if not reason and args.stage and stage_off(args.stage, env):
         word = "switched-off"
         reason = "%s switched this stage off here" % args.stage
+    if not reason and args.stage:
+        # Read, not reserved: asking costs nothing, and the call that follows
+        # counts itself.
+        word, reason = budget_spent(args.stage, env, reserve=False)
     if args.why:
         if not reason and shadow_on(env):
             out.write("jev: enabled; shadow on (Jev is asked and recorded, "
@@ -1833,6 +1963,9 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     out = Teed(out)
     sink = io.StringIO() if shadowed else out
     word, reason = why_unusable(conf, env)
+    stage = whose(args, env, "stage")
+    if not reason:
+        word, reason = budget_spent(stage, env, reserve=True)
     if switched and not reason:
         sys.stderr.write("jev: shadow on; Jev is asked and recorded, and its "
                          "answer is not used\n")
@@ -1852,6 +1985,9 @@ def main(argv=None, out=None, env=None, **kw) -> int:
             else:
                 sys.stderr.write(f"jev: {exc}\n")
                 code = EXIT_ERROR
+        spent = _EVENT or {}
+        budget_charge(stage, env, (spent.get("tokens_in") or 0) +
+                      (spent.get("tokens_out") or 0))
     if shadow is not None:
         # The caller's own answer, always, and exit 0. A stage in shadow mode
         # changes no behaviour, and that has to hold on the run where the call

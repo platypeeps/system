@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -537,6 +538,16 @@ class TestEnvFile(StubServer):
         self.assertIn("shadow=on",
                       self.run_link(link, ["status"], {"JEV_SHADOW": "1"}).stdout)
 
+    def test_a_budget_in_the_env_file_holds_and_an_exported_one_beats_it(self):
+        budget = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, budget, ignore_errors=True)
+        link = self.copy("TYPESAFE_API_KEY=k\nJEV_TEST_STAGE_MAX_CALLS=0\n")
+        args = ["noul", "q", "--stage", "JEV_TEST_STAGE"]
+        held = {"JEV_BUDGET_DIR": str(budget)}
+        self.assertEqual(self.run_link(link, args, held).returncode, 3)
+        done = self.run_link(link, args, dict(held, JEV_TEST_STAGE_MAX_CALLS="5"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_without_a_key_anywhere_the_link_exits_three(self):
         link = self.copy("#JEV_MODEL=unset\n")
         self.assertEqual(self.run_link(link, ["noul", "q"], {}).returncode, 3)
@@ -977,3 +988,94 @@ class TestRedaction(StubServer):
         self.assertEqual(code, 3)
         self.run_main(["noul", "q", "--fallback", "0.5"])
         self.assertEqual(Stub.seen, [])
+
+
+class TestBudget(StubServer):
+    """A stage's daily ceiling, spent, is a decline like Jev off (sd:1239)."""
+
+    STAGE = "JEV_TEST_STAGE"
+
+    def setUp(self):
+        super().setUp()
+        self.budget = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.budget, ignore_errors=True)
+
+    def env(self, **extra):
+        return super().env(JEV_BUDGET_DIR=str(self.budget), **extra)
+
+    def call(self, *flags, **extra):
+        return self.run_verbose(["noul", "q", "--stage", self.STAGE, *flags], **extra)
+
+    def events(self, argv, **extra):
+        """The events one call hands the recorder, with the meter off."""
+        seen = []
+        with mock.patch.object(jev, "write_event",
+                               lambda event, env, corpus=None: seen.append(event) or ""):
+            self.run_verbose(argv, **extra)
+        return seen
+
+    def test_a_spent_call_budget_prints_the_fallback_and_sends_nothing(self):
+        limit = {self.STAGE + "_MAX_CALLS": "2"}
+        for _ in range(2):
+            self.assertEqual(self.call("--fallback", "0.5", **limit)[:2], (0, "0.97\n"))
+        code, out, err = self.call("--fallback", "0.5", **limit)
+        self.assertEqual((code, out), (0, "0.5\n"))
+        self.assertIn("budget", err)
+        self.assertEqual(len(Stub.seen), 2)
+
+    def test_without_a_fallback_a_spent_budget_exits_three(self):
+        limit = {self.STAGE + "_MAX_CALLS": "0"}
+        self.assertEqual(self.call(**limit)[0], 3)
+        self.assertEqual(Stub.seen, [])
+
+    def test_enabled_answers_three_once_spent_and_counts_nothing(self):
+        limit = {self.STAGE + "_MAX_CALLS": "1"}
+        for _ in range(3):
+            self.assertEqual(self.run_main(["enabled", self.STAGE], **limit)[0], 0)
+        self.assertEqual(self.call(**limit)[0], 0)
+        code, out = self.run_main(["enabled", self.STAGE, "--why"], **limit)
+        self.assertEqual(code, 3)
+        self.assertIn("calls budget", out)
+
+    def test_a_token_ceiling_stops_the_call_after_the_one_that_crossed_it(self):
+        Stub.input_tokens, Stub.output_tokens = 3, 3
+        limit = {self.STAGE + "_MAX_TOKENS": "5"}
+        self.assertEqual(self.call(**limit)[0], 0)
+        self.assertEqual(self.call(**limit)[0], 3)
+        self.assertEqual(len(Stub.seen), 1)
+
+    def test_one_stage_spent_leaves_another_alone(self):
+        limit = {self.STAGE + "_MAX_CALLS": "0"}
+        code, _ = self.run_main(["noul", "q", "--stage", "JEV_OTHER"], **limit)
+        self.assertEqual(code, 0)
+
+    def test_a_new_utc_day_starts_from_zero(self):
+        (self.budget / "budget.json").write_text(json.dumps(
+            {"day": "2000-01-01", "stages": {self.STAGE: {"calls": 99}}}))
+        self.assertEqual(self.call(**{self.STAGE + "_MAX_CALLS": "1"})[0], 0)
+
+    def test_a_ceiling_that_does_not_parse_declines(self):
+        for raw in ("ten", "-1", "1.5"):
+            with self.subTest(raw=raw):
+                code, out, err = self.call("--fallback", "0.5",
+                                           **{self.STAGE + "_MAX_CALLS": raw})
+                self.assertEqual((code, out), (0, "0.5\n"))
+                self.assertIn("not a whole number", err)
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_counter_that_cannot_be_read_declines(self):
+        (self.budget / "budget.json").write_text("not json")
+        code, out = self.call("--fallback", "0.5", **{self.STAGE + "_MAX_CALLS": "5"})[:2]
+        self.assertEqual((code, out), (0, "0.5\n"))
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_stage_without_a_ceiling_touches_no_file(self):
+        self.assertEqual(self.call()[0], 0)
+        self.assertEqual(list(self.budget.iterdir()), [])
+
+    def test_the_decline_is_recorded_as_budget(self):
+        limit = {self.STAGE + "_MAX_CALLS": "0"}
+        rows = self.events(["noul", "q", "--stage", self.STAGE, "--fallback", "0.5"], **limit)
+        self.assertEqual([(r["outcome"], r["cause"]) for r in rows], [("fallback", "budget")])
+        rows = self.events(["enabled", self.STAGE, "--record"], **limit)
+        self.assertEqual([r["cause"] for r in rows], ["budget"])

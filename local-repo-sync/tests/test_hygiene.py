@@ -10,6 +10,7 @@ NEW: written before `hygiene` existed and seen to fail against the script
 without it. The README's test section says how to aim the suite at old code.
 """
 
+import json
 import os
 import pathlib
 import re
@@ -982,6 +983,117 @@ class NightlyHygieneTest(unittest.TestCase):
             f.notify_log.exists(),
             f.notify_log.read_text() if f.notify_log.exists() else "",
         )
+
+
+JEV_STUB = """#!/bin/sh
+# Test stub for local-jev: log each call, and keep what `ask` was handed.
+# `enabled STAGE` reads that stage's variable, as the real command does.
+printf '%s\\n' "$*" >> "$JEV_LOG"
+case "$1" in
+  enabled)
+    eval "word=\\${$2:-}"
+    case "$word" in 0|off|false|no|disabled) exit 3 ;; esac
+    exit 0 ;;
+  ask)
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --questions) cp "$2" "$JEV_LOG.questions" ;;
+        --state) cp "$2" "$JEV_LOG.state" ;;
+      esac
+      shift
+    done
+    exit "${JEV_STUB_EXIT:-0}" ;;
+esac
+exit 0
+"""
+
+
+class NightlyJevShadowTest(unittest.TestCase):
+    """sd:2094: Jev classifies each listed line as live, abandoned or
+    superseded, in shadow: the report keeps its order and its words."""
+
+    def fixture(self, listed=True):
+        f = HygieneFixture()
+        self.addCleanup(f.destroy)
+        jev = f.tmp / "local-jev"
+        jev.mkdir()
+        (jev / "jev.sh").write_text(JEV_STUB)
+        self.log = f.tmp / "jev.log"
+        repo = f.repo()
+        if listed:
+            f.git(repo, "checkout", "-q", "-b", "sd-2094-private-topic")
+            self.sha = f.commit(repo, "notes", "x\n", "never pushed")
+            f.git(repo, "checkout", "-q", "main")
+        return f
+
+    def nightly(self, f, **extra):
+        return f.run("nightly", expect=0, extra_env={"JEV_LOG": str(self.log), **extra})
+
+    def calls(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def test_a_listed_line_is_asked_about_in_shadow(self):
+        f = self.fixture()
+        self.nightly(f)
+        calls = self.calls()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertIn("enabled JEV_REPO_SYNC_HYGIENE --record --caller local-repo-sync",
+                      calls[0])
+        self.assertTrue(calls[1].startswith("ask "), calls)
+        for flag in ("--shadow {}", "--caller local-repo-sync",
+                     "--stage JEV_REPO_SYNC_HYGIENE", "--state-format json"):
+            self.assertIn(flag, calls[1])
+        questions = json.loads(pathlib.Path(f"{self.log}.questions").read_text())
+        self.assertEqual(list(questions), ["h1"])
+        self.assertEqual(questions["h1"]["type"], "choice")
+        self.assertEqual(list(questions["h1"]["criteria"]),
+                         ["live", "abandoned", "superseded"])
+        state = json.loads(pathlib.Path(f"{self.log}.state").read_text())
+        self.assertEqual(list(state["entries"]), ["h1"])
+        self.assertIn("1 commit(s) on no remote", state["entries"]["h1"])
+        self.assertIn("last commit 0 day(s) ago", state["entries"]["h1"])
+
+    def test_each_listed_line_is_one_entry_in_report_order(self):
+        f = self.fixture()
+        repo = f.root / "a" / "proj"
+        f.git(repo, "checkout", "-q", "-b", "sd-2094-pushed")
+        f.commit(repo, "more", "y\n", "pushed then deleted upstream")
+        f.git(repo, "push", "-q", "-u", "origin", "sd-2094-pushed")
+        f.git(repo, "push", "-q", "origin", "--delete", "sd-2094-pushed")
+        f.git(repo, "checkout", "-q", "main")
+        out = self.nightly(f).stdout
+        listed = [line.split()[0] for line in out.splitlines()
+                  if re.match(r"^  (GONE|LOCAL|DONE|BEHIND|KEEP) ", line)]
+        self.assertEqual(sorted(listed), ["GONE", "LOCAL"], out)
+        state = json.loads(pathlib.Path(f"{self.log}.state").read_text())
+        self.assertEqual(list(state["entries"]), ["h1", "h2"])
+        kinds = ["upstream branch deleted" in text for text in state["entries"].values()]
+        self.assertEqual(kinds, [kind == "GONE" for kind in listed])
+
+    def test_nothing_private_leaves_the_machine(self):
+        f = self.fixture()
+        self.nightly(f)
+        sent = pathlib.Path(f"{self.log}.state").read_text() + \
+            pathlib.Path(f"{self.log}.questions").read_text()
+        for private in ("sd-2094-private-topic", "private", self.sha, self.sha[:7],
+                        "owner/proj", str(f.tmp), str(f.root)):
+            self.assertNotIn(private, sent)
+
+    def test_the_mailed_report_is_the_report_without_jev(self):
+        f = self.fixture()
+        self.nightly(f, JEV_STUB_EXIT="1")
+        self.assertIn("LOCAL    branch sd-2094-private-topic", f.notify_log.read_text())
+        self.assertNotIn("jev", f.notify_log.read_text().lower())
+
+    def test_the_stage_switched_off_asks_nothing(self):
+        f = self.fixture()
+        self.nightly(f, JEV_REPO_SYNC_HYGIENE="0")
+        self.assertEqual([c.split()[0] for c in self.calls()], ["enabled"])
+
+    def test_a_clean_report_asks_nothing(self):
+        f = self.fixture(listed=False)
+        self.nightly(f)
+        self.assertEqual(self.calls(), [])
 
 
 if __name__ == "__main__":
