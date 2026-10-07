@@ -460,3 +460,85 @@ A head whose review never completed has no objective label. A head whose state w
 
 **Intervals.** Newcombe hybrid score intervals for differences of independent proportions; for paired differences, the Wald interval on discordant pairs.
 Exact Clopper-Pearson intervals for single proportions with few events; rule of three for zero counts.
+
+## Addendum, 2026-10-07: written after data collection started (sd:2968)
+
+Written on 2026-10-07 MDT, after C2's live shadow collection started.
+The first `JEV_SD_REVIEW` shadow row is 2026-10-06T13:55:12Z (07:55 MDT, note #10627 on sd:2764).
+So this section is an amendment under the rule above: it adds four exploratory analyses, and every result it adds is reported as exploratory.
+It changes no line above it. The question, populations, hypotheses H1 to H8 and X1, thresholds, decision rule lines 1 to 6, stopping rule, confirmatory analysis order and every `PREDICTION` line stay as registered.
+No result in this section can select, keep or drop an arm.
+
+**What its author had seen.** The addendum's author read no outcome (finding, label or review status) for a C1 or C2 head.
+The jev-conversion article work had read C2 answers, not outcomes, from the live ledger on 2026-10-07.
+Those reads were arm agreement on review questions, Jev's tier against the rule's tier on 53 pairs (none labelled), and Kev failure counts.
+Each of the four topics below came from those reads or from the article's review, not from an outcome.
+
+### What this section touches
+
+| Part of this page | Touched how |
+|---|---|
+| Decision rule, lines 1 to 6 | Not touched |
+| H1 to H8, X1, their thresholds and predictions | Not touched |
+| Populations C1, C2, E, E0 | Not touched; C2b below is a new exploratory population |
+| H5 | Not touched; A1 adds an exploratory split beside it |
+| Analysis plan, exploratory "Calibration curves, Brier score and expected calibration error per model arm" | Defined by A2 |
+| Analysis plan, exploratory "Cost and latency tables" | Machine cost defined by A4 |
+| Stopping rule | Not touched; C2 still ends after 14 days |
+
+| Ledger rows | Used by |
+|---|---|
+| Stage `JEV_SD_REVIEW_BLIND`, every arm, from its first row | A3 |
+| Stage `JEV_SD_REVIEW`, every arm, C2 window | A1, A2, A3, A4 |
+| Arm `kev`, split at 2026-10-07T19:12:02Z | A1, A4 |
+| Rows with a non-null `load_avg` (sd_db schema 21, sd:2950) | A4 |
+
+### A1, availability
+
+**Why.** Kev's launch agent ran as `ProcessType=Background`; under load macOS starved it.
+474 Kev rows from 2026-10-06T03:03Z held 64 timeouts (note #11385).
+The plist moved to `Interactive` at 2026-10-07T19:12:02Z (note #11437).
+After it, 21 docs-lint Kev calls from 19:12Z to 20:22Z still ended `unavailable`; sd:2943 traces them to caller-side refusals, tracked in sd:2973.
+Haiku failed on a zero-credit key early in C2 until the operator replaced the key (note #10565).
+
+**Report.** Per arm, the share of attempted calls that returned an answer, and the rest by cause: `timeout`, `unavailable`, other.
+For Kev, C2 is reported in two parts, before and after 2026-10-07T19:12:02Z, and H5's p95 is given for each part beside the registered whole-window value.
+H5 and every confirmatory metric still count a failed call as registered: its rules fallback, at its full wait.
+Kev's pre-fix failures therefore count against Kev in the decision; the split only shows how much of the result the launch setting explains.
+
+### A2, calibration
+
+**Why.** The analysis plan names calibration curves, the Brier score and expected calibration error per model arm, but no event, bins or weights.
+
+**Definition.** Each row is a hand-labelled C1 or C2 head with an arm's stored `probabilities`.
+The event is "the head is `skip`" under the review-or-not label; the forecast is the arm's probability on `skip`.
+Brier score is the mean of (forecast − event)², with each row weighted as in labelled accuracy.
+Expected calibration error uses 10 equal-width forecast bins on [0, 1]: the weighted mean of |event rate − mean forecast| per bin, each bin weighted by its rows' weight.
+The curve plots event rate against mean forecast per bin, with each bin's row count.
+An arm whose rows carry no `probabilities` is reported as not computable, not as zero.
+`unknown` heads are left out and counted.
+The share of each arm's answers below the 0.6 cutoff is reported beside it.
+
+### A3, the hint-blind stage
+
+**Why.** Every `JEV_SD_REVIEW` question carries `deterministic_routing_said`, the rule's reason (`sd-ai-command-pack` `bin/sd_jev.py` `_jev_state`).
+Agreement between the arms, and between an arm and the rules, may then be the arms following the same hint.
+
+**Stage.** `JEV_SD_REVIEW_BLIND` (sd:2969) asks the same question, criteria and subject over the same state without that key, in shadow: `--shadow` prints the routed tier and nothing reads the answer.
+It runs from the day it ships, and its Kev and Haiku arms only after the operator adds it to `JEV_COMPARE_STAGES`.
+Its rows form **C2b**: every head with both a `JEV_SD_REVIEW` and a `JEV_SD_REVIEW_BLIND` answer from the same arm, joined on subject.
+C2b covers only the part of C2 after the stage ships, so it is not a sample of all C2 heads.
+
+**Report.** Per arm on C2b: the share of heads where the blind answer differs from the hinted one, as a table of hinted tier against blind tier.
+The share where each differs from the rules' tier, blind and hinted, with the McNemar test on the paired heads.
+Each arm's model skips under each form, and, where C2b heads carry labels, the unsafe skips among them.
+A blind answer never enters a confirmatory metric; the registered metrics read the hinted stage only.
+
+### A4, machine cost
+
+**Why.** Kev rows carry `usd = 0.0`, so the cost tables would report a local arm as free while it uses this machine.
+
+**Report.** Per arm, the calls, the summed wait (`duration_ms`) and, where the row carries it, the 1-minute `load_avg` at the call.
+Load is read from rows with a non-null `load_avg`, which exist only after the operator migrates the live database to sd_db schema 21 (sd:2950); earlier rows are counted as unmeasured.
+When sd:2967 lands, a local arm's price is its wait at the operator's hourly rate, and a row without a rate is reported as unpriced, not as $0.
+Hosted spend is reported as before. Neither figure enters the decision rule.
