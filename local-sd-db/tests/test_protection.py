@@ -1481,6 +1481,15 @@ class Alerts(SyncCase):
         for name in ("private", "hidden", "off"):
             self.assertNotIn(protection.alert_path("platypeeps", name, "secret-scanning"), transport.calls)
 
+    def test_an_entry_that_is_not_an_alert_is_a_reason_not_a_count(self):
+        mine = self.managed("mine")
+        client, _ = self.client({**self.protected("mine"),
+                                 protection.alert_path("platypeeps", "mine", "dependabot"): [],
+                                 protection.alert_path("platypeeps", "mine", "secret-scanning"): [None, "invalid"]})
+        protection.sync(self.db, client=client, observed_at=AT)
+        self.assertEqual(self.alerts(mine)["secret_scanning"]["reason"], "alert list holds an entry that is not an alert")
+        self.assertNotIn("open", self.alerts(mine)["secret_scanning"])
+
     def test_alerts_spend_only_what_the_basic_observations_left(self):
         mine = self.managed("mine")
         other = self.register("other", "git@github.com:platypeeps/other.git", PR_WORKFLOW)

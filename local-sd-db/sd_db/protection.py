@@ -1789,6 +1789,9 @@ def _open_alerts(client, path: str, *, severity: bool = False) -> dict[str, Any]
         page, headers = client.request(path)
         if not isinstance(page, list):
             raise Unavailable("alert list is not a list")
+        if any(not isinstance(alert, dict) or type(alert.get("number")) is not int for alert in page):
+            # Counted, an entry that is not an alert would read as an open finding.
+            raise Unavailable("alert list holds an entry that is not an alert")
         found: dict[str, Any] = {"open": len(page), "more": 'rel="next"' in headers.get("link", "")}
         if severity:
             counts: dict[str, int] = {}
