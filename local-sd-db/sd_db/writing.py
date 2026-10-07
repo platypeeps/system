@@ -621,8 +621,11 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
                 created = folder / "index.md"
                 created.write_text(written, encoding="utf-8")
             return piece_state(connection, item)
-    except BaseException:
-        if created is not None:
+    except BaseException as error:
+        if created is not None and _file_hash(created) not in (None, _hash(written.encode("utf-8"))):
+            # Another writer changed the scaffold after it was written; keep the edit.
+            error.add_note(f"promote kept {created}: it changed after the scaffold was written")
+        elif created is not None:
             created.unlink(missing_ok=True)
             for folder in (created.parent, created.parent.parent):
                 try:

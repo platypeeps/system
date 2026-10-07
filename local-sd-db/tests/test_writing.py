@@ -572,6 +572,16 @@ class Promote(WritingCase):
         row = self.db.execute("SELECT piece, source FROM item WHERE id = ?", (self.idea,)).fetchone()
         self.assertEqual(tuple(row), (None, "drafts"))
 
+    def test_a_failure_keeps_a_scaffold_another_writer_changed(self):
+        def edit_then_fail(*_):
+            self.file().write_text(self.file().read_text() + "Prose written meanwhile.\n")
+            raise RuntimeError("late")
+        with patch("sd_db.writing.piece_state", side_effect=edit_then_fail), self.assertRaises(RuntimeError) as caught:
+            promote(self.db, self.idea, who="operator")
+        self.assertIn("Prose written meanwhile.", self.file().read_text())
+        self.assertIn("changed after the scaffold", caught.exception.__notes__[0])
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+
     def test_the_target_is_the_one_repository_that_registers_pieces(self):
         other = self.root / "other"
         (other / "templates").mkdir(parents=True)
