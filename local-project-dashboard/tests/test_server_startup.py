@@ -18,7 +18,7 @@ class ServerStartup(unittest.TestCase):
             with patch.object(runtime, "installed_library") as library, patch.object(server, "build", return_value=listening) as build:
                 self.assertEqual(server.main(["--config", str(config), "--port", "8787"]), 0)
             library.assert_called_once_with("/fixture/sd.db")
-            build.assert_called_once_with("/fixture/sd.db", port=8787)
+            build.assert_called_once_with("/fixture/sd.db", port=8787, jev=runtime.jev_command())
             listening.server_close.assert_called_once()
 
     def test_source_library_is_refused_before_a_socket_opens(self):

@@ -31,10 +31,10 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # where <config> is $SYSTEM_TOOLS_CONFIG (default ~/.config/system).
 . "$DIR/../lib/config.sh"
 st_source_env project-dashboard
-# Personal paths and the label prefix may come from .env. Export the ones set
+# Personal paths, the label prefix and the JEV_JOB_TRIAGE stage switch may come from .env. Export the ones set
 # so collectors.py and `install` (which copies them into the LaunchAgent) see
 # the same values this script does.
-for _name in VAULT REPO_ROOT SYSTEM_TOOLS_LABEL_PREFIX SYSTEM_TOOLS_CONFIG; do
+for _name in VAULT REPO_ROOT SYSTEM_TOOLS_LABEL_PREFIX SYSTEM_TOOLS_CONFIG JEV_JOB_TRIAGE; do
   if eval "[ -n \"\${$_name:-}\" ]"; then export "$_name"; fi
 done
 

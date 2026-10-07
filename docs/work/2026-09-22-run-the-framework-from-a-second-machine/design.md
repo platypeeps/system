@@ -299,6 +299,7 @@ satellite stage reports each one installed or loaded as `EXTRA`.
 | `task-actions` — *hub only* | Funnel-published; per-machine TCC | `personal.agent` |
 | `sd-db-backup`, `offsite-*`, `mirror-sync-nightly` — *hub only* | Snapshot the local file and the NAS mount | `personal.cron` |
 | Cron intake and digests — *hub only* | Write rows on a schedule; one clock | `personal.cron` |
+| `sd shadow sync`, `shadow-sync-nightly` — *hub only* | Hold `operation-locks/shadow-sync.lock` beside the database for the whole run (sd:2207) | `sync_lock`, `local-sd-db/sd_db/shadow_sync.py` |
 | `repo remove`, `item remove`, `restore`, `migrate` | Take `control_gate` and move journal files | `sd-db.sh help` |
 | Delivery: the `sd-ship` merge and every path under `repository_lock` | A lock held over a droppable session cannot outlive the subprocesses it guards | `repository_lock`, `local-sd-db/sd_db/ship.py`; Decision |
 | Service controls and every path under `control_gate` | Same reason; `PRAGMA database_list` names a hub path | `control_gate`, `local-sd-db/sd_db/operations.py` |
