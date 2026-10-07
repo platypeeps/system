@@ -350,10 +350,13 @@ def _location(value: object) -> str | None:
 
 def _soft_number(value: object, low: float, high: float) -> float | None:
     """A finite number from `low` to `high`, or None. Never refuses."""
-    if type(value) not in (int, float) or not math.isfinite(value) \
-            or not low <= value <= high:
+    if type(value) not in (int, float):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:            # an int past a float's range
+        return None
+    return number if math.isfinite(number) and low <= number <= high else None
 
 
 def _soft_match(value: object, shape: re.Pattern, limit: int) -> str | None:

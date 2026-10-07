@@ -217,11 +217,11 @@ class TheCallContext(JudgmentCase):
 
     def test_a_bad_value_is_null_and_the_row_is_still_written(self):
         bad = {
-            "threshold": (-0.01, 1.01, math.nan, math.inf, True, "0.5"),
+            "threshold": (-0.01, 1.01, math.nan, math.inf, True, "0.5", 10 ** 400),
             "run_id": ("", "-leading", "has space", "a/b", "line\n", "a" * (MAX_NAME + 1), 7),
             "prompt_hash": ("a" * 15, "a" * 17, "a" * 64, "ABCDEF0123456789",
                             "0123456789abcdeg", "0123456789abcdef\n", "", 1234567890123456),
-            "load_avg": (-0.1, math.nan, math.inf, False, "1.0"),
+            "load_avg": (-0.1, math.nan, math.inf, False, "1.0", 10 ** 400),
         }
         for field, values in bad.items():
             for value in values:
