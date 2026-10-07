@@ -609,11 +609,10 @@ class MaskRewrite(unittest.TestCase):
         self.assertIn(self.TOKEN.encode(), settled.read_bytes())
 
 
-class Settling(unittest.TestCase):
-    """`critical` reports a hit in a file mask has not reached yet, and does
-    not page on it (sd:1254). The weekly job masks first; mask skips a file
-    modified inside the settle window, so the next run removes that hit.
-    A fixture $HOME and fixture scratch roots only: no live file is read."""
+class ManualMask(unittest.TestCase):
+    """`mask`, which the operator runs by hand, on homes with less in them
+    (sd:1254). A fixture $HOME and fixture scratch roots only: no live file
+    is read or rewritten."""
 
     #: Joined here, so this file is not a finding of the repository scan.
     TOKEN = "ghp_" + "Zq7" * 12
@@ -641,79 +640,6 @@ class Settling(unittest.TestCase):
         stamp = time.time() - age_seconds
         os.utime(path, (stamp, stamp))
 
-    def critical(self) -> subprocess.CompletedProcess:
-        return subprocess.run(["sh", str(SCRIPT), "critical"], cwd=self.root, env=self.env,
-                              capture_output=True, text=True, timeout=120)
-
-    def test_a_recent_hit_in_a_session_log_is_settling_and_does_not_page(self):
-        self.plant(".codex/sessions/2026/10/07/rollout.jsonl", 60)
-        result = self.critical()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("== settling", result.stdout)
-
-    def test_a_settled_hit_in_a_session_log_still_pages(self):
-        self.plant(".codex/sessions/2026/10/07/rollout.jsonl", self.SETTLED)
-        result = self.critical()
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertNotIn("== settling", result.stdout)
-
-    def test_a_recent_hit_outside_the_mask_targets_still_pages(self):
-        self.plant("repos/project/app.py", 60)
-        result = self.critical()
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertNotIn("== settling", result.stdout)
-
-    def test_a_recent_hit_that_mask_excludes_still_pages(self):
-        # Under a mask target, but a live tool store mask never rewrites.
-        self.plant(".codex/config.toml", 60)
-        result = self.critical()
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertNotIn("== settling", result.stdout)
-
-    def test_a_recent_exported_value_in_a_session_log_is_settling(self):
-        # Pass 2: a value exported in the shell env, in no known format.
-        value = "example-" + "q4" * 12
-        env_file = self.home / ".config" / "shell" / "env.sh"
-        env_file.parent.mkdir(parents=True)
-        env_file.write_text('export EXAMPLE_API_KEY="%s"\n' % value, encoding="utf-8")
-        log = self.home / ".codex" / "sessions" / "rollout.jsonl"
-        log.parent.mkdir(parents=True)
-        log.write_text('{"text": "%s"}\n' % value, encoding="utf-8")
-        result = self.critical()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("transient: $EXAMPLE_API_KEY found in: .codex/sessions/rollout.jsonl", result.stdout)
-        stamp = time.time() - self.SETTLED
-        os.utime(log, (stamp, stamp))
-        result = self.critical()
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("YOURS: $EXAMPLE_API_KEY found in: .codex/sessions/rollout.jsonl", result.stdout)
-
-    def test_a_recent_file_named_like_a_prefix_settles_nothing_else(self):
-        # rg prints `path:line:match`; a recent `log` must not lend its
-        # timestamp to a settled `log:old.jsonl` beside it (review, sd:1254).
-        self.plant(".codex/sessions/log", 60)
-        self.plant(".codex/sessions/log:old.jsonl", self.SETTLED)
-        result = self.critical()
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-
-    def test_an_ambiguous_name_settles_only_when_every_reading_does(self):
-        # `x:1:y:1:<match>` reads as file `x` or file `x:1:y`. A recent `x`
-        # with no hit of its own must not settle the hit in a settled `x:1:y`.
-        sessions = self.home / ".codex" / "sessions"
-        sessions.mkdir(parents=True)
-        (sessions / "x").write_text("no credential here\n", encoding="utf-8")
-        self.plant(".codex/sessions/x:1:y", self.SETTLED)
-        result = self.critical()
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-
-    def test_a_file_named_like_a_whole_hit_line_settles_nothing(self):
-        # The pattern pass prints `x:1:<match>`; a recent file of exactly that
-        # name must not stand in for the settled `x` (review, sd:1254).
-        self.plant(".codex/sessions/x", self.SETTLED)
-        (self.home / ".codex" / "sessions" / ("x:1:" + self.TOKEN)).write_text("clean\n", encoding="utf-8")
-        result = self.critical()
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-
     def test_mask_without_exports_still_masks_known_patterns(self):
         # No env.sh and no .bash_profile: the weekly job's mask pass must not
         # fail, and a pattern hit is still masked (review, sd:1254).
@@ -738,13 +664,6 @@ class Settling(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(self.TOKEN, (self.home / "repos/project/app.py").read_text())
                 self.assertNotIn("repos/project/app.py", result.stdout)
-
-    def test_a_window_of_zero_settles_nothing(self):
-        self.plant(".codex/sessions/2026/10/07/rollout.jsonl", 60)
-        self.env["S4S_MASK_SETTLE_MIN"] = "0"
-        result = self.critical()
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()

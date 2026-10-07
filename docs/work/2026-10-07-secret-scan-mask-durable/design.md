@@ -1,26 +1,22 @@
 ---
-title: Weekly secret scan pages only on new findings
+title: Secret scan masks by hand and scans weekly
 created: 2026-10-07
 item: sd:1254
 ---
-# Design — weekly secret scan pages only on new findings
+# Design — secret scan masks by hand and scans weekly
 
 All examples here are synthetic. No value, path or count from a real scan enters this record.
 
-## 1. Make `mask --apply` safe on a live file
+## 1. `mask --apply` on a live file (shipped, #208 and #209)
 
-Today the Python step in `mask` reads a file, computes the masked bytes, then opens it `r+`, writes, and truncates.
-The fix keeps the same-inode rewrite, which live sessions need, and adds two guards:
+`mask` reads a file, computes the masked bytes, then rewrites it `r+` on the same inode and truncates.
+Two guards skip a file, which then counts as busy:
 
-1. **Settle age.** Skip a file whose `mtime` is newer than `S4S_MASK_SETTLE_MIN` minutes, default 10.
-   An active session log is busy now; the next run reaches it.
-2. **Compare before write.** Record `st_size` and `st_mtime_ns` at the read.
-   Re-stat the open `r+` handle just before the write; when either changed, skip the file.
-   The window that remains is between that `fstat` and the `truncate`: microseconds against a session that appends seconds apart.
+1. Settle age: a file modified in the last `S4S_MASK_SETTLE_MIN` minutes (10).
+2. Compare before write: the size and mtime are read again on the open handle just before the write.
 
-A skipped file prints `busy <path>` and counts toward `busy N` in the summary line:
-
-    == masked 12 your-key value(s) + 30 pattern match(es) in 4 file(s); 1 busy
+A window remains between that `fstat` and the truncate.
+#209 restores a write cut short, such as by a full disk, without truncating.
 
 Alternatives not chosen:
 
@@ -28,71 +24,58 @@ Alternatives not chosen:
 | --- | --- |
 | Write a temp file and rename | New inode; a session holding the old descriptor keeps writing to the unlinked file, and its log is lost. |
 | `flock` the file | Claude Code and Codex take no lock, so the lock guards nothing. |
-| Mask only files older than a day | Leaves every hit from the last day paging, which is most of them. |
 
-## 2. Mask before the weekly scan
+## 2. The weekly job scans only
 
-`local-cron-jobs/examples/secret-scan-weekly.job` changes its command to:
+The first build ran `mask --apply --no-prune` before `critical` every Monday.
+The hub's lane review blocked it: a session idle past the settle window resumes and appends between the last `fstat` and the truncate.
+The reviewer reproduced the lost line.
+By hand, the operator picks a quiet time; unattended, nobody does.
 
-    sh "$ROOT/../local-scan-for-secrets/scan-for-secrets.sh" mask --apply --no-prune
-    sh "$ROOT/../local-scan-for-secrets/scan-for-secrets.sh" critical
+Operator ruling 2026-10-07 (option 1): `secret-scan-weekly.job` runs `critical` only, as before this item.
+Its header names the manual procedure. A test asserts the command never names `mask`.
 
-`--no-prune` leaves deletion to the nightly `prune`, which already owns it, and keeps the job from removing build directories.
-A mask failure does not stop the scan.
-(Changed in the build: pull request 1 made `mask --apply` exit 1 on a write that fails part way.
-That file's mtime is fresh, so the scan reads its hits as settling and exits 0.
-The job therefore keeps the mask's exit code: a scan finding, exit 2, wins; otherwise the mask's code is the job's.)
+## 3. Settling is cut
 
-## 3. Hits the mask pass did not reach are transient
+The first build added a settling class to `critical`: a hit in a mask target modified inside the settle window was reported, not paged.
+It meant "the next scheduled mask removes this hit". With no scheduled mask, that claim is false.
+At 07:00 it would hide only a hit written in the last ten minutes, and nothing would remove that hit later.
+So the class, its classifier in `mask_files.py`, and its tests are gone. Hits read as before this item: durable, or transient for scratchpads and `~/.codex/shell_snapshots`.
 
-After the mask pass, a durable hit in a mask target means one of two things: the file was busy, or a session wrote the value after the pass.
-Both clear on the next run, so `critical` classifies a hit as transient when its file is a mask target modified inside the settle window.
-(Changed in the build: the pattern pass prints these under their own heading, `== settling`, and counts them with the transient hits.
-The your-keys pass prints them as `transient:` lines, as it does scratchpad hits.
-A file `mask` excludes, such as a live tool store under `~/.codex`, is not a mask target here either.)
-The rule reuses the mask target list; it adds no second list.
-A hit in a mask target that is older than the window still exits 2: the mask pass should have removed it, so it is a defect to see.
+## 4. Two `mask` fixes stay
 
-`critical` without the mask pass keeps today's behaviour for every file outside the window.
+Both came out of review of the first build. The manual mask needs them.
 
-`mask_files.py settling` makes the call. `critical` passes it the same target and exclusion lists `mask` uses, so the two cannot drift.
-A classifier that fails marks every hit durable, so a failure pages.
-(Changed in the build: `S4S_SCRATCH_ROOTS` replaces the two scratchpad roots, so the `critical` tests read a fixture and never a live scratchpad.)
+1. **No key-like export.** `mask` exited 1 before it masked anything. It now masks the known patterns and says so on stderr.
+2. **No target present.** With no history, AI store or scratchpad, `mask_file_list` ran `rg`/`grep -r` with no path, which searches the current directory, `$HOME`.
+   `mask --apply` then rewrote pattern matches outside its safe list, `~/repos` included.
+   It now searches nothing. The literal pass is skipped with no values: an empty line is an empty pattern, which matches every file.
 
-## 4. The first run
+`S4S_SCRATCH_ROOTS` replaces the two scratchpad roots, so the `mask` tests read a fixture and never a live scratchpad.
 
-The backlog is large. The operator runs it once by hand at a quiet time:
+## 5. The manual procedure
 
-    sh local-scan-for-secrets/scan-for-secrets.sh mask --no-prune     # dry run: per-file counts
+On the machine that runs the weekly job, at a quiet time:
+
+    sh local-scan-for-secrets/scan-for-secrets.sh mask --no-prune           # dry run: per-file counts, busy list
     sh local-scan-for-secrets/scan-for-secrets.sh mask --apply --no-prune
 
-The job then keeps the logs masked week to week.
+Sessions keep echoing the exported keys into new log lines, so the Monday page returns after a mask.
+That ends only when the keys leave the shell environment, which is out of scope.
 
 ## Reuse
 
 | Piece | Used for |
 | --- | --- |
-| `scan-for-secrets.sh mask` | the rewrite, its target list and its patterns |
-| `TRANSIENT_PATH_RE` and the transient count in `critical` | the report-not-page class |
+| `scan-for-secrets.sh mask` and `mask_files.py` | the manual rewrite, its targets and patterns |
 | `local-cron-jobs` failure push | the page, unchanged |
 | nightly `prune` in `local-maintenance` | retention, unchanged |
 
-Nothing new is added to `local-notify`; the job's existing failure push carries the page.
+## Rulings
 
-## Open questions
-
-| # | Question | Recommendation |
-| --- | --- | --- |
-| Q1 | Mask inside the weekly job, or nightly in `local-maintenance`? | Weekly. One place, one schedule; nightly is a later item. |
-| Q2 | Settle window length? | 10 minutes, `S4S_MASK_SETTLE_MIN`. |
-| Q3 | Treat a recent hit in a mask target as transient? | Yes, inside the window only. |
-| Q4 | First backlog run by hand or by the job? | By hand, after a dry run. |
-| Q5 | Fix the append race as its own pull request first? | Yes; it is a data-loss defect in `mask` today. |
-
-## Risks
-
-- A key leaked into a session log is masked before anyone sees it, so its exposure leaves no page.
-  The operator's acceptance covers that class; the log line counts it.
-- A session idle more than 10 minutes and then resumed may append while the job runs.
-  The compare-before-write guard skips the file; the next run masks it.
-- A masked transcript resumed later shows `<masked:$NAME>` where the value was. Intended.
+| When | Ruling |
+| --- | --- |
+| 2026-09-30 | Clear the accepted values with `mask --apply`. |
+| 2026-10-07 ~13:30 | Q1 to Q5 accepted: weekly mask in the job, 10-minute window, settling, first mask by hand, race fix first. |
+| 2026-10-07 ~14:25 | Exported-value settling hits print as `transient:`; rollout after both pull requests. |
+| 2026-10-07 evening | After the lane review: the job scans only; masking stays manual. Supersedes the weekly mask and settling. |

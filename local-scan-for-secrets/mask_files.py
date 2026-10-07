@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """The rewrite half of `scan-for-secrets.sh mask`: one file path per stdin line.
 
-`mask_files.py settling` is the other use: `critical` asks it which hits sit
-in a file mask would rewrite but has not yet reached, because the file was
-modified inside the settle window. Those hits are reported and do not page.
-
 Your key values arrive in S4S_PAIRS (NAME=value lines) and the credential
 patterns in S4S_PATTERNS, both through the environment, never argv or disk.
 S4S_APPLY=1 rewrites; anything else is a dry run that exits 2 when there is
@@ -196,65 +192,7 @@ def settle_seconds(text: str) -> float:
     return minutes * 60
 
 
-def words(name: str) -> list[str]:
-    return os.environ.get(name, "").split()
-
-
-def lines(name: str) -> list[str]:
-    return [line for line in os.environ.get(name, "").splitlines() if line]
-
-
-LINE_NUMBER = re.compile(r":(?=[0-9]+:)")
-
-
-def hit_paths(line: str, form: str) -> list[str]:
-    """Every file a hit line may name. `paths` lines are a file name each
-    (`rg -l`). `lines` lines are `path:line:match` (`rg -n -o`, `grep -n`):
-    each prefix that is a file and is followed by `:<line>:`, never the whole
-    line, which a file could be named after. A name that holds `:<digits>:`
-    makes the split ambiguous, so every reading is returned and the caller
-    settles only when all agree."""
-    if form == "paths":
-        return [line] if os.path.isfile(line) else []
-    return [line[:m.start()] for m in LINE_NUMBER.finditer(line) if os.path.isfile(line[:m.start()])]
-
-
-def mask_would_rewrite(path: str) -> bool:
-    """True when `mask` targets this $HOME-relative path and no mask
-    exclusion spares it. The lists arrive from scan-for-secrets.sh, so the
-    two never drift: S4S_MASK_FILES and S4S_MASK_DIRS name the targets,
-    S4S_MASK_EXCLUDE_{DIRS,GLOBS,PATHS} the exclusions."""
-    parts = path.split("/")
-    if path not in words("S4S_MASK_FILES") and not any(
-            path.startswith(d.rstrip("/") + "/") for d in lines("S4S_MASK_DIRS")):
-        return False
-    if any(d in parts[:-1] for d in words("S4S_MASK_EXCLUDE_DIRS")):
-        return False
-    if parts[-1] in words("S4S_MASK_EXCLUDE_GLOBS"):
-        return False
-    return not any(path == p or path.startswith(p + "/") for p in words("S4S_MASK_EXCLUDE_PATHS"))
-
-
-def settling(settle_s: float, form: str) -> int:
-    """Prefix each stdin hit line with `S|` when its file is settling (a mask
-    target modified inside the window) and `D|` when it is durable. `form`
-    is `lines` or `paths`, as `hit_paths` reads them."""
-    now = time.time()
-    for line in sys.stdin.read().splitlines():
-        if not line:
-            continue
-        paths = hit_paths(line, form)
-        recent = bool(paths) and all(
-            mask_would_rewrite(path) and now - os.stat(path).st_mtime < settle_s for path in paths)
-        print(("S|" if recent else "D|") + line)
-    return 0
-
-
 def main() -> int:
-    if sys.argv[1:2] == ["settling"]:
-        if sys.argv[2:] not in (["lines"], ["paths"]):
-            sys.exit("usage: mask_files.py settling lines|paths")
-        return settling(settle_seconds(os.environ.get("S4S_MASK_SETTLE_MIN", str(SETTLE_MIN_DEFAULT))), sys.argv[2])
     apply = os.environ.get("S4S_APPLY") == "1"
     pairs = parse_pairs(os.environ.get("S4S_PAIRS", ""))
     pats = parse_patterns(os.environ.get("S4S_PATTERNS", ""))

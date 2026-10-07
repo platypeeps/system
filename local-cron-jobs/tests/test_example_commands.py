@@ -52,12 +52,12 @@ class PackRootFromEnvShTest(unittest.TestCase):
                 self.assertTrue(pathlib.Path(ran[0]).is_relative_to(pack), ran)
 
 
-# A scan-for-secrets.sh that exits with MASK_RC for `mask` and SCAN_RC for
-# `critical`, and records each call.
+# A scan-for-secrets.sh that exits with SCAN_RC for `critical`, and records
+# each call; `mask` exits 0, so only the record shows it ran.
 FAKE_SCAN = """#!/bin/sh
 printf '%s\\n' "$1" >> "$SCAN_MARKER"
 case $1 in
-  mask) exit "${MASK_RC:-0}" ;;
+  mask) exit 0 ;;
   critical) exit "${SCAN_RC:-0}" ;;
 esac
 exit 64
@@ -65,12 +65,12 @@ exit 64
 
 
 class SecretScanWeeklyTest(unittest.TestCase):
-    """The weekly job masks, then scans, and a failure in either fails the job
-    (sd:1254). A write that failed part way leaves a fresh mtime, so the scan
-    reads that file's hits as settling and exits 0; only the mask's own exit
-    code then reports the failure."""
+    """The weekly job scans and pages; it never masks (sd:1254). An
+    unattended in-place rewrite can lose a line a session appends between
+    the last check and the truncate, so masking stays a step the operator
+    runs by hand. The job's exit code is the scan's: 2 pages."""
 
-    def run_job(self, mask_rc, scan_rc):
+    def run_job(self, scan_rc):
         fx = Fixture()
         self.addCleanup(fx.destroy)
         scan = fx.tmp / "local-scan-for-secrets" / "scan-for-secrets.sh"
@@ -79,18 +79,19 @@ class SecretScanWeeklyTest(unittest.TestCase):
         marker = fx.tmp / "scan-calls"
         job = EXAMPLES / "secret-scan-weekly.job"
         fx.write_job(job.stem, job.read_text())
-        result = fx.exec_job(job.stem, extra_env={
-            "SCAN_MARKER": str(marker), "MASK_RC": str(mask_rc), "SCAN_RC": str(scan_rc)})
+        result = fx.exec_job(job.stem, extra_env={"SCAN_MARKER": str(marker), "SCAN_RC": str(scan_rc)})
         return result, marker.read_text().splitlines() if marker.exists() else []
 
-    def test_the_exit_code(self):
-        cases = {(0, 0): 0, (0, 2): 2, (1, 0): 1, (1, 2): 2}
-        for (mask_rc, scan_rc), expected in cases.items():
-            with self.subTest(mask=mask_rc, scan=scan_rc):
-                result, calls = self.run_job(mask_rc, scan_rc)
-                self.assertEqual(calls, ["mask", "critical"], result.stdout + result.stderr)
-                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+    def test_the_job_never_masks(self):
+        self.assertNotIn("mask", (EXAMPLES / "secret-scan-weekly.job").read_text().split("JOB_COMMAND=", 1)[1])
+        result, calls = self.run_job(0)
+        self.assertEqual(calls, ["critical"], result.stdout + result.stderr)
 
+    def test_the_exit_code_is_the_scans(self):
+        for scan_rc in (0, 2):
+            with self.subTest(scan=scan_rc):
+                result, _ = self.run_job(scan_rc)
+                self.assertEqual(result.returncode, scan_rc, result.stdout + result.stderr)
 
 if __name__ == "__main__":
     unittest.main()

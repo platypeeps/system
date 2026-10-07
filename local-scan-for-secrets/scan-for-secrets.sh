@@ -36,11 +36,7 @@ with the provider they identify.
                only durable findings exit 2). ~/.codex/shell_snapshots is
                TRANSIENT for the same reason: codex rewrites it on every
                session start, so it is a cache of the exported shell env
-               and not a record. Reported, never paged on. A hit in a
-               file mask rewrites, modified in the last
-               S4S_MASK_SETTLE_MIN minutes (10), reads SETTLING: the
-               next mask run reaches it, so it is reported and exits 0
-               too. ~/.bash_profile itself is
+               and not a record. Reported, never paged on. ~/.bash_profile itself is
                excluded in this mode (it is the key source, it would
                match itself), as are third-party checkouts and test
                fixtures (see CRITICAL_EXCLUDE_PATHS in this script, plus
@@ -407,13 +403,11 @@ MASK_EXCLUDE_DIRS=".git node_modules .venv venv __pycache__ .npm .cargo target d
 # every state save, and the rg glob for the original does not match it — so
 # mask would have corrupted the backup while carefully sparing the file it
 # backs up. Deleting it is not a fix either; it comes straight back.
-# Files under $HOME that mask rewrites, besides AI_LOG_DIRS and the scratchpads.
-MASK_FILES=".viminfo .bash_history .zsh_history"
 MASK_EXCLUDE_PATHS=".gemini/extensions .codex/plugins .codex/.tmp .codex/tool-venvs .codex/vendor_imports .codex/process_manager .codex/.codex-global-state.json .codex/.codex-global-state.json.bak"
 if [ "$MODE" = mask ] || [ "$MODE" = prune ]; then
-  # No exports is not a failure: the known credential patterns need none,
-  # and the weekly job runs mask before its scan, so an exit here failed the
-  # job on every run of a machine with no key-like exports (sd:1254).
+  # No exports is not a failure: the known credential patterns need none, so
+  # mask still masks them, and a machine with no key-like exports is not left
+  # holding every pattern hit (sd:1254).
   if [ "$MODE" = mask ] && [ -z "$S4S_PAIRS" ]; then
     echo "no key-like exports found in ~/.config/shell/env.sh or ~/.bash_profile; masking known patterns only" >&2
   fi
@@ -423,7 +417,7 @@ if [ "$MODE" = mask ] || [ "$MODE" = prune ]; then
   # the loop exits 1 and set -e kills the script silently. It never showed
   # because this machine has all three — a scratch $HOME with only session
   # logs in it does not.
-  for f in $MASK_FILES; do
+  for f in .viminfo .bash_history .zsh_history; do
     if [ -f "$f" ]; then
       MASK_TARGETS="$MASK_TARGETS
 $f"
@@ -1303,26 +1297,6 @@ TRANSIENT_FOUND=0
 # it is exactly the durable finding this scan exists to page on.
 TRANSIENT_PATH_RE='/claude-[^/]*/[^/]*/[^/]*/scratchpad/|^\.codex/shell_snapshots/'
 
-# Settling is the third member (sd:1254): a hit in a file mask rewrites,
-# modified in the last S4S_MASK_SETTLE_MIN minutes. The weekly job masks
-# before it scans, and mask skips a file that recent, because a live session
-# may still be appending to it; so the hit is one the next mask run removes,
-# not a leak to page on. Outside the window a hit in the same file still
-# exits 2: mask should have reached it. mask_files.py decides, from the same
-# target and exclusion lists mask uses, passed here so the two cannot drift.
-# Prints each hit line on stdin as `S|line` (settling) or `D|line` (durable).
-# $1 is the line form: `lines` for `path:line:match`, `paths` for `rg -l`.
-# A classifier that fails marks every line durable: it fails toward paging.
-settling_split() {
-  _form=$1
-  _hits=$(cat)
-  printf '%s\n' "$_hits" \
-    | S4S_MASK_FILES="$MASK_FILES" S4S_MASK_DIRS="$AI_LOG_DIRS" \
-      S4S_MASK_EXCLUDE_DIRS="$MASK_EXCLUDE_DIRS" S4S_MASK_EXCLUDE_GLOBS="$MASK_EXCLUDE_GLOBS" \
-      S4S_MASK_EXCLUDE_PATHS="$MASK_EXCLUDE_PATHS" python3 "$DIR/mask_files.py" settling "$_form" \
-    || printf '%s\n' "$_hits" | sed 's/^/D|/'
-}
-
 # --- pass 1: known credential formats -------------------------------------
 echo "== pattern scan"
 if [ "$HAVE_RG" = 1 ]; then
@@ -1355,12 +1329,6 @@ if [ "$MODE" = critical ] && [ -n "$OUT" ]; then
   TRANSIENT_OUT=$(printf '%s\n' "$OUT" | grep -E "$TRANSIENT_PATH_RE" || true)
   OUT=$(printf '%s\n' "$OUT" | grep -Ev "$TRANSIENT_PATH_RE" || true)
 fi
-SETTLING_OUT=""
-if [ "$MODE" = critical ] && [ -n "$OUT" ]; then
-  SPLIT=$(printf '%s\n' "$OUT" | settling_split lines)
-  SETTLING_OUT=$(printf '%s\n' "$SPLIT" | sed -n 's/^S|//p')
-  OUT=$(printf '%s\n' "$SPLIT" | sed -n 's/^D|//p')
-fi
 if [ -n "$OUT" ]; then
   printf '%s\n' "$OUT" | mask_tag
   FOUND=$((FOUND + $(printf '%s\n' "$OUT" | wc -l)))
@@ -1371,11 +1339,6 @@ if [ -n "$TRANSIENT_OUT" ]; then
   echo "== transient (agent scratchpad / codex shell-snapshot cache — regenerated, not a record; not fatal)"
   printf '%s\n' "$TRANSIENT_OUT" | mask_tag
   TRANSIENT_FOUND=$((TRANSIENT_FOUND + $(printf '%s\n' "$TRANSIENT_OUT" | wc -l)))
-fi
-if [ -n "$SETTLING_OUT" ]; then
-  echo "== settling (mask target modified in the last ${S4S_MASK_SETTLE_MIN:-10} min — the next mask run reaches it; not fatal)"
-  printf '%s\n' "$SETTLING_OUT" | mask_tag
-  TRANSIENT_FOUND=$((TRANSIENT_FOUND + $(printf '%s\n' "$SETTLING_OUT" | wc -l)))
 fi
 
 # --- the local judgment of each hit (sd:2761) -------------------------------
@@ -1436,12 +1399,6 @@ TARGETS_EOF
       if [ "$MODE" = critical ] && [ -n "$HITS" ]; then
         T_HITS=$(printf '%s\n' "$HITS" | grep -E "$TRANSIENT_PATH_RE" || true)
         HITS=$(printf '%s\n' "$HITS" | grep -Ev "$TRANSIENT_PATH_RE" || true)
-      fi
-      if [ "$MODE" = critical ] && [ -n "$HITS" ]; then
-        SPLIT=$(printf '%s\n' "$HITS" | settling_split paths)
-        S_HITS=$(printf '%s\n' "$SPLIT" | sed -n 's/^S|//p')
-        HITS=$(printf '%s\n' "$SPLIT" | sed -n 's/^D|//p')
-        T_HITS=$(printf '%s\n%s\n' "$T_HITS" "$S_HITS" | awk 'NF')
       fi
       if [ -n "$HITS" ]; then
         if [ "$S4S_TTY" = 1 ]; then

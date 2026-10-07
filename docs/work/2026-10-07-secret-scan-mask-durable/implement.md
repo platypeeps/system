@@ -1,37 +1,34 @@
 ---
-title: Weekly secret scan pages only on new findings
+title: Secret scan masks by hand and scans weekly
 created: 2026-10-07
 item: sd:1254
 ---
-# Implement — weekly secret scan pages only on new findings
+# Implement — secret scan masks by hand and scans weekly
 
-Two pull requests in this repository, gated and shipped by the hub (`repo.satellite_gate` is `off`).
-Tests go in `local-scan-for-secrets/tests/test_scan_for_secrets.py`, against a fixture `$HOME` with synthetic values.
+Two pull requests in this repository, prepared and merged by the hub (`repo.satellite_gate` is `off`).
+Tests use a fixture `$HOME` with synthetic values.
 
-## Pull request 1: the append race
+## Pull request 1: the append race (shipped, #208)
 
 1. Test: a fixture log grows between the read and the write; every appended byte survives, and the file counts as busy.
-   Check: it fails against today's `mask`.
 2. Test: a log modified inside `S4S_MASK_SETTLE_MIN` is skipped; one older than it is masked.
-3. Add the settle age and the compare-before-write guard; print `busy` lines and the busy count.
-   Check: both tests pass; each fails with its guard removed.
+3. The settle age and the compare-before-write guard.
 
-## Pull request 2: mask before the weekly scan
+## Pull request 2: the job scans only; two `mask` fixes
 
-4. Test: after `mask --apply`, a recent hit in a mask target reads `transient` and `critical` exits 0.
-5. Test: a synthetic hit under the fixture `~/repos` still exits 2.
-6. Classify recent mask-target hits as transient in `critical`.
-7. Change `secret-scan-weekly.job` to mask first; rewrite its header comment and the README "Accepted exposure" section.
-8. `make check`, `tests/test_citations.py`, `sd-docs-lint` and the secrets scan.
-
-## Operator ruling
-
-2026-10-07 ~13:30 MDT, relayed by the hub lead: Q1 to Q5 accepted as recommended in `design.md`.
-Changes found in the build are marked "Changed in the build" in `design.md`.
+4. Test in `local-cron-jobs/tests/test_example_commands.py`: the job's command never names `mask`, it calls `critical` only, and its exit code is the scan's.
+   Check: it fails against the first build's mask-first command.
+5. Test in `local-scan-for-secrets/tests/test_scan_for_secrets.py`: `mask` with no export masks a pattern hit.
+   Check: it fails against `main`, which exits 1.
+6. Test: `mask --apply` on a fixture home with no target leaves a `~/repos` file untouched.
+   Check: before the guard it rewrote that file; removing the guard fails the test.
+7. Restore `secret-scan-weekly.job` to `critical` only, with a header that names the manual procedure.
+8. README "Accepted exposure": masking is manual; the page returns after a mask.
+9. `make check`, `tests/test_citations.py`, `sd-docs-lint` and the secrets scan.
 
 ## Rollout
 
-Ruled 2026-10-07 ~14:25 MDT. After both pull requests merge, on the machine that runs the weekly job:
+After pull request 2 merges, on the machine that runs the weekly job:
 
 1. Dry run; the operator reads the per-file counts and the busy list:
 
@@ -41,8 +38,6 @@ Ruled 2026-10-07 ~14:25 MDT. After both pull requests merge, on the machine that
 
        sh local-scan-for-secrets/scan-for-secrets.sh mask --apply --no-prune
 
-3. Reinstall the job, so launchd runs the new command:
+3. Reinstall the scan-only job:
 
        sh local-cron-jobs/cron-jobs.sh install secret-scan-weekly
-
-Settling hits from the your-keys pass print as `transient:` lines (ruled the same time).

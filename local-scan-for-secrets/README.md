@@ -116,17 +116,16 @@ original length and never truncates, so a line appended while it writes
 stays too. A file that will not open to
 write fails the same way when it holds a match, and passes when it holds none. The rewrite is in `mask_files.py`.
 
+With no key-like export, `mask` still masks the known patterns and says so on
+stderr. With no target present at all (no history, AI store or scratchpad),
+it searches nothing; it never falls back to the current directory (sd:1254).
+
 Caveats: quit vim before masking `.viminfo` (vim rewrites it
 on exit from memory), same idea for open shells and history files, and
 masking is cleanup, not un-leaking — rotate any key that sat in these
-files. A weekly automated job masks, then runs a `critical` scan, via
+files. A weekly automated `critical` scan runs via
 `<config>/cron-jobs/jobs/secret-scan-weekly.job` (examples in `local-cron-jobs/examples/`) (Mon 07:00,
 findings push to ntfy).
-
-In `critical`, a hit in a file `mask` rewrites that was modified in the last
-`S4S_MASK_SETTLE_MIN` minutes reads as settling. It prints and exits 0, as a
-scratchpad hit does: the mask pass skipped that file as busy, and the next
-run masks it. Outside the window, a hit in the same file still exits 2.
 
 `prune` mode is the half of `mask` that is safe to run unattended: it deletes
 AI session log files past their directory's retention and does nothing else —
@@ -358,13 +357,15 @@ legible rather than re-argued each Monday.
   under 30 days old and nothing on the machine is older than 90, so the
   exposed material is in current, active work and no retention window reaches
   it. Do not read the prune as remediation of the exposure.
-- **Masked every week (ruling 2026-10-07).** The transcript findings are
-  not touched by any of the above. The operator ruled on 2026-09-30 to
-  `mask --apply` them, and on 2026-10-07 to do it weekly, because sessions
-  keep echoing the exported values into new log lines. The weekly job masks
-  first, then scans, so the Monday page fires only on a hit that `mask`
-  cannot remove. The backlog is masked once by hand, after the operator
-  reads a dry run (`mask --no-prune`). Design record:
+- **Masked by hand, not by the job (rulings 2026-09-30 and 2026-10-07).**
+  The transcript findings are not touched by any of the above. The operator
+  ruled to clear them with `mask --apply`, run by hand after reading a dry
+  run (`mask --no-prune`). The weekly job only scans: `mask` rewrites in
+  place, and a session that resumes while it runs can append between its
+  last check and its truncate, so the line is lost. Run by hand, the operator
+  picks a quiet time. Sessions keep echoing the exported values into new log
+  lines, so `critical` exits 2 again after a mask until those keys leave the
+  shell environment. Design record:
   `docs/work/2026-10-07-secret-scan-mask-durable/`.
 - **`~/.bash_history` stays in scope.** The 2026-09-21 run flagged four lines
   carrying `sts_` ingestion keys. It is not excluded, because the
