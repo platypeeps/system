@@ -331,9 +331,10 @@ def _location(value: object) -> str | None:
         value = paths.key(value)
     except paths.PathRefused:        # no usable $HOME: keep it as given
         return value
-    except (OSError, RuntimeError):  # resolving failed: the row, not the path
+    except Exception:                # a location may not cost the ledger its row
         return None
-    return value if len(value) <= MAX_LOCATION else None
+    # Resolving follows symlinks, so the key is held to the rule again.
+    return value if len(value) <= MAX_LOCATION and value.isprintable() else None
 
 
 def record(

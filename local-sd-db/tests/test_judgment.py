@@ -159,12 +159,30 @@ class TheLocation(JudgmentCase):
                 self.assertEqual(row["caller"], "local-mail-intake")
 
     def test_a_path_that_cannot_be_resolved_is_null_and_the_row_is_still_written(self):
-        for failure in (PermissionError("denied"), RuntimeError("symlink loop")):
+        for failure in (PermissionError("denied"), RuntimeError("symlink loop"),
+                        ValueError("anything else")):
             with self.subTest(failure=failure), \
                     mock.patch("sd_db.judgment.paths.key", side_effect=failure):
                 row = self.row(self.write(location="/opt/unreadable"))
                 self.assertIsNotNone(row)
                 self.assertIsNone(row["location"])
+
+    def test_a_resolved_key_is_held_to_the_same_rule(self):
+        # Resolving follows symlinks, so a printable, short alias can resolve
+        # to a key that is neither.
+        for resolved in ("~/a\nb", "~/bell\x07", "~/" + "x" * judgment.MAX_LOCATION):
+            with self.subTest(resolved=resolved), \
+                    mock.patch("sd_db.judgment.paths.key", return_value=resolved):
+                row = self.row(self.write(location="~/alias"))
+                self.assertIsNotNone(row)
+                self.assertIsNone(row["location"])
+
+    def test_no_usable_home_keeps_the_location_as_given(self):
+        with mock.patch("sd_db.judgment.paths.key",
+                        side_effect=judgment.paths.PathRefused("HOME is unset")):
+            self.assertEqual(self.row(self.write(location="/opt/outside"))["location"],
+                             "/opt/outside")
+
 
 class ThePrice(JudgmentCase):
     """A row's cost from the price `providers.yaml` registers for its
