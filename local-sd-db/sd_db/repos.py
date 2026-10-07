@@ -432,6 +432,8 @@ _KEY_COLUMNS = (
      lambda value: value[:-14]),
     ("cost.repo", "SELECT repo FROM cost WHERE repo IS NOT NULL", lambda value: value),
     ("skill_use.cwd", "SELECT cwd FROM skill_use WHERE cwd IS NOT NULL", lambda value: value),
+    ("judgment.location", "SELECT location FROM judgment WHERE location IS NOT NULL",
+     lambda value: value),
 )
 
 
