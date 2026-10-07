@@ -21,8 +21,8 @@ None. What it refuses, with `Refused` and the line number: anchors,
 aliases, tags, merge keys (`<<`), explicit keys (`?`), duplicate keys,
 directives, a second document, tabs in indentation, scalars that span
 lines (plain or quoted), flow collections that span lines, an indentation
-indicator on a block scalar, and a folded scalar whose lines are not all
-plain. A file needing any of those is read as unknown by the caller, never
+indicator on a block scalar, a folded scalar whose lines are not all
+plain, and nesting deeper than Python's recursion limit. A file needing any of those is read as unknown by the caller, never
 guessed at.
 """
 
@@ -47,7 +47,10 @@ class Refused(ValueError):
 
 def load(text: str) -> Any:
     """The document's value: a dict, a list, a string or None."""
-    return _Reader(text.removeprefix("﻿")).document()
+    try:
+        return _Reader(text.removeprefix("\ufeff")).document()
+    except RecursionError:
+        raise Refused("nesting deeper than this reader follows", 1) from None
 
 
 def _is_item(text: str) -> bool:

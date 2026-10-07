@@ -66,6 +66,7 @@ class Refuses(unittest.TestCase):
             "indentation indicator": ("a: |2\n   x\n", 1, "indentation indicator"),
             "folded with a blank line": ("a: >\n  x\n\n  y\n", 1, "folded"),
             "content after a quoted value": ('a: "b"c\n', 1, "content after"),
+            "nesting past the recursion limit": ("a: " + "[" * 5000 + "]" * 5000 + "\n", 1, "nesting"),
         }
         for name, (text, line, reason) in cases.items():
             with self.subTest(name=name):
