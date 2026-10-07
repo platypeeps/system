@@ -1231,6 +1231,12 @@ class TheCallContext(MeteringCase):
         self.assertEqual(one, two)
         self.assertNotEqual(one, other)
 
+    def test_reordered_criteria_are_another_question(self):
+        # A choice's answer is a position, so `desk` is 1 in one and 2 in the other.
+        one = self.last(["choice", "where?", "--criteria", "desk,phone"])["prompt_hash"]
+        two = self.last(["choice", "where?", "--criteria", "phone,desk"])["prompt_hash"]
+        self.assertNotEqual(one, two)
+
     def test_the_load_is_a_number(self):
         load = self.last(["noul", "is it?"])["load_avg"]
         self.assertIsInstance(load, float)

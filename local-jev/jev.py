@@ -1450,8 +1450,12 @@ def build_payload(state, questions: dict, model: str) -> dict:
     if not questions:
         raise JevError("no questions to ask")
     # The question's version: the definition without the state, so a reworded
-    # question starts a new series and a new state does not.
-    note(prompt_hash=sha256(questions)[:16])
+    # question starts a new series and a new state does not. `sha256` sorts
+    # keys, and a choice's answer is a position in its criteria, so their
+    # order is hashed too; a question without a criteria mapping keeps its hash.
+    order = {qid: list(q["criteria"]) for qid, q in questions.items()
+             if isinstance(q, dict) and isinstance(q.get("criteria"), dict)}
+    note(prompt_hash=sha256([questions, order] if order else questions)[:16])
     return {"state": state, "model": model, "questions": questions}
 
 

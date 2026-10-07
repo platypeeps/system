@@ -294,8 +294,11 @@ ledger stores it once `sd_db` has the column; an older one drops it.
 Four more ride the same way: `run_id` from `JEV_RUN`, which a caller
 exports once per run so its calls group together; `threshold`, the
 `--gate` or `--unsure-below` it applied; `prompt_hash`, 16 hex of the
-question definition without the state, so a reworded question starts a new
-series; and `load_avg`, the one-minute load when the row was written.
+question definition without the state, so a reworded question or reordered
+criteria start a new series; and `load_avg`, the one-minute load when the
+row was written. `threshold` and `prompt_hash` describe a question, so only
+the Jev row and the comparison arms' rows carry them; a baseline row joins
+its judgment through `pair`, and a gate or `jev record` row asked nothing.
 
 **The same row can go to a trace collector.** With `JEV_TRACES_URL` set,
 `jev_trace.py` posts it as one OTLP/HTTP JSON span, service `jev`, after the
