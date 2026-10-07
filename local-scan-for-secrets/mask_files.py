@@ -204,17 +204,17 @@ def lines(name: str) -> list[str]:
     return [line for line in os.environ.get(name, "").splitlines() if line]
 
 
-def hit_path(line: str) -> str | None:
-    """The file a hit line names: the line itself (`rg -l`), or its shortest
-    `path:` prefix that is a file (`rg -n -o`), so a colon in a name holds."""
+LINE_NUMBER = re.compile(r":(?=[0-9]+:)")
+
+
+def hit_paths(line: str) -> list[str]:
+    """Every file a hit line may name: the line itself (`rg -l`), else each
+    prefix that is a file and is followed by `:<line>:` (`rg -n -o` and
+    `grep -n`). A name that holds `:<digits>:` makes the split ambiguous,
+    so every reading is returned and the caller settles only when all agree."""
     if os.path.isfile(line):
-        return line
-    at = line.find(":")
-    while at > 0:
-        if os.path.isfile(line[:at]):
-            return line[:at]
-        at = line.find(":", at + 1)
-    return None
+        return [line]
+    return [line[:m.start()] for m in LINE_NUMBER.finditer(line) if os.path.isfile(line[:m.start()])]
 
 
 def mask_would_rewrite(path: str) -> bool:
@@ -240,8 +240,9 @@ def settling(settle_s: float) -> int:
     for line in sys.stdin.read().splitlines():
         if not line:
             continue
-        path = hit_path(line)
-        recent = path is not None and mask_would_rewrite(path) and now - os.stat(path).st_mtime < settle_s
+        paths = hit_paths(line)
+        recent = bool(paths) and all(
+            mask_would_rewrite(path) and now - os.stat(path).st_mtime < settle_s for path in paths)
         print(("S|" if recent else "D|") + line)
     return 0
 

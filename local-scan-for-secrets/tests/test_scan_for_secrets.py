@@ -688,6 +688,24 @@ class Settling(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("YOURS: $EXAMPLE_API_KEY found in: .codex/sessions/rollout.jsonl", result.stdout)
 
+    def test_a_recent_file_named_like_a_prefix_settles_nothing_else(self):
+        # rg prints `path:line:match`; a recent `log` must not lend its
+        # timestamp to a settled `log:old.jsonl` beside it (review, sd:1254).
+        self.plant(".codex/sessions/log", 60)
+        self.plant(".codex/sessions/log:old.jsonl", self.SETTLED)
+        result = self.critical()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    def test_an_ambiguous_name_settles_only_when_every_reading_does(self):
+        # `x:1:y:1:<match>` reads as file `x` or file `x:1:y`. A recent `x`
+        # with no hit of its own must not settle the hit in a settled `x:1:y`.
+        sessions = self.home / ".codex" / "sessions"
+        sessions.mkdir(parents=True)
+        (sessions / "x").write_text("no credential here\n", encoding="utf-8")
+        self.plant(".codex/sessions/x:1:y", self.SETTLED)
+        result = self.critical()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
     def test_a_window_of_zero_settles_nothing(self):
         self.plant(".codex/sessions/2026/10/07/rollout.jsonl", 60)
         self.env["S4S_MASK_SETTLE_MIN"] = "0"
