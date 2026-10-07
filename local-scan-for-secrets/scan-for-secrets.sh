@@ -411,9 +411,11 @@ MASK_EXCLUDE_DIRS=".git node_modules .venv venv __pycache__ .npm .cargo target d
 MASK_FILES=".viminfo .bash_history .zsh_history"
 MASK_EXCLUDE_PATHS=".gemini/extensions .codex/plugins .codex/.tmp .codex/tool-venvs .codex/vendor_imports .codex/process_manager .codex/.codex-global-state.json .codex/.codex-global-state.json.bak"
 if [ "$MODE" = mask ] || [ "$MODE" = prune ]; then
+  # No exports is not a failure: the known credential patterns need none,
+  # and the weekly job runs mask before its scan, so an exit here failed the
+  # job on every run of a machine with no key-like exports (sd:1254).
   if [ "$MODE" = mask ] && [ -z "$S4S_PAIRS" ]; then
-    echo "no key-like exports found in ~/.config/shell/env.sh or ~/.bash_profile, nothing to mask" >&2
-    exit 1
+    echo "no key-like exports found in ~/.config/shell/env.sh or ~/.bash_profile; masking known patterns only" >&2
   fi
   MASK_TARGETS=""
   # if, not `[ -f "$f" ] && MASK_TARGETS=...`: the AND-list is the last

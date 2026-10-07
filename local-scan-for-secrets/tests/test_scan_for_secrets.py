@@ -714,6 +714,19 @@ class Settling(unittest.TestCase):
         result = self.critical()
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
+    def test_mask_without_exports_still_masks_known_patterns(self):
+        # No env.sh and no .bash_profile: the weekly job's mask pass must not
+        # fail, and a pattern hit is still masked (review, sd:1254).
+        self.plant(".codex/sessions/rollout.jsonl", self.SETTLED)
+        dry = subprocess.run(["sh", str(SCRIPT), "mask", "--no-prune"], cwd=self.root, env=self.env,
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(dry.returncode, 2, dry.stdout + dry.stderr)
+        self.assertIn("would mask 0 your-key value(s) + 1 pattern match(es) in 1 file(s)", dry.stdout)
+        applied = subprocess.run(["sh", str(SCRIPT), "mask", "--apply", "--no-prune"], cwd=self.root,
+                                 env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertNotIn(self.TOKEN, (self.home / ".codex/sessions/rollout.jsonl").read_text())
+
     def test_a_window_of_zero_settles_nothing(self):
         self.plant(".codex/sessions/2026/10/07/rollout.jsonl", 60)
         self.env["S4S_MASK_SETTLE_MIN"] = "0"
