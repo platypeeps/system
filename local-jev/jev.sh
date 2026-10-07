@@ -118,6 +118,14 @@ case "$1" in
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
     ;;
   ask|noul|choice|score|status|enabled|on|off|shadow|record)
+    # A caller that names itself nowhere is named after the program that ran
+    # this one (`jev.py` `parent_args`). Looked up only then: one `ps` per call.
+    if [ -z "${JEV_CALLER:-}" ]; then
+      case " $* " in
+        *" --caller "*|*" --caller="*) ;;
+        *) JEV_PARENT_ARGS="$(ps -o args= -p "$PPID" 2>/dev/null)"; export JEV_PARENT_ARGS ;;
+      esac
+    fi
     exec "${PYTHON:-python3}" "$DIR/jev.py" "$@"
     ;;
   -h|--help|help)

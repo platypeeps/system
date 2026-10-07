@@ -279,12 +279,18 @@ A locked ledger is waited on for 250 ms and then the row is dropped; `JEV_METER_
 The row needs `sd_db`, so `jev.sh` runs the interpreter `sd-db.sh` would:
 `PYTHON`, `SD_DB_PYTHON`, then the command pack's venv, then `python3`.
 
-Name yourself, or the row says `unknown`:
+Name yourself, or the row is named after the program that ran `jev`
+(`jev.sh` reads its command line with `ps`), and `unknown` only when that
+fails too:
 
     jev noul 'is it?' --caller local-adversarial-gate --stage JEV_ADVERSARIAL_GATE
 
 `JEV_CALLER` and `JEV_STAGE` do the same, for a caller that is a shell and
 reaches this script through a wrapper that already exports its own variables.
+
+Every row also carries `location`: the repository the caller's working
+directory sits in, else that directory, with the home directory as `~`. The
+ledger stores it once `sd_db` has the column; an older one drops it.
 
 **The same row can go to a trace collector.** With `JEV_TRACES_URL` set,
 `jev_trace.py` posts it as one OTLP/HTTP JSON span, service `jev`, after the
@@ -582,7 +588,7 @@ A record carries:
 
 - `schema`, `id` and `time`, and `call`: one id shared by the Jev record,
   the baseline's and each arm's, with or without a pair;
-- `caller`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
+- `caller`, `location`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
   `shadow`, and the ledger's fields: answer, confidence, distribution,
   outcome, cause, tokens, duration, `changed`;
 - `request`: the payload as sent, after redaction. A local-only call sends

@@ -1134,3 +1134,65 @@ class TheMeterWaitsOnlyBriefly(MeteringCase):
                                               JEV_METER="0"))
         finally:
             holder.execute("ROLLBACK")
+
+
+class WhereTheCallCameFrom(MeteringCase):
+    """Every row says where the call came from and which program made it,
+    named or not."""
+
+    def written(self, argv, cwd, **env):
+        events = []
+        real = jev_meter.write
+
+        def capture(event, env=None):
+            events.append(dict(event))
+            return real(event, env)
+
+        here = os.getcwd()
+        os.chdir(cwd)
+        try:
+            with unittest.mock.patch.object(jev_meter, "write", capture):
+                self.run_main(argv, **env)
+        finally:
+            os.chdir(here)
+        return events
+
+    def test_a_row_names_the_repository_it_was_called_from(self):
+        repo = Path(tempfile.mkdtemp())
+        (repo / ".git").mkdir()
+        (repo / "deep" / "er").mkdir(parents=True)
+        events = self.written(["noul", "is it?"], repo / "deep" / "er")
+        self.assertEqual(events[-1]["location"], str(repo.resolve()))
+
+    def test_a_row_outside_a_repository_names_its_directory(self):
+        bare = Path(tempfile.mkdtemp()).resolve()
+        events = self.written(["noul", "is it?"], bare)
+        self.assertEqual(events[-1]["location"], str(bare))
+
+    def test_home_is_written_as_a_tilde(self):
+        home = Path(tempfile.mkdtemp()).resolve()
+        (home / "repos" / "thing" / ".git").mkdir(parents=True)
+        with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+            events = self.written(["noul", "is it?"], home / "repos" / "thing")
+        self.assertEqual(events[-1]["location"], "~/repos/thing")
+
+    def test_an_unnamed_caller_is_named_after_its_parent_program(self):
+        with unittest.mock.patch.object(
+                jev, "parent_args", lambda: "/usr/bin/python3 -u /opt/x/trace-classifier.py --all"):
+            events = self.written(["noul", "is it?"], Path.cwd())
+        self.assertEqual(events[-1]["caller"], "trace-classifier.py")
+
+    def test_an_interactive_shell_is_named_as_the_shell(self):
+        with unittest.mock.patch.object(jev, "parent_args", lambda: "-zsh"):
+            events = self.written(["noul", "is it?"], Path.cwd())
+        self.assertEqual(events[-1]["caller"], "zsh")
+
+    def test_a_named_caller_is_kept(self):
+        with unittest.mock.patch.object(jev, "parent_args", lambda: "sh /x/other.sh"):
+            events = self.written(["noul", "is it?", "--caller", "sd-review"], Path.cwd())
+        self.assertEqual(events[-1]["caller"], "sd-review")
+
+    def test_a_parent_that_cannot_be_read_is_unknown(self):
+        with unittest.mock.patch.object(jev, "parent_args", lambda: None):
+            events = self.written(["noul", "is it?"], Path.cwd())
+        self.assertEqual(events[-1]["caller"], jev.UNNAMED)

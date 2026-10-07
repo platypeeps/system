@@ -708,6 +708,7 @@ def write_event(event: dict, env, corpus=None) -> str:
     and a span attribute, and neither may hold content. Given, it is stored
     with the event and the ledger row's id.
     """
+    event = dict(event, location=event.get("location") or location())
     if jev_trace is not None:
         try:
             jev_trace.export(event, env)
@@ -931,9 +932,59 @@ def whose(args, env, field: str) -> str:
     Each is held to the identifier grammar on the way through: a row filed
     under `unknown` is a row that can still be counted, and a refused row is
     not.
+
+    A caller that names itself nowhere is named after the program that ran
+    `jev`, so a row always says who made the call.
     """
     variable = {"caller": "JEV_CALLER", "stage": "JEV_STAGE"}[field]
-    return named(getattr(args, field, None)) or named(env.get(variable)) or UNNAMED
+    found = named(getattr(args, field, None)) or named(env.get(variable))
+    if found is None and field == "caller":
+        found = named(program_of(parent_args()))
+    return found or UNNAMED
+
+
+#: Words that run a program rather than being one, skipped when naming it.
+RUNNERS = {"env", "sh", "bash", "zsh", "dash", "uv", "node", "nohup", "exec"}
+
+
+def parent_args() -> str | None:
+    """The command line of the process that ran `jev`, which `jev.sh` looks up
+    before its `exec` when the call names no caller, or nothing."""
+    return os.environ.get("JEV_PARENT_ARGS", "").strip() or None
+
+
+def program_of(args: str | None) -> str | None:
+    """The script a command line runs, else its interpreter: `python3 -u
+    /x/run.py --all` is `run.py`, a login `-zsh` is `zsh`."""
+    if not args:
+        return None
+    first, *rest = args.split()
+    for word in (first.lstrip("-"), *rest):
+        name = os.path.basename(word)
+        if word.startswith("-") or "=" in word or name in RUNNERS or name.startswith("python"):
+            continue
+        return name
+    return os.path.basename(first.lstrip("-"))
+
+
+def location() -> str | None:
+    """Where the call came from: the repository the working directory sits
+    in, else the directory itself, with the home directory as `~`.
+
+    Walks up to a `.git` rather than asking `git`, so a call costs no process.
+    """
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        return None
+    found = next((p for p in (here, *here.parents) if (p / ".git").exists()), here)
+    text = str(found)
+    home = os.environ.get("HOME", "")
+    if home and (text == home or text.startswith(home.rstrip("/") + "/")):
+        text = "~" + text[len(home.rstrip("/")):]
+    if len(text) > 255 or any(ord(c) < 32 for c in text):
+        return None
+    return text
 
 
 #: The most values the ledger's `probabilities` takes (`sd_db.judgment.MAX_OPTIONS`).
@@ -1585,6 +1636,7 @@ def start_arms(payload: dict) -> str:
         job = {key: _EVENT.get(key) for key in
                ("caller", "stage", "pair", "question_id", "primitive", "questions")}
         job["call"] = _EVENT.get("_call")
+        job["location"] = location()
         job["payload"] = payload
         log = (env.get("JEV_COMPARE_LOG") or "").strip()
         with tempfile.TemporaryFile("w+", encoding="utf-8", prefix="jev-compare-") as fh:

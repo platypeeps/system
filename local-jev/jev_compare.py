@@ -699,6 +699,7 @@ def run_arm(name: str, job: dict, env, work) -> None:
     base = {
         "caller": job["caller"], "stage": job["stage"], "arm": name,
         "pair": job["pair"], "question_id": job.get("question_id"),
+        "location": job.get("location"),
         "primitive": job["primitive"], "questions": job.get("questions"),
         "changed": "no",
     }
