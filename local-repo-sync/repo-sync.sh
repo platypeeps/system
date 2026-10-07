@@ -948,6 +948,82 @@ hygiene() {
   fi
 }
 
+# --- Jev: shadow ordering of the hygiene report (sd:2094) -------------------
+# local-jev asks, per listed line, whether its work is live, abandoned or
+# superseded: the order a reader would want (superseded first, live last).
+# It runs in shadow only. `--shadow` records Jev's answers beside the
+# report's own order, and the report is mailed unchanged, word for word and
+# in its order, whatever Jev says, fails or costs. Unset means on; the
+# JEV_REPO_SYNC_HYGIENE switch, `jev off` or a spent budget skips it.
+#
+# Every call leaves the machine, so the state is built from fixed words and
+# numbers only: the line's class, its counts, and its tip's age in days. No
+# repository, branch, sha, path or lock reason is sent.
+JEV="${REPO_SYNC_JEV:-$DIR/../local-jev/jev.sh}"
+hyg_jev_shadow() {
+  [ -f "$JEV" ] || return 0
+  grep -qE '^  (GONE|LOCAL|DONE|BEHIND|KEEP) ' "$1" || return 0
+  sh "$JEV" enabled JEV_REPO_SYNC_HYGIENE --record --caller local-repo-sync \
+    >/dev/null 2>&1 || return 0
+  # One record per listed line: class, count, why, sha, checkout. Only the
+  # first three are sent; the sha and checkout date the tip here.
+  awk -v us="$US" '
+    /^=== / { d = $0; sub(/^=== [^ ]* \(/, "", d); sub(/\)$/, "", d); next }
+    /^  (GONE|LOCAL|DONE|KEEP) +branch / {
+      n = ""; why = ""
+      if ($1 == "LOCAL") { n = $5; sub(/^\(/, "", n) }
+      if ($1 == "KEEP") why = "on the default branch, kept: worktree dirty, locked or missing"
+      if ($1 == "GONE") why = "upstream branch deleted; content not on the default branch"
+      if ($1 == "DONE") why = "named for a work item marked done; content not on the default branch"
+      print $1 us n us why us $4 us d; next
+    }
+    /^  KEEP +worktree / { print "KEEP" us "" us "worktree directory gone; lock names no process" us "" us ""; next }
+    /^  BEHIND / {
+      why = "not pulled"
+      if ($0 ~ /\(local changes\)$/) why = "local changes"
+      else if ($0 ~ /local commit\(s\)\)$/) why = "local commits"
+      print "BEHIND" us $4 us why us "" us ""
+    }
+  ' "$1" > "$TMPD/jev.listed"
+  h_now=$(date +%s)
+  h_i=0
+  : > "$TMPD/jev.entries"
+  while IFS=$US read -r j_kind j_n j_why j_sha j_dir; do
+    h_i=$((h_i + 1))
+    case "$j_n" in *[!0-9]*) j_n="" ;; esac
+    case "$j_kind" in
+      LOCAL)  h_text="branch with ${j_n:-some} commit(s) on no remote" ;;
+      BEHIND) h_text="checkout ${j_n:-some} commit(s) behind its upstream; $j_why" ;;
+      KEEP)   case "$j_sha" in "") h_text="$j_why" ;; *) h_text="branch whose content is $j_why" ;; esac ;;
+      *)      h_text="branch: $j_why" ;;
+    esac
+    if [ -n "$j_sha" ] && h_at=$(git -C "$j_dir" log -1 --format=%ct "$j_sha" 2>/dev/null) \
+       && [ -n "$h_at" ]; then
+      h_text="$h_text; last commit $(( (h_now - h_at) / 86400 )) day(s) ago"
+    fi
+    printf 'h%s%s%s\n' "$h_i" "$US" "$h_text" >> "$TMPD/jev.entries"
+  done < "$TMPD/jev.listed"
+  # Fixed words, digits and `;:,()` only, so nothing needs escaping.
+  awk -F "$US" -v sfile="$TMPD/jev.state" -v qfile="$TMPD/jev.questions" '
+    BEGIN { s = "{\"entries\":{"; q = "{" }
+    {
+      if (NR > 1) { s = s ","; q = q "," }
+      s = s "\"" $1 "\":\"" $2 "\""
+      q = q "\"" $1 "\":{\"type\":\"choice\",\"instructions\":\"State entries." $1 \
+          " is one leftover from a nightly sweep of git checkouts on a developer" \
+          " machine. Is the work it holds still live, abandoned, or superseded by" \
+          " work that already landed? Judge entries." $1 " only.\",\"criteria\":{" \
+          "\"live\":\"someone is still working on it\"," \
+          "\"abandoned\":\"nobody will finish it\"," \
+          "\"superseded\":\"its work landed another way or was replaced\"}}"
+    }
+    END { print s "}}" > sfile; print q "}" > qfile }
+  ' "$TMPD/jev.entries"
+  sh "$JEV" ask --questions "$TMPD/jev.questions" --state "$TMPD/jev.state" \
+    --state-format json --caller local-repo-sync --stage JEV_REPO_SYNC_HYGIENE \
+    --shadow '{}' >/dev/null 2>&1 || true
+}
+
 case "$1" in
   sync)
     # The `while read` loop runs in a subshell, so failures are collected in a
@@ -1051,6 +1127,8 @@ case "$1" in
         EMAIL_FAILED=1
       fi
     fi
+    # After the mail, so Jev never delays or changes it.
+    hyg_jev_shadow "$HYG_OUT" || true
 
     if [ "$EMAIL_FAILED" -ne 0 ]; then
       echo "email FAILED — exiting 1 so the cron failure push fires" >&2
@@ -1166,6 +1244,15 @@ environment:
   REPO_SYNC_SD_DB     the sd workflow database hygiene reads, read-only,
                       to list branches named for a done item (default:
                       ~/.local/share/sd/sd.db; absent means none listed)
+  JEV_REPO_SYNC_HYGIENE
+                      0, off, false, no or disabled switches off the Jev
+                      shadow ordering of nightly's hygiene report; unset
+                      means on. local-jev asks whether each listed line is
+                      live, abandoned or superseded and records the answer;
+                      the report is mailed unchanged. Jev must also be on
+                      and keyed (`jev enabled`)
+  REPO_SYNC_JEV       local-jev's entrypoint (default: the local-jev
+                      folder of this checkout)
 HELPEOF
     exit 0
     ;;
