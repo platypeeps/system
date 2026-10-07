@@ -355,8 +355,10 @@ def upsert_item(
     if found is None:
         # An idea promoted to a writing piece took the piece's identity and
         # kept its own in `promoted_from`; the piece owns that row now (sd:1994).
+        # Only a piece row counts: an imported note can carry any frontmatter.
         promoted = connection.execute(
-            "SELECT id FROM item WHERE CASE WHEN json_valid(fields) THEN "
+            "SELECT id FROM item WHERE source = 'writing-piece' AND piece IS NOT NULL "
+            "AND CASE WHEN json_valid(fields) THEN "
             "json_extract(fields, '$.promoted_from.source') = ? "
             "AND json_extract(fields, '$.promoted_from.external_id') = ? END",
             (source, external_id),

@@ -229,7 +229,7 @@ def verify(
     # owns it now and keeps the identity in `promoted_from` (sd:1994).
     promoted = {row[0] for row in connection.execute(
         "SELECT json_extract(fields, '$.promoted_from.external_id') FROM item WHERE "
-        "CASE WHEN json_valid(fields) THEN json_extract(fields, '$.promoted_from.source') = ? END",
+        "source = 'writing-piece' AND piece IS NOT NULL AND CASE WHEN json_valid(fields) THEN json_extract(fields, '$.promoted_from.source') = ? END",
         (source.name,))}
     differences: list[Difference] = []
     for identity in sorted(set(frozen.records) - set(held) - promoted):

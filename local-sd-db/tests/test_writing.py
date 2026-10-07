@@ -522,6 +522,20 @@ class Promote(WritingCase):
         promote(self.db, self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0], who="operator")
         self.assertEqual(verify_source(self.db, reader, reader.freeze()), [])
 
+    def test_a_note_carrying_promoted_from_suppresses_nothing(self):
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\n---\nThe angle.\n")
+        identity = "blog-idea:System/Databases/Blog Ideas/vault-idea.md"
+        create_item(self.db, kind="idea", title="Decoy", source="vault", external_id="decoy",
+                    fields={"promoted_from": {"source": "vault", "external_id": identity}})
+        reader = VaultReader.at(vault)
+        missing = [d.identity for d in verify_source(self.db, reader, reader.freeze()) if d.what == "missing from the rows"]
+        self.assertEqual(missing, [identity])
+        self.assertEqual(reader.land(self.db, reader.freeze()).inserted, 1)
+
     def test_an_open_outer_transaction_is_refused(self):
         self.db.execute("BEGIN")
         try:
