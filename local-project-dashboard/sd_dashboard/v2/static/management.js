@@ -223,7 +223,7 @@ function reviewCell(rv, key) {
   return v == null ? html`<span class="no">unset</span>` : String(v);
 }
 function checksCell(pr) {
-  if (!pr || pr.status === 'unknown' || !Array.isArray(pr.required)) return unk(pr?.reason || why('repos') || 'no protection reading');
+  if (!pr || pr.status === 'unknown' || !Array.isArray(pr.required)) return unk(pr?.required_error || pr?.reason || why('repos') || 'no protection reading');
   if (!pr.required.length) return html`<span class="no">none</span>`;
   return html`<span class="checks">${pr.required.map(c => html`<code>${c}</code>`)}</span>${pr.strict ? html`<span class="sr"> (branch must be up to date)</span>` : ''}`;
 }

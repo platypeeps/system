@@ -350,6 +350,23 @@ class TheDocument(ScreenCase):
         self.assertEqual(row["runtimes"]["node"], {"error": "package.json nests too deeply to read"})
         self.assertEqual(row["review"]["error"], "nests too deeply to read")
 
+    def test_a_setting_of_the_wrong_type_is_that_repos_error_not_a_value(self):
+        """sd:1629 round 2: one checkout's `{"toString": null}` reached the page, and String() of it stopped every view."""
+        checkout = Path(self.ids["checkout"])
+        (checkout / ".github" / "sd-review.json").write_text(
+            '{"severity_floor": 7, "copilot_review": {"automatic_deep": {"toString": null}}}')
+        body = {"gaps": [], "detail": {"required_contexts": ["ci", {"toString": None}], "strict": True}}
+        self.connection.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
+                                "VALUES (?, '2026-10-04T01:00:00Z', 'protected', 'main', ?)", (str(checkout), json.dumps(body)))
+        self.connection.commit()
+        doc = self.document()
+        self.assertEqual(doc["sources"]["repos"], "")
+        row = {row["path"]: row for row in doc["repos"]}[str(checkout)]
+        review, guarded = row["review"], row["protection"]
+        self.assertEqual((review["severity_floor"], review["automatic_deep"]), (None, None))
+        self.assertEqual(review["error"], "severity_floor is not a string; copilot_review.automatic_deep is not true or false")
+        self.assertEqual((guarded["required"], guarded["required_error"]), (None, "a required check is not a name"))
+
     def test_the_machine_merge_grant_is_what_sd_config_answers(self):
         """sd:1629: sd.assistant_merge is machine-wide, so the document carries it once; unset is a reading, not a failure."""
         self.assertEqual(self.document()["grant"], {"assistant_merge": "controlled"})

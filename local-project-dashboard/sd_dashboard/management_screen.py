@@ -101,19 +101,27 @@ def _review(path: str) -> dict | None:
     body = body if isinstance(body, dict) else {}
     copilot = body.get("copilot_review") if isinstance(body.get("copilot_review"), dict) else {}
     schema = body.get("$schema") if isinstance(body.get("$schema"), str) else None
-    return {"file": text, "severity_floor": body.get("severity_floor"), "automatic_deep": copilot.get("automatic_deep"),
-            "schema": schema}
+    floor, deep = body.get("severity_floor"), copilot.get("automatic_deep")
+    # Only the types the page renders pass; any other value is this repo's error, never a value (sd:1629).
+    wrong = [words for value, kind, words in ((floor, str, "severity_floor is not a string"),
+                                              (deep, bool, "copilot_review.automatic_deep is not true or false"))
+             if value is not None and not isinstance(value, kind)]
+    out = {"file": text, "severity_floor": floor if isinstance(floor, str) else None,
+           "automatic_deep": deep if isinstance(deep, bool) else None, "schema": schema}
+    return out | {"error": "; ".join(wrong)} if wrong else out
 
 
 def _protection(row: dict) -> dict:
     detail = row.get("detail") or {}
     required = detail.get("required_contexts")
+    names = isinstance(required, list) and all(isinstance(name, str) for name in required)
     return {"status": row["status"], "observed_at": row["observed_at"], "default_branch": row["default_branch"],
             "reason": row["reason"], "gaps": [{"id": gap.get("id"), "gap": gap.get("gap")} for gap in row["gaps"]],
             # An older installed `sd_db` returns no `borrowed_from` (sd:1607): its row is the checkout's own.
             "borrowed_from": row.get("borrowed_from"),
             # None when no observation names them, which is not "none required" (sd:1629).
-            "required": [str(name) for name in required] if isinstance(required, list) else None,
+            "required": required if names else None,
+            "required_error": "a required check is not a name" if isinstance(required, list) and not names else None,
             "strict": detail.get("strict") is True}
 
 
