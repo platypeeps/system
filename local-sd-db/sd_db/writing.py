@@ -619,7 +619,8 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
             if orphan is None:
                 folder.mkdir(parents=True)
                 created = folder / "index.md"
-                created.write_text(written, encoding="utf-8")
+                # Whole or absent: a write that fails leaves no partial index.md.
+                _replace(created, written.encode("utf-8"))
             return piece_state(connection, item)
     except BaseException as error:
         if created is not None and _file_hash(created) not in (None, _hash(written.encode("utf-8"))):

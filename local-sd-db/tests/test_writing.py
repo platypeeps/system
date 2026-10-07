@@ -582,6 +582,18 @@ class Promote(WritingCase):
         self.assertIn("changed after the scaffold", caught.exception.__notes__[0])
         self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
 
+    def test_a_write_that_fails_partway_leaves_no_index_and_a_retry_succeeds(self):
+        def partial(path, data, *args, **kwargs):
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write(data[:10])
+            raise OSError("disk full")
+        with patch("pathlib.Path.write_text", partial), \
+                patch("sd_db.writing.os.fsync", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            promote(self.db, self.idea, who="operator")
+        self.assertFalse(self.file().parent.exists())
+        self.assertEqual(promote(self.db, self.idea, who="operator")["item"]["piece"], f"{self.year}/an-idea-uber-cafe")
+        self.assertIn("The angle.", self.file().read_text())
+
     def test_the_target_is_the_one_repository_that_registers_pieces(self):
         other = self.root / "other"
         (other / "templates").mkdir(parents=True)
