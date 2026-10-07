@@ -582,6 +582,8 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
             if owner == "row":
                 text = _rewrite(text, {}, remove=("status", "published"))
             folder = disk / "content" / piece
+            if not folder.resolve().is_relative_to(disk):
+                raise WorkflowError(f"content/{piece} escapes the repository")
             folder.mkdir(parents=True)
             created = folder / "index.md"
             created.write_text(text, encoding="utf-8")

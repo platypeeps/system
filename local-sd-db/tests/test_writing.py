@@ -441,6 +441,17 @@ class Promote(WritingCase):
             promote(self.db, self.idea, who="operator")
         self.assertFalse(self.file().parent.exists())
 
+    def test_a_content_folder_linked_out_of_the_repository_is_refused(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.repo / "content" / self.year).mkdir(exist_ok=True)
+        (self.repo / "content" / self.year).rename(outside / self.year)
+        (self.repo / "content" / self.year).symlink_to(outside / self.year)
+        with self.assertRaisesRegex(WorkflowError, "escapes"):
+            promote(self.db, self.idea, who="operator")
+        self.assertFalse((outside / self.year / "an-idea-uber-cafe").exists())
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+
     def test_a_failure_after_the_scaffold_removes_it_and_keeps_the_row(self):
         with patch("sd_db.writing.piece_state", side_effect=RuntimeError("late")), self.assertRaises(RuntimeError):
             promote(self.db, self.idea, who="operator")
