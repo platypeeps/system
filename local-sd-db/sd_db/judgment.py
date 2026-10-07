@@ -331,6 +331,8 @@ def _location(value: object) -> str | None:
         value = paths.key(value)
     except paths.PathRefused:        # no usable $HOME: keep it as given
         return value
+    except (OSError, RuntimeError):  # resolving failed: the row, not the path
+        return None
     return value if len(value) <= MAX_LOCATION else None
 
 

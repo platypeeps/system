@@ -158,6 +158,14 @@ class TheLocation(JudgmentCase):
                 self.assertIsNone(row["location"])
                 self.assertEqual(row["caller"], "local-mail-intake")
 
+    def test_a_path_that_cannot_be_resolved_is_null_and_the_row_is_still_written(self):
+        for failure in (PermissionError("denied"), RuntimeError("symlink loop")):
+            with self.subTest(failure=failure), \
+                    mock.patch("sd_db.judgment.paths.key", side_effect=failure):
+                row = self.row(self.write(location="/opt/unreadable"))
+                self.assertIsNotNone(row)
+                self.assertIsNone(row["location"])
+
 class ThePrice(JudgmentCase):
     """A row's cost from the price `providers.yaml` registers for its
     provider (sd:2358). The price is the operator's to enter; with none
