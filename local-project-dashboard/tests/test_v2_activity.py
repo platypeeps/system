@@ -399,6 +399,16 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", "() =
         self.assertEqual(out["posts"], [["/api/jobs/nightly-sync/retry", {"revision": failed["revision"]}, 64]])
         self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]])
 
+    def test_show_log_opens_the_jobs_row_on_management_schedules_and_keeps_the_line_to_copy(self):
+        # sd:2392, ruling #8769: the row on Schedules, filtered to the job so a fleet of more than 25 jobs still shows it.
+        out = self.run_page("""window.shell.pages.Management = '/management';
+R.cli = cmd('jobs.log').cli(C.get('job:nightly-sync'));
+shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = location.href;""")
+        self.assertEqual(out["R"].get("href"), "/management?view=schedules&q=nightly-sync&row=cron%3Anightly-sync")
+        self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs nightly-sync")
+        self.assertEqual(out["toasts"], [["nightly-sync opens in Management > Schedules", False]])
+        self.assertEqual(out["posts"], [])
+
     def test_show_output_reads_the_execution_record_into_details(self):
         note = self.ids["bad_run"]
         answer = "(path) => [200, { state: 'finished', output: 'removed 3 worktrees', output_expired: null }]"

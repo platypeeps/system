@@ -178,6 +178,9 @@ nothing; the orphan sweep that `sd-db.sh usage` runs is the verb's alone. Provid
 complete proposal passes the author/reviewer guard. Resources reuse bounded
 read-only collectors; research configuration is parsed as data, never executed.
 The obsolete Obsidian Skill Proposals action is replaced by the Skills workflow.
+Contributions' Re-run collector runs `sd_db.sync_shadow` for each tracker in a server thread (sd:2207, `shadow_run`).
+A run has 120 seconds, and a second start is refused while one is live.
+The run calls `gh` with the LaunchAgent's environment; gh's keychain login under launchd is not yet verified.
 
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications

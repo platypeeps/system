@@ -2,8 +2,8 @@
 // reference is marked "build:". The rows are /api/contributions/page (contribution_screen.document): the projection v1
 // /classic/contributions renders, never sample data. The dashboard reads nothing from GitHub, so the reference's "GitHub now"
 // chip, its "settled on GitHub" lane and its settled-per-day chart have no reading here and say so. Acknowledge and Make task run
-// through dashboard routes and ask first: neither has a verb that reverses it. Draft nudge, Open on GitHub and Re-run collector are
-// copy only. The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
+// through dashboard routes and ask first: neither has a verb that reverses it. Draft nudge and Open on GitHub are copy only;
+// Re-run collector asks the server to run sd shadow sync (sd:2207). The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
 const { html, put, plural } = window.markup;
 // Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
 window.PAGE_KEYS = [['/', 'Filter contributions']];
@@ -103,11 +103,21 @@ addEventListener('DOMContentLoaded', () => {
       { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', key: 'o', risk: 'safe', executes: false,
         when: o => github(o.url) || 'not filed on GitHub', cli: o => `gh ${kindOf(o)} view --web ${o.url}`,
         run: () => 'Copy the line, or use the link in Details: the dashboard opens nothing itself' },
-      // Copy only until the dashboard has a route that runs sd shadow sync (sd:2207, as the reference has it).
-      { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true, executes: false,
-        cli: () => 'sd shadow sync', run: () => 'Copy it into a terminal: the dashboard has no route that runs sd shadow sync yet (sd:2207)' },
+      // build (sd:2207): the server runs sd shadow sync in a thread, bounded to 120 s, one run at a time; a second start is
+      // refused while one is live. The page asks how it went every 5 s and reads the page again once it ends.
+      { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true,
+        cli: () => 'sd shadow sync --max-seconds 120',
+        run: () => window.shell.post('/api/shadow/sync', {}).then(() => { awaitSync(); return 'Shadow sync started · the page reads again when it ends'; }) },
     );
   }
+  // Success is quiet: the reread shows it. A failed tracker or a run that broke stays as a toast with its first reason.
+  const SYNC_POLL = 5000;
+  const awaitSync = () => setTimeout(() => window.shell.getJSON('/api/shadow/state').then(s => {
+    if (s.running) return awaitSync();
+    reread();
+    const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
+    if (bad) window.shell.toast(`Shadow sync ended with a problem: ${bad}`);
+  }, e => window.shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
 
   // ---------- Focus (sd:2426) ----------
   // Replacing a box's markup drops the focused control, and focus falls to the body. Focus its replacement instead: the
