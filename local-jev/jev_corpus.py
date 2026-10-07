@@ -95,7 +95,10 @@ def sweep(folder: str, today, env) -> None:
         if rest != "jsonl" or day >= oldest:
             continue
         try:
-            datetime.strptime(day, "%Y-%m-%d")
+            # `strptime` also takes `2025-1-2`; only the name `append` writes
+            # may go.
+            if datetime.strptime(day, "%Y-%m-%d").strftime("%Y-%m-%d") != day:
+                continue
             path = os.path.join(folder, name)
             if private(os.lstat(path), stat.S_ISREG):
                 os.unlink(path)

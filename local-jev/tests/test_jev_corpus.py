@@ -187,7 +187,8 @@ class TheModule(unittest.TestCase):
         self.folder.mkdir(mode=0o700)
         kept = self.day_file(self.folder, jev_corpus.KEEP_DAYS)
         gone = self.day_file(self.folder, jev_corpus.KEEP_DAYS + 1)
-        other = [self.folder / "notes.txt", self.folder / "not-a-day.jsonl"]
+        other = [self.folder / "notes.txt", self.folder / "not-a-day.jsonl",
+                 self.folder / "2020-1-2.jsonl"]
         for path in other:
             path.write_text("x")
         said = jev_corpus.append({"arm": "jev"}, {"JEV_CORPUS_DIR": str(self.folder)})
