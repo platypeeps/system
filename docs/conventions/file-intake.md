@@ -186,9 +186,9 @@ Why not only in consumers: every consumer then has to remember, and one that
 forgets mails sixteen identical lines. Why not in the log: it loses evidence
 and breaks per-row stamping.
 
-**The reference instance does not meet this yet.** `local-drive-intake`'s
-`peek` and `report` list each row. That is a gap in the instance, tracked as
-its own row, not a change this convention makes.
+`local-drive-intake` meets this since `sd:1427`: `collapse_repeats` in
+`source:local-drive-intake/drive_intake.py::collapse_repeats` runs before the
+40-row folder collapse, so repeats of one file never trip it.
 
 ## Verbs
 
@@ -269,6 +269,6 @@ verb maps 3 to 0 before it returns.
 
 | Instance | Source | Notes |
 |---|---|---|
-| `local-drive-intake` | two mounted Google Drive roots | the reference; `peek` and `report` do not collapse duplicates yet |
+| `local-drive-intake` | two mounted Google Drive roots | the reference |
 | `local-mail-intake` | a Gmail query over two aliases, through `workspace-mcp` | keys on thread; headers only, never bodies |
 | an export-directory importer | an export directory, built outside this repo | consumes the `data-export` route |

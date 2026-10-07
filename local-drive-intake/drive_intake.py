@@ -639,13 +639,30 @@ def stamp_arrivals(path: Path, through: str, stamped_at: str) -> int:
 COLLAPSE_AT = 40
 
 
+def collapse_repeats(rows: list[dict]) -> list[dict]:
+    """One row per file (root plus rel_path), carrying how many arrivals it had.
+
+    A Drive-hosted Doc syncs as a stub whose content never changes while every
+    sync touches its mtime, so one notice arrived sixteen times on 2026-09-19.
+    The log keeps every row, because `stamp` marks rows; this is presentation.
+    `new` wins over `modified`, as in the site morning digest; otherwise the
+    latest row speaks for the file. See docs/conventions/file-intake.md.
+    """
+    by_file: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        by_file.setdefault((row["root"], row["rel_path"]), []).append(row)
+    return [{**next((r for r in group if r["change"] == "new"), group[-1]), "arrivals": len(group)}
+            for group in by_file.values()]
+
+
 def group_for_report(rows: list[dict]) -> list[str]:
     """Lines for one route: files, or folders once there are too many."""
     if len(rows) <= COLLAPSE_AT:
         out = []
         for row in rows:
             origin = f"  <- {row['from_path']}" if row.get("from_path") else ""
-            out.append(f"    [{row['root']}] {row['rel_path']}  ({row['change']}){origin}")
+            count = f", {row['arrivals']} arrivals" if row.get("arrivals", 1) > 1 else ""
+            out.append(f"    [{row['root']}] {row['rel_path']}  ({row['change']}{count}){origin}")
         return out
     folders: dict[str, int] = {}
     for row in rows:
@@ -776,7 +793,9 @@ def cmd_peek(config_path: Path, state_dir: Path, out, environ: dict[str, str] | 
         return EXIT_NONE
     print(f"a fetch would record {len(rows)}: {summarise(rows)}", file=out)
     for route in ROUTES:
-        group = [r for r in rows if r["route"] == route]
+        # One walk diffs each file once, so this collapses nothing today. It
+        # keeps `peek` on the same one-line-per-file rule as `report`.
+        group = collapse_repeats([r for r in rows if r["route"] == route])
         if not group:
             continue
         if route == "noise":
@@ -812,7 +831,7 @@ def cmd_report(config_path: Path, state_dir: Path, out, show_all: bool = False) 
 
     shown = 0
     for route in ROUTES:
-        group = [r for r in rows if r.get("route") == route]
+        group = collapse_repeats([r for r in rows if r.get("route") == route])
         if not group:
             continue
         if route == "noise":

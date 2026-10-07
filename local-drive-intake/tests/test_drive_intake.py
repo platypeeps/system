@@ -503,6 +503,52 @@ class TestCollapse(Harness):
         self.assertNotIn("collapsed", text)
 
 
+class TestRepeatedArrivals(Harness):
+    """One file arriving many times is one line, with its count (sd:1427).
+
+    A Drive-hosted Doc syncs as a small stub whose mtime every sync touches.
+    On 2026-09-19 eighteen correspondence arrivals were two documents.
+    """
+
+    def log_repeats(self, rel_path: str, route: str, times: int) -> None:
+        di.append_arrivals(self.state / "arrivals.csv", [{
+            "detected_at": f"2026-09-19T{n:02d}:00:00+00:00", "root": "test",
+            "rel_path": rel_path, "route": route,
+            "change": "new" if n == 0 else "modified", "size": 179,
+            "mtime": "2026-09-19T00:00:00+00:00", "from_path": "", "reported_at": "",
+        } for n in range(times)])
+
+    def test_report_lists_a_repeated_file_once_with_its_count(self):
+        self.log_repeats("Notices/notice.gdoc", "correspondence", 16)
+        self.log_repeats("Meetings/minutes.gdoc", "correspondence", 2)
+        code, text = self.run_verb("report")
+        self.assertEqual(code, di.EXIT_FOUND)
+        self.assertEqual(text.count("notice.gdoc"), 1, text)
+        self.assertIn("correspondence (2)", text)
+        self.assertIn("Notices/notice.gdoc  (new, 16 arrivals)", text)
+
+    def test_a_single_arrival_carries_no_count(self):
+        self.log_repeats("Inbox/once.pdf", "document", 1)
+        _, text = self.run_verb("report")
+        self.assertIn("Inbox/once.pdf  (new)\n", text)
+
+    def test_repeats_do_not_trip_the_folder_collapse(self):
+        self.log_repeats("Notices/notice.gdoc", "correspondence", di.COLLAPSE_AT + 5)
+        _, text = self.run_verb("report")
+        self.assertNotIn("collapsed", text)
+        self.assertIn(f"(new, {di.COLLAPSE_AT + 5} arrivals)", text)
+
+    def test_noise_counts_files_not_arrivals(self):
+        self.log_repeats("photo.jpg", "noise", 5)
+        _, text = self.run_verb("report")
+        self.assertIn("noise: 1 files, not listed", text)
+
+    def test_the_log_keeps_every_row(self):
+        self.log_repeats("Notices/notice.gdoc", "correspondence", 3)
+        self.run_verb("report")
+        self.assertEqual(len(di.read_arrivals(self.state / "arrivals.csv")), 3)
+
+
 class TestAQuietDayIsNotAnError(Harness):
     """`report` and `stamp` with no arrivals log: 3 after a baseline, 1 before one.
 
