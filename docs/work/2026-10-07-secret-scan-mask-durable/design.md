@@ -38,7 +38,10 @@ Alternatives not chosen:
     sh "$ROOT/../local-scan-for-secrets/scan-for-secrets.sh" critical
 
 `--no-prune` leaves deletion to the nightly `prune`, which already owns it, and keeps the job from removing build directories.
-A mask failure does not stop the scan: the scan then finds the unmasked hits and exits 2, so the failure still pages.
+A mask failure does not stop the scan.
+(Changed in the build: pull request 1 made `mask --apply` exit 1 on a write that fails part way.
+That file's mtime is fresh, so the scan reads its hits as settling and exits 0.
+The job therefore keeps the mask's exit code: a scan finding, exit 2, wins; otherwise the mask's code is the job's.)
 
 ## 3. Hits the mask pass did not reach are transient
 

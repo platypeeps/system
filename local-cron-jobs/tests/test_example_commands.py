@@ -52,5 +52,45 @@ class PackRootFromEnvShTest(unittest.TestCase):
                 self.assertTrue(pathlib.Path(ran[0]).is_relative_to(pack), ran)
 
 
+# A scan-for-secrets.sh that exits with MASK_RC for `mask` and SCAN_RC for
+# `critical`, and records each call.
+FAKE_SCAN = """#!/bin/sh
+printf '%s\\n' "$1" >> "$SCAN_MARKER"
+case $1 in
+  mask) exit "${MASK_RC:-0}" ;;
+  critical) exit "${SCAN_RC:-0}" ;;
+esac
+exit 64
+"""
+
+
+class SecretScanWeeklyTest(unittest.TestCase):
+    """The weekly job masks, then scans, and a failure in either fails the job
+    (sd:1254). A write that failed part way leaves a fresh mtime, so the scan
+    reads that file's hits as settling and exits 0; only the mask's own exit
+    code then reports the failure."""
+
+    def run_job(self, mask_rc, scan_rc):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        scan = fx.tmp / "local-scan-for-secrets" / "scan-for-secrets.sh"
+        scan.parent.mkdir()
+        scan.write_text(FAKE_SCAN)
+        marker = fx.tmp / "scan-calls"
+        job = EXAMPLES / "secret-scan-weekly.job"
+        fx.write_job(job.stem, job.read_text())
+        result = fx.exec_job(job.stem, extra_env={
+            "SCAN_MARKER": str(marker), "MASK_RC": str(mask_rc), "SCAN_RC": str(scan_rc)})
+        return result, marker.read_text().splitlines() if marker.exists() else []
+
+    def test_the_exit_code(self):
+        cases = {(0, 0): 0, (0, 2): 2, (1, 0): 1, (1, 2): 2}
+        for (mask_rc, scan_rc), expected in cases.items():
+            with self.subTest(mask=mask_rc, scan=scan_rc):
+                result, calls = self.run_job(mask_rc, scan_rc)
+                self.assertEqual(calls, ["mask", "critical"], result.stdout + result.stderr)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
