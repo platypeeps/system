@@ -890,7 +890,7 @@ class TheScript(Collectors, ScreenCase):
         lamps = out["R"]["lamps"]
         self.assertRegex(lamps, r'data-area="cred" data-state="unknown"[^>]*>.*?no reader')
         for area in ("dep", "sec"):
-            self.assertRegex(lamps, rf'data-area="{area}" data-state="unknown"[^>]*>.*?<b>0</b> open alerts', area)
+            self.assertRegex(lamps, rf'data-area="{area}" data-state="unknown"[^>]*><span class="lbl">[^<]*<svg[^>]*><use[^>]*/></svg></span><span class="val"><span class="ph">not read</span>', area)
         self.assertRegex(lamps, r'data-area="wt" data-state="caution"[^>]*>.*?<b>2</b> dir gone')
         self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?<b>3</b> missing')
         self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?your commits · 5 weeks · default branch')
@@ -904,6 +904,13 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("9 areas · 1 warning, 6 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
+
+    def test_an_alert_lamp_keeps_a_paged_total_and_says_when_a_repo_was_not_read(self):
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(3),
+                                     ports=ports_snapshot, protection=protection_of(ALERTED))
+        lamps = self.run_page("R.lamps = ELS.annunciator.html;", doc)["R"]["lamps"]
+        self.assertRegex(lamps, r'data-area="dep"[^>]*>.*?<b>102\+</b> open alerts</span> · <span class="ph">not all read</span>')
+        self.assertRegex(lamps, r'data-area="sec"[^>]*>.*?<b>1</b> open alerts</span> · <span class="ph">not all read</span>')
 
     def test_a_failed_reader_is_a_partial_read_and_its_lamp_is_unknown(self):
         def broken(area):

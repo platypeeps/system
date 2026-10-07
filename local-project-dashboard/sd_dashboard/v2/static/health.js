@@ -45,6 +45,13 @@
   const fullest = a => { const v = (a.extra.volumes || []).reduce((w, x) => !w || x.capacity > w.capacity ? x : w, null);
     return v ? html`<span class="ph"><b>${v.capacity}%</b> fullest</span> <span class="ph">${v.name}</span>` : html`<span class="ph">no volume</span>`; };
   const sumFact = (a, key) => a.rows.reduce((s, r) => s + (+(r.facts?.[key]) || 0), 0);
+  // An unread repo is not zero alerts, and a list cut at its page size is "N+", as in the rows' Shown fact.
+  const alerts = a => {
+    const unread = a.rows.some(r => r.state === 'unknown');
+    if (unread && a.rows.every(r => r.state === 'unknown')) return html`<span class="ph">not read</span>`;
+    const more = a.rows.some(r => String(r.facts?.Shown || '').endsWith('+')) ? '+' : '';
+    return html`<span class="ph"><b>${sumFact(a, 'Open')}${more}</b> open alerts</span>${unread ? html` · <span class="ph">not all read</span>` : ''}`;
+  };
   const lampValue = a => !a.read ? html`<span class="ph">no reader</span>`
     : a.error ? html`<span class="ph">not read</span>`
     : a.id === 'wt' ? html`<span class="ph"><b>${sumFact(a, 'Registered')}</b> dir gone</span>`
@@ -52,7 +59,7 @@
     : a.id === 'attr' ? html`<span class="ph"><b>${sumFact(a, 'Missing')}</b> missing</span> <span class="ph">your commits · 5 weeks · default branch</span>`
     : a.id === 'disk' ? fullest(a)
     : a.id === 'br' ? html`<span class="ph"><b>${sumFact(a, 'Merged')}</b> merged</span> <span class="ph">not deleted</span>`
-    : a.id === 'dep' || a.id === 'sec' ? html`<span class="ph"><b>${sumFact(a, 'Open')}</b> open alerts</span>`
+    : a.id === 'dep' || a.id === 'sec' ? alerts(a)
     : a.id === 'cred' ? html`<span class="ph"><b>${a.rows.filter(r => r.state === 'warning' || r.state === 'caution').length}</b> need you</span>`
     : a.id === 'ports' ? html`<span class="ph"><b>${a.extra.counts.unknown}</b> unknown</span> · <span class="ph">${a.extra.counts.listening} listening</span>`
     : html`<span class="ph"><b>${a.rows.length}</b> rows</span>`;
