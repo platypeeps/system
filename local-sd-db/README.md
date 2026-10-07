@@ -65,11 +65,11 @@ backup, and the fixture harness both repositories test against.
                     gate pass. The column only, every row starts at `off`,
                     set with `repo satellite-gate`. Carries its reverse in
                     its header, run before 019's (sd:2704)
-      schema/021_judgment_location.sql  `judgment.location`: the
-                    directory a call came from, a `~/` key like
-                    `skill_use.cwd`, NULL on every older row.
-                    The column only. Carries its reverse in its header, run
-                    before 020's (sd:2950)
+      schema/021_judgment_call_context.sql  five `judgment` columns
+                    for the context of a call: `location` (a `~/` key like
+                    `skill_use.cwd`), `threshold`, `run_id`, `prompt_hash`
+                    and `load_avg`, NULL on every older row. Carries its
+                    reverse in its header, run before 020's (sd:2950)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -497,6 +497,15 @@ value absolute under this home. It is the one field a bad value does not
 refuse: a value over 255 characters, or one with a control character, is
 stored as NULL and the row is kept. It names a directory, never submitted
 content.
+
+Four more columns record the conditions of a call, under the same rule: a
+value that fails its shape is stored as NULL and the row is kept.
+`threshold` is the cut-off the caller applied (`--gate`, `--unsure-below`),
+from 0 to 1. `run_id` groups the calls of one run, such as one review, and
+is an identifier. `prompt_hash` is 12 to 64 lowercase hex digits hashing the
+question definition -- instructions, criteria, levels -- and never the state.
+`load_avg` is the one-minute load average when the call was made, zero or
+more.
 
 A gate event is not a decision. A caller that declines at the gate and then
 records what its own mechanism did writes two rows for one decision, so the

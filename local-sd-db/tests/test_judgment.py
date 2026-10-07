@@ -7,6 +7,7 @@ test does not check is a comment.
 """
 
 import json
+import math
 import sqlite3
 import tempfile
 import unittest
@@ -182,6 +183,49 @@ class TheLocation(JudgmentCase):
                         side_effect=judgment.paths.PathRefused("HOME is unset")):
             self.assertEqual(self.row(self.write(location="/opt/outside"))["location"],
                              "/opt/outside")
+
+
+class TheCallContext(JudgmentCase):
+    """`threshold`, `run_id`, `prompt_hash` and `load_avg` (sd:2950). Each is
+    held to its shape, and a value that fails it is stored as NULL with the
+    row kept, as `location` is."""
+
+    CONTEXT = ("threshold", "run_id", "prompt_hash", "load_avg")
+
+    def context(self, **fields):
+        row = self.row(self.write(**fields))
+        self.assertIsNotNone(row)
+        self.assertEqual(row["caller"], "local-mail-intake")
+        return {name: row[name] for name in self.CONTEXT}
+
+    def test_every_field_is_stored(self):
+        self.assertEqual(
+            self.context(threshold=0.75, run_id="sd-review:2950:r4",
+                         prompt_hash="0123456789abcdef", load_avg=3.5),
+            {"threshold": 0.75, "run_id": "sd-review:2950:r4",
+             "prompt_hash": "0123456789abcdef", "load_avg": 3.5})
+
+    def test_an_omitted_field_is_null(self):
+        self.assertEqual(self.context(), dict.fromkeys(self.CONTEXT))
+
+    def test_the_edges_are_kept(self):
+        for field, value in (("threshold", 0), ("threshold", 1), ("load_avg", 0),
+                             ("run_id", "a" * MAX_NAME), ("prompt_hash", "a" * 12),
+                             ("prompt_hash", "f" * 64)):
+            with self.subTest(field=field, value=value):
+                self.assertEqual(self.context(**{field: value})[field], value)
+
+    def test_a_bad_value_is_null_and_the_row_is_still_written(self):
+        bad = {
+            "threshold": (-0.01, 1.01, math.nan, math.inf, True, "0.5"),
+            "run_id": ("", "-leading", "has space", "a/b", "line\n", "a" * (MAX_NAME + 1), 7),
+            "prompt_hash": ("a" * 11, "a" * 65, "ABCDEF012345", "0123456789ag", "", 123456789012),
+            "load_avg": (-0.1, math.nan, math.inf, False, "1.0"),
+        }
+        for field, values in bad.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    self.assertIsNone(self.context(**{field: value})[field])
 
 
 class ThePrice(JudgmentCase):

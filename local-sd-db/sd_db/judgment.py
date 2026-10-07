@@ -61,6 +61,13 @@ other path stays absolute. A value over `MAX_LOCATION` characters, or one
 with a character `str.isprintable` rejects, is stored as NULL and the row is
 kept: a location is a convenience for the reader, not a fact the metering
 depends on (sd:2950).
+
+**The rest of a call's context follows the same rule.** `threshold` is the
+cut-off the caller applied, from 0 to 1; `run_id` groups the calls of one
+run, in the identifier grammar; `prompt_hash` is 12 to 64 lowercase hex
+digits hashing the question definition, never the state; `load_avg` is the
+one-minute load average, zero or more. Each value that fails its shape is
+stored as NULL and the row is kept.
 """
 
 from __future__ import annotations
@@ -188,6 +195,9 @@ MAX_DISTRIBUTION = MAX_OPTIONS * 16
 
 #: The longest location `record` keeps. A longer one is stored as NULL.
 MAX_LOCATION = 255
+
+#: A prompt hash: lowercase hex, from a 48-bit prefix to a full SHA-256.
+PROMPT_HASH = re.compile(r"[0-9a-f]{12,64}")
 
 
 class JudgmentRefused(SdDbError):
@@ -337,6 +347,22 @@ def _location(value: object) -> str | None:
     return value if len(value) <= MAX_LOCATION and value.isprintable() else None
 
 
+def _soft_number(value: object, low: float, high: float) -> float | None:
+    """A finite number from `low` to `high`, or None. Never refuses."""
+    if type(value) not in (int, float) or not math.isfinite(value) \
+            or not low <= value <= high:
+        return None
+    return float(value)
+
+
+def _soft_match(value: object, shape: re.Pattern, limit: int) -> str | None:
+    """A string of at most `limit` characters that `shape` matches whole, or
+    None. Never refuses."""
+    if not isinstance(value, str) or len(value) > limit or not shape.fullmatch(value):
+        return None
+    return value
+
+
 def record(
     connection: sqlite3.Connection,
     *,
@@ -363,6 +389,10 @@ def record(
     server_ms: int | None = None,
     probabilities: str | None = None,
     location: str | None = None,
+    threshold: float | None = None,
+    run_id: str | None = None,
+    prompt_hash: str | None = None,
+    load_avg: float | None = None,
     now: str | None = None,
 ) -> int:
     """Write one row and return its id.
@@ -402,6 +432,10 @@ def record(
     server_ms = _count("server_ms", server_ms)
     probabilities = _probabilities(probabilities)
     location = _location(location)
+    threshold = _soft_number(threshold, 0.0, 1.0)
+    run_id = _soft_match(run_id, IDENTIFIER, MAX_NAME)
+    prompt_hash = _soft_match(prompt_hash, PROMPT_HASH, 64)
+    load_avg = _soft_number(load_avg, 0.0, math.inf)
     if usd is not None and (type(usd) not in (int, float) or not math.isfinite(usd)
                             or usd < 0):
         raise JudgmentRefused(f"usd must be a finite number of zero or more; got {usd!r}")
@@ -413,13 +447,15 @@ def record(
             "INSERT INTO judgment (timestamp, caller, stage, arm, pair, shadow, "
             "provider, model, primitive, question_id, questions, outcome, cause, "
             "answer, confidence, ordering, tokens_in, tokens_out, duration_ms, "
-            "usd, changed, server_ms, probabilities, location) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "usd, changed, server_ms, probabilities, location, threshold, run_id, "
+            "prompt_hash, load_avg) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?)",
             (moment, caller, stage, arm, pair, 1 if shadow else 0, provider,
              model, primitive, question_id, questions, outcome, cause, answer,
              confidence, ordering, tokens_in, tokens_out, duration_ms,
              None if usd is None else float(usd), changed, server_ms,
-             probabilities, location),
+             probabilities, location, threshold, run_id, prompt_hash, load_avg),
         )
     return int(cursor.lastrowid)
 

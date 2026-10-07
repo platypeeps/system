@@ -51,7 +51,8 @@ COLUMNS = {
     "judgment": {"history": "answer questions ordering changed override", "key": "location",
                  "none": "id timestamp caller stage arm pair shadow provider model primitive "
                          "question_id outcome cause confidence tokens_in tokens_out duration_ms usd "
-                         "override_source override_at server_ms probabilities"},
+                         "override_source override_at server_ms probabilities threshold run_id "
+                         "prompt_hash load_avg"},
     "note": {"history": "body", "hub-only": "output_path",
              "none": "id item timestamp kind session resolved_at started ended exit_code"},
     "provider": {"none": "name enabled reason author_rank reviewer_rank"},
@@ -239,9 +240,9 @@ class TheMigration(AThirteenStore):
         connection.execute("PRAGMA foreign_keys = ON")
         # 021 to 015 came after 014 and are reversed first, newest first:
         # 014's reverse is written against the table at 14, without
-        # `repo.managed`, `repo.ci`, `repo.satellite_gate`,
-        # `judgment.location` or `runner_run.detached_from`.
-        connection.executescript(reverse_script("021_judgment_location.sql"))
+        # `repo.managed`, `repo.ci`, `repo.satellite_gate`, 021's
+        # `judgment` columns or `runner_run.detached_from`.
+        connection.executescript(reverse_script("021_judgment_call_context.sql"))
         connection.executescript(reverse_script("020_repo_satellite_gate.sql"))
         connection.executescript(reverse_script("019_request_outcome.sql"))
         connection.executescript(reverse_script("018_runner_run_repo_nullable.sql"))

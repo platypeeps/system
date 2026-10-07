@@ -994,13 +994,16 @@ class TheSatelliteGateColumn(SchemaCase):
         self.assertNotIn("satellite_gate", [row[1] for row in raw.execute("PRAGMA table_info(repo)")])
 
 
-class TheJudgmentLocationColumn(SchemaCase):
-    """Migration 21. `judgment.location`, the call site a row came from
-    (sd:2950).
+class TheJudgmentCallContextColumns(SchemaCase):
+    """Migration 21. Five `judgment` columns for the context of a call:
+    `location`, `threshold`, `run_id`, `prompt_hash` and `load_avg` (sd:2950).
 
-    Added, not rebuilt, as 20 was: every existing row reads NULL and keeps
-    its other values, and the reverse returns the file to 20.
+    Added, not rebuilt, as 20 was: every existing row reads NULL in all five
+    and keeps its other values, and the reverse returns the file to 20.
     """
+
+    CONTEXT = (("location", "TEXT"), ("threshold", "REAL"), ("run_id", "TEXT"),
+               ("prompt_hash", "TEXT"), ("load_avg", "REAL"))
 
     def _at_version_twenty(self):
         connection = connect(self.path, create=True, write=True)
@@ -1035,13 +1038,15 @@ class TheJudgmentLocationColumn(SchemaCase):
                          (20, list(range(21, SCHEMA_VERSION + 1))))
         connection = connect(self.path, write=True)
         self.addCleanup(connection.close)
-        self.assertIn(("location", "TEXT", 0, None), [
-            (row[1], row[2], row[3], row[4])
-            for row in connection.execute("PRAGMA table_info(judgment)")])
+        columns = [(row[1], row[2], row[3], row[4])
+                   for row in connection.execute("PRAGMA table_info(judgment)")]
+        for name, kind in self.CONTEXT:
+            self.assertIn((name, kind, 0, None), columns)
         rows = [tuple(row) for row in connection.execute(
-            "SELECT caller, stage, arm, answer, location FROM judgment ORDER BY id")]
-        self.assertEqual(rows, [("one", "JEV_ONE", "jev", "0.9", None),
-                                ("two", "JEV_TWO", "baseline", "1", None)])
+            "SELECT caller, stage, arm, answer, location, threshold, run_id, "
+            "prompt_hash, load_avg FROM judgment ORDER BY id")]
+        self.assertEqual(rows, [("one", "JEV_ONE", "jev", "0.9") + (None,) * 5,
+                                ("two", "JEV_TWO", "baseline", "1") + (None,) * 5])
 
     def test_the_reverse_returns_the_file_to_twenty(self):
         self._at_version_twenty()
@@ -1052,7 +1057,8 @@ class TheJudgmentLocationColumn(SchemaCase):
         self.addCleanup(raw.close)
         raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
         self.assertEqual(schema_version(raw), 20)
-        self.assertNotIn("location", [row[1] for row in raw.execute("PRAGMA table_info(judgment)")])
+        left = {row[1] for row in raw.execute("PRAGMA table_info(judgment)")}
+        self.assertEqual(left & {name for name, _ in self.CONTEXT}, set())
         self.assertEqual(self._dump(), before)
 
 class TheConnection(SchemaCase):
