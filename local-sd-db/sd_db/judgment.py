@@ -52,13 +52,15 @@ right when the two are equal. `label` is the one write path for it, and it
 holds the label to the same shapes a row is held to: a number, and a source
 that is an identifier naming the rule that produced it (sd:2107).
 
-**`location` is the call site, and the one field a bad value does not
-refuse.** It says where the call came from, beside `caller`, which says who
-asked. A value over `MAX_LOCATION` characters, or one with a character
-`str.isprintable` rejects, is stored as NULL and the row is kept: a call site
-is a convenience for the reader, not a fact the metering depends on (sd:2950).
-It is the one column no shape guards, so a caller names its own code there,
-never anything it was given.
+**`location` is the caller's directory, and the one field a bad value does
+not refuse.** It says where the call came from, beside `caller`, which says
+who asked: the git toplevel of the caller's working directory, else that
+directory. It is a repository key in the sense of `paths`, as
+`skill_use.cwd` is: a path under `$HOME` is stored `~/`-relative, and any
+other path stays absolute. A value over `MAX_LOCATION` characters, or one
+with a character `str.isprintable` rejects, is stored as NULL and the row is
+kept: a location is a convenience for the reader, not a fact the metering
+depends on (sd:2950).
 """
 
 from __future__ import annotations
@@ -69,6 +71,7 @@ import re
 import sqlite3
 from decimal import Decimal
 
+from . import paths
 from .database import transaction
 from .errors import SdDbError
 from .writes import now as _now
@@ -183,7 +186,7 @@ MAX_OPTIONS = 255
 #: Sized from the option count; `MAX_ORDERING` is a different thing's bound.
 MAX_DISTRIBUTION = MAX_OPTIONS * 16
 
-#: The longest call site `record` keeps. A longer one is stored as NULL.
+#: The longest location `record` keeps. A longer one is stored as NULL.
 MAX_LOCATION = 255
 
 
@@ -317,13 +320,18 @@ def _answer(value: object) -> str | None:
 
 
 def _location(value: object) -> str | None:
-    """The call site, or None for a value the ledger does not keep: not a
-    string, empty, over `MAX_LOCATION`, or carrying a control character.
-    Never refuses; a bad location costs the row its location, not the row."""
+    """The caller's directory as a `paths` key, or None for a value the
+    ledger does not keep: not a string, empty, over `MAX_LOCATION`, or
+    carrying a control character. Never refuses; a bad location costs the
+    row its location, not the row."""
     if not isinstance(value, str) or not value or len(value) > MAX_LOCATION \
             or not value.isprintable():
         return None
-    return value
+    try:
+        value = paths.key(value)
+    except paths.PathRefused:        # no usable $HOME: keep it as given
+        return value
+    return value if len(value) <= MAX_LOCATION else None
 
 
 def record(

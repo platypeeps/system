@@ -65,8 +65,9 @@ backup, and the fixture harness both repositories test against.
                     gate pass. The column only, every row starts at `off`,
                     set with `repo satellite-gate`. Carries its reverse in
                     its header, run before 019's (sd:2704)
-      schema/021_judgment_location.sql  `judgment.location`: the call site
-                    a row came from, free text, NULL on every older row.
+      schema/021_judgment_location.sql  `judgment.location`: the
+                    directory a call came from, a `~/` key like
+                    `skill_use.cwd`, NULL on every older row.
                     The column only. Carries its reverse in its header, run
                     before 020's (sd:2950)
       schema.py     the version, the table list, the migration files
@@ -488,10 +489,14 @@ they are caller-controlled and a cap alone accepts `--stage
 `anthropic/claude-opus-5`, which come from a vendor and not from a subject
 line.
 
-`location` is the call site: where the call came from, beside `caller`, who
-asked. It is free text of at most 255 printable characters, and the one field
-a bad value does not refuse: `record` stores NULL and keeps the row. No shape
-guards it, so a caller names its own code there, never anything it was given.
+`location` is where the call came from, beside `caller`, who asked: the git
+toplevel of the caller's working directory, else that directory. It is a key
+column, as `skill_use.cwd` is: `record` stores a path under `$HOME` as `~/`
+plus the relative path, and any other path absolute, and `status` counts a
+value absolute under this home. It is the one field a bad value does not
+refuse: a value over 255 characters, or one with a control character, is
+stored as NULL and the row is kept. It names a directory, never submitted
+content.
 
 A gate event is not a decision. A caller that declines at the gate and then
 records what its own mechanism did writes two rows for one decision, so the

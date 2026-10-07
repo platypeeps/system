@@ -1,11 +1,12 @@
 -- `judgment.location`: where the call came from (sd:2950).
 --
 -- `caller` and `stage` say which program asked and for which decision; they
--- do not say from where. `location` names the call site, so two callers that
--- share a stage can be told apart in the ledger. It is free text the caller
--- sets: `sd_db.judgment.record` stores a value of at most 255 characters with
--- no control character, and NULL for any other value, so a bad location costs
--- the row its location and never the row.
+-- do not say from where. `location` is the caller's directory: the git
+-- toplevel of its working directory, else that directory. It is a key column
+-- as `skill_use.cwd` is: `sd_db.judgment.record` stores a path under `$HOME`
+-- as `~/` plus the relative path. A value over 255 characters or with a
+-- control character is stored as NULL, so a bad location costs the row its
+-- location and never the row.
 --
 -- The column only, and every existing row reads NULL: no row recorded one.
 --

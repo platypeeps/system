@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_db import connect, create_item, ledger, paths, reads, removal, repos, workflow
+from sd_db import connect, create_item, judgment, ledger, paths, reads, removal, repos, workflow
 from sd_db.jobs.cli import command_status
 from sd_db.migrate import migrate
 from sd_db.schema import SCHEMA_DIR, SCHEMA_VERSION
@@ -48,10 +48,10 @@ COLUMNS = {
              "none": "id kind branch status stage priority due source shipped_at created_at updated_at "
                      "source_commit piece parked_at gate_generation ready_digest recurrence "
                      "recurrence_anchor"},
-    "judgment": {"history": "answer questions ordering changed override",
+    "judgment": {"history": "answer questions ordering changed override", "key": "location",
                  "none": "id timestamp caller stage arm pair shadow provider model primitive "
                          "question_id outcome cause confidence tokens_in tokens_out duration_ms usd "
-                         "override_source override_at server_ms probabilities location"},
+                         "override_source override_at server_ms probabilities"},
     "note": {"history": "body", "hub-only": "output_path",
              "none": "id item timestamp kind session resolved_at started ended exit_code"},
     "provider": {"none": "name enabled reason author_rank reviewer_rank"},
@@ -321,6 +321,19 @@ class TheWriters(HomeCase):
         record_skill_use(c, "sd-ship", cwd=str(self.checkout))
         self.assertEqual(c.execute("SELECT cwd FROM skill_use").fetchone()[0], "~/repos/one")
 
+    def test_a_judgment_location_is_stored_as_the_key(self):
+        def location(value):
+            row_id = judgment.record(
+                self.connection, caller="c", stage="s", provider="p", primitive="noul",
+                outcome="ok", location=value)
+            return self.connection.execute(
+                "SELECT location FROM judgment WHERE id = ?", (row_id,)).fetchone()[0]
+        self.assertEqual(location(str(self.checkout)), "~/repos/one")
+        self.assertEqual(location("~/repos/one"), "~/repos/one")
+        self.assertEqual(location(str(self.home)), "~")
+        self.assertEqual(location("/opt/outside"), "/opt/outside")
+        self.assertEqual(repos.absolute_under_home(self.connection)["judgment.location"], 0)
+
     def test_upsert_repo_refuses_an_absolute_path_under_the_home(self):
         with self.assertRaisesRegex(paths.PathRefused, "~/repos/one"):
             upsert_repo(self.connection, str(self.checkout))
@@ -349,6 +362,13 @@ class TheStatusCount(HomeCase):
         text = self.status()
         self.assertIn("sd-db: 1 key value(s) absolute under this home", text)
         self.assertIn("sd-db:   repo.path: 1", text)
+        raw = sqlite3.connect(database)
+        with raw:
+            raw.execute("INSERT INTO judgment (timestamp, caller, stage, provider, primitive, "
+                        "outcome, location) VALUES (?, 'c', 's', 'p', 'noul', 'ok', ?)",
+                        (WHEN, str(self.home / "repos/one")))
+        raw.close()
+        self.assertIn("sd-db:   judgment.location: 1", self.status())
 
 
 def git(path: Path, *args: str) -> str:

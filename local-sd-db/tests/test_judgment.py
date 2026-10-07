@@ -139,9 +139,8 @@ class TheLocation(JudgmentCase):
     refuse: it is stored as NULL and the row is written."""
 
     def test_a_location_is_stored(self):
-        row_id = self.write(location="local-mail-intake/mail_intake.py:triage")
-        self.assertEqual(self.row(row_id)["location"],
-                         "local-mail-intake/mail_intake.py:triage")
+        row_id = self.write(location="~/repos/system")
+        self.assertEqual(self.row(row_id)["location"], "~/repos/system")
 
     def test_an_omitted_location_is_null(self):
         self.assertIsNone(self.row(self.write())["location"])
