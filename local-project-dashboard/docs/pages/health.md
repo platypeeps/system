@@ -2,7 +2,7 @@
 
 Health is at `/fleet-health` (sd:2115); `/health` stays the service's own
 check. `GET /api/health` (`health_screen.document`) lists the design's nine
-areas in its order. Six have a reader. Four read what the dashboard had: Worktrees (registrations whose directory
+areas in its order. Each has a reader. Four read what the dashboard had: Worktrees (registrations whose directory
 is gone, from the fleet child Sessions reads), Attribution (your own commits,
 by each repository's `user.email`, of the last five weeks on its default branch
 `origin/HEAD`, merges left out, that lack `Authored-with:`; a repository with no
@@ -11,8 +11,25 @@ checkout's HEAD; the walk runs inside a 10-second budget, and past it the area
 says it stopped rather than waited on), Ports (Operations > Ports' reader, with
 its counts and warnings) and Protection (`protection.rows`, drawn as a matrix
 with one column per repository and a table carrying the same cells; an unread
-repository shows no cell). Credentials, Dependencies and Security have no
-collector yet; each shows as unknown and names what it does not read.
+repository shows no cell).
+
+Dependencies, Security and Credentials read rows nightly jobs stored; the page
+calls no service and reads no credential.
+
+- Dependencies (sd:2205) and Security (sd:2206) read the `alerts` the nightly
+  `sd shadow sync` stores in each managed repository's `repo_protection` row.
+  Dependencies is a row per repository with open Dependabot alerts, a warning
+  when one is critical or high; an archived repository is left out. Security
+  is a row per public repository with open secret-scanning alerts (warning) or
+  with scanning off (caution); a private repository is not scanned, by policy.
+  The sync reads one page of 100 alerts, so a longer list shows as `100+`.
+- Credentials (sd:2203) reads the latest `credentials:nightly` heartbeat that
+  `sd-db.sh credentials` writes from `credentials-nightly.job`: the GitHub PAT
+  (present, accepted, expiry), `gh auth status`, `HA_TOKEN` against `HA_URL`,
+  and `claude mcp list`. An expiry lights caution 30 days ahead and warning 7
+  days ahead; a heartbeat older than 48 hours is a caution row.
+- In all three, a read that failed is an unknown row naming the reason, never
+  a count of zero.
 
 Disk and Branches (sd:2202, sd:2204) are read by `health_collectors`, each
 inside an 8-second budget; past it the area says it stopped rather than

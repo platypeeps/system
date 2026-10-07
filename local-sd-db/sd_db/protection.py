@@ -93,6 +93,17 @@ not gate: a failed need skips the job, and a skipped required check passes,
 so only the aggregate `design.md` prescribes counts, exactly as written
 there; it gates every need (`_gated_needs`).
 
+**Alerts ride along (sd:2205, sd:2206).** For a managed repository the
+sweep also stores, in the same row's `body.alerts`, its open Dependabot
+alerts (one page, by severity; `more` when GitHub has a next page) and its
+secret-scanning facts: visibility, the `security_and_analysis` setting, and,
+when scanning is on in a public repository, its open alerts. The setting
+comes with the repository read the basic observation already made; the
+alert pages are read last, from what the observations and bypass reads
+left, so they never take a repository's three. An alert read that fails is
+that read's `reason`, never a count of zero. Health reads the row and calls
+nothing.
+
 **A side observation, not the tracker.** `shadow_sync.sync` calls `sync`
 here after the contribution refresh and before it writes its own heartbeat.
 A failure here becomes `unknown` rows and its own heartbeat; it never fails
@@ -188,6 +199,12 @@ SECONDS_PER_REPO = 3.0
 #: that stopped exactly at the reserve left no request for any bypass read.
 BYPASS_MARGIN_PER_REPO = 1
 
+#: What `reserve` holds back per managed repository for its alerts: one page
+#: of open Dependabot alerts and one of open secret-scanning alerts.
+ALERT_REQUESTS_PER_MANAGED = 2
+#: One page of alerts, GitHub's largest; past it the count is "100+".
+ALERT_PAGE_SIZE = 100
+
 #: The `source` marker on protection synthesized from rulesets; a classic
 #: object carries none. The pack's `sd_protection.RULESET_SOURCE`.
 RULESET_SOURCE = "ruleset"
@@ -238,13 +255,15 @@ def ruleset_path(owner: str, name: str, ruleset_id: int) -> str:
 
 
 def reserve(connection: sqlite3.Connection) -> int:
-    """Requests `sync` needs to reach every registered GitHub repository.
+    """Requests `sync` needs to reach every registered GitHub repository,
+    and to read the alerts of every managed one.
 
     The contribution refresh runs first on the shared budget and stops this
     many short, so a long detail backlog cannot turn every protection row
     `unknown` with `budget exhausted`.
     """
-    return (REQUESTS_PER_REPO + BYPASS_MARGIN_PER_REPO) * _fleet_size(connection)
+    return ((REQUESTS_PER_REPO + BYPASS_MARGIN_PER_REPO) * _fleet_size(connection)
+            + ALERT_REQUESTS_PER_MANAGED * _fleet_size(connection, managed=True))
 
 
 def reserve_seconds(connection: sqlite3.Connection, max_seconds: float) -> float:
@@ -260,8 +279,9 @@ def reserve_seconds(connection: sqlite3.Connection, max_seconds: float) -> float
     return min(SECONDS_PER_REPO * _fleet_size(connection), max_seconds / 2)
 
 
-def _fleet_size(connection: sqlite3.Connection) -> int:
-    return sum(1 for row in connection.execute("SELECT remote FROM repo") if github_slug(row["remote"]) is not None)
+def _fleet_size(connection: sqlite3.Connection, *, managed: bool = False) -> int:
+    query = "SELECT remote FROM repo" + (" WHERE managed = 1" if managed else "")
+    return sum(1 for row in connection.execute(query) if github_slug(row["remote"]) is not None)
 
 
 # ------------------------------------------------- the checks a repo produces
@@ -1619,7 +1639,7 @@ def _malformed(error: Exception) -> str:
 
 
 def observe(client, path: str, owner: str, name: str, *, observed_at: str,
-            ci: str | None = None) -> dict[str, Any]:
+            ci: str | None = None, seen: dict[str, Any] | None = None) -> dict[str, Any]:
     """One repository's basic observation: the repository, its classic
     protection and the branch's rules, and a row whatever they answer.
 
@@ -1637,6 +1657,9 @@ def observe(client, path: str, owner: str, name: str, *, observed_at: str,
     reached says `budget exhausted` rather than a request it did not make.
     The one exception is the rules read beside a classic 200: it fails into
     `rules_read_error` in the detail and the classic result stands (sd:1430).
+
+    `seen`, when given, receives the repository object as `repo` once it is
+    read, whatever the row says after it: `alerts` reads it later.
     """
     from .contribution_github import Unavailable
 
@@ -1649,6 +1672,8 @@ def observe(client, path: str, owner: str, name: str, *, observed_at: str,
         repo = client.get(f"repos/{owner}/{name}")
         if not isinstance(repo, dict):
             raise Unavailable("repository response is not an object")
+        if seen is not None:
+            seen["repo"] = repo
         if not isinstance(repo.get("default_branch"), str) or not repo["default_branch"]:
             # Read as `main`, a 200 there was `protected` for a branch the
             # repository never named (sd:1204).
@@ -1748,6 +1773,65 @@ def enrich(client, row: dict[str, Any]) -> None:
     row["body"]["requests"] += client.budget.requests - before
 
 
+def alert_path(owner: str, name: str, kind: str) -> str:
+    """One page of open alerts; `kind` is `dependabot` or `secret-scanning`."""
+    return f"repos/{owner}/{name}/{kind}/alerts?state=open&per_page={ALERT_PAGE_SIZE}"
+
+
+def _open_alerts(client, path: str, *, severity: bool = False) -> dict[str, Any]:
+    """`{open, more}` from one page, with `severity` counts when asked, or `{reason}`."""
+    from .contribution_github import Unavailable
+
+    spent = _exhausted(client)
+    if spent:
+        return {"reason": spent}
+    try:
+        page, headers = client.request(path)
+        if not isinstance(page, list):
+            raise Unavailable("alert list is not a list")
+        found: dict[str, Any] = {"open": len(page), "more": 'rel="next"' in headers.get("link", "")}
+        if severity:
+            counts: dict[str, int] = {}
+            for alert in page:
+                level = alert["security_advisory"]["severity"]
+                level = level if isinstance(level, str) else "unknown"
+                counts[level] = counts.get(level, 0) + 1
+            found["severity"] = counts
+    except Unavailable as error:
+        return {"reason": _spent_reason(client, error)}
+    except MALFORMED as error:
+        return {"reason": _malformed(error)}
+    return found
+
+
+def alerts(client, owner: str, name: str, repo: dict[str, Any]) -> dict[str, Any]:
+    """A managed repository's `body.alerts`: `dependabot` and `secret_scanning`.
+
+    `dependabot` is `{archived: true}` for an archived repository, which
+    Health leaves out, else `_open_alerts`. `secret_scanning` carries the
+    `visibility`; for a public repository also the `setting` from
+    `security_and_analysis` -- None when the object does not show it, which
+    it does only to an admin -- and, when the setting is `enabled`, the open
+    alerts. A private repository is not scanned, by policy, and reads nothing.
+    """
+    dependabot = ({"archived": True} if repo.get("archived") is True else
+                  _open_alerts(client, alert_path(owner, name, "dependabot"), severity=True))
+    private = repo.get("private")
+    if private is True:
+        return {"dependabot": dependabot, "secret_scanning": {"visibility": "private"}}
+    if private is not False:
+        return {"dependabot": dependabot, "secret_scanning": {"reason": "repository response has no visibility"}}
+    analysis = repo.get("security_and_analysis")
+    scanning = analysis.get("secret_scanning") if isinstance(analysis, dict) else None
+    setting = scanning.get("status") if isinstance(scanning, dict) else None
+    secret: dict[str, Any] = {"visibility": "public", "setting": setting if isinstance(setting, str) else None}
+    if secret["setting"] is None:
+        secret["reason"] = "security_and_analysis not shown: the token does not administer the repository"
+    elif secret["setting"] == "enabled":
+        secret.update(_open_alerts(client, alert_path(owner, name, "secret-scanning")))
+    return {"dependabot": dependabot, "secret_scanning": secret}
+
+
 def sync(connection: sqlite3.Connection, *, client, observed_at: str) -> dict[str, Any]:
     """Every registered GitHub repository, observed and written in one transaction.
 
@@ -1775,16 +1859,23 @@ def sync(connection: sqlite3.Connection, *, client, observed_at: str) -> dict[st
         if slug is None:
             continue
         summary["attempted"] += 1
-        row = observe(client, str(registered["path"]), *slug, observed_at=observed_at, ci=registered["ci"])
-        rows.append((slug, row, registered))
+        seen: dict[str, Any] = {}
+        row = observe(client, str(registered["path"]), *slug, observed_at=observed_at, ci=registered["ci"],
+                      seen=seen)
+        rows.append((slug, row, registered, seen.get("repo")))
     # Every repository has its basic observation before any bypass list is
     # read: the basic observation is three a repository, a gating ruleset
     # costs a fourth, and a first pass that spent it would take it from the
     # last repository's three and file that one `budget exhausted` on nothing.
-    for _slug, row, _registered in rows:
+    for _slug, row, _registered, _repo in rows:
         enrich(client, row)
+    # Alerts last, for managed repositories whose repository object was read
+    # (sd:2205, sd:2206): from what is left, as the bypass reads are.
+    for slug, row, registered, repo in rows:
+        if registered["managed"] and repo is not None:
+            row["body"]["alerts"] = alerts(client, *slug, repo)
     written = []
-    for slug, row, registered in rows:
+    for slug, row, registered, _repo in rows:
         kept = _not_reached(row) and registered["kept_at"] is not None and not _not_reached(registered)
         if kept:
             # The earlier observation stands, and is counted as what it says.
@@ -1827,7 +1918,7 @@ def _sweep_order(connection: sqlite3.Connection) -> list[sqlite3.Row]:
     None when there is none): managed first, then not reached before reached, then
     oldest observation first, then path."""
     return list(connection.execute(
-        "SELECT repo.path, repo.remote, repo.ci, p.observed_at AS kept_at, p.status AS kept_status, p.reason "
+        "SELECT repo.path, repo.remote, repo.ci, repo.managed, p.observed_at AS kept_at, p.status AS kept_status, p.reason "
         "FROM repo LEFT JOIN repo_protection p ON p.repo = repo.path "
         "ORDER BY repo.managed DESC, "
         "(p.repo IS NULL OR COALESCE(p.reason, '') LIKE ? || '%') DESC, "
@@ -1853,7 +1944,7 @@ def rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     flags were judged against that. A checkout with a row of its own keeps it.
     """
     found = list(connection.execute(
-        "SELECT repo.path, repo.remote, repo.ci, p.repo AS observed, p.observed_at, p.status, "
+        "SELECT repo.path, repo.remote, repo.ci, repo.managed, p.repo AS observed, p.observed_at, p.status, "
         "p.default_branch, p.reason, p.body FROM repo LEFT JOIN repo_protection p ON p.repo = repo.path "
         "ORDER BY repo.path"
     ))
@@ -1893,5 +1984,8 @@ def rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
             "merge_settings": [flag for flag in body.get("merge_settings") or []
                                if isinstance(flag, dict)],
             "requests": body.get("requests"),
+            # Health's Dependencies and Security areas (sd:2205, sd:2206).
+            "managed": bool(own["managed"]),
+            "alerts": body.get("alerts") if isinstance(body.get("alerts"), dict) else None,
         })
     return out

@@ -26,7 +26,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .. import judgment, removal, usage
+from .. import credentials, judgment, removal, usage
 from ..backup import restore as restore_snapshot
 from ..database import connect, default_path, schema_version, tables
 from ..errors import SdDbError
@@ -181,6 +181,22 @@ def command_usage(argv: list[str]) -> int:
         print(f"sd-db usage: released {len(released.deleted)} reserved row(s) and bound "
               f"{len(released.bound)} sending row(s) of dead owners", file=sys.stderr)
     sys.stdout.write(usage.json_text(found) if as_json else usage.text(found))
+    return 0
+
+
+def command_credentials(argv: list[str]) -> int:
+    """`credentials`: probe credential presence and expiry and record the
+    heartbeat Health reads (sd:2203). One line per probe; never a value."""
+    if argv:
+        print("sd-db credentials: takes no arguments", file=sys.stderr)
+        return 1
+    connection = _open_for_write()
+    try:
+        body = credentials.check(connection, env=os.environ)
+    finally:
+        connection.close()
+    for probe in body["probes"]:
+        print(credentials.describe(probe))
     return 0
 
 
@@ -943,6 +959,7 @@ COMMANDS = {
     "work": command_work,
     "usage": command_usage,
     "judgments": command_judgments,
+    "credentials": command_credentials,
 }
 
 
