@@ -577,13 +577,23 @@ PRUNE_EOF
       for g in $MASK_EXCLUDE_GLOBS; do set -- "$@" "--exclude=$g"; done
     fi
     # targets read on fd 3 — stdin stays reserved for the pattern list
-    while IFS= read -r t <&3; do [ -n "$t" ] && set -- "$@" "$t"; done 3<<TARGETS_EOF
+    MASK_TARGET_COUNT=0
+    while IFS= read -r t <&3; do
+      if [ -n "$t" ]; then set -- "$@" "$t"; MASK_TARGET_COUNT=$((MASK_TARGET_COUNT + 1)); fi
+    done 3<<TARGETS_EOF
 $MASK_TARGETS
 TARGETS_EOF
+    # No target, no search: rg and grep -r given no path search the current
+    # directory, which is $HOME here, and mask would rewrite files far outside
+    # its safe list, ~/repos among them (review, sd:1254).
+    [ "$MASK_TARGET_COUNT" -gt 0 ] || return 0
     if [ "$HAVE_RG" = 1 ]; then rg "$@" 2>/dev/null || true
     else grep "$@" 2>/dev/null || true; fi
   }
-  FILES=$(printf '%s\n' "$VALS" | mask_file_list fixed)
+  # No values, no literal pass: an empty line is an empty pattern, and an
+  # empty pattern matches every file.
+  FILES=""
+  if [ -n "$VALS" ]; then FILES=$(printf '%s\n' "$VALS" | mask_file_list fixed); fi
   if [ "$HAVE_RG" = 1 ]; then PFILES=$(printf '%s\n' "$PATTERNS" | mask_file_list regex)
   else PFILES=$(ere_patterns | mask_file_list regex); fi
   ALLFILES=$(printf '%s\n%s\n' "$FILES" "$PFILES" | awk 'NF' | sort -u)

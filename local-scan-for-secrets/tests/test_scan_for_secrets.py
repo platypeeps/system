@@ -727,6 +727,18 @@ class Settling(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         self.assertNotIn(self.TOKEN, (self.home / ".codex/sessions/rollout.jsonl").read_text())
 
+    def test_mask_with_no_targets_touches_nothing(self):
+        # A home with no history, no AI store and no scratchpad: mask must not
+        # fall back to searching the current directory, $HOME (review, sd:1254).
+        self.plant("repos/project/app.py", self.SETTLED)
+        for flags in (["--no-prune"], ["--apply", "--no-prune"]):
+            with self.subTest(flags=flags):
+                result = subprocess.run(["sh", str(SCRIPT), "mask", *flags], cwd=self.root, env=self.env,
+                                        capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(self.TOKEN, (self.home / "repos/project/app.py").read_text())
+                self.assertNotIn("repos/project/app.py", result.stdout)
+
     def test_a_window_of_zero_settles_nothing(self):
         self.plant(".codex/sessions/2026/10/07/rollout.jsonl", 60)
         self.env["S4S_MASK_SETTLE_MIN"] = "0"
