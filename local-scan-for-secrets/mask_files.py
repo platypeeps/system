@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """The rewrite half of `scan-for-secrets.sh mask`: one file path per stdin line.
 
+`mask_files.py settling` is the other use: `critical` asks it which hits sit
+in a file mask would rewrite but has not yet reached, because the file was
+modified inside the settle window. Those hits are reported and do not page.
+
 Your key values arrive in S4S_PAIRS (NAME=value lines) and the credential
 patterns in S4S_PATTERNS, both through the environment, never argv or disk.
 S4S_APPLY=1 rewrites; anything else is a dry run that exits 2 when there is
@@ -192,7 +196,59 @@ def settle_seconds(text: str) -> float:
     return minutes * 60
 
 
+def words(name: str) -> list[str]:
+    return os.environ.get(name, "").split()
+
+
+def lines(name: str) -> list[str]:
+    return [line for line in os.environ.get(name, "").splitlines() if line]
+
+
+def hit_path(line: str) -> str | None:
+    """The file a hit line names: the line itself (`rg -l`), or its shortest
+    `path:` prefix that is a file (`rg -n -o`), so a colon in a name holds."""
+    if os.path.isfile(line):
+        return line
+    at = line.find(":")
+    while at > 0:
+        if os.path.isfile(line[:at]):
+            return line[:at]
+        at = line.find(":", at + 1)
+    return None
+
+
+def mask_would_rewrite(path: str) -> bool:
+    """True when `mask` targets this $HOME-relative path and no mask
+    exclusion spares it. The lists arrive from scan-for-secrets.sh, so the
+    two never drift: S4S_MASK_FILES and S4S_MASK_DIRS name the targets,
+    S4S_MASK_EXCLUDE_{DIRS,GLOBS,PATHS} the exclusions."""
+    parts = path.split("/")
+    if path not in words("S4S_MASK_FILES") and not any(
+            path.startswith(d.rstrip("/") + "/") for d in lines("S4S_MASK_DIRS")):
+        return False
+    if any(d in parts[:-1] for d in words("S4S_MASK_EXCLUDE_DIRS")):
+        return False
+    if parts[-1] in words("S4S_MASK_EXCLUDE_GLOBS"):
+        return False
+    return not any(path == p or path.startswith(p + "/") for p in words("S4S_MASK_EXCLUDE_PATHS"))
+
+
+def settling(settle_s: float) -> int:
+    """Prefix each stdin hit line with `S|` when its file is settling (a mask
+    target modified inside the window) and `D|` when it is durable."""
+    now = time.time()
+    for line in sys.stdin.read().splitlines():
+        if not line:
+            continue
+        path = hit_path(line)
+        recent = path is not None and mask_would_rewrite(path) and now - os.stat(path).st_mtime < settle_s
+        print(("S|" if recent else "D|") + line)
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:] == ["settling"]:
+        return settling(settle_seconds(os.environ.get("S4S_MASK_SETTLE_MIN", str(SETTLE_MIN_DEFAULT))))
     apply = os.environ.get("S4S_APPLY") == "1"
     pairs = parse_pairs(os.environ.get("S4S_PAIRS", ""))
     pats = parse_patterns(os.environ.get("S4S_PATTERNS", ""))

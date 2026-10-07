@@ -44,10 +44,17 @@ A mask failure does not stop the scan: the scan then finds the unmasked hits and
 
 After the mask pass, a durable hit in a mask target means one of two things: the file was busy, or a session wrote the value after the pass.
 Both clear on the next run, so `critical` classifies a hit as transient when its file is a mask target modified inside the settle window.
+(Changed in the build: the pattern pass prints these under their own heading, `== settling`, and counts them with the transient hits.
+The your-keys pass prints them as `transient:` lines, as it does scratchpad hits.
+A file `mask` excludes, such as a live tool store under `~/.codex`, is not a mask target here either.)
 The rule reuses the mask target list; it adds no second list.
 A hit in a mask target that is older than the window still exits 2: the mask pass should have removed it, so it is a defect to see.
 
 `critical` without the mask pass keeps today's behaviour for every file outside the window.
+
+`mask_files.py settling` makes the call. `critical` passes it the same target and exclusion lists `mask` uses, so the two cannot drift.
+A classifier that fails marks every hit durable, so a failure pages.
+(Changed in the build: `S4S_SCRATCH_ROOTS` replaces the two scratchpad roots, so the `critical` tests read a fixture and never a live scratchpad.)
 
 ## 4. The first run
 

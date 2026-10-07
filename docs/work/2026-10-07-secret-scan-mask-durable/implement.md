@@ -24,6 +24,11 @@ Tests go in `local-scan-for-secrets/tests/test_scan_for_secrets.py`, against a f
 7. Change `secret-scan-weekly.job` to mask first; rewrite its header comment and the README "Accepted exposure" section.
 8. `make check`, `tests/test_citations.py`, `sd-docs-lint` and the secrets scan.
 
+## Operator ruling
+
+2026-10-07 ~13:30 MDT, relayed by the hub lead: Q1 to Q5 accepted as recommended in `design.md`.
+Changes found in the build are marked "Changed in the build" in `design.md`.
+
 ## Rollout
 
 The operator runs the first mask by hand (design section 4), then reinstalls the job:

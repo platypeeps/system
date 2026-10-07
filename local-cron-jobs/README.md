@@ -139,7 +139,8 @@ a job fills at the end rather than live. Example:
 Jobs that don't need Claude set `JOB_COMMAND` instead of `JOB_PROMPT` — a
 plain shell command run via `bash -c` (exactly one of the two, never both).
 Example: `examples/secret-scan-weekly.job` runs
-`local-scan-for-secrets/scan-for-secrets.sh critical` every Monday 07:00;
+`local-scan-for-secrets/scan-for-secrets.sh mask --apply --no-prune`, then
+`critical`, every Monday 07:00;
 the scanner's exit 2 on findings counts as a failure on purpose, so leaks
 trigger the failure notifications below.
 

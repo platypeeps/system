@@ -37,12 +37,12 @@ The Monday page fires only for a hit that `mask` cannot remove: a value outside 
 
 ## Acceptance criteria
 
-- [ ] A file that grows between the read and the write keeps every appended byte, and the run counts it as busy.
-- [ ] A file modified inside the settle window is skipped and counted as busy.
-- [ ] After the job, a hit in a session log reads `transient` and the run exits 0.
-- [ ] A hit in a synthetic `~/repos` file still exits 2.
-- [ ] The job log line names the masked count and the busy count.
-- [ ] `make check` passes.
+- [x] A file that grows between the read and the write keeps every appended byte, and the run counts it as busy.
+- [x] A file modified inside the settle window is skipped and counted as busy.
+- [x] After the job, a hit in a session log reads `transient` and the run exits 0.
+- [x] A hit in a synthetic `~/repos` file still exits 2.
+- [x] The job log line names the masked count and the busy count.
+- [x] `make check` passes.
 
 ## Out of scope
 
@@ -53,3 +53,5 @@ The Monday page fires only for a hit that `mask` cannot remove: a value outside 
 ## Log
 
 - 2026-10-07 design record written on a satellite; open questions sent to the hub lead for the operator.
+- 2026-10-07 operator accepted Q1 to Q5. Pull request 1 (the append race) built on `sd-1254-mask-append-race`.
+- 2026-10-07 pull request 2 (mask before the weekly scan) built on this branch. Changes are marked in `design.md`.

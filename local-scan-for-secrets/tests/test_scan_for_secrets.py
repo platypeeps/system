@@ -609,5 +609,91 @@ class MaskRewrite(unittest.TestCase):
         self.assertIn(self.TOKEN.encode(), settled.read_bytes())
 
 
+class Settling(unittest.TestCase):
+    """`critical` reports a hit in a file mask has not reached yet, and does
+    not page on it (sd:1254). The weekly job masks first; mask skips a file
+    modified inside the settle window, so the next run removes that hit.
+    A fixture $HOME and fixture scratch roots only: no live file is read."""
+
+    #: Joined here, so this file is not a finding of the repository scan.
+    TOKEN = "ghp_" + "Zq7" * 12
+    SETTLED = 20 * 60
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+        self.home = self.root / "home"
+        (self.root / "scratch").mkdir()
+        self.home.mkdir()
+        self.env = dict(os.environ, HOME=str(self.home), SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
+                        S4S_SCRATCH_ROOTS=str(self.root / "scratch"), JEV_SECRET_SCAN="0",
+                        S4S_MASK_SETTLE_MIN="10")
+        self.env.pop("S4S_CONF", None)
+        isolate_jev(self.env)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def plant(self, relative: str, age_seconds: float) -> None:
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"text": "token %s"}\n' % self.TOKEN, encoding="utf-8")
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+
+    def critical(self) -> subprocess.CompletedProcess:
+        return subprocess.run(["sh", str(SCRIPT), "critical"], cwd=self.root, env=self.env,
+                              capture_output=True, text=True, timeout=120)
+
+    def test_a_recent_hit_in_a_session_log_is_settling_and_does_not_page(self):
+        self.plant(".codex/sessions/2026/10/07/rollout.jsonl", 60)
+        result = self.critical()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("== settling", result.stdout)
+
+    def test_a_settled_hit_in_a_session_log_still_pages(self):
+        self.plant(".codex/sessions/2026/10/07/rollout.jsonl", self.SETTLED)
+        result = self.critical()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("== settling", result.stdout)
+
+    def test_a_recent_hit_outside_the_mask_targets_still_pages(self):
+        self.plant("repos/project/app.py", 60)
+        result = self.critical()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("== settling", result.stdout)
+
+    def test_a_recent_hit_that_mask_excludes_still_pages(self):
+        # Under a mask target, but a live tool store mask never rewrites.
+        self.plant(".codex/config.toml", 60)
+        result = self.critical()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("== settling", result.stdout)
+
+    def test_a_recent_exported_value_in_a_session_log_is_settling(self):
+        # Pass 2: a value exported in the shell env, in no known format.
+        value = "example-" + "q4" * 12
+        env_file = self.home / ".config" / "shell" / "env.sh"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text('export EXAMPLE_API_KEY="%s"\n' % value, encoding="utf-8")
+        log = self.home / ".codex" / "sessions" / "rollout.jsonl"
+        log.parent.mkdir(parents=True)
+        log.write_text('{"text": "%s"}\n' % value, encoding="utf-8")
+        result = self.critical()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("transient: $EXAMPLE_API_KEY found in: .codex/sessions/rollout.jsonl", result.stdout)
+        stamp = time.time() - self.SETTLED
+        os.utime(log, (stamp, stamp))
+        result = self.critical()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("YOURS: $EXAMPLE_API_KEY found in: .codex/sessions/rollout.jsonl", result.stdout)
+
+    def test_a_window_of_zero_settles_nothing(self):
+        self.plant(".codex/sessions/2026/10/07/rollout.jsonl", 60)
+        self.env["S4S_MASK_SETTLE_MIN"] = "0"
+        result = self.critical()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
