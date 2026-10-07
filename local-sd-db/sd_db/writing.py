@@ -587,8 +587,8 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
                         orphan, (text, written) = found, scaffold(day)
                 except (OSError, UnicodeError, WorkflowError):
                     pass
-            if orphan is None and (piece_for_key(connection, target, piece) is not None or any(
-                    (disk / tree / piece).exists() for tree in ("content", "content-parked"))):
+            if (disk / "content-parked" / piece).exists() or orphan is None and (
+                    piece_for_key(connection, target, piece) is not None or folder.exists()):
                 raise WorkflowError(f"piece {piece} already exists in {target}; pass another slug")
             metadata = _metadata(text)
             if FILE_STAGES.get(metadata.get("status")) != "accepted":

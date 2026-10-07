@@ -472,6 +472,15 @@ class Promote(WritingCase):
             promote(self.db, self.idea, who="operator")
         self.assertEqual(self.file().read_text(), text)
 
+    def test_an_untouched_scaffold_with_a_parked_twin_is_not_adopted(self):
+        self.orphan()
+        parked = self.repo / "content-parked" / self.year / "an-idea-uber-cafe" / "index.md"
+        parked.parent.mkdir(parents=True)
+        parked.write_text("held\n")
+        with self.assertRaisesRegex(WorkflowError, "already exists"):
+            promote(self.db, self.idea, who="operator")
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+
     def test_an_open_outer_transaction_is_refused(self):
         self.db.execute("BEGIN")
         try:
