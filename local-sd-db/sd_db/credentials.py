@@ -21,7 +21,7 @@ import subprocess
 from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .writes import record_state
 
@@ -35,11 +35,18 @@ _MCP_LINE = re.compile(r"^(?P<name>\S.*?): .* - (?P<mark>[✓✗!⚠])\s*(?P<tex
 _MCP_STATES = {"✓": "connected", "✗": "failed"}
 
 
+class _NoRedirect(HTTPRedirectHandler):
+    """Follows no redirect: urllib would resend the Authorization header to wherever a 3xx points."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def _get(url: str, token: str) -> tuple[int, dict[str, str]]:
-    """The status and lower-cased headers of a GET carrying `token`; never the body."""
+    """The status and lower-cased headers of a GET carrying `token`; never the body. A redirect is its 3xx status."""
     request = Request(url, headers={"Authorization": f"Bearer {token}", "User-Agent": "sd-db-credentials"})
     try:
-        with urlopen(request, timeout=TIMEOUT) as reply:  # nosec B310 - fixed or operator-set origin
+        with build_opener(_NoRedirect).open(request, timeout=TIMEOUT) as reply:  # nosec B310 - fixed or operator-set origin
             return reply.status, {key.lower(): value for key, value in reply.headers.items()}
     except HTTPError as error:
         return error.code, {}

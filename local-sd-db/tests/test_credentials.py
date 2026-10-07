@@ -11,7 +11,9 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -108,10 +110,48 @@ class Probes(unittest.TestCase):
         self.assertEqual((probes["github_pat"]["valid"], probes["github_pat"]["expires"]), (True, None))
 
 
+class Redirects(unittest.TestCase):
+    """A token goes only where it was addressed: `_get` follows no redirect (sd:2203 review)."""
+
+    def serve(self, handler):
+        server = HTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    def test_a_redirect_is_its_status_and_the_token_never_reaches_the_target(self):
+        seen = []
+
+        class Target(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        target = self.serve(Target)
+
+        class Mover(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"{target}/api/")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        status, headers = credentials._get(self.serve(Mover) + "/api/", HA)
+        self.assertEqual((status, headers), (302, {}))
+        self.assertEqual(seen, [], "the redirect was followed with the token")
+
+
 class TheVerb(unittest.TestCase):
     def setUp(self):
         # A seam the verb misses must fail here, not reach GitHub or run gh and claude.
-        for target, name in ((credentials, "urlopen"), (credentials.subprocess, "run")):
+        for target, name in ((credentials, "build_opener"), (credentials.subprocess, "run")):
             patcher = mock.patch.object(target, name, side_effect=AssertionError(f"the test reached the real {name}"))
             patcher.start()
             self.addCleanup(patcher.stop)

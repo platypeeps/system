@@ -365,6 +365,12 @@ class TheDocument(Collectors, ScreenCase):
                                                       "group/epsilon: API HTTP 403; retry on a later collection"])
         self.assertEqual(self.area("dep", protection=protection_of(ALERTED))["at"], "2026-09-05T08:00:00Z")
 
+    def test_of_sibling_checkouts_the_newest_observation_counts(self):
+        stale = {**ALERTED[0], "repo": "/checkouts/aardvark", "observed_at": "2026-09-01T08:00:00Z",
+                 "alerts": {"dependabot": {"open": 0, "more": False}}}
+        rows = [row["id"] for row in self.area("dep", protection=protection_of([stale, ALERTED[0]]))["rows"]]
+        self.assertEqual(rows, ["dep:/checkouts/alpha"])
+
     def test_no_open_alert_is_an_ok_row_and_no_managed_repo_is_unknown(self):
         clean = [{**repo, "alerts": {"dependabot": {"open": 0, "more": False}}} for repo in ALERTED[:2]]
         (row,) = self.area("dep", protection=protection_of(clean))["rows"]

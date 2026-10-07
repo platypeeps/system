@@ -420,16 +420,16 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
 
 
 def _managed(found: list[dict]) -> list[dict]:
-    """The managed repositories, one per GitHub repository: sibling checkouts share one row."""
+    """The managed repositories, one per GitHub repository: of sibling checkouts, the newest observation."""
     if found and not any("managed" in repo for repo in found):
         # An installed sd_db older than sd:2205 reports neither flag nor alerts: not "no managed repository".
         raise ValueError("the installed sd_db reports no managed flag; install the build that stores alerts (sd:2205)")
-    seen, out = set(), []
+    newest: dict[str, dict] = {}
     for repo in found:
-        if repo.get("managed") and (repo.get("slug") or repo["repo"]) not in seen:
-            seen.add(repo.get("slug") or repo["repo"])
-            out.append(repo)
-    return out
+        key = repo.get("slug") or repo["repo"]
+        if repo.get("managed") and (key not in newest or (repo.get("observed_at") or "") > (newest[key].get("observed_at") or "")):
+            newest[key] = repo
+    return list(newest.values())
 
 
 def _alert_extra(managed: list[dict]) -> dict:
