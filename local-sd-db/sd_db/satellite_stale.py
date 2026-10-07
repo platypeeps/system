@@ -19,6 +19,7 @@ alert waits until progress moves past it and stalls again.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import subprocess
@@ -88,11 +89,25 @@ def _instant(value: str) -> datetime:
     return parsed if parsed.tzinfo else parsed.astimezone()
 
 
-def _claim(row: sqlite3.Row) -> Claim:
-    body = json.loads(row["body"] or "{}")
-    return Claim(row=int(row["id"]), item=int(row["key"][len(CLAIM_PREFIX):]), host=body.get("host", "?"),
-                 branch=body.get("branch"), since=body.get("since") or row["timestamp"],
-                 quiet_until=body.get("quiet_until"))
+def _claim(row: sqlite3.Row) -> Claim | None:
+    """The claim a row holds, or `None` for a row `claim` did not write,
+    so one malformed row cannot stop the check for every other item."""
+    try:
+        body = json.loads(row["body"] or "{}")
+        item = int(row["key"][len(CLAIM_PREFIX):])
+        if not isinstance(body, dict):
+            return None
+        held = Claim(row=int(row["id"]), item=item, host=str(body.get("host") or "?"),
+                     branch=body.get("branch") or None, since=body.get("since") or row["timestamp"],
+                     quiet_until=body.get("quiet_until"))
+        for value in (held.since, held.quiet_until):
+            if value is not None:
+                _instant(value)
+        if held.branch is not None and not isinstance(held.branch, str):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return held
 
 
 def _open_rows(connection: sqlite3.Connection, kind: str, key: str) -> list[int]:
@@ -114,17 +129,19 @@ def claim(connection: sqlite3.Connection, item: int, *, host: str, branch: str |
         _instant(quiet_until)
     when = at or now()
     key = f"{CLAIM_PREFIX}{item}"
+    body = {"host": host, "branch": branch, "since": when, "quiet_until": quiet_until}
+    # One transaction: a failed insert keeps the old claim, and BEGIN
+    # IMMEDIATE orders two replacements so only one claim stays open.
     with transaction(connection):
         _resolve(connection, _open_rows(connection, "heartbeat", key), when)
-    body = {"host": host, "branch": branch, "since": when, "quiet_until": quiet_until}
-    return record_state(connection, "heartbeat", key=key, body=body, timestamp=when)
+        return record_state(connection, "heartbeat", key=key, body=body, timestamp=when)
 
 
 def unclaim(connection: sqlite3.Connection, item: int, *, at: str | None = None) -> bool:
     """Release `item`'s claim and close its episode. False when none was open."""
     when = at or now()
-    claims = _open_rows(connection, "heartbeat", f"{CLAIM_PREFIX}{item}")
     with transaction(connection):
+        claims = _open_rows(connection, "heartbeat", f"{CLAIM_PREFIX}{item}")
         _resolve(connection, claims, when)
         _resolve(connection, _open_rows(connection, "watermark", f"{EPISODE_PREFIX}{item}"), when)
     return bool(claims)
@@ -134,7 +151,7 @@ def open_claims(connection: sqlite3.Connection) -> list[Claim]:
     rows = connection.execute(
         "SELECT id, key, timestamp, body FROM state WHERE kind = 'heartbeat' AND key LIKE ? "
         "AND resolved_at IS NULL ORDER BY timestamp, id", (f"{CLAIM_PREFIX}%",))
-    return [_claim(row) for row in rows]
+    return [held for held in map(_claim, rows) if held is not None]
 
 
 def _alerted_on(connection: sqlite3.Connection, item: int) -> str | None:
@@ -207,7 +224,7 @@ def alert(connection: sqlite3.Connection, verdicts: list[Verdict], *,
         when = at or now()
         with transaction(connection):
             _resolve(connection, _open_rows(connection, "watermark", key), when)
-        record_state(connection, "watermark", key=key, body=verdict.progress, timestamp=when)
+            record_state(connection, "watermark", key=key, body=verdict.progress, timestamp=when)
         sent.append(verdict)
     return sent
 
@@ -219,7 +236,7 @@ def parse_hours(text: str | None) -> float:
         hours = float(text)
     except ValueError:
         hours = -1.0
-    if hours <= 0:
+    if not (math.isfinite(hours) and hours > 0):
         raise ClaimRefused(f"SD_SATELLITE_STALE_HOURS={text!r} is not a positive number of hours")
     return hours
 

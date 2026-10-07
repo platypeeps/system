@@ -106,6 +106,25 @@ class TheClaim(Database):
         retention.compact_heartbeats(self.connection)
         self.assertEqual([c.host for c in satellite_stale.open_claims(self.connection)], ["two"])
 
+    def test_a_failed_replacement_keeps_the_old_claim(self):
+        item = self.item()
+        satellite_stale.claim(self.connection, item, host="one", at=at(0))
+        with mock.patch.object(satellite_stale, "record_state", side_effect=sqlite3.OperationalError("disk")):
+            with self.assertRaises(sqlite3.OperationalError):
+                satellite_stale.claim(self.connection, item, host="two", at=at(1))
+        self.assertEqual([c.host for c in satellite_stale.open_claims(self.connection)], ["one"])
+
+    def test_one_malformed_claim_does_not_stop_the_others(self):
+        item = self.item()
+        satellite_stale.claim(self.connection, item, host="laptop", at=at(0))
+        for key, body in (("satellite-claim:x", "{}"), ("satellite-claim:8", "[]"), ("satellite-claim:9", "null"),
+                          ("satellite-claim:10", '{"since": 123}'), ("satellite-claim:11", "not json")):
+            self.connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('heartbeat', ?, ?, ?)",
+                                    (key, at(0), body))
+        self.connection.commit()
+        self.assertEqual([c.item for c in satellite_stale.open_claims(self.connection)], [item])
+        self.assertEqual(self.state_of(self.assess(4), item), "stale")
+
     def test_a_claim_on_no_item_is_refused(self):
         with self.assertRaises(satellite_stale.ClaimRefused):
             satellite_stale.claim(self.connection, 999, host="laptop")
@@ -206,6 +225,18 @@ class TheEpisode(Database):
         sent = []
         satellite_stale.alert(self.connection, self.assess(4), send=sent.append)
         self.assertEqual(len(sent), 1)
+
+    def test_a_failed_watermark_replacement_keeps_the_old_episode(self):
+        item = self.item()
+        satellite_stale.claim(self.connection, item, host="laptop", at=at(0))
+        satellite_stale.alert(self.connection, self.assess(4), send=lambda _alert: None)
+        self.note(item, 5)
+        with mock.patch.object(satellite_stale, "record_state", side_effect=sqlite3.OperationalError("disk")):
+            with self.assertRaises(sqlite3.OperationalError):
+                satellite_stale.alert(self.connection, self.assess(9), send=lambda _alert: None)
+        open_rows = self.connection.execute(
+            "SELECT body FROM state WHERE key = ? AND resolved_at IS NULL", (f"satellite-stale:{item}",)).fetchall()
+        self.assertEqual([row[0] for row in open_rows], [at(0)])
 
 
 class TheWindow(unittest.TestCase):
@@ -409,9 +440,10 @@ class TheThreshold(Cli):
 
     def test_a_malformed_threshold_is_refused(self):
         self.seed()
-        code, _, err = self.run_cli("satellite-stale", "status", env={"SD_SATELLITE_STALE_HOURS": "soon"})
-        self.assertEqual(code, 1)
-        self.assertIn("SD_SATELLITE_STALE_HOURS", err)
+        for text in ("soon", "nan", "inf", "-1"):
+            code, _, err = self.run_cli("satellite-stale", "status", env={"SD_SATELLITE_STALE_HOURS": text})
+            self.assertEqual(code, 1, text)
+            self.assertIn("SD_SATELLITE_STALE_HOURS", err)
 
 
 if __name__ == "__main__":
