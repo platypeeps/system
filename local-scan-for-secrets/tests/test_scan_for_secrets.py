@@ -246,12 +246,15 @@ class TheLocalJudgment(unittest.TestCase):
             'cat >/dev/null\n')
         (stub / "jev").chmod(0o755)
         log = self.root / "calls"
-        self.scan(PATH=f"{stub}:{self.env['PATH']}", JEV_STUB_LOG=str(log), JEV_RUN="")
+        result = self.scan(PATH=f"{stub}:{self.env['PATH']}", JEV_STUB_LOG=str(log), JEV_RUN="")
         calls = log.read_text().splitlines()
         self.assertEqual([line.split()[0] for line in calls], ["enabled", "noul", "noul"])
         subjects = sorted(re.search(r"--subject (\S+)", line).group(1) for line in calls[1:])
-        expected = sorted("secret-scan:" + hashlib.sha256(f"one.txt:{n}\n".encode()).hexdigest()[:16]
-                          for n in (1, 2))
+        # The report names each hit's location; ripgrep prints `one.txt`, `grep -E` `./one.txt`.
+        locations = re.findall(r"^\s+(\S*one\.txt:\d+):", result.stdout, re.M)
+        self.assertEqual(len(locations), 2, result.stdout)
+        expected = sorted("secret-scan:" + hashlib.sha256(f"{where}\n".encode()).hexdigest()[:16]
+                          for where in locations)
         self.assertEqual(subjects, expected)
         self.assertNotIn(self.TOKEN[4:], " ".join(subjects))
         runs = {line.rsplit("run=", 1)[1] for line in calls}
