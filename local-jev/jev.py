@@ -2083,9 +2083,13 @@ def main(argv=None, out=None, env=None, **kw) -> int:
             else:
                 sys.stderr.write(f"jev: {exc}\n")
                 code = EXIT_ERROR
-        spent = _EVENT or {}
-        budget_charge(stage, env, (spent.get("tokens_in") or 0) +
-                      (spent.get("tokens_out") or 0), counted[0] if counted else "")
+        finally:
+            # In `finally`: an answer no verb can read still reported its
+            # usage, and an uncharged call would lift a token ceiling.
+            spent = _EVENT or {}
+            budget_charge(stage, env, (spent.get("tokens_in") or 0) +
+                          (spent.get("tokens_out") or 0),
+                          counted[0] if counted else "")
     if shadow is not None:
         # The caller's own answer, always, and exit 0. A stage in shadow mode
         # changes no behaviour, and that has to hold on the run where the call

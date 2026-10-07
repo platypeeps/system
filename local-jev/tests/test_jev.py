@@ -52,6 +52,8 @@ class Stub(BaseHTTPRequestHandler):
     # A 200 that carries no answers: the endpoint is up and what came back is
     # unusable, which is its own outcome class.
     drop_answers = False
+    # A 200 whose answers are null: a shape no verb can read.
+    null_answers = False
 
     def log_message(self, *args):
         pass
@@ -92,6 +94,8 @@ class Stub(BaseHTTPRequestHandler):
                                 "confidence": Stub.confidence}
         if Stub.drop_answers:
             answers = {}
+        if Stub.null_answers:
+            answers = {qid: None for qid in answers}
         body = json.dumps({"model": "jev-stub", "answers": answers,
                            "usage": {"input_tokens": Stub.input_tokens,
                                      "output_tokens": Stub.output_tokens}}).encode()
@@ -132,6 +136,7 @@ class StubServer(unittest.TestCase):
         Stub.input_tokens = 1
         Stub.output_tokens = 1
         Stub.drop_answers = False
+        Stub.null_answers = False
         Stub.seen = []
 
     def env(self, **extra):
@@ -1132,3 +1137,16 @@ class TestBudget(StubServer):
                     {"day": today, "stages": {self.STAGE: {"calls": bad}}}))
                 env = self.env(**{self.STAGE + "_MAX_CALLS": "1"})
                 self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True)[0], "budget")
+
+    def test_a_malformed_answer_is_still_charged(self):
+        Stub.input_tokens, Stub.output_tokens = 10, 10
+        for verb in (["noul", "q"], ["choice", "q", "--criteria", "a,b"],
+                     ["score", "q", "--levels", "a,b"]):
+            with self.subTest(verb=verb[0]):
+                stage = "JEV_TEST_" + verb[0].upper()
+                limit = {stage + "_MAX_TOKENS": "5"}
+                Stub.null_answers = True
+                with self.assertRaises(Exception):
+                    self.run_verbose(verb + ["--stage", stage], **limit)
+                Stub.null_answers = False
+                self.assertEqual(self.run_verbose(verb + ["--stage", stage], **limit)[0], 3)
