@@ -184,6 +184,41 @@ different question and gets this one wrong in both directions: it returns
 switches, and grepping for `enabled JEV_` instead misses every caller that
 passes the name through a constant. Two of the nine appear in neither result.
 
+### Per-stage budgets
+
+```sh
+JEV_HEALTH_CHECK_MAX_CALLS=10       # requests per UTC day
+JEV_HEALTH_CHECK_MAX_TOKENS=20000   # input plus output tokens per UTC day
+```
+
+A stage can carry a ceiling for each UTC day (sd:1239). A spent budget is a
+decline with cause `budget`, exactly like Jev off: `jev enabled STAGE` exits
+3, a `--fallback` is printed, and a call without one exits 3. The caller's
+old path runs, and the ledger counts the decline under that cause.
+
+- Unset means no ceiling. A stage with none reads and writes no file.
+- A call counts itself before it is sent, so two callers cannot share the
+  last call. `enabled` reads the counter and counts nothing.
+- Tokens are known only after the answer, so a token ceiling stops the call
+  after the one that crossed it.
+- A ceiling that is not a whole number declines, and so does a counter that
+  cannot be read or locked within a second, or that is not a budget book. A
+  limit you set is never lifted silently.
+- A token charge that cannot take the lock is left beside the counter as a
+  `pending-*.json` file; the next call that holds the lock adds it.
+- Tokens count toward the UTC day their call was counted on. A call that
+  crosses midnight charges nothing to the new day.
+- Every counter in the book must be a whole number from 0; a book holding
+  anything else declines, like a book that does not parse.
+- The counter is one file, `~/.local/state/jev/budget.json`
+  (`XDG_STATE_HOME`, or `JEV_BUDGET_DIR`), locked through `budget.json.lock`
+  beside it. It holds the current UTC day only, and each write replaces it
+  whole, so a failed write leaves the last counts.
+- `status` and the comparison arms are not counted; `JEV_COMPARE_STAGES`
+  bounds the arms.
+
+Put the ceilings in `<config>/jev/.env`; an exported value wins over it.
+
 ## Exit codes
 
 `status` answers `0` ok, `3` no key on this machine, `1` configured and
