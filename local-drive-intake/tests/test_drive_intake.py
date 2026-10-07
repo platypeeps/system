@@ -1002,6 +1002,24 @@ class TestJevBatching(unittest.TestCase):
                 self.PATHS, lambda state: subprocess.CompletedProcess([], code, out, ""))
             self.assertEqual(routes, dict.fromkeys(self.PATHS, "noise"), out)
 
+    def test_each_call_names_its_paths_by_hash_and_the_run_is_one_id(self):
+        """`--subject` is a hash of the paths, never a path, and every call shares `JEV_RUN` (sd:2953)."""
+        paths = [f"weird/{n}.xyz" for n in range(9)]  # one batch of eight, then a choice of one
+        with unittest.mock.patch.dict(os.environ):
+            os.environ.pop("JEV_RUN", None)
+            self.route(paths, self.answered(lambda path: "document"))
+        asked = [args for args, _ in self.calls if args[1] != "enabled"]
+        self.assertEqual([args[1] for args in asked], ["ask", "choice"])
+        subjects = [args[args.index("--subject") + 1] for args in asked]
+        for subject in subjects:
+            self.assertRegex(subject, r"^drive-intake:[0-9a-f]{16}$")
+        # What an outcome recomputes: sorted paths, one per line.
+        digest = hashlib.sha256("weird/8.xyz\n".encode()).hexdigest()[:16]
+        self.assertEqual(subjects[1], f"drive-intake:{digest}")
+        runs = {kwargs["env"]["JEV_RUN"] for _, kwargs in self.calls}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^drive-intake-\d{8}T\d{6}-[0-9a-f]{4}$")
+
     def test_a_call_that_raises_is_noise_for_every_path(self):
         def boom(state):
             raise subprocess.TimeoutExpired("jev", 60)

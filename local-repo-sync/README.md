@@ -94,6 +94,8 @@ and the tip's age in days only: no repository, branch, sha or path. Stage
 and `jev off`, no key or a spent budget skip it too. The suite stubs
 `local-jev` and never reaches it.
 
+**Ledger subject and run (sd:2953).** The hygiene `ask` passes `--subject repo-sync:<16 hex>`: the first 16 hex of the sha256 of the listed records (class, count, reason, sha, checkout, unit-separated), sorted, one per line. An outcome recomputes it from the same hygiene listing. The script exports `JEV_RUN=repo-sync-<UTC yyyymmddThhmmss>-<4 hex>` once, so the reports' `notify.sh` calls join the same run.
+
 ## Profiles
 
 The work and personal machines carry different repo lists, so the list lives in

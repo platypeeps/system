@@ -12,8 +12,10 @@ so nothing is deleted and the operator's config is never read.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -234,6 +236,27 @@ class TheLocalJudgment(unittest.TestCase):
                          [("JEV_SECRET_SCAN", "baseline")] * 2 + [("JEV_SECRET_SCAN", "kev")] * 2)
         self.assertTrue(all(r["request"]["state_sha256"] for r in lines if r["arm"] == "kev"))
         self.assertNotIn(self.TOKEN, "".join(path.read_text() for path in files))
+
+    def test_each_hit_is_named_by_its_location_and_the_run_is_one_id(self):
+        """`--subject` hashes `path:line`, never the token; one `JEV_RUN` per run (sd:2953)."""
+        stub = self.root / "stub"
+        stub.mkdir()
+        (stub / "jev").write_text(
+            '#!/bin/sh\nprintf \'%s run=%s\\n\' "$*" "${JEV_RUN:-}" >> "$JEV_STUB_LOG"\n'
+            'cat >/dev/null\n')
+        (stub / "jev").chmod(0o755)
+        log = self.root / "calls"
+        self.scan(PATH=f"{stub}:{self.env['PATH']}", JEV_STUB_LOG=str(log), JEV_RUN="")
+        calls = log.read_text().splitlines()
+        self.assertEqual([line.split()[0] for line in calls], ["enabled", "noul", "noul"])
+        subjects = sorted(re.search(r"--subject (\S+)", line).group(1) for line in calls[1:])
+        expected = sorted("secret-scan:" + hashlib.sha256(f"one.txt:{n}\n".encode()).hexdigest()[:16]
+                          for n in (1, 2))
+        self.assertEqual(subjects, expected)
+        self.assertNotIn(self.TOKEN[4:], " ".join(subjects))
+        runs = {line.rsplit("run=", 1)[1] for line in calls}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^secret-scan-\d{8}T\d{6}-[0-9a-f]{4}$")
 
     def test_the_stage_switched_off_asks_nobody(self):
         self.scan(JEV_SECRET_SCAN="0")

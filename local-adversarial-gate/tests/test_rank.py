@@ -23,6 +23,7 @@ and it records the request it was given, so a case can assert what left the
 machine rather than trusting that it was only the findings.
 """
 
+import hashlib
 import json
 import pathlib
 import re
@@ -87,6 +88,7 @@ SCORES = {"f1": 0.11, "f2": 0.94, "f3": 0.62}
 
 # Answers every question from a table baked in, and records the request.
 STUB_OK = """
+printf '%s run=%s\\n' "$*" "${JEV_RUN:-}" >> "$JEV_CALLS_LOG"
 case "$1" in
   enabled)
     # `jev enabled STAGE` reads the stage variable itself; a stub that ignores
@@ -124,6 +126,7 @@ class RankAgainstAStubJev(unittest.TestCase):
         self.result = self.tmp / "adversarial.md"
         self.result.write_text(RESULT)
         self.questions_log = self.tmp / "questions.json"
+        self.calls_log = self.tmp / "calls"
         self.state_log = self.tmp / "state.json"
         self.answers = self.tmp / "answers.json"
         self.answers.write_text(json.dumps(
@@ -142,6 +145,7 @@ class RankAgainstAStubJev(unittest.TestCase):
             "PATH": "/usr/bin:/bin",
             "ADVERSARIAL_GATE_JEV": str(jev),
             "JEV_QUESTIONS_LOG": str(self.questions_log),
+            "JEV_CALLS_LOG": str(self.calls_log),
             "JEV_STATE_LOG": str(self.state_log),
             "JEV_ANSWERS": str(self.answers),
         }
@@ -273,6 +277,20 @@ class RankAgainstAStubJev(unittest.TestCase):
         self.assertNotIn("## Verdict", blob)
         for text in state["findings"].values():
             self.assertLessEqual(len(text), 1500)
+
+    def test_the_ask_names_the_result_by_hash_and_the_run_is_one_id(self):
+        """`--subject` hashes the unranked file, and both calls share `JEV_RUN` (sd:2953)."""
+        result = self.rank()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls_log.read_text().splitlines()
+        self.assertEqual([line.split()[0] for line in calls], ["enabled", "ask"])
+        # What an outcome recomputes: `shasum -a 256` of the file as written.
+        subject = f"adversarial-gate:{hashlib.sha256(RESULT.encode()).hexdigest()[:16]}"
+        self.assertIn(f"--subject {subject} run=", calls[1])
+        self.assertIn(subject, result.stderr)
+        runs = {line.rsplit("run=", 1)[1] for line in calls}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^adversarial-gate-\d{8}T\d{6}-[0-9a-f]{4}$")
 
     def test_every_finding_is_asked_in_one_request(self):
         # Questions in a single `ask` run in parallel; N findings cost one

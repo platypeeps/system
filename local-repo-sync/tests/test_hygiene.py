@@ -988,7 +988,7 @@ class NightlyHygieneTest(unittest.TestCase):
 JEV_STUB = """#!/bin/sh
 # Test stub for local-jev: log each call, and keep what `ask` was handed.
 # `enabled STAGE` reads that stage's variable, as the real command does.
-printf '%s\\n' "$*" >> "$JEV_LOG"
+printf '%s run=%s\\n' "$*" "${JEV_RUN:-}" >> "$JEV_LOG"
 case "$1" in
   enabled)
     eval "word=\\${$2:-}"
@@ -1027,7 +1027,8 @@ class NightlyJevShadowTest(unittest.TestCase):
         return f
 
     def nightly(self, f, **extra):
-        return f.run("nightly", expect=0, extra_env={"JEV_LOG": str(self.log), **extra})
+        return f.run("nightly", expect=0,
+                     extra_env={"JEV_LOG": str(self.log), "JEV_RUN": "", **extra})
 
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
@@ -1052,6 +1053,19 @@ class NightlyJevShadowTest(unittest.TestCase):
         self.assertEqual(list(state["entries"]), ["h1"])
         self.assertIn("1 commit(s) on no remote", state["entries"]["h1"])
         self.assertIn("last commit 0 day(s) ago", state["entries"]["h1"])
+
+    def test_the_ask_names_the_listing_by_hash_and_the_run_is_one_id(self):
+        """`--subject` hashes the listed records; both calls share `JEV_RUN` (sd:2953)."""
+        f = self.fixture()
+        self.nightly(f)
+        calls = self.calls()
+        self.assertEqual(len(calls), 2, calls)
+        found = re.search(r"--subject (\S+) ", calls[1])
+        self.assertIsNotNone(found, calls[1])
+        self.assertRegex(found.group(1), r"^repo-sync:[0-9a-f]{16}$")
+        runs = {line.rsplit("run=", 1)[1] for line in calls}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^repo-sync-\d{8}T\d{6}-[0-9a-f]{4}$")
 
     def test_each_listed_line_is_one_entry_in_report_order(self):
         f = self.fixture()

@@ -59,7 +59,8 @@ with open(log, "a") as fh:
 # Everything handed to jev besides the files it is pointed at: its argv and
 # its stdin, for every verb, so a test can read all of what one run sent.
 with open(os.path.join(os.environ["JEV_STUB_DIR"], "wire"), "a") as fh:
-    fh.write(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read()}) + "\\n")
+    fh.write(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read(),
+                         "run": os.environ.get("JEV_RUN")}) + "\\n")
 if verb == "enabled":
     # `jev enabled STAGE` reads the stage variable itself, and the stub has to
     # honour it or a caller that switched its stage off would still be ordered.
@@ -341,6 +342,7 @@ esac
             "JEV_STUB_DIR": str(d / "payload"),
         })
         env.pop("JEV_HEALTH_CHECK", None)
+        env.pop("JEV_RUN", None)
         # The fixture labels carry the default prefix.
         env.pop("SYSTEM_TOOLS_LABEL_PREFIX", None)
         env.update(extra)
@@ -549,6 +551,21 @@ esac
                              (shape, findings))
         # Fix lines never leave: they are nothing but absolute paths.
         self.assertNotIn("by hand", " ".join(findings))
+
+    def test_the_ask_names_the_findings_by_hash_and_the_run_is_one_id(self):
+        """`--subject` hashes the shareable forms; both calls share `JEV_RUN` (sd:2953).
+
+        The suite stubs `date`, so the run id's clock part is the stub's; its
+        prefix and that one id reaches both calls are what this pins.
+        """
+        calls = [json.loads(line) for line in
+                 self.sent(self.runs["ordered"])["wire"].splitlines()]
+        self.assertEqual([c["argv"][0] for c in calls], ["enabled", "ask"])
+        argv = calls[1]["argv"]
+        self.assertRegex(argv[argv.index("--subject") + 1], r"^health-check:[0-9a-f]{16}$")
+        runs = {c["run"] for c in calls}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertTrue(runs.pop().startswith("health-check-"))
 
     def test_a_finding_without_a_shareable_form_stops_the_ordering(self):
         self.assertEqual(self.dns_site_count, 1, "the DNS finding site moved")
