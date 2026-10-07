@@ -420,6 +420,19 @@ class TestEntrypoint(StubServer):
         return subprocess.run([str(ENTRYPOINT)] + args, capture_output=True,
                               text=True, env=environ, cwd=cwd)
 
+    def test_only_a_caller_argument_skips_the_parent_lookup(self):
+        """sd:2952: a question that mentions `--caller` still names its parent."""
+        python = Path(tempfile.mkdtemp()) / "python"
+        python.write_text('#!/bin/sh\nprintf "%s\\n" "${JEV_PARENT_ARGS:+looked up}"\n')
+        python.chmod(0o755)
+        for args, want in ((["noul", "Does --caller mean this?"], "looked up"),
+                           (["noul", "is it?", "--caller", "me"], ""),
+                           (["noul", "is it?", "--caller=me"], "")):
+            with self.subTest(args=args):
+                done = self.sh(args, env={"PYTHON": str(python), "JEV_CALLER": "",
+                                          "JEV_PARENT_ARGS": ""})
+                self.assertEqual(done.stdout, want + "\n")
+
     def test_no_argument_prints_usage_to_stderr_and_exits_one(self):
         done = self.sh([])
         self.assertEqual(done.returncode, 1)
