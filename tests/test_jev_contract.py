@@ -77,6 +77,7 @@ KNOWN_CALLERS = frozenset({
     "local-notify",
     "local-obsidian-review",
     "local-obsidian-tasks",
+    "local-project-dashboard",
     "local-scan-for-secrets",
     "local-sd-plan",
 })
@@ -86,10 +87,6 @@ KNOWN_CALLERS = frozenset({
 #: are candidate credentials (sd:2761).
 LOCAL_ONLY_CALLERS = frozenset({"local-scan-for-secrets"})
 
-#: `local-bin-links` puts `jev` on PATH and `local-project-dashboard` has a
-#: `score` collector of its own. Neither asks Jev anything. They are named
-#: here rather than pattern-matched away, so that a day one of them does
-#: starts an argument instead of passing.
 #: Folders whose `--criteria` is built at runtime, so no literal exists for
 #: `test_no_fallback_token_is_a_name_its_own_criteria_offers` to compare a
 #: fallback against. Each is a place that rule cannot see, written down so it
@@ -111,7 +108,9 @@ SELF = "tests/test_jev_contract.py"
 #: asks Jev nothing, so it is excluded by path the same way.
 SUITE_RUNNER = "tests/ci-native.sh"
 
-#: Folders that name `jev` without asking it anything. `local-sd-db` is the
+#: Folders that name `jev` without asking it anything, named here rather than
+#: pattern-matched away so that a day one of them does starts an argument.
+#: `local-bin-links` puts `jev` on PATH. `local-sd-db` is the
 #: store the calls are recorded in: `sd_db/judgment.py` names the two arms a
 #: row can carry, one of which is spelled `jev`, and a schema that could not
 #: name the thing it counts would be a worse schema. It holds no key, opens no
@@ -122,7 +121,6 @@ SUITE_RUNNER = "tests/ci-native.sh"
 NOT_CALLERS = frozenset({
     "local-bin-links",
     "local-machine-setup",
-    "local-project-dashboard",
     "local-sd-db",
 })
 

@@ -30,6 +30,19 @@ class RuntimeRefused(Exception):
     pass
 
 
+def jev_command():
+    """The checkout's `local-jev/jev.sh`, else `jev` on PATH, else None.
+
+    The checkout's copy first: launchd's PATH (`LAUNCH_PATH`) holds no
+    `local-bin-links` folder. None means the failed-job shadow asks nothing.
+    """
+    script = HERE.parent / "local-jev" / "jev.sh"
+    if script.is_file():
+        return ["sh", str(script)]
+    found = shutil.which("jev")
+    return [found] if found else None
+
+
 def _run(arguments, *, check=True, timeout=20):
     try:
         result = subprocess.run(arguments, capture_output=True, text=True, timeout=timeout)
@@ -383,9 +396,10 @@ def _plist(config_path, config, home):
 #: Carried into the LaunchAgent when the installing shell sets them, so the
 #: server reads the same vault, checkout root, labels, config directory and
 #: extra job directories as `dashboard.sh`. `OBSIDIAN_VAULT` is the vault
-#: `sd store` writes Notes' quick notes into (sd:2549).
+#: `sd store` writes Notes' quick notes into (sd:2549). `JEV_JOB_TRIAGE`
+#: switches the failed-job Jev shadow off (`job_failures`, sd:2095).
 PASSED_THROUGH = ("VAULT", "REPO_ROOT", "SYSTEM_TOOLS_LABEL_PREFIX", "SYSTEM_TOOLS_CONFIG",
-                  "CRON_JOBS_EXTRA_DIRS", "OBSIDIAN_VAULT")
+                  "CRON_JOBS_EXTRA_DIRS", "OBSIDIAN_VAULT", "JEV_JOB_TRIAGE")
 
 
 def _launch_environment():

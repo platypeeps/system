@@ -32,6 +32,14 @@ because the shadow table carries no `updated_at`), and Jobs through
 before every other row; it names the exit code or signal, the time its log was
 last written, and its retry line, `launchctl kickstart <service>`, the one Operations Jobs sends
 (a hand-run of `cron-jobs.sh run` does not clear launchd's record).
+A failed job's detail ends with a triage class from fixed rules in `sd_dashboard/job_failures.py`:
+`transient`, `probably transient`, `unclear` or `needs a person`, and the rule that matched (sd:1166).
+The rules read launchd's signal or exit code, then the last run's section of the job's log.
+The Operations Jobs card shows the same class. It is a label only: it changes no rank, retry or notification.
+Jev is asked the same question in shadow, in the background, once per failure (sd:2095).
+It sees the job name, the outcome and the rule's class, never a log line.
+`--shadow` hands back the rule's answer, so Jev's score is recorded in the judgment ledger and never shown.
+`JEV_JOB_TRIAGE` switches the shadow off; unset means on.
 An interrupted, unloaded or unknown job ranks 2, in the look band (sd:2014). An interrupted one carries the same retry line.
 An unloaded one names the `cron-jobs.sh install` that loads it; an unknown one names the `launchctl print` that shows its record.
 The rows arrive by `/api/now` after
@@ -655,9 +663,10 @@ first two learned the hard way on 2026-08-28 when the page sat on
 | `VAULT` | `~/Documents/Vault` — read by `collectors.py` itself; set it in `<config>/project-dashboard/.env` |
 | `REPO_ROOT` | `~/repos` — likewise |
 | `SYSTEM_TOOLS_LABEL_PREFIX` | `local.system-tools` — launchd label prefix; the dashboard's LaunchAgent is `<prefix>.sd-dashboard`, and Toolbox reads cron jobs as `<prefix>.cron.<job>` |
+| `JEV_JOB_TRIAGE` | unset (on) — `0`, `off`, `false`, `no` or `disabled` switches off the failed-job Jev shadow |
 
 `dashboard.sh` exports whichever of `VAULT`, `REPO_ROOT`,
-`SYSTEM_TOOLS_LABEL_PREFIX` and `SYSTEM_TOOLS_CONFIG` are set after sourcing
+`SYSTEM_TOOLS_LABEL_PREFIX`, `SYSTEM_TOOLS_CONFIG` and `JEV_JOB_TRIAGE` are set after sourcing
 `<config>/project-dashboard/.env`, and `install` copies them (and
 `CRON_JOBS_EXTRA_DIRS`) into the LaunchAgent, so the server reads the same values. The
 Vault tile lists the vault's top-level `<Area> Home` folders, found on disk.

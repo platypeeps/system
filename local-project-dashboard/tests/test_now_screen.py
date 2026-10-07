@@ -384,7 +384,7 @@ class FailedJobs(ScreenCase):
         # Retry is what the Operations Jobs area sends: a kickstart updates the
         # launchd record Now reads, and a hand-run of cron-jobs.sh does not.
         self.assertEqual(row["retry"], "launchctl kickstart fixture/nightly-sync")
-        self.assertEqual(row["detail"], f"log 2026-09-27 02:15 · retry: {row['retry']}")
+        self.assertEqual(row["detail"], f"log 2026-09-27 02:15 · retry: {row['retry']} · triage: unclear, no rule matched exit 7")
         self.assertEqual(now_screen.FAILED, 1)
         self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
 
@@ -439,7 +439,8 @@ class FailedJobs(ScreenCase):
         jobs = NoRoot(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None)])
         document = now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)
         self.assertEqual(document["sources"]["jobs"], "")
-        self.assertEqual(document["rows"][0]["detail"], "log unknown · retry: launchctl kickstart fixture/nightly-sync")
+        self.assertEqual(document["rows"][0]["detail"], "log unknown · retry: launchctl kickstart fixture/nightly-sync"
+                         " · triage: unclear, no rule matched exit 7")
 
     def test_an_unreadable_log_is_one_rows_detail_not_a_dark_source(self):
         jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None)])
