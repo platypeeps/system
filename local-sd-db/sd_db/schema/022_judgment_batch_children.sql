@@ -1,0 +1,31 @@
+-- `judgment.parent`: one row per question of a batched call (sd:2966).
+--
+-- A batched `ask` writes one row with `questions = N` and no answer, because
+-- the row measures the request: its tokens, its cost, how long it took and
+-- how it ended. Its answers were never stored, so a batch could not be
+-- compared across the jev, kev and haiku arms, or labelled.
+--
+-- Each question now gets a child row beside the batch row: the same `pair`,
+-- `question_id` = `<id>:<index>`, the question's own primitive, answer and
+-- confidence, and `parent` = the batch row's `id`. A child carries no tokens,
+-- duration or cost; the batch row keeps those, and the per-stage report
+-- counts calls from rows with no parent, so a batch is still one call.
+--
+-- A column and not a JSON `answers` column: a child is an ordinary row, so the
+-- shape checks, `label`, `unlabelled` and `compare` read it with no second
+-- path. A column and not `pair` alone: `pair` already ties one decision's arms
+-- together, so it cannot also tell a batch row from its children.
+--
+-- `ADD COLUMN` for 016's reason: SQLite adds a nullable column in place,
+-- touches no other table and moves no row. Every existing row reads NULL.
+-- The reverse, run by hand with the runner, the dashboard and the serve agent
+-- stopped:
+--
+--   BEGIN;
+--   DROP INDEX judgment_by_parent;
+--   ALTER TABLE judgment DROP COLUMN parent;
+--   PRAGMA user_version = 21;
+--   COMMIT;
+
+ALTER TABLE judgment ADD COLUMN parent INTEGER REFERENCES judgment(id);
+CREATE INDEX judgment_by_parent ON judgment(parent) WHERE parent IS NOT NULL;
