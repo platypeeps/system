@@ -1077,8 +1077,9 @@ def baseline_answer(args, own) -> str | None:
     A `noul` under a `--gate` other than 0.5 is dropped the same way. The
     report reads every noul at 0.5 and no row says which gate the caller
     used, so a `no` against 0.8 would be compared on the wrong side of a 0.7
-    judgment. A `choice` under `--unsure-below` is dropped too: the report
-    reads the chosen key, while the caller may have been printed `unsure`.
+    judgment. A `choice` under `--unsure-below` keeps the caller's key
+    (sd:2944): the report compares each arm's chosen key, never the `unsure`
+    it printed, and the caller's own `unsure` is no key, so it is dropped.
     `changed` on the judgment's row still compares the printed words.
 
     The criteria are the ones the verb parsed when it ran. When it never ran
@@ -1100,10 +1101,6 @@ def baseline_answer(args, own) -> str | None:
                 return "1" if word == "yes" else "0"
         if getattr(args, "verb", None) != "choice":
             return judged(own)
-        # ponytail: counted, not compared, as for a noul gated away from 0.5.
-        # The report reads the chosen key, never the `unsure` it printed.
-        if getattr(args, "unsure_below", None) is not None:
-            return None
         criteria = _EVENT.get("_criteria") if _EVENT is not None else None
         if criteria is None:
             if args.criteria == "@-":
