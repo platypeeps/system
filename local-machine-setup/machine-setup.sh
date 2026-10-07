@@ -1008,17 +1008,27 @@ stage_agents() {
   rm -rf "$rendered"
 }
 
-# Container name for a local-* service folder. Most match the folder suffix;
-# these do not. stage_services and cmd_candidates must agree on the answer,
-# so there is one copy of the mapping rather than two that drift apart.
+# Container names for a local-* service folder, space-separated. Most run one
+# container named for the folder suffix; these do not. stage_services and
+# cmd_candidates must agree on the answer, so there is one copy of the mapping
+# rather than two that drift apart.
 container_for() {
   case "$1" in
     local-milvus)                  echo zilliz ;;
     local-opentelemetry-collector) echo local-opentelemetry-collector ;;
     local-graphiti-mcp)            echo local-graphiti-mcp-graphiti-falkordb-1 ;;
-    local-genai-traces)            echo local-genai-collector ;;
+    local-genai-traces)            echo local-genai-collector local-genai-phoenix ;;
     *)                             echo "${1#local-}" ;;
   esac
+}
+
+# Whether service $1 runs: every one of its containers is in $2, the running
+# names one per line. One stopped container of several is a stopped service
+# (sd:2852).
+service_running() {
+  for sr_name in $(container_for "$1"); do
+    printf '%s\n' "$2" | grep -qx "$sr_name" || return 1
+  done
 }
 
 stage_services() {
@@ -1034,10 +1044,9 @@ stage_services() {
   echo "$svcs" | while read -r svc; do
     name=$(echo "$svc" | sed 's/^local-//')
     entry="$ROOT/$svc/$name.sh"
-    container=$(container_for "$svc")
     if [ ! -x "$entry" ]; then
       echo "  SKIP    $svc (no entrypoint at $svc/$name.sh)"
-    elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    elif service_running "$svc" "$(docker ps --format '{{.Names}}' 2>/dev/null)"; then
       echo "  ok      $svc running"
     else
       run "$entry" start
@@ -2715,7 +2724,7 @@ candidates_service() {
     fi
     if [ "$cand_docker_observed" -eq 0 ]; then
       cand_state="unknown"
-    elif printf '%s\n' "$cand_running" | grep -qx "$(container_for "$cand_svc")"; then
+    elif service_running "$cand_svc" "$cand_running"; then
       cand_state="running"
     else
       cand_state="stopped"
