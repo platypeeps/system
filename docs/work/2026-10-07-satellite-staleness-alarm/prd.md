@@ -30,7 +30,7 @@ Alert the operator when an item a satellite holds shows no progress for 3 hours.
    `SD_SATELLITE_STALE_HOURS` overrides the threshold.
 4. A claim on an item that is `done`, `blocked` or `ready_to_send` is not checked.
    `blocked` and `ready_to_send` wait on someone other than the satellite.
-5. The check runs on the hub only. A satellite refuses it with `HubOnly`.
+5. The check runs on the hub only. A satellite refuses it with `HubOnly`; its `status` answers 3.
 6. One stale episode sends one alert. A new episode starts only after progress moves.
 7. The operator silences a claim until a stated time, or releases it.
 8. The check's verb answers convention 6 exit codes, so `local-health-check` reports it.
@@ -38,13 +38,13 @@ Alert the operator when an item a satellite holds shows no progress for 3 hours.
 
 ## Acceptance criteria
 
-- [ ] A claim with a note 2 h old is not stale; one with all signals 4 h old is stale.
-- [ ] A pushed commit 1 h old keeps a claim fresh when notes are 5 h old.
-- [ ] A `blocked` item, a released claim and a silenced claim send nothing.
-- [ ] A second run in the same episode sends nothing; progress followed by a new stall sends again.
-- [ ] A satellite refuses the check with `HubOnly`; a satellite writes a claim over the wire.
-- [ ] The `status` verb exits 0, 1 and 3 as convention 6 states.
-- [ ] `make check` passes.
+- [x] A claim with a note 2 h old is not stale; one with all signals 4 h old is stale.
+- [x] A pushed commit 1 h old keeps a claim fresh when notes are 5 h old.
+- [x] A `blocked` item, a released claim and a silenced claim send nothing.
+- [x] A second run in the same episode sends nothing; progress followed by a new stall sends again.
+- [x] A satellite refuses the check with `HubOnly`; a satellite writes a claim over the wire.
+- [x] The `status` verb exits 0, 1 and 3 as convention 6 states.
+- [x] `make check` passes.
 
 ## Out of scope
 
@@ -55,3 +55,4 @@ Alert the operator when an item a satellite holds shows no progress for 3 hours.
 ## Log
 
 - 2026-10-07 design record written on a satellite; open questions sent to the hub lead for the operator.
+- 2026-10-07 operator accepted Q1 to Q7; built on the same branch. Four changes from the design are marked in `design.md`.
