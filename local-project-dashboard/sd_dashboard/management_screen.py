@@ -45,7 +45,9 @@ refuse with `HubOnly` (sd:1629).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import subprocess
 import tomllib
 from datetime import datetime, timezone
@@ -93,6 +95,9 @@ def _review(path: str) -> dict | None:
         body = json.loads(raw)
     except ValueError:
         return {"file": text, "error": "not valid JSON" if len(raw) <= REVIEW_BYTES else "too large to show"}
+    except RecursionError:
+        # A pure-Python JSON scanner recurses per nesting level (sd:2911); this repo's file, not the document, fails.
+        return {"file": text, "error": "nests too deeply to read"}
     body = body if isinstance(body, dict) else {}
     copilot = body.get("copilot_review") if isinstance(body.get("copilot_review"), dict) else {}
     schema = body.get("$schema") if isinstance(body.get("$schema"), str) else None
@@ -113,13 +118,31 @@ def _protection(row: dict) -> dict:
 
 
 def _pin_text(root: Path, name: str) -> str | None:
-    """A pin file's text, or None when it is absent; ValueError when it cannot be read."""
+    """A pin file's text, or None when it is absent; ValueError when it cannot be read.
+
+    Opened without blocking and checked to be a regular file before any read,
+    then read to `PIN_BYTES` + 1 at most (sd:2911): a FIFO, or a link to one,
+    would hang `/api/management`, and a huge file would be loaded whole.
+    """
     try:
-        raw = (root / name).read_bytes()[:PIN_BYTES + 1]
-    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+        fd = os.open(root / name, os.O_RDONLY | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError):
         return None
     except OSError as error:
         raise ValueError(f"{name} is unreadable: {error.strerror or error}") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"{name} is not a regular file")
+        raw = b""
+        while len(raw) <= PIN_BYTES:
+            part = os.read(fd, PIN_BYTES + 1 - len(raw))
+            if not part:
+                break
+            raw += part
+    except OSError as error:
+        raise ValueError(f"{name} is unreadable: {error.strerror or error}") from None
+    finally:
+        os.close(fd)
     if len(raw) > PIN_BYTES:
         raise ValueError(f"{name} is larger than a pin file")
     return raw.decode("utf-8", "replace")
@@ -146,6 +169,9 @@ def _requires_python(root):
         project = tomllib.loads(text).get("project")
     except tomllib.TOMLDecodeError:
         raise ValueError("pyproject.toml is not valid TOML") from None
+    except RecursionError:
+        # tomllib recurses per nesting level; a file under PIN_BYTES can pass the interpreter's limit (sd:2911).
+        raise ValueError("pyproject.toml nests too deeply to read") from None
     value = project.get("requires-python") if isinstance(project, dict) else None
     return value if isinstance(value, str) else None
 
@@ -158,6 +184,8 @@ def _engines_node(root):
         body = json.loads(text)
     except ValueError:
         raise ValueError("package.json is not valid JSON") from None
+    except RecursionError:
+        raise ValueError("package.json nests too deeply to read") from None
     engines = body.get("engines") if isinstance(body, dict) else None
     value = engines.get("node") if isinstance(engines, dict) else None
     return value if isinstance(value, str) else None

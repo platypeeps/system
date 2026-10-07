@@ -287,6 +287,69 @@ class TheDocument(ScreenCase):
                     (root / name).write_text(text)
                 self.assertEqual(management_screen._runtimes(str(root)), {"python": python, "node": node})
 
+    def test_a_pin_that_is_not_a_regular_file_is_refused_without_blocking(self):
+        """sd:2911: a FIFO, or a link to one, is refused before any read; reading one would hang /api/management."""
+        import os
+        import threading
+
+        root = Path(self.tmp.name) / "fifo-pins"
+        root.mkdir()
+        os.mkfifo(root / ".python-version")
+        os.symlink(root / ".python-version", root / ".nvmrc")
+        got = {}
+        reader = threading.Thread(target=lambda: got.update(management_screen._runtimes(str(root))), daemon=True)
+        reader.start()
+        reader.join(5)
+        self.assertFalse(reader.is_alive(), "reading a FIFO pin blocked the document")
+        self.assertEqual(got, {"python": {"error": ".python-version is not a regular file"},
+                               "node": {"error": ".nvmrc is not a regular file"}})
+
+    def test_a_pin_file_past_the_limit_is_refused_after_a_bounded_read(self):
+        root = Path(self.tmp.name) / "big-pins"
+        root.mkdir()
+        (root / "pyproject.toml").write_text("#" * (management_screen.PIN_BYTES + 10))
+        reads = []
+        real = management_screen.os.read
+
+        def counted(fd, n):
+            reads.append(n)
+            return real(fd, n)
+
+        with patch.object(management_screen.os, "read", counted):
+            got = management_screen._runtimes(str(root))
+        self.assertEqual(got["python"], {"error": "pyproject.toml is larger than a pin file"})
+        self.assertLessEqual(sum(reads), 2 * (management_screen.PIN_BYTES + 1))
+
+    def test_a_deeply_nested_manifest_is_that_repos_error_not_the_documents(self):
+        """sd:2911: tomllib raises RecursionError on deep nesting, which no FAILURES entry caught; the whole document failed."""
+        checkout = Path(self.ids["checkout"])
+        depth = 15000
+        self.assertLess(depth * 2 + 20, management_screen.PIN_BYTES)
+        (checkout / "pyproject.toml").write_text("[project]\nx = " + "[" * depth + "]" * depth + "\n")
+        doc = self.document()
+        self.assertEqual(doc["sources"]["repos"], "")
+        rows = {row["path"]: row for row in doc["repos"]}
+        self.assertEqual(rows[str(checkout)]["runtimes"]["python"], {"error": "pyproject.toml nests too deeply to read"})
+
+    def test_a_json_parser_that_recurses_too_deep_is_a_reason_too(self):
+        """The C JSON scanner takes the nesting these sizes allow; a pure-Python one raises RecursionError (sd:2911)."""
+        checkout = Path(self.ids["checkout"])
+        (checkout / "package.json").write_text("{}")
+        real = json.loads
+
+        def deep(text, *args, **kwargs):
+            # The two checkout files only: package.json is "{}", and _review hands json.loads bytes.
+            if text == "{}" or isinstance(text, bytes):
+                raise RecursionError("maximum recursion depth exceeded")
+            return real(text, *args, **kwargs)
+
+        with patch.object(management_screen.json, "loads", deep):
+            doc = self.document()
+        self.assertEqual(doc["sources"]["repos"], "")
+        row = {row["path"]: row for row in doc["repos"]}[str(checkout)]
+        self.assertEqual(row["runtimes"]["node"], {"error": "package.json nests too deeply to read"})
+        self.assertEqual(row["review"]["error"], "nests too deeply to read")
+
     def test_the_machine_merge_grant_is_what_sd_config_answers(self):
         """sd:1629: sd.assistant_merge is machine-wide, so the document carries it once; unset is a reading, not a failure."""
         self.assertEqual(self.document()["grant"], {"assistant_merge": "controlled"})
