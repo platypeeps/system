@@ -6,22 +6,28 @@ The operator ruled option (a) on 2026-10-03 (sd:2207 #8765): a thread calls
 the library's 600 per tracker. GitHub gets what is left of it as `max_seconds`.
 Jira ignores `max_seconds`, so its transport refuses a request once the deadline
 has passed; a request already in flight can still take Jira's 30-second timeout.
-A request while a run is live is refused, not queued. The nightly job is a separate process this guard cannot
-see; the library rechecks its cursor under the write transaction, so an
-overlap re-reads rows and moves no cursor backwards.
+A request while a run is live is refused, not queued.
+
+A start is also refused while an `sd shadow sync` process runs on this machine,
+such as the nightly job. Two collectors at once can store an older observation
+over a newer one. This check cannot stop the nightly job from starting during a
+dashboard run; serializing every collector belongs in the library (sd:2893).
 
 The run opens its own writer on the database the request's writer opened: the
 request's connection closes when the POST answers, long before the run ends.
+On a satellite that path is the hub's, so a start there is refused (HubOnly).
 """
 
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
 
 import sd_db
+from sd_db.database import refuse_hub_only
 
 __all__ = ["MAX_SECONDS", "RUN", "Run"]
 
@@ -49,10 +55,15 @@ class Run:
 
     def start(self, connection: sqlite3.Connection):
         """Start a run on the database `connection` reads: `(202, status)`, or `(409, error)` while one is live."""
+        # Raises HubOnly (a 400) on a satellite, whose PRAGMA path names the hub's file, before anything opens it.
+        refuse_hub_only(connection, "Re-run collector")
         database = connection.execute("PRAGMA database_list").fetchone()[2]
         with self.lock:
             if self.state["running"]:
                 return 409, {"error": f"A shadow sync started at {self.state['started']} is still running. Wait for it to finish."}
+            other = _other_sync()
+            if other:
+                return 409, {"error": other}
             self.state = {"running": True, "started": _now(), "finished": None, "trackers": [], "error": None}
             # The answer is the state as it started: a run that ends at once must not answer a start with "finished".
             answer = self._snapshot()
@@ -82,6 +93,19 @@ class Run:
             error = f"{type(problem).__name__}: {problem}"
         with self.lock:
             self.state.update(running=False, finished=_now(), trackers=trackers, error=error)
+
+
+def _other_sync() -> str:
+    """Why another collector may be live: an `sd shadow sync` process on this machine, or a check that did not answer."""
+    try:
+        found = subprocess.run(["pgrep", "-f", r"sd shadow sync"], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError) as problem:
+        return f"Could not check for a running sd shadow sync ({type(problem).__name__}), so none was started."
+    if found.returncode == 0:
+        return "An sd shadow sync process, such as the nightly job, is running on this machine. Wait for it to finish."
+    if found.returncode != 1:
+        return f"Could not check for a running sd shadow sync (pgrep exit {found.returncode}), so none was started."
+    return ""
 
 
 def _until(deadline: float):

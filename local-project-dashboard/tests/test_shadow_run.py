@@ -9,6 +9,7 @@ the network. Whether gh is authenticated under the LaunchAgent is a live check t
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import unittest
 from pathlib import Path
@@ -46,7 +47,18 @@ class Stub:
         return self.answers.get(tracker, synced())
 
 
+def quiet(case):
+    """No other `sd shadow sync` on this machine: pgrep is stubbed, never run."""
+    patcher = patch.object(shadow_run, "_other_sync", return_value="")
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
+
 class TheRun(ScreenCase):
+    def setUp(self):
+        super().setUp()
+        quiet(self)
+
     def start(self, run, stub):
         with patch.object(sd_db, "sync_shadow", stub):
             status, answer = run.start(self.connection)
@@ -124,6 +136,7 @@ class TheRun(ScreenCase):
 class TheRoute(BrowserSession):
     def setUp(self):
         super().setUp()
+        quiet(self)
         self.run = shadow_run.Run()
         patcher = patch.object(shadow_run, "RUN", self.run)
         patcher.start()
@@ -147,6 +160,15 @@ class TheRoute(BrowserSession):
         self.assertEqual((status, state["running"], [t["tracker"] for t in state["trackers"]]), (200, False, list(sd_db.TRACKERS)))
         self.assertTrue(all(100 < call[2] <= 120 for call in stub.calls), [call[2] for call in stub.calls])
 
+    def test_a_satellite_is_refused_before_it_opens_the_hubs_path(self):
+        # Review round 2: PRAGMA database_list names the hub's file over a satellite connection.
+        stub = Stub()
+        with patch.object(sd_db, "sync_shadow", stub), patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
+            status, _, answer = self.post("/api/shadow/sync", {})
+        self.assertEqual(status, 400)
+        self.assertIn("runs on the sd hub only", answer["error"])
+        self.assertEqual((stub.calls, self.run.thread), ([], None))
+
     def test_a_start_with_arguments_is_refused_before_anything_runs(self):
         stub = Stub()
         with patch.object(sd_db, "sync_shadow", stub):
@@ -158,3 +180,39 @@ class TheRoute(BrowserSession):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheOtherCollector(ScreenCase):
+    """Review round 2: a start while an `sd shadow sync` process runs here (the nightly job) is refused; pgrep is stubbed."""
+
+    def answer(self, outcome):
+        def fake(argv, **_):
+            self.argv = argv
+            if isinstance(outcome, Exception):
+                raise outcome
+            return subprocess.CompletedProcess(argv, outcome, "", "")
+        return fake
+
+    def start(self, outcome):
+        run, stub = shadow_run.Run(), Stub()
+        with patch.object(shadow_run.subprocess, "run", self.answer(outcome)), patch.object(sd_db, "sync_shadow", stub):
+            status, answer = run.start(self.connection)
+            if run.thread:
+                run.thread.join(5)
+        return status, answer, stub.calls
+
+    def test_a_live_sync_process_refuses_the_start(self):
+        status, answer, calls = self.start(0)
+        self.assertEqual((status, calls), (409, []))
+        self.assertIn("is running on this machine", answer["error"])
+        self.assertEqual(self.argv, ["pgrep", "-f", "sd shadow sync"])
+
+    def test_a_check_that_does_not_answer_refuses_rather_than_guesses(self):
+        for outcome in (2, OSError("no pgrep"), subprocess.TimeoutExpired("pgrep", 5)):
+            status, answer, calls = self.start(outcome)
+            self.assertEqual((status, calls), (409, []), outcome)
+            self.assertIn("Could not check for a running sd shadow sync", answer["error"])
+
+    def test_no_other_sync_starts_the_run(self):
+        status, _, calls = self.start(1)
+        self.assertEqual((status, len(calls)), (202, len(sd_db.TRACKERS)))
