@@ -137,15 +137,15 @@ JEV_CALLER = "local-adversarial-gate"
 JEV_STAGE = "JEV_ADVERSARIAL_GATE"
 
 
-def subject_of(text):
+def subject_of(data):
     """The ledger's name for one ordering: `adversarial-gate:<16 hex>` (sd:2953).
 
     No finding leaves in it. The key is the first 16 hex of the sha256 of the
-    result file as the reviewer wrote it, before this reorders it; the
-    success line names it, and an outcome recomputes it from that unranked
-    file as `shasum -a 256 FILE | cut -c1-16`.
+    result file's bytes as the reviewer wrote them, before this reorders it;
+    the success line names it, and an outcome recomputes it from that
+    unranked file as `shasum -a 256 FILE | cut -c1-16`.
     """
-    return f"adversarial-gate:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
+    return f"adversarial-gate:{hashlib.sha256(data).hexdigest()[:16]}"
 
 
 def record_baseline(jev, cause=None, subject=None):
@@ -254,7 +254,7 @@ def label_for(score):
     return f"*Jev — real defect: {score:.2f}*"
 
 
-def rank_text(text, jev):
+def rank_text(text, jev, subject):
     """The reordered, labelled document, or None to leave the file alone."""
     if MARKER in text:
         warn("this file was ordered by Jev already; leaving it as it is")
@@ -269,7 +269,7 @@ def rank_text(text, jev):
         f"f{n + 1}": "\n".join(lines[start:end]).strip()[:MAX_FINDING_CHARS]
         for n, (start, end) in enumerate(found)
     }
-    scores = ask_jev(jev, texts, subject_of(text))
+    scores = ask_jev(jev, texts, subject)
     if scores is None:
         return None
 
@@ -351,18 +351,21 @@ def main(argv=None) -> int:
                         help="path to local-jev/jev.sh")
     args = parser.parse_args(argv)
     try:
-        with open(args.path, encoding="utf-8") as fh:
-            text = fh.read()
+        with open(args.path, "rb") as fh:
+            data = fh.read()
+        # Universal newlines, as a text-mode read gives; the subject hashes the bytes.
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     except OSError as exc:
         warn(f"cannot read {args.path}: {exc}")
         return 1
-    ordered = rank_text(text, args.jev)
+    subject = subject_of(data)
+    ordered = rank_text(text, args.jev, subject)
     if ordered is None:
         return 0
     if not replace_text(args.path, ordered):
         return 1
     sys.stderr.write(f"adversarial-gate: rank: {args.path} ordered by Jev "
-                     f"as {subject_of(text)}; no finding was removed\n")
+                     f"as {subject}; no finding was removed\n")
     return 0
 
 

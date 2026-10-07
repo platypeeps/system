@@ -1401,7 +1401,8 @@ judge_hits() {
   case $wait_s in ''|*[!0-9]*) wait_s=5 ;; esac
   printf '%s\n' "$1" | head -n "$max" | while IFS= read -r hit; do
     [ -n "$hit" ] || continue
-    subject="secret-scan:$(printf '%s\n' "$hit" | cut -d: -f1-2 | shasum -a 256 | cut -c1-16)"
+    # The first `:<digits>:` ends the location, so a colon in the path keeps its line.
+    subject="secret-scan:$(printf '%s\n' "$hit" | sed -E 's/(:[0-9]+):.*$/\1/' | shasum -a 256 | cut -c1-16)"
     printf '%s\n' "$hit" | JEV_TIMEOUT=$wait_s JEV_RETRIES=0 \
       "$JEV" noul 'Is this a real credential, not a test value or placeholder?' \
         --local-only --stage JEV_SECRET_SCAN --caller local-scan-for-secrets \

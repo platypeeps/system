@@ -292,6 +292,15 @@ class RankAgainstAStubJev(unittest.TestCase):
         self.assertEqual(len(runs), 1, runs)
         self.assertRegex(runs.pop(), r"^adversarial-gate-\d{8}T\d{6}-[0-9a-f]{4}$")
 
+    def test_a_crlf_result_is_named_by_its_bytes(self):
+        """The subject is `shasum -a 256 FILE` of the file as written, CRLF included."""
+        data = RESULT.replace("\n", "\r\n").encode()
+        self.result.write_bytes(data)
+        result = self.rank()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        subject = f"adversarial-gate:{hashlib.sha256(data).hexdigest()[:16]}"
+        self.assertIn(f"--subject {subject} run=", self.calls_log.read_text())
+
     def test_every_finding_is_asked_in_one_request(self):
         # Questions in a single `ask` run in parallel; N findings cost one
         # round trip, not N.
