@@ -353,6 +353,16 @@ def upsert_item(
         columns["repo"] = paths.key(columns["repo"])
     found = item_by_external(connection, source, external_id)
     if found is None:
+        # An idea promoted to a writing piece took the piece's identity and
+        # kept its own in `promoted_from`; the piece owns that row now (sd:1994).
+        promoted = connection.execute(
+            "SELECT id FROM item WHERE CASE WHEN json_valid(fields) THEN "
+            "json_extract(fields, '$.promoted_from.source') = ? "
+            "AND json_extract(fields, '$.promoted_from.external_id') = ? END",
+            (source, external_id),
+        ).fetchone()
+        if promoted is not None:
+            return int(promoted[0]), "unchanged"
         item = create_item(
             connection,
             kind=kind,

@@ -581,6 +581,8 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
                 # A promote stopped between its file write and its commit leaves
                 # an untouched scaffold; adopt it, since it holds no prose.
                 try:
+                    if not (folder / "index.md").resolve().is_relative_to(disk):
+                        raise WorkflowError("scaffold escapes the repository")
                     found = (folder / "index.md").read_text(encoding="utf-8")
                     day = str(_metadata(found).get("created"))
                     if [entry.name for entry in folder.iterdir()] == ["index.md"] and scaffold(day)[1] == found:

@@ -19,6 +19,7 @@ from sd_db.writing import (
     piece_for_key, piece_state, preflight, record_gate, update_piece_metadata,
     verify_pieces, readiness, recover_cutover, park_piece, checkout, piece_files, promote,
 )
+from sd_db.sources.vault import Reader as VaultReader
 from sd_db.writes import create_item, now
 
 
@@ -477,6 +478,28 @@ class Promote(WritingCase):
         parked = self.repo / "content-parked" / self.year / "an-idea-uber-cafe" / "index.md"
         parked.parent.mkdir(parents=True)
         parked.write_text("held\n")
+        with self.assertRaisesRegex(WorkflowError, "already exists"):
+            promote(self.db, self.idea, who="operator")
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+
+    def test_a_promoted_vault_idea_is_not_imported_again(self):
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\n---\nThe angle.\n")
+        reader = VaultReader.at(vault)
+        reader.land(self.db, reader.freeze())
+        idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
+        promote(self.db, idea, who="operator")
+        self.assertEqual(reader.land(self.db, reader.freeze()).unchanged, 1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM item WHERE title = 'Vault idea'").fetchone()[0], 1)
+
+    def test_an_orphan_index_linked_out_of_the_repository_is_refused(self):
+        outside = self.root / "outside.md"
+        outside.write_text(TEMPLATE.replace('title: ""', 'title: "An idea: Über café!"').replace("YYYY-MM-DD", "2026-01-02"))
+        self.file().parent.mkdir(parents=True)
+        self.file().symlink_to(outside)
         with self.assertRaisesRegex(WorkflowError, "already exists"):
             promote(self.db, self.idea, who="operator")
         self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
