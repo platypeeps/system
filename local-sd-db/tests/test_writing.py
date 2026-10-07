@@ -17,8 +17,11 @@ from sd_db.workflow import StaleItem, WorkflowError
 from sd_db.writing import (
     change_stage, cutover_pieces, cutover_preview, import_piece, list_pieces,
     piece_for_key, piece_state, preflight, record_gate, update_piece_metadata,
-    verify_pieces, readiness, recover_cutover, park_piece, checkout, piece_files,
+    verify_pieces, readiness, recover_cutover, park_piece, checkout, piece_files, promote,
 )
+from sd_db.sources import verify as verify_source
+from sd_db.sources.vault import Reader as VaultReader
+from sd_db.writes import create_item, now
 
 
 class WritingCase(unittest.TestCase):
@@ -371,6 +374,287 @@ writing.cutover_pieces(c, sys.argv[2], expected_fingerprint=p['fingerprint'], wh
         self.assertTrue(parked.exists())
 
 
+TEMPLATE = ('---\ntitle: ""\ntype: blog        # blog | research | article\nstatus: idea       # idea | drafting\n'
+            'created: YYYY-MM-DD\nupdated: YYYY-MM-DD\npublished: null\npublished_urls:      # filled on publish\n'
+            '  gdrive: null\ntags: []\n---\n\n## Notes / angle\n\n## Draft\n')
+
+
+class Promote(WritingCase):
+    """An idea row becomes a piece in place, scaffolded from the repository's template (sd:1994)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / "templates").mkdir()
+        (self.repo / "templates/piece-template.md").write_text(TEMPLATE)
+        self.idea = create_item(self.db, kind="idea", title="An idea: Über café!", source="drafts",
+                                external_id="Blog Ideas/an-idea.md", body={"text": "The angle."})
+        self.year = now()[:4]
+
+    def file(self, slug="an-idea-uber-cafe", root=None):
+        return (root or self.repo) / "content" / self.year / slug / "index.md"
+
+    def test_the_idea_row_becomes_the_piece_scaffolded_from_the_template(self):
+        state = promote(self.db, self.idea, who="operator")
+        row = state["item"]
+        self.assertEqual(row["id"], self.idea)
+        self.assertEqual(row["piece"], f"{self.year}/an-idea-uber-cafe")
+        self.assertEqual((row["stage"], row["status"], row["source"]), ("accepted", "ready", "writing-piece"))
+        text = self.file().read_text()
+        self.assertIn('title: "An idea: Über café!"\n', text)
+        self.assertIn(f"created: {now()[:10]}\n", text)
+        self.assertIn("type: blog        # blog | research | article\n", text)
+        self.assertIn("---\n\nThe angle.\n\n## Notes / angle\n\n## Draft\n", text)
+        origin = json.loads(row["fields"])["promoted_from"]
+        self.assertEqual((origin["source"], origin["external_id"], origin["row"]["title"]),
+                         ("drafts", "Blog Ideas/an-idea.md", "An idea: Über café!"))
+        self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
+
+    def test_a_slug_override_names_the_piece(self):
+        self.assertEqual(promote(self.db, self.idea, slug="short", who="operator")["item"]["piece"], f"{self.year}/short")
+        self.assertTrue(self.file("short").is_file())
+
+    def test_refusals_change_neither_the_row_nor_the_files(self):
+        promote(self.db, create_item(self.db, kind="idea", title="Taken"), who="operator")
+        taken = self.file("taken").read_bytes()
+        parked = self.repo / "content-parked" / self.year / "parked" / "index.md"
+        parked.parent.mkdir(parents=True)
+        parked.write_text("held\n")
+        before = piece_state(self.db, self.item)
+        task = create_item(self.db, kind="task", title="Not an idea")
+        declined = create_item(self.db, kind="idea", title="Declined", status="done")
+        for item, slug, message in ((self.idea, "../escape", "YEAR/SLUG"), (self.idea, "taken", "already"),
+                                    (self.idea, "parked", "already"), (task, None, "not an idea"),
+                                    (self.item, None, "already"), (declined, None, "done")):
+            with self.subTest(slug=slug, message=message), self.assertRaisesRegex(WorkflowError, message):
+                promote(self.db, item, slug=slug, who="operator")
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+        self.assertEqual(self.file("taken").read_bytes(), taken)
+        self.assertEqual(parked.read_text(), "held\n")
+        self.assertEqual(piece_state(self.db, self.item), before)
+
+    def test_a_title_with_no_slug_text_needs_an_explicit_slug(self):
+        idea = create_item(self.db, kind="idea", title="???")
+        with self.assertRaisesRegex(WorkflowError, "slug"):
+            promote(self.db, idea, who="operator")
+
+    def test_a_missing_template_is_refused_by_name(self):
+        (self.repo / "templates/piece-template.md").unlink()
+        with self.assertRaisesRegex(WorkflowError, "templates/piece-template.md"):
+            promote(self.db, self.idea, who="operator")
+        self.assertFalse(self.file().parent.exists())
+
+    def test_a_content_folder_linked_out_of_the_repository_is_refused(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.repo / "content" / self.year).mkdir(exist_ok=True)
+        (self.repo / "content" / self.year).rename(outside / self.year)
+        (self.repo / "content" / self.year).symlink_to(outside / self.year)
+        with self.assertRaisesRegex(WorkflowError, "escapes"):
+            promote(self.db, self.idea, who="operator")
+        self.assertFalse((outside / self.year / "an-idea-uber-cafe").exists())
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+
+    def orphan(self, extra=""):
+        """The untouched scaffold a promote stopped before its commit leaves, dated another day."""
+        text = TEMPLATE.replace('title: ""', 'title: "An idea: Über café!"').replace("YYYY-MM-DD", "2026-01-02").replace(
+            "---\n\n", "---\n\nThe angle.\n\n") + extra
+        self.file().parent.mkdir(parents=True, exist_ok=True)
+        self.file().write_text(text)
+        return text
+
+    def test_a_retry_adopts_the_untouched_scaffold_a_stopped_promote_left(self):
+        text = self.orphan()
+        state = promote(self.db, self.idea, who="operator")
+        self.assertEqual(self.file().read_text(), text)
+        self.assertEqual(state["writing"]["metadata"]["created"], "2026-01-02")
+        self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
+
+    def test_an_edited_scaffold_is_not_adopted(self):
+        text = self.orphan("Prose someone wrote.\n")
+        with self.assertRaisesRegex(WorkflowError, "already exists"):
+            promote(self.db, self.idea, who="operator")
+        self.assertEqual(self.file().read_text(), text)
+
+    def test_an_untouched_scaffold_with_a_parked_twin_is_not_adopted(self):
+        self.orphan()
+        parked = self.repo / "content-parked" / self.year / "an-idea-uber-cafe" / "index.md"
+        parked.parent.mkdir(parents=True)
+        parked.write_text("held\n")
+        with self.assertRaisesRegex(WorkflowError, "already exists"):
+            promote(self.db, self.idea, who="operator")
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+
+    def test_a_promoted_vault_idea_is_not_imported_again(self):
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
+        reader = VaultReader.at(vault)
+        reader.land(self.db, reader.freeze())
+        idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
+        promote(self.db, idea, who="operator")
+        self.assertEqual(reader.land(self.db, reader.freeze()).unchanged, 1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM item WHERE title = 'Vault idea'").fetchone()[0], 1)
+
+    def test_an_orphan_index_linked_out_of_the_repository_is_refused(self):
+        outside = self.root / "outside.md"
+        outside.write_text(TEMPLATE.replace('title: ""', 'title: "An idea: Über café!"').replace("YYYY-MM-DD", "2026-01-02"))
+        self.file().parent.mkdir(parents=True)
+        self.file().symlink_to(outside)
+        with self.assertRaisesRegex(WorkflowError, "already exists"):
+            promote(self.db, self.idea, who="operator")
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+
+    def test_the_idea_prose_survives_a_later_import(self):
+        piece = promote(self.db, self.idea, who="operator")["item"]["piece"]
+        state = import_piece(self.db, str(self.repo), piece, who="operator")
+        self.assertIn("The angle.", state["writing"]["document"])
+        self.assertIn("The angle.", json.loads(state["item"]["body"])["source"])
+
+    def test_the_vault_verify_is_clean_after_a_promote(self):
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
+        reader = VaultReader.at(vault)
+        reader.land(self.db, reader.freeze())
+        promote(self.db, self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0], who="operator")
+        self.assertEqual(verify_source(self.db, reader, reader.freeze()), [])
+
+    def test_a_note_carrying_promoted_from_suppresses_nothing(self):
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
+        identity = "blog-idea:System/Databases/Blog Ideas/vault-idea.md"
+        create_item(self.db, kind="idea", title="Decoy", source="vault", external_id="decoy",
+                    fields={"promoted_from": {"source": "vault", "external_id": identity}})
+        reader = VaultReader.at(vault)
+        missing = [d.identity for d in verify_source(self.db, reader, reader.freeze()) if d.what == "missing from the rows"]
+        self.assertEqual(missing, [identity])
+        self.assertEqual(reader.land(self.db, reader.freeze()).inserted, 1)
+
+    def test_an_edit_to_a_promoted_vault_note_is_reported_not_written(self):
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
+        reader = VaultReader.at(vault)
+        reader.land(self.db, reader.freeze())
+        idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
+        promote(self.db, idea, who="operator")
+        before = piece_state(self.db, idea)
+        note.write_text("---\ntitle: Vault idea, retitled\nstatus: accepted\ndateCreated: 2026-01-02\n---\nA new angle.\n")
+        counts = reader.land(self.db, reader.freeze())
+        self.assertEqual((counts.promoted_changed, counts.unchanged, counts.inserted), (1, 0, 0))
+        self.assertEqual(piece_state(self.db, idea), before)
+        changed = {d.what for d in verify_source(self.db, reader, reader.freeze())
+                   if d.identity == "blog-idea:System/Databases/Blog Ideas/vault-idea.md"}
+        self.assertEqual(changed, {"title", "stage", "status", "fields", "body"})
+
+    def broken_snapshot(self, snapshot):
+        """A promoted vault idea whose `promoted_from.row` is not a whole snapshot."""
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
+        reader = VaultReader.at(vault)
+        reader.land(self.db, reader.freeze())
+        idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
+        promote(self.db, idea, who="operator")
+        fields = json.loads(self.db.execute("SELECT fields FROM item WHERE id = ?", (idea,)).fetchone()[0])
+        if snapshot is None:
+            del fields["promoted_from"]["row"]
+        else:
+            fields["promoted_from"]["row"] = snapshot
+        self.db.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), idea))
+        identity = "blog-idea:System/Databases/Blog Ideas/vault-idea.md"
+        missing = [d.identity for d in verify_source(self.db, reader, reader.freeze()) if d.what == "missing from the rows"]
+        self.assertEqual(missing, [identity])
+        self.assertEqual(reader.land(self.db, reader.freeze()).inserted, 1)
+        self.assertEqual(verify_source(self.db, reader, reader.freeze()), [])
+
+    def test_a_promotion_with_no_snapshot_imports_normally(self):
+        self.broken_snapshot(None)
+
+    def test_a_promotion_with_an_empty_snapshot_imports_normally(self):
+        self.broken_snapshot({})
+
+    def test_a_promotion_with_an_array_snapshot_imports_normally(self):
+        self.broken_snapshot([1])
+
+    def test_an_open_outer_transaction_is_refused(self):
+        self.db.execute("BEGIN")
+        try:
+            with self.assertRaisesRegex(WorkflowError, "own transaction"):
+                promote(self.db, self.idea, who="operator")
+        finally:
+            self.db.execute("ROLLBACK")
+        self.assertFalse(self.file().parent.exists())
+
+    def test_a_failure_after_the_scaffold_removes_it_and_keeps_the_row(self):
+        with patch("sd_db.writing.piece_state", side_effect=RuntimeError("late")), self.assertRaises(RuntimeError):
+            promote(self.db, self.idea, who="operator")
+        self.assertFalse(self.file().parent.exists())
+        row = self.db.execute("SELECT piece, source FROM item WHERE id = ?", (self.idea,)).fetchone()
+        self.assertEqual(tuple(row), (None, "drafts"))
+
+    def test_a_failure_keeps_a_scaffold_another_writer_changed(self):
+        def edit_then_fail(*_):
+            self.file().write_text(self.file().read_text() + "Prose written meanwhile.\n")
+            raise RuntimeError("late")
+        with patch("sd_db.writing.piece_state", side_effect=edit_then_fail), self.assertRaises(RuntimeError) as caught:
+            promote(self.db, self.idea, who="operator")
+        self.assertIn("Prose written meanwhile.", self.file().read_text())
+        self.assertIn("changed after the scaffold", caught.exception.__notes__[0])
+        self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
+
+    def test_a_write_that_fails_partway_leaves_no_index_and_a_retry_succeeds(self):
+        def partial(path, data, *args, **kwargs):
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write(data[:10])
+            raise OSError("disk full")
+        with patch("pathlib.Path.write_text", partial), \
+                patch("sd_db.writing.os.fsync", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            promote(self.db, self.idea, who="operator")
+        self.assertFalse(self.file().parent.exists())
+        self.assertEqual(promote(self.db, self.idea, who="operator")["item"]["piece"], f"{self.year}/an-idea-uber-cafe")
+        self.assertIn("The angle.", self.file().read_text())
+        umask = os.umask(0)
+        os.umask(umask)
+        self.assertEqual(self.file().stat().st_mode & 0o777, 0o666 & ~umask)
+
+    def test_the_target_is_the_one_repository_that_registers_pieces(self):
+        other = self.root / "other"
+        (other / "templates").mkdir(parents=True)
+        (other / "templates/piece-template.md").write_text(TEMPLATE)
+        upsert_repo(self.db, str(other), pieces_source="row")
+        with self.assertRaisesRegex(WorkflowError, "several"):
+            promote(self.db, self.idea, who="operator")
+        promote(self.db, self.idea, repo=str(other), who="operator")
+        self.assertTrue(self.file(root=other).is_file())
+        self.assertFalse(self.file().exists())
+
+    def test_no_repository_that_registers_pieces_is_refused(self):
+        self.db.execute("UPDATE item SET piece = NULL WHERE id = ?", (self.item,))
+        with self.assertRaisesRegex(WorkflowError, "no repository"):
+            promote(self.db, self.idea, who="operator")
+
+    @hub_only
+    def test_a_row_owned_repository_gets_no_status_bookkeeping(self):
+        self.cutover()
+        promote(self.db, self.idea, who="operator")
+        text = self.file().read_text()
+        self.assertNotIn("status:", text)
+        self.assertNotIn("published:", text)
+        self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
+
+
 class WorktreeCheckout(WritingCase):
     """A writer in a linked worktree reads its own files under the registered row (sd:2024)."""
 
@@ -447,6 +731,18 @@ class WorktreeCheckout(WritingCase):
                 import_piece(self.db, str(self.repo), "2026/new", who="operator")
         self.assertEqual(new.read_bytes(), original)
         self.assertIsNone(piece_for_key(self.db, str(self.repo), "2026/new"))
+
+    def test_promote_scaffolds_in_the_checkout_under_the_registered_row(self):
+        template = self.worktree / "templates/piece-template.md"
+        template.parent.mkdir()
+        template.write_text(TEMPLATE)
+        idea = create_item(self.db, kind="idea", title="Worktree idea")
+        with checkout(str(self.repo), self.worktree):
+            state = promote(self.db, idea, who="operator")
+        self.assertEqual(state["item"]["repo"], str(self.repo))
+        relative = f"content/{state['item']['piece']}/index.md"
+        self.assertTrue((self.worktree / relative).is_file())
+        self.assertFalse((self.repo / relative).exists())
 
     def test_the_registered_checkout_is_its_own_checkout(self):
         with checkout(str(self.repo), self.repo):

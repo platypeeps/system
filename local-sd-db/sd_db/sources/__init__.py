@@ -150,6 +150,8 @@ class Counts:
     inserted: int = 0
     updated: int = 0
     unchanged: int = 0
+    #: Records of an idea promoted to a writing piece that changed since; reported, not written.
+    promoted_changed: int = 0
 
     def record(self, what: str) -> None:
         self.seen += 1
@@ -161,6 +163,7 @@ class Counts:
             "inserted": self.inserted,
             "updated": self.updated,
             "unchanged": self.unchanged,
+            "promoted_changed": self.promoted_changed,
         }
 
 
@@ -268,6 +271,8 @@ class Sitting:
             f"{self.source}: {self.counts.seen} seen, "
             f"{self.counts.inserted} inserted, {self.counts.updated} updated, "
             f"{self.counts.unchanged} unchanged"
+            + (f", {self.counts.promoted_changed} promoted and changed since, not written"
+               if self.counts.promoted_changed else "")
         ]
         lines.extend(self.notes)
         if self.clean:
