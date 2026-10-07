@@ -97,24 +97,31 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
     """
     if time.time() - os.stat(path).st_mtime < settle_s:
         return Result(0, 0, busy=True)
-    with open(path, "r+b" if apply else "rb") as f:
-        seen = os.fstat(f.fileno())
-        data = f.read()
-        new, count, pcount = masked(data, pairs, pats)
-        if not (count or pcount) or not apply:
-            return Result(count, pcount)
-        if before_write:
-            before_write(path)
-        now = os.fstat(f.fileno())
-        if (now.st_size, now.st_mtime_ns) != (seen.st_size, seen.st_mtime_ns):
-            return Result(0, 0, busy=True)
-        try:
+    # Any OSError once the rewrite starts, up to and including the close
+    # that flushes what the buffer still holds, may leave the file half
+    # masked; before it, the file is untouched and a skip is right.
+    started = False
+    try:
+        with open(path, "r+b" if apply else "rb") as f:
+            seen = os.fstat(f.fileno())
+            data = f.read()
+            new, count, pcount = masked(data, pairs, pats)
+            if not (count or pcount) or not apply:
+                return Result(count, pcount)
+            if before_write:
+                before_write(path)
+            now = os.fstat(f.fileno())
+            if (now.st_size, now.st_mtime_ns) != (seen.st_size, seen.st_mtime_ns):
+                return Result(0, 0, busy=True)
+            started = True
             f.seek(0)
             f.write(new)
             f.truncate()
             f.flush()
-        except OSError as e:
+    except OSError as e:
+        if started:
             raise WriteFailed("%s: %s" % (path, e)) from e
+        raise
     return Result(count, pcount)
 
 

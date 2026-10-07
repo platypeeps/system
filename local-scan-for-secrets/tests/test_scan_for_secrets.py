@@ -333,36 +333,60 @@ class MaskRewrite(unittest.TestCase):
         self.assertIn(self.TOKEN.encode(), recent.read_bytes())
         self.assertNotIn(self.TOKEN.encode(), settled.read_bytes())
 
-    def test_a_failed_write_exits_nonzero(self):
-        path = self.log("old.jsonl", self.SETTLED)
+    def test_a_failure_after_the_rewrite_starts_exits_nonzero(self):
+        """Every step after the first byte moves: seek, write, truncate, flush
+        and close, alone and with close failing again during cleanup."""
         real_open = open
+        for fail_on in ({"seek"}, {"write"}, {"truncate"}, {"flush"}, {"close"}, {"write", "close"}):
+            with self.subTest(fail_on=sorted(fail_on)):
+                path = self.log("old.jsonl", self.SETTLED)
 
-        class Full:
-            """A file whose disk fills on the masked write."""
+                class Full:
+                    """A file whose disk fills at the named steps."""
 
-            def __init__(self, handle):
-                self.handle = handle
+                    def __init__(self, handle):
+                        self.handle = handle
 
-            def __enter__(self):
-                return self
+                    def __enter__(self):
+                        return self
 
-            def __exit__(self, *_exc):
-                self.handle.close()
+                    def __exit__(self, *_exc):
+                        self.handle.close()
+                        self.fail("close")
 
-            def __getattr__(self, name):
-                return getattr(self.handle, name)
+                    def __getattr__(self, name):
+                        return getattr(self.handle, name)
 
-            def write(self, _data):
-                raise OSError(errno.ENOSPC, "No space left on device")
+                    def fail(self, step):
+                        if step in fail_on and "+" in self.handle.mode:
+                            raise OSError(errno.ENOSPC, "No space left on device")
 
-        env = {"S4S_PATTERNS": self.PATTERN, "S4S_PAIRS": "", "S4S_MASK_SETTLE_MIN": "10", "S4S_APPLY": "1"}
-        err = io.StringIO()
-        with mock.patch.dict(os.environ, env), mock.patch.object(sys, "stdin", io.StringIO("%s\n" % path)), \
-                mock.patch.object(self.mod, "open", lambda *a, **k: Full(real_open(*a, **k)), create=True), \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-            code = self.mod.main()
-        self.assertEqual(code, 1, err.getvalue())
-        self.assertIn("No space left on device", err.getvalue())
+                    def seek(self, *a):
+                        self.fail("seek")
+                        return self.handle.seek(*a)
+
+                    def write(self, data):
+                        self.fail("write")
+                        return self.handle.write(data)
+
+                    def truncate(self, *a):
+                        self.fail("truncate")
+                        return self.handle.truncate(*a)
+
+                    def flush(self):
+                        self.fail("flush")
+                        return self.handle.flush()
+
+                env = {"S4S_PATTERNS": self.PATTERN, "S4S_PAIRS": "", "S4S_MASK_SETTLE_MIN": "10",
+                       "S4S_APPLY": "1"}
+                err = io.StringIO()
+                with mock.patch.dict(os.environ, env), \
+                        mock.patch.object(sys, "stdin", io.StringIO("%s\n" % path)), \
+                        mock.patch.object(self.mod, "open", lambda *a, **k: Full(real_open(*a, **k)), create=True), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    code = self.mod.main()
+                self.assertEqual(code, 1, err.getvalue())
+                self.assertIn("FAILED", err.getvalue())
 
     def test_a_dry_run_reports_busy_files_and_writes_nothing(self):
         settled = self.log("old.jsonl", self.SETTLED)
