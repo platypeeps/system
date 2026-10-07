@@ -207,7 +207,9 @@ old path runs, and the ledger counts the decline under that cause.
 - A token charge that cannot take the lock is left beside the counter as a
   `pending-*.json` file; the next call that holds the lock adds it.
 - The counter is one file, `~/.local/state/jev/budget.json`
-  (`XDG_STATE_HOME`, or `JEV_BUDGET_DIR`). It holds the current UTC day only.
+  (`XDG_STATE_HOME`, or `JEV_BUDGET_DIR`), locked through `budget.json.lock`
+  beside it. It holds the current UTC day only, and each write replaces it
+  whole, so a failed write leaves the last counts.
 - `status` and the comparison arms are not counted; `JEV_COMPARE_STAGES`
   bounds the arms.
 

@@ -380,24 +380,34 @@ def budget_book(env, change):
     holds one UTC day, so the first call of a new day starts from zero.
     Raises on any failure; the callers below turn that into a decline or
     into nothing.
+
+    The lock is a file of its own, so the book can be replaced whole: a new
+    book is written beside it and renamed over it, and a write that fails
+    leaves the old one in place.
     """
     import fcntl
     path = budget_file(env)
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "r+", encoding="utf-8") as fh:
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    lock = os.open(path + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
         deadline = time.monotonic() + BUDGET_LOCK_S
         while True:
             try:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
                 if time.monotonic() > deadline:
                     raise OSError("another call holds the counter")
                 time.sleep(0.02)
-        text = fh.read()
         today = time.strftime("%Y-%m-%d", time.gmtime())
-        book = json.loads(text) if text.strip() else {"day": today, "stages": {}}
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            book = {"day": today, "stages": {}}
+        else:
+            with os.fdopen(fd, encoding="utf-8") as fh:
+                book = json.load(fh)
         # Only a well-formed book of another day rolls over. Anything else is
         # refused as it stands, because resetting it could drop spent counts.
         if not (isinstance(book, dict) and isinstance(book.get("day"), str)
@@ -405,30 +415,41 @@ def budget_book(env, change):
             raise ValueError("the counter file is not a budget book")
         if book["day"] != today:
             book = {"day": today, "stages": {}}
-        absorbed = absorb_charges(os.path.dirname(path), book["stages"])
+        absorbed = absorb_charges(folder, book["stages"])
         result, dirty = change(book["stages"])
         if dirty or absorbed:
-            fh.seek(0)
-            fh.truncate()
-            json.dump(book, fh, sort_keys=True)
-            fh.flush()
+            temp = os.path.join(folder, f".budget-{os.urandom(8).hex()}.tmp")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(book, fh, sort_keys=True)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(temp, path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(temp)
+                raise
         for done in absorbed:
             # After the write: a crash between the two counts a charge twice,
             # which errs toward declining.
             with contextlib.suppress(OSError):
                 os.unlink(done)
         return result
+    finally:
+        os.close(lock)
 
 
 def absorb_charges(folder: str, stages: dict) -> list:
     """Add the charges `budget_charge` could not write to `stages`, and
-    return their files. A file that does not parse is returned uncounted."""
+    return their files. A file that does not parse is left uncounted and
+    kept; `budget_charge` publishes each one whole, by rename."""
     found = []
     for name in sorted(os.listdir(folder)):
         if not (name.startswith(PENDING) and name.endswith(".json")):
             continue
         where = os.path.join(folder, name)
-        found.append(where)
         try:
             with open(where, encoding="utf-8") as fh:
                 charge = json.load(fh)
@@ -438,6 +459,7 @@ def absorb_charges(folder: str, stages: dict) -> list:
         if isinstance(stage, str) and type(tokens) is int and tokens > 0:
             used = stages.get(stage) or {}
             stages[stage] = dict(used, tokens=int(used.get("tokens", 0)) + tokens)
+        found.append(where)
     return found
 
 
@@ -488,13 +510,17 @@ def budget_charge(stage: str, env, tokens: int) -> None:
         # The counter is locked or unreadable. Leave the charge beside it in
         # a file of its own, which needs no lock; the next call that holds
         # the lock adds it, so a lost write cannot lift a token ceiling.
+        # Written under a name absorption ignores, then renamed, so a reader
+        # never sees it half written.
         try:
-            where = os.path.join(os.path.dirname(budget_file(env)),
-                                 f"{PENDING}{os.urandom(8).hex()}.json")
-            fd = os.open(where, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+            folder = os.path.dirname(budget_file(env))
+            name = os.urandom(8).hex()
+            temp = os.path.join(folder, f".{PENDING}{name}.tmp")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                          os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump({"stage": stage, "tokens": tokens}, fh)
+            os.rename(temp, os.path.join(folder, f"{PENDING}{name}.json"))
         except Exception:
             pass
 

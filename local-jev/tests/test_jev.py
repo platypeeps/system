@@ -1100,3 +1100,19 @@ class TestBudget(StubServer):
             jev.budget_charge(self.STAGE, env, 100)
         self.assertEqual(real, jev.budget_book)
         self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True)[0], "budget")
+
+    def test_a_pending_charge_not_yet_readable_is_kept_for_later(self):
+        (self.budget / "pending-half.json").write_text('{"stage": "JEV_')
+        env = self.env(**{self.STAGE + "_MAX_TOKENS": "5"})
+        self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True), ("", ""))
+        self.assertTrue((self.budget / "pending-half.json").exists())
+
+    def test_a_failed_write_keeps_the_previous_book(self):
+        path = self.budget / "budget.json"
+        today = __import__("time").strftime("%Y-%m-%d", __import__("time").gmtime())
+        path.write_text(json.dumps({"day": today, "stages": {self.STAGE: {"calls": 5}}}))
+        before = path.read_text()
+        env = self.env(**{self.STAGE + "_MAX_CALLS": "6"})
+        with mock.patch.object(jev.json, "dump", side_effect=OSError("disk full")):
+            self.assertEqual(jev.budget_spent(self.STAGE, env, reserve=True)[0], "budget")
+        self.assertEqual(path.read_text(), before)
