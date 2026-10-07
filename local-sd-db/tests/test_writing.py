@@ -19,6 +19,7 @@ from sd_db.writing import (
     piece_for_key, piece_state, preflight, record_gate, update_piece_metadata,
     verify_pieces, readiness, recover_cutover, park_piece, checkout, piece_files, promote,
 )
+from sd_db.sources import verify as verify_source
 from sd_db.sources.vault import Reader as VaultReader
 from sd_db.writes import create_item, now
 
@@ -385,7 +386,7 @@ class Promote(WritingCase):
         super().setUp()
         (self.repo / "templates").mkdir()
         (self.repo / "templates/piece-template.md").write_text(TEMPLATE)
-        self.idea = create_item(self.db, kind="idea", title="An idea: Über café!", source="vault",
+        self.idea = create_item(self.db, kind="idea", title="An idea: Über café!", source="drafts",
                                 external_id="Blog Ideas/an-idea.md", body={"text": "The angle."})
         self.year = now()[:4]
 
@@ -402,10 +403,9 @@ class Promote(WritingCase):
         self.assertIn('title: "An idea: Über café!"\n', text)
         self.assertIn(f"created: {now()[:10]}\n", text)
         self.assertIn("type: blog        # blog | research | article\n", text)
-        self.assertTrue(text.endswith("## Notes / angle\n\n## Draft\n"))
-        self.assertEqual(json.loads(row["body"])["text"], "The angle.")
+        self.assertIn("---\n\nThe angle.\n\n## Notes / angle\n\n## Draft\n", text)
         self.assertEqual(json.loads(row["fields"])["promoted_from"],
-                         {"source": "vault", "external_id": "Blog Ideas/an-idea.md"})
+                         {"source": "drafts", "external_id": "Blog Ideas/an-idea.md"})
         self.assertTrue(verify_pieces(self.db, str(self.repo))["ok"])
 
     def test_a_slug_override_names_the_piece(self):
@@ -455,7 +455,8 @@ class Promote(WritingCase):
 
     def orphan(self, extra=""):
         """The untouched scaffold a promote stopped before its commit leaves, dated another day."""
-        text = TEMPLATE.replace('title: ""', 'title: "An idea: Über café!"').replace("YYYY-MM-DD", "2026-01-02") + extra
+        text = TEMPLATE.replace('title: ""', 'title: "An idea: Über café!"').replace("YYYY-MM-DD", "2026-01-02").replace(
+            "---\n\n", "---\n\nThe angle.\n\n") + extra
         self.file().parent.mkdir(parents=True, exist_ok=True)
         self.file().write_text(text)
         return text
@@ -504,6 +505,23 @@ class Promote(WritingCase):
             promote(self.db, self.idea, who="operator")
         self.assertIsNone(self.db.execute("SELECT piece FROM item WHERE id = ?", (self.idea,)).fetchone()[0])
 
+    def test_the_idea_prose_survives_a_later_import(self):
+        piece = promote(self.db, self.idea, who="operator")["item"]["piece"]
+        state = import_piece(self.db, str(self.repo), piece, who="operator")
+        self.assertIn("The angle.", state["writing"]["document"])
+        self.assertIn("The angle.", json.loads(state["item"]["body"])["source"])
+
+    def test_the_vault_verify_is_clean_after_a_promote(self):
+        vault = self.root / "vault"
+        note = vault / "System/Databases/Blog Ideas/vault-idea.md"
+        note.parent.mkdir(parents=True)
+        (vault / "System/Databases/Topics").mkdir(parents=True)
+        note.write_text("---\ntitle: Vault idea\nstatus: inbox\n---\nThe angle.\n")
+        reader = VaultReader.at(vault)
+        reader.land(self.db, reader.freeze())
+        promote(self.db, self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0], who="operator")
+        self.assertEqual(verify_source(self.db, reader, reader.freeze()), [])
+
     def test_an_open_outer_transaction_is_refused(self):
         self.db.execute("BEGIN")
         try:
@@ -518,7 +536,7 @@ class Promote(WritingCase):
             promote(self.db, self.idea, who="operator")
         self.assertFalse(self.file().parent.exists())
         row = self.db.execute("SELECT piece, source FROM item WHERE id = ?", (self.idea,)).fetchone()
-        self.assertEqual(tuple(row), (None, "vault"))
+        self.assertEqual(tuple(row), (None, "drafts"))
 
     def test_the_target_is_the_one_repository_that_registers_pieces(self):
         other = self.root / "other"

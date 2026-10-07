@@ -570,9 +570,19 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
             if not template.resolve().is_relative_to(disk) or not template.is_file():
                 raise WorkflowError(f"{target} has no {TEMPLATE} to scaffold from")
 
+            held = _fields(row["body"])
+            prose = next((held[key].strip() for key in ("text", "markdown")
+                          if isinstance(held.get(key), str) and held[key].strip()), "")
+
             def scaffold(day: str) -> tuple[str, str]:
-                """The registered source and the file it writes, dated `day`."""
+                """The registered source and the file it writes, dated `day`.
+
+                The idea's prose opens the body, so the file owns it from here on.
+                """
                 source = _rewrite(template.read_text(encoding="utf-8"), {"title": title, "created": day, "updated": day})
+                if prose:
+                    head, fence, rest = source.partition("\n---\n")
+                    source = f"{head}{fence}\n{prose}\n{rest}"
                 return source, _rewrite(source, {}, remove=("status", "published")) if owner == "row" else source
 
             text, written = scaffold(today)
@@ -602,7 +612,7 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
             fields["promoted_from"] = {"source": row["source"], "external_id": row["external_id"]}
             set_item_fields(connection, item, repo=target, piece=piece, path=relative, stage="accepted",
                             source=SOURCE, external_id=f"{target}::{piece}", fields=fields,
-                            body={**_fields(row["body"]), "source": text}, source_commit=None)
+                            body={"source": text}, source_commit=None)
             _transition(connection, item, STAGE_STATUS["accepted"], who=who, reason=f"promoted to piece {piece}")
             add_note(connection, item, "decision", f"Promoted to piece {piece} in {target} by {who}", session=who)
             if orphan is None:

@@ -225,8 +225,14 @@ def verify(
     construct themselves.
     """
     held = source.rows(connection)
+    # An idea promoted to a writing piece left the source's rows; the piece
+    # owns it now and keeps the identity in `promoted_from` (sd:1994).
+    promoted = {row[0] for row in connection.execute(
+        "SELECT json_extract(fields, '$.promoted_from.external_id') FROM item WHERE "
+        "CASE WHEN json_valid(fields) THEN json_extract(fields, '$.promoted_from.source') = ? END",
+        (source.name,))}
     differences: list[Difference] = []
-    for identity in sorted(set(frozen.records) - set(held)):
+    for identity in sorted(set(frozen.records) - set(held) - promoted):
         differences.append(Difference(identity, "missing from the rows", "present", None))
     for identity in sorted(set(held) - set(frozen.records)):
         differences.append(Difference(identity, "no longer in the source", None, "present"))
