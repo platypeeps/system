@@ -591,7 +591,7 @@ def _credential_row(probe: dict, now: datetime) -> dict:
         return {**row, "state": "unknown", "what": f"{name}: not read", "detail": probe["reason"]}
     if probe.get("expires"):
         days = (_when(probe["expires"]) - now).days
-        state = "warning" if days < EXPIRY_WARNING else "caution" if days < EXPIRY_CAUTION else "ok"
+        state = "warning" if days <= EXPIRY_WARNING else "caution" if days <= EXPIRY_CAUTION else "ok"
         return {**row, "state": state, "what": f"{name}: expired" if days < 0 else f"{name}: expires in {days} days",
                 "detail": f"expires {probe['expires']}",
                 "note": f"Health lights caution {EXPIRY_CAUTION} days before expiry and warning at {EXPIRY_WARNING}."}

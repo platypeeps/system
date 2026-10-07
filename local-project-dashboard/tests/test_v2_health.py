@@ -441,6 +441,12 @@ class TheDocument(Collectors, ScreenCase):
             "cred:mcp": ("caution", "1 of 2 MCP servers not connected"),
         })
 
+    def test_an_expiry_exactly_on_a_threshold_lights_that_threshold(self):
+        self.heartbeat([{"id": "week", "name": "Week", "present": True, "valid": True, "expires": "2026-09-13T12:00:00Z"},
+                        {"id": "month", "name": "Month", "present": True, "valid": True, "expires": "2026-10-06T12:00:00Z"}])
+        self.assertEqual({row["id"]: row["state"] for row in self.area("cred")["rows"]},
+                         {"cred:week": "warning", "cred:month": "caution"})
+
     def test_credentials_never_observed_or_gone_stale_say_so(self):
         (row,) = self.area("cred")["rows"]
         self.assertEqual((row["id"], row["state"]), ("cred:none", "unknown"))
