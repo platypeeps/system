@@ -507,6 +507,36 @@ class MaskRewrite(unittest.TestCase):
         self.assertEqual(path.read_bytes(), rotated, "recovery wrote into a file it never read")
         self.assertIn("replaced after the failed write", err)
 
+    def test_recovery_keeps_an_append_that_lands_while_it_restores(self):
+        path = self.token_first()
+        event = b'{"line": 2, "text": "written by the live session"}\n'
+        real_fdopen = os.fdopen
+
+        class AppendOnSeek:
+            """The session appends just as recovery starts its write."""
+
+            def __init__(self, raw):
+                self.raw = raw
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self.raw.__exit__(*exc)
+
+            def __getattr__(self, name):
+                return getattr(self.raw, name)
+
+            def seek(self, *a):
+                with open(path, "ab") as f:
+                    f.write(event)
+                return self.raw.seek(*a)
+
+        with mock.patch.object(self.mod.os, "fdopen", lambda *a, **k: AppendOnSeek(real_fdopen(*a, **k))):
+            code, err = self.apply_through(path, self.half_way_then(lambda _target: None))
+        self.assertEqual(code, 1, err)
+        self.assertTrue(path.read_bytes().endswith(event), "recovery cut the appended event")
+
     def test_the_cut_short_shape(self):
         cut = self.mod.cut_short
         data, new = b"SECRETSECRET tail", b"<m> tail"
@@ -515,8 +545,8 @@ class MaskRewrite(unittest.TestCase):
         self.assertFalse(cut(b"<m>RETSECRET tail+event", data, new), "an append since")
         self.assertFalse(cut(b"<m>RETSECRXT tail", data, new), "a change past the written prefix")
         longer = b"<masked:$NAME> tail"
-        self.assertTrue(cut(b"<masked:$NAME> ta", b"abc tail", longer), "a longer write, cut short")
-        self.assertFalse(cut(b"abc tail and more", b"abc tail", longer))
+        self.assertFalse(cut(b"<masked:$NAME> ta", b"abc tail", longer),
+                         "a longer write grew the file; restoring it needs a truncate")
 
     def test_a_rewrite_that_landed_is_not_undone(self):
         path = self.log("old.jsonl", self.SETTLED)

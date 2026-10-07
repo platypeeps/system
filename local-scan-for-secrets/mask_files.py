@@ -135,10 +135,12 @@ def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before
 
 
 def cut_short(on_disk: bytes, data: bytes, new: bytes) -> bool:
-    """True when `on_disk` is `new[:k] + data[k:]` for some k: what an
-    in-place write leaves when it stops partway, before the truncate."""
+    """True when `on_disk` is `new[:k] + data[k:]` for some k at the
+    original length: what an in-place write leaves when it stops partway.
+    A cut-short write that grew the file is not one: putting it back would
+    need a truncate, and a truncate removes what a session appended."""
     if len(on_disk) != len(data):
-        return len(on_disk) > len(data) and new.startswith(on_disk)
+        return False
     written = len(os.path.commonprefix([on_disk, new]))
     kept = len(os.path.commonprefix([on_disk[::-1], data[::-1]]))
     return len(data) - kept <= written
@@ -153,8 +155,9 @@ def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> st
     exactly what a write cut short leaves: a session's append since, or a
     rotated log, stays as it is. A file that holds either version stays too,
     since undoing a rewrite that landed would put the value back. A cut-short
-    write gets the original bytes back; the run still fails, and the next
-    one masks it.
+    write gets the original bytes back over the same length, with no
+    truncate, so a line a session appends meanwhile lands after them and
+    stays; the run still fails, and the next one masks it.
     """
     try:
         fd = os.open(path, os.O_RDWR)
@@ -167,13 +170,12 @@ def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> st
                 return "the masked bytes landed"
             if on_disk == data:
                 return "file unchanged"
-            if not cut_short(on_disk, data, new) or os.fstat(fd).st_size != len(on_disk):
+            if not cut_short(on_disk, data, new):
                 return "file changed after the failed write; left as is, and it may be half masked"
             raw.seek(0)
             view = memoryview(data)
             while view:
                 view = view[raw.write(view):]
-            raw.truncate(len(data))
             os.fsync(fd)
     except OSError as e:
         return "restore failed (%s); the file may be half masked" % e
