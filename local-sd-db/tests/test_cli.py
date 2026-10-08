@@ -496,38 +496,39 @@ class TheMigrationVerbs(MigrationVerbCase):
         """sd:1619. `managed` sits before `runner_merge`, which stays the last
         field: the operator's instructions read the merge setting as the last
         field of each row, and a new last field would change that answer.
-        `ci` (sd:1843) and `satellite_gate` (sd:2704) sit between them."""
+        `ci` (sd:1843), `satellite_gate` (sd:2704) and `lane_host` (sd:3075) sit
+        between them."""
         self.sd_db("repo", "add", str(self.checkout))
-        self.assertEqual(self._list_row()[-4:], ["no", "github", "off", "manual"])
+        self.assertEqual(self._list_row()[-5:], ["no", "github", "off", "hub", "manual"])
         completed = self.sd_db("repo", "managed", str(self.checkout), "yes")
         self.assertIn("managed no -> yes", completed.stdout)
-        self.assertEqual(self._list_row()[-4:], ["yes", "github", "off", "manual"])
+        self.assertEqual(self._list_row()[-5:], ["yes", "github", "off", "hub", "manual"])
         self.sd_db("repo", "runner-merge", str(self.checkout), "auto")
-        self.assertEqual(self._list_row()[-4:], ["yes", "github", "off", "auto"])
+        self.assertEqual(self._list_row()[-5:], ["yes", "github", "off", "hub", "auto"])
 
     def test_repo_ci_sets_the_mode_and_list_shows_it_before_runner_merge(self):
         """sd:1843. `ci` sits before `satellite_gate` and `runner_merge`,
         and the verb round-trips through `list`."""
         self.sd_db("repo", "add", str(self.checkout))
-        self.assertEqual(self._list_row()[-5:], ["file", "no", "github", "off", "manual"])
+        self.assertEqual(self._list_row()[-6:], ["file", "no", "github", "off", "hub", "manual"])
         completed = self.sd_db("repo", "ci", str(self.checkout), "local")
         self.assertIn("ci github -> local", completed.stdout)
-        self.assertEqual(self._list_row()[-5:], ["file", "no", "local", "off", "manual"])
+        self.assertEqual(self._list_row()[-6:], ["file", "no", "local", "off", "hub", "manual"])
         completed = self.sd_db("repo", "ci", str(self.checkout), "github")
         self.assertIn("ci local -> github", completed.stdout)
-        self.assertEqual(self._list_row()[-3], "github")
+        self.assertEqual(self._list_row()[-4], "github")
 
     def test_repo_satellite_gate_sets_the_grant_and_list_shows_it_before_runner_merge(self):
         """sd:2704, ruling Q1. An unset row reads `off`; the verb sets
-        `accept`, and `list` shows it just before `runner_merge`."""
+        `accept`, and `list` shows it before `lane_host` and `runner_merge`."""
         self.sd_db("repo", "add", str(self.checkout))
-        self.assertEqual(self._list_row()[-3:], ["github", "off", "manual"])
+        self.assertEqual(self._list_row()[-4:], ["github", "off", "hub", "manual"])
         completed = self.sd_db("repo", "satellite-gate", str(self.checkout), "accept")
         self.assertIn("satellite_gate off -> accept", completed.stdout)
-        self.assertEqual(self._list_row()[-3:], ["github", "accept", "manual"])
+        self.assertEqual(self._list_row()[-4:], ["github", "accept", "hub", "manual"])
         completed = self.sd_db("repo", "satellite-gate", str(self.checkout), "off")
         self.assertIn("satellite_gate accept -> off", completed.stdout)
-        self.assertEqual(self._list_row()[-2], "off")
+        self.assertEqual(self._list_row()[-3], "off")
 
     def test_repo_satellite_gate_refuses_a_bad_value_an_unknown_path_and_a_missing_argument(self):
         self.sd_db("repo", "add", str(self.checkout))
@@ -537,7 +538,38 @@ class TheMigrationVerbs(MigrationVerbCase):
         self.assertIn("not a registered repository", completed.stdout + completed.stderr)
         completed = self.sd_db("repo", "satellite-gate", str(self.checkout), expect=1)
         self.assertIn("needs a path and off or accept", completed.stderr)
-        self.assertEqual(self._list_row()[-2], "off")
+        self.assertEqual(self._list_row()[-3], "off")
+
+    def test_repo_lane_host_sets_the_host_prints_before_and_after_and_hub_writes_null(self):
+        """sd:3075, acceptance 1. An unset row reads `hub`; the verb names a
+        host, prints the value before and after, and `hub` stores NULL.
+        `list` shows the column just before `runner_merge`."""
+        self.sd_db("repo", "add", str(self.checkout))
+        self.assertEqual(self._list_row()[-2:], ["hub", "manual"])
+        completed = self.sd_db("repo", "lane-host", str(self.checkout), "build-2")
+        self.assertIn("lane_host before: hub, after: build-2", completed.stdout)
+        self.assertEqual(self._list_row()[-2:], ["build-2", "manual"])
+        completed = self.sd_db("repo", "lane-host", str(self.checkout), "hub")
+        self.assertIn("lane_host before: build-2, after: hub", completed.stdout)
+        self.assertEqual(self._list_row()[-2:], ["hub", "manual"])
+        raw = sqlite3.connect(self.home / ".local/share/sd/sd.db")
+        try:
+            self.assertEqual(raw.execute("SELECT lane_host FROM repo").fetchall(), [(None,)])
+        finally:
+            raw.close()
+
+    def test_repo_lane_host_refuses_a_bad_name_an_unknown_path_and_any_flag(self):
+        """sd:3075, acceptances 1 and 2: `Build_2` and an unregistered path
+        refuse, and the verb takes no flag; nothing is written."""
+        self.sd_db("repo", "add", str(self.checkout))
+        completed = self.sd_db("repo", "lane-host", str(self.checkout), "Build_2", expect=1)
+        self.assertIn("not a lane host", completed.stdout + completed.stderr)
+        completed = self.sd_db("repo", "lane-host", str(self.home / "absent"), "build-2", expect=1)
+        self.assertIn("not a registered repository", completed.stdout + completed.stderr)
+        for extra in (["build-2", "--force"], ["--force"], []):
+            completed = self.sd_db("repo", "lane-host", str(self.checkout), *extra, expect=1)
+            self.assertIn("takes no flag", completed.stderr)
+        self.assertEqual(self._list_row()[-2], "hub")
 
     def test_repo_list_keeps_runner_merge_as_the_last_field(self):
         """The operator's instructions read the runner merge grant as the
@@ -561,7 +593,7 @@ class TheMigrationVerbs(MigrationVerbCase):
         self.assertIn("not a registered repository", completed.stdout + completed.stderr)
         completed = self.sd_db("repo", "ci", str(self.checkout), expect=1)
         self.assertIn("needs a path and github or local", completed.stderr)
-        self.assertEqual(self._list_row()[-3], "github")
+        self.assertEqual(self._list_row()[-4], "github")
 
     def test_repo_managed_refuses_a_bad_value_an_unknown_path_and_a_missing_argument(self):
         self.sd_db("repo", "add", str(self.checkout))
@@ -571,7 +603,7 @@ class TheMigrationVerbs(MigrationVerbCase):
         self.assertIn("not a registered repository", completed.stdout + completed.stderr)
         completed = self.sd_db("repo", "managed", str(self.checkout), expect=1)
         self.assertIn("needs a path and yes or no", completed.stderr)
-        self.assertEqual(self._list_row()[-4], "no")
+        self.assertEqual(self._list_row()[-5], "no")
 
     def test_repo_list_managed_prints_only_the_managed_rows(self):
         other = self.home / "other"
@@ -825,7 +857,7 @@ class TheRetireVerb(MigrationVerbCase):
         listed = self.sd_db("repo", "list")
         # Status source, managed, ci, satellite gate, then runner merge: the
         # five trailing fields `repo list` prints.
-        self.assertEqual(listed.stdout.split()[-5:], ["row", "no", "github", "off", "manual"])
+        self.assertEqual(listed.stdout.split()[-6:], ["row", "no", "github", "off", "hub", "manual"])
 
     def test_it_needs_a_source(self):
         completed = self.sd_db("retire", expect=1)
@@ -1065,7 +1097,7 @@ class TheRemoveVerbs(RemoveCase):
 
     def test_repo_and_item_with_no_verb_name_their_verbs(self):
         completed = self.sd_db("repo", expect=1)
-        for verb in ("add", "seed", "list", "runner-merge", "managed", "ci", "satellite-gate", "remove"):
+        for verb in ("add", "seed", "list", "runner-merge", "managed", "ci", "satellite-gate", "lane-host", "remove"):
             self.assertIn(verb, completed.stderr)
         completed = self.sd_db("item", expect=1)
         self.assertIn("remove", completed.stderr)

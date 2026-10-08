@@ -28,6 +28,7 @@ from sd_db.repos import (
     repo_satellite_gate,
     seed,
     set_ci,
+    set_lane_host,
     set_managed,
     set_runner_merge,
     set_satellite_gate,
@@ -492,3 +493,41 @@ class TheSatelliteGateWriter(RepoCase):
             set_satellite_gate(self.connection, checkout, "accept")
         self.assertIn("not a registered repository", str(caught.exception))
 
+
+
+class TheLaneHostWriter(RepoCase):
+    """sd:3075. `set_lane_host` is the one writer of `repo.lane_host`: a
+    host name, or `hub`, stored as NULL. It moves no other field."""
+
+    def _registered(self) -> str:
+        checkout = support.repository(self.checkouts / "one")
+        return add(self.connection, checkout, home=self.home)
+
+    def _stored(self, path: str):
+        return self.connection.execute("SELECT lane_host FROM repo WHERE path = ?", (path,)).fetchone()[0]
+
+    def test_a_host_is_stored_and_hub_stores_null_each_answering_the_value_before(self):
+        path = self._registered()
+        self.assertIsNone(self._stored(path))
+        self.assertEqual(set_lane_host(self.connection, path, "build-2"), (path, "hub"))
+        self.assertEqual(self._stored(path), "build-2")
+        self.assertEqual(set_lane_host(self.connection, path, "hub"), (path, "build-2"))
+        self.assertIsNone(self._stored(path))
+
+    def test_it_changes_no_other_field_on_the_row(self):
+        path = self._registered()
+        before = dict(self.connection.execute("SELECT * FROM repo WHERE path = ?", (path,)).fetchone())
+        set_lane_host(self.connection, path, "build-2")
+        after = dict(self.connection.execute("SELECT * FROM repo WHERE path = ?", (path,)).fetchone())
+        self.assertEqual({key for key in before if before[key] != after[key]} - {"updated_at"}, {"lane_host"})
+
+    def test_a_bad_name_and_an_unregistered_path_are_refused(self):
+        path = self._registered()
+        for value in ("Build_2", "build.example.test", "", "build 2"):
+            with self.subTest(value=value), self.assertRaises(RepoRefusal) as caught:
+                set_lane_host(self.connection, path, value)
+            self.assertIn("not a lane host", str(caught.exception))
+        self.assertIsNone(self._stored(path))
+        with self.assertRaises(RepoRefusal) as caught:
+            set_lane_host(self.connection, support.repository(self.checkouts / "two"), "build-2")
+        self.assertIn("not a registered repository", str(caught.exception))

@@ -1143,7 +1143,10 @@ class TheJudgmentError(TheJudgmentBatchChildren):
     def test_the_reverse_returns_the_file_to_twenty_two(self):
         self._at_version_twenty_two()
         before = self._dump()
-        migrate(self.path)
+        # Through 23 only: 24 adds a `repo` column 23's reverse leaves.
+        through = [m for m in schema_module.migrations() if m[0] <= 23]
+        with mock.patch("sd_db.migrate.migrations", return_value=through):
+            migrate(self.path)
         text = dict(schema_module.migrations())[23].read_text(encoding="utf-8")
         raw = sqlite3.connect(self.path, isolation_level=None)
         self.addCleanup(raw.close)
@@ -1153,6 +1156,70 @@ class TheJudgmentError(TheJudgmentBatchChildren):
 
     # Migration 22's own reverse test runs in its class.
     test_the_reverse_returns_the_file_to_twenty_one = None
+
+
+class TheLaneHostColumn(SchemaCase):
+    """Migration 24. `repo.lane_host`, the machine that runs a repository's
+    merge lane; NULL is the hub (sd:3075, design sd:3003).
+
+    Added, not rebuilt, as 20 was: every existing row reads NULL and keeps its
+    other values, the CHECK holds a value to `[a-z0-9-]+`, and the reverse
+    returns the file to 23.
+    """
+
+    def _at_version_twenty_three(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                if version > 23:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.executemany(
+                "INSERT INTO repo (path, remote, runner_merge, managed, ci, satellite_gate, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 't', 't')",
+                [("/one", "git@github.com:platypeeps/one.git", "auto", 1, "local", "accept"),
+                 ("/two", None, "manual", 0, "github", "off")])
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_every_existing_row_arrives_at_null_and_keeps_its_values(self):
+        self._at_version_twenty_three()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (23, [24]))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        rows = [tuple(row) for row in connection.execute(
+            "SELECT path, lane_host, satellite_gate, ci, runner_merge, managed, remote FROM repo ORDER BY path")]
+        self.assertEqual(rows, [
+            ("/one", None, "accept", "local", "auto", 1, "git@github.com:platypeeps/one.git"),
+            ("/two", None, "off", "github", "manual", 0, None)])
+
+    def test_the_check_holds_a_value_to_lower_case_letters_digits_and_dashes(self):
+        self._at_version_twenty_three()
+        migrate(self.path)
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        connection.execute("UPDATE repo SET lane_host = 'build-2' WHERE path = '/one'")
+        for value in ("Build_2", "build 2", "", "build.example.test"):
+            with self.subTest(value=value), self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("UPDATE repo SET lane_host = ? WHERE path = '/one'", (value,))
+        connection.execute("UPDATE repo SET lane_host = NULL WHERE path = '/two'")
+        self.assertEqual([row[0] for row in connection.execute(
+            "SELECT lane_host FROM repo ORDER BY path")], ["build-2", None])
+
+    def test_the_reverse_returns_the_file_to_twenty_three(self):
+        self._at_version_twenty_three()
+        migrate(self.path)
+        text = dict(schema_module.migrations())[24].read_text(encoding="utf-8")
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        self.assertEqual(schema_version(raw), 23)
+        self.assertNotIn("lane_host", [row[1] for row in raw.execute("PRAGMA table_info(repo)")])
 
 
 class TheConnection(SchemaCase):

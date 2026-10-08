@@ -43,8 +43,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config, paths
+from .database import transaction
 from .errors import SdDbError
-from .writes import upsert_repo
+from .writes import now, upsert_repo
 
 #: `<subdir> <owner/repo>`, with `#` comments and blank lines. The format is
 #: the first line of the file itself, and this is the whole grammar.
@@ -623,3 +624,41 @@ def repo_satellite_gate(connection: sqlite3.Connection, path: Path | str) -> str
         f"SELECT satellite_gate FROM repo WHERE path IN ({paths.placeholders(probe)})",
         probe).fetchone()
     return SATELLITE_GATE_VALUES[0] if row is None else row["satellite_gate"]
+
+
+#: The word that names the hub for `repo.lane_host`; the column holds NULL for it.
+LANE_HUB = "hub"
+#: A lane host is a `hostname -s`, lower-cased: the `local-cron-jobs` folder rule.
+LANE_HOST_NAME = re.compile(r"[a-z0-9-]+")
+
+
+def set_lane_host(
+    connection: sqlite3.Connection,
+    path: Path | str,
+    value: str,
+) -> tuple[str, str]:
+    """Set the machine that runs one repository's lane. Returns `(path, before)`.
+
+    The one writer of `repo.lane_host` (sd:3075): the verb and the dashboard
+    both call it. `hub` writes NULL, the default every row starts at; any
+    other value is a host name and must match `[a-z0-9-]+`. `before` is
+    `hub` or the name. Same path refusal as `set_runner_merge`. A direct
+    UPDATE, not `upsert_repo`, whose `None` means "leave it" and so cannot
+    write the hub's NULL.
+    """
+    if value != LANE_HUB and not LANE_HOST_NAME.fullmatch(value):
+        raise RepoRefusal(
+            f"{value!r} is not a lane host; expected hub or a short host name "
+            f"of lower-case letters, digits and dashes, as `hostname -s` gives it lower-cased")
+    given = str(Path(path).expanduser().resolve())
+    probe = paths.keys(given)
+    with transaction(connection):
+        row = connection.execute(
+            f"SELECT path, lane_host FROM repo WHERE path IN ({paths.placeholders(probe)})",
+            probe).fetchone()
+        if row is None:
+            raise RepoRefusal(
+                f"{given} is not a registered repository; run `sd-db.sh repo add {given}`")
+        connection.execute("UPDATE repo SET lane_host = ?, updated_at = ? WHERE path = ?",
+                           (None if value == LANE_HUB else value, now(), row["path"]))
+    return row["path"], row["lane_host"] or LANE_HUB

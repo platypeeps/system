@@ -199,6 +199,11 @@ Usage: sd-db.sh <command>
               satellite's gate pass. `off`, the default every row starts
               at, runs the gate on the hub. The path must already be
               registered; this writes no new row.
+  repo lane-host PATH HOST|hub
+              Set the machine that runs this repository's merge lane: its
+              `hostname -s`, lower-cased, or `hub`, the default every row
+              starts at. Prints the value before and after. Takes no flag.
+              The path must already be registered; this writes no new row.
   repo remove PATH [--with-items] --who NAME --reason TEXT
               [--apply --if-fingerprint HEX]
               Preview what retiring the repository row at PATH would take,
