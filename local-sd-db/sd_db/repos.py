@@ -645,7 +645,15 @@ def set_lane_host(
     `hub` or the name. Same path refusal as `set_runner_merge`. A direct
     UPDATE, not `upsert_repo`, whose `None` means "leave it" and so cannot
     write the hub's NULL.
+
+    The lane belongs to the remote, so every clone row of the remote gets the
+    value, and the ship lock never sees clones that disagree. A queued or
+    running merge assignment on any clone refuses the move: its ship holds the
+    old host's lock. A hand-run `sd-ship` is not recorded; the README says to
+    move a lane only while it is idle.
     """
+    from .protection import github_slug
+
     if value != LANE_HUB and not LANE_HOST_NAME.fullmatch(value):
         raise RepoRefusal(
             f"{value!r} is not a lane host; expected hub or a short host name "
@@ -654,11 +662,30 @@ def set_lane_host(
     probe = paths.keys(given)
     with transaction(connection):
         row = connection.execute(
-            f"SELECT path, lane_host FROM repo WHERE path IN ({paths.placeholders(probe)})",
+            f"SELECT path, remote, lane_host FROM repo WHERE path IN ({paths.placeholders(probe)})",
             probe).fetchone()
         if row is None:
             raise RepoRefusal(
                 f"{given} is not a registered repository; run `sd-db.sh repo add {given}`")
-        connection.execute("UPDATE repo SET lane_host = ?, updated_at = ? WHERE path = ?",
-                           (None if value == LANE_HUB else value, now(), row["path"]))
+        def remote_of(remote):
+            slug = github_slug(remote)
+            return "/".join(slug).lower() if slug else None
+
+        mine = remote_of(row["remote"])
+        clones = [row["path"]] if mine is None else [
+            other["path"] for other in connection.execute("SELECT path, remote FROM repo ORDER BY path")
+            if remote_of(other["remote"]) == mine]
+        live = connection.execute(
+            "SELECT assignment.id, assignment.item FROM assignment JOIN item ON item.id = assignment.item"
+            " WHERE assignment.role = 'merge' AND assignment.status IN ('queued', 'running', 'ending')"
+            f" AND item.repo IN ({paths.placeholders(clones)}) ORDER BY assignment.id",
+            clones).fetchall()
+        if live:
+            held = ", ".join(f"assignment {entry['id']} (sd:{entry['item']})" for entry in live)
+            raise RepoRefusal(
+                f"{row['path']} has a merge queued or running: {held}; its ship holds the old "
+                f"host's lock. Move the lane once the lane is idle")
+        connection.execute(
+            f"UPDATE repo SET lane_host = ?, updated_at = ? WHERE path IN ({paths.placeholders(clones)})",
+            (None if value == LANE_HUB else value, now(), *clones))
     return row["path"], row["lane_host"] or LANE_HUB

@@ -37,7 +37,10 @@ def register(path: Path, lane_host: str | None, remote: str = REMOTE) -> None:
 
 
 class HostsLane(unittest.TestCase):
-    """Acceptance 5. `served_by` says hub or satellite; the host name is patched."""
+    """Acceptance 5. `served_by` says hub or satellite; the host name is patched.
+
+    Review finding 2: a read fault or clones that disagree refuse; they never grant the hub.
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -86,6 +89,27 @@ class HostsLane(unittest.TestCase):
         with mock.patch.object(ship, "served_by", return_value=HUB):
             self.assertFalse(ship.hosts_lane(raw, self.path, REPOSITORY))
 
+    def test_a_read_fault_refuses_on_the_hub_and_on_a_satellite(self):
+        broken = mock.Mock()
+        broken.execute.side_effect = sqlite3.OperationalError("disk I/O error")
+        for served in (None, HUB):
+            with self.subTest(served=served), mock.patch.object(ship, "served_by", return_value=served):
+                with self.assertRaisesRegex(ship.LaneUnknown, "Cannot read the lane host for example/one: disk I/O"):
+                    ship.hosts_lane(broken, self.path, REPOSITORY)
+
+    def test_clones_that_disagree_refuse_and_name_each_row(self):
+        register(self.path, "build-2")
+        connection = database.connect(self.path)
+        self.addCleanup(connection.close)
+        upsert_repo(connection, "/srv/two", remote="https://github.com/example/one")
+        for served in (None, HUB):
+            with self.subTest(served=served), mock.patch.object(ship, "served_by", return_value=served):
+                with self.assertRaises(ship.LaneUnknown) as caught:
+                    ship.hosts_lane(connection, self.path, REPOSITORY)
+                self.assertEqual(caught.exception.code, "lane_unknown")
+                self.assertIn("/srv/one build-2, /srv/two hub", str(caught.exception))
+                self.assertIn("sd-db.sh repo lane-host /srv/one <host>", str(caught.exception))
+
 
 class TheLockOnTheHub(unittest.TestCase):
     """Acceptance 6 on the hub: a lane moved away refuses and locks nothing."""
@@ -110,6 +134,36 @@ class TheLockOnTheHub(unittest.TestCase):
             "Run it there, or move the lane: dashboard, Management, /srv/one, Move lane;\n"
             "or sd-db.sh repo lane-host /srv/one hub-mac."))
         self.assertFalse((self.path.parent / ship.LOCK_DIRECTORY).exists())
+
+    def test_a_database_that_cannot_be_opened_refuses_and_locks_nothing(self):
+        missing = Path(self.tmp.name) / "elsewhere" / "sd.db"
+        with self.assertRaisesRegex(ship.LaneUnknown, "Cannot open the database"):
+            with ship.repository_lock(missing, REPOSITORY):
+                self.fail("the lock was taken with no database to read")
+        self.assertFalse(missing.parent.exists())
+
+    def test_a_move_while_it_waits_on_the_flock_releases_it_and_refuses(self):
+        # Review finding 1: ownership is read again once the flock is held.
+        register(self.path, None)
+        real = ship._owner
+        calls = []
+
+        def move_then_read(database_path, repository):
+            calls.append(1)
+            if len(calls) == 2:
+                connection = database.connect(self.path)
+                connection.execute("UPDATE repo SET lane_host = 'build-2'")
+                connection.close()
+            real(database_path, repository)
+
+        with mock.patch.object(ship, "_owner", side_effect=move_then_read):
+            with self.assertRaises(ship.LaneElsewhere) as caught:
+                with ship.repository_lock(self.path, REPOSITORY):
+                    self.fail("the lock was kept after the lane moved")
+        self.assertEqual(caught.exception.host, "build-2")
+        register(self.path, None)
+        with ship.repository_lock(self.path, REPOSITORY):
+            pass
 
     def test_the_hubs_own_lane_locks_beside_the_database(self):
         register(self.path, None)

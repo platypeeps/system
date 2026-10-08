@@ -449,11 +449,16 @@ The value is that machine's `hostname -s`, lower-cased. NULL, shown as `hub`, me
 
 The dashboard does the same: Management, the repository's page, `lane_host`, Move lane, with Undo.
 Both refuse an unregistered path and a name outside `[a-z0-9-]+`.
+A move sets every clone row of the remote, so clones never disagree.
+It refuses while a runner merge assignment for the repository is queued or running.
+A hand-run `sd-ship` leaves no record; move a lane only while it is idle.
 
 `sd_db.ship.hosts_lane` answers whether this machine hosts a repository.
-`repository_lock` asks it first. On any other machine it raises `LaneElsewhere` (`lane_elsewhere`) and locks nothing.
+`repository_lock` asks it before the flock and again once it holds it, so a move during a wait refuses.
+On any other machine it raises `LaneElsewhere` (`lane_elsewhere`) and locks nothing.
+A read fault, a database that cannot be opened, or clones that disagree raise `LaneUnknown` (`lane_unknown`): uncertain ownership never grants the hub.
+A missing row reads as the hub.
 The hub's lock file sits beside the database; a satellite host's sits under `$XDG_STATE_HOME/sd/ship-locks/`.
-A missing row, a read fault, or clones that disagree read as the hub.
 
 ### Satellite gate offload: the satellite gates, the hub merges
 

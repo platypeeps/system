@@ -531,3 +531,39 @@ class TheLaneHostWriter(RepoCase):
         with self.assertRaises(RepoRefusal) as caught:
             set_lane_host(self.connection, support.repository(self.checkouts / "two"), "build-2")
         self.assertIn("not a registered repository", str(caught.exception))
+
+    def _clones(self, *remotes: str) -> list[str]:
+        made = []
+        for index, remote in enumerate(remotes):
+            path = add(self.connection, support.repository(self.checkouts / f"clone-{index}"), home=self.home)
+            self.connection.execute("UPDATE repo SET remote = ? WHERE path = ?", (remote, path))
+            made.append(path)
+        return made
+
+    def test_every_clone_of_the_remote_moves_and_no_other_repository(self):
+        # Review finding 2 (sd:3075): the lane belongs to the remote, so clones never disagree.
+        first, second, other = self._clones("git@github.com:example/one.git",
+                                            "https://github.com/Example/One", "git@github.com:example/two.git")
+        self.connection.execute("UPDATE repo SET lane_host = 'build-3' WHERE path = ?", (second,))
+        self.assertEqual(set_lane_host(self.connection, first, "build-2"), (first, "hub"))
+        self.assertEqual([self._stored(path) for path in (first, second, other)], ["build-2", "build-2", None])
+        set_lane_host(self.connection, second, "hub")
+        self.assertEqual([self._stored(path) for path in (first, second, other)], [None, None, None])
+
+    def test_a_queued_or_running_merge_on_any_clone_refuses_the_move(self):
+        # Review finding 1 (sd:3075): a live merge's ship holds the old host's lock.
+        first, second = self._clones("git@github.com:example/one.git", "git@github.com:example/one.git")
+        self.connection.execute(
+            "INSERT INTO item (id, kind, title, status, repo, created_at, updated_at) "
+            "VALUES (41, 'task', 'merge me', 'in_progress', ?, '2026-10-08', '2026-10-08')", (second,))
+        for status in ("queued", "running", "ending"):
+            self.connection.execute("DELETE FROM assignment")
+            self.connection.execute("INSERT INTO assignment (id, item, role, status) VALUES (7, 41, 'merge', ?)",
+                                    (status,))
+            with self.subTest(status=status), self.assertRaises(RepoRefusal) as caught:
+                set_lane_host(self.connection, first, "build-2")
+            self.assertIn("assignment 7 (sd:41)", str(caught.exception))
+            self.assertEqual([self._stored(first), self._stored(second)], [None, None])
+        self.connection.execute("UPDATE assignment SET status = 'done'")
+        self.connection.execute("INSERT INTO assignment (id, item, role, status) VALUES (8, 41, 'author', 'running')")
+        self.assertEqual(set_lane_host(self.connection, first, "build-2"), (first, "hub"))

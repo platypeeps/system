@@ -297,26 +297,44 @@ def this_host() -> str:
     return socket.gethostname().split(".")[0].lower()
 
 
+class LaneUnknown(WorkflowError):
+    """This machine cannot tell who runs this repository's lane; nothing was locked (sd:3075).
+
+    A read fault or clone rows that name different hosts. Uncertain ownership
+    refuses: granting the hub here could run a second ship beside the lane host's.
+    """
+
+    code = "lane_unknown"
+
+
 def _lane(connection, database, repository: str) -> tuple[bool, str | None, str | None]:
     """`(hosted here, lane host, registered path)` for `repository`, an `owner/name`.
 
-    The row is the one whose remote gives `repository` (`protection.github_slug`).
-    No row, a read fault, a database without the column, or clones that disagree
-    read as NULL, the hub: then only the hub hosts it.
+    The rows are the ones whose remote gives `repository` (`protection.github_slug`).
+    NULL is the hub; so is no row, and a database without the column, where no
+    host can be named. A read fault or clones that disagree raise `LaneUnknown`.
     """
     from .protection import github_slug
 
     matched = []
     try:
-        for row in connection.execute("SELECT path, remote, lane_host FROM repo ORDER BY path"):
+        for row in connection.execute("SELECT * FROM repo ORDER BY path"):
             slug = github_slug(row["remote"])
             if slug is not None and "/".join(slug).lower() == repository.lower():
-                matched.append((row["path"], row["lane_host"]))
-    except (SdDbError, sqlite3.Error, OSError):
-        matched = []
+                matched.append((row["path"], row["lane_host"] if "lane_host" in row.keys() else None))
+    except (SdDbError, sqlite3.Error, OSError) as error:
+        raise LaneUnknown(
+            f"Cannot read the lane host for {repository}: {error}. Nothing was locked; "
+            f"retry when the database answers.") from error
     hosts = {host for _, host in matched}
-    host = hosts.pop() if len(hosts) == 1 else None
     path = matched[0][0] if matched else None
+    if len(hosts) > 1:
+        rows = ", ".join(f"{clone} {host or 'hub'}" for clone, host in matched)
+        raise LaneUnknown(
+            f"The clones of {repository} name different lane hosts: {rows}. Nothing was locked.\n"
+            f"Move the lane once to set every clone: dashboard, Management, Move lane;\n"
+            f"or sd-db.sh repo lane-host {path} <host>.")
+    host = hosts.pop() if hosts else None
     if host is None:
         return served_by(database) is None, None, path
     return host == this_host(), host, path
@@ -326,9 +344,26 @@ def hosts_lane(connection, database, repository: str) -> bool:
     """Whether this machine runs `repository`'s lane (sd:3075).
 
     True when `repo.lane_host` names this machine, or when it is NULL and this
-    machine is the hub (`served_by(database)` is None).
+    machine is the hub (`served_by(database)` is None). Raises `LaneUnknown`
+    when it cannot tell.
     """
     return _lane(connection, database, repository)[0]
+
+
+def _owner(database: Path, repository: str) -> None:
+    """Refuse unless this machine runs `repository`'s lane, read on a fresh connection."""
+    try:
+        connection = connect(database, write=False)
+    except (SdDbError, sqlite3.Error, OSError) as error:
+        raise LaneUnknown(
+            f"Cannot open the database to read the lane host for {repository}: {error}. "
+            f"Nothing was locked; retry when the database answers.") from error
+    try:
+        hosted, host, registered = _lane(connection, database, repository)
+    finally:
+        connection.close()
+    if not hosted:
+        raise LaneElsewhere(repository, host, registered)
 
 
 def _lock_directory(database: Path) -> Path:
@@ -441,24 +476,15 @@ def repository_lock(database: Path, repository: str, *, holder: dict | None = No
     WAIT_POLL_SECONDS, then refuse as `wait=0` refuses at once.
 
     Only the repository's lane host takes it (sd:3075, `hosts_lane`): any
-    other machine raises `LaneElsewhere` and locks nothing. The hub's lock
-    file sits beside the database; a satellite host's under its state folder.
+    other machine raises `LaneElsewhere`, and uncertain ownership raises
+    `LaneUnknown`; both lock nothing. Ownership is read before the flock and
+    again once it is held. The hub's lock file sits beside the database; a
+    satellite host's under its state folder.
     """
     if wait < 0:
         raise WorkflowError("ship lock wait must be zero or more seconds")
     # sd:3075: only the lane host takes the lock; any other machine refuses before it locks.
-    connection = None
-    try:
-        connection = connect(database, write=False)
-        hosted, host, registered = _lane(connection, database, repository)
-    except (SdDbError, sqlite3.Error, OSError):
-        # A database that cannot be opened has no row to read: NULL, the hub.
-        hosted, host, registered = served_by(database) is None, None, None
-    finally:
-        if connection is not None:
-            connection.close()
-    if not hosted:
-        raise LaneElsewhere(repository, host, registered)
+    _owner(database, repository)
     directory = _lock_directory(database)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / (hashlib.sha256(repository.encode()).hexdigest() + ".lock")
@@ -469,6 +495,8 @@ def repository_lock(database: Path, repository: str, *, holder: dict | None = No
 
     with runner_journal.lock(path, blocking=False, noun="ship", error=WorkflowError, held=held,
                              wait=wait, poll=WAIT_POLL_SECONDS) as descriptor:
+        # The lane may have moved while this waited on the flock: read it again, and release on a refusal.
+        _owner(database, repository)
         given = holder or {}
         record = {"pid": os.getpid(), "repository": repository, "started_at": now(),
                   "command": given.get("command") or " ".join([Path(sys.argv[0]).name, *sys.argv[1:]])[:512],
