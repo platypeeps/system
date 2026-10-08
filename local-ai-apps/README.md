@@ -14,8 +14,7 @@ captured manifests are safe to commit; secrets stay in each app's own config.
 ./ai-apps.sh compare personal work   # cross-PROFILE diff
 ./ai-apps.sh setup [profile] [--apply]  # align machine to a manifest
 ./ai-apps.sh adopt <kind> <name> <from> <to> [--apply]  # move one item
-./ai-apps.sh update              # brew upgrade for these apps but codex and claude-code
-./ai-apps.sh nightly             # update + capture, email on change (cron)
+./ai-apps.sh nightly             # capture, email on change (cron)
 ```
 
 ## Manifest format
@@ -67,15 +66,11 @@ and `setup <profile> --apply` pulls a machine toward the chosen manifest.
 ## Cron
 
 `ai-apps-nightly` (04:30, a job in `<config>/cron-jobs/jobs/`; examples in `local-cron-jobs/examples/`) runs `nightly`:
-upgrades the apps through brew and re-captures the inventory, emailing
-via local-notify only when an app was upgraded or the inventory moved.
-It skips codex and claude-code: `machine-setup.sh upgrade` updates them weekly.
+it re-captures the inventory and emails via local-notify only when the inventory moved.
 The `.inv` diff lands in `<config>/ai-apps/profiles/`.
-Each brew call names itself in the job log as it starts.
-A query stops after 600 s and an upgrade after 1800 s; `AI_APPS_STEP_TIMEOUT` sets one bound in seconds for both.
-A hung call then ends and names its step, instead of running until the job's limit.
-A brew step that fails or times out fails the night with exit 1, so cron-jobs raises its failure banner and push.
-A night with nothing outdated and no inventory change stays quiet.
+It upgrades no app: `machine-setup.sh upgrade-report` upgrades every app once a week.
+Both machines then move together, and macOS permissions need re-granting in one sitting.
+A night with no inventory change stays quiet.
 
 ## Where inventories come from
 

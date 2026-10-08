@@ -1,7 +1,6 @@
-# Nightly AI-app upkeep: brew-upgrade the AI coding apps but codex and
-# claude-code (the weekly upgrade owns those), re-capture the
-# skills/MCP/agent/plugin inventory, then commit and push it; emails only when
-# something changed.
+# Nightly AI-app inventory: re-capture the skills/MCP/agent/plugin
+# inventory, then commit and push it; emails only when it changed. It
+# upgrades no app: machine-setup-upgrade-weekly owns every upgrade (sd:3062).
 #
 # The commit is part of this job because the inventory is this job's own
 # output. Leaving it dirty made `git status` permanently noisy in a checkout

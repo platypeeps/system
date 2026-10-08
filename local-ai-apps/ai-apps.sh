@@ -3,11 +3,10 @@
 # (claude-code, claude-desktop, codex, copilot, opencode, antigravity):
 # which skills, MCP servers, agents, and plugins each app has, captured into
 # committable per-machine-profile manifests (names only — never secrets).
-# Usage: ai-apps.sh status|capture|compare|setup|adopt|update
+# Usage: ai-apps.sh status|capture|compare|setup|adopt|nightly
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
-. "$DIR/../lib/bounded.sh"
 # The .inv manifests are a machine's own inventory, so they live in the shared
 # config directory outside the checkout. AI_APPS_PROFILES_DIR points
 # elsewhere; a private fork that tracks them sets it to this folder's
@@ -51,7 +50,7 @@ case "$PROFILE" in
 esac
 
 usage() {
-  echo "usage: $(basename "$0") status|capture [profile]|compare [p1 p2]|setup [profile] [--apply]|adopt <kind> <name> <from> <to> [--apply]|update|nightly|test" >&2
+  echo "usage: $(basename "$0") status|capture [profile]|compare [p1 p2]|setup [profile] [--apply]|adopt <kind> <name> <from> <to> [--apply]|nightly|test" >&2
   exit 1
 }
 
@@ -691,36 +690,11 @@ PY
   esac
 }
 
-# The apps themselves all come from homebrew; upgrade just these six. Each
-# brew call is a bounded step (lib/bounded.sh): the query gets 600 s and the
-# upgrade 1800 s, or AI_APPS_STEP_TIMEOUT seconds each when that is set. A
-# query that did not finish checked nothing, so it is not "all current".
-cmd_update() {
-  # codex and claude-code update in the weekly upgrade only (sd:3033).
-  PKGS="opencode claude antigravity copilot-cli"
-  rc=0
-  out=$(st_step "${AI_APPS_STEP_TIMEOUT:-600}" brew outdated --quiet) || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    echo "brew outdated failed (exit $rc); no AI app was checked or upgraded"
-    return 1
-  fi
-  todo=""
-  for p in $PKGS; do
-    echo "$out" | grep -qx "$p" && todo="$todo $p"
-  done
-  if [ -z "$todo" ]; then
-    echo "all AI apps current (checked: $PKGS)"
-    return 0
-  fi
-  echo "upgrading:$todo"
-  # shellcheck disable=SC2086  # word splitting of the package list is the point
-  st_step "${AI_APPS_STEP_TIMEOUT:-1800}" brew upgrade $todo
-}
-
-# Cron flavor: upgrade the brew apps in PKGS, re-capture the inventory, and email
-# only when something actually moved (an upgrade or an inventory change).
-# Exits 1 when the email could not be delivered or the update failed, and
-# with capture's code when capture failed.
+# Cron flavor: re-capture the inventory and email only when it changed. It
+# upgrades nothing: the weekly `machine-setup.sh upgrade-report` owns every
+# app upgrade, so both machines move together once a week (sd:3062).
+# Exits 1 when the email could not be delivered, and with capture's code when
+# capture failed.
 cmd_nightly() {
   NOTIFY="$DIR/../local-notify/notify.sh"
   TMPD=$(mktemp -d)
@@ -731,18 +705,6 @@ cmd_nightly() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # fd 3 is the job log. The update's output goes into the report, and each
-  # brew step names itself here as it starts, so a hang names its step.
-  exec 3>&2
-  # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
-  ST_STEP_FD3=1
-
-  # The update's code is kept too. A brew step that failed or timed out on a
-  # quiet night used to exit 0 with no mail, its step line in the job log the
-  # only trace (sd:2662). The report still goes when something moved; the exit
-  # then fails the night, so cron-jobs raises its failure banner and push.
-  up_rc=0
-  cmd_update > "$TMPD/up" 2>&1 || up_rc=$?
 
   # The rc is kept, not discarded. `capture` refuses to write when a config it
   # reads is present and unparseable, and the old `|| true` turned that refusal
@@ -750,25 +712,14 @@ cmd_nightly() {
   # stale with nothing saying so.
   cap_rc=0
   cmd_capture > "$TMPD/cap" 2>&1 || cap_rc=$?
-  cat "$TMPD/up" "$TMPD/cap"
+  cat "$TMPD/cap"
   if [ "$cap_rc" -ne 0 ]; then
     echo "ai-apps: capture failed; the inventory was not rewritten." >&2
     exit "$cap_rc"
   fi
 
-  upgraded=0
-  grep -q '^upgrading:' "$TMPD/up" && upgraded=1
-  changed=1
-  grep -q '^  none$' "$TMPD/cap" && changed=0
-
-  if [ "$upgraded" -eq 1 ] || [ "$changed" -eq 1 ]; then
+  if ! grep -q '^  none$' "$TMPD/cap"; then
     send_report
-  fi
-  # 1 and not the update's own code: a step's timeout is 124, which cron-jobs
-  # uses for the job's own limit.
-  if [ "$up_rc" -ne 0 ]; then
-    echo "ai-apps: the app update failed (exit $up_rc); the step lines above name the brew call" >&2
-    exit 1
   fi
   return 0
 }
@@ -777,9 +728,8 @@ cmd_nightly() {
 send_report() {
 
   subject="ai-apps: changes on $(hostname -s)"
-  body=$(printf 'ai-apps nightly — %s on %s\n\nApp upgrades:\n%s\n\nInventory (profile %s):\n%s\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" \
-    "$(cat "$TMPD/up")" "$PROFILE" "$(cat "$TMPD/cap")")
+  body=$(printf 'ai-apps nightly — %s on %s\n\nInventory (profile %s):\n%s\n' \
+    "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$PROFILE" "$(cat "$TMPD/cap")")
   if ! sh "$NOTIFY" -t "$subject" -k status -c ntfy,email -b "$body"; then
     echo "email FAILED — exiting 1 so the cron failure push fires" >&2
     exit 1
@@ -795,11 +745,10 @@ case "${1:-}" in
   compare) shift; cmd_compare "$@" ;;
   setup)   shift; cmd_setup "$@" ;;
   adopt)   shift; cmd_adopt "$@" ;;
-  update)  cmd_update ;;
   nightly) cmd_nightly ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--apply]|adopt ...|update|nightly
+usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--apply]|adopt ...|nightly
 
   status                     which apps are installed and how many MCP
                              servers / skills / agents / plugins each has
@@ -822,18 +771,14 @@ usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--ap
                              app's config snippet with secret values REDACTED
                              (never written automatically); plugins print the
                              install command
-  update                     brew upgrade for the AI apps but codex and
-                             claude-code, which the weekly upgrade owns; each
-                             brew call is logged as it starts and stopped
-                             after 600 s (query) or 1800 s (upgrade), or
-                             AI_APPS_STEP_TIMEOUT seconds when that is set
-  nightly                    update + capture into the config folder, emailing
-                             the report when an app was upgraded or the
-                             inventory changed (what the ai-apps-nightly cron
-                             job runs). Exits 1 when the email could not be
-                             delivered or a brew step of the update failed or
-                             timed out, and with capture's code when capture
-                             failed and the inventory was not rewritten.
+  nightly                    capture into the config folder, emailing the
+                             report when the inventory changed (what the
+                             ai-apps-nightly cron job runs). It upgrades
+                             nothing: machine-setup.sh upgrade-report owns
+                             every app upgrade, weekly. Exits 1 when the email
+                             could not be delivered, and with capture's code
+                             when capture failed and the inventory was not
+                             rewritten.
 
 apps: claude-code, claude-desktop, codex, copilot, opencode, antigravity
 manifests: <config>/ai-apps/profiles/<profile>.inv, where <config> is
