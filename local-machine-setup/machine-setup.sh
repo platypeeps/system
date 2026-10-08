@@ -3958,9 +3958,10 @@ outdated_lists() {
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
 # after the sweep, and emails what got upgraded / what failed / what is still
-# pending through local-notify's email channel. Quiet no-op when nothing is
-# outdated. Exits 1 only when the email could not be delivered, so the cron
-# failure push covers a lost report, not mere findings.
+# pending through local-notify's email channel. When nothing is outdated it
+# only updates Claude Code. Exits 1 when the email could not be delivered, or
+# when that quiet-week Claude update failed, so the cron failure push covers a
+# lost report or a silent failure, not mere findings.
 cmd_upgrade_report() {
   APPLY=1
   notify="$ROOT/local-notify/notify.sh"
@@ -3984,8 +3985,14 @@ cmd_upgrade_report() {
   outdated_lists before
 
   if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ]      && [ ! -s "$tmp/mas.before" ]; then
+    # Claude Code updates outside brew, and cmd_upgrade, which runs it, does
+    # not run this week (sd:3033).
+    rc=0
+    if [ -x "$HOME/.local/bin/claude" ]; then
+      run_step 600 "$HOME/.local/bin/claude" update || rc=1
+    fi
     echo "nothing outdated — no upgrade, no email"
-    return 0
+    return "$rc"
   fi
 
   rc=0
@@ -4333,9 +4340,10 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
                    runs the rest, and exits 1 naming the steps that failed
   upgrade-report   cron flavor of upgrade: always applies, emails what got
-                   upgraded / what failed / what is still outdated (quiet
-                   no-op when nothing is outdated); exits 1 only when the
-                   email could not be delivered
+                   upgraded / what failed / what is still outdated; when
+                   nothing is outdated it only runs claude update; exits 1
+                   when the email could not be delivered or that quiet-week
+                   claude update failed
   checklist        print the manual new-machine steps no stage automates
                    (accounts, licenses, key restores; plus checklist.txt from the config)
   decommission     retire this machine: list dirty/unpushed repos, uninstall
