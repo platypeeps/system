@@ -168,6 +168,14 @@ Resolving it is the pattern to follow: **check what the outside copy has that
 the block does not, fold that into `prompt/shared.md`, then delete the copy.**
 Deleting first would have lost both of those. The file is now block-only.
 
+## Claude rule files
+
+`shared.md` holds the user-level rules, so every machine and every agent gets them.
+A file in `~/.claude/rules/` is a second copy that reaches only the machine it sits on.
+`status` reports each `~/.claude/rules/*.md` as `DIFFERS`, so the machine-setup drift count sees it.
+Fold anything the file has that `shared.md` lacks into `shared.md`, then delete the file.
+Personal lines for one machine stay below the block in `~/.claude/CLAUDE.md`.
+
 ## RTK is inlined, not imported
 
 `~/.claude/CLAUDE.md` used to start with `@RTK.md`, importing

@@ -805,6 +805,46 @@ stage_repos() {
   else
     echo "  local-repo-sync missing from the repo"
   fi
+  local_blocks
+}
+
+# The shared CLAUDE.local.md keys, SHARED_LOCAL_KEYS in claude_settings.py, in
+# each auto repo checked out here (sd:3030). The source wins for those keys;
+# the repo's other keys, its comments and the lines outside the block stay.
+# A file git does not ignore is reported and never written: the block is
+# per machine, and a tracked copy would publish it.
+local_blocks() {
+  if ! rows=$("$ROOT/local-sd-db/sd-db.sh" repo list 2>/dev/null </dev/null); then
+    echo "  SKIP    CLAUDE.local.md shared keys: sd-db.sh repo list failed"
+    return 0
+  fi
+  # `sd-db: <path>  <url>  ...  <runner merge>`: two spaces between fields,
+  # and a path may hold one.
+  printf '%s\n' "$rows" | sed -n 's/^sd-db: //p' | awk -F '  ' '$NF == "auto" {print $1}' |
+  while IFS= read -r repo; do
+    case $repo in
+      "~/"*) dir="$HOME/${repo#\~/}" ;;
+      *) dir=$repo ;;
+    esac
+    [ -e "$dir/.git" ] || continue
+    file="$repo/CLAUDE.local.md"
+    if ! gaps=$(python3 "$DIR/claude_settings.py" local-missing "$dir/CLAUDE.local.md" 2>&1 </dev/null); then
+      echo "  DIFFERS $file: ${gaps#claude_settings.py: }"
+      continue
+    fi
+    if [ -z "$gaps" ]; then
+      echo "  ok      $file shared keys"
+      continue
+    fi
+    printf '%s\n' "$gaps" | while read -r word key; do
+      printf '  %-7s %s %s\n' "$word" "$file" "$key"
+    done
+    if ! git -C "$dir" check-ignore -q CLAUDE.local.md </dev/null; then
+      echo "  DIFFERS $file is not ignored by git; not written"
+      continue
+    fi
+    run python3 "$DIR/claude_settings.py" local-merge "$dir/CLAUDE.local.md"
+  done
 }
 
 # Jobs only this machine sees: those in its own folder, cron-jobs/jobs/<host>/.
