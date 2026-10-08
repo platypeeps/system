@@ -18,6 +18,7 @@ from tests import fixture_config
 HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
+EXAMPLE = FOLDER.parent / "local-statusline" / "claude-hud.config.example.json"
 OPERATOR = {"permissions": {"deny": ["Bash(aws iam:*)", "Read(~/.ssh/**)"]},
             "attribution": {"commit": "mine"},
             "hooks": {"SessionStart": [{"matcher": "startup", "hooks": [{"type": "command", "command": "own"}]}]}}
@@ -39,6 +40,7 @@ class SyntheticHome(unittest.TestCase):
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, self.repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         write_exec(self.repo / "local-statusline/statusline.sh", "#!/bin/sh\nexit 0\n")
+        shutil.copy(EXAMPLE, self.repo / "local-statusline" / EXAMPLE.name)
         self.home = base / "home"
         self.claude = self.home / ".claude"
         (self.claude / "plugins/cache/claude-hud/claude-hud/0.10.0").mkdir(parents=True)
