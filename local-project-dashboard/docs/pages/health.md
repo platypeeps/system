@@ -63,6 +63,7 @@ thread, not one per refresh. Meanwhile the area shows its last answer under
   `node_modules/` or `.venv/`, the rule of 2026-09-25; it reads their
   presence, not their size.
 
-Nothing on the page writes: Prune registrations, Attribute, Delete merged,
-Remove build output, Show biggest, Show use, Inspect listener and Re-run
-collector are CLI lines for Copy, and Re-check reads the document again.
+Prune registrations, Attribute, Delete merged, Remove build output, Show
+biggest, Show use and Inspect listener are CLI lines for Copy, and Re-check
+reads the document again. Re-run collector posts `/api/shadow/sync`, as
+Contributions does, and reads Health again when the run ends (sd:2894).

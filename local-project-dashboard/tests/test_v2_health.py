@@ -889,7 +889,7 @@ class TheScript(Collectors, ScreenCase):
             ["merged branches.delete", "merged branches", "safe", "d", False, True],
             ["port.inspect", "port", "safe", "i", False, False],
             ["protection.settings", "branch protection", "safe", "o", False, False],
-            ["collector.sync", "collector", "safe", "r", False, False],
+            ["collector.sync", "collector", "safe", "r", None, False],
             ["dependabot alerts.review", "dependabot alerts", "safe", "o", False, False],
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
             ["credential.probe", "credential", "safe", "r", False, False],
@@ -1105,7 +1105,7 @@ R.unread = ELS.details.html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:
         self.assertIn("group/alpha · settings/branches", details)
         self.assertEqual(out["R"]["cli"], "open https://github.com/group/alpha/settings/branches")
         self.assertEqual(out["R"]["off"], "no github.com remote: there is no settings page")
-        self.assertEqual(out["R"]["sync"], "sd shadow sync")
+        self.assertEqual(out["R"]["sync"], "sd shadow sync --max-seconds 120")
         self.assertEqual(out["R"]["lsof"], "lsof -nP -iTCP:9010 -sTCP:LISTEN")
         self.assertIn("No cell is shown: token does not reach it.", out["R"]["unread"])
         self.assertNotIn("<dl class=\"checks\">", out["R"]["unread"])
@@ -1121,6 +1121,25 @@ shellRun(cmd('worktree registrations.prune'), o); await flush();""")
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["toasts"][-1][0], "Not run here: copy the line from Details and run it in a terminal · "
                                                "group/alpha: 2 worktrees registered, directory gone")
+
+    def sync(self, finished):
+        """Re-run collector on the protection collector: the run starts, reads as running once, then `finished`."""
+        return self.run_page("""var n = 0; ANSWER = (path, body) => path === '/api/health' ? [200, DOC]
+  : path === '/api/shadow/sync' ? [202, { running: true }]
+  : path === '/api/shadow/state' ? (n++ ? [200, """ + json.dumps(finished) + """] : [200, { running: true }]) : [404, { error: 'no answer' }];
+OUT.gets = []; shellRun(cmd('collector.sync'), C.get('collector:protection')); await flush();""")
+
+    def test_rerun_collector_starts_the_servers_sync_and_reads_health_again_when_it_ends(self):
+        # sd:2894: the route Contributions posts (sd:2207); `sd shadow sync` writes the protection rows Health shows.
+        out = self.sync({"running": False, "error": None, "trackers": [
+            {"tracker": "github", "ok": True, "configured": True, "reason": "", "lines": []}]})
+        self.assertEqual(out["posts"], [["/api/shadow/sync", {}, 64]])
+        self.assertEqual(out["gets"], ["/api/shadow/state", "/api/shadow/state", "/api/health"])
+        self.assertEqual([t[0] for t in out["toasts"]][-1], "Shadow sync started · Health reads again when it ends")
+
+    def test_a_sync_that_ends_broken_says_why(self):
+        out = self.sync({"running": False, "error": "OperationalError: database is locked", "trackers": []})
+        self.assertEqual(out["toasts"][-1][0], "Shadow sync ended with a problem: OperationalError: database is locked")
 
     def test_disk_draws_a_bar_per_volume_and_its_lines_are_copy_only(self):
         out = self.run_page("""R.areas = ELS.areas.html; var o = C.get('build:merged');
