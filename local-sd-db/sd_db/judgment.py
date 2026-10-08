@@ -69,6 +69,12 @@ hashing the question definition, never the state; `load_avg` is the
 one-minute load average, zero or more. Each value that fails its shape is
 stored as NULL and the row is kept.
 
+**A failed call says why, beside `cause`.** `error_class` is the exception's
+class name, such as `ConnectionRefusedError` or `HTTPError`; `error_detail`
+is its errno name or HTTP status, such as `ECONNREFUSED` or `503`. Neither
+holds message text, a URL or a response body. Each is at most `MAX_ERROR`
+characters of its shape, else NULL, and the row is kept (sd:2973).
+
 **A batch is one call and N decisions.** A batched call's row measures the
 request and holds no answer. `answers` gives each question its own child
 row: `parent` names the batch row, `question_id` is `<id>:<index>`, and the
@@ -216,6 +222,12 @@ MAX_LOCATION = 255
 #: A prompt hash: the first 16 lowercase hex digits of a SHA-256, as `jev`
 #: writes it.
 PROMPT_HASH = re.compile(r"[0-9a-f]{16}")
+
+#: Why a call failed: an exception's class name, and its detail, an errno name
+#: or an HTTP status. Neither holds message text (sd:2973).
+ERROR_CLASS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+ERROR_DETAIL = re.compile(r"[A-Z0-9_]+")
+MAX_ERROR = 64
 
 
 class JudgmentRefused(SdDbError):
@@ -459,6 +471,8 @@ def record(
     run_id: str | None = None,
     prompt_hash: str | None = None,
     load_avg: float | None = None,
+    error_class: str | None = None,
+    error_detail: str | None = None,
     answers: list[dict] | None = None,
     now: str | None = None,
 ) -> int:
@@ -507,6 +521,8 @@ def record(
     run_id = _soft_match(run_id, IDENTIFIER, MAX_NAME)
     prompt_hash = _soft_match(prompt_hash, PROMPT_HASH, 16)
     load_avg = _soft_number(load_avg, 0.0, math.inf)
+    error_class = _soft_match(error_class, ERROR_CLASS, MAX_ERROR)
+    error_detail = _soft_match(error_detail, ERROR_DETAIL, MAX_ERROR)
     if usd is not None and (type(usd) not in (int, float) or not math.isfinite(usd)
                             or usd < 0):
         raise JudgmentRefused(f"usd must be a finite number of zero or more; got {usd!r}")
@@ -526,7 +542,8 @@ def record(
         duration_ms=duration_ms, usd=None if usd is None else float(usd),
         changed=changed, server_ms=server_ms, probabilities=probabilities,
         location=location, threshold=threshold, run_id=run_id,
-        prompt_hash=prompt_hash, load_avg=load_avg)
+        prompt_hash=prompt_hash, load_avg=load_avg, error_class=error_class,
+        error_detail=error_detail)
     children = ([_child(index, entry, row) for index, entry in enumerate(answers, 1)]
                 if isinstance(answers, list) else [])
     with transaction(connection):

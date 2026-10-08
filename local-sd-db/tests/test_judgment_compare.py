@@ -147,10 +147,10 @@ class TheMigration(unittest.TestCase):
             path = Path(tmp) / "sd.db"
             initialise(path)
             raw = sqlite3.connect(path, isolation_level=None)
-            # 022 to 018 came after 017 and are reversed first: their `ADD
-            # COLUMN` and `CREATE TABLE` do not replay (sd:2966, sd:2950,
-            # sd:2704, sd:1335, sd:2581).
-            for name in ("022_judgment_batch_children.sql",
+            # 023 to 018 came after 017 and are reversed first: their `ADD
+            # COLUMN` and `CREATE TABLE` do not replay (sd:2973, sd:2966,
+            # sd:2950, sd:2704, sd:1335, sd:2581).
+            for name in ("023_judgment_error.sql", "022_judgment_batch_children.sql",
                          "021_judgment_call_context.sql", "020_repo_satellite_gate.sql",
                          "019_request_outcome.sql",
                          "018_runner_run_repo_nullable.sql", "017_judgment_compare_arms.sql"):

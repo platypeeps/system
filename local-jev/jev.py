@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import io
 import ipaddress
 import json
@@ -1559,6 +1560,8 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
     started = time.monotonic()
     try:
         for attempt in range(conf["retries"] + 1):
+            # The row says how the last attempt ended, not an earlier one.
+            note(_cause=None, error_class=None, error_detail=None)
             try:
                 with send(request, timeout=conf["timeout"]) as response:
                     raw = response.read().decode("utf-8")
@@ -1590,7 +1593,7 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
                 detail = exc.read().decode("utf-8", "replace").strip()[:400]
                 exc.close()   # an HTTPError is an open response, not just an exception
                 last = f"HTTP {exc.code}: {detail}" if detail else f"HTTP {exc.code}"
-                note(_cause="unavailable")
+                note(_cause="unavailable", **error_of(exc))
                 if exc.code == 401 and conf.get("local"):
                     raise JevError(
                         "HTTP 401: Kev rejected the key (set KEV_API_KEY to the "
@@ -1611,13 +1614,31 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
                 # A timeout arrives wrapped, and it is the one failure class a
                 # caller can act on differently from an endpoint that refused.
                 note(_cause="timeout" if isinstance(exc.reason, TimeoutError)
-                     else "unavailable")
-                if attempt == conf["retries"]:
+                     else "unavailable", **error_of(exc))
+                # A loopback connect that is refused -- nothing listens, or a
+                # sandbox denies it -- is refused again in 2, 4 and 8 seconds,
+                # so it is not retried (sd:2973).
+                refused = conf.get("local") and isinstance(
+                    exc.reason, (ConnectionRefusedError, PermissionError))
+                if refused or attempt == conf["retries"]:
                     raise JevError(last) from exc
                 sleep(BACKOFF * (2 ** attempt))
         raise JevError(last or "request failed")
     finally:
         note(duration_ms=int(round((time.monotonic() - started) * 1000)))
+
+
+def error_of(exc) -> dict:
+    """Why a request failed, for the row beside `cause`: the exception's
+    class and its errno name or HTTP status (sd:2973). Never its message,
+    which can carry a URL or the response body, and so the request."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return {"error_class": "HTTPError", "error_detail": str(exc.code)}
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
+        exc = exc.reason
+    number = getattr(exc, "errno", None)
+    return {"error_class": type(exc).__name__,
+            "error_detail": errno.errorcode.get(number) if type(number) is int else None}
 
 
 def start_arms(payload: dict) -> str:
@@ -2182,6 +2203,9 @@ def main(argv=None, out=None, env=None, **kw) -> int:
             code, outcome, cause = degrade(str(exc), fallback, sink), "unavailable", "budget"
         except (JevError, OSError, json.JSONDecodeError) as exc:
             outcome = cause = cause_of(exc)
+            # `post` names a request's failure; this names any other.
+            if not (_EVENT or {}).get("error_class"):
+                note(**error_of(exc))
             if fallback is not None:
                 code = degrade(str(exc), fallback, sink)
             else:

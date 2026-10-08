@@ -74,6 +74,11 @@ backup, and the fixture harness both repositories test against.
                     batch row a child row answers one question of; NULL
                     on every older row. Carries its reverse in its header,
                     run before 021's (sd:2966)
+      schema/023_judgment_error.sql  `judgment.error_class` and
+                    `error_detail`, why a call failed: an exception class and
+                    an errno name or HTTP status; NULL on every older row.
+                    Carries its reverse in its header, run before 022's
+                    (sd:2973)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -515,14 +520,17 @@ refuse: a value over 255 characters, or one with a control character, is
 stored as NULL and the row is kept. It names a directory, never submitted
 content.
 
-Four more columns record the conditions of a call, under the same rule: a
+More columns record the conditions of a call, under the same rule: a
 value that fails its shape is stored as NULL and the row is kept.
 `threshold` is the cut-off the caller applied (`--gate`, `--unsure-below`),
 from 0 to 1. `run_id` groups the calls of one run, such as one review, and
 is an identifier. `prompt_hash` is 16 lowercase hex digits hashing the
 question definition -- instructions, criteria, levels -- and never the state.
 `load_avg` is the one-minute load average when the call was made, zero or
-more.
+more. `error_class` and `error_detail` say why a failed call failed, beside
+`cause`: an exception class name such as `ConnectionRefusedError`, and an
+errno name or HTTP status such as `ECONNREFUSED` or `503`. Neither holds
+message text (sd:2973).
 
 A batched call asks several questions at once. Its row is the call: tokens,
 latency, cost, `questions=N`, and no answer. Given `answers`, one entry per

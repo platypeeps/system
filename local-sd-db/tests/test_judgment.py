@@ -229,6 +229,37 @@ class TheCallContext(JudgmentCase):
                     self.assertIsNone(self.context(**{field: value})[field])
 
 
+class TheError(TheCallContext):
+    """`error_class` and `error_detail` say why a call failed (sd:2973): a
+    class name and an errno name or status, never message text."""
+
+    CONTEXT = ("error_class", "error_detail")
+
+    def test_every_field_is_stored(self):
+        self.assertEqual(
+            self.context(error_class="ConnectionRefusedError", error_detail="ECONNREFUSED"),
+            {"error_class": "ConnectionRefusedError", "error_detail": "ECONNREFUSED"})
+        self.assertEqual(self.context(error_class="HTTPError", error_detail="503"),
+                         {"error_class": "HTTPError", "error_detail": "503"})
+
+    def test_the_edges_are_kept(self):
+        for field, value in (("error_class", "a" * judgment.MAX_ERROR),
+                             ("error_detail", "E" * judgment.MAX_ERROR)):
+            with self.subTest(field=field):
+                self.assertEqual(self.context(**{field: value})[field], value)
+
+    def test_a_bad_value_is_null_and_the_row_is_still_written(self):
+        bad = {
+            "error_class": ("", "1Leading", "has space", "Error: text", "a" * 65, 7),
+            "error_detail": ("", "Connection refused", "econnrefused",
+                             "http://127.0.0.1:8009", "E" * 65, 503),
+        }
+        for field, values in bad.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    self.assertIsNone(self.context(**{field: value})[field])
+
+
 class ThePrice(JudgmentCase):
     """A row's cost from the price `providers.yaml` registers for its
     provider (sd:2358). The price is the operator's to enter; with none

@@ -15,6 +15,7 @@ The promises checked:
 * an unkeyed, refused, slow or switched-off arm costs the caller nothing.
 """
 
+import errno
 import json
 import os
 import socket
@@ -25,6 +26,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -268,6 +270,16 @@ class TheKevArm(CompareCase):
         kev = self.by_arm(self.wait_rows(2))["kev"]
         self.assertEqual((kev["outcome"], kev["cause"]), ("unavailable", "unavailable"))
         self.assertIsNone(kev["answer"])
+        # And why, as the local-only row says it (sd:2973).
+        self.assertEqual((kev["error_class"], kev["error_detail"]),
+                         ("ConnectionRefusedError", "ECONNREFUSED"))
+
+    def test_a_kev_that_answers_503_records_the_status(self):
+        Arm.status = 503
+        self.run_main(["noul", "is it?"])
+        kev = self.by_arm(self.wait_rows(2))["kev"]
+        self.assertEqual((kev["outcome"], kev["error_class"], kev["error_detail"]),
+                         ("unavailable", "HTTPError", "503"))
 
     def test_a_slow_kev_past_its_timeout_records_timeout(self):
         Arm.delay = 3.0
@@ -959,6 +971,72 @@ class LocalOnly(CompareCase):
         row = self.only()
         self.assertEqual((row["arm"], row["outcome"], row["cause"]),
                          ("kev", "fallback", "unavailable"))
+
+    def test_a_refused_kev_says_why_and_is_asked_once(self):
+        """sd:2973: a loopback connect that is refused, by nothing listening
+        or by a sandbox, is sent once and the row names the errno."""
+        for reason, name, detail in (
+                (ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"),
+                 "ConnectionRefusedError", "ECONNREFUSED"),
+                (PermissionError(errno.EPERM, "Operation not permitted"),
+                 "PermissionError", "EPERM")):
+            with self.subTest(name=name), unittest.mock.patch.object(
+                    jev.LOCAL_OPENER, "open",
+                    side_effect=urllib.error.URLError(reason)) as send:
+                code, out, _ = self.run_local(["noul", "is it?", "--fallback", "keep"])
+                self.assertEqual((code, out, send.call_count), (0, "keep\n", 1))
+                row = self.rows()[-1]
+                self.assertEqual((row["cause"], row["error_class"], row["error_detail"]),
+                                 ("unavailable", name, detail))
+
+    def test_a_closed_kev_port_records_connection_refused(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        self.run_local(["noul", "is it?", "--fallback", "keep"],
+                       JEV_COMPARE_KEV_URL=f"http://127.0.0.1:{port}/v1/systemone")
+        row = self.only()
+        self.assertEqual((row["error_class"], row["error_detail"]),
+                         ("ConnectionRefusedError", "ECONNREFUSED"))
+
+    def test_a_failure_past_the_connect_says_why_too(self):
+        # A reset while reading arrives unwrapped, past `post`'s handlers.
+        with unittest.mock.patch.object(
+                jev.LOCAL_OPENER, "open",
+                side_effect=ConnectionResetError(errno.ECONNRESET, "Connection reset")):
+            self.run_local(["noul", "is it?", "--fallback", "keep"])
+        row = self.only()
+        self.assertEqual((row["error_class"], row["error_detail"]),
+                         ("ConnectionResetError", "ECONNRESET"))
+
+    def test_a_kev_that_answers_503_is_retried_and_says_503(self):
+        Arm.status = 503
+        self.run_local(["noul", "is it?", "--fallback", "keep"], JEV_RETRIES="2")
+        self.assertEqual(len(self.kev_requests()), 3)
+        row = self.only()
+        self.assertEqual((row["error_class"], row["error_detail"]), ("HTTPError", "503"))
+
+    def test_the_row_names_the_last_attempt_and_not_an_earlier_one(self):
+        """A 503, then a reset: the row says the reset. A 503, then an answer:
+        the row says nothing failed."""
+        real = jev.LOCAL_OPENER.open
+        for second, want in ((ConnectionResetError(errno.ECONNRESET, "Connection reset"),
+                              ("ConnectionResetError", "ECONNRESET")),
+                             (None, (None, None))):
+            failures = iter([urllib.error.HTTPError(jev.KEV_URL, 503, "busy", {}, None), second])
+
+            def send(request, timeout=None):
+                failure = next(failures)
+                if failure is not None:
+                    raise failure
+                return real(request, timeout=timeout)
+
+            with self.subTest(second=want), unittest.mock.patch.object(
+                    jev.LOCAL_OPENER, "open", side_effect=send), \
+                    unittest.mock.patch.object(jev.time, "sleep"):
+                self.run_local(["noul", "is it?", "--fallback", "keep"], JEV_RETRIES="1")
+                row = self.rows()[-1]
+                self.assertEqual((row["error_class"], row["error_detail"]), want)
 
     def test_the_kill_switch_still_stops_it(self):
         self.write_switch("off")

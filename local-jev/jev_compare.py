@@ -115,14 +115,16 @@ class Declined(Exception):
 
     `reply` is the usage a response reported before the arm declined it, in
     the shape a transport returns; a decline that reached no response has none.
+    `error` is `jev.error_of` the failure that caused it, for the row (sd:2973).
     """
 
     def __init__(self, outcome: str, cause: str, detail: str = "",
-                 reply: dict | None = None):
+                 reply: dict | None = None, error: dict | None = None):
         super().__init__(detail or cause)
         self.outcome = outcome
         self.cause = cause
         self.reply = reply
+        self.error = error or {}
 
 
 # --- shaping ------------------------------------------------------------------
@@ -331,15 +333,17 @@ def http_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         exc.close()
-        raise Declined("unavailable", "unavailable", f"HTTP {exc.code}")
+        raise Declined("unavailable", "unavailable", f"HTTP {exc.code}",
+                       error=jev.error_of(exc))
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
-            raise Declined("timeout", "timeout", "timed out")
-        raise Declined("unavailable", "unavailable", str(exc.reason))
-    except TimeoutError:
-        raise Declined("timeout", "timeout", "timed out")
+            raise Declined("timeout", "timeout", "timed out", error=jev.error_of(exc))
+        raise Declined("unavailable", "unavailable", str(exc.reason),
+                       error=jev.error_of(exc))
+    except TimeoutError as exc:
+        raise Declined("timeout", "timeout", "timed out", error=jev.error_of(exc))
     except OSError as exc:
-        raise Declined("unavailable", "unavailable", str(exc))
+        raise Declined("unavailable", "unavailable", str(exc), error=jev.error_of(exc))
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
@@ -711,7 +715,7 @@ def run_arm(name: str, job: dict, env, work) -> None:
         event.update(outcome="ok", cause=None)
     except Declined as exc:
         event = dict(getattr(exc, "event", {}) or {})
-        event.update(outcome=exc.outcome, cause=exc.cause)
+        event.update(exc.error, outcome=exc.outcome, cause=exc.cause)
         event.setdefault("provider", name)
         sys.stderr.write(f"jev-compare: {name}: {exc}\n")
     except Exception as exc:                         # never a traceback, always a row

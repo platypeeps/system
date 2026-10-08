@@ -796,15 +796,15 @@ def one_migration_back(database):
     """
     raw = sqlite3.connect(database, isolation_level=None)
     try:
-        # The reverse of 022_judgment_batch_children.sql, which its header
-        # carries as `--   ` lines: `judgment.parent` is dropped and the
-        # version goes to 21. The helper is rewritten with every migration: a
+        # The reverse of 023_judgment_error.sql, which its header carries as
+        # `--   ` lines: `judgment.error_class` and `error_detail` are dropped
+        # and the version goes to 22. The helper is rewritten with every migration: a
         # migration that adds a table or a column would be refused if left in
         # place.
-        text = (SCHEMA_DIR / "022_judgment_batch_children.sql").read_text()
+        text = (SCHEMA_DIR / "023_judgment_error.sql").read_text()
         script = "\n".join(line[4:] for line in text.splitlines() if line.startswith("--   "))
-        assert "PRAGMA user_version = 21" in script, \
-            "022's reverse is not where this helper expects it"
+        assert "PRAGMA user_version = 22" in script, \
+            "023's reverse is not where this helper expects it"
         raw.executescript(script)
         assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION - 1
     finally:
