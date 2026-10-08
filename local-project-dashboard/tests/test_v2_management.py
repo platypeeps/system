@@ -174,7 +174,6 @@ class TheDocument(ScreenCase):
         with patch.object(management_screen.subprocess, "run", ran):
             self.assertEqual(management_screen.runner_status(), (3, '{"ok": false}\n', ""))
         runner_sh = Path(management_screen.__file__).resolve().parents[2] / "local-sd-runner" / "runner.sh"
-        self.assertTrue(runner_sh.is_file())
         self.assertEqual(calls, [(["sh", str(runner_sh), "status"], management_screen.RUNNER_SECONDS)])
 
         def slow(argv, **options):

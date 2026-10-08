@@ -81,7 +81,6 @@ local-project-dashboard/home-tiles.conf
 local-project-dashboard/report-families.conf
 local-repo-sync/repos.*.conf
 local-scan-for-secrets/scan-for-secrets.conf
-local-sd-plan/repos.*.conf
 local-ai-apps/profiles/*.inv
 !local-ai-apps/profiles/example.inv
 # LaunchAgent plists rendered from *.plist.template at install

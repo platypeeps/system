@@ -132,11 +132,10 @@ mkdir -p "$LOG_DIR"
 # "no such file". The fix resolved it from PATH and fell back to the bare name,
 # which resolves only where PATH already carries ~/.local/bin: a login shell
 # does, an exec'd command does not. The jobs here survived that because the
-# plist spells the directory into PATH, so it stayed latent — until sd-plan
-# resolved the same binary the same way from the runner's queue and died with
-# FileNotFoundError: 'claude' (local-sd-plan/sd_plan.py, claude_binary()).
-# Same order as there: an explicit CLAUDE_BIN, then PATH, then the install
-# location — and when none of them exists, one sentence now rather than an
+# plist spells the directory into PATH, so it stayed latent — until a nightly
+# planner resolved the same binary the same way from a queue and died with
+# FileNotFoundError: 'claude'. The order is an explicit CLAUDE_BIN, then PATH,
+# then the install location — and when none of them exists, one sentence now rather than an
 # exec error later. Called where the binary is needed; list, verify and help
 # never ask.
 claude_binary() {

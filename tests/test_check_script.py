@@ -41,7 +41,7 @@ MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
 """
-JOBS = 6 + (2 if platform.system() == "Darwin" else 0)
+JOBS = 5 + (2 if platform.system() == "Darwin" else 0)
 
 
 def git(*args, cwd):
@@ -102,10 +102,10 @@ class CheckScript(unittest.TestCase):
                 self.assertIn(f"check.sh: {JOBS} jobs, {JOBS} at a time", done.stdout)
 
     def test_a_failing_job_in_a_lane_fails_the_check_and_is_named(self):
-        (self.root / "fail-runner").touch()
+        (self.root / "fail-dashboard").touch()
         done = self.check(expect=1, SD_GATE_POOL_SIZE=str(max(2, self.cores // 2)))
-        self.assertIn("check.sh: leg-runner exited 3", done.stderr)
-        self.assertIn("check.sh: failed: leg-runner\n", done.stderr)
+        self.assertIn("check.sh: leg-dashboard exited 3", done.stderr)
+        self.assertIn("check.sh: failed: leg-dashboard\n", done.stderr)
         # Every other job still ran.
         self.assertEqual(len((self.root / "ran").read_text().splitlines()), JOBS)
 
@@ -115,9 +115,9 @@ class CheckScript(unittest.TestCase):
         made = self.base / "made"
         (self.bin / "mktemp").write_text(f'#!/bin/sh\nd=$(/usr/bin/mktemp "$@") || exit\necho "$d" >> {made}\necho "$d"\n')
         (self.bin / "mktemp").chmod(0o755)
-        (self.root / "fail-runner").touch()
+        (self.root / "fail-dashboard").touch()
         done = self.check(expect=1)
-        self.assertIn("leg-runner exited 3", done.stderr)
+        self.assertIn("leg-dashboard exited 3", done.stderr)
         [work] = made.read_text().split()
         self.assertTrue(work.startswith("/tmp/system-check."), work)
         self.assertFalse(Path(work).exists(), work)

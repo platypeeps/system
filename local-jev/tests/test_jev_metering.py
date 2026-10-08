@@ -893,11 +893,11 @@ class TheShadowSwitch(MeteringCase):
 
 class WhoAsked(MeteringCase):
     def test_the_flags_name_the_caller_and_the_stage(self):
-        self.run_main(["noul", "is it?", "--caller", "local-sd-plan",
-                       "--stage", "JEV_SD_PLAN"])
+        self.run_main(["noul", "is it?", "--caller", "local-repo-sync",
+                       "--stage", "JEV_REPO_SYNC_HYGIENE"])
         row = self.only()
         self.assertEqual((row["caller"], row["stage"]),
-                         ("local-sd-plan", "JEV_SD_PLAN"))
+                         ("local-repo-sync", "JEV_REPO_SYNC_HYGIENE"))
 
     def test_the_environment_names_them_for_a_caller_that_is_a_shell(self):
         self.run_main(["noul", "is it?"], JEV_CALLER="local-notify",
@@ -1014,7 +1014,7 @@ class TheCauseIsWrittenOnce(MeteringCase):
         self.run_main(
             ["ask", "--questions", "-", "--state", state.name,
              "--state-format", "json", "--fallback", "{}",
-             "--caller", "local-sd-plan", "--stage", "JEV_SD_PLAN"],
+             "--caller", "local-repo-sync", "--stage", "JEV_REPO_SYNC_HYGIENE"],
             stdin=json.dumps({"q1": {"type": "noul", "instructions": "is it?"}}),
             JEV_RETRIES="0",
         )
@@ -1023,7 +1023,7 @@ class TheCauseIsWrittenOnce(MeteringCase):
         connection = connect(self.store)
         self.addCleanup(connection.close)
         return {entry["stage"]: entry
-                for entry in by_stage(connection)}["JEV_SD_PLAN"]
+                for entry in by_stage(connection)}["JEV_REPO_SYNC_HYGIENE"]
 
     def test_a_failed_ask_and_the_old_path_behind_it_are_one_decline(self):
         self.ask_and_fail()
@@ -1031,8 +1031,8 @@ class TheCauseIsWrittenOnce(MeteringCase):
         self.assertIsNotNone(cause, "the failed ask recorded no cause at all, "
                                     "so this measures nothing")
         # What every wired caller writes on the branch its own mechanism took.
-        self.run_main(["record", "--caller", "local-sd-plan",
-                       "--stage", "JEV_SD_PLAN", "--arm", "baseline",
+        self.run_main(["record", "--caller", "local-repo-sync",
+                       "--stage", "JEV_REPO_SYNC_HYGIENE", "--arm", "baseline",
                        "--outcome", "ok"])
         entry = self.stage()
         self.assertEqual(entry["declines"], {cause: 1})
@@ -1049,8 +1049,8 @@ class TheCauseIsWrittenOnce(MeteringCase):
         """
         self.ask_and_fail()
         cause = self.rows()[0]["cause"]
-        self.run_main(["record", "--caller", "local-sd-plan",
-                       "--stage", "JEV_SD_PLAN", "--arm", "baseline",
+        self.run_main(["record", "--caller", "local-repo-sync",
+                       "--stage", "JEV_REPO_SYNC_HYGIENE", "--arm", "baseline",
                        "--outcome", "ok", "--decline", cause])
         self.assertEqual(self.stage()["declines"], {cause: 2})
 

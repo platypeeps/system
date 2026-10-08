@@ -6,8 +6,5 @@
 # named here as wired, and fails a line whose command names a missing path.
 # Keep every line literal: the preflight greps for `<folder>/`.
 
-# APFS immutable retention (`chflags uchg`), clonefile seeds (`cp -c`) and
-# diskutil. The rest of local-sd-runner runs in the runner leg.
-runner-macos sh local-sd-runner/runner.sh test-macos -v
 # swiftc, `xcrun clang` and an open(2) shim loaded with DYLD_INSERT_LIBRARIES.
 msgsnap sh local-msgsnap/msgsnap.sh test -v

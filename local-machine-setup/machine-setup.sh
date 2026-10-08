@@ -53,7 +53,7 @@ DS_USERS=/Users
 STATE_DIR="${MACHINE_SETUP_STATE:-$HOME/.config/machine-setup}"
 STATE_FILE="$STATE_DIR/profile"
 
-# `sd` runs before `agents`: the runner and the dashboard both open the
+# `sd` runs before `agents`: the dashboard opens the
 # database at startup, so an agent bootstrapped first restarts against a
 # file that does not exist yet. `satellite` sits beside it: a machine runs
 # one of the two, and neither loads an agent the other needs.
@@ -941,7 +941,7 @@ stage_agents() {
   rendered=$(mktemp -d)
   echo "$agents" | while read -r label; do
     # A guard: no satellite profile lists a hub-only agent today, and one
-    # that adds it later must not start a second runner or dashboard.
+    # that adds it later must not start a second dashboard.
     # Skipped, not removed: the satellite stage reports one already here.
     if [ -e "$SD_HUB_CONFIG" ] && sd_hub_only "$label"; then
       echo "  SKIP    $label — hub only, and $SD_HUB_CONFIG makes this machine a satellite"
@@ -1212,20 +1212,19 @@ stage_tooling() {
 
 # The database and the dashboard's private route — the two pieces of
 # docs/work/2026-09-05-one-database-one-front-door that the `agents` stage
-# cannot build. A profile's .agent lists <prefix>.sd-dashboard and
-# <prefix>.sd-runner, and that stage installs and loads both; what neither
-# agent can do for itself is create the database it opens or the tailscale
+# cannot build. A profile's .agent lists <prefix>.sd-dashboard, and that
+# stage installs and loads it; what the agent cannot do for itself is create the database it opens or the tailscale
 # serve route the dashboard's HTTPS front door sits behind. Gated on the
-# profile listing an sd agent: a machine with neither has no database to
+# profile listing the sd agent: a machine without it has no database to
 # initialise and no port to route.
 #
 # Both comparisons print a word the drift counter greps for. Whether the
-# runner ticks, the dashboard answers and the schema versions agree is
+# dashboard answers and the schema versions agree is
 # doctor's question (doctor_sd below); this stage asks only whether the
 # pieces exist, which is the question `update --apply` can act on.
 #
 # One database path, and not an override: `sd-db.sh init` creates this file
-# and no other, and the library, the runner and the dashboard all default to
+# and no other, and the library and the dashboard both default to
 # it. An SD_DB_PATH used to move it here alone, so the stage and doctor
 # could check a file no agent opened (sd:1177). A service config that names
 # another `database` is reported instead; see sd_database_elsewhere.
@@ -1234,7 +1233,7 @@ SD_DASHBOARD_PORT="${SD_DASHBOARD_PORT:-8767}"
 SD_DASHBOARD_HTTPS_PORT="${SD_DASHBOARD_HTTPS_PORT:-8443}"
 SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 
-sd_in_profile() { manifest agent | grep -qxF -e "$LABEL_PREFIX.sd-dashboard" -e "$LABEL_PREFIX.sd-runner"; }
+sd_in_profile() { manifest agent | grep -qxF "$LABEL_PREFIX.sd-dashboard"; }
 # The satellite's selector (`sd_db.hub`); on the hub its presence is drift.
 SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # The hub's own launchd jobs, by label suffix: the one list of what a
@@ -1243,7 +1242,7 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # database; the cron stage installs them under `<prefix>.cron.`.
 # The satellite stage reports each one present as EXTRA; the agents stage
 # skips each one while hub.json exists.
-SD_HUB_ONLY_AGENTS="sd-dashboard sd-runner sd-serve task-actions cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly"
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve task-actions cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
@@ -1281,11 +1280,11 @@ sd_config_database() { # config
 }
 
 # One line per config of this profile's sd agents that names a database
-# other than $SD_DB: the runner's and the dashboard's, at the paths their
-# tracked plists pass with --config. Either service would then open a file
+# other than $SD_DB: the dashboard's, at the path its tracked plist passes
+# with --config. The service would then open a file
 # this stage never built and doctor never checked.
 sd_database_elsewhere() {
-  for sde_name in runner dashboard; do
+  for sde_name in dashboard; do
     manifest agent | grep -qxF "$LABEL_PREFIX.sd-$sde_name" || continue
     sde_conf="$HOME/.config/sd/$sde_name.json"
     sde_db=$(sd_config_database "$sde_conf")
@@ -1296,7 +1295,7 @@ sd_database_elsewhere() {
 stage_sd() {
   echo "== sd"
   if ! sd_in_profile; then
-    echo "  SKIP    no sd agent in this profile ($LABEL_PREFIX.sd-dashboard, $LABEL_PREFIX.sd-runner)"
+    echo "  SKIP    no sd agent in this profile ($LABEL_PREFIX.sd-dashboard)"
     return 0
   fi
   if [ -f "$SD_DB" ]; then
@@ -3166,26 +3165,21 @@ plist_env_value() { # plist, key
   plutil -extract "EnvironmentVariables.$2" raw -o - "$1" 2>/dev/null || :
 }
 
-# The four checks requirement 9 of
-# docs/work/2026-09-05-one-database-one-front-door asks doctor for, and the
-# version report beside them: the database opens and passes integrity_check;
-# the runner is loaded with a fresh heartbeat; the dashboard answers over its
-# HTTPS name; the serve route exists. Every failure is a FAIL, which is what
+# The checks requirement 9 of
+# docs/work/2026-09-05-one-database-one-front-door asks doctor for, less the
+# runner's, and the version report beside them: the database opens and
+# passes integrity_check; the dashboard answers over its HTTPS name; the
+# serve route exists. Every failure is a FAIL, which is what
 # doctor's exit code counts, and the line carries the word the stages use for
-# the same gap (MISSING, UNLOADED, STALE, DIFFERS) so one grep finds both.
+# the same gap (MISSING, DIFFERS) so one grep finds both.
 # Not configured here — no sd agent in the profile, no tailscale — is a SKIP
 # and not a finding, convention 6. A check doctor could not run on a machine
 # that is configured is not that: a missing sqlite3 and a dashboard origin
 # under Funnel are each a FAIL.
 #
 # Each check reads the state where it lives rather than asking a tool that
-# might itself be broken: sqlite3 on the database file, launchctl for the
-# agent, the heartbeat row the runner writes on every tick, tailscale for
-# the route and curl for the answer. Fresh is the runner's own definition,
-# local-sd-db/sd_db/runner.py heartbeat_state: within three intervals and
-# reporting healthy. runner.sh status would say the same thing, but it
-# imports sd_db from the pack's virtualenv, and a virtualenv holding the
-# wrong build is one of the things this report exists to name.
+# might itself be broken: sqlite3 on the database file, tailscale for the
+# route and curl for the answer.
 doctor_sd() {
   if [ -z "${PROFILE:-}" ] || ! sd_in_profile; then
     echo "  SKIP    sd pieces not checked (no sd agent in this profile)"
@@ -3195,7 +3189,7 @@ doctor_sd() {
   # /usr/bin/sqlite3 and no profile installs another, so a doctor that
   # cannot find it runs on a broken PATH and has checked nothing (sd:1413).
   if ! command -v sqlite3 >/dev/null 2>&1; then
-    doctor_fail "sqlite3 MISSING from PATH — database and runner heartbeat not checked; macOS ships /usr/bin/sqlite3, so put /usr/bin on PATH and re-run: $(basename "$SELF") doctor sd"
+    doctor_fail "sqlite3 MISSING from PATH — database not checked; macOS ships /usr/bin/sqlite3, so put /usr/bin on PATH and re-run: $(basename "$SELF") doctor sd"
     db_ok=0
   elif [ ! -f "$SD_DB" ]; then
     doctor_fail "database MISSING at $SD_DB — run: $(basename "$SELF") update sd --apply"
@@ -3217,29 +3211,6 @@ doctor_sd() {
   done <<EOF
 $(sd_database_elsewhere)
 EOF
-
-  if manifest agent | grep -qxF "$LABEL_PREFIX.sd-runner"; then
-    if ! launchctl print "gui/$(id -u)/$LABEL_PREFIX.sd-runner" >/dev/null 2>&1; then
-      doctor_fail "$LABEL_PREFIX.sd-runner UNLOADED — run: $(basename "$SELF") update agents --apply"
-    elif [ "$db_ok" -eq 1 ]; then
-      # age seconds, interval seconds, healthy — one row, or none.
-      hb=$(sd_sqlite "SELECT printf('%d %d %d', (julianday('now') - julianday(timestamp)) * 86400, coalesce(json_extract(body, '\$.interval_seconds'), 10), coalesce(json_extract(body, '\$.healthy'), 0)) FROM state WHERE kind = 'heartbeat' AND key = 'runner'" 2>/dev/null || :)
-      if [ -z "$hb" ]; then
-        doctor_fail "runner heartbeat MISSING — $LABEL_PREFIX.sd-runner is loaded and has never written one; read ~/Library/Logs/$LABEL_PREFIX.sd-runner.err"
-      else
-        hb_age=${hb%% *}; hb_rest=${hb#* }; hb_interval=${hb_rest%% *}; hb_healthy=${hb_rest#* }
-        if [ "$hb_healthy" -eq 1 ] && [ "$hb_age" -le $((hb_interval * 3)) ]; then
-          echo "  ok      runner heartbeat ${hb_age}s old (interval ${hb_interval}s)"
-        elif [ "$hb_healthy" -ne 1 ]; then
-          doctor_fail "runner heartbeat reports unhealthy, ${hb_age}s old — run: local-sd-runner/runner.sh status"
-        else
-          doctor_fail "runner heartbeat STALE — ${hb_age}s old, fresh is within $((hb_interval * 3))s — run: local-sd-runner/runner.sh status"
-        fi
-      fi
-    else
-      echo "  --      runner heartbeat not checked (the database was not read)"
-    fi
-  fi
 
   if manifest agent | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
     if ! command -v tailscale >/dev/null 2>&1 || ! tailscale status >/dev/null 2>&1; then
@@ -3286,117 +3257,13 @@ EOF
   fi
 
   doctor_sd_versions
-  doctor_sd_provider_keys
-}
-
-# Criterion 22's last clause (docs/work/2026-09-05-one-database-one-front-door):
-# every enabled entry in the provider registry names the variables its
-# process receives (`env:` in ~/.local/share/sd/providers.yaml), and the
-# runner gets them by sourcing ~/.config/shell/env.sh on serve|once
-# (local-sd-runner/runner.sh) — its LaunchAgent plist carries PATH and
-# SD_RUNNER_PYTHON and nothing else. So each name is tested in the
-# environment the runner would build: env.sh sourced in a subshell, then
-# the name. The enabled set comes from the library through the runner's own
-# interpreter, never from parsing the YAML here: enabled and reason are
-# merged from the provider table on every read, and the file alone says
-# the wrong thing about an entry the dashboard switched off. Names only,
-# never values — doctor output gets pasted around. A disabled entry is
-# skipped without a line; an entry with `env: []` needs nothing.
-doctor_sd_provider_keys() {
-  registry="$HOME/.local/share/sd/providers.yaml"
-  if [ ! -f "$registry" ]; then
-    doctor_fail "provider registry MISSING at $registry — the pack's installer seeds it: python3 bin/sd_install.py --user, from $SD_PACK_ROOT"
-    return 0
-  fi
-  # runner.sh sources env.sh under `set -e` and then resolves its
-  # interpreter, so both happen here the same way, in a child `sh -e` that
-  # prints only the path: a failed source stops the runner before it starts,
-  # and env.sh may set SD_RUNNER_PYTHON. The environment it starts from is
-  # the one launchd hands the agent: doctor's own value, else the installed
-  # plist's. A child and not a subshell, because `set -e` is ignored inside
-  # a command substitution tested by `||`, and the source failure is the
-  # point.
-  env_file="$HOME/.config/shell/env.sh"
-  if ! runner_py=$(SD_RUNNER_PYTHON="${SD_RUNNER_PYTHON:-$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-runner.plist" SD_RUNNER_PYTHON)}" \
-      sh -ec '[ ! -f "$1" ] || . "$1" </dev/null >/dev/null 2>&1; printf "%s\n" "${SD_RUNNER_PYTHON:-$2/.venv/bin/python}"' \
-      _ "$env_file" "$SD_PACK_ROOT" 2>/dev/null) || [ -z "$runner_py" ]; then
-    doctor_fail "$env_file fails when sourced — local-sd-runner/runner.sh sources it under set -e on serve|once and would not start; run: sh -n $env_file, then source it by hand"
-    return 0
-  fi
-  if [ ! -x "$runner_py" ]; then
-    echo "  --      enabled providers' variables not checked (no runner interpreter at $runner_py)"
-    return 0
-  fi
-  # One line per enabled provider: its name, then its variable names. The
-  # rows are merged only when the database check above passed; otherwise
-  # the file alone answers and the database's own line says why.
-  # The database and the registry are passed, never defaulted: the library's
-  # default reads HOME, and the file the checks above read is $SD_DB.
-  if ! entries=$("$runner_py" -I -c '
-import re, sys
-from sd_db import database, registry
-connection = database.connect(sys.argv[3], write=False) if sys.argv[1] == "1" else None
-try:
-    merged = registry.read(sys.argv[2], connection=connection)
-finally:
-    if connection is not None:
-        connection.close()
-for provider in merged.providers.values():
-    if not provider.enabled:
-        continue
-    for name in provider.env:
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-            sys.exit(f"provider {provider.name!r} names {name!r} in env, which is not a variable name")
-    print(provider.name, *provider.env)
-' "${db_ok:-0}" "$registry" "$SD_DB" 2>&1); then
-    doctor_fail "provider registry $registry not readable through $runner_py: $(printf '%s\n' "$entries" | tail -1)"
-    return 0
-  fi
-  if [ -z "$entries" ]; then
-    doctor_fail "provider registry $registry has no enabled entry — nothing resolves for the runner; enable one on the dashboard's providers screen"
-    return 0
-  fi
-  # The runner's environment, built in a child `sh -e` so nothing env.sh
-  # sets reaches doctor itself; only `name VARIABLE` pairs come back. Each
-  # name is tested in a grandchild shell, which sees exported variables
-  # only: a bare `VAR=value` in env.sh sets a shell variable the runner's
-  # Python process never receives.
-  if ! unset_pairs=$(printf '%s\n' "$entries" | sh -ec '
-      [ ! -f "$1" ] || . "$1" </dev/null >/dev/null 2>&1
-      while read -r name vars; do
-        for var in $vars; do
-          sh -c "[ -n \"\${$var:-}\" ]" || printf "%s %s\n" "$name" "$var"
-        done
-      done
-    ' _ "$env_file" 2>/dev/null); then
-    doctor_fail "$env_file fails when sourced — local-sd-runner/runner.sh sources it under set -e on serve|once and would not start; run: sh -n $env_file, then source it by hand"
-    return 0
-  fi
-  if [ -z "$unset_pairs" ]; then
-    summary=""
-    while read -r name vars; do
-      [ -n "$name" ] || continue
-      summary="$summary, $name (${vars:-none})"
-    done <<EOF
-$entries
-EOF
-    echo "  ok      enabled providers' variables set in the runner's environment: ${summary#, }"
-    return 0
-  fi
-  # A here-document and not a pipe, so doctor_fail counts in this shell.
-  while read -r name var; do
-    [ -n "$name" ] || continue
-    doctor_fail "provider $name is enabled and $var is MISSING (unset, empty or not exported) in the runner's environment — export it in ~/.config/shell/env.sh, which local-sd-runner/runner.sh sources on serve|once"
-  done <<EOF
-$unset_pairs
-EOF
 }
 
 # The installed sd_db in each virtualenv, beside the schema version in the
 # database and the one this checkout is built for, naming any that differs
 # (prd.md:173-175). The virtualenvs are the pack's — what dashboard.sh serve
-# and runner.sh default to — and whatever SD_DASHBOARD_PYTHON and
-# SD_RUNNER_PYTHON name, in the environment or in the installed plists.
+# defaults to — and whatever SD_DASHBOARD_PYTHON names, in the environment
+# or in the installed plist.
 # `-I` so a PYTHONPATH cannot stand in for the installed copy; the file path
 # is checked for the same reason, criterion 1's last clause.
 doctor_sd_versions() {
@@ -3408,12 +3275,11 @@ doctor_sd_versions() {
   fi
   echo "  --      sd_db in this checkout: ${checkout_dist:-?} built for schema ${checkout_schema:-?}; database at schema ${db_schema:-none}"
   if [ -n "$db_schema" ] && [ "$db_schema" != "$checkout_schema" ]; then
-    echo "  WARN    database schema $db_schema DIFFERS from this checkout's $checkout_schema — after a backup, with sd-dashboard, sd-runner and sd-serve stopped: local-sd-db/sd-db.sh migrate"
+    echo "  WARN    database schema $db_schema DIFFERS from this checkout's $checkout_schema — after a backup, with sd-dashboard and sd-serve stopped: local-sd-db/sd-db.sh migrate"
   fi
   seen=" "
-  for py in "$SD_PACK_ROOT/.venv/bin/python" "${SD_DASHBOARD_PYTHON:-}" "${SD_RUNNER_PYTHON:-}" \
-            "$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-dashboard.plist" SD_DASHBOARD_PYTHON)" \
-            "$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-runner.plist" SD_RUNNER_PYTHON)"; do
+  for py in "$SD_PACK_ROOT/.venv/bin/python" "${SD_DASHBOARD_PYTHON:-}" \
+            "$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-dashboard.plist" SD_DASHBOARD_PYTHON)"; do
     [ -n "$py" ] || continue
     case "$seen" in *" $py "*) continue ;; esac
     seen="$seen$py "
@@ -3837,8 +3703,8 @@ cmd_doctor() {
     done
   fi
 
-  # The database, the runner's pulse, the dashboard's front door and the
-  # installed library versions. Loaded-or-not for the two agents is above;
+  # The database, the dashboard's front door and the
+  # installed library versions. Loaded-or-not for the agents is above;
   # this is whether what they run against is sound.
   doctor_sd
 
@@ -4264,8 +4130,8 @@ cmd_status() {
   # here and the nightly job sees all of them.
   # `sd` is the database and the dashboard's route: two of criterion 22's four
   # drift items (docs/work/2026-09-05-one-database-one-front-door); the other
-  # two are the agents stage's rows for <prefix>.sd-dashboard and
-  # <prefix>.sd-runner.
+  # two were the agents stage's rows for <prefix>.sd-dashboard and the
+  # runner, which is gone.
   for st in shell bin dotfiles envs prompts repos appstore cron sd satellite agents services tooling system macos obsidian iterm2; do
     status_stage "$st"
     echo
@@ -4323,8 +4189,8 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
   doctor           read-only sanity check: CLT, brew, docker, fnm, key
                    material, launchd agents, and which .env files still
                    need filling in on this machine; on a profile with an sd
-                   agent, also the database (integrity_check), the runner's
-                   heartbeat, the dashboard's tailscale route and its answer
+                   agent, also the database (integrity_check), the
+                   dashboard's tailscale route and its answer
                    over the HTTPS name, and the sd_db build in each
                    virtualenv beside the database's schema version; no
                    sqlite3 on PATH, the dashboard's origin under Funnel,
@@ -4469,17 +4335,16 @@ case "$VERB" in
     case "$ARG" in
       "") cmd_doctor ;;
       sd) cmd_doctor_sd ;;
-      *)  die "doctor takes no argument, or 'sd' for the database, runner and dashboard checks alone" ;;
+      *)  die "doctor takes no argument, or 'sd' for the database and dashboard checks alone" ;;
     esac
     ;;
-  # Python, not sh, for the same reason local-repo-sync and local-sd-plan test
+  # Python, not sh, for the same reason local-repo-sync tests
   # a shell script from Python: the CI wrapper asserts a unittest summary and
   # refuses skips. PYTHON is CI's venv; a machine runs it with its own.
   # The suite seeds its fixture database through sd_db -- nothing outside
   # the library opens the database or creates a table, and
   # local-sd-db/tests/test_one_store.py greps the repository to keep it so --
-  # so this checkout's local-sd-db goes on PYTHONPATH the way
-  # local-sd-plan/sd-plan.sh does for its own suite.
+  # so this checkout's local-sd-db goes on PYTHONPATH.
   test)
     shift
     PYTHONPATH="$DIR/../local-sd-db${PYTHONPATH:+:$PYTHONPATH}" \

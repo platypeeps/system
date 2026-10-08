@@ -12,7 +12,6 @@ paths:
   - "local-repo-sync/**"
   - "local-scan-for-secrets/**"
   - "local-sd-db/**"
-  - "local-sd-plan/**"
 ---
 
 # Jev: switch, exit codes, test pins

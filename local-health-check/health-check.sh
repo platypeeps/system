@@ -454,9 +454,8 @@ for d in "$TOOLS_ROOT"/*/; do
   [ "$name" != "local-health-check" ] || continue
   stem=${name#local-}
   e="$d/$stem.sh"
-  # Two entrypoints do not follow convention 1's name — local-sd-runner/runner.sh
-  # and local-project-dashboard/dashboard.sh — and renaming them means editing
-  # and reloading launchd plists and the pack's sd-plugin.json, which was
+  # local-project-dashboard/dashboard.sh does not follow convention 1's name,
+  # and renaming it means editing and reloading launchd plists and the pack's sd-plugin.json, which was
   # rejected. A folder with no <stem>.sh and exactly one *.sh at its root is
   # taken to mean that one; anything else is skipped as before.
   if [ ! -f "$e" ]; then

@@ -23,14 +23,13 @@ Two layers, because one is not enough.
 
 **The inventory** is coarse and very hard to evade: a folder is a caller if
 any tracked file of its own names `jev` outside a comment. That is compared
-against `KNOWN_CALLERS`, so a twelfth caller cannot be added silently -- it
+against `KNOWN_CALLERS`, so an eleventh caller cannot be added silently -- it
 fails here naming itself, and whoever adds it has to say so. A folder that
 stops calling fails too: the set only changes deliberately.
 
 **The contract** is folder-level on purpose. A syntactic scan of call sites
-cannot see a wrapped call, and two callers here wrap: `sd_plan.py` builds its
-argv through `jev_argv("ask", ...)`, and `notify.sh` defines `jev_ask()` and
-calls `jev_ask choice ...`. A rule that reads argv would miss both and report
+cannot see a wrapped call, and a caller here wraps: `notify.sh` defines
+`jev_ask()` and calls `jev_ask choice ...`. A rule that reads argv would miss it and report
 a pass -- the very shape this file exists to ban. So the rules ask about the
 flags a folder uses anywhere in its own code, which no amount of wrapping
 hides.
@@ -80,7 +79,6 @@ KNOWN_CALLERS = frozenset({
     "local-project-dashboard",
     "local-repo-sync",
     "local-scan-for-secrets",
-    "local-sd-plan",
 })
 
 #: Callers whose input may not leave the machine: every `jev` call they make
@@ -280,7 +278,7 @@ def argv_sequences(rel, source=None):
     argv here is written one element per line -- `drive_intake.py` spells the
     whole call across eleven of them -- so a rule that reads physical lines
     cannot see the order of anything real. `ast` can. Calls are included
-    because `sd_plan.py` builds its argv as `jev_argv("ask", ...)`.
+    because a caller may build its argv as `jev_argv("ask", ...)`.
 
     Returns (line number, [str | None]) pairs. A file that does not parse is
     skipped rather than failing the suite: this rule is not a syntax gate.

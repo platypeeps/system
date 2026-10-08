@@ -12,7 +12,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-native.sh preflight
-       ci-native.sh leg shared|dashboard|runner|tools
+       ci-native.sh leg shared|dashboard|tools
 
   preflight  the fixture digest, sd-docs-lint, the citation, Jev contract,
              product-name and entrypoint-mode gates, the unwired-suite guard, and the venv at
@@ -257,14 +257,10 @@ case "$SUITE_LEG" in
   dashboard)
     run_suite dashboard sh local-project-dashboard/dashboard.sh test
     ;;
-  runner)
-    run_suite runner sh local-sd-runner/runner.sh test -v
-    ;;
   tools)
     run_suite repo-sync sh local-repo-sync/repo-sync.sh test -v
     run_suite bin-links sh local-bin-links/bin-links.sh test -v
     run_suite agent-prompt sh local-agent-prompt/agent-prompt.sh test -v
-    run_suite sd-plan sh local-sd-plan/sd-plan.sh test -v
     run_suite health-check sh local-health-check/health-check.sh test -v
     run_suite cron-jobs sh local-cron-jobs/cron-jobs.sh test -v
     run_suite dependabot sh local-dependabot/dependabot.sh test -v

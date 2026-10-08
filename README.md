@@ -16,8 +16,8 @@ own README. There is no repository-wide build.
 | `docs` | Design documents and planned work (`docs/work/`) |
 
 The larger pieces are `local-sd-db` (a Python package holding the workflow
-database), `local-project-dashboard` (the dashboard over it), `local-sd-runner`
-(the work runner) and `local-cron-jobs` (launchd-scheduled jobs). They pair
+database), `local-project-dashboard` (the dashboard over it) and
+`local-cron-jobs` (launchd-scheduled jobs). They pair
 with the public command pack
 [`platypeeps/sd-ai-command-pack`](https://github.com/platypeeps/sd-ai-command-pack).
 
@@ -113,8 +113,7 @@ the list of suites; the preflight fails on a `*/tests/test_*.py` folder that no
 line names. No GitHub workflow runs the suites. The pack pin is one full commit
 sha in `.sd-pack-rev`; bump it deliberately.
 
-Some tests need macOS: APFS immutable retention, clonefile copies and diskutil
-in `local-sd-runner`, and the Swift build and dyld shim in `local-msgsnap`.
+Some tests need macOS: the Swift build and dyld shim in `local-msgsnap`.
 Linux cannot run them, and a skipped test fails the check, so they live in
 separate suites named in `tests/macos-only-suites.txt`. `make check` runs them
 on a Mac; to run only them:

@@ -713,12 +713,12 @@ class NoVerbNamesItsOperatorForTheCaller(unittest.TestCase):
     """No library function names the operator on the caller's behalf (sd:749).
 
     sd:747 removed `who="user"` from `reporting.acknowledge`; forty-two more
-    functions in `sd_db` and two in `sd_runner.controls` carried the same
+    functions in `sd_db` and two in the runner's controls carried the same
     default, `"user"` on most, `"sd-ship"` on `progress.deliver_work`,
     `"import"` on `writing.import_piece`. Each let a call that named nobody
     write a row naming somebody. Fixing them one at a time closes those
     instances and leaves the next verb free to reopen the hole, so this walks
-    the source of both packages instead of listing the verbs.
+    the package's source instead of listing the verbs.
 
     `principal` gets the first two rules with `who` (sd:755): it is what the
     caller's channel authenticated, and a default or a fallback there would
@@ -730,15 +730,10 @@ class NoVerbNamesItsOperatorForTheCaller(unittest.TestCase):
     (`os.environ.get("SD_SESSION", "user")`, which `sd-db work register` used).
     Every function is read, private helpers and nested ones included: a
     default on `_import_piece` writes the same row as one on `import_piece`.
-
-    `local-sd-runner` is walked from here and not from its own suite so that
-    one test owns the rule for the whole library the operator verbs live in;
-    both folders are in the same checkout wherever this suite runs, and a
-    missing one fails rather than skipping.
     """
 
     SYSTEM = Path(__file__).resolve().parents[2]
-    ROOTS = (SYSTEM / "local-sd-db/sd_db", SYSTEM / "local-sd-runner/sd_runner")
+    ROOTS = (SYSTEM / "local-sd-db/sd_db",)
 
     @staticmethod
     def functions(tree):
@@ -789,12 +784,11 @@ class NoVerbNamesItsOperatorForTheCaller(unittest.TestCase):
                             literals.append(f"{name}:{node.lineno}: who={ast.unparse(keyword.value)}")
         return seen, defaulted, fallbacks, literals
 
-    def test_the_walk_sees_both_packages(self):
+    def test_the_walk_sees_the_package(self):
         """An empty walk passes every rule below, so it has to have found the verbs."""
         seen = self.findings()[0]
         self.assertGreaterEqual(len(seen), 40, seen)
         self.assertIn("local-sd-db/sd_db/writes.py transition", seen)
-        self.assertIn("local-sd-runner/sd_runner/controls.py cancel", seen)
         self.assertEqual(seen.count("local-sd-db/sd_db/reporting.py acknowledge_clean"), 2, "who and principal")
 
     def test_no_who_parameter_has_a_default(self):
