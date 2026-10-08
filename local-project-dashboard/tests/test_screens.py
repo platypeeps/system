@@ -14,19 +14,13 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from sd_db import reads, transition, update_assignment, upsert_shadow
-from sd_db.errors import SdDbError
 from sd_db.writes import record_cost
-from sd_dashboard.listing import PAGE_SIZE
-from sd_dashboard import server
 from sd_dashboard.server import NotFound, route
 
 from support import ScreenCase
@@ -52,36 +46,6 @@ def maintenance_children(checkout):
         events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
     return [event["argv"] for event in events if event.get("event") == "child_start"
             and {"maintenance", "gc"} & set(event.get("argv", []))]
-
-
-class HeartbeatRefusalOverHttp(ScreenCase):
-    """The loopback server, so the assertion is about the response `do_GET` sends."""
-
-    def setUp(self):
-        super().setUp()
-        self.listening = server.build(self.path, port=0)
-        thread = threading.Thread(target=self.listening.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(self.listening.server_close)
-        self.addCleanup(self.listening.shutdown)
-        host, port = self.listening.server_address[:2]
-        self.base = f"http://{host}:{port}"
-
-    def test_a_hand_written_heartbeat_row_is_the_503_page_naming_the_shape(self):
-        # sd:934, the HTTP half. `do_GET` names SdDbError and renders the 503
-        # page with the message; it never named TypeError, so before the fix
-        # the same row was a traceback and no response body a reader could use.
-        self.connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('heartbeat', 'runner', ?, '[1, 2]')", (self.now,))
-        self.connection.commit()
-        try:
-            answer = urllib.request.urlopen(self.base + "/classic/today", timeout=10)
-            status, body = answer.status, answer.read().decode("utf-8")
-        except urllib.error.HTTPError as refused:
-            with refused:
-                status, body = refused.code, refused.read().decode("utf-8")
-        self.assertEqual(status, 503)
-        self.assertIn("the runner heartbeat body is a JSON array ('[1, 2]')", html.unescape(body))
-        self.assertNotIn("Traceback", body)
 
 
 class Today(ScreenCase):
@@ -139,17 +103,6 @@ class Today(ScreenCase):
         self.note(self.running, "chase the reviewer")
         page = self.render("/classic/today")
         self.assertIn("chase the reviewer", page)
-
-    def test_a_hand_written_heartbeat_row_leaves_route_as_the_store_refusal_not_a_type_error(self):
-        # sd:934. `jobs_panel` reads the heartbeat state; a row that is not a
-        # JSON object used to raise TypeError out of `route`. This is the
-        # route-level half: the exception that leaves `route` is the store's
-        # SdDbError. What `do_GET` makes of it is `HeartbeatRefusalOverHttp`.
-        self.connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('heartbeat', 'runner', ?, '[1, 2]')", (self.now,))
-        self.connection.commit()
-        with self.assertRaises(SdDbError) as caught:
-            self.render("/classic/today")
-        self.assertIn("the runner heartbeat body is a JSON array", str(caught.exception))
 
     def test_the_runner_board_renders_rows_the_runner_does_not_yet_write(self):
         """The board exists before the runner does, which is the point of it."""

@@ -203,10 +203,9 @@ the selected tab travels in the URL, for example `/operations?area=services`.
 Every job or service control rechecks the observed state and revision. The last
 request's acceptance is shown separately from the current state; acceptance is
 not proof that a job finished or that an application is healthy.
-Queued assignments can be cancelled without completing their item. A blocked
-assignment can be cancelled once its item is done and no runner attempt holds
-its lease. A running assignment no runner attempt owns names `sd runner cancel`,
-which ends it. A restore
+Queued assignments can be cancelled without completing their item, with
+`sd assignments cancel`. A blocked assignment can be cancelled once its item is
+done. A restore
 blocks starting jobs and starting or restarting services, while supported stop
 controls remain available. Stopping a service unloads it for the current login;
 its plist stays installed and may load again at the next login. Equivalent

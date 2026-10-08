@@ -17,8 +17,7 @@ keeps, so the port adds no collector:
   A delivery in the window with no review record is counted in
   `review_unrecorded`, so the page says so rather than drop it.
 - **run**: runner assignments that started or ended in the window (`reads.recent_assignments`, with the item's repository), as
-  `operations.assignment_state` reads them, with the queue revision
-  `sd runner requeue` checks. `exec` assignments are left to `command`.
+  `operations.assignment_state` reads them. `exec` assignments are left to `command`.
 - **job**: each launchd job whose log `cron-jobs.sh` wrote in the window,
   as `operations.job_state` reads it (Today's failed-job read, sd:2110).
   A failed run is a warning; an interrupted one (a signal nobody accounted
@@ -48,7 +47,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sd_db import operations, reads, runner, runner_exec
+from sd_db import operations, reads, runner_exec
 from sd_db.errors import SdDbError
 
 __all__ = ["JOURNAL_CAP", "KINDS", "UNKNOWN", "WINDOW", "document", "reviews"]
@@ -176,7 +175,6 @@ def runs(connection, start: datetime, end: datetime) -> list[dict]:
                     "ref": f"sd:{state['item']}" if state["item"] else f"assignment #{ident}",
                     "n": ident, "item": state["item"], "role": state["role"], "provider": state["provider"],
                     "status": status, "started": state["started"], "ended": state["ended"],
-                    "revision": runner.queue_state(connection, ident)["revision"],
                     "src": "runner assignments (operations.assignment_state)"})
     return out
 

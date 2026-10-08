@@ -4,7 +4,7 @@ What this slice promises: `/management` answers under the shared policy and
 loads its script before `shell.js`; `/api/management` is one document built
 from the reads v1 already makes (the sd-db repo table with each checkout's
 `.github/sd-review.json` and protection reading, the fleet's git state and
-sessions, the runner lane, services and jobs), where a source that fails is
+sessions, the assignment lane, services and jobs), where a source that fails is
 a reason and never an empty list; `/api/repos/<verb>` runs the two sd-db repo
 verbs and refuses a stale `before`.
 
@@ -24,7 +24,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import runner, upsert_repo, workflow
+from sd_db import upsert_repo, workflow
 from sd_dashboard import management_screen, server, v2
 
 from support import NOW, ScreenCase
@@ -59,14 +59,6 @@ def dark_fleet(area):
     raise ValueError("fleet collection was stopped at its budget")
 
 
-def runner_status(body, code=0, err=""):
-    """A `runner.sh status` stand-in: its exit code, its one-line body and its stderr."""
-    return lambda: (code, "" if body is None else json.dumps(body) + "\n", err)
-
-
-SCHEDULE = {"last_completed_at": "2026-09-06T03:00:00+00:00", "next_due_at": "2026-09-07T03:00:00+00:00", "due": False,
-            "cadence_seconds": 86400}
-REFRESHED = runner_status({"ok": True, "interval_seconds": 10, "archive_refresh_schedule": SCHEDULE})
 #: `sd config get sd.assistant_merge` stand-in: exit code, stdout, stderr (sd:1629).
 GRANTED = lambda: (0, "controlled\n", "")  # noqa: E731
 UNSET = (1, "", "sd: sd.assistant_merge is not set (controlled: merge ...). Run:\n    sd config set sd.assistant_merge <value>\n")
@@ -104,15 +96,18 @@ class TheDocument(ScreenCase):
         self.ids = seed(self)
         self.jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
 
-    def document(self, read=fleet, runner=REFRESHED, grant=GRANTED):
+    def document(self, read=fleet, grant=GRANTED):
         return management_screen.document(self.connection, now=NOW, fleet=read, jobs=self.jobs, services=NoServices(),
-                                          runner=runner, grant=grant)
+                                          grant=grant)
 
     def test_every_source_is_read_and_says_so(self):
         doc = self.document()
         self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "services", "jobs",
-                                                          "archive", "grant")})
+                                                          "grant")})
         self.assertEqual(doc["read"], NOW)
+        # sd:3041: the runner stopped, so no archive refresh from runner.sh and no runner heartbeat.
+        self.assertNotIn("archive", doc)
+        self.assertNotIn("heartbeat", doc["lane"])
 
     def test_a_job_carries_its_last_run_from_the_wrappers_stamp(self):
         """sd:2210: launchd keeps no run time; the cron-jobs wrapper stamps each run's start, end and exit."""
@@ -134,70 +129,6 @@ class TheDocument(ScreenCase):
         stamp(self.jobs, "quiet", "started=2026-09-06T02:15:00Z\nended=2026-09-06T02:16:30Z\n")
         quiet = {job["name"]: job["last_run"] for job in self.document()["jobs"]}["quiet"]
         self.assertEqual((quiet["state"], quiet["reason"]), ("unread", "the run stamp has an end without an exit code"))
-
-    def test_the_archive_refresh_is_what_runner_status_prints(self):
-        """sd:2209: the dashboard does not know the runner's config; `runner.sh status` names the last and next refresh."""
-        self.assertEqual(self.document()["archive"], {"last": "2026-09-06T03:00:00+00:00", "next": "2026-09-07T03:00:00+00:00",
-                                                      "due": False})
-        never = runner_status({"ok": False, "reason": "heartbeat stale",
-                               "archive_refresh_schedule": {**SCHEDULE, "last_completed_at": None, "due": True}}, code=1)
-        self.assertEqual(self.document(runner=never)["archive"], {"last": None, "next": "2026-09-07T03:00:00+00:00", "due": True})
-
-    def test_an_archive_refresh_runner_status_does_not_name_is_a_reason(self):
-        cases = {
-            "runner.sh status names no archive refresh: runner runtime is not provisioned: /x/python":
-                runner_status({"ok": False, "reason": "runner runtime is not provisioned: /x/python"}, code=3),
-            "runner.sh status names no archive refresh; the runner predates sd:2209": runner_status({"ok": True}),
-            "the archive refresh was not read: archive refresh cadence belongs to another configuration":
-                runner_status({"ok": True, "archive_refresh_schedule": {"reason": "archive refresh cadence belongs to another configuration"}}),
-            "runner.sh status printed no body: runner: the runner heartbeat body is a JSON array":
-                runner_status(None, code=1, err="runner: the runner heartbeat body is a JSON array\n"),
-            "runner.sh status exited 2: usage": runner_status(None, code=2, err="usage\n"),
-            "runner.sh status printed a body that is not JSON": lambda: (0, "{not json\n", ""),
-            "runner.sh status named a next refresh that is not a time": runner_status(
-                {"ok": True, "archive_refresh_schedule": {**SCHEDULE, "next_due_at": "soon"}}),
-        }
-        for reason, runner in cases.items():
-            with self.subTest(reason=reason):
-                doc = self.document(runner=runner)
-                self.assertIsNone(doc["archive"])
-                self.assertEqual(doc["sources"]["archive"], reason)
-                self.assertEqual(doc["sources"]["jobs"], "")
-
-    def test_runner_status_runs_this_checkouts_runner_sh_within_its_ceiling(self):
-        calls = []
-
-        def ran(argv, **options):
-            calls.append((argv, options.get("timeout")))
-            return subprocess.CompletedProcess(argv, 3, '{"ok": false}\n', "")
-
-        self.assertEqual(management_screen.RUNNER,
-                         Path(management_screen.__file__).resolve().parents[2] / "local-sd-runner" / "runner.sh")
-        with tempfile.TemporaryDirectory() as tmp:
-            runner_sh = Path(tmp) / "runner.sh"
-            runner_sh.write_text("#!/bin/sh\n")
-            with patch.object(management_screen, "RUNNER", runner_sh), patch.object(management_screen.subprocess, "run", ran):
-                self.assertEqual(management_screen.runner_status(), (3, '{"ok": false}\n', ""))
-            self.assertEqual(calls, [(["sh", str(runner_sh), "status"], management_screen.RUNNER_SECONDS)])
-
-            def slow(argv, **options):
-                raise subprocess.TimeoutExpired(argv, options["timeout"])
-
-            with patch.object(management_screen, "RUNNER", runner_sh), patch.object(management_screen.subprocess, "run", slow):
-                doc = self.document(runner=management_screen.runner_status)
-        self.assertEqual(doc["sources"]["archive"], f"runner.sh status ran past its {management_screen.RUNNER_SECONDS:g} seconds")
-
-    def test_an_absent_runner_sh_is_the_quiet_exit_3_state_and_runs_nothing(self):
-        """sd:3041 deleted local-sd-runner; the archive source reads as not configured, not as exit 127."""
-        def ran(argv, **options):
-            raise AssertionError(f"ran {argv}")
-
-        with patch.object(management_screen, "RUNNER", Path("/nonexistent/local-sd-runner/runner.sh")), \
-                patch.object(management_screen.subprocess, "run", ran):
-            self.assertEqual(management_screen.runner_status()[0], 3)
-            doc = self.document(runner=management_screen.runner_status)
-        self.assertIsNone(doc["archive"])
-        self.assertEqual(doc["sources"]["archive"], "runner.sh status names no archive refresh: no runner in this checkout")
 
     def test_a_repo_carries_its_row_its_review_file_and_its_protection_reading(self):
         rows = {row["path"]: row for row in self.document()["repos"]}
@@ -237,11 +168,10 @@ class TheDocument(ScreenCase):
         self.assertEqual((git["system"]["state"], git["system"]["remedy"]), ("behind", "git -C /repos/system pull --ff-only"))
         self.assertEqual(git["busy"]["remedy"], "No pull offered: 3 uncommitted files.")
 
-    def test_assignments_carry_the_queue_revision_and_the_history_counts(self):
+    def test_assignments_carry_the_history_counts(self):
         doc = self.document()
         (blocked,) = doc["assignments"]["latest"]
         self.assertEqual((blocked["id"], blocked["status"]), (self.ids["blocked"], "blocked"))
-        self.assertEqual(blocked["revision"], runner.queue_state(self.connection, self.ids["blocked"])["revision"])
         self.assertEqual([m["id"] for m in doc["lane"]["merges"]], [self.ids["merged"]])
         self.assertEqual(doc["assignments"]["history"], {"blocked": 1, "done": 1})
         self.assertEqual((doc["sessions"]["registered"], doc["sessions"]["abandoned"]), (2, 1))
@@ -464,9 +394,6 @@ class ThePage(BrowserSession):
         patcher = patch("sd_db.services.ServiceBackend", NoServices)
         patcher.start()
         self.addCleanup(patcher.stop)
-        runner = patch.object(management_screen, "runner_status", REFRESHED)
-        runner.start()
-        self.addCleanup(runner.stop)
         grant = patch.object(management_screen, "assistant_merge", GRANTED)
         grant.start()
         self.addCleanup(grant.stop)
@@ -495,7 +422,6 @@ class ThePage(BrowserSession):
         self.assertEqual(status, 200)
         doc = json.loads(body)
         self.assertEqual(doc["sources"]["services"], "")
-        self.assertEqual((doc["sources"]["archive"], doc["archive"]["next"]), ("", SCHEDULE["next_due_at"]))
         self.assertIn(self.ids["checkout"], [row["path"] for row in doc["repos"]])
 
     def test_the_repo_write_flips_once_and_refuses_the_same_before_again(self):
@@ -549,7 +475,7 @@ class PageScript(ScreenCase):
         jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
         stamp(jobs, "nightly-sync", "started=2026-09-06T02:15:00Z\nended=2026-09-06T02:16:30Z\nexit=7\n")
         self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices(),
-                                              runner=REFRESHED, grant=GRANTED)
+                                              grant=GRANTED)
 
     def run_page(self, body, answer="null", doc=None, search="", extra=""):
         script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA + READ_SHELL + extra
@@ -582,8 +508,6 @@ class TheScript(PageScript):
             ["file.prepare", "file change", "safe", "p", False, False],
             ["sddb.withdraw", "sd-db change", "safe", None, False, False],
             ["file.withdraw", "file change", "safe", None, False, False],
-            ["asg.requeue", "assignment", "undo", "q", None, True],
-            ["asg.cancel", "assignment", "confirm", "x", None, False],
             ["asg.get", "assignment", "safe", "o", False, False],
             ["item.show", "item", "safe", "o", False, False],
             ["wt.prune", "worktrees", "confirm", "p", None, False],
@@ -726,16 +650,6 @@ R.toast = lastToast().msg; const undo = lastToast().undo; await undo(); await fl
         self.assertEqual(out["toasts"][-1], [f"{path} not changed: managed is yes now, not no", False])
         self.assertEqual(out["gets"], ["/api/management", "/api/management"])
 
-    def test_requeue_and_cancel_post_the_runner_routes_with_the_queue_revision(self):
-        n = self.ids["blocked"]
-        revision = runner.queue_state(self.connection, n)["revision"]
-        out = self.run_page(f"""C.run(cmd('asg.requeue'), C.get('asg:{n}')); await flush();
-C.get('asg:{n}').status = 'queued'; C.run(cmd('asg.cancel'), C.get('asg:{n}')); await flush();""", answer="(p, b) => [200, {}]")
-        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
-                         [(f"/api/runner/{n}/requeue", {"revision": revision}), (f"/api/runner/{n}/cancel", {"revision": revision})])
-        self.assertEqual(out["confirms"], ["asg.cancel"])
-        self.assertEqual(out["toasts"][0], [f"Requeued · #{n}. The runner starts it on its next tick.", True])
-
     def test_a_failed_job_retries_through_its_route_and_an_idle_one_is_off(self):
         revision = next(j for j in self.doc["jobs"] if j["name"] == "nightly-sync")["revision"]
         out = self.run_page("""C.run(cmd('jobs.retry'), C.get('cron:nightly-sync')); await flush();
@@ -844,29 +758,6 @@ R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return '
   human([{ Minute: 0 }, { Minute: 30 }])];""")
         self.assertEqual(out["R"]["got"], ["day 15 03:00", "Jan 1 00:05", "day 1 *:30", "daily 03:00", "hourly at :30", "Mon 09:00",
                                            "every 30 min"])
-
-
-class TheRequeueUndo(PageScript):
-    """The lane's local review of f06cbf5: requeue's Undo cancels only the queued attempt the requeue made."""
-
-    def requeue_then(self, between):
-        n = self.ids["blocked"]
-        return n, self.run_page(f"""const asg = () => DOC0.assignments.latest.find(a => a.id === {n});
-C.run(cmd('asg.requeue'), C.get('asg:{n}')); await flush();
-const undo = lastUndo().undo; {between} await load(); await flush();
-await undo(); await flush(); R.toast = lastToast().msg;""",
-                                answer="(p, b) => p.endsWith('/requeue') ? [200, {id: 1, status: 'queued', revision: 'queued-rev'}] : [200, {}]")
-
-    def test_undo_refuses_once_the_runner_claimed_the_assignment(self):
-        n, out = self.requeue_then("Object.assign(asg(), {status: 'running', revision: 'running-rev'});")
-        self.assertEqual([p for p, _, _ in out["posts"]], [f"/api/runner/{n}/requeue"], "Undo cancelled running work")
-        self.assertEqual(out["R"]["toast"],
-                         f"Requeue not undone · #{n} Port the page: assignment #{n} is running now; Undo cancels only the queued attempt the requeue made, so use Cancel")
-
-    def test_undo_cancels_the_queued_attempt_with_the_revision_the_requeue_answered(self):
-        n, out = self.requeue_then("Object.assign(asg(), {status: 'queued', revision: 'queued-rev'});")
-        self.assertEqual([(p, b) for p, b, _ in out["posts"]][1:], [(f"/api/runner/{n}/cancel", {"revision": "queued-rev"})])
-        self.assertEqual(out["R"]["toast"], f"Requeue undone · #{n} Port the page")
 
 
 # A view's rows as the browser finds them: `#view-<v> tr[data-id]` and `#view-<v> tr[data-id="<id>"]` read the view's drawn
@@ -1007,21 +898,11 @@ class TheLastRun(PageScript):
         self.assertIn("logs/.nightly-sync.stamp", out["R"]["failed"])
         self.assertIn("no run stamp", out["R"]["quiet"])
 
-    def test_the_lane_strip_names_the_last_and_next_archive_refresh(self):
+    def test_the_lane_strip_names_no_runner_and_no_archive_refresh(self):
+        """sd:3041: the runner stopped; the strip drew its heartbeat and its archive refresh."""
         out = self.run_page("R.lane = ELS['view-lane'].html;", search="?view=lane")
-        lane = out["R"]["lane"]
-        self.assertIn('<span class="label">Archive refresh</span>', lane)
-        self.assertIn('datetime="2026-09-06T03:00:00+00:00"', lane)
-        self.assertIn('datetime="2026-09-07T03:00:00+00:00" data-future', lane)
-
-    def test_an_archive_refresh_not_read_is_unknown_with_its_reason(self):
-        doc = dict(self.doc, archive=None, sources=dict(self.doc["sources"], archive="runner.sh status ran past its 15 seconds"))
-        out = self.run_page("R.lane = ELS['view-lane'].html;", doc=doc, search="?view=lane")
-        self.assertIn('<span class="g-unknown" aria-hidden="true">▨</span> not read: runner.sh status ran past its 15 seconds',
-                      out["R"]["lane"])
-        never = dict(self.doc, archive={"last": None, "next": "2026-09-06T12:00:00+00:00", "due": True})
-        out = self.run_page("R.lane = ELS['view-lane'].html;", doc=never, search="?view=lane")
-        self.assertIn('<span class="g-caution" aria-hidden="true">▲</span> never run · due', out["R"]["lane"])
+        self.assertNotIn('<span class="label">Runner</span>', out["R"]["lane"])
+        self.assertNotIn('<span class="label">Archive refresh</span>', out["R"]["lane"])
 
 
 class TheRegistration(Registers, unittest.TestCase):

@@ -12,10 +12,9 @@ source guarded on its own so one that fails is a reason and not an empty list
 - `git`: `fleet.collect("repos")`, v1 Operations > Repos, each row with
   `repos_screen.primary`'s state, headline, detail and remedy. Nothing fetches
   or pulls.
-- `lane`: the runner heartbeat, queued and running assignments, the latest
-  merge assignments, and the items waiting at `ready_to_send`.
-- `assignments`: the latest assignments with the queue revision `sd runner
-  requeue` and `cancel` check, and the history counted by status.
+- `lane`: queued and running assignments, the latest merge assignments, and
+  the items waiting at `ready_to_send`.
+- `assignments`: the latest assignments and the history counted by status.
 - `sessions`: `fleet.collect("sessions")`, v1 Operations > Sessions:
   worktree counts and the sd-* processes it lists.
 - `services` and `jobs`: `services.inventory` and `operations.inventory`,
@@ -23,10 +22,6 @@ source guarded on its own so one that fails is a reason and not an empty list
   Each job carries `last_run`, read from `<cron_root>/logs/.<job>.stamp`, the
   start, end and exit the cron-jobs wrapper writes for every run (sd:2210):
   launchd keeps no run time, and a log's write time is not one.
-- `archive`: the runner's last and next archive refresh, as `runner.sh
-  status` prints them (sd:2209). The dashboard does not know the runner's
-  config or retention folder, so it runs this checkout's `runner.sh status`
-  and reads its one-line body.
 - `grant`: the machine merge grant, `sd config get sd.assistant_merge`
   (sd:1629). It is machine-wide, so the document carries it once, not per
   repo; unset is a reading (`None`), not a failure.
@@ -36,7 +31,7 @@ and `strict` from the protection reading, and `runtimes`, the Python and Node
 versions its checkout pins (`_runtimes`).
 
 Every write the page makes goes through a route `server.action_route`
-answers: runner requeue and cancel, job retry, service start, stop and
+answers: job retry, service start, stop and
 restart, and the two sd-db repo verbs (`repos.set_runner_merge`,
 `repos.set_managed`), which refuse a stale `before` and, on a satellite,
 refuse with `HubOnly` (sd:1629).
@@ -53,13 +48,13 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sd_db import database, operations, protection, reads, repos, runner, workflow
+from sd_db import database, operations, protection, reads, repos, workflow
 from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
 from .repos_screen import primary
 
-__all__ = ["assistant_merge", "document", "last_run", "runner_status", "set_repo"]
+__all__ = ["assistant_merge", "document", "last_run", "set_repo"]
 
 #: How many assignments and merges the page lists; the history counts every row.
 LATEST = 40
@@ -69,9 +64,6 @@ REVIEW_BYTES = 16384
 FAILURES = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
 #: The largest run stamp read; the wrapper writes three short lines.
 STAMP_BYTES = 512
-#: `runner.sh status`'s ceiling: one Python start and one database read.
-RUNNER_SECONDS = 15.0
-RUNNER = Path(__file__).resolve().parents[2] / "local-sd-runner" / "runner.sh"
 #: `sd config get`'s ceiling: one pack start and one small file read.
 SD_SECONDS = 5.0
 #: The largest pin file read; a version file is one line, a manifest a few KiB.
@@ -268,20 +260,14 @@ def _git(read, now: str) -> dict:
 def _assignment(connection, row) -> dict:
     return {"id": row["id"], "item": row["item"], "title": row["title"], "repo": row["repo"], "role": row["role"],
             "provider": row["provider"], "status": row["status"], "lane": row["lane"], "queued_at": row["queued_at"],
-            "started": row["started"], "ended": row["ended"],
-            "revision": runner.queue_state(connection, row["id"])["revision"]}
+            "started": row["started"], "ended": row["ended"]}
 
 
 def _lane(connection) -> dict:
-    try:
-        heartbeat = runner.heartbeat_state(connection)
-    except SdDbError as error:
-        heartbeat = {"ok": False, "reason": str(error)}
     live = [_assignment(connection, row) for row in reads.assignment_ledger(connection, live=True)]
     merges = [_assignment(connection, row) for row in reads.assignment_ledger(connection, role="merge", limit=MERGES)]
     ready = [dict(row) for row in reads.ready_to_send(connection)]
-    beat = {key: heartbeat.get(key) for key in ("ok", "reason", "timestamp", "interval_seconds", "healthy")}
-    return {"heartbeat": beat, "live": live, "merges": merges, "ready": ready}
+    return {"live": live, "merges": merges, "ready": ready}
 
 
 def _assignments(connection) -> dict:
@@ -364,21 +350,6 @@ def _jobs(connection, backend) -> list[dict]:
             for job in operations.inventory(connection, backend=backend)["jobs"]]
 
 
-def runner_status() -> tuple[int, str, str]:
-    """This checkout's `runner.sh status`: its exit code, stdout and stderr, within `RUNNER_SECONDS` (sd:2209).
-
-    No runner.sh (sd:3041 deleted local-sd-runner) answers as its exit 3, not configured, without running anything.
-    """
-    if not RUNNER.is_file():
-        return 3, json.dumps({"ok": False, "reason": "no runner in this checkout"}) + "\n", ""
-    try:
-        done = subprocess.run(["sh", str(RUNNER), "status"], capture_output=True, text=True, timeout=RUNNER_SECONDS,
-                              check=False)
-    except subprocess.TimeoutExpired:
-        raise ValueError(f"runner.sh status ran past its {RUNNER_SECONDS:g} seconds") from None
-    return done.returncode, done.stdout, done.stderr
-
-
 def assistant_merge() -> tuple[int, str, str]:
     """`sd config get sd.assistant_merge`: its exit code, stdout and stderr, within `SD_SECONDS` (sd:1629)."""
     try:
@@ -405,53 +376,14 @@ def _grant(read) -> dict:
     return {"assistant_merge": value}
 
 
-def _archive(status) -> dict:
-    """The last and next archive refresh from `runner.sh status`'s body; ValueError names what it does not say.
-
-    The exit code is the heartbeat's verdict (0, 1 or 3) and not this
-    source's: a stale heartbeat still prints the schedule.
-    """
-    code, out, err = status()
-    said = (err.strip().splitlines() or [""])[-1]
-    if code not in (0, 1, 3):
-        raise ValueError(f"runner.sh status exited {code}" + (f": {said}" if said else ""))
-    line = (out.strip().splitlines() or [""])[0]
-    if not line:
-        raise ValueError("runner.sh status printed no body" + (f": {said}" if said else ""))
-    try:
-        body = json.loads(line)
-    except ValueError:
-        raise ValueError("runner.sh status printed a body that is not JSON") from None
-    if not isinstance(body, dict):
-        raise ValueError("runner.sh status printed a body that is not an object")
-    schedule = body.get("archive_refresh_schedule")
-    if schedule is None:
-        reason = body.get("reason")
-        raise ValueError(f"runner.sh status names no archive refresh: {reason}" if isinstance(reason, str) and reason
-                         else "runner.sh status names no archive refresh; the runner predates sd:2209")
-    if not isinstance(schedule, dict):
-        raise ValueError("runner.sh status named an archive refresh that is not an object")
-    if schedule.get("reason"):
-        raise ValueError(f"the archive refresh was not read: {schedule['reason']}")
-    last, upcoming = schedule.get("last_completed_at"), schedule.get("next_due_at")
-    if last is not None and not _time(last):
-        raise ValueError("runner.sh status named a last refresh that is not a time")
-    if not _time(upcoming):
-        raise ValueError("runner.sh status named a next refresh that is not a time")
-    return {"last": last, "next": upcoming, "due": schedule.get("due") is True}
-
-
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None, runner=None,
-             grant=None) -> dict:
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None, grant=None) -> dict:
     """Every source the page reads, and the reason for each one that could not be read.
 
     `fleet` is `fleet.collect`'s shape, the seam a test fills; `jobs` and
     `services` are the operations and services backends, the launchd ones
-    by default; `runner` is `runner_status`'s shape and `grant`
-    `assistant_merge`'s.
+    by default; `grant` is `assistant_merge`'s shape.
     """
     read = fleet or fleet_module.collect
-    status = runner or runner_status
     config = grant or assistant_merge
     out: dict = {"read": now, "sources": {}}
     for source, collect in (("repos", lambda: _repos(connection)),
@@ -461,7 +393,6 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
                             ("sessions", lambda: _sessions(read)),
                             ("services", lambda: _services(connection, services)),
                             ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend())),
-                            ("archive", lambda: _archive(status)),
                             ("grant", lambda: _grant(config))):
         try:
             out[source] = collect()

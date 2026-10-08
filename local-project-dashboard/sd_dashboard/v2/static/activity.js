@@ -342,22 +342,16 @@ addEventListener('DOMContentLoaded', () => {
   const open = u => { window.open(u, '_blank', 'noopener'); return 'Opens in a new tab'; };
   const openSchedule = job => { const to = window.shell.pages?.Management; if (!to) return 'Management is not built yet';
     location.href = `${to}?view=schedules&q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}`; return `${job} opens in Management > Schedules`; };
-  const requeue = o => window.shell.post(`/api/runner/${o.n}/requeue`, { revision: ev(o).revision }).then(out => reread().then(() => out));
   C.register(
     { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
     { id: 'pr.item', on: 'pull request', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
     // build: the design's review.open; its review.lane re-runs a review, which a recorded one cannot ask for, so it is left out.
     { id: 'review.open', on: 'review', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
     { id: 'review.item', on: 'review', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
-    // asg.requeue and jobs.retry are the one declarations in commands.md; Management, Reports, Today and Briefs declare them the same way.
-    // build: requeue posts to /api/runner/<n>/requeue with the queue revision; Undo cancels the queued run with the revision it answered.
-    { id: 'asg.requeue', on: 'assignment', label: 'Requeue', key: 'q', risk: 'undo', bulk: true, primary: o => ev(o).status === 'blocked',
-      when: o => ev(o).status === 'blocked' || `the assignment is ${ev(o).status}`, cli: o => `sd runner requeue ${o.n}`,
-      run: o => landing(requeue(o), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, out => undoRequeue(o, out)),
-      undo: undoOf },
-    { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: o => ev(o).status !== 'blocked', cli: o => `sd runner get ${o.n}`,
+    { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd assignments get ${o.n}`,
       run: o => { select(o.id, true); return `Assignment #${o.n} shown in Details`; } },
     { id: 'asg.item', on: 'assignment', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the assignment names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
+    // jobs.retry is the one declaration in commands.md; Management, Reports, Today and Briefs declare it the same way.
     // Retry is `sd jobs retry`, which sends the kickstart (commands.md, one declaration, as Management declares it).
     // build: retry posts to /api/jobs/<job>/retry with the job's revision, as Operations > Jobs does; launchd starts the run.
     // Exit 127 is "command not found": a retry fails the same way until the path is fixed, so Retry is off, as in Management.
@@ -376,8 +370,6 @@ addEventListener('DOMContentLoaded', () => {
       cli: o => `sd runner commands output ${o.note}`, run: o => landing(readOutput(o), () => `Output of note ${o.note} shown in Details`) },
     { id: 'command.item', on: 'command', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
   );
-  // Undo cancels the queued run with the revision the requeue answered, then reads the document again.
-  const undoRequeue = (o, out) => window.shell.post(`/api/runner/${o.n}/cancel`, { revision: out.revision }).then(() => reread());
   // read_execution answers at most 64 KiB a read (sd:2416): a full page means more follows at next_offset, up to the
   // 2 MiB it keeps of an output.
   const OUTPUT_PAGE = 65536, OUTPUT_MAX = 2 * 1024 * 1024;

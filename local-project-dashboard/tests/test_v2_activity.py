@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import runner
 from sd_db.ship import note_merge
 from sd_dashboard import activity_screen, server, v2
 
@@ -127,11 +126,10 @@ class TheDocument(ScreenCase):
         self.assertEqual(merge["url"], "https://github.com/example-org/system/pull/41")
         self.assertEqual(merge["ref"], "system#41")
 
-    def test_a_run_carries_its_state_and_the_revision_requeue_checks(self):
+    def test_a_run_carries_its_state(self):
         blocked = self.by_id[f"run:{self.ids['blocked']}"]
         self.assertEqual((blocked["s"], blocked["status"], blocked["n"], blocked["item"]),
                          ("caution", "blocked", self.ids["blocked"], self.ids["port"]))
-        self.assertEqual(blocked["revision"], runner.queue_state(self.connection, self.ids["blocked"])["revision"])
         self.assertEqual(self.by_id[f"run:{self.ids['done']}"]["s"], "ok")
         self.assertNotIn(f"run:{self.ids['stale']}", self.by_id)
         self.assertNotIn(f"run:{self.ids['exec']}", self.by_id, "an exec assignment is the command kind's")
@@ -318,7 +316,6 @@ class TheScript(ScreenCase):
             ["pr.item", "pull request", "safe", "i", None, True, False, False],
             ["review.open", "review", "safe", "o", None, True, False, False],
             ["review.item", "review", "safe", "i", None, True, False, False],
-            ["asg.requeue", "assignment", "undo", "q", None, True, True, True],
             ["asg.get", "assignment", "safe", "o", None, True, False, False],
             ["asg.item", "assignment", "safe", "i", None, True, False, False],
             ["jobs.retry", "job", "safe", "t", None, True, False, True],
@@ -357,34 +354,6 @@ class TheScript(ScreenCase):
 R.rows = ELS.rows.html;""")
         self.assertIn(">status · exit 0<", out["R"]["rows"])
         self.assertNotIn("Port the page<small>", out["R"]["rows"])
-
-    def test_requeue_toasts_after_the_write_and_undo_cancels_with_the_revision_it_answered(self):
-        n = self.ids["blocked"]
-        revision = runner.queue_state(self.connection, n)["revision"]
-        answer = "(path, body) => [200, { id: %d, status: path.endsWith('requeue') ? 'queued' : 'cancelled', revision: 'b'.repeat(64) }]" % n
-        out = self.run_page(f"""R.off = cmd('asg.requeue').when(C.get('run:{self.ids["done"]}'));
-shellRun(cmd('asg.requeue'), C.get('run:{n}'));
-R.before = OUT.toasts.length; await flush(); R.after = OUT.toasts.length;
-lastToast().undo(); await flush();""", answer)
-        self.assertEqual(out["R"]["off"], "the assignment is done")
-        self.assertEqual(out["R"]["before"], 0, "the toast came before the write landed")
-        self.assertEqual(out["R"]["after"], 1)
-        self.assertEqual(out["posts"], [[f"/api/runner/{n}/requeue", {"revision": revision}, 64],
-                                        [f"/api/runner/{n}/cancel", {"revision": "b" * 64}, 64]])
-        self.assertEqual(out["toasts"], [[f"Requeued · #{n}. The runner starts it on its next tick.", True],
-                                         ["Requeue undone · Port the page", False]])
-        self.assertEqual(out["gets"], ["/api/activity"] * 3, "the document was not read again after each write")
-
-    def test_a_bulk_requeue_counts_only_the_writes_that_landed_and_undo_reverses_those(self):
-        a, b = self.ids["blocked"], self.ids["done"]
-        answer = ("(path) => path.includes('/%d/') ? [409, { error: 'the queue moved' }]"
-                  " : [200, { status: path.endsWith('requeue') ? 'queued' : 'cancelled', revision: 'c'.repeat(64) }]") % b
-        out = self.run_page(f"""shellBulk(cmd('asg.requeue'), [C.get('run:{a}'), C.get('run:{b}')]); await flush();
-lastToast().undo(); await flush();""", answer)
-        self.assertEqual(out["toasts"][0], ["Requeue · 1 assignment · 1 of 2 not changed: the queue moved", True])
-        self.assertEqual([post[0] for post in out["posts"]],
-                         [f"/api/runner/{a}/requeue", f"/api/runner/{b}/requeue", f"/api/runner/{a}/cancel"])
-        self.assertEqual(out["posts"][-1][1], {"revision": "c" * 64})
 
     def test_retry_is_on_only_for_a_failed_job_and_posts_its_revision(self):
         failed = next(e for e in self.doc["events"] if e["id"] == "job:nightly-sync")
@@ -599,17 +568,17 @@ R.after = ELS.details.html; R.current = window.PAGE_LIST.current();""")
 
     def test_a_write_whose_reread_fails_keeps_the_rows_and_says_it_landed(self):
         """sd:2489. The write landed; a failed read after it is partial, not "nothing below is current"."""
-        n = self.ids["blocked"]
-        answer = "(path) => [200, { status: 'queued', revision: 'b'.repeat(64) }]"
+        n = "job:nightly-sync"
+        answer = "(path) => [200, {}]"
         out = self.run_page(f"""ANSWER = (path, body) => path === '/api/activity' ? [500, {{ error: 'database locked' }}] : WRITE(path, body);
-shellRun(cmd('asg.requeue'), C.get('run:{n}')); await flush();
-R.rows = ELS.rows.html; R.type = C.get('run:{n}').type; R.details = ELS.details.html;""", answer)
+shellRun(cmd('jobs.retry'), C.get('{n}')); await flush();
+R.rows = ELS.rows.html; R.type = C.get('{n}').type; R.details = ELS.details.html;""", answer)
         self.assertEqual(out["states"][-1]["kind"], "partial")
         self.assertIn("not read again after the change", out["R"]["details"])
         self.assertIn("The change landed", out["states"][-1]["text"])
-        self.assertIn(f'data-id="run:{n}"', out["R"]["rows"], "the rows stay on screen")
+        self.assertIn(f'data-id="{n}"', out["R"]["rows"], "the rows stay on screen")
         self.assertEqual(out["R"]["type"], "not listed", "no command runs on a row the reread did not confirm")
-        self.assertEqual(out["toasts"], [[f"Requeued · #{n}. The runner starts it on its next tick.", True]])
+        self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]])
 
     def test_a_bulk_retry_ends_in_at_most_two_reads(self):
         """sd:2489. The write barrier: N landed writes share one reread queued behind the read in flight."""

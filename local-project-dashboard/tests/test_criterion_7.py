@@ -145,7 +145,6 @@ class Criterion7(BrowserSession):
         page = self.page()
         self.assertEqual(self.status_forms(page), [], "no status form is offered")
         self.assertEqual(re.findall(r'data-cli="sd task status[^"]*"', page), [], "so the palette lists none")
-        self.assertIn(f"Assignment #{running} · running", page)
         # Every target in `STATUSES`, the current `in_progress` included: the
         # refusal comes before the library's same-status no-op.
         for target in STATUSES:
@@ -162,7 +161,7 @@ class Criterion7(BrowserSession):
         self.assertRegex(message, rf"assignment {queued}\b")
         self.assertIn(f"cancel it with `sd runner cancel {queued}`", message)
         self.assertNotIn("control entry", message)
-        self.assertIn(f'action="/api/runner/{queued}/cancel"', self.page(), "and the item screen offers it")
+        self.assertIn(f'action="/api/assignments/{queued}/cancel"', self.page(), "and the item screen offers it")
         self.end(queued)
 
         owned = runner.enqueue(self.connection, [self.work], who="operator")[0]["id"]
@@ -171,16 +170,14 @@ class Criterion7(BrowserSession):
         message = self.refused("ready")
         self.assertRegex(message, rf"assignment {owned}\b")
         self.assertIn(f"stop it from the runner's control entry, `sd runner cancel {owned}`", message)
-        self.assertIn(f'action="/api/runner/{owned}/cancel"', self.page(), "the control entry is on the item screen")
+        # sd:3041: the runner's stop went with the runner; `operations.cancel_assignment` refuses a running row.
+        self.assertNotIn(f'/{owned}/cancel"', self.page())
         self.end(owned)
 
         # A running row with no `runner_run`: the item screen renders no
-        # control, and the screen and the refusal both name the verb that
-        # ends it, `sd runner cancel` (sd:991, owner note 2706).
+        # control, and the refusal names the verb that ends it (sd:991, owner note 2706).
         by_hand = create_assignment(self.connection, item=self.work, role="author", status="running")
-        page = self.page()
-        self.assertNotIn(f'action="/api/runner/{by_hand}/cancel"', page)
-        self.assertIn(f"No owned runner attempt was recorded for this legacy assignment; end it with <code>sd runner cancel {by_hand}</code>", page)
+        self.assertNotIn(f'/{by_hand}/cancel"', self.page())
         message = self.refused("ready")
         self.assertRegex(message, rf"assignment {by_hand}\b")
         self.assertIn(f"running assignment without a runner run; end it with `sd runner cancel {by_hand}`", message)
@@ -195,9 +192,10 @@ class Criterion7(BrowserSession):
         self.assertIsNone(queued["run"])
         page = self.page()
         self.assertEqual(self.status_forms(page), [])
-        control = re.search(rf'<form[^>]*action="/api/runner/{queued["id"]}/cancel"[^>]*>', page)
+        control = re.search(rf'<form[^>]*action="/api/assignments/{queued["id"]}/cancel"[^>]*>.*?</form>', page)
         self.assertIsNotNone(control, "the item screen offers the cancel")
-        self.assertIn(f'data-cli="sd runner cancel {queued["id"]}"', control.group(0))
+        self.assertIn(f'data-cli="sd assignments cancel {queued["id"]}"', control.group(0))
+        revision = re.search(r'name="revision" value="([0-9a-f]+)"', control.group(0))[1]
         self.assertRegex(self.refused("ready"), rf"assignment {queued['id']}\b")
 
         started = time.perf_counter()
@@ -205,18 +203,15 @@ class Criterion7(BrowserSession):
                 patch("subprocess.run", side_effect=AssertionError("the cancel ran a process")), \
                 patch("time.sleep", side_effect=AssertionError("the cancel slept")), \
                 patch.object(runner, "heartbeat_state", side_effect=AssertionError("the cancel read the heartbeat")):
-            status, _, result = self.post(f"/api/runner/{queued['id']}/cancel", {"revision": queued["revision"]})
+            status, _, result = self.post(f"/api/assignments/{queued['id']}/cancel", {"revision": revision})
         elapsed = time.perf_counter() - started
         self.assertEqual(status, 200, result)
         self.assertLess(elapsed, CANCEL_BOUND_SECONDS)
         row = self.connection.execute("SELECT status, result, ended FROM assignment WHERE id = ?",
                                       (queued["id"],)).fetchone()
-        # `cancelled`, the schema's terminal status, where the clause says
-        # `blocked`; and `by dashboard`, the surface's name, where it says
-        # `by operator`. Both drifts are recorded on the item.
+        # `cancelled`, the schema's terminal status, where the clause says `blocked` (recorded on the item).
         self.assertEqual(row["status"], "cancelled")
         self.assertTrue(row["ended"])
-        self.assertEqual(row["result"], "cancelled by dashboard")
         status, result = self.ask("ready")
         self.assertEqual(status, 200, result)
         self.assertEqual(self.row()["status"], "ready")

@@ -115,7 +115,7 @@ class DeliberateWriteControls(ScreenCase):
                 self.assertIn('method="post"', form, path)
                 self.assertIn('action="/api/', form, path)
                 self.assertIn('data-workflow-form', form, path)
-                self.assertRegex(form, r'data-cli="sd (task|note|work|writing|run|runner) ', path)
+                self.assertRegex(form, r'data-cli="sd (task|note|work|writing|assignments|runner) ', path)
                 self.assertNotIn('<code class="command">', form)
             if path.startswith("/item/"):
                 self.assertIn('<summary>CLI equivalents</summary>', page)
