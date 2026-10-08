@@ -334,12 +334,31 @@ def promoted_rows(connection: sqlite3.Connection, source: str, external_id: str 
     if external_id is not None:
         query += " AND json_extract(fields, '$.promoted_from.external_id') = ?"
         values += (external_id,)
-    found = []
-    for row in connection.execute(query, values):
-        snapshot = json.loads(row["fields"])["promoted_from"].get("row")
-        if isinstance(snapshot, dict) and set(PROMOTED_COLUMNS) <= set(snapshot):
-            found.append(row)
-    return found
+    return [row for row in connection.execute(query, values)
+            if _whole_snapshot(json.loads(row["fields"])["promoted_from"])]
+
+
+def _whole_snapshot(origin: dict) -> bool:
+    """A string identity and every column with the type its `item` column
+    holds, JSON text where the column is JSON: what verify and import read
+    without raising (sd:2926)."""
+    snapshot = origin.get("row")
+    if not isinstance(origin.get("external_id"), str) or not isinstance(snapshot, dict):
+        return False
+    if not set(PROMOTED_COLUMNS) <= set(snapshot):
+        return False
+    for key in PROMOTED_COLUMNS:
+        value = snapshot[key]
+        if value is None and key in ("stage", "path", "fields", "body"):
+            continue
+        if not isinstance(value, str):
+            return False
+        if key in ("fields", "body"):
+            try:
+                json.loads(value)
+            except ValueError:
+                return False
+    return True
 
 
 def upsert_item(

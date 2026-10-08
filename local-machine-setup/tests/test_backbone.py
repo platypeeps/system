@@ -548,6 +548,7 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn(f"WARN    database schema {schema - 1} DIFFERS from this checkout's {schema}", out)
         self.assertIn("sd-db.sh migrate", out)
+        self.assertIn("sd-serve", out)  # sd:2974: the hub's listener stops too
         # The virtualenv matches the database, so its agents run; it is the
         # checkout that moved ahead, which is a warning and not a failure.
         self.assertRegex(out, rf"WARN    \S+/python: sd_db 0\.1\.0 built for schema {schema - 1} DIFFERS from this checkout's {schema}")

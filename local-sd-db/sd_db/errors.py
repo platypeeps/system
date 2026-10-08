@@ -71,8 +71,9 @@ class SchemaTooOld(SdDbError):
         self.built_for = built_for
         super().__init__(
             f"the database is at schema version {found} and this library is "
-            f"built for {built_for}; run `local-sd-db/sd-db.sh migrate` with "
-            f"the dashboard and the runner stopped, after a backup"
+            f"built for {built_for}; run `local-sd-db/sd-db.sh migrate` after a "
+            f"backup, with the dashboard, the runner and sd-serve stopped, then "
+            f"start all three again"
         )
 
 
