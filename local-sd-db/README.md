@@ -356,7 +356,8 @@ The message names the verb and the hub.
 - runner controls and the runner's executions directory;
 - `repo remove` and `item remove`;
 - the retention and executions prunes;
-- the publication journal and the `sd writing` cutover.
+- the publication journal and the `sd writing` cutover;
+- `repo lane-host`, which holds the hub's ship lock while it moves a lane (sd:3075).
 
 `ledger.reserve` raises `LedgerRefused` with scope `hub`: provider calls are charged on the hub.
 `ledger.release_orphans` sweeps nothing off the hub, because it asks the local kernel about owner pids.
@@ -445,13 +446,16 @@ A stale `make setup` can then install older code once; the next hub call self-in
 The value is that machine's `hostname -s`, lower-cased. NULL, shown as `hub`, means the hub; every row starts there.
 
     ./sd-db.sh repo lane-host PATH build-2   # move the lane; prints before and after
-    ./sd-db.sh repo lane-host PATH hub       # back to the hub
+    ./sd-db.sh repo lane-host PATH hub       # NULL again; refused while another machine hosts it
 
-The dashboard does the same: Management, the repository's page, `lane_host`, Move lane, with Undo.
+The dashboard does the same: Management, the repository's page, `lane_host`, Move lane.
 Both refuse an unregistered path and a name outside `[a-z0-9-]+`.
 A move sets every clone row of the remote, so clones never disagree.
-It refuses while a runner merge assignment for the repository is queued or running.
-A hand-run `sd-ship` leaves no record; move a lane only while it is idle.
+
+A move holds the ship lock of the machine that hosts the lane, from before its read to after its commit.
+Every ship takes that lock, so a held lock proves no ship runs; a busy one refuses the move and names its holder.
+A ship that waited through the move reads the new host once it gets the lock, and refuses.
+Part 1 moves a lane only on the hub, and only while the hub hosts it: a lane on another machine refuses with "run the move on <host> (sd:3003 part 2)".
 
 `sd_db.ship.hosts_lane` answers whether this machine hosts a repository.
 `repository_lock` asks it before the flock and again once it holds it, so a move during a wait refuses.

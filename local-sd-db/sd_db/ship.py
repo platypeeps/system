@@ -470,24 +470,37 @@ def _write_holder(descriptor: int, record: dict) -> None:
 def repository_lock(database: Path, repository: str, *, holder: dict | None = None, wait: float = 0):
     """Serial per remote across clones; never lock or alter an operator checkout.
 
-    Under the flock, the holder writes pid, command, item or review, repository
-    and start time into the lock file, and clears it on release. A refusal
-    reads it back. `wait` seconds block on the flock, polled every
-    WAIT_POLL_SECONDS, then refuse as `wait=0` refuses at once.
-
     Only the repository's lane host takes it (sd:3075, `hosts_lane`): any
     other machine raises `LaneElsewhere`, and uncertain ownership raises
     `LaneUnknown`; both lock nothing. Ownership is read before the flock and
-    again once it is held. The hub's lock file sits beside the database; a
-    satellite host's under its state folder.
+    again once it is held, so a ship that waited through a lane move refuses.
+    """
+    # sd:3075: only the lane host takes the lock; any other machine refuses before it locks.
+    _owner(database, repository)
+    with repository_flock(database, repository, holder=holder, wait=wait,
+                          held_then=lambda: _owner(database, repository)):
+        yield
+
+
+@contextmanager
+def repository_flock(database: Path, repository: str, *, holder: dict | None = None, wait: float = 0,
+                     held_then=None):
+    """The flock alone, on this machine; `repository_lock` adds the lane-host reads.
+
+    Under the flock, the holder writes pid, command, item or review, repository
+    and start time into the lock file, and clears it on release. A refusal
+    reads it back. `wait` seconds block on the flock, polled every
+    WAIT_POLL_SECONDS, then refuse as `wait=0` refuses at once. `held_then`
+    runs once the flock is held; a raise releases it. The key is the
+    repository lower-cased, as GitHub compares names. The hub's lock file sits
+    beside the database; a satellite host's under its state folder.
+    `repos.set_lane_host` holds it while it moves a lane (sd:3075).
     """
     if wait < 0:
         raise WorkflowError("ship lock wait must be zero or more seconds")
-    # sd:3075: only the lane host takes the lock; any other machine refuses before it locks.
-    _owner(database, repository)
     directory = _lock_directory(database)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / (hashlib.sha256(repository.encode()).hexdigest() + ".lock")
+    path = directory / (hashlib.sha256(repository.lower().encode()).hexdigest() + ".lock")
 
     def held() -> str:
         waited = f"; waited {wait:g}s" if wait else ""
@@ -495,8 +508,8 @@ def repository_lock(database: Path, repository: str, *, holder: dict | None = No
 
     with runner_journal.lock(path, blocking=False, noun="ship", error=WorkflowError, held=held,
                              wait=wait, poll=WAIT_POLL_SECONDS) as descriptor:
-        # The lane may have moved while this waited on the flock: read it again, and release on a refusal.
-        _owner(database, repository)
+        if held_then is not None:
+            held_then()
         given = holder or {}
         record = {"pid": os.getpid(), "repository": repository, "started_at": now(),
                   "command": given.get("command") or " ".join([Path(sys.argv[0]).name, *sys.argv[1:]])[:512],

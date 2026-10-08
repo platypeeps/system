@@ -33,9 +33,8 @@ versions its checkout pins (`_runtimes`).
 Every write the page makes goes through a route `server.action_route`
 answers: job retry, service start, stop and
 restart, and the sd-db repo verbs (`repos.set_runner_merge`,
-`repos.set_managed`, `repos.set_lane_host`), which refuse a stale `before`.
-On a satellite the first two refuse with `HubOnly` (sd:1629); a lane host
-moves from any machine (sd:3075).
+`repos.set_managed`, `repos.set_lane_host`), which refuse a stale `before`
+and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075).
 """
 
 from __future__ import annotations
@@ -425,15 +424,16 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value: str, 
     """
     setter, column = SETTERS[field]
     # The runner that reads these columns runs on the hub; a satellite's page reads them and changes nothing (sd:1629).
-    # Every machine reads `lane_host`, so any machine's page may move a lane, as `sd-db.sh repo lane-host` may (sd:3075).
-    if field != "lane-host":
-        database.refuse_hub_only(connection, f"repo {field}")
+    database.refuse_hub_only(connection, f"repo {field}")
+    if field == "lane-host":
+        # sd:3075: the move commits under the ship lock, so it holds its own transaction and checks `before` in it.
+        path, was = setter(connection, path, value, before=before)
+        return {"path": path, "field": column, "value": value, "before": was}
     with workflow.transaction(connection):
         row = repos.row_for(connection, path)
         if row is None:
             raise repos.RepoRefusal(f"{path} is not a registered repository")
-        current = (("yes" if row["managed"] else "no") if column == "managed"
-                   else (row[column] or repos.LANE_HUB) if column == "lane_host" else row[column])
+        current = ("yes" if row["managed"] else "no") if column == "managed" else row[column]
         if current != before:
             raise StaleSetting(f"{column} for {path} is {current} now, not {before}; read the page again")
         _, was = setter(connection, row["path"], value)

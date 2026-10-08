@@ -196,7 +196,7 @@ class TheDocument(ScreenCase):
         self.assertEqual((rows[self.ids["checkout"]]["runner_merge"], rows[self.ids["checkout"]]["managed"]), ("auto", "yes"))
 
     def test_the_lane_host_reads_hub_and_moves_refusing_a_stale_before_a_bad_name_and_an_unknown_path(self):
-        """sd:3075, acceptances 2 and 3. NULL reads `hub`; a move writes the name, Undo writes `hub` back."""
+        """sd:3075, acceptances 2 and 3. NULL reads `hub`; a move writes the name."""
         checkout = self.ids["checkout"]
         lane = lambda: {row["path"]: row for row in self.document()["repos"]}[checkout]["lane_host"]  # noqa: E731
         self.assertEqual(lane(), "hub")
@@ -210,15 +210,22 @@ class TheDocument(ScreenCase):
         self.assertIn("not a lane host", str(refused.exception))
         with self.assertRaises(repos.RepoRefusal):
             management_screen.set_repo(self.connection, "lane-host", checkout + "-absent", "hub", "build-2")
-        management_screen.set_repo(self.connection, "lane-host", checkout, "hub", "build-2")
-        self.assertEqual(lane(), "hub")
-        self.assertIsNone(self.connection.execute("SELECT lane_host FROM repo WHERE path = ?", (checkout,)).fetchone()[0])
+        # sd:3075 part 1: the hub cannot take build-2's ship lock, so it cannot move the lane back (sd:3003 part 2).
+        with self.assertRaises(repos.RepoRefusal) as refused:
+            management_screen.set_repo(self.connection, "lane-host", checkout, "hub", "build-2")
+        self.assertIn("run the move on build-2 (sd:3003 part 2)", str(refused.exception))
+        self.assertEqual(lane(), "build-2")
 
-    def test_a_satellite_may_move_a_lane(self):
-        """sd:3075: every machine reads the lane host, so the verb runs off the hub as `sd-db.sh repo lane-host` does."""
+    def test_a_satellite_refuses_a_lane_move_and_writes_nothing(self):
+        """sd:3075 part 1: a move holds the lane host's ship lock, which only the hub's dashboard reaches."""
+        from sd_db.remote import HubOnly
+
         with patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
-            got = management_screen.set_repo(self.connection, "lane-host", self.ids["checkout"], "build-2", "hub")
-        self.assertEqual(got["value"], "build-2")
+            with self.assertRaises(HubOnly) as refused:
+                management_screen.set_repo(self.connection, "lane-host", self.ids["checkout"], "build-2", "hub")
+        self.assertIn("repo lane-host runs on the sd hub only", str(refused.exception))
+        self.assertIsNone(self.connection.execute(
+            "SELECT lane_host FROM repo WHERE path = ?", (self.ids["checkout"],)).fetchone()[0])
 
     def test_a_repo_carries_its_required_checks_and_its_runtime_pins(self):
         """sd:1629: the overview's columns. Required checks are the protection reading's; runtimes are the checkout's pins."""

@@ -23,7 +23,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_db import (create_item, database, initialise, ledger, publication_journal, removal, remote,
+from sd_db import (create_item, database, initialise, ledger, publication_journal, removal, remote, repos,
                    retention, runner_controls, runner_exec, seed, ship, writing)
 from sd_db.backup import restore, run as take_backup
 from sd_db.database import default_path
@@ -101,6 +101,8 @@ VERBS = [
     ("the writing cutover",
      lambda c, t: writing.cutover_pieces(c, str(t.root / "repo"), expected_fingerprint="", who="test")),
     ("the writing cutover journal", lambda c, t: writing._journal_path(c, str(t.root / "repo"))),
+    # sd:3075 part 1: a move holds the lane host's ship flock, beside the hub's file.
+    ("repo lane-host", lambda c, t: repos.set_lane_host(c, str(t.root / "repo"), "hub")),
 ]
 
 

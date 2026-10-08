@@ -543,20 +543,28 @@ class TheMigrationVerbs(MigrationVerbCase):
     def test_repo_lane_host_sets_the_host_prints_before_and_after_and_hub_writes_null(self):
         """sd:3075, acceptance 1. An unset row reads `hub`; the verb names a
         host, prints the value before and after, and `hub` stores NULL.
-        `list` shows the column just before `runner_merge`."""
+        `list` shows the column just before `runner_merge`. A lane on
+        another machine does not move back from here (sd:3003 part 2)."""
+        from sd_db.ship import this_host
+
+        here = this_host()
         self.sd_db("repo", "add", str(self.checkout))
         self.assertEqual(self._list_row()[-2:], ["hub", "manual"])
-        completed = self.sd_db("repo", "lane-host", str(self.checkout), "build-2")
-        self.assertIn("lane_host before: hub, after: build-2", completed.stdout)
-        self.assertEqual(self._list_row()[-2:], ["build-2", "manual"])
+        completed = self.sd_db("repo", "lane-host", str(self.checkout), here)
+        self.assertIn(f"lane_host before: hub, after: {here}", completed.stdout)
+        self.assertEqual(self._list_row()[-2:], [here, "manual"])
         completed = self.sd_db("repo", "lane-host", str(self.checkout), "hub")
-        self.assertIn("lane_host before: build-2, after: hub", completed.stdout)
+        self.assertIn(f"lane_host before: {here}, after: hub", completed.stdout)
         self.assertEqual(self._list_row()[-2:], ["hub", "manual"])
         raw = sqlite3.connect(self.home / ".local/share/sd/sd.db")
         try:
             self.assertEqual(raw.execute("SELECT lane_host FROM repo").fetchall(), [(None,)])
         finally:
             raw.close()
+        self.sd_db("repo", "lane-host", str(self.checkout), "build-2")
+        completed = self.sd_db("repo", "lane-host", str(self.checkout), "hub", expect=1)
+        self.assertIn("run the move on build-2 (sd:3003 part 2)", completed.stderr)
+        self.assertEqual(self._list_row()[-2:], ["build-2", "manual"])
 
     def test_repo_lane_host_refuses_a_bad_name_an_unknown_path_and_any_flag(self):
         """sd:3075, acceptances 1 and 2: `Build_2` and an unregistered path

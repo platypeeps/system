@@ -636,56 +636,74 @@ def set_lane_host(
     connection: sqlite3.Connection,
     path: Path | str,
     value: str,
+    *,
+    before: str | None = None,
 ) -> tuple[str, str]:
     """Set the machine that runs one repository's lane. Returns `(path, before)`.
 
     The one writer of `repo.lane_host` (sd:3075): the verb and the dashboard
     both call it. `hub` writes NULL, the default every row starts at; any
     other value is a host name and must match `[a-z0-9-]+`. `before` is
-    `hub` or the name. Same path refusal as `set_runner_merge`. A direct
-    UPDATE, not `upsert_repo`, whose `None` means "leave it" and so cannot
-    write the hub's NULL.
+    `hub` or the name; given, a row that reads otherwise raises `StaleItem`.
+    Same path refusal as `set_runner_merge`. A direct UPDATE, not
+    `upsert_repo`, whose `None` means "leave it" and so cannot write NULL.
 
-    The lane belongs to the remote, so every clone row of the remote gets the
-    value, and the ship lock never sees clones that disagree. A queued or
-    running merge assignment on any clone refuses the move: its ship holds the
-    old host's lock. A hand-run `sd-ship` is not recorded; the README says to
-    move a lane only while it is idle.
+    The lane belongs to the remote, so every clone row of the remote moves.
+    The move holds the ship flock of the machine that hosts the lane now,
+    from before its read to after its commit: every ship takes that flock, so
+    holding it proves none runs, and a ship that waited reads the new host
+    once it gets the flock and refuses. A busy flock refuses naming its
+    holder. Part 1 moves a lane only on the hub, and only while the hub hosts
+    it: another machine's flock is out of reach (sd:3003 part 2).
     """
+    from contextlib import ExitStack
+
+    from . import ship
+    from .database import refuse_hub_only
     from .protection import github_slug
+    from .workflow import StaleItem
 
     if value != LANE_HUB and not LANE_HOST_NAME.fullmatch(value):
         raise RepoRefusal(
             f"{value!r} is not a lane host; expected hub or a short host name "
             f"of lower-case letters, digits and dashes, as `hostname -s` gives it lower-cased")
+    refuse_hub_only(connection, "repo lane-host")
+    if connection.in_transaction:
+        raise RepoRefusal("a lane move commits while it holds the ship lock; call it outside a transaction")
+    database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
     given = str(Path(path).expanduser().resolve())
     probe = paths.keys(given)
-    with transaction(connection):
+
+    def remote_of(remote):
+        slug = github_slug(remote)
+        return "/".join(slug) if slug else None
+
+    # The stack releases the flock after the transaction commits, never before.
+    with ExitStack() as held, transaction(connection):
         row = connection.execute(
             f"SELECT path, remote, lane_host FROM repo WHERE path IN ({paths.placeholders(probe)})",
             probe).fetchone()
         if row is None:
             raise RepoRefusal(
                 f"{given} is not a registered repository; run `sd-db.sh repo add {given}`")
-        def remote_of(remote):
-            slug = github_slug(remote)
-            return "/".join(slug).lower() if slug else None
-
-        mine = remote_of(row["remote"])
-        clones = [row["path"]] if mine is None else [
-            other["path"] for other in connection.execute("SELECT path, remote FROM repo ORDER BY path")
-            if remote_of(other["remote"]) == mine]
-        live = connection.execute(
-            "SELECT assignment.id, assignment.item FROM assignment JOIN item ON item.id = assignment.item"
-            " WHERE assignment.role = 'merge' AND assignment.status IN ('queued', 'running', 'ending')"
-            f" AND item.repo IN ({paths.placeholders(clones)}) ORDER BY assignment.id",
-            clones).fetchall()
-        if live:
-            held = ", ".join(f"assignment {entry['id']} (sd:{entry['item']})" for entry in live)
+        was = row["lane_host"] or LANE_HUB
+        if before is not None and was != before:
+            raise StaleItem(f"lane_host for {row['path']} is {was} now, not {before}; read the page again")
+        repository = remote_of(row["remote"])
+        clones = [row] if repository is None else [
+            other for other in connection.execute("SELECT path, remote, lane_host FROM repo ORDER BY path")
+            if (remote_of(other["remote"]) or "").lower() == repository.lower()]
+        away = sorted({clone["lane_host"] for clone in clones} - {None, ship.this_host()})
+        if away:
             raise RepoRefusal(
-                f"{row['path']} has a merge queued or running: {held}; its ship holds the old "
-                f"host's lock. Move the lane once the lane is idle")
+                f"the lane for {row['path']} runs on {', '.join(away)}; run the move on {away[0]} "
+                f"(sd:3003 part 2): this machine cannot see that machine's ship lock")
+        if repository is not None:
+            # No GitHub remote, no ship: nothing can hold a lock for it.
+            held.enter_context(ship.repository_flock(
+                database, repository, holder={"command": f"sd-db.sh repo lane-host {row['path']} {value}"}))
+        paths_of = [clone["path"] for clone in clones]
         connection.execute(
-            f"UPDATE repo SET lane_host = ?, updated_at = ? WHERE path IN ({paths.placeholders(clones)})",
-            (None if value == LANE_HUB else value, now(), *clones))
-    return row["path"], row["lane_host"] or LANE_HUB
+            f"UPDATE repo SET lane_host = ?, updated_at = ? WHERE path IN ({paths.placeholders(paths_of)})",
+            (None if value == LANE_HUB else value, now(), *paths_of))
+    return row["path"], was
