@@ -5,6 +5,11 @@ file lacks; `claude_settings.py merge SETTINGS` adds those entries in place.
 `opencode-missing` and `opencode-merge` do the same for opencode.json.
 Only missing entries are added: an entry the operator set, to any value, is
 left alone, and nothing is removed. The stage backs the file up first.
+
+`local-missing FILE` and `local-merge FILE` do the same for the shared keys of
+a repo's CLAUDE.local.md block (the repos stage, sd:3030). Here the source
+wins: a shared key with another value is rewritten. The repo's other keys, its
+comments and every line outside the block stay as they are.
 """
 
 import json
@@ -52,6 +57,16 @@ ENV = {"DISABLE_AUTOUPDATER": "1"}
 #: The same paths for opencode's read permission, whose `*` also matches `/`.
 OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").replace("**", "*").lstrip("*")
                       for rule in SECRET_READ_DENY]
+#: The CLAUDE.local.md block keys every auto repo shares (sd:3030); other keys stay per repo.
+#: A value holds no quote or backslash, so it is written double-quoted as is.
+SHARED_LOCAL_KEYS = {
+    "threat-model": "One operator on their own machines. Out of scope: a hostile local user, "
+                    "a hostile program on PATH, and two concurrent runs of one manual command. "
+                    "Flag defects that hurt that operator.",
+}
+LOCAL_START = "<!-- SD-AI-COMMAND-PACK:LOCAL:START -->"
+LOCAL_END = "<!-- SD-AI-COMMAND-PACK:LOCAL:END -->"
+LOCAL_KEY = re.compile(r"^([A-Za-z0-9_.-]+):[ \t]*(.*?)[ \t]*$")
 STRING = r'("(?:\\.|[^"\\])*")'
 COMMENT = re.compile(STRING + r"|//[^\n]*|/\*.*?\*/", re.S)
 TRAILING_COMMA = re.compile(STRING + r"|,(\s*[}\]])")
@@ -94,6 +109,56 @@ def merge(settings):
     return settings
 
 
+def local_lines(text):
+    """The block's lines as (index of START, index of END, lines); no block is (None, None, lines)."""
+    lines = text.splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if line.strip() == LOCAL_START]
+    ends = [i for i, line in enumerate(lines) if line.strip() == LOCAL_END]
+    if not starts and not ends:
+        return None, None, lines
+    if len(starts) != 1 or len(ends) != 1 or ends[0] < starts[0]:
+        raise ValueError("the SD-AI-COMMAND-PACK:LOCAL markers are not one ordered pair")
+    return starts[0], ends[0], lines
+
+
+def local_value(raw):
+    if len(raw) > 1 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    return raw
+
+
+def local_gaps(text):
+    """`MISSING key` or `STALE key` for each shared key the block lacks or holds another value for."""
+    start, end, lines = local_lines(text)
+    have = {}
+    for line in lines[start + 1:end] if start is not None else []:
+        match = LOCAL_KEY.match(line.rstrip("\r\n"))
+        if match:
+            have[match.group(1)] = local_value(match.group(2))
+    return [("MISSING " if key not in have else "STALE ") + key
+            for key, value in sorted(SHARED_LOCAL_KEYS.items()) if have.get(key) != value]
+
+
+def local_merge(text):
+    start, end, lines = local_lines(text)
+    shared = {key: f'{key}: "{value}"\n' for key, value in sorted(SHARED_LOCAL_KEYS.items())}
+    if start is None:
+        block = [LOCAL_START + "\n", *shared.values(), LOCAL_END + "\n"]
+        separator = [] if not text or text.endswith("\n\n") else ["\n"] if text.endswith("\n") else ["\n\n"]
+        return text + "".join(separator + block)
+    body, written = [], set()
+    for line in lines[start + 1:end]:
+        match = LOCAL_KEY.match(line.rstrip("\r\n"))
+        key = match.group(1) if match else None
+        if key in written:
+            continue
+        if key in shared:
+            written.add(key)
+            line = shared.pop(key)
+        body.append(line)
+    return "".join(lines[:start + 1] + body + list(shared.values()) + lines[end:])
+
+
 def load_jsonc(text):
     """opencode.json allows comments and trailing commas; strings keep theirs."""
     text = COMMENT.sub(lambda m: m.group(1) or "", text)
@@ -120,6 +185,18 @@ def opencode_merge(text):
 
 def main(argv):
     verb, path = argv
+    if verb.startswith("local-"):
+        try:
+            text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+            gaps = local_gaps(text)
+        except (OSError, ValueError) as error:
+            sys.exit(f"claude_settings.py: {path}: {error}")
+        if verb == "local-missing":
+            for gap in gaps:
+                print(gap)
+        elif gaps:
+            write(path, local_merge(text))
+        return
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     if verb.startswith("opencode-"):
@@ -137,14 +214,16 @@ def main(argv):
     elif verb == "merge" and missing(settings):
         write(path, json.dumps(merge(settings), indent=2, ensure_ascii=False) + "\n")
     elif verb != "merge":
-        sys.exit(f"usage: claude_settings.py missing|merge|opencode-missing|opencode-merge FILE (got {verb})")
+        sys.exit("usage: claude_settings.py missing|merge|opencode-missing|opencode-merge|local-missing|local-merge FILE"
+                 f" (got {verb})")
 
 
 def write(path, text):
     temporary = path + ".tmp"
     with open(temporary, "w", encoding="utf-8") as fh:
         fh.write(text)
-    shutil.copymode(path, temporary)
+    if os.path.exists(path):
+        shutil.copymode(path, temporary)
     os.replace(temporary, path)
 
 
