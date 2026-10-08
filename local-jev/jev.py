@@ -2153,6 +2153,11 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     word, reason = why_unusable(conf, env)
     stage = whose(args, env, "stage")
     counted = []
+    if not reason:
+        # Checked, not counted, before the verb reads stdin or `--state`: a
+        # call that may not send declines at once, and an open stdin or a FIFO
+        # cannot hold it. `reserve` below still counts the call atomically.
+        word, reason = budget_spent(stage, env, reserve=False)
 
     def reserve():
         # Called by `post`, after the last local refusal (sd:2910).

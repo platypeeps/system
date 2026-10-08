@@ -1050,6 +1050,25 @@ class TestBudget(StubServer):
         self.assertEqual(self.call(**limit)[0], 3)
         self.assertEqual(Stub.seen, [])
 
+    def test_a_spent_budget_declines_before_reading_any_input(self):
+        """sd:2910: an open stdin or a FIFO cannot hold a call that may not send."""
+        class Untouchable:
+            def __getattr__(self, name):
+                raise AssertionError(f"stdin was touched: {name}")
+        limit = {self.STAGE + "_MAX_CALLS": "0"}
+        saved, sys.stdin = sys.stdin, Untouchable()
+        try:
+            with tempfile.TemporaryFile("w+") as out, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                code = jev.main(["noul", "q", "--stage", self.STAGE, "--fallback", "0.5"],
+                                out=out, env=self.env(**limit), sleep=lambda _s: None)
+                out.seek(0)
+                printed = out.read()
+        finally:
+            sys.stdin = saved
+        self.assertEqual((code, printed), (0, "0.5\n"))
+        self.assertEqual(Stub.seen, [])
+
     def test_a_call_refused_before_sending_spends_no_call(self):
         """Counted after every local refusal, right before the send (sd:2910)."""
         limit = {self.STAGE + "_MAX_CALLS": "1"}
