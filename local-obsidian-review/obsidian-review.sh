@@ -11,6 +11,11 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 NOTIFY="$DIR/../local-notify/notify.sh"
 ACTIONS="$DIR/../local-task-actions/task-actions.sh"
 JEV="$DIR/../local-jev/jev.sh"
+# One id for every jev call this run makes, so the ledger groups them
+# (sd:2953). A run that started this one keeps its own: it is the same run.
+[ -n "${JEV_RUN:-}" ] || \
+  JEV_RUN="obsidian-review-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+export JEV_RUN
 
 # <config>/obsidian-review/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
 # default ~/.config/system; see .env.example) provides defaults only; an exported
@@ -83,7 +88,7 @@ TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT INT TERM
 
 body=$(VAULT="$VAULT" ACTIONS="$ACTIONS" JEV="$JEV" HTML_OUT="$TMPD/body.html" python3 <<'PYEOF'
-import datetime, html, json, os, pathlib, re, subprocess, sys, tempfile, urllib.parse
+import datetime, hashlib, html, json, os, pathlib, re, subprocess, sys, tempfile, urllib.parse
 
 vault = pathlib.Path(os.environ["VAULT"])
 actions = os.environ["ACTIONS"]
@@ -250,7 +255,19 @@ BTN = ('<a href="{href}" style="display:inline-block;padding:7px 14px;'
 URGENCY = ["can wait", "this week", "today", "right now"]
 
 
-def jev_record_baseline(jev, cause=None):
+def jev_subject(stems):
+    """The ledger's name for one ordering: `obsidian-review:<16 hex>` (sd:2953).
+
+    No title leaves in it. The key is the first 16 hex of the sha256 of the
+    ordered notes' file stems, sorted, each followed by a newline. An outcome
+    recomputes it from the stems the digest showed, as
+    `printf '%s\\n' STEM... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`.
+    """
+    text = "".join(stem + "\n" for stem in sorted(stems))
+    return "obsidian-review:" + hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def jev_record_baseline(jev, cause=None, subject=None):
     """Say the digest's usual order -- the control arm -- is what ran.
 
     `--outcome ok` always: the old path completed, and that this row exists
@@ -273,7 +290,8 @@ def jev_record_baseline(jev, cause=None):
                         "--caller", "local-obsidian-review",
                         "--stage", "JEV_OBSIDIAN_REVIEW",
                         "--arm", "baseline", "--outcome", "ok"]
-                       + (["--decline", cause] if cause else []),
+                       + (["--decline", cause] if cause else [])
+                       + (["--subject", subject] if subject else []),
                        capture_output=True, text=True, timeout=30)
     except Exception:
         pass
@@ -323,6 +341,7 @@ def jev_ranked(queues):
                 }
         if not questions:
             return queues, False
+        subject = jev_subject([it[0] for q in queues for it in q[5]])
         # One request, every note a question in it: questions in one `ask`
         # run in parallel, where one call per note would pay the round trip
         # once per card in the mail.
@@ -337,7 +356,8 @@ def jev_ranked(queues):
                 ["sh", jev, "ask", "--questions", qf, "--state", sf,
                  "--state-format", "json",
                  "--caller", "local-obsidian-review",
-                 "--stage", "JEV_OBSIDIAN_REVIEW"],
+                 "--stage", "JEV_OBSIDIAN_REVIEW",
+                 "--subject", subject],
                 capture_output=True, text=True, timeout=180)
         if r.returncode != 0:
             raise RuntimeError((r.stderr or r.stdout).strip()[:200]
@@ -353,7 +373,7 @@ def jev_ranked(queues):
             jev_record_baseline(
                 jev,
                 "timeout" if isinstance(exc, subprocess.TimeoutExpired)
-                else None)
+                else None, subject)
         return queues, False
     out = []
     for qi, q in enumerate(queues):

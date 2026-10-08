@@ -1351,8 +1351,16 @@ fi
 # it reaches jev on stdin, never in argv, where `ps` would show it.
 # Bounded: S4S_JEV_MAX_HITS hits per run (default 10), S4S_JEV_TIMEOUT
 # seconds per call (default 5), no retry. JEV_SECRET_SCAN=0 is the off-switch.
+# Each call's ledger name is `secret-scan:<16 hex>` (sd:2953): the first 16 hex
+# of the sha256 of the hit's `path:line`, followed by a newline. Never the
+# matched text, so no credential is hashed; an outcome recomputes it from the
+# report's location as `printf '%s\n' PATH:LINE | shasum -a 256 | cut -c1-16`.
+# JEV_RUN is one id for every call this run makes; an inherited one is kept.
 judge_hits() {
   JEV=$(command -v jev 2>/dev/null) || return 0
+  [ -n "${JEV_RUN:-}" ] || \
+    JEV_RUN="secret-scan-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+  export JEV_RUN
   "$JEV" enabled JEV_SECRET_SCAN --local-only --record \
     --caller local-scan-for-secrets >/dev/null 2>&1 || return 0
   max=${S4S_JEV_MAX_HITS:-10}
@@ -1361,9 +1369,12 @@ judge_hits() {
   case $wait_s in ''|*[!0-9]*) wait_s=5 ;; esac
   printf '%s\n' "$1" | head -n "$max" | while IFS= read -r hit; do
     [ -n "$hit" ] || continue
+    # The first `:<digits>:` ends the location, so a colon in the path keeps its line.
+    subject="secret-scan:$(printf '%s\n' "$hit" | sed -E 's/(:[0-9]+):.*$/\1/' | shasum -a 256 | cut -c1-16)"
     printf '%s\n' "$hit" | JEV_TIMEOUT=$wait_s JEV_RETRIES=0 \
       "$JEV" noul 'Is this a real credential, not a test value or placeholder?' \
         --local-only --stage JEV_SECRET_SCAN --caller local-scan-for-secrets \
+        --subject "$subject" \
         --gate 0.5 --shadow yes --state-format text >/dev/null 2>&1 || :
   done
 }

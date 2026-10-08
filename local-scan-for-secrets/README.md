@@ -325,6 +325,8 @@ agrees.
 | `S4S_JEV_MAX_HITS` | 10 | hits asked per run |
 | `S4S_JEV_TIMEOUT` | 5 | seconds per call, no retry |
 
+**Ledger subject and run (sd:2953).** Each `noul` passes `--subject secret-scan:<16 hex>`: the first 16 hex of the sha256 of the hit's `path:line`, followed by a newline. The location ends at the first `:<digits>:`, so a colon in the path keeps its line number. The matched text is never hashed, so no credential has a fingerprint in the ledger. An outcome recomputes it from the report with `printf '%s\n' PATH:LINE | shasum -a 256 | cut -c1-16`. Every call of one scan shares `JEV_RUN=secret-scan-<UTC yyyymmddThhmmss>-<4 hex>`, or the scan's inherited one.
+
 ## Accepted exposure (2026-09-21, sd:1254)
 
 The weekly `critical` run has exited 2 every Monday since 2026-08-24 on real

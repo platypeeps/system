@@ -25,6 +25,7 @@ that variable switches it off, so that is an action and not an omission.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -136,7 +137,18 @@ JEV_CALLER = "local-adversarial-gate"
 JEV_STAGE = "JEV_ADVERSARIAL_GATE"
 
 
-def record_baseline(jev, cause=None):
+def subject_of(data):
+    """The ledger's name for one ordering: `adversarial-gate:<16 hex>` (sd:2953).
+
+    No finding leaves in it. The key is the first 16 hex of the sha256 of the
+    result file's bytes as the reviewer wrote them, before this reorders it;
+    the success line names it, and an outcome recomputes it from that
+    unranked file as `shasum -a 256 FILE | cut -c1-16`.
+    """
+    return f"adversarial-gate:{hashlib.sha256(data).hexdigest()[:16]}"
+
+
+def record_baseline(jev, cause=None, subject=None):
     """Say the reviewer's own order -- the control arm -- is what ran.
 
     `--outcome ok` always: the old path completed, and that this row exists at
@@ -159,14 +171,15 @@ def record_baseline(jev, cause=None):
         subprocess.run(
             [jev, "record", "--caller", JEV_CALLER, "--stage", JEV_STAGE,
              "--arm", "baseline", "--outcome", "ok"]
-            + (["--decline", cause] if cause else []),
+            + (["--decline", cause] if cause else [])
+            + (["--subject", subject] if subject else []),
             capture_output=True, text=True, timeout=30,
         )
     except Exception:  # noqa: BLE001 - bookkeeping may never fail the caller
         pass
 
 
-def ask_jev(jev, texts):
+def ask_jev(jev, texts, subject=None):
     """{id: probability} for every finding, or None and a reason on stderr.
 
     One request: questions in a single `ask` run in parallel and cannot see
@@ -189,7 +202,8 @@ def ask_jev(jev, texts):
             result = subprocess.run(
                 [jev, "ask", "--questions", qpath, "--state", spath,
                  "--state-format", "json",
-                 "--caller", JEV_CALLER, "--stage", JEV_STAGE],
+                 "--caller", JEV_CALLER, "--stage", JEV_STAGE]
+                + (["--subject", subject] if subject else []),
                 capture_output=True, text=True, timeout=300,
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -199,7 +213,7 @@ def ask_jev(jev, texts):
             record_baseline(
                 jev,
                 "timeout" if isinstance(exc, subprocess.TimeoutExpired)
-                else "unavailable")
+                else "unavailable", subject)
             return None
     finally:
         for path in (qpath, spath):
@@ -211,13 +225,13 @@ def ask_jev(jev, texts):
         detail = (result.stderr or "").strip().splitlines()
         warn(f"jev ask exited {result.returncode}"
              f"{': ' + detail[-1] if detail else ''}; the order is the reviewer's own")
-        record_baseline(jev)
+        record_baseline(jev, subject=subject)
         return None
     try:
         answers = json.loads(result.stdout)["answers"]
     except (ValueError, KeyError, TypeError):
         warn("jev ask returned no answers block; the order is the reviewer's own")
-        record_baseline(jev)
+        record_baseline(jev, subject=subject)
         return None
     scores = {}
     for qid in texts:
@@ -231,7 +245,7 @@ def ask_jev(jev, texts):
             # Partial coverage is refused whole. Sorting the answered findings
             # and leaving the rest wherever they fall is an order no one chose.
             warn(f"jev ask did not answer for {qid}; the order is the reviewer's own")
-            record_baseline(jev)
+            record_baseline(jev, subject=subject)
             return None
     return scores
 
@@ -240,7 +254,7 @@ def label_for(score):
     return f"*Jev — real defect: {score:.2f}*"
 
 
-def rank_text(text, jev):
+def rank_text(text, jev, subject):
     """The reordered, labelled document, or None to leave the file alone."""
     if MARKER in text:
         warn("this file was ordered by Jev already; leaving it as it is")
@@ -255,7 +269,7 @@ def rank_text(text, jev):
         f"f{n + 1}": "\n".join(lines[start:end]).strip()[:MAX_FINDING_CHARS]
         for n, (start, end) in enumerate(found)
     }
-    scores = ask_jev(jev, texts)
+    scores = ask_jev(jev, texts, subject)
     if scores is None:
         return None
 
@@ -337,18 +351,21 @@ def main(argv=None) -> int:
                         help="path to local-jev/jev.sh")
     args = parser.parse_args(argv)
     try:
-        with open(args.path, encoding="utf-8") as fh:
-            text = fh.read()
+        with open(args.path, "rb") as fh:
+            data = fh.read()
+        # Universal newlines, as a text-mode read gives; the subject hashes the bytes.
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     except OSError as exc:
         warn(f"cannot read {args.path}: {exc}")
         return 1
-    ordered = rank_text(text, args.jev)
+    subject = subject_of(data)
+    ordered = rank_text(text, args.jev, subject)
     if ordered is None:
         return 0
     if not replace_text(args.path, ordered):
         return 1
-    sys.stderr.write(f"adversarial-gate: rank: {args.path} ordered by Jev; "
-                     "no finding was removed\n")
+    sys.stderr.write(f"adversarial-gate: rank: {args.path} ordered by Jev "
+                     f"as {subject}; no finding was removed\n")
     return 0
 
 

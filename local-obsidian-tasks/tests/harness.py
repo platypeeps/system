@@ -76,6 +76,7 @@ exit 1
 """
 
 STUB_JEV = """#!/bin/sh
+[ -z "${JEV_STUB_CALLS:-}" ] || printf '%s run=%s\\n' "$*" "${JEV_RUN:-}" >> "$JEV_STUB_CALLS"
 case "$1" in
   enabled)
     # `jev enabled STAGE` reads the stage variable itself, so the stub has to
@@ -170,7 +171,8 @@ def run_proc(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
     })
     env.pop("OBSIDIAN_TASKS_SIGN_TIMEOUT", None)
     for key in ("JEV_OBSIDIAN_TASKS", "JEV_STUB_ENABLED_EXIT",
-                "JEV_STUB_ASK_FAIL", "JEV_STUB_RECORD"):
+                "JEV_STUB_ASK_FAIL", "JEV_STUB_RECORD",
+                "JEV_STUB_CALLS", "JEV_RUN"):
         env.pop(key, None)
     env.update(env_extra or {})
     proc = subprocess.run(

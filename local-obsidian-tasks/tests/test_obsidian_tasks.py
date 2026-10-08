@@ -271,6 +271,19 @@ class DigestTest(unittest.TestCase):
                              ["days_overdue", "id", "scheduled", "title"])
         self.assertEqual(len(sent["questions"]), len(harness.EXPECTED_TITLES))
 
+    def test_the_ask_names_the_digest_by_hash_and_the_run_is_one_id(self):
+        """`--subject` hashes the stems, never a title; both calls share `JEV_RUN` (sd:2953)."""
+        calls = self.root / "jev.calls"
+        self.digest({**ON, "JEV_STUB_CALLS": str(calls)})
+        lines = calls.read_text().splitlines()
+        self.assertEqual([line.split()[0] for line in lines], ["enabled", "ask"])
+        found = re.search(r"--subject (\S+) run=", lines[1])
+        self.assertIsNotNone(found, lines[1])
+        self.assertRegex(found.group(1), r"^obsidian-tasks:[0-9a-f]{16}$")
+        runs = {line.rsplit("run=", 1)[1] for line in lines}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^obsidian-tasks-\d{8}T\d{6}-[0-9a-f]{4}$")
+
     def test_every_task_is_one_question_in_one_request(self):
         record = self.root / "jev.request.json"
         self.digest({**ON, "JEV_STUB_RECORD": str(record)})

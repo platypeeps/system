@@ -194,6 +194,12 @@ fi
 # local-bin-links, and a `jev` on PATH is the same link farm one `install` out
 # of date. DIR is already walked through $0's symlinks at the top of the file.
 JEV_SH="$DIR/../local-jev/jev.sh"
+# One id for every jev call this run makes, so the ledger groups them
+# (sd:2953). A run that called this one -- a health check, a repo sync --
+# keeps its own, so its notification joins its run.
+[ -n "${JEV_RUN:-}" ] || \
+  JEV_RUN="notify-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+export JEV_RUN
 
 # One question, with a hard wall-clock cap. An alert must never wait on an
 # experimental judgment, and jev's own JEV_TIMEOUT is per attempt and retried,
@@ -283,15 +289,23 @@ jev_record_baseline() {
   [ -x "$JEV_SH" ] || return 0
   if [ -n "${1:-}" ]; then
     "$JEV_SH" record --caller local-notify --stage JEV_NOTIFY \
-      --arm baseline --outcome ok --decline "$1" >/dev/null 2>&1 || true
+      --arm baseline --outcome ok --decline "$1" --subject "$jev_subject" \
+      >/dev/null 2>&1 || true
   else
     "$JEV_SH" record --caller local-notify --stage JEV_NOTIFY \
-      --arm baseline --outcome ok >/dev/null 2>&1 || true
+      --arm baseline --outcome ok --subject "$jev_subject" >/dev/null 2>&1 || true
   fi
   return 0
 }
 
+# $1 is the half being asked, `route` or `priority`; the rest is jev's argv.
+# The ledger names the call `notify:<16 hex>:<half>` (sd:2953): the first 16
+# hex of the sha256 of the title and the message, each followed by a newline,
+# before redaction. No text leaves in it; an outcome recomputes it from the
+# notification as `printf '%s\n%s\n' TITLE MESSAGE | shasum -a 256 | cut -c1-16`.
 jev_ask() {
+  jev_subject="notify:$(printf '%s\n%s\n' "$TITLE" "$MESSAGE" | shasum -a 256 | cut -c1-16):$1"
+  shift
   jev_limit="${JEV_TIMEOUT:-5}"
   case "$jev_limit" in ''|*[!0-9]*) jev_limit=5 ;; esac
   jev_out=$(mktemp) || return 1
@@ -301,6 +315,7 @@ jev_ask() {
   printf 'Title: %s\nMessage: %s\n' "$TITLE" "$MESSAGE" \
     | sed -E -f "$JEV_REDACT" \
     | "$JEV_SH" "$@" --state - --caller local-notify --stage JEV_NOTIFY \
+        --subject "$jev_subject" \
         >"$jev_out" 2>/dev/null &
   jev_pid=$!
   jev_waited=0
@@ -375,7 +390,7 @@ jev_route() {
   # Neither route is empty either -- Jev chooses among channels, it never
   # chooses none. Descriptions carry no commas: --criteria splits on them.
   jev_channels=""
-  if jev_pick=$(jev_ask choice 'Which route fits this notification?' \
+  if jev_pick=$(jev_ask route choice 'Which route fits this notification?' \
       --id notify-route \
       --criteria 'desk=routine or informational; a banner on the screen the person is already at is enough,phone=needs attention away from the desk; banner plus a push to the phone' \
       --unsure-below 0.7); then
@@ -396,7 +411,7 @@ jev_route() {
   # list, so the value handed to ntfy is always one of the five names. awk's
   # `^` and `$` anchor the whole value, so a second line fails the match too.
   jev_priority=""
-  if jev_raw=$(jev_ask score 'How urgently does this need a person?' \
+  if jev_raw=$(jev_ask priority score 'How urgently does this need a person?' \
       --id notify-priority \
       --levels 'min,low,default,high,urgent'); then
     jev_idx=$(awk -v s="$jev_raw" 'BEGIN{
