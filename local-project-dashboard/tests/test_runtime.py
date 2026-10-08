@@ -662,6 +662,35 @@ class BuildIdentity(unittest.TestCase):
             self.assertEqual(body["library_digest"], original["library_digest"])
             self.assertEqual(body["dashboard_digest"], original["dashboard_digest"])
 
+    def test_server_stops_when_the_disk_build_changes_and_launchd_restarts_it(self):
+        """sd:3018: a merge that moves the checkout stops the server, so KeepAlive starts the new code."""
+        from sd_db.migrate import initialise
+        from sd_dashboard import server
+
+        plist = plistlib.loads(runtime._plist(self.root / "dashboard.json", {"port": 8767}, self.root))
+        self.assertIs(plist["KeepAlive"], True)
+        database = self.root / "sd.db"
+        initialise(database)
+        original = self.digests()
+        with patch.object(runtime, "build_digests", return_value=original):
+            listening = server.build(database, port=0)
+        self.addCleanup(listening.server_close)
+        listening.build_check_seconds = 0
+        ended = []
+        def serve():
+            try:
+                listening.serve_forever(poll_interval=0.01)
+            except BaseException as error:  # noqa: BLE001 - the test reads what ended it
+                ended.append(error)
+        with patch.object(runtime, "build_digests", return_value=dict(original, dashboard_digest="0" * 64)):
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            thread.join(5)
+        if thread.is_alive():
+            listening.shutdown()
+            self.fail("the server kept serving a build that changed on disk")
+        self.assertIsInstance(ended[0], server.CodeChanged)
+
 
 class LibraryLag(unittest.TestCase):
     """`installed_library` refuses an installed sd_db older than the checkout's library (the #395 class).

@@ -894,11 +894,34 @@ class Listener(ThreadingHTTPServer):
     request_queue_size = socket.SOMAXCONN
 
 
+class CodeChanged(Exception):
+    """The build on disk is no longer the one this process loaded (sd:3018)."""
+
+
 class DashboardServer(Listener):
-    """Own both listeners so partial startup and shutdown leave no orphan socket."""
+    """Own both listeners so partial startup and shutdown leave no orphan socket.
+
+    It also stops once its build changes on disk, so the LaunchAgent's
+    KeepAlive starts the new code; a stale process answered /health 503 until
+    someone kickstarted it (sd:3018).
+    """
 
     direct_server = None
     direct_thread = None
+    # A check hashes the library and the package, about 30 ms.
+    build_check_seconds = 30
+
+    def service_actions(self):
+        super().service_actions()
+        if time.monotonic() - self.build_checked < self.build_check_seconds:
+            return
+        self.build_checked = time.monotonic()
+        try:
+            current = runtime.build_digests()
+        except runtime.RuntimeRefused:
+            return  # A checkout mid-update can lack a file; the next check sees it settled.
+        if current != self.RequestHandlerClass.loaded_build:
+            raise CodeChanged("the dashboard build changed on disk")
 
     def direct_listener_healthy(self):
         return self.direct_server is None or (
@@ -920,6 +943,7 @@ class DashboardServer(Listener):
                 self.direct_thread.start()
                 if not self.direct_thread.is_alive():
                     raise RuntimeError("The required dashboard IP listener did not start.")
+            self.build_checked = time.monotonic()
             super().serve_forever(poll_interval=poll_interval)
         except BaseException:
             self.server_close()
@@ -1009,6 +1033,10 @@ def main(argv: list[str] | None = None) -> int:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    except CodeChanged as changed:
+        # Non-zero, and launchd's KeepAlive starts the new build.
+        print(f"sd-dashboard: {changed}; exiting to restart", file=sys.stderr, flush=True)
+        return 1
     finally:
         server.server_close()
     return 0

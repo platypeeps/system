@@ -21,6 +21,13 @@ class ServerStartup(unittest.TestCase):
             build.assert_called_once_with("/fixture/sd.db", port=8787, jev=runtime.jev_command())
             listening.server_close.assert_called_once()
 
+    def test_changed_build_exits_non_zero_for_launchd_to_restart(self):
+        listening = Mock(server_address=("127.0.0.1", 8767))
+        listening.serve_forever.side_effect = server.CodeChanged("build changed")
+        with patch.object(runtime, "installed_library"), patch.object(server, "build", return_value=listening):
+            self.assertEqual(server.main([]), 1)
+        listening.server_close.assert_called_once()
+
     def test_source_library_is_refused_before_a_socket_opens(self):
         with patch.object(runtime, "installed_library", side_effect=runtime.RuntimeRefused("installed build required")), patch.object(server, "build") as build:
             with self.assertRaises(SystemExit) as refused:
