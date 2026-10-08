@@ -3,7 +3,7 @@
 What this slice promises: `/metrics` answers under the shared policy and loads
 its script before `shell.js`; `/api/metrics` carries the month exactly as
 `sd usage` reads it, the 7-day window's last meter reading of each day for a
-week, the week's numbers and missing trailers, the provider scorecard, four
+week, the week's numbers, the provider scorecard, four
 weeks of skill use, age in status and observed activity. Each part is guarded
 on its own, so one that fails is that part's error and the page shows it as
 unknown with the reason. By model, CI health and flaky tests have no reader:
@@ -86,8 +86,8 @@ class Fixture(ScreenCase):
         self.connection.execute("UPDATE cost SET timestamp = ? WHERE id = ?", (at, row))
         self.connection.commit()
 
-    def doc(self, trailers=lambda: 3):
-        return metrics_screen.document(self.connection, now=NOW, trailers=trailers)
+    def doc(self):
+        return metrics_screen.document(self.connection, now=NOW)
 
 
 class TheDocument(Fixture):
@@ -121,14 +121,6 @@ class TheDocument(Fixture):
         self.assertEqual(doc["trend"]["error"], "")
         self.assertEqual(doc["usage"]["error"], "")
 
-    def test_a_trailer_walk_past_its_budget_is_stopped_and_says_so(self):
-        def over():
-            raise reads.OverBudget("the trailer count ran past its budget of 10 seconds")
-
-        self.assertEqual(self.doc(trailers=over)["trailers"],
-                         {"error": "the trailer count ran past its budget of 10 seconds and was stopped rather than waited on"})
-        self.assertEqual(self.doc()["trailers"], {"error": "", "count": 3})
-
     def test_the_panels_no_reader_covers_are_named_with_their_reason(self):
         unread = {u["id"]: u["reason"] for u in self.doc()["unread"]}
         self.assertEqual(sorted(unread), ["ci", "flaky", "model"])
@@ -151,10 +143,9 @@ class ThePage(BrowserSession):
         self.assertEqual(self.request("/api/metrics")[0], 403)
         cookie = {"Cookie": self.cookie}
         self.assertEqual(self.request("/api/metrics?range=30", headers=cookie)[0], 400)
-        with mock.patch.object(reads, "missing_trailers", return_value=0):
-            status, _, body = self.request("/api/metrics", headers=cookie)
+        status, _, body = self.request("/api/metrics", headers=cookie)
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["trailers"], {"error": "", "count": 0})
+        self.assertEqual(json.loads(body)["numbers"]["error"], "")
 
     def test_the_rail_opens_metrics_at_its_page_and_keeps_the_classic_usage_screen(self):
         self.assertEqual(v2.SECTIONS["Metrics"], "/metrics")
@@ -197,9 +188,8 @@ class TheScript(Fixture):
         lamps = out["R"]["lamps"]
         self.assertRegex(lamps, r'data-cell="spend" data-state="ok" data-ev="spend".*?<b>\$80.00</b>')
         self.assertRegex(lamps, r'data-cell="w-claude" data-state="caution" data-ev="win:claude:10080".*?<b>80%</b> used')
-        self.assertRegex(lamps, r'data-cell="trailers" data-state="caution".*?<b>3</b> commits')
         self.assertRegex(lamps, r'data-cell="ci" data-state="unknown".*?not read')
-        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 2, "what": "readings past a threshold"})
+        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "readings past a threshold"})
         self.assertIsNone(out["states"][-1])
 
     def test_the_panels_draw_the_readings_and_name_what_is_not_read(self):

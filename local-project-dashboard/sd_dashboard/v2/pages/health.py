@@ -1,4 +1,4 @@
-"""Health (sd:2115): worktrees, missing trailers, ports and branch protection. The page is at /fleet-health because
+"""Health (sd:2115): worktrees, ports and branch protection. The page is at /fleet-health because
 /health is the service's own check, which the runtime reads."""
 
 from __future__ import annotations

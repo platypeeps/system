@@ -1,9 +1,8 @@
 """The Disk and Branches readers behind Health (sd:2202, sd:2204).
 
 Both read this machine at request time and write nothing, as the other
-Health readers do. Each runs inside one overall budget, as the trailer count
-does (`reads.trailer_scan`'s `within`): a command that would end past it is
-stopped, and the reader raises `reads.OverBudget`, which Health shows as the
+Health readers do. Each runs inside one overall budget: a command that would
+end past it is stopped, and the reader raises `reads.OverBudget`, which Health shows as the
 area stopped rather than waited on. A partial walk is not the answer.
 
 **Branches** (sd:2204) is the design's "merged but not deleted": the local
@@ -41,11 +40,10 @@ from sd_db import paths, reads, repos
 
 __all__ = ["BRANCH_SECONDS", "DISK_SECONDS", "branch_scan", "disk_scan", "storage_roots"]
 
-#: Each reader's overall budget. Branches is two git calls per registered repository, as the trailer count is
-#: one; Disk is df, a few git calls per repository and the du walks, which get what is left.
+#: Each reader's overall budget. Branches is two git calls per registered repository; Disk is df, a few git calls per repository and the du walks, which get what is left.
 BRANCH_SECONDS = 8.0
 DISK_SECONDS = 8.0
-#: One command's own ceiling inside the budget, the trailer count's figure.
+#: One command's own ceiling inside the budget.
 COMMAND_SECONDS = 20.0
 #: The build output folders the 2026-09-25 rule names.
 BUILD_DIRS = ("target", "node_modules", ".venv")
