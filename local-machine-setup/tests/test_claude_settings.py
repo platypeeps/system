@@ -152,6 +152,24 @@ OPENCODE = """{
 """
 
 
+class OpeningBrace(unittest.TestCase):
+    """CodeQL alerts 38 and 39: the old pattern backtracked exponentially on a run of `//`."""
+
+    def test_a_long_run_of_comment_starts_without_a_brace_fails_fast(self):
+        import time
+        import claude_settings
+
+        started = time.monotonic()
+        self.assertIsNone(claude_settings.OPENING_BRACE.match("//" * 5000 + "x"))
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_comments_and_space_before_the_brace_are_kept(self):
+        import claude_settings
+
+        text = ' \n// a {\n/* b { */\n\t{"x": 1}'
+        self.assertEqual(claude_settings.OPENING_BRACE.match(text).group(1), ' \n// a {\n/* b { */\n\t')
+
+
 class OpencodeReadDeny(SyntheticHome):
     def setUp(self):
         super().setUp()

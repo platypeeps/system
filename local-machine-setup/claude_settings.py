@@ -55,7 +55,10 @@ OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").
 STRING = r'("(?:\\.|[^"\\])*")'
 COMMENT = re.compile(STRING + r"|//[^\n]*|/\*.*?\*/", re.S)
 TRAILING_COMMA = re.compile(STRING + r"|,(\s*[}\]])")
-OPENING_BRACE = re.compile(r"\A(\s*(?:(?://[^\n]*|/\*.*?\*/)\s*)*)\{", re.S)
+#: Each alternative matches one way only, so a run of `//` with no brace fails at once
+#: (CodeQL alerts 38 and 39). Not possessive: machine-setup runs this under /usr/bin's 3.9.
+#: A `{` inside a leading `//` comment is no longer taken as the opening brace.
+OPENING_BRACE = re.compile(r"\A((?:\s|//[^\n]*(?=\n|\Z)|/\*(?:[^*]|\*(?!/))*\*/)*)\{", re.S)
 
 
 def session_start_commands(settings):
