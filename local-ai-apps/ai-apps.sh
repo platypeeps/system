@@ -696,7 +696,8 @@ PY
 # upgrade 1800 s, or AI_APPS_STEP_TIMEOUT seconds each when that is set. A
 # query that did not finish checked nothing, so it is not "all current".
 cmd_update() {
-  PKGS="codex opencode claude claude-code antigravity copilot-cli"
+  # codex and claude-code update in the weekly upgrade only (sd:3033).
+  PKGS="opencode claude antigravity copilot-cli"
   rc=0
   out=$(st_step "${AI_APPS_STEP_TIMEOUT:-600}" brew outdated --quiet) || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -716,7 +717,7 @@ cmd_update() {
   st_step "${AI_APPS_STEP_TIMEOUT:-1800}" brew upgrade $todo
 }
 
-# Cron flavor: upgrade the six apps, re-capture the inventory, and email
+# Cron flavor: upgrade the brew apps in PKGS, re-capture the inventory, and email
 # only when something actually moved (an upgrade or an inventory change).
 # Exits 1 when the email could not be delivered or the update failed, and
 # with capture's code when capture failed.
@@ -821,7 +822,8 @@ usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--ap
                              app's config snippet with secret values REDACTED
                              (never written automatically); plugins print the
                              install command
-  update                     brew upgrade for just the six AI apps; each
+  update                     brew upgrade for the AI apps but codex and
+                             claude-code, which the weekly upgrade owns; each
                              brew call is logged as it starts and stopped
                              after 600 s (query) or 1800 s (upgrade), or
                              AI_APPS_STEP_TIMEOUT seconds when that is set

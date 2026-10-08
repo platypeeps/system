@@ -1,4 +1,5 @@
-# Nightly AI-app upkeep: brew-upgrade the six AI coding apps, re-capture the
+# Nightly AI-app upkeep: brew-upgrade the AI coding apps but codex and
+# claude-code (the weekly upgrade owns those), re-capture the
 # skills/MCP/agent/plugin inventory, then commit and push it; emails only when
 # something changed.
 #

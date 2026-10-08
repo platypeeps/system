@@ -44,11 +44,11 @@ FORMAT = "# format: app|kind|name[|key]  (names only — safe to commit)\n"
 # The format line before labels were encoded (sd:1273).
 OLD_FORMAT = "# format: app|kind|name  (names only — safe to commit)\n"
 
-# codex is outdated, and its upgrade never finishes: a brew stalled on a
+# opencode is outdated, and its upgrade never finishes: a brew stalled on a
 # permission check nobody can answer, as on the nights of sd:2660.
 BREW_HANG_STUB = """#!/bin/sh
 case "$1" in
-  outdated) echo codex ;;
+  outdated) echo opencode ;;
   upgrade) : > "$BREW_STARTED"; exec sleep 60 ;;
 esac
 """
@@ -60,19 +60,28 @@ case "$1" in
 esac
 """
 
-# codex is outdated, and its upgrade fails at once.
+# opencode is outdated, and its upgrade fails at once.
 BREW_UPGRADE_FAILS_STUB = """#!/bin/sh
 case "$1" in
-  outdated) echo codex ;;
-  upgrade) echo "Error: codex: download failed" >&2; exit 1 ;;
+  outdated) echo opencode ;;
+  upgrade) echo "Error: opencode: download failed" >&2; exit 1 ;;
 esac
 """
 
-STEP_LINE = r"\[step \d\d:\d\d:\d\d\] brew upgrade codex \(bound {}s\)"
+STEP_LINE = r"\[step \d\d:\d\d:\d\d\] brew upgrade opencode \(bound {}s\)"
 
 GIT_STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "$GIT_LOG"
 exit 0
+"""
+
+
+# codex and claude-code are outdated; the weekly upgrade owns them (sd:3033).
+BREW_WEEKLY_ONLY_STUB = """#!/bin/sh
+case "$1" in
+  outdated) echo codex; echo claude-code ;;
+  upgrade) echo "upgrade $*" >> "$BREW_LOG" ;;
+esac
 """
 
 
@@ -200,8 +209,8 @@ class HungStepTest(Fixture):
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertRegex(result.stderr, STEP_LINE.format(2))
-        self.assertIn("timed out after 2s: brew upgrade codex", result.stdout)
-        self.assertIn("timed out after 2s: brew upgrade codex", self.notify_log.read_text())
+        self.assertIn("timed out after 2s: brew upgrade opencode", result.stdout)
+        self.assertIn("timed out after 2s: brew upgrade opencode", self.notify_log.read_text())
 
     def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
         """REGRESSION: the job's limit ends the run; it does not carry on.
@@ -273,7 +282,7 @@ class FailedUpdateTest(Fixture):
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("ai-apps: the app update failed (exit 1)", result.stderr)
-        self.assertIn("Error: codex: download failed", self.notify_log.read_text())
+        self.assertIn("Error: opencode: download failed", self.notify_log.read_text())
 
 
 class ConfigDirTest(Fixture):
@@ -656,6 +665,19 @@ class RowKeyTest(Fixture):
                if line.strip().startswith("main ")]
         self.assertEqual(len(row), 1, matrix)
         self.assertEqual(row[0].split()[1:], ["-", "-", "-", "x", "-"])
+
+
+
+class WeeklyOnlyApps(Fixture):
+    def test_update_leaves_codex_and_claude_code_to_the_weekly_upgrade(self):
+        """sd:3033: codex and Claude Code update in the weekly upgrade only."""
+        self._double(self.bin / "brew", BREW_WEEKLY_ONLY_STUB)
+        brew_log = self.tmp / "brew.log"
+        result = self.run_tool("update", extra_env={"BREW_LOG": str(brew_log)})
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("all AI apps current", result.stdout)
+        self.assertFalse(brew_log.exists(), brew_log.read_text() if brew_log.exists() else "")
 
 
 if __name__ == "__main__":
