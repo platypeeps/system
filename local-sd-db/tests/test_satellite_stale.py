@@ -618,15 +618,15 @@ class TheRunDeadline(Cli):
         calls = []
 
         def slow(command, *, timeout, **_):
-            calls.append(command[3])
+            calls.append((command[3], timeout))
             time.sleep(timeout)
             return subprocess.CompletedProcess(command, 0, "", "")
 
-        started = time.monotonic()
         with mock.patch.object(satellite_stale.subprocess, "run", slow):
             satellite_stale.fetch_branch_time(self.root, "sd-1-x", bound=0.3)
-        self.assertEqual(calls, ["fetch"], "the read ran after the fetch spent the bound")
-        self.assertLess(time.monotonic() - started, 0.45)
+        self.assertEqual([c for c, _ in calls], ["fetch"], "the read ran after the fetch spent the bound")
+        # The recorded timeout, not wall time: a loaded machine (load5 45) overran a 0.15 s margin.
+        self.assertLessEqual(calls[0][1], 0.3)
 
 
 class TheThreshold(Cli):

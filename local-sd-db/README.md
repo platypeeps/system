@@ -845,6 +845,8 @@ library refuses **writes** while still allowing reads -- a machine stopped
 halfway through an upgrade can be inspected. A database *newer* than this
 library is refused outright, reads included: a wrong answer read quietly is
 worse than a process that will not start.
+Run `migrate` after a backup, with the dashboard, the runner and `sd-serve` stopped.
+Start all three again after it: `sd-serve` loads its build at start, so it needs the restart too (sd:2974).
 `sd-db.sh` runs the package from this checkout, so there the refusal names the
 checkout and the fix: `git -C <checkout> pull --ff-only`. An installed copy
 names a reinstall instead.

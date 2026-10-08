@@ -738,8 +738,9 @@ def produced_contexts(root: Path | str, *, ci: str | None = None) -> tuple[set[s
             # The names the aggregate covers for are line reads; credit it
             # only when they are the name its structure reports, or a quoted
             # or folded `name:` would lend its coverage to `ci` (sd:1820 r1).
+            # A list or mapping `name:` is no check name, and unhashable (sd:2902).
             reported = job.get("name", job_id) if isinstance(job, dict) else None
-            if gating[job_id] and names[job_id] != {reported}:
+            if gating[job_id] and (not isinstance(reported, str) or names[job_id] != {reported}):
                 notes.append(f"{path.name}: job {job_id} reports {reported!r}, which the name read "
                              f"did not derive, so it is not counted as gating its needs")
                 gating[job_id] = []

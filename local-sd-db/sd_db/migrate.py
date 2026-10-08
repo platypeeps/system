@@ -3,7 +3,7 @@
 `init` and `migrate` are the same operation on a database that does not exist
 yet, which is why they share this module. What they never share is a caller:
 `init` is run once by hand, `migrate` is run by the operator with the
-dashboard and the runner stopped, after a backup.
+dashboard, the runner and sd-serve stopped, after a backup.
 """
 
 from __future__ import annotations

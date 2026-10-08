@@ -150,9 +150,9 @@ Usage: sd-db.sh <command>
   init        Create ~/.local/share/sd/sd.db, bring it to the current schema
               version, and seed provider and bill from providers.yaml.
   migrate     Apply every migration the database has not seen. Run it with
-              the dashboard and the runner stopped, after `backup` (which
-              copies a database it cannot yet write). Nothing migrates on
-              open.
+              the dashboard, the runner and sd-serve stopped, after `backup`
+              (which copies a database it cannot yet write), then start all
+              three again. Nothing migrates on open.
   status      The path, the schema version, the version this library was
               built for, each unresolved restore, verified and check record,
               one count line per other state kind without resolved_at (logs

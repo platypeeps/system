@@ -569,6 +569,8 @@ class TheVersionRefusals(SchemaCase):
         with self.assertRaises(SchemaTooOld) as raised:
             connect(self.path)
         self.assertIn("sd-db.sh migrate", str(raised.exception))
+        # sd:2974: the hub's tailnet listener runs against the database too.
+        self.assertIn("sd-serve", str(raised.exception))
 
     def test_an_older_database_still_opens_for_reading(self):
         self._set(0)
