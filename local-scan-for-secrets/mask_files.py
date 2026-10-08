@@ -14,10 +14,13 @@ corrupt JSONL), and PEM masking covers the whole BEGIN..END block, not just
 the header line.
 
 A live session may append to a log while it is rewritten, and a write of the
-masked bytes plus a truncate would drop that append (sd:1254). So the size
-and mtime are read again on the open handle just before the write; a change
-since the read skips the file, which counts as busy and waits for the next
-run. Run the mask by hand at a quiet time.
+masked bytes plus a truncate would drop that append (sd:1254). Two guards
+skip such a file, which then counts as busy and waits for the next run:
+
+1. Settle age: a file modified within S4S_MASK_SETTLE_MIN minutes (default
+   10) is in use now.
+2. Compare before write: the size and mtime are read again on the open handle
+   just before the write; a change since the read means a writer got in.
 
 The window left is between that fstat and the truncate, microseconds against
 a session that appends seconds apart. A temp file and a rename would close
@@ -30,6 +33,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from typing import NamedTuple
 
 PEM = re.compile(
@@ -37,6 +41,7 @@ PEM = re.compile(
     rb"(?:[\s\S]{0,10000}?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----)?"
 )
 MARK = b"<masked:pattern>"
+SETTLE_MIN_DEFAULT = 10
 
 
 class WriteFailed(Exception):
@@ -84,12 +89,14 @@ def masked(data: bytes, pairs, pats) -> tuple[bytes, int, int]:
     return new, count, pcount
 
 
-def mask_file(path: str, pairs, pats, apply: bool, before_write=None) -> Result:
+def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before_write=None) -> Result:
     """Mask one file, or leave it alone as busy.
 
     `before_write` is called with the path between the read and the write.
     It exists for the tests, which append to the file there.
     """
+    if time.time() - os.stat(path).st_mtime < settle_s:
+        return Result(0, 0, busy=True)
     # Any OSError once the rewrite starts, up to and including the close
     # that flushes what the buffer still holds, may leave the file half
     # masked; before it, the file is untouched and a skip is right. A file
@@ -130,19 +137,13 @@ def mask_file(path: str, pairs, pats, apply: bool, before_write=None) -> Result:
 def cut_short(on_disk: bytes, data: bytes, new: bytes) -> bool:
     """True when `on_disk` is `new[:k] + data[k:]` for some k at the
     original length: what an in-place write leaves when it stops partway.
-    A cut-short write that grew the file is `grew_short` instead."""
+    A cut-short write that grew the file is not one: putting it back would
+    need a truncate, and a truncate removes what a session appended."""
     if len(on_disk) != len(data):
         return False
     written = len(os.path.commonprefix([on_disk, new]))
     kept = len(os.path.commonprefix([on_disk[::-1], data[::-1]]))
     return len(data) - kept <= written
-
-
-def grew_short(on_disk: bytes, data: bytes, new: bytes) -> bool:
-    """True when `on_disk` is `new[:k]` for some k past the original length:
-    what a write that grows the file leaves when it stops partway. A line a
-    session appended since breaks the prefix, so that file is not one."""
-    return len(data) < len(on_disk) < len(new) and new.startswith(on_disk)
 
 
 def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> str:
@@ -156,9 +157,7 @@ def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> st
     since undoing a rewrite that landed would put the value back. A cut-short
     write gets the original bytes back over the same length, with no
     truncate, so a line a session appends meanwhile lands after them and
-    stays. A write cut short after it grew the file gets them back and a
-    truncate to the original length. Either way the run still fails, and
-    the next one masks it.
+    stays; the run still fails, and the next one masks it.
     """
     try:
         fd = os.open(path, os.O_RDWR)
@@ -171,33 +170,39 @@ def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> st
                 return "the masked bytes landed"
             if on_disk == data:
                 return "file unchanged"
-            grew = grew_short(on_disk, data, new)
-            if not (grew or cut_short(on_disk, data, new)):
+            if not cut_short(on_disk, data, new):
                 return "file changed after the failed write; left as is, and it may be half masked"
             raw.seek(0)
             view = memoryview(data)
             while view:
                 view = view[raw.write(view):]
-            if grew:
-                # ponytail: a line appended between the read above and this
-                # truncate is lost; the window is microseconds, as in the rewrite.
-                raw.truncate(len(data))
             os.fsync(fd)
     except OSError as e:
         return "restore failed (%s); the file may be half masked" % e
     return "original restored"
 
 
+def settle_seconds(text: str) -> float:
+    try:
+        minutes = float(text)
+    except ValueError:
+        sys.exit("mask_files.py: S4S_MASK_SETTLE_MIN must be a number of minutes, not %r" % text)
+    if minutes < 0:
+        sys.exit("mask_files.py: S4S_MASK_SETTLE_MIN must not be negative, not %r" % text)
+    return minutes * 60
+
+
 def main() -> int:
     apply = os.environ.get("S4S_APPLY") == "1"
     pairs = parse_pairs(os.environ.get("S4S_PAIRS", ""))
     pats = parse_patterns(os.environ.get("S4S_PATTERNS", ""))
+    settle_s = settle_seconds(os.environ.get("S4S_MASK_SETTLE_MIN", str(SETTLE_MIN_DEFAULT)))
     total = ptotal = files = busy = failed = 0
     for path in sys.stdin.read().splitlines():
         if not path:
             continue
         try:
-            result = mask_file(path, pairs, pats, apply)
+            result = mask_file(path, pairs, pats, apply, settle_s)
         except OSError as e:
             print("  skip %s: %s" % (path, e), file=sys.stderr)
             continue
@@ -219,8 +224,8 @@ def main() -> int:
         print("== masked %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy; %d failed"
               % (total, ptotal, files, busy, failed))
         return 1 if failed else 0
-    print("== would mask %d your-key value(s) + %d pattern match(es) in %d file(s)"
-          " (dry run; add --apply)" % (total, ptotal, files))
+    print("== would mask %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy"
+          " (dry run; add --apply)" % (total, ptotal, files, busy))
     return 2 if (total or ptotal) else 0
 
 

@@ -102,7 +102,8 @@ deliberately narrower than the scan's `EXCLUDE_DIRS`: a key sitting in a
 exactly what mask is for.
 
 A live session may append to a log while `mask --apply` rewrites it, and the
-rewrite would drop that line (sd:1254). So `mask` skips a file whose size or
+rewrite would drop that line (sd:1254). So `mask` skips a file modified in the
+last `S4S_MASK_SETTLE_MIN` minutes (default 10), and a file whose size or
 mtime changed between its read and its write. Each skipped file prints as
 `busy <path>` and counts in the summary line; the next run masks it. A
 write that fails partway, such as a full disk, prints `FAILED <path>` and
