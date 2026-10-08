@@ -4256,9 +4256,9 @@ cmd_status() {
     echo
   done
   echo "drift   : $drift item(s)"
-  # --fail-on-drift turns drift into exit 1, which is what lets a cron job
-  # (machine-setup-drift) route "this machine drifted" into the failure
-  # notification path (banner + ntfy push).
+  # --fail-on-drift turns drift into exit 1, which is what lets the cron job
+  # machine-setup-update-nightly (its last step) route "this machine drifted"
+  # into the failure notification path (banner + ntfy push).
   if [ "$FAIL_ON_DRIFT" -eq 1 ] && [ "$drift" -gt 0 ]; then
     exit 1
   fi

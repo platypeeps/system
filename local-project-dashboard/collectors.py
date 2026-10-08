@@ -1046,12 +1046,13 @@ def last_run(log, stamp):
 
 
 def read_drift(log):
-    """The last `machine-setup-drift` run: its numbers, and how old they are.
+    """The last `machine-setup-update-nightly` run: its drift numbers, and how old they are.
 
     Drift used to come from a fresh `machine-setup.sh status` here. That call
     costs ~3.6s of the tile's 5s budget on this machine -- most of the budget,
-    for a number the nightly job at 03:30 already computed and wrote to this
-    log verbatim. Reading it costs a millisecond.
+    for a number the nightly job already computed and wrote to this log
+    verbatim: its last step is `status --fail-on-drift`. Reading it costs a
+    millisecond.
 
     What the swap gives up is freshness, so freshness is reported rather than
     implied: `drift_at` is the run that produced the numbers and `drift_age_h`
@@ -1063,7 +1064,9 @@ def read_drift(log):
     fact either. `drift_logged` is false only when no log exists at all,
     which is the one case that means never rather than merely unknown.
 
-    The job appends, so only the final run block counts. A block with no
+    The job appends, so only the final run block counts, and within it only
+    the status part, from its last `profile :` line: the `update --apply`
+    before it prints MISSING for what it then fixes. A block with no
     `drift :` line is unknown rather than zero, and which kind of unknown
     depends on its last stamp: a run still going has not reported yet, while
     one that already logged `done` or `FAILED` never will.
@@ -1072,7 +1075,7 @@ def read_drift(log):
              "drift_logged": True}
     if not log.exists():
         return {**blank, "drift_logged": False,
-                "drift_unknown": f"{log.name} does not exist: the nightly drift job has never run here"}
+                "drift_unknown": f"{log.name} does not exist: the nightly update job has never run here"}
     stamp = re.compile(rf"^\[{re.escape(log.stem)}\] (\S+) (starting|done|FAILED)")
     block = last_run(log, stamp)
     if block is None:
@@ -1089,6 +1092,8 @@ def read_drift(log):
     hours = (datetime.datetime.now(datetime.timezone.utc) - at).total_seconds() / 3600 \
         if at else None
     age = round(hours, 1) if hours is not None else None
+    starts = [i for i, line in enumerate(block) if re.match(r"^profile\s*:", line)]
+    block = block[starts[-1]:] if starts else block
     count = re.search(r"^drift\s*:\s*(\d+)", "\n".join(block), re.M)
     if not count:
         return {**blank, "drift_at": when, "drift_age_h": age, "drift_logged": True,
@@ -1183,7 +1188,7 @@ def collect_toolbox():
     return {
         "jobs": jobs, "failures": fails, "agents": agents, "containers": containers,
         "tools": tools,
-        **read_drift(logs_dir / "machine-setup-drift.log"),
+        **read_drift(logs_dir / "machine-setup-update-nightly.log"),
     }
 
 

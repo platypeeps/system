@@ -328,10 +328,10 @@ alone does not count — `[dry-run] mas install <id>` looked like a note rather
 than a finding, which is why the appstore and cron stages now name what is
 missing before offering to fix it.
 
-`status --fail-on-drift` exits 1 when anything drifted, and the
-`machine-setup-drift` job in `local-cron-jobs` (listed in `common.cron`, so
-every machine installs it) runs that nightly — drift triggers the cron failure
-notification (banner + ntfy push). A clean machine stays silent.
+`status --fail-on-drift` exits 1 when anything drifted. The
+`machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last
+step, after `update --apply`, so drift the update could not fix triggers the
+cron failure notification (banner + ntfy push). A clean machine stays silent.
 
 ### Additive capture, unattended
 
