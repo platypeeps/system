@@ -1099,10 +1099,12 @@ stage_tooling() {
   else
     echo "  SKIP    rtk not installed"
   fi
-  # The Claude Code HUD, on every profile: the claude-hud plugin, and a
-  # statusLine that runs local-statusline, which wraps the plugin. Each gap
-  # prints MISSING so --fail-on-drift sees it. HUD display options stay in
-  # ~/.claude/plugins/claude-hud/config.json, which this stage does not write.
+  # The Claude Code HUD, on every profile: the claude-hud plugin, a
+  # statusLine that runs local-statusline, which wraps the plugin, and the
+  # plugin's display options in ~/.claude/plugins/claude-hud/config.json.
+  # Each gap prints MISSING so --fail-on-drift sees it. The config is seeded
+  # from local-statusline's example only when nothing is at that path, so an
+  # operator's own config is never overwritten (sd:2929).
   if command -v claude >/dev/null 2>&1; then
     if ls -d "$HOME"/.claude/plugins/cache/*/claude-hud/*/ >/dev/null 2>&1; then
       echo "  ok      claude-hud plugin"
@@ -1111,6 +1113,14 @@ stage_tooling() {
       [ -d "$HOME/.claude/plugins/marketplaces/claude-hud" ] \
         || run claude plugin marketplace add jarrodwatts/claude-hud
       run claude plugin install claude-hud@claude-hud
+    fi
+    hud_config="$HOME/.claude/plugins/claude-hud/config.json"
+    if [ -e "$hud_config" ] || [ -L "$hud_config" ]; then
+      echo "  ok      claude-hud config"
+    else
+      echo "  MISSING claude-hud config"
+      run mkdir -p "${hud_config%/*}"
+      run cp -n "$ROOT/local-statusline/claude-hud.config.example.json" "$hud_config"
     fi
     if [ ! -f "$HOME/.claude/settings.json" ]; then
       echo "  SKIP    statusLine not set (no ~/.claude/settings.json; start claude once)"
