@@ -200,8 +200,17 @@ Library/Application Support/Claude/claude-code-sessions'
 # <root>/claude-<uid>/<project>/<session>/scratchpad, and a glob written one
 # level short matches nothing and reports clean, which is the exact failure
 # this function exists to end.
+# S4S_SCRATCH_ROOTS (one root per line) replaces the two roots, so a test
+# reaches only its own fixture and never a live session's scratchpad.
+scratch_roots() {
+  if [ -n "${S4S_SCRATCH_ROOTS:-}" ]; then
+    printf '%s\n' "$S4S_SCRATCH_ROOTS"
+  else
+    printf '%s\n' "${TMPDIR:-/tmp}" /private/tmp
+  fi
+}
 agent_scratch_dirs() {
-  for root in "${TMPDIR:-/tmp}" /private/tmp; do
+  scratch_roots | while IFS= read -r root; do
     [ -d "$root" ] || continue
     # `|| :` is load-bearing: find exits non-zero when it cannot read a
     # subdirectory (routine under $TMPDIR), the loop body runs inside the
@@ -396,9 +405,11 @@ MASK_EXCLUDE_DIRS=".git node_modules .venv venv __pycache__ .npm .cargo target d
 # backs up. Deleting it is not a fix either; it comes straight back.
 MASK_EXCLUDE_PATHS=".gemini/extensions .codex/plugins .codex/.tmp .codex/tool-venvs .codex/vendor_imports .codex/process_manager .codex/.codex-global-state.json .codex/.codex-global-state.json.bak"
 if [ "$MODE" = mask ] || [ "$MODE" = prune ]; then
+  # No exports is not a failure: the known credential patterns need none, so
+  # mask still masks them, and a machine with no key-like exports is not left
+  # holding every pattern hit (sd:1254).
   if [ "$MODE" = mask ] && [ -z "$S4S_PAIRS" ]; then
-    echo "no key-like exports found in ~/.config/shell/env.sh or ~/.bash_profile, nothing to mask" >&2
-    exit 1
+    echo "no key-like exports found in ~/.config/shell/env.sh or ~/.bash_profile; masking known patterns only" >&2
   fi
   MASK_TARGETS=""
   # if, not `[ -f "$f" ] && MASK_TARGETS=...`: the AND-list is the last
@@ -560,13 +571,23 @@ PRUNE_EOF
       for g in $MASK_EXCLUDE_GLOBS; do set -- "$@" "--exclude=$g"; done
     fi
     # targets read on fd 3 — stdin stays reserved for the pattern list
-    while IFS= read -r t <&3; do [ -n "$t" ] && set -- "$@" "$t"; done 3<<TARGETS_EOF
+    MASK_TARGET_COUNT=0
+    while IFS= read -r t <&3; do
+      if [ -n "$t" ]; then set -- "$@" "$t"; MASK_TARGET_COUNT=$((MASK_TARGET_COUNT + 1)); fi
+    done 3<<TARGETS_EOF
 $MASK_TARGETS
 TARGETS_EOF
+    # No target, no search: rg and grep -r given no path search the current
+    # directory, which is $HOME here, and mask would rewrite files far outside
+    # its safe list, ~/repos among them (review, sd:1254).
+    [ "$MASK_TARGET_COUNT" -gt 0 ] || return 0
     if [ "$HAVE_RG" = 1 ]; then rg "$@" 2>/dev/null || true
     else grep "$@" 2>/dev/null || true; fi
   }
-  FILES=$(printf '%s\n' "$VALS" | mask_file_list fixed)
+  # No values, no literal pass: an empty line is an empty pattern, and an
+  # empty pattern matches every file.
+  FILES=""
+  if [ -n "$VALS" ]; then FILES=$(printf '%s\n' "$VALS" | mask_file_list fixed); fi
   if [ "$HAVE_RG" = 1 ]; then PFILES=$(printf '%s\n' "$PATTERNS" | mask_file_list regex)
   else PFILES=$(ere_patterns | mask_file_list regex); fi
   ALLFILES=$(printf '%s\n%s\n' "$FILES" "$PFILES" | awk 'NF' | sort -u)
@@ -1330,8 +1351,16 @@ fi
 # it reaches jev on stdin, never in argv, where `ps` would show it.
 # Bounded: S4S_JEV_MAX_HITS hits per run (default 10), S4S_JEV_TIMEOUT
 # seconds per call (default 5), no retry. JEV_SECRET_SCAN=0 is the off-switch.
+# Each call's ledger name is `secret-scan:<16 hex>` (sd:2953): the first 16 hex
+# of the sha256 of the hit's `path:line`, followed by a newline. Never the
+# matched text, so no credential is hashed; an outcome recomputes it from the
+# report's location as `printf '%s\n' PATH:LINE | shasum -a 256 | cut -c1-16`.
+# JEV_RUN is one id for every call this run makes; an inherited one is kept.
 judge_hits() {
   JEV=$(command -v jev 2>/dev/null) || return 0
+  [ -n "${JEV_RUN:-}" ] || \
+    JEV_RUN="secret-scan-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+  export JEV_RUN
   "$JEV" enabled JEV_SECRET_SCAN --local-only --record \
     --caller local-scan-for-secrets >/dev/null 2>&1 || return 0
   max=${S4S_JEV_MAX_HITS:-10}
@@ -1340,9 +1369,12 @@ judge_hits() {
   case $wait_s in ''|*[!0-9]*) wait_s=5 ;; esac
   printf '%s\n' "$1" | head -n "$max" | while IFS= read -r hit; do
     [ -n "$hit" ] || continue
+    # The first `:<digits>:` ends the location, so a colon in the path keeps its line.
+    subject="secret-scan:$(printf '%s\n' "$hit" | sed -E 's/(:[0-9]+):.*$/\1/' | shasum -a 256 | cut -c1-16)"
     printf '%s\n' "$hit" | JEV_TIMEOUT=$wait_s JEV_RETRIES=0 \
       "$JEV" noul 'Is this a real credential, not a test value or placeholder?' \
         --local-only --stage JEV_SECRET_SCAN --caller local-scan-for-secrets \
+        --subject "$subject" \
         --gate 0.5 --shadow yes --state-format text >/dev/null 2>&1 || :
   done
 }

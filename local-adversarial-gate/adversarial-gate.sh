@@ -57,6 +57,11 @@ RANKER="$ROOT/rank.py"
 # and through the symlink sibling files are missing. ADVERSARIAL_GATE_JEV is the
 # seam the suite drives a stub through, so no test reaches the network.
 JEV="${ADVERSARIAL_GATE_JEV:-$(dirname "$ROOT")/local-jev/jev.sh}"
+# One id for every jev call this run makes, so the ledger groups them
+# (sd:2953). A run that started this one keeps its own: it is the same run.
+[ -n "${JEV_RUN:-}" ] || \
+  JEV_RUN="adversarial-gate-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+export JEV_RUN
 
 die() { echo "adversarial-gate: $*" >&2; exit 1; }
 

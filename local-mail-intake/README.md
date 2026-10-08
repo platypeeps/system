@@ -191,6 +191,8 @@ which is what makes the sentence above checkable rather than a promise:
 `TestNothingPrivateLeavesTheMachine` runs a report through a stubbed `jev` and
 fails if an address, a name or an id appears in any argument or any payload.
 
+**Ledger subject and run (sd:2953).** Each call passes `--subject mail-intake:<16 hex>`: the first 16 hex of the sha256 of the asked threads' `message_id` values, sorted, one per line. That is one id for a `noul` and the batch for an `ask`. An outcome recomputes it from the report rows with `printf '%s\n' ID... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`. No subject line or address leaves in it. Every call of one run shares `JEV_RUN=mail-intake-<UTC yyyymmddThhmmss>-<4 hex>`, or the run's inherited one.
+
 ## Config
 
 The conf is private: it names real addresses. It lives outside the checkout, at

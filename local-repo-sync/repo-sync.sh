@@ -960,6 +960,11 @@ hygiene() {
 # numbers only: the line's class, its counts, and its tip's age in days. No
 # repository, branch, sha, path or lock reason is sent.
 JEV="${REPO_SYNC_JEV:-$DIR/../local-jev/jev.sh}"
+# One id for every jev call this run makes, the reports' notify.sh included,
+# so the ledger groups them (sd:2953). A run that started this one keeps its own.
+[ -n "${JEV_RUN:-}" ] || \
+  JEV_RUN="repo-sync-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+export JEV_RUN
 hyg_jev_shadow() {
   [ -f "$JEV" ] || return 0
   grep -qE '^  (GONE|LOCAL|DONE|BEHIND|KEEP) ' "$1" || return 0
@@ -1019,9 +1024,14 @@ hyg_jev_shadow() {
     }
     END { print s "}}" > sfile; print q "}" > qfile }
   ' "$TMPD/jev.entries"
+  # The ledger's name for this call (sd:2953): the first 16 hex of the sha256
+  # of the listed records above -- class, count, reason, sha and checkout,
+  # unit-separated -- sorted, one per line. No repository or branch leaves in
+  # it; an outcome recomputes it from the same hygiene report.
+  h_subject="repo-sync:$(LC_ALL=C sort "$TMPD/jev.listed" | shasum -a 256 | cut -c1-16)"
   sh "$JEV" ask --questions "$TMPD/jev.questions" --state "$TMPD/jev.state" \
     --state-format json --caller local-repo-sync --stage JEV_REPO_SYNC_HYGIENE \
-    --shadow '{}' >/dev/null 2>&1 || true
+    --subject "$h_subject" --shadow '{}' >/dev/null 2>&1 || true
 }
 
 case "$1" in

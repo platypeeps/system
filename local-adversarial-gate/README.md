@@ -131,6 +131,8 @@ and no ordering is worth that. Doing nothing sends it: the stage is on unless
 that variable says otherwise, so keeping a draft off the wire is an action you
 take, not one you omit. `jev off` and an unkeyed machine stop it too.
 
+**Ledger subject and run (sd:2953).** `rank`'s `jev ask` passes `--subject adversarial-gate:<16 hex>`: the first 16 hex of the sha256 of the result file's bytes as the reviewer wrote them, before ordering. CRLF line ends count. The success line names it. An outcome recomputes it from that unranked file with `shasum -a 256 FILE | cut -c1-16`. `adversarial-gate.sh` exports `JEV_RUN=adversarial-gate-<UTC yyyymmddThhmmss>-<4 hex>` once per run, unless the run that started it set one.
+
 ## What this does not do
 
 It does not decide whether a claim is true. It reads the repository, not the sources the

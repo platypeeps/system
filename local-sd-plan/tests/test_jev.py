@@ -33,6 +33,7 @@ set -e
 verb="$1"
 shift
 dir="$JEV_STUB_DIR"
+printf '%%s %%s run=%%s\n' "$verb" "$*" "${JEV_RUN:-}" >> "$dir/calls"
 case "$verb" in
   enabled)
     # `enabled STAGE` answers both halves, as the real one does: can Jev
@@ -288,6 +289,16 @@ class TheJudgment(JevCase):
 
 class WhatLeavesTheMachine(JevCase):
     """A prd is internal planning prose, and it is the only thing sent."""
+
+    def test_the_ask_names_the_item_and_the_run_is_one_id(self):
+        """`--subject` is the tracker's number, and every call shares `JEV_RUN` (sd:2953)."""
+        identifier, _ = self.run_plan(jev=self.jev(), JEV_RUN=None)
+        calls = (self.stub / "calls").read_text(encoding="utf-8").splitlines()
+        self.assertEqual([line.split()[0] for line in calls], ["enabled", "ask"])
+        self.assertIn(f"--subject sd-plan:sd-{identifier} ", calls[1])
+        runs = {line.rsplit("run=", 1)[1] for line in calls}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^sd-plan-\d{8}T\d{6}-[0-9a-f]{4}$")
 
     def test_the_state_is_the_prd_and_the_questions_are_the_two(self):
         self.run_plan(jev=self.jev(design=0.9, implement=0.9))

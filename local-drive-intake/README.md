@@ -222,6 +222,8 @@ A first run against a large tree is still a lot of calls. That is the reason to
 reach for `JEV_DRIVE_INTAKE=0` on one, and the reason a declined probe says so
 once per run rather than once per path.
 
+**Ledger subject and run (sd:2953).** Each call passes `--subject drive-intake:<16 hex>`: the first 16 hex of the sha256 of its relative paths, sorted, one per line. That is one path for a `choice` and the batch for an `ask`. An outcome recomputes it with `printf '%s\n' PATH... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`. No path leaves in it. Every call of one run shares `JEV_RUN=drive-intake-<UTC yyyymmddThhmmss>-<4 hex>`, or the run's inherited one.
+
 ## Config
 
 Pipe-separated, three fields, because a Drive path contains spaces and an `@`

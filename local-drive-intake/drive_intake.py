@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import csv
 import fnmatch
+import hashlib
 import json
 import os
+import secrets
 import shlex
 import subprocess
 import sys
@@ -267,6 +269,32 @@ def jev_command(environ: dict[str, str]) -> list[str]:
     return [str(Path(__file__).resolve().parent.parent / "local-jev" / "jev.sh")]
 
 
+def jev_subject(paths: list[str]) -> str:
+    """The ledger's name for one call: `drive-intake:<16 hex>` (sd:2953).
+
+    No path leaves in it. The key is the first 16 hex of the sha256 of the
+    call's relative paths, sorted, each followed by a newline: one path for a
+    `choice`, the batch for an `ask`. An outcome recomputes it from the same
+    paths, as `printf '%s\\n' PATH... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`.
+    """
+    text = "".join(f"{path}\n" for path in sorted(paths))
+    return f"drive-intake:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
+
+
+def jev_env(environ: dict[str, str]) -> dict[str, str]:
+    """The child's environment, with this run's `JEV_RUN` (sd:2953).
+
+    One id for every `jev` call a run makes, so the ledger can group them:
+    the one the run inherited, else `drive-intake-<UTC yyyymmddThhmmss>-<4 hex>`,
+    made on the first call and kept in this process for the rest of it.
+    """
+    if not (environ.get("JEV_RUN") or os.environ.get("JEV_RUN")):
+        os.environ["JEV_RUN"] = (f"drive-intake-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}"
+                                 f"-{secrets.token_hex(2)}")
+    return {**os.environ, **environ,
+            "JEV_RUN": environ.get("JEV_RUN") or os.environ["JEV_RUN"]}
+
+
 def route_names(rules: list[Rule]) -> list[str]:
     """The routes this config actually defines, in file order, deduplicated.
 
@@ -342,7 +370,7 @@ def jev_routes(
         probe = runner([*jev_command(environ), "enabled", JEV_STAGE, "--why",
                         "--record", "--caller", JEV_CALLER],
                        input="", capture_output=True, text=True, timeout=30,
-                       env={**os.environ, **environ})
+                       env=jev_env(environ))
     except Exception as failure:  # a missing interpreter, a timeout, anything
         print(f"jev: could not be asked whether it is enabled ({failure}); "
               f"{named} stay noise", file=sys.stderr)
@@ -386,6 +414,8 @@ def _route_one(rel_path: str, routes: list[str], environ, runner) -> str:
         JEV_CALLER,
         "--stage",
         JEV_STAGE,
+        "--subject",
+        jev_subject([rel_path]),
         "--fallback",
         JEV_DEGRADED,
     ]
@@ -397,6 +427,7 @@ def _route_one(rel_path: str, routes: list[str], environ, runner) -> str:
             capture_output=True,
             text=True,
             timeout=60,
+            env=jev_env(environ),
         )
     except Exception as problem:  # noqa: BLE001 - any failure is the same answer
         print(f"jev: {rel_path}: call failed ({problem}); routed noise", file=sys.stderr)
@@ -457,10 +488,11 @@ def _route_batch(paths: list[str], routes: list[str], environ, runner) -> dict[s
                 [*jev_command(environ), "ask", "--questions", str(file),
                  "--state", "-", "--state-format", "json",
                  "--caller", JEV_CALLER, "--stage", JEV_STAGE,
+                 "--subject", jev_subject(paths),
                  "--fallback", JEV_DEGRADED],
                 input=json.dumps(dict(zip(keys, paths))),
                 capture_output=True, text=True, timeout=60,
-                env={**os.environ, **environ})
+                env=jev_env(environ))
     except Exception as problem:  # noqa: BLE001 - any failure is the same answer
         print(f"jev: {len(paths)} paths: call failed ({problem}); routed noise",
               file=sys.stderr)
