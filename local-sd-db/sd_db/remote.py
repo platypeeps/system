@@ -314,7 +314,7 @@ class HubRestartNeeded(RemoteError):
         self.installed = installed
         super().__init__(
             f"the hub's sd_db was installed after the hub started: it runs build {running}, "
-            f"its files hold build {installed}; restart `sd-db.sh serve` on the hub. "
+            f"its files hold build {installed}; the hub stops so launchd restarts it, or restart `sd-db.sh serve` on the hub. "
             f"The hub ran no statement"
         )
 

@@ -396,6 +396,21 @@ valid_profile() {
 
 # ---------------------------------------------------------------- stages ----
 
+# Formulae kept pinned (sd:3062). Homebrew python is ad-hoc signed, so every
+# patch upgrade drops the macOS grants its binary held; the operator unpins
+# and re-grants on purpose. python@3.12 is left as it is.
+BREW_PINNED="python@3.14"
+
+# Each BREW_PINNED formula that is installed and not pinned, one per line.
+unpinned_formulae() {
+  _have=$(brew list --formula 2>/dev/null | sed 's|.*/||')
+  _pinned=$(brew list --pinned 2>/dev/null | sed 's|.*/||')
+  for _f in $BREW_PINNED; do
+    printf '%s\n' "$_have" | grep -qx "$_f" || continue
+    printf '%s\n' "$_pinned" | grep -qx "$_f" || echo "$_f"
+  done
+}
+
 stage_brew() {
   echo "== brew"
   command -v brew >/dev/null 2>&1 || {
@@ -434,6 +449,15 @@ stage_brew() {
       # nothing. maccy and zoom were both hand-installed here and blocked the
       # brew stage until this.
       run brew install --cask --adopt "$c"
+    fi
+  done
+
+  unpinned=$(unpinned_formulae)
+  for f in $BREW_PINNED; do
+    if printf '%s\n' "$unpinned" | grep -qx "$f"; then
+      run brew pin "$f"
+    elif brew list --formula 2>/dev/null | sed 's|.*/||' | grep -qx "$f"; then
+      echo "  ok      pinned $f"
     fi
   done
 }
@@ -1824,17 +1848,111 @@ report_deferred() {
   echo
 }
 
+# Self-update off in every installed cask with `auto_updates true`, where the
+# app documents a switch (sd:3062). The weekly upgrade-report runs
+# `brew upgrade --cask --greedy`, so brew is the one updater: both machines
+# change together, and the macOS privacy (TCC) grants an update drops are
+# re-granted in one sitting. An app that is not installed is skipped.
+#
+# One row per app: cask|app|mechanism|target|key|value.
+# - sparkle: target is the defaults domain. Sparkle keeps the user's choice
+#   there under its Info.plist key names, SUEnableAutomaticChecks (scheduled
+#   checks) and SUAutomaticallyUpdate (silent installs); both go false. Each
+#   app ships Sparkle.framework. ChatGPT.app's domain is com.openai.codex,
+#   read from its bundle.
+# - defaults: a documented boolean in the app's domain. Claude desktop reads
+#   disableAutoUpdates from com.anthropic.claudefordesktop.
+# - json: one top-level key in the app's settings file, through
+#   claude_settings.py. VS Code documents update.mode none and Zed
+#   auto_update false. Docker Desktop keeps its "Always download updates"
+#   setting as AutoDownloadUpdates in settings-store.json.
+#
+# No documented per-user switch, so left on (checked 2026-10-08): 1Password
+# (a Settings > Advanced toggle only); Electron apps Antigravity, Beekeeper
+# Studio, Discord, Dropbox, Notion, Obsidian, OpenWhispr, Postman and Slack;
+# Beyond Compare, iStat Menus, Malwarebytes, Piezo and Sync with their own
+# updaters; Firefox, Google Chrome, Google Drive and Zoom, whose switches are
+# system-wide managed policy; and the CLIs antigravity-cli, copilot-cli and
+# gcloud-cli. Updater agents are never removed to stop an app.
+self_update_rows() {
+  printf '%s\n' \
+    "appcleaner|AppCleaner.app|sparkle|net.freemacsoft.AppCleaner" \
+    "betterdisplay|BetterDisplay.app|sparkle|pro.betterdisplay.BetterDisplay" \
+    "bettertouchtool|BetterTouchTool.app|sparkle|com.hegenberg.BetterTouchTool" \
+    "chatgpt|ChatGPT.app|sparkle|com.openai.codex" \
+    "chatgpt-classic|ChatGPT Classic.app|sparkle|com.openai.chat" \
+    "cleanshot|CleanShot X.app|sparkle|pl.maketheweb.cleanshotx" \
+    "daisydisk|DaisyDisk.app|sparkle|com.daisydiskapp.DaisyDiskStandAlone" \
+    "handbrake-app|HandBrake.app|sparkle|fr.handbrake.HandBrake" \
+    "iterm2|iTerm.app|sparkle|com.googlecode.iterm2" \
+    "languagetool-desktop|LanguageTool for Desktop.app|sparkle|org.languagetool.desktop" \
+    "maccy|Maccy.app|sparkle|org.p0deje.Maccy" \
+    "macwhisper|MacWhisper.app|sparkle|com.goodsnooze.MacWhisper" \
+    "medis|Medis.app|sparkle|li.zihua.medis2" \
+    "nordvpn|NordVPN.app|sparkle|com.nordvpn.macos" \
+    "vlc|VLC.app|sparkle|org.videolan.vlc" \
+    "claude|Claude.app|defaults|com.anthropic.claudefordesktop|disableAutoUpdates|true" \
+    "visual-studio-code|Visual Studio Code.app|json|$HOME/Library/Application Support/Code/User/settings.json|update.mode|\"none\"" \
+    "zed|Zed.app|json|$HOME/.config/zed/settings.json|auto_update|false" \
+    "docker-desktop|Docker.app|json|$HOME/Library/Group Containers/group.com.docker/settings-store.json|AutoDownloadUpdates|false"
+}
+
+# One boolean in a defaults domain: ok, or the write that converges it.
+self_update_default() { # domain key true|false
+  cur=$(defaults read "$1" "$2" 2>/dev/null || echo "(unset)")
+  if norm_eq bool "$cur" "$3"; then
+    echo "  ok      $1 $2 = $cur"
+  else
+    run defaults write "$1" "$2" -bool "$3"
+  fi
+}
+
+# One key in a JSON settings file: ok, or MISSING/DIFFERS and the merge.
+self_update_json() { # file key json-value
+  if ! gap=$(python3 "$DIR/claude_settings.py" pref-missing "$1" "$2" "$3" 2>/dev/null </dev/null); then
+    echo "  DIFFERS $1 does not parse; $2 not checked"
+    return 0
+  fi
+  case "$gap" in
+    '') echo "  ok      $1 $2 = $3"; return 0 ;;
+    unset) echo "  MISSING $1 $2 = $3" ;;
+    *) echo "  DIFFERS $1 $2 $gap, want $3" ;;
+  esac
+  run backup_file "$1"
+  run mkdir -p "$(dirname "$1")"
+  run python3 "$DIR/claude_settings.py" pref-merge "$1" "$2" "$3" \
+    || echo "  DIFFERS $1 $2 not changed; set it to $3 by hand"
+}
+
+stage_self_update() {
+  echo "  self-update off (casks that update themselves; the weekly upgrade moves them)"
+  while IFS='|' read -r cask app how target key val; do
+    [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] || continue
+    case "$how" in
+      sparkle)
+        self_update_default "$target" SUEnableAutomaticChecks false
+        self_update_default "$target" SUAutomaticallyUpdate false ;;
+      defaults) self_update_default "$target" "$key" "$val" ;;
+      json) self_update_json "$target" "$key" "$val" ;;
+      *) echo "  DIFFERS $cask: unknown self-update mechanism '$how'" ;;
+    esac
+  done <<EOF_SELF_UPDATE
+$(self_update_rows)
+EOF_SELF_UPDATE
+}
+
 # .macos lines are "<domain> <key> <type> <value...>". Only keys named in a
 # manifest are ever touched or captured: whole-domain exports rot across macOS
 # releases and hit TCC-blocked domains (Safari, AddressBook) silently.
 stage_macos() {
   echo "== macos"
+  command -v defaults >/dev/null 2>&1 || { echo "  defaults MISSING (not macOS?)"; return 0; }
+  stage_self_update
   entries=$(manifest macos)
   if [ -z "$entries" ]; then
     echo "  no macOS settings in this profile"
     return 0
   fi
-  command -v defaults >/dev/null 2>&1 || { echo "  defaults MISSING (not macOS?)"; return 0; }
 
   changed=0
   # Not a pipeline: `changed` must survive the loop, and a pipeline subshell
@@ -3825,7 +3943,9 @@ cmd_upgrade() {
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
     run_step 1800 brew upgrade || failed="$failed, brew upgrade"
-    run_step 1800 brew upgrade --cask || failed="$failed, brew upgrade --cask"
+    # --greedy takes casks with `auto_updates true` too, whose own updaters
+    # stage_macos turns off where the app holds a TCC grant (sd:3062).
+    run_step 1800 brew upgrade --cask --greedy || failed="$failed, brew upgrade --cask --greedy"
   else
     echo "  brew MISSING — https://brew.sh"
   fi
@@ -3852,22 +3972,114 @@ cmd_upgrade() {
 
 # outdated_lists before|after: what brew and mas call outdated, one sorted
 # file per kind under $tmp. Each query is a bounded step; one that fails or
-# times out leaves its file empty.
+# times out leaves its file empty. Casks are asked with --greedy, as
+# cmd_upgrade upgrades them, so a self-updating cask is in both lists.
 outdated_lists() {
-  run_step 300 brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.$1" || :
-  run_step 300 brew outdated --cask --quiet 2>/dev/null | sort > "$tmp/cask.$1" || :
+  run_step 300 brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.all.$1" || :
+  # A pinned formula with a newer version is held on purpose (BREW_PINNED),
+  # not left over: it goes to its own list, out of the counts.
+  run_step 300 brew list --pinned 2>/dev/null | sed 's|.*/||' | sort > "$tmp/pinned" || :
+  comm -12 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/held.$1"
+  comm -23 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/formula.$1"
+  run_step 300 brew outdated --cask --greedy --quiet 2>/dev/null | sort > "$tmp/cask.$1" || :
   : > "$tmp/mas.$1"
   if command -v mas >/dev/null 2>&1; then
     run_step 300 mas outdated 2>/dev/null | sort > "$tmp/mas.$1" || :
   fi
 }
 
+# held_section before|after: the pinned formulae a newer version waits for.
+held_section() {
+  [ -s "$tmp/held.$1" ] || return 0
+  printf '\nheld (pinned):\n'
+  sed 's/^/  /' "$tmp/held.$1"
+  printf '  unpin with brew unpin <formula>, upgrade, then re-grant its binary\n'
+}
+
+# grant_paths before|after: the paths whose change drops a macOS grant, one
+# file per kind under $tmp. ~/.local/bin/claude links to a versioned binary,
+# and `brew upgrade python` moves the Cellar path (.claude/rules/macos-tcc.md).
+grant_paths() {
+  readlink "$HOME/.local/bin/claude" > "$tmp/claude.$1" 2>/dev/null || :
+  : > "$tmp/python.$1"
+  if command -v brew >/dev/null 2>&1; then
+    _cellar=$(brew --cellar 2>/dev/null) || _cellar=""
+    if [ -n "$_cellar" ]; then
+      ls -d "$_cellar"/python@*/* 2>/dev/null | sort > "$tmp/python.$1" || :
+    fi
+  fi
+}
+
+# The AI-app inventory, captured after the upgrades and before the grants
+# probe, in both paths: the ai-apps-nightly job is retired and this run takes
+# its place (sd:3062). Writes $tmp/inventory, the mail's section, and returns
+# capture's code; the caller reports a failure and goes on to the probe.
+inventory_capture() {
+  i_rc=0
+  run_step 600 sh "$ROOT/local-ai-apps/ai-apps.sh" capture > "$tmp/inventory.out" 2>&1 || i_rc=$?
+  {
+    if [ "$i_rc" -eq 0 ]; then
+      printf '\nai-apps inventory:\n'
+    else
+      printf '\nai-apps inventory capture FAILED (exit %s); the inventory was not rewritten:\n' "$i_rc"
+    fi
+    sed 's/^/  /' "$tmp/inventory.out"
+  } > "$tmp/inventory"
+  return "$i_rc"
+}
+
+# After the sweep, in both paths (sd:3062): run the dashboard's vault-grant
+# probe and write $tmp/grants, the mail's section. $tmp/regrant gets one line
+# per binary that lost Full Disk Access, and $tmp/changed the grant droppers
+# that moved. This job runs under launchd, where the probe's answer is the
+# binary's own. A missing grant is a push, not a failed job.
+grants_report() {
+  grant_paths after
+  : > "$tmp/changed"
+  if [ -s "$tmp/claude.after" ] && ! cmp -s "$tmp/claude.before" "$tmp/claude.after"; then
+    printf '  Claude Code: %s -> %s\n' "$(cat "$tmp/claude.before")" "$(cat "$tmp/claude.after")" >> "$tmp/changed"
+  fi
+  comm -13 "$tmp/python.before" "$tmp/python.after" | sed 's/^/  new python Cellar path: /' >> "$tmp/changed"
+  g_rc=0
+  run_step 300 sh "$ROOT/local-project-dashboard/dashboard.sh" grants > "$tmp/grants.out" 2>&1 || g_rc=$?
+  sed -n 's/.*Grant Full Disk Access to \(.*\) in System Settings.*/  Full Disk Access: \1/p' \
+    "$tmp/grants.out" > "$tmp/regrant"
+  {
+    printf '\nTCC grants (dashboard.sh grants, exit %s):\n' "$g_rc"
+    sed 's/^/  /' "$tmp/grants.out"
+    if [ -s "$tmp/changed" ]; then
+      printf '\ngrant droppers that changed — check their grants:\n'
+      cat "$tmp/changed"
+    fi
+  } > "$tmp/grants"
+}
+
+# One push, with mail, when a grant is missing. Returns 1 when it could not
+# be delivered.
+grants_push() {
+  [ -s "$tmp/regrant" ] || return 0
+  {
+    printf 'Re-grant in System Settings > Privacy & Security on %s:\n' "$(hostname -s)"
+    cat "$tmp/regrant"
+    if [ -s "$tmp/changed" ]; then
+      printf '\nChanged this run:\n'
+      cat "$tmp/changed"
+    fi
+  } > "$tmp/push"
+  if ! sh "$notify" -t "TCC: re-grant on $(hostname -s)" -k status -F -c ntfy,email -b "$(cat "$tmp/push")"; then
+    echo "grant push FAILED — exiting 1 so the cron failure push fires" >&2
+    return 1
+  fi
+}
+
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
 # after the sweep, and emails what got upgraded / what failed / what is still
-# pending through local-notify's email channel. When nothing is outdated it
-# only updates Claude Code. Exits 1 when the email could not be delivered, or
-# when that quiet-week Claude update failed, so the cron failure push covers a
-# lost report or a silent failure, not mere findings.
+# pending through local-notify's email channel, with the AI-app inventory
+# capture and the TCC grants probe's result. When nothing is outdated it only
+# updates Claude Code, captures the inventory and probes the grants. A missing grant sends one push naming each binary to re-grant.
+# Exits 1 when the email or that push could not be delivered, or when the
+# quiet-week Claude update or capture failed, so the cron failure push covers
+# a lost report or a silent failure, not mere findings.
 cmd_upgrade_report() {
   APPLY=1
   notify="$ROOT/local-notify/notify.sh"
@@ -3889,6 +4101,7 @@ cmd_upgrade_report() {
   # repeats it, but the second run is a fast no-op.
   run_step 600 brew update >/dev/null 2>&1 || :
   outdated_lists before
+  grant_paths before
 
   if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ]      && [ ! -s "$tmp/mas.before" ]; then
     # Claude Code updates outside brew, and cmd_upgrade, which runs it, does
@@ -3898,18 +4111,28 @@ cmd_upgrade_report() {
       run_step 600 "$HOME/.local/bin/claude" update || rc=1
     fi
     echo "nothing outdated — no upgrade, no email"
+    held_section before
+    inventory_capture || rc=1
+    cat "$tmp/inventory"
+    grants_report
+    cat "$tmp/grants"
+    grants_push || rc=1
     return "$rc"
   fi
 
   rc=0
   cmd_upgrade > "$tmp/out" 2>&1 || rc=1
   cat "$tmp/out"
+  inv_rc=0
+  inventory_capture || inv_rc=1
 
   outdated_lists after
+  grants_report
 
   {
     printf 'machine-setup upgrade report — %s on %s\n' \
       "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)"
+    held_section after
     for kind in formula cask mas; do
       comm -23 "$tmp/$kind.before" "$tmp/$kind.after" > "$tmp/$kind.done"
       if [ -s "$tmp/$kind.done" ]; then
@@ -3925,20 +4148,25 @@ cmd_upgrade_report() {
       printf '\nupgrade sweep exited nonzero; last output:\n'
       tail -30 "$tmp/out" | sed 's/^/  /'
     fi
+    cat "$tmp/inventory"
+    cat "$tmp/grants"
   } > "$tmp/body"
 
   n_done=$(cat "$tmp"/*.done 2>/dev/null | wc -l | tr -d ' ')
-  n_left=$(cat "$tmp"/*.after 2>/dev/null | wc -l | tr -d ' ')
+  n_left=$(cat "$tmp/formula.after" "$tmp/cask.after" "$tmp/mas.after" 2>/dev/null | wc -l | tr -d ' ')
   subject="upgrade: $n_done upgraded, $n_left still outdated on $(hostname -s)"
   # A clean upgrade is a receipt, not a problem — only the leftovers are worth
   # flagging, so -F is conditional here where the other status jobs hardcode it.
   # Those only send at all when they have findings; this one always sends.
   fu=""
-  if [ "$n_left" -gt 0 ]; then fu="-F"; fi
+  if [ "$n_left" -gt 0 ] || [ "$inv_rc" -ne 0 ]; then fu="-F"; fi
+  push_rc=0
+  grants_push || push_rc=1
   if ! sh "$notify" -t "$subject" -k status $fu -c ntfy,email -b "$(cat "$tmp/body")"; then
     echo "email FAILED — exiting 1 so the cron failure push fires" >&2
     exit 1
   fi
+  return "$push_rc"
 }
 
 # Manual new-machine steps that no stage can automate. Doctor checks the
@@ -4148,7 +4376,11 @@ cmd_status() {
     status_line missing "$mc"
     status_line extra "$xc"
     [ -n "$mc$xc" ] || echo "  ok      in sync"
-    for v in "$mb" "$xb" "$mc" "$xc"; do
+    up=$(unpinned_formulae)
+    echo "pins"
+    status_line unpinned "$up"
+    [ -n "$up" ] || echo "  ok      $BREW_PINNED pinned or not installed"
+    for v in "$mb" "$xb" "$mc" "$xc" "$up"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
@@ -4239,17 +4471,22 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    is a FAIL
   doctor sd        those sd checks alone, exit 1 on any FAIL
   test             run the unittest suite in tests/ (extra args go to unittest)
-  upgrade          maintenance sweep: brew update/upgrade, claude update
+  upgrade          maintenance sweep: brew update/upgrade (casks with
+                   --greedy, so self-updating ones move too), claude update
                    (when ~/.local/bin/claude exists), brew cleanup + mas
                    upgrade (dry run without --apply, like everything else);
                    an apply logs each step as it starts and stops it at its
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
                    runs the rest, and exits 1 naming the steps that failed
   upgrade-report   cron flavor of upgrade: always applies, emails what got
-                   upgraded / what failed / what is still outdated; when
-                   nothing is outdated it only runs claude update; exits 1
-                   when the email could not be delivered or that quiet-week
-                   claude update failed
+                   upgraded / what failed / what is still outdated, with the
+                   ai-apps inventory capture and the result of
+                   local-project-dashboard's `grants` probe; when nothing
+                   is outdated it only runs claude update, the capture and
+                   the probe; a missing grant sends one push naming each
+                   binary to re-grant; exits 1 when the email or that push
+                   could not be delivered or that quiet-week claude update
+                   or capture failed
   checklist        print the manual new-machine steps no stage automates
                    (accounts, licenses, key restores; plus checklist.txt from the config)
   decommission     retire this machine: list dirty/unpushed repos, uninstall
