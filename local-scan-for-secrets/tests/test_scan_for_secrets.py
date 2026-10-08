@@ -24,7 +24,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -336,19 +335,17 @@ def load_mask_files():
 
 
 class MaskRewrite(unittest.TestCase):
-    """`mask --apply` never loses a line a live session appends (sd:1254).
+    """`mask --apply` masks in place, same length, same inode (sd:3042).
 
-    The rewrite reads a file, then writes the masked bytes back and truncates.
-    A session log can grow in between. Two guards stop that: a file modified
-    inside the settle window is skipped, and a file whose size or mtime moved
-    since the read is skipped. A skipped file counts as busy; the next run
-    masks it. Every file here is a synthetic fixture in a temporary folder.
+    One test per row of the failure table in
+    docs/work/2026-10-08-mask-rewrite/design.md. Every file here is a
+    synthetic fixture in a temporary folder.
     """
 
     #: Joined here, so this file is not a finding of the repository scan.
     TOKEN = "ghp_" + "Zq7" * 12
     PATTERN = "ghp_[0-9A-Za-z]{36}"
-    SETTLED = 20 * 60
+    MASKED = "<masked:pattern>" + "*" * 24
 
     def setUp(self):
         self.mod = load_mask_files()
@@ -359,316 +356,222 @@ class MaskRewrite(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def log(self, name: str, age_seconds: float) -> Path:
+    def log(self, name: str) -> Path:
         path = self.root / name
         path.write_bytes(('{"line": 1, "text": "token %s"}\n' % self.TOKEN).encode())
-        stamp = time.time() - age_seconds
-        os.utime(path, (stamp, stamp))
+        path.chmod(0o600)
         return path
 
-    def test_a_concurrent_append_survives_the_rewrite(self):
-        path = self.log("session.jsonl", self.SETTLED)
-        appended = b'{"line": 2, "text": "written by the live session"}\n'
-
-        def session_appends(target):
-            with open(target, "ab") as f:
-                f.write(appended)
-
-        result = self.mod.mask_file(str(path), [], self.pats, True, before_write=session_appends)
-        self.assertIn(appended, path.read_bytes())
-        self.assertTrue(result.busy)
-
-    def test_a_file_inside_the_settle_window_is_left_alone(self):
-        path = self.log("session.jsonl", 60)
-        before = path.read_bytes()
-        result = self.mod.mask_file(str(path), [], self.pats, True, settle_s=600)
-        self.assertTrue(result.busy)
-        self.assertEqual(path.read_bytes(), before)
-
-    def test_a_settled_file_is_masked(self):
-        path = self.log("session.jsonl", self.SETTLED)
-        result = self.mod.mask_file(str(path), [], self.pats, True, settle_s=600)
-        self.assertFalse(result.busy)
-        self.assertEqual(result.pcount, 1)
-        self.assertNotIn(self.TOKEN.encode(), path.read_bytes())
-        self.assertIn(b"<masked:pattern>", path.read_bytes())
-
     def run_main(self, paths, apply):
-        env = dict(os.environ, S4S_PATTERNS=self.PATTERN, S4S_PAIRS="", S4S_MASK_SETTLE_MIN="10",
-                   S4S_APPLY="1" if apply else "0")
+        env = dict(os.environ, S4S_PATTERNS=self.PATTERN, S4S_PAIRS="", S4S_APPLY="1" if apply else "0")
         return subprocess.run([sys.executable, str(FOLDER / "mask_files.py")],
                               input="\n".join(str(p) for p in paths) + "\n",
                               env=env, capture_output=True, text=True, timeout=60)
 
-    def test_the_summary_counts_busy_files(self):
-        settled = self.log("old.jsonl", self.SETTLED)
-        recent = self.log("new.jsonl", 60)
-        result = self.run_main([settled, recent], apply=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("  busy %s" % recent, result.stdout)
-        self.assertIn("in 1 file(s); 1 busy", result.stdout)
-        self.assertIn(self.TOKEN.encode(), recent.read_bytes())
-        self.assertNotIn(self.TOKEN.encode(), settled.read_bytes())
+    def main_in_process(self, path: Path, pairs: str = "") -> tuple[int, str]:
+        env = {"S4S_PATTERNS": self.PATTERN, "S4S_PAIRS": pairs, "S4S_APPLY": "1"}
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, env), mock.patch.object(sys, "stdin", io.StringIO("%s\n" % path)), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = self.mod.main()
+        return code, err.getvalue()
 
-    def test_a_failure_after_the_rewrite_starts_exits_nonzero(self):
-        """Every step after the first byte moves: seek, write, truncate, flush
-        and close, alone and with close failing again during cleanup."""
-        real_open = open
-        for fail_on in ({"seek"}, {"write"}, {"truncate"}, {"flush"}, {"close"}, {"write", "close"}):
-            with self.subTest(fail_on=sorted(fail_on)):
-                path = self.log("old.jsonl", self.SETTLED)
+    # Row 1: a sound mask keeps the length, the inode and the mode.
+    def test_a_mask_keeps_the_length_the_inode_and_the_mode(self):
+        path = self.log("session.jsonl")
+        before = os.stat(path)
+        result = self.mod.mask_file(str(path), [], self.pats, True)
+        after = os.stat(path)
+        self.assertEqual(result, (0, 1))
+        self.assertEqual(path.read_text(), '{"line": 1, "text": "token %s"}\n' % self.MASKED)
+        self.assertEqual((after.st_size, after.st_ino, after.st_mode), (before.st_size, before.st_ino, before.st_mode))
 
-                class Full:
-                    """A file whose disk fills at the named steps."""
+    def test_a_value_shorter_than_its_label_masks_to_stars(self):
+        path = self.root / "history"
+        path.write_bytes(b"export K=s3cr3t; echo s3cr3t\n")
+        code, err = self.main_in_process(path, "K=s3cr3t")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(path.read_bytes(), b"export K=******; echo ******\n")
 
-                    def __init__(self, handle):
-                        self.handle = handle
+    def test_a_value_longer_than_its_label_keeps_the_label(self):
+        path = self.root / "history"
+        value = "v" * 20
+        path.write_bytes(("x %s y\n" % value).encode())
+        code, err = self.main_in_process(path, "K=" + value)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(path.read_bytes(), b"x <masked:$K>" + b"*" * 9 + b" y\n")
 
-                    def __enter__(self):
-                        return self
+    # Row 2: a writer appends while mask runs (the review's reproduction).
+    def test_a_session_that_opens_the_file_mid_mask_keeps_every_record(self):
+        path = self.log("session.jsonl")
+        records = [b'{"line": %d}\n' % n for n in (2, 3, 4)]
+        real_fsync, session = os.fsync, []
 
-                    def __exit__(self, *_exc):
-                        self.handle.close()
-                        self.fail("close")
+        def session_appends(fd):
+            # The session opens the log after mask read it, writes, and keeps
+            # its descriptor for later writes.
+            if not session:
+                session.append(os.open(path, os.O_WRONLY | os.O_APPEND))
+                os.write(session[0], records[0])
+            return real_fsync(fd)
 
-                    def __getattr__(self, name):
-                        return getattr(self.handle, name)
+        with mock.patch.object(self.mod.os, "fsync", session_appends):
+            code, err = self.main_in_process(path)
+        self.addCleanup(os.close, session[0])
+        for record in records[1:]:
+            os.write(session[0], record)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(path.read_bytes(),
+                         ('{"line": 1, "text": "token %s"}\n' % self.MASKED).encode() + b"".join(records))
 
-                    def fail(self, step):
-                        if step in fail_on and "+" in self.handle.mode:
-                            raise OSError(errno.ENOSPC, "No space left on device")
+    def test_a_live_appender_process_keeps_every_record(self):
+        # Each record holds a token, so every pass while the child runs writes.
+        path = self.log("session.jsonl")
+        record = '{"line": %d, "text": "token %s"}'
+        child = subprocess.Popen([sys.executable, "-c",
+                                  "import os, sys\n"
+                                  "fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND)\n"
+                                  "for n in range(2, 2002):\n"
+                                  "    os.write(fd, (sys.argv[2] % (n, sys.argv[3]) + '\\n').encode())\n",
+                                  str(path), record, self.TOKEN])
+        self.addCleanup(child.wait)
+        passes = 0
+        while child.poll() is None:
+            passes += self.mod.mask_file(str(path), [], self.pats, True).pcount > 0
+        self.mod.mask_file(str(path), [], self.pats, True)
+        self.assertEqual(child.returncode, 0)
+        self.assertGreater(passes, 1)
+        self.assertEqual(path.read_text().splitlines(), [record % (n, self.MASKED) for n in range(1, 2002)])
 
-                    def seek(self, *a):
-                        self.fail("seek")
-                        return self.handle.seek(*a)
+    # Write rows: one pwrite per match span; on any failure, list every span
+    # not yet fully written, because a second run cannot find a half-masked value.
+    def three_tokens(self) -> tuple[Path, list[str]]:
+        path = self.root / "three.jsonl"
+        lines = ['{"line": %d, "text": "token %s"}' % (n, self.TOKEN) for n in (1, 2, 3)]
+        path.write_bytes(("\n".join(lines) + "\n").encode())
+        data = path.read_bytes()
+        offsets, at = [], 0
+        for _ in lines:
+            at = data.index(self.TOKEN.encode(), at)
+            offsets.append("    offset %d length %d" % (at, len(self.TOKEN)))
+            at += 1
+        return path, offsets
 
-                    def write(self, data):
-                        self.fail("write")
-                        return self.handle.write(data)
+    def fail_on_second(self, name, action):
+        real, calls = getattr(os, name), []
 
-                    def truncate(self, *a):
-                        self.fail("truncate")
-                        return self.handle.truncate(*a)
+        def wrapped(*args):
+            calls.append(args)
+            if len(calls) == 2:
+                return action(real, *args)
+            return real(*args)
 
-                    def flush(self):
-                        self.fail("flush")
-                        return self.handle.flush()
+        return mock.patch.object(self.mod.os, name, wrapped), calls
 
-                env = {"S4S_PATTERNS": self.PATTERN, "S4S_PAIRS": "", "S4S_MASK_SETTLE_MIN": "10",
-                       "S4S_APPLY": "1"}
-                err = io.StringIO()
-                with mock.patch.dict(os.environ, env), \
-                        mock.patch.object(sys, "stdin", io.StringIO("%s\n" % path)), \
-                        mock.patch.object(self.mod, "open", lambda *a, **k: Full(real_open(*a, **k)), create=True), \
-                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                    code = self.mod.main()
-                self.assertEqual(code, 1, err.getvalue())
-                self.assertIn("FAILED", err.getvalue())
+    def test_a_token_across_a_4k_boundary_is_written_by_one_pwrite(self):
+        path = self.root / "big.jsonl"
+        head = b"x" * (4096 - 10)
+        path.write_bytes(head + self.TOKEN.encode() + b"\n")
+        patch, calls = self.fail_on_second("pwrite", lambda real, *a: real(*a))
+        with patch:
+            self.mod.mask_file(str(path), [], self.pats, True)
+        self.assertEqual([(len(bytes(data)), offset) for _fd, data, offset in calls], [(len(self.TOKEN), len(head))])
+        self.assertEqual(path.read_bytes(), head + self.MASKED.encode() + b"\n")
 
+    def test_overlapping_matches_are_one_span_and_one_pwrite(self):
+        path = self.root / "history"
+        path.write_bytes(b"secret=abcdef12 x\n")
+        pats = self.mod.parse_patterns("secret=[^ ]+")
+        patch, calls = self.fail_on_second("pwrite", lambda real, *a: real(*a))
+        with patch:
+            self.mod.mask_file(str(path), [("K", b"abcdef12")], pats, True)
+        self.assertEqual([(len(bytes(data)), offset) for _fd, data, offset in calls], [(15, 0)])
+        self.assertEqual(path.read_bytes(), b"*" * 15 + b" x\n")
+
+    def test_a_failed_pwrite_lists_every_span_not_yet_written(self):
+        path, offsets = self.three_tokens()
+
+        def eio(_real, *_a):
+            raise OSError(errno.EIO, "Input/output error")
+
+        patch, _calls = self.fail_on_second("pwrite", eio)
+        with patch:
+            code, err = self.main_in_process(path)
+        self.assertEqual(code, 1, err)
+        self.assertIn("2 match span(s) not fully masked", err)
+        self.assertEqual([line for line in err.splitlines() if line.startswith("    offset")], offsets[1:])
+        self.assertEqual(path.read_bytes().count(self.MASKED.encode()), 1)
+
+    def test_a_short_pwrite_lists_the_half_written_span(self):
+        path, offsets = self.three_tokens()
+
+        def half(real, fd, data, offset):
+            return real(fd, bytes(data)[: len(data) // 2], offset)
+
+        patch, _calls = self.fail_on_second("pwrite", half)
+        with patch:
+            code, err = self.main_in_process(path)
+        self.assertEqual(code, 1, err)
+        self.assertIn("short write, 20 of 40 bytes", err)
+        self.assertEqual([line for line in err.splitlines() if line.startswith("    offset")], offsets[1:])
+
+    def test_a_span_changed_or_unreadable_before_its_write_stops_the_file(self):
+        def rewrite(real, fd, n, offset):
+            os.pwrite(fd, b"y" * n, offset)
+            return real(fd, n, offset)
+
+        def eio(_real, *_a):
+            raise OSError(errno.EIO, "Input/output error")
+
+        for label, action, reason in (("rewritten", rewrite, "changed while it was masked"),
+                                      ("unreadable", eio, "Input/output error")):
+            with self.subTest(label):
+                path, offsets = self.three_tokens()
+                patch, _calls = self.fail_on_second("pread", action)
+                with patch:
+                    code, err = self.main_in_process(path)
+                self.assertEqual(code, 1, err)
+                self.assertIn(reason, err)
+                self.assertEqual([line for line in err.splitlines() if line.startswith("    offset")], offsets[1:])
+
+    def test_a_failed_fsync_lists_every_span(self):
+        path, offsets = self.three_tokens()
+        size = path.stat().st_size
+
+        def eio(_fd):
+            raise OSError(errno.EIO, "Input/output error")
+
+        with mock.patch.object(self.mod.os, "fsync", eio):
+            code, err = self.main_in_process(path)
+        self.assertEqual(code, 1, err)
+        self.assertIn("nothing is known to be on disk", err)
+        self.assertEqual([line for line in err.splitlines() if line.startswith("    offset")], offsets)
+        self.assertEqual(path.stat().st_size, size)
+
+    # Row 5: the file will not open to write.
     def test_an_unwritable_file_fails_only_when_it_holds_a_match(self):
-        held = self.log("held.jsonl", self.SETTLED)
+        held = self.log("held.jsonl")
         clean = self.root / "clean.jsonl"
         clean.write_bytes(b'{"line": 1}\n')
         for path in (held, clean):
             path.chmod(0o444)
         result = self.run_main([held], apply=True)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("FAILED %s" % held, result.stderr)
+        self.assertIn("FAILED %s: not writable" % held, result.stderr)
         self.assertIn(self.TOKEN.encode(), held.read_bytes())
-        result = self.run_main([clean], apply=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.run_main([clean], apply=True).returncode, 0)
 
-    def apply_through(self, path: Path, wrap) -> tuple[int, str]:
-        """Run `main` in apply mode on `path`, each open handle passed through `wrap`."""
-        real_open = open
-        env = {"S4S_PATTERNS": self.PATTERN, "S4S_PAIRS": "", "S4S_MASK_SETTLE_MIN": "10", "S4S_APPLY": "1"}
-        err = io.StringIO()
-        with mock.patch.dict(os.environ, env), mock.patch.object(sys, "stdin", io.StringIO("%s\n" % path)), \
-                mock.patch.object(self.mod, "open", lambda *a, **k: wrap(real_open(*a, **k)), create=True), \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-            code = self.mod.main()
-        return code, err.getvalue()
-
-    def test_a_half_written_file_gets_its_original_bytes_back(self):
-        path = self.log("old.jsonl", self.SETTLED)
-        # The token first, so half the masked bytes differ from the original.
-        original = ("%s and the rest of the line\n" % self.TOKEN).encode()
-        path.write_bytes(original)
-        os.utime(path, (time.time() - self.SETTLED,) * 2)
-
-        class HalfWay:
-            """The disk fills after half the masked bytes land."""
-
-            def __init__(self, handle):
-                self.handle = handle
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_exc):
-                self.handle.close()
-
-            def __getattr__(self, name):
-                return getattr(self.handle, name)
-
-            def write(self, data):
-                if "+" in self.handle.mode:
-                    self.handle.write(data[: len(data) // 2])
-                    self.handle.flush()
-                    raise OSError(errno.ENOSPC, "No space left on device")
-                return self.handle.write(data)
-
-        code, err = self.apply_through(path, HalfWay)
-        self.assertEqual(code, 1, err)
-        self.assertEqual(path.read_bytes(), original, "a half-masked file was left in place")
-        self.assertIn("original restored", err)
-
-    def half_way_then(self, after_close):
-        """A handle that fills the disk halfway through the masked write,
-        then runs `after_close` once it is closed, before recovery."""
-
-        class HalfWay:
-            def __init__(self, handle):
-                self.handle = handle
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_exc):
-                self.handle.close()
-                if "+" in self.handle.mode:
-                    after_close(Path(self.handle.name))
-
-            def __getattr__(self, name):
-                return getattr(self.handle, name)
-
-            def write(self, data):
-                if "+" in self.handle.mode:
-                    self.handle.write(data[: len(data) // 2])
-                    self.handle.flush()
-                    raise OSError(errno.ENOSPC, "No space left on device")
-                return self.handle.write(data)
-
-        return HalfWay
-
-    def token_first(self) -> Path:
-        path = self.log("old.jsonl", self.SETTLED)
-        path.write_bytes(("%s and the rest of the line\n" % self.TOKEN).encode())
-        os.utime(path, (time.time() - self.SETTLED,) * 2)
-        return path
-
-    def test_recovery_keeps_an_append_that_landed_after_the_failed_write(self):
-        path = self.token_first()
-        event = b'{"line": 2, "text": "written by the live session"}\n'
-
-        def session_appends(target):
-            with open(target, "ab") as f:
-                f.write(event)
-
-        code, err = self.apply_through(path, self.half_way_then(session_appends))
-        self.assertEqual(code, 1, err)
-        self.assertTrue(path.read_bytes().endswith(event), "recovery dropped the appended event")
-        self.assertIn("changed after the failed write", err)
-
-    def test_recovery_leaves_a_replacement_file_alone(self):
-        path = self.token_first()
-        rotated = b'{"line": 1, "text": "a new log after rotation"}\n'
-
-        def rotate(target):
-            fresh = target.with_suffix(".new")
-            fresh.write_bytes(rotated)
-            fresh.replace(target)
-
-        code, err = self.apply_through(path, self.half_way_then(rotate))
-        self.assertEqual(code, 1, err)
-        self.assertEqual(path.read_bytes(), rotated, "recovery wrote into a file it never read")
-        self.assertIn("replaced after the failed write", err)
-
-    def test_recovery_keeps_an_append_that_lands_while_it_restores(self):
-        path = self.token_first()
-        event = b'{"line": 2, "text": "written by the live session"}\n'
-        real_fdopen = os.fdopen
-
-        class AppendOnSeek:
-            """The session appends just as recovery starts its write."""
-
-            def __init__(self, raw):
-                self.raw = raw
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return self.raw.__exit__(*exc)
-
-            def __getattr__(self, name):
-                return getattr(self.raw, name)
-
-            def seek(self, *a):
-                with open(path, "ab") as f:
-                    f.write(event)
-                return self.raw.seek(*a)
-
-        with mock.patch.object(self.mod.os, "fdopen", lambda *a, **k: AppendOnSeek(real_fdopen(*a, **k))):
-            code, err = self.apply_through(path, self.half_way_then(lambda _target: None))
-        self.assertEqual(code, 1, err)
-        self.assertTrue(path.read_bytes().endswith(event), "recovery cut the appended event")
-
-    def test_the_cut_short_shape(self):
-        cut = self.mod.cut_short
-        data, new = b"SECRETSECRET tail", b"<m> tail"
-        self.assertTrue(cut(b"<m>RETSECRET tail", data, new), "a prefix of the masked bytes, then the original")
-        self.assertTrue(cut(b"<m> tailCRET tail", data, new), "all masked bytes, no truncate")
-        self.assertFalse(cut(b"<m>RETSECRET tail+event", data, new), "an append since")
-        self.assertFalse(cut(b"<m>RETSECRXT tail", data, new), "a change past the written prefix")
-        longer = b"<masked:$NAME> tail"
-        self.assertFalse(cut(b"<masked:$NAME> ta", b"abc tail", longer),
-                         "a longer write grew the file; restoring it needs a truncate")
-
-    def test_a_rewrite_that_landed_is_not_undone(self):
-        path = self.log("old.jsonl", self.SETTLED)
-
-        class CloseFails:
-            """Every masked byte lands; the close then reports an error."""
-
-            def __init__(self, handle):
-                self.handle = handle
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_exc):
-                self.handle.close()
-                if "+" in self.handle.mode:
-                    raise OSError(errno.EIO, "Input/output error")
-
-            def __getattr__(self, name):
-                return getattr(self.handle, name)
-
-        code, err = self.apply_through(path, CloseFails)
-        self.assertEqual(code, 1, err)
-        self.assertNotIn(self.TOKEN.encode(), path.read_bytes(), "the restore put the secret back")
-        self.assertIn("the masked bytes landed", err)
-
-    def test_a_read_only_volume_fails_only_when_it_holds_a_match(self):
-        held = self.log("held.jsonl", self.SETTLED)
-        clean = self.root / "clean.jsonl"
-        clean.write_bytes(b'{"line": 1}\n')
-
-        def read_only_volume(handle):
-            if "+" in handle.mode:
-                handle.close()
-                raise OSError(errno.EROFS, "Read-only file system")
-            return handle
-
-        code, err = self.apply_through(held, read_only_volume)
-        self.assertEqual(code, 1, err)
-        self.assertIn("Read-only file system", err)
-        self.assertIn(self.TOKEN.encode(), held.read_bytes())
-        self.assertEqual(self.apply_through(clean, read_only_volume)[0], 0)
+    # Row 6: links and dry runs.
+    def test_a_hard_link_sees_the_mask(self):
+        path = self.log("old.jsonl")
+        twin = self.root / "twin.jsonl"
+        os.link(path, twin)
+        code, err = self.main_in_process(path)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn(self.TOKEN.encode(), twin.read_bytes())
 
     def test_a_symlink_masks_its_target_and_stays_a_link(self):
-        target = self.log("target.jsonl", self.SETTLED)
+        target = self.log("target.jsonl")
         link = self.root / "link.jsonl"
         link.symlink_to(target)
         result = self.run_main([link], apply=True)
@@ -676,14 +579,13 @@ class MaskRewrite(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertNotIn(self.TOKEN.encode(), target.read_bytes())
 
-    def test_a_dry_run_reports_busy_files_and_writes_nothing(self):
-        settled = self.log("old.jsonl", self.SETTLED)
-        recent = self.log("new.jsonl", 60)
-        result = self.run_main([settled, recent], apply=False)
+    def test_a_dry_run_writes_nothing(self):
+        path = self.log("old.jsonl")
+        path.chmod(0o444)
+        result = self.run_main([path], apply=False)
         self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn("  busy %s" % recent, result.stdout)
-        self.assertIn("in 1 file(s); 1 busy (dry run", result.stdout)
-        self.assertIn(self.TOKEN.encode(), settled.read_bytes())
+        self.assertIn("would mask 0 your-key value(s) + 1 pattern match(es) in 1 file(s) (dry run", result.stdout)
+        self.assertIn(self.TOKEN.encode(), path.read_bytes())
 
 
 class ManualMask(unittest.TestCase):
@@ -693,7 +595,6 @@ class ManualMask(unittest.TestCase):
 
     #: Joined here, so this file is not a finding of the repository scan.
     TOKEN = "ghp_" + "Zq7" * 12
-    SETTLED = 20 * 60
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -702,25 +603,22 @@ class ManualMask(unittest.TestCase):
         (self.root / "scratch").mkdir()
         self.home.mkdir()
         self.env = dict(os.environ, HOME=str(self.home), SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
-                        S4S_SCRATCH_ROOTS=str(self.root / "scratch"), JEV_SECRET_SCAN="0",
-                        S4S_MASK_SETTLE_MIN="10")
+                        S4S_SCRATCH_ROOTS=str(self.root / "scratch"), JEV_SECRET_SCAN="0")
         self.env.pop("S4S_CONF", None)
         isolate_jev(self.env)
 
     def tearDown(self):
         self._tmp.cleanup()
 
-    def plant(self, relative: str, age_seconds: float) -> None:
+    def plant(self, relative: str) -> None:
         path = self.home / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{"text": "token %s"}\n' % self.TOKEN, encoding="utf-8")
-        stamp = time.time() - age_seconds
-        os.utime(path, (stamp, stamp))
 
     def test_mask_without_exports_still_masks_known_patterns(self):
         # No env.sh and no .bash_profile: the weekly job's mask pass must not
         # fail, and a pattern hit is still masked (review, sd:1254).
-        self.plant(".codex/sessions/rollout.jsonl", self.SETTLED)
+        self.plant(".codex/sessions/rollout.jsonl")
         dry = subprocess.run(["sh", str(SCRIPT), "mask", "--no-prune"], cwd=self.root, env=self.env,
                              capture_output=True, text=True, timeout=120)
         self.assertEqual(dry.returncode, 2, dry.stdout + dry.stderr)
@@ -733,7 +631,7 @@ class ManualMask(unittest.TestCase):
     def test_mask_with_no_targets_touches_nothing(self):
         # A home with no history, no AI store and no scratchpad: mask must not
         # fall back to searching the current directory, $HOME (review, sd:1254).
-        self.plant("repos/project/app.py", self.SETTLED)
+        self.plant("repos/project/app.py")
         for flags in (["--no-prune"], ["--apply", "--no-prune"]):
             with self.subTest(flags=flags):
                 result = subprocess.run(["sh", str(SCRIPT), "mask", *flags], cwd=self.root, env=self.env,

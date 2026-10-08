@@ -251,6 +251,21 @@ class PromptDistribution(unittest.TestCase):
         self.assertEqual(original_source, self.source.read_bytes())
         self.assertEqual(before, self.snapshot())
 
+    def test_status_flags_each_claude_rule_file_the_block_replaces(self):
+        """sd:3031: shared.md holds the user rules, so a ~/.claude/rules file is drift."""
+        self.run_script("refresh", "--apply")
+        self.assertNotIn("rules/", self.run_script("status").stdout)
+        rules = self.targets["claude"].parent / "rules"
+        rules.mkdir()
+        (rules / "merge-lane.md").write_text("# Merge lane (integrator sessions)\n")
+        (rules / "notes.txt").write_text("not a rule file\n")
+
+        out = self.run_script("status").stdout
+
+        self.assertIn(f"DIFFERS {rules / 'merge-lane.md'} — shared.md holds the user rules", out)
+        self.assertNotIn("notes.txt", out)
+        self.assertEqual("# Merge lane (integrator sessions)\n", (rules / "merge-lane.md").read_text())
+
 
 class SharedPolicy(unittest.TestCase):
     def test_defaults_are_self_contained(self):

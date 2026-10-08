@@ -94,7 +94,7 @@ Reason: an allow rule matches the whole line, so `cd <dir> && …` goes to the a
 # Parallel work
 
 Follow pack `WORKFLOW.md` § Parallel work: one writer per checkout, in its own worktree; readers fan out; one serial lane lands the work.
-Run at most 4 code-writing builders at once per machine; readers stay unlimited.
+Run at most 6 code-writing builders at once per machine, and start none while load5 is above 40. Readers stay unlimited.
 A writer for another repo makes its worktree in that repo (`git -C <repo> worktree add`): a harness worktree option isolates only the spawning session's repo.
 Give every spawned agent a budget and a completion notice; never poll and never assume success.
 On a missed deadline, cancel a writer and confirm it stopped before a replacement starts; only a reader may be replaced on the deadline alone.

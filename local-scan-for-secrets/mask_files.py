@@ -6,34 +6,30 @@ patterns in S4S_PATTERNS, both through the environment, never argv or disk.
 S4S_APPLY=1 rewrites; anything else is a dry run that exits 2 when there is
 something to mask.
 
-The rewrite is in place on the same inode (open r+, write, truncate), so a
-file a live session holds open keeps working. Besides your literal values,
-the well-known credential patterns are masked too, with two adaptations: the
-URL-credentials class must not swallow quotes or backslashes (it would
-corrupt JSONL), and PEM masking covers the whole BEGIN..END block, not just
-the header line.
+Besides your literal values, the well-known credential patterns are masked
+too, with two adaptations: the URL-credentials class must not swallow quotes
+or backslashes (it would corrupt JSONL), and PEM masking covers the whole
+BEGIN..END block, not just the header line.
 
-A live session may append to a log while it is rewritten, and a write of the
-masked bytes plus a truncate would drop that append (sd:1254). Two guards
-skip such a file, which then counts as busy and waits for the next run:
-
-1. Settle age: a file modified within S4S_MASK_SETTLE_MIN minutes (default
-   10) is in use now.
-2. Compare before write: the size and mtime are read again on the open handle
-   just before the write; a change since the read means a writer got in.
-
-The window left is between that fstat and the truncate, microseconds against
-a session that appends seconds apart. A temp file and a rename would close
-it, but a session holding the old inode would then write into an unlinked
-file, and Claude Code and Codex take no lock a flock could wait on.
+Every mask is as long as the bytes it replaces: `<masked:$NAME>` or
+`<masked:pattern>`, padded with `*`, or all `*` when the match is shorter than
+the label (sd:3042). The file length never changes, so mask writes each match
+in place with one `pwrite` of its own span, on the same inode, and never
+truncates. A session that appends while mask runs, through any descriptor,
+keeps every byte: its writes land past the end mask read, which mask never
+touches. Each span is read again just before its write. A span that changed,
+or a failed or short write, stops the file, and mask prints the offset and
+length of every match not yet fully written, because a half-masked value no
+longer matches and the next run cannot find it. A failed fsync lists them
+all. docs/work/2026-10-08-mask-rewrite/design.md has the failure table.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import sys
-import time
 from typing import NamedTuple
 
 PEM = re.compile(
@@ -41,18 +37,16 @@ PEM = re.compile(
     rb"(?:[\s\S]{0,10000}?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----)?"
 )
 MARK = b"<masked:pattern>"
-SETTLE_MIN_DEFAULT = 10
 
 
 class WriteFailed(Exception):
-    """A rewrite that failed after it began; the file may be half masked.
+    """A file that holds a match and was not fully masked.
     Not an OSError, so the read-time skip in `main` does not swallow it."""
 
 
 class Result(NamedTuple):
     count: int
     pcount: int
-    busy: bool = False
 
 
 def parse_pairs(text: str) -> list[tuple[str, bytes]]:
@@ -74,145 +68,93 @@ def parse_patterns(text: str) -> list[re.Pattern]:
     return pats
 
 
-def masked(data: bytes, pairs, pats) -> tuple[bytes, int, int]:
-    """Return the masked bytes, the your-key count and the pattern count."""
-    new, count = data, 0
+def fit(label: bytes, n: int) -> bytes:
+    """`label` padded with `*` to `n` bytes, or `n` stars when it does not fit."""
+    return label + b"*" * (n - len(label)) if n >= len(label) else b"*" * n
+
+
+def masked(data: bytes, pairs, pats) -> tuple[bytes, int, int, list[tuple[int, int]]]:
+    """Return the masked bytes, as long as `data`, the your-key count, the
+    pattern count, and the sorted spans that changed, overlaps merged."""
+    new, count, spans = data, 0, []
     for name, val in pairs:
-        c = new.count(val)
-        if c:
-            new = new.replace(val, b"<masked:$" + name.encode() + b">")
-            count += c
+        if not val:
+            continue
+        label = fit(b"<masked:$" + name.encode() + b">", len(val))
+        found = [m.span() for m in re.finditer(re.escape(val), new)]
+        if found:
+            new = new.replace(val, label)
+            count += len(found)
+            spans += found
     pcount = 0
     for pat in pats:
-        new, n = pat.subn(MARK, new)
-        pcount += n
-    return new, count, pcount
+        found = [m.span() for m in pat.finditer(new)]
+        new = pat.sub(lambda m: fit(MARK, len(m.group(0))), new)
+        pcount += len(found)
+        spans += found
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        elif end > start:
+            merged.append((start, end))
+    return new, count, pcount, merged
 
 
-def mask_file(path: str, pairs, pats, apply: bool, settle_s: float = 0.0, before_write=None) -> Result:
-    """Mask one file, or leave it alone as busy.
-
-    `before_write` is called with the path between the read and the write.
-    It exists for the tests, which append to the file there.
-    """
-    if time.time() - os.stat(path).st_mtime < settle_s:
-        return Result(0, 0, busy=True)
-    # Any OSError once the rewrite starts, up to and including the close
-    # that flushes what the buffer still holds, may leave the file half
-    # masked; before it, the file is untouched and a skip is right. A file
-    # that will not open to write fails only when it holds a match: the
-    # value stays on disk, so the run must not read as a success.
-    started = opened = False
+def mask_file(path: str, pairs, pats, apply: bool) -> Result:
+    """Mask one file in place, one pwrite per match span, without changing its length."""
     try:
-        with open(path, "r+b" if apply else "rb") as f:
-            opened = True
-            seen = os.fstat(f.fileno())
-            data = f.read()
-            new, count, pcount = masked(data, pairs, pats)
-            if not (count or pcount) or not apply:
-                return Result(count, pcount)
-            if before_write:
-                before_write(path)
-            now = os.fstat(f.fileno())
-            if (now.st_size, now.st_mtime_ns) != (seen.st_size, seen.st_mtime_ns):
-                return Result(0, 0, busy=True)
-            started = True
-            f.seek(0)
-            f.write(new)
-            f.truncate()
-            f.flush()
+        fd = os.open(path, os.O_RDWR if apply else os.O_RDONLY)
+        writable = True
     except OSError as e:
-        if started:
-            raise WriteFailed("%s: %s; %s" % (path, e, recover(path, data, new, (seen.st_dev, seen.st_ino)))) from e
-        if apply and not opened:
-            left = mask_file(path, pairs, pats, False)
-            if left.count or left.pcount:
-                raise WriteFailed("%s: %s; %d match(es) left unmasked"
-                                  % (path, e, left.count + left.pcount)) from e
-            return left
-        raise
-    return Result(count, pcount)
+        if not apply or e.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        fd, writable = os.open(path, os.O_RDONLY), False
+    with os.fdopen(fd, "rb") as f:
+        data = f.read()
+        new, count, pcount, spans = masked(data, pairs, pats)
+        if not (count or pcount) or not apply:
+            return Result(count, pcount)
+        if not writable:
+            raise WriteFailed("%s: not writable; %d match(es) found, none masked" % (path, count + pcount))
 
+        def stop(reason: str, left: list[tuple[int, int]]) -> WriteFailed:
+            lines = ["    offset %d length %d" % (start, end - start) for start, end in left]
+            return WriteFailed("%s: %s; %d match span(s) not fully masked (a second run cannot find a"
+                               " half-masked value; rotate its key):\n%s" % (path, reason, len(left), "\n".join(lines)))
 
-def cut_short(on_disk: bytes, data: bytes, new: bytes) -> bool:
-    """True when `on_disk` is `new[:k] + data[k:]` for some k at the
-    original length: what an in-place write leaves when it stops partway.
-    A cut-short write that grew the file is not one: putting it back would
-    need a truncate, and a truncate removes what a session appended."""
-    if len(on_disk) != len(data):
-        return False
-    written = len(os.path.commonprefix([on_disk, new]))
-    kept = len(os.path.commonprefix([on_disk[::-1], data[::-1]]))
-    return len(data) - kept <= written
-
-
-def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> str:
-    """After a failed rewrite, leave the file whole: as it was, or masked.
-
-    It runs once the buffered handle is closed, since a close flushes what
-    the buffer held over anything written before it. Only the file that was
-    read is touched (same device and inode), and only when its bytes are
-    exactly what a write cut short leaves: a session's append since, or a
-    rotated log, stays as it is. A file that holds either version stays too,
-    since undoing a rewrite that landed would put the value back. A cut-short
-    write gets the original bytes back over the same length, with no
-    truncate, so a line a session appends meanwhile lands after them and
-    stays; the run still fails, and the next one masks it.
-    """
-    try:
-        fd = os.open(path, os.O_RDWR)
-        with os.fdopen(fd, "r+b", buffering=0) as raw:
-            st = os.fstat(fd)
-            if (st.st_dev, st.st_ino) != identity:
-                return "file replaced after the failed write; left as is"
-            on_disk = raw.read()
-            if on_disk == new:
-                return "the masked bytes landed"
-            if on_disk == data:
-                return "file unchanged"
-            if not cut_short(on_disk, data, new):
-                return "file changed after the failed write; left as is, and it may be half masked"
-            raw.seek(0)
-            view = memoryview(data)
-            while view:
-                view = view[raw.write(view):]
+        for i, (start, end) in enumerate(spans):
+            try:
+                if os.pread(fd, end - start, start) != data[start:end]:
+                    raise stop("changed while it was masked", spans[i:])
+                n = os.pwrite(fd, new[start:end], start)
+            except OSError as e:
+                raise stop(str(e), spans[i:]) from e
+            if n != end - start:
+                raise stop("short write, %d of %d bytes" % (n, end - start), spans[i:])
+        try:
             os.fsync(fd)
-    except OSError as e:
-        return "restore failed (%s); the file may be half masked" % e
-    return "original restored"
-
-
-def settle_seconds(text: str) -> float:
-    try:
-        minutes = float(text)
-    except ValueError:
-        sys.exit("mask_files.py: S4S_MASK_SETTLE_MIN must be a number of minutes, not %r" % text)
-    if minutes < 0:
-        sys.exit("mask_files.py: S4S_MASK_SETTLE_MIN must not be negative, not %r" % text)
-    return minutes * 60
+        except OSError as e:
+            raise stop("fsync: %s, nothing is known to be on disk" % e, spans) from e
+    return Result(count, pcount)
 
 
 def main() -> int:
     apply = os.environ.get("S4S_APPLY") == "1"
     pairs = parse_pairs(os.environ.get("S4S_PAIRS", ""))
     pats = parse_patterns(os.environ.get("S4S_PATTERNS", ""))
-    settle_s = settle_seconds(os.environ.get("S4S_MASK_SETTLE_MIN", str(SETTLE_MIN_DEFAULT)))
-    total = ptotal = files = busy = failed = 0
+    total = ptotal = files = failed = 0
     for path in sys.stdin.read().splitlines():
         if not path:
             continue
         try:
-            result = mask_file(path, pairs, pats, apply, settle_s)
+            result = mask_file(path, pairs, pats, apply)
         except OSError as e:
             print("  skip %s: %s" % (path, e), file=sys.stderr)
             continue
         except WriteFailed as e:
             print("  FAILED %s" % e, file=sys.stderr)
             failed += 1
-            continue
-        if result.busy:
-            busy += 1
-            print("  busy %s" % path)
             continue
         count, pcount = result.count, result.pcount
         if count or pcount:
@@ -221,11 +163,11 @@ def main() -> int:
             ptotal += pcount
             print("  %s: %d your-key value(s), %d pattern match(es)" % (path, count, pcount))
     if apply:
-        print("== masked %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy; %d failed"
-              % (total, ptotal, files, busy, failed))
+        print("== masked %d your-key value(s) + %d pattern match(es) in %d file(s); %d failed"
+              % (total, ptotal, files, failed))
         return 1 if failed else 0
-    print("== would mask %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy"
-          " (dry run; add --apply)" % (total, ptotal, files, busy))
+    print("== would mask %d your-key value(s) + %d pattern match(es) in %d file(s)"
+          " (dry run; add --apply)" % (total, ptotal, files))
     return 2 if (total or ptotal) else 0
 
 
