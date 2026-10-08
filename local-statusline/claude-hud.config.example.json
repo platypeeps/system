@@ -1,0 +1,11 @@
+{
+  "display": {
+    "contextValue": "both",
+    "showDuration": true,
+    "showSessionTokens": true,
+    "showTokenBreakdown": true,
+    "showPromptCache": true,
+    "showCompactions": true,
+    "mergeGroups": [["context", "usage", "promptCache"]]
+  }
+}

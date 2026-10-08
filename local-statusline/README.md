@@ -53,6 +53,8 @@ and sets:
   `~/.claude/plugins/cache/*/claude-hud/*/` — a plugin update needs no change
   here, but an uninstall makes `render` exit 1 with a message.
 - HUD display options (which lines exist at all) live in
-  `~/.claude/plugins/claude-hud/config.json`, not here.
+  `~/.claude/plugins/claude-hud/config.json`, not here. The machine-setup
+  `tooling` stage seeds it from `claude-hud.config.example.json` when the file
+  is absent and never overwrites one (sd:2929).
 
 [claude-hud]: https://github.com/jarrodwatts/claude-hud

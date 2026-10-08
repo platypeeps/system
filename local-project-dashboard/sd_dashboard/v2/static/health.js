@@ -5,7 +5,8 @@
 // health_collectors (disk and merged branches, sd:2202 and sd:2204).
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
 // An area with no reader shows as unknown with what it does not read, never as a clean lamp.
-// Nothing here writes. Every fix is a CLI line for Copy; Re-check reads the document again.
+// Every fix is a CLI line for Copy; Re-check reads the document again. The one write is Re-run collector, which starts
+// the server's shadow sync (sd:2894).
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   const { html, put, plural } = window.markup;
@@ -221,6 +222,14 @@
   // worktree, attributes a commit, deletes a branch or removes build output, so each is copy only and its run says where the
   // line runs. A row with `disabled` (a merged branch a worktree holds) names why the line would be refused.
   const copyOnly = o => `Not run here: copy the line from Details and run it in a terminal · ${o.label}`;
+  // As contributions.js's: success is quiet, since the reread shows it; a failed tracker or a broken run stays as a toast.
+  const SYNC_POLL = 5000;
+  const awaitSync = () => setTimeout(() => shell.getJSON('/api/shadow/state').then(s => {
+    if (s.running) return awaitSync();
+    load();
+    const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
+    if (bad) shell.toast(`Shadow sync ended with a problem: ${bad}`);
+  }, e => shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
   window.PAGE_COMMANDS = [
     { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
     { label: 'Read Health again', icon: 'rotate-ccw', run: () => load() },
@@ -253,16 +262,18 @@
         primary: () => true, when: o => !o.disabled || o.disabled, cli: o => o.cli,
         consequence: o => `Deletes ${o.facts.Merged || o.facts.Count} local branches already in origin's default branch. git branch -d refuses any unmerged one.`, run: copyOnly },
     );
-    // Ports and Protection are read-only: each line is copy only. The dashboard has no route that runs sd shadow sync, so the
-    // design's Re-run collector is copy only too.
+    // Ports and Protection are read-only: each line is copy only.
     C.register(
       { id: 'port.inspect', on: 'port', label: 'Inspect listener', key: 'i', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.port || 'no port configured: there is nothing to inspect', cli: o => `lsof -nP -iTCP:${o.port || '<port>'} -sTCP:LISTEN`, run: copyOnly },
       { id: 'protection.settings', on: 'branch protection', label: 'Open branch settings', key: 'o', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.slug || 'no github.com remote: there is no settings page', cli: o => `open https://github.com/${o.slug || '<owner>/<repo>'}/settings/branches`,
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
-      { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true, executes: false,
-        cli: () => 'sd shadow sync', run: copyOnly },
+      // Re-run collector (sd:2894) posts the route Contributions posts (sd:2207): the server runs sd shadow sync, which
+      // writes the protection rows, in a thread, bounded to 120 s, one run at a time. Health reads again once it ends.
+      { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true,
+        cli: () => 'sd shadow sync --max-seconds 120',
+        run: () => shell.post('/api/shadow/sync', {}).then(() => { awaitSync(); return 'Shadow sync started · Health reads again when it ends'; }) },
       // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows; each line is copy only.
       { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },
