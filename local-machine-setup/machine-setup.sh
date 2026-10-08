@@ -3898,12 +3898,72 @@ outdated_lists() {
   fi
 }
 
+# grant_paths before|after: the paths whose change drops a macOS grant, one
+# file per kind under $tmp. ~/.local/bin/claude links to a versioned binary,
+# and `brew upgrade python` moves the Cellar path (.claude/rules/macos-tcc.md).
+grant_paths() {
+  readlink "$HOME/.local/bin/claude" > "$tmp/claude.$1" 2>/dev/null || :
+  : > "$tmp/python.$1"
+  if command -v brew >/dev/null 2>&1; then
+    _cellar=$(brew --cellar 2>/dev/null) || _cellar=""
+    if [ -n "$_cellar" ]; then
+      ls -d "$_cellar"/python@*/* 2>/dev/null | sort > "$tmp/python.$1" || :
+    fi
+  fi
+}
+
+# After the sweep, in both paths (sd:3062): run the dashboard's vault-grant
+# probe and write $tmp/grants, the mail's section. $tmp/regrant gets one line
+# per binary that lost Full Disk Access, and $tmp/changed the grant droppers
+# that moved. This job runs under launchd, where the probe's answer is the
+# binary's own. A missing grant is a push, not a failed job.
+grants_report() {
+  grant_paths after
+  : > "$tmp/changed"
+  if [ -s "$tmp/claude.after" ] && ! cmp -s "$tmp/claude.before" "$tmp/claude.after"; then
+    printf '  Claude Code: %s -> %s\n' "$(cat "$tmp/claude.before")" "$(cat "$tmp/claude.after")" >> "$tmp/changed"
+  fi
+  comm -13 "$tmp/python.before" "$tmp/python.after" | sed 's/^/  new python Cellar path: /' >> "$tmp/changed"
+  g_rc=0
+  run_step 300 sh "$ROOT/local-project-dashboard/dashboard.sh" grants > "$tmp/grants.out" 2>&1 || g_rc=$?
+  sed -n 's/.*Grant Full Disk Access to \(.*\) in System Settings.*/  Full Disk Access: \1/p' \
+    "$tmp/grants.out" > "$tmp/regrant"
+  {
+    printf '\nTCC grants (dashboard.sh grants, exit %s):\n' "$g_rc"
+    sed 's/^/  /' "$tmp/grants.out"
+    if [ -s "$tmp/changed" ]; then
+      printf '\ngrant droppers that changed — check their grants:\n'
+      cat "$tmp/changed"
+    fi
+  } > "$tmp/grants"
+}
+
+# One push, with mail, when a grant is missing. Returns 1 when it could not
+# be delivered.
+grants_push() {
+  [ -s "$tmp/regrant" ] || return 0
+  {
+    printf 'Re-grant in System Settings > Privacy & Security on %s:\n' "$(hostname -s)"
+    cat "$tmp/regrant"
+    if [ -s "$tmp/changed" ]; then
+      printf '\nChanged this run:\n'
+      cat "$tmp/changed"
+    fi
+  } > "$tmp/push"
+  if ! sh "$notify" -t "TCC: re-grant on $(hostname -s)" -k status -F -c ntfy,email -b "$(cat "$tmp/push")"; then
+    echo "grant push FAILED — exiting 1 so the cron failure push fires" >&2
+    return 1
+  fi
+}
+
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
 # after the sweep, and emails what got upgraded / what failed / what is still
-# pending through local-notify's email channel. When nothing is outdated it
-# only updates Claude Code. Exits 1 when the email could not be delivered, or
-# when that quiet-week Claude update failed, so the cron failure push covers a
-# lost report or a silent failure, not mere findings.
+# pending through local-notify's email channel, with the TCC grants probe's
+# result. When nothing is outdated it only updates Claude Code and probes the
+# grants. A missing grant sends one push naming each binary to re-grant.
+# Exits 1 when the email or that push could not be delivered, or when the
+# quiet-week Claude update failed, so the cron failure push covers a lost
+# report or a silent failure, not mere findings.
 cmd_upgrade_report() {
   APPLY=1
   notify="$ROOT/local-notify/notify.sh"
@@ -3925,6 +3985,7 @@ cmd_upgrade_report() {
   # repeats it, but the second run is a fast no-op.
   run_step 600 brew update >/dev/null 2>&1 || :
   outdated_lists before
+  grant_paths before
 
   if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ]      && [ ! -s "$tmp/mas.before" ]; then
     # Claude Code updates outside brew, and cmd_upgrade, which runs it, does
@@ -3934,6 +3995,9 @@ cmd_upgrade_report() {
       run_step 600 "$HOME/.local/bin/claude" update || rc=1
     fi
     echo "nothing outdated — no upgrade, no email"
+    grants_report
+    cat "$tmp/grants"
+    grants_push || rc=1
     return "$rc"
   fi
 
@@ -3942,6 +4006,7 @@ cmd_upgrade_report() {
   cat "$tmp/out"
 
   outdated_lists after
+  grants_report
 
   {
     printf 'machine-setup upgrade report — %s on %s\n' \
@@ -3961,6 +4026,7 @@ cmd_upgrade_report() {
       printf '\nupgrade sweep exited nonzero; last output:\n'
       tail -30 "$tmp/out" | sed 's/^/  /'
     fi
+    cat "$tmp/grants"
   } > "$tmp/body"
 
   n_done=$(cat "$tmp"/*.done 2>/dev/null | wc -l | tr -d ' ')
@@ -3971,10 +4037,13 @@ cmd_upgrade_report() {
   # Those only send at all when they have findings; this one always sends.
   fu=""
   if [ "$n_left" -gt 0 ]; then fu="-F"; fi
+  push_rc=0
+  grants_push || push_rc=1
   if ! sh "$notify" -t "$subject" -k status $fu -c ntfy,email -b "$(cat "$tmp/body")"; then
     echo "email FAILED — exiting 1 so the cron failure push fires" >&2
     exit 1
   fi
+  return "$push_rc"
 }
 
 # Manual new-machine steps that no stage can automate. Doctor checks the
@@ -4283,10 +4352,12 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
                    runs the rest, and exits 1 naming the steps that failed
   upgrade-report   cron flavor of upgrade: always applies, emails what got
-                   upgraded / what failed / what is still outdated; when
-                   nothing is outdated it only runs claude update; exits 1
-                   when the email could not be delivered or that quiet-week
-                   claude update failed
+                   upgraded / what failed / what is still outdated, with the
+                   result of local-project-dashboard's `grants` probe; when
+                   nothing is outdated it only runs claude update and the
+                   probe; a missing grant sends one push naming each binary
+                   to re-grant; exits 1 when the email or that push could
+                   not be delivered or that quiet-week claude update failed
   checklist        print the manual new-machine steps no stage automates
                    (accounts, licenses, key restores; plus checklist.txt from the config)
   decommission     retire this machine: list dirty/unpushed repos, uninstall

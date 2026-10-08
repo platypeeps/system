@@ -35,7 +35,9 @@ echo "$*" >> "$BREW_LOG"
 case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula ;;
   "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
+  --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
+           [ -z "$BREW_NEW_PYTHON" ] || mkdir -p "$BREW_NEW_PYTHON"
            [ -z "$BREW_HANG" ] || exec sleep 60 ;;
 esac
 exit 0
@@ -46,10 +48,23 @@ echo "$*" >> "$MAS_LOG"
 exit 0
 """
 
+# One block per call, each ended by a "--" line. NOTIFY_FAIL fails every send.
 NOTIFY_STUB = r"""#!/bin/sh
-printf '%s\n' "$@" > "$NOTIFY_LOG"
-exit 0
+printf '%s\n' "$@" -- >> "$NOTIFY_LOG"
+[ -z "$NOTIFY_FAIL" ]
 """
+
+# The vault-grant probe. GRANTS_OUT is what it prints, GRANTS_RC its exit.
+DASHBOARD_STUB = r"""#!/bin/sh
+[ "$1" = grants ] || exit 2
+printf '%s\n' "${GRANTS_OUT:-DASHBOARD_PYTHON python3: ok, lists the vault}"
+exit "${GRANTS_RC:-0}"
+"""
+
+REFUSED = ("SD_DASHBOARD_PYTHON /opt/homebrew/bin/python3: cannot read /vault — macOS is asking for "
+           "Documents access and nothing under launchd can answer the prompt. Grant Full Disk "
+           "Access to /opt/homebrew/bin/python3 in System Settings > Privacy & Security, then "
+           "restart the agent.")
 
 STEP = r"\[step \d\d:\d\d:\d\d\] {} \(bound {}s\)"
 
@@ -70,6 +85,7 @@ class UpgradeStepTest(unittest.TestCase):
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         write_exec(repo / "local-notify/notify.sh", NOTIFY_STUB)
+        write_exec(repo / "local-project-dashboard/dashboard.sh", DASHBOARD_STUB)
         self.home = base / "home"
         self.state = self.home / ".config/machine-setup"
         self.state.mkdir(parents=True)
@@ -99,6 +115,29 @@ class UpgradeStepTest(unittest.TestCase):
         return subprocess.run([str(self.folder / "machine-setup.sh"), *args],
                               env=self.env(**extra), capture_output=True, text=True,
                               cwd=self.tmp.name, stdin=subprocess.DEVNULL, timeout=30)
+
+    def sends(self):
+        """Each notify call's arguments, one list per call."""
+        if not self.notify_log.exists():
+            return []
+        calls, call = [], []
+        for line in self.notify_log.read_text().splitlines():
+            if line == "--":
+                calls.append(call)
+                call = []
+            else:
+                call.append(line)
+        return calls
+
+    def claude_moves_to(self, old, new):
+        """~/.local/bin/claude links to version OLD; `claude update` relinks it to NEW."""
+        versions = self.home / ".local/share/claude/versions"
+        for version in (old, new):
+            write_exec(versions / version, "#!/bin/sh\nexit 0\n")
+        write_exec(versions / old, f'#!/bin/sh\nln -sf {versions / new} {self.home / ".local/bin/claude"}\n')
+        (self.home / ".local/bin").mkdir(parents=True, exist_ok=True)
+        (self.home / ".local/bin/claude").symlink_to(versions / old)
+        return versions
 
     def brew_calls(self):
         return self.brew_log.read_text().splitlines() if self.brew_log.exists() else []
@@ -174,6 +213,66 @@ class UpgradeStepTest(unittest.TestCase):
         mail = self.notify_log.read_text().splitlines()
         self.assertIn("-F", mail)
         self.assertIn("timed out after 2s: brew upgrade", "\n".join(mail))
+
+    def test_the_report_mail_carries_the_grants_result(self):
+        """sd:3062: the weekly mail says whether the vault grants held."""
+        cellar = pathlib.Path(self.tmp.name) / "Cellar"
+        (cellar / "python@3.14/3.14.0").mkdir(parents=True)
+        result = self.run_verb("upgrade-report", BREW_CELLAR=str(cellar),
+                               BREW_NEW_PYTHON=str(cellar / "python@3.14/3.14.1"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sends = self.sends()
+        self.assertEqual(len(sends), 1, sends)
+        body = "\n".join(sends[0])
+        self.assertIn("TCC grants (dashboard.sh grants, exit 0)", body)
+        self.assertIn("DASHBOARD_PYTHON python3: ok, lists the vault", body)
+        self.assertIn(f"new python Cellar path: {cellar}/python@3.14/3.14.1", body)
+
+    def test_a_missing_grant_pushes_what_to_regrant(self):
+        """sd:3062: one push names the binary and the permission; the job
+        still exits 0, since the report went out."""
+        versions = self.claude_moves_to("1.0.0", "1.0.1")
+        result = self.run_verb("upgrade-report", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sends = self.sends()
+        self.assertEqual(len(sends), 2, sends)
+        push = sends[0]
+        self.assertIn("-F", push)
+        self.assertIn("ntfy,email", push)
+        self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", "\n".join(push))
+        self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", "\n".join(push))
+        self.assertIn("TCC grants (dashboard.sh grants, exit 1)", "\n".join(sends[1]))
+
+    def test_a_quiet_week_with_a_missing_grant_pushes_and_exits_0(self):
+        """`claude update` runs in a quiet week too, and can drop a grant."""
+        self.claude_moves_to("1.0.0", "1.0.1")
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing outdated", result.stdout)
+        sends = self.sends()
+        self.assertEqual(len(sends), 1, sends)
+        self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", "\n".join(sends[0]))
+
+    def test_an_inconclusive_probe_is_reported_and_pushes_nothing(self):
+        """Exit 3 is not a missing grant: the mail says so, no push goes."""
+        result = self.run_verb("upgrade-report", GRANTS_OUT="inconclusive: /bin/ls lists the vault too",
+                               GRANTS_RC="3")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sends = self.sends()
+        self.assertEqual(len(sends), 1, sends)
+        self.assertIn("inconclusive: /bin/ls lists the vault too", "\n".join(sends[0]))
+
+    def test_a_lost_grant_push_fails_the_job(self):
+        """The push is the quiet week's only report, so losing it is exit 1."""
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1",
+                               NOTIFY_FAIL="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("grant push FAILED", result.stderr)
 
     def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
         """The job's limit ends the run; the TERM trap used to remove the

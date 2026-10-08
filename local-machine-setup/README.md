@@ -39,6 +39,8 @@ change I made on this machine back into its profile*.
                                        # stopped at its bound (300-1800 s, or
                                        # MACHINE_SETUP_STEP_TIMEOUT seconds)
 ./machine-setup.sh upgrade-report      # upgrade + email summary (cron: weekly)
+                                       # plus the TCC grants probe; one push
+                                       # names each binary to re-grant
 ./machine-setup.sh checklist           # manual new-machine steps
 ./machine-setup.sh decommission        # retire machine: dirty-repo scan, job/agent
                                        # removal with --apply (asks you to type
@@ -51,6 +53,17 @@ unfamiliar machine should be inspected before it is touched.
 
 The chosen profile is recorded in `~/.config/machine-setup/profile`, so `update`
 and `capture` need no argument after the first `setup`.
+
+**The weekly `upgrade-report` owns every package and app upgrade** (sd:3062).
+`ai-apps nightly` upgrades nothing, and the `macos` stage turns self-update off
+in apps that hold a macOS privacy (TCC) grant. Both machines then move once a
+week, and grants are re-granted in one sitting. After the sweep, and in a quiet
+week after `claude update`, it runs `local-project-dashboard/dashboard.sh
+grants` and puts the result in the mail. The cron job runs under launchd, where
+the probe's answer is the binary's own. A binary that lost Full Disk Access gets
+one push (`-F`, ntfy and email) naming its path. The push also lists a new Claude Code
+binary or python Cellar path, the two known grant droppers. A missing grant
+does not fail the job; a push or mail that cannot be delivered does.
 
 ## Configuration
 
