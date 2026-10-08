@@ -36,7 +36,7 @@ A failed job's detail ends with a triage class from fixed rules in `sd_dashboard
 `transient`, `probably transient`, `unclear` or `needs a person`, and the rule that matched (sd:1166).
 The rules read launchd's signal or exit code, then the last run's section of the job's log.
 The Operations Jobs card shows the same class. It is a label only: it changes no rank, retry or notification.
-Jev is asked the same question in shadow, in the background, once per failure (sd:2095).
+Jev is asked the same question in shadow, in the background, once per failed run (sd:2095, sd:2904).
 It sees the job name, the outcome and the rule's class, never a log line.
 `--shadow` hands back the rule's answer, so Jev's score is recorded in the judgment ledger and never shown.
 `JEV_JOB_TRIAGE` switches the shadow off; unset means on.

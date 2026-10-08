@@ -699,6 +699,10 @@ def run_arm(name: str, job: dict, env, work) -> None:
     base = {
         "caller": job["caller"], "stage": job["stage"], "arm": name,
         "pair": job["pair"], "question_id": job.get("question_id"),
+        "location": job.get("location"),
+        "threshold": job.get("threshold"), "prompt_hash": job.get("prompt_hash"),
+        # The child inherits the caller's environment, so `JEV_RUN` is here.
+        "run_id": jev.named(env.get("JEV_RUN")), "load_avg": jev.load_avg(),
         "primitive": job["primitive"], "questions": job.get("questions"),
         "changed": "no",
     }

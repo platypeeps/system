@@ -615,9 +615,10 @@ class LivePaired(MeteringCase):
         self.run_main(["noul", "is it?", "--gate", "0.8", "--baseline", "0.6"])
         self.assertIsNone(self.rows()[-1]["answer"])
 
-    def test_a_baseline_under_unsure_below_is_no_position(self):
-        """A choice printed `unsure` is not the chosen key the report reads,
-        so a gated choice is counted and not compared, like a gated noul."""
+    def test_a_baseline_under_unsure_below_keeps_its_position(self):
+        """sd:2944: the report compares each arm's chosen key with the
+        caller's, never the printed `unsure`, so a gated choice keeps the
+        caller's key. sd-review always gates, and its pairs were all empty."""
         Stub.choice_value, Stub.confidence = "desk", 0.1
         # Live prints the gated judgment; shadow prints the caller's own key.
         for flag, printed in (("--baseline", "unsure\n"), ("--shadow", "desk\n")):
@@ -628,7 +629,13 @@ class LivePaired(MeteringCase):
                 judged, baseline = self.rows()[-2:]
                 self.assertEqual(judged["changed"], "yes")
                 self.assertEqual(baseline["arm"], "baseline")
-                self.assertIsNone(baseline["answer"])
+                self.assertEqual(baseline["answer"], "1")
+
+    def test_an_unsure_baseline_under_unsure_below_is_no_position(self):
+        """A caller's own `unsure` is not one of its keys, so it is dropped."""
+        self.run_main(["choice", "where?", "--criteria", "desk,phone",
+                       "--unsure-below", "0.5", "--baseline", "unsure"])
+        self.assertIsNone(self.rows()[-1]["answer"])
 
     def test_a_numeric_baseline_is_compared_as_a_number(self):
         """`score` prints `2.0`; a caller's own scale says `2`. They agree."""
@@ -1127,3 +1134,110 @@ class TheMeterWaitsOnlyBriefly(MeteringCase):
                                               JEV_METER="0"))
         finally:
             holder.execute("ROLLBACK")
+
+
+class WhereTheCallCameFrom(MeteringCase):
+    """Every row says where the call came from and which program made it,
+    named or not."""
+
+    def written(self, argv, cwd, **env):
+        events = []
+        real = jev_meter.write
+
+        def capture(event, env=None):
+            events.append(dict(event))
+            return real(event, env)
+
+        here = os.getcwd()
+        os.chdir(cwd)
+        try:
+            with unittest.mock.patch.object(jev_meter, "write", capture):
+                self.run_main(argv, **env)
+        finally:
+            os.chdir(here)
+        return events
+
+    def test_a_row_names_the_repository_it_was_called_from(self):
+        repo = Path(tempfile.mkdtemp())
+        (repo / ".git").mkdir()
+        (repo / "deep" / "er").mkdir(parents=True)
+        events = self.written(["noul", "is it?"], repo / "deep" / "er")
+        self.assertEqual(events[-1]["location"], str(repo.resolve()))
+
+    def test_a_row_outside_a_repository_names_its_directory(self):
+        bare = Path(tempfile.mkdtemp()).resolve()
+        events = self.written(["noul", "is it?"], bare)
+        self.assertEqual(events[-1]["location"], str(bare))
+
+    def test_home_is_written_as_a_tilde(self):
+        home = Path(tempfile.mkdtemp()).resolve()
+        (home / "repos" / "thing" / ".git").mkdir(parents=True)
+        with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+            events = self.written(["noul", "is it?"], home / "repos" / "thing")
+        self.assertEqual(events[-1]["location"], "~/repos/thing")
+
+    def test_an_unnamed_caller_is_named_after_its_parent_program(self):
+        with unittest.mock.patch.object(
+                jev, "parent_args", lambda: "/usr/bin/python3 -u /opt/x/trace-classifier.py --all"):
+            events = self.written(["noul", "is it?"], Path.cwd())
+        self.assertEqual(events[-1]["caller"], "trace-classifier.py")
+
+    def test_an_interactive_shell_is_named_as_the_shell(self):
+        with unittest.mock.patch.object(jev, "parent_args", lambda: "-zsh"):
+            events = self.written(["noul", "is it?"], Path.cwd())
+        self.assertEqual(events[-1]["caller"], "zsh")
+
+    def test_a_named_caller_is_kept(self):
+        with unittest.mock.patch.object(jev, "parent_args", lambda: "sh /x/other.sh"):
+            events = self.written(["noul", "is it?", "--caller", "sd-review"], Path.cwd())
+        self.assertEqual(events[-1]["caller"], "sd-review")
+
+    def test_a_parent_that_cannot_be_read_is_unknown(self):
+        with unittest.mock.patch.object(jev, "parent_args", lambda: None):
+            events = self.written(["noul", "is it?"], Path.cwd())
+        self.assertEqual(events[-1]["caller"], jev.UNNAMED)
+
+
+class TheCallContext(MeteringCase):
+    """The run, the cut-off, the question's version and the machine's load
+    ride on every row, so an analysis can group, split and explain them."""
+
+    written = WhereTheCallCameFrom.written
+
+    def last(self, argv, **env):
+        return self.written(argv, Path.cwd(), **env)[-1]
+
+    def test_a_run_groups_its_calls(self):
+        event = self.last(["noul", "is it?"], JEV_RUN="sd-review-20261007T2000-ab12")
+        self.assertEqual(event["run_id"], "sd-review-20261007T2000-ab12")
+
+    def test_a_run_id_that_is_not_an_identifier_is_dropped(self):
+        self.assertIsNone(self.last(["noul", "is it?"], JEV_RUN="a run/with spaces")["run_id"])
+
+    def test_the_cut_off_is_recorded(self):
+        self.assertEqual(self.last(["noul", "is it?", "--gate", "0.8"])["threshold"], 0.8)
+        self.assertEqual(self.last(["choice", "where?", "--criteria", "desk,phone",
+                                    "--unsure-below", "0.6"])["threshold"], 0.6)
+        self.assertIsNone(self.last(["noul", "is it?"])["threshold"])
+
+    def test_the_question_version_follows_the_question_not_the_state(self):
+        first, second = (Path(tempfile.mkdtemp()) / name for name in ("first", "second"))
+        first.write_text("one state")
+        second.write_text("another state")
+        one = self.last(["noul", "is it?", "--state", str(first)])["prompt_hash"]
+        two = self.last(["noul", "is it?", "--state", str(second)])["prompt_hash"]
+        other = self.last(["noul", "is it not?", "--state", str(first)])["prompt_hash"]
+        self.assertRegex(one, r"^[0-9a-f]{16}$")
+        self.assertEqual(one, two)
+        self.assertNotEqual(one, other)
+
+    def test_reordered_criteria_are_another_question(self):
+        # A choice's answer is a position, so `desk` is 1 in one and 2 in the other.
+        one = self.last(["choice", "where?", "--criteria", "desk,phone"])["prompt_hash"]
+        two = self.last(["choice", "where?", "--criteria", "phone,desk"])["prompt_hash"]
+        self.assertNotEqual(one, two)
+
+    def test_the_load_is_a_number(self):
+        load = self.last(["noul", "is it?"])["load_avg"]
+        self.assertIsInstance(load, float)
+        self.assertGreaterEqual(load, 0.0)

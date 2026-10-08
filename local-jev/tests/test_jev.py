@@ -54,6 +54,8 @@ class Stub(BaseHTTPRequestHandler):
     drop_answers = False
     # A 200 whose answers are null: a shape no verb can read.
     null_answers = False
+    # A 200 that reports no token counts at all.
+    drop_usage = False
 
     def log_message(self, *args):
         pass
@@ -96,9 +98,10 @@ class Stub(BaseHTTPRequestHandler):
             answers = {}
         if Stub.null_answers:
             answers = {qid: None for qid in answers}
+        usage = None if Stub.drop_usage else {"input_tokens": Stub.input_tokens,
+                                              "output_tokens": Stub.output_tokens}
         body = json.dumps({"model": "jev-stub", "answers": answers,
-                           "usage": {"input_tokens": Stub.input_tokens,
-                                     "output_tokens": Stub.output_tokens}}).encode()
+                           "usage": usage}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -137,6 +140,7 @@ class StubServer(unittest.TestCase):
         Stub.output_tokens = 1
         Stub.drop_answers = False
         Stub.null_answers = False
+        Stub.drop_usage = False
         Stub.seen = []
 
     def env(self, **extra):
@@ -415,6 +419,19 @@ class TestEntrypoint(StubServer):
             environ["PATH"] = f"{first}{os.pathsep}{environ.get('PATH', '')}"
         return subprocess.run([str(ENTRYPOINT)] + args, capture_output=True,
                               text=True, env=environ, cwd=cwd)
+
+    def test_only_a_caller_argument_skips_the_parent_lookup(self):
+        """sd:2952: a question that mentions `--caller` still names its parent."""
+        python = Path(tempfile.mkdtemp()) / "python"
+        python.write_text('#!/bin/sh\nprintf "%s\\n" "${JEV_PARENT_ARGS:+looked up}"\n')
+        python.chmod(0o755)
+        for args, want in ((["noul", "Does --caller mean this?"], "looked up"),
+                           (["noul", "is it?", "--caller", "me"], ""),
+                           (["noul", "is it?", "--caller=me"], "")):
+            with self.subTest(args=args):
+                done = self.sh(args, env={"PYTHON": str(python), "JEV_CALLER": "",
+                                          "JEV_PARENT_ARGS": ""})
+                self.assertEqual(done.stdout, want + "\n")
 
     def test_no_argument_prints_usage_to_stderr_and_exits_one(self):
         done = self.sh([])
@@ -1033,6 +1050,38 @@ class TestBudget(StubServer):
         self.assertEqual(self.call(**limit)[0], 3)
         self.assertEqual(Stub.seen, [])
 
+    def test_a_spent_budget_declines_before_reading_any_input(self):
+        """sd:2910: an open stdin or a FIFO cannot hold a call that may not send."""
+        class Untouchable:
+            def __getattr__(self, name):
+                raise AssertionError(f"stdin was touched: {name}")
+        limit = {self.STAGE + "_MAX_CALLS": "0"}
+        saved, sys.stdin = sys.stdin, Untouchable()
+        try:
+            with tempfile.TemporaryFile("w+") as out, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                code = jev.main(["noul", "q", "--stage", self.STAGE, "--fallback", "0.5"],
+                                out=out, env=self.env(**limit), sleep=lambda _s: None)
+                out.seek(0)
+                printed = out.read()
+        finally:
+            sys.stdin = saved
+        self.assertEqual((code, printed), (0, "0.5\n"))
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_call_refused_before_sending_spends_no_call(self):
+        """Counted after every local refusal, right before the send (sd:2910)."""
+        limit = {self.STAGE + "_MAX_CALLS": "1"}
+        (self.config / "privacy-patterns").write_text("private-host\n")
+        for refused in (["choice", "q", "--criteria", " , "],
+                        ["noul", "q", "--state", str(self.budget / "absent")],
+                        ["choice", "q", "--criteria", "private-host,other"]):
+            with self.subTest(refused=refused[-1]):
+                code = self.run_verbose([*refused, "--stage", self.STAGE], **limit)[0]
+                self.assertEqual(code, 1)
+        self.assertEqual(Stub.seen, [])
+        self.assertEqual(self.call(**limit)[:2], (0, "0.97\n"))
+
     def test_enabled_answers_three_once_spent_and_counts_nothing(self):
         limit = {self.STAGE + "_MAX_CALLS": "1"}
         for _ in range(3):
@@ -1048,6 +1097,16 @@ class TestBudget(StubServer):
         self.assertEqual(self.call(**limit)[0], 0)
         self.assertEqual(self.call(**limit)[0], 3)
         self.assertEqual(len(Stub.seen), 1)
+
+    def test_a_response_without_usage_is_charged_an_estimate(self):
+        """Not zero, or a token ceiling never trips (sd:2916)."""
+        Stub.drop_usage = True
+        limit = {self.STAGE + "_MAX_TOKENS": "5"}
+        rows = self.events(["noul", "q", "--stage", self.STAGE], **limit)
+        self.assertEqual(self.call(**limit)[0], 3)
+        self.assertEqual(len(Stub.seen), 1)
+        # The ledger keeps what the vendor reported, which is nothing.
+        self.assertEqual([(r["tokens_in"], r["tokens_out"]) for r in rows], [(None, None)])
 
     def test_one_stage_spent_leaves_another_alone(self):
         limit = {self.STAGE + "_MAX_CALLS": "0"}

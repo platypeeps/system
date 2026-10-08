@@ -284,6 +284,13 @@ class Operations(unittest.TestCase):
                 retry_job(self.db, self.job, expected_revision=revision, backend=self.backend, who="operator")
         self.assertEqual(self.actions(), [])
 
+    def test_a_job_names_its_last_run(self):
+        """`run` is launchd's run counter with the lifetime and boot it was
+        counted in, so a reader can tell one run from the next (sd:2904)."""
+        self.assertEqual(self.snapshot()["run"], [3, 85948, 1789568182])
+        self.runs += 1
+        self.assertEqual(self.snapshot()["run"], [4, 85948, 1789568182])
+
     def test_signal_ended_run_without_a_cancel_is_interrupted_not_unknown(self):
         """launchd prints `last terminating signal = Terminated: 15` and no
         `last exit code` line after SIGTERM. That is a recorded outcome, not

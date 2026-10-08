@@ -591,6 +591,14 @@ class TheInventory(unittest.TestCase):
             f"drop the row deliberately rather than leaving it to rot: {gone}",
         )
 
+    def test_the_jev_rule_loads_in_every_caller_folder(self):
+        """`.claude/rules/jev.md` loads by its `paths:`, so a caller missing
+        there is edited without the rules it has to keep (sd:2905)."""
+        front = (ROOT / ".claude" / "rules" / "jev.md").read_text(encoding="utf-8").split("---")[1]
+        listed = set(re.findall(r'^\s*-\s*"([^"/]+)/\*\*"\s*$', front, re.M))
+        missing = sorted(set(self.found) - NOT_CALLERS - listed)
+        self.assertEqual(missing, [], "add each to the paths: of .claude/rules/jev.md")
+
     def test_the_inventory_is_not_empty(self):
         """The one way this whole file passes while measuring nothing."""
         self.assertGreaterEqual(

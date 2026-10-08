@@ -2,10 +2,15 @@
 paths:
   - "local-jev/**"
   - "local-adversarial-gate/**"
+  - "local-drive-intake/**"
   - "local-health-check/**"
+  - "local-mail-intake/**"
   - "local-notify/**"
   - "local-obsidian-review/**"
   - "local-obsidian-tasks/**"
+  - "local-project-dashboard/**"
+  - "local-repo-sync/**"
+  - "local-scan-for-secrets/**"
   - "local-sd-db/**"
   - "local-sd-plan/**"
 ---

@@ -203,6 +203,16 @@ class TheKevArm(CompareCase):
         self.assertEqual(kev["outcome"], "ok")
         self.assertIsNotNone(kev["duration_ms"])
 
+    def test_the_kev_row_carries_the_jev_row_s_call_context(self):
+        """sd:2952: filtering the ledger by a run keeps its comparison rows."""
+        self.run_main(["noul", "is it?", "--gate", "0.8", "--stage", "JEV_NOTIFY"],
+                      JEV_RUN="sd-review-20261007T2000-ab12")
+        rows = self.by_arm(self.wait_rows(2))
+        for key in ("location", "run_id", "threshold", "prompt_hash"):
+            self.assertEqual(rows["kev"][key], rows["jev"][key], key)
+        self.assertEqual(rows["kev"]["run_id"], "sd-review-20261007T2000-ab12")
+        self.assertIsInstance(rows["kev"]["load_avg"], float)
+
     def test_under_the_shadow_switch_the_kev_row_joins_the_pair(self):
         """sd:2761: the arm, the judgment and the caller's own answer are one pair."""
         code, out = self.run_main(["score", "how urgent?", "--levels", "a,b,c",
@@ -1020,6 +1030,11 @@ class Shaping(unittest.TestCase):
         self.assertIsNone(jev.distribution_of(
             {"probabilities": {"a": 1.2, "b": 0.0}},
             {"type": "choice", "criteria": {"a": None, "b": None}}))
+
+    def test_a_token_estimate_uses_the_library_s_bytes_per_token(self):
+        # `jev` runs without `sd_db`, so the rule is mirrored, not imported.
+        from sd_db.calls import BYTES_PER_TOKEN
+        self.assertEqual(jev.BYTES_PER_TOKEN, BYTES_PER_TOKEN)
 
     def test_a_distribution_that_is_not_finite_is_no_distribution(self):
         for bad in (float("nan"), float("inf"), float("-inf")):

@@ -132,6 +132,10 @@ class JevError(RuntimeError):
     """Something the caller can act on, printed without the key in it."""
 
 
+class BudgetSpent(JevError):
+    """The stage may not call today; nothing was sent (`budget_spent`)."""
+
+
 # --- the switch --------------------------------------------------------------
 
 def flag_file(env) -> str:
@@ -347,6 +351,11 @@ BUDGET_LOCK_S = 1.0
 
 #: The prefix of a charge `budget_charge` left beside the counter.
 PENDING = "pending-"
+
+#: Bytes of UTF-8 to a token, for a side of a call its response does not
+#: count: `sd_db.calls.BYTES_PER_TOKEN`, mirrored because `jev` runs without
+#: `sd_db`, and checked by the suite. It errs high, as a ceiling should.
+BYTES_PER_TOKEN = 3
 
 WHOLE = re.compile(r"^[0-9]{1,15}$")
 
@@ -699,6 +708,8 @@ def write_event(event: dict, env, corpus=None) -> str:
     and a span attribute, and neither may hold content. Given, it is stored
     with the event and the ledger row's id.
     """
+    event = dict(event, location=event.get("location") or location(),
+                 run_id=named(env.get("JEV_RUN")), load_avg=load_avg())
     if jev_trace is not None:
         try:
             jev_trace.export(event, env)
@@ -810,6 +821,9 @@ def measure(args, env) -> None:
         "model": None,
         "question_id": subject_of(args),
         "questions": None,
+        # The cut-off the caller applied, so the report can tell the printed
+        # `unsure` or `no` from what the model chose.
+        "threshold": getattr(args, "unsure_below" if args.verb == "choice" else "gate", None),
         "answer": None,
         "confidence": None,
         "tokens_in": None,
@@ -922,9 +936,67 @@ def whose(args, env, field: str) -> str:
     Each is held to the identifier grammar on the way through: a row filed
     under `unknown` is a row that can still be counted, and a refused row is
     not.
+
+    A caller that names itself nowhere is named after the program that ran
+    `jev`, so a row always says who made the call.
     """
     variable = {"caller": "JEV_CALLER", "stage": "JEV_STAGE"}[field]
-    return named(getattr(args, field, None)) or named(env.get(variable)) or UNNAMED
+    found = named(getattr(args, field, None)) or named(env.get(variable))
+    if found is None and field == "caller":
+        found = named(program_of(parent_args()))
+    return found or UNNAMED
+
+
+#: Words that run a program rather than being one, skipped when naming it.
+RUNNERS = {"env", "sh", "bash", "zsh", "dash", "uv", "node", "nohup", "exec"}
+
+
+def parent_args() -> str | None:
+    """The command line of the process that ran `jev`, which `jev.sh` looks up
+    before its `exec` when the call names no caller, or nothing."""
+    return os.environ.get("JEV_PARENT_ARGS", "").strip() or None
+
+
+def program_of(args: str | None) -> str | None:
+    """The script a command line runs, else its interpreter: `python3 -u
+    /x/run.py --all` is `run.py`, a login `-zsh` is `zsh`."""
+    if not args:
+        return None
+    first, *rest = args.split()
+    for word in (first.lstrip("-"), *rest):
+        name = os.path.basename(word)
+        if word.startswith("-") or "=" in word or name in RUNNERS or name.startswith("python"):
+            continue
+        return name
+    return os.path.basename(first.lstrip("-"))
+
+
+def load_avg() -> float | None:
+    """The machine's one-minute load average, which explains a slow local arm."""
+    try:
+        return float(os.getloadavg()[0])
+    except (OSError, AttributeError):
+        return None
+
+
+def location() -> str | None:
+    """Where the call came from: the repository the working directory sits
+    in, else the directory itself, with the home directory as `~`.
+
+    Walks up to a `.git` rather than asking `git`, so a call costs no process.
+    """
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        return None
+    found = next((p for p in (here, *here.parents) if (p / ".git").exists()), here)
+    text = str(found)
+    home = os.environ.get("HOME", "")
+    if home and (text == home or text.startswith(home.rstrip("/") + "/")):
+        text = "~" + text[len(home.rstrip("/")):]
+    if len(text) > 255 or any(ord(c) < 32 for c in text):
+        return None
+    return text
 
 
 #: The most values the ledger's `probabilities` takes (`sd_db.judgment.MAX_OPTIONS`).
@@ -1068,8 +1140,9 @@ def baseline_answer(args, own) -> str | None:
     A `noul` under a `--gate` other than 0.5 is dropped the same way. The
     report reads every noul at 0.5 and no row says which gate the caller
     used, so a `no` against 0.8 would be compared on the wrong side of a 0.7
-    judgment. A `choice` under `--unsure-below` is dropped too: the report
-    reads the chosen key, while the caller may have been printed `unsure`.
+    judgment. A `choice` under `--unsure-below` keeps the caller's key
+    (sd:2944): the report compares each arm's chosen key, never the `unsure`
+    it printed, and the caller's own `unsure` is no key, so it is dropped.
     `changed` on the judgment's row still compares the printed words.
 
     The criteria are the ones the verb parsed when it ran. When it never ran
@@ -1091,10 +1164,6 @@ def baseline_answer(args, own) -> str | None:
                 return "1" if word == "yes" else "0"
         if getattr(args, "verb", None) != "choice":
             return judged(own)
-        # ponytail: counted, not compared, as for a noul gated away from 0.5.
-        # The report reads the chosen key, never the `unsure` it printed.
-        if getattr(args, "unsure_below", None) is not None:
-            return None
         criteria = _EVENT.get("_criteria") if _EVENT is not None else None
         if criteria is None:
             if args.criteria == "@-":
@@ -1380,6 +1449,13 @@ def redacted_payload(payload: dict, patterns) -> tuple[dict, int]:
 def build_payload(state, questions: dict, model: str) -> dict:
     if not questions:
         raise JevError("no questions to ask")
+    # The question's version: the definition without the state, so a reworded
+    # question starts a new series and a new state does not. `sha256` sorts
+    # keys, and a choice's answer is a position in its criteria, so their
+    # order is hashed too; a question without a criteria mapping keeps its hash.
+    order = {qid: list(q["criteria"]) for qid, q in questions.items()
+             if isinstance(q, dict) and isinstance(q.get("criteria"), dict)}
+    note(prompt_hash=sha256([questions, order] if order else questions)[:16])
     return {"state": state, "model": model, "questions": questions}
 
 
@@ -1439,12 +1515,15 @@ def retry_after(headers, attempt: int) -> float:
     return BACKOFF * (2 ** attempt)
 
 
-def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
+def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
+         reserve=None) -> dict:
     """POST the payload, retrying the statuses the API says to retry.
 
     `opener` and `sleep` are injected so the suite can drive a throttled
-    server and a doubling backoff without waiting for either.
+    server and a doubling backoff without waiting for either. `reserve`
+    counts the call against its stage's budget, or raises `BudgetSpent`.
     """
+    taken = 0
     if conf.get("local"):
         # Checked again here, at the one place a request is sent, so no path
         # into `post` can reach a remote host in local-only mode.
@@ -1453,8 +1532,13 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
                            "not a loopback address")
     else:
         payload, taken = redacted_payload(payload, conf.get("privacy", ()))
-        if taken:
-            sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
+    # After the last local refusal and before anything leaves: a call this
+    # machine refuses spends none of its stage's budget (sd:2910).
+    if reserve is not None:
+        reserve()
+    if taken:
+        sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
+    if not conf.get("local"):
         # After redaction and refusal, before the first attempt: the arms see
         # the bytes Jev sees, once per call however many retries follow.
         start_arms(payload)
@@ -1478,6 +1562,11 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
             try:
                 with send(request, timeout=conf["timeout"]) as response:
                     raw = response.read().decode("utf-8")
+                    # What a budget charges for a side the response does not
+                    # count: the bytes each way, never zero (sd:2916).
+                    note(_estimate={
+                        "tokens_in": len(body) // BYTES_PER_TOKEN,
+                        "tokens_out": len(raw.encode("utf-8")) // BYTES_PER_TOKEN})
                     try:
                         parsed = json.loads(raw)
                     except json.JSONDecodeError:
@@ -1564,8 +1653,10 @@ def start_arms(payload: dict) -> str:
         if not _EVENT.get("pair"):
             _EVENT["pair"] = os.urandom(8).hex()
         job = {key: _EVENT.get(key) for key in
-               ("caller", "stage", "pair", "question_id", "primitive", "questions")}
+               ("caller", "stage", "pair", "question_id", "primitive", "questions",
+                "threshold", "prompt_hash")}
         job["call"] = _EVENT.get("_call")
+        job["location"] = location()
         job["payload"] = payload
         log = (env.get("JEV_COMPARE_LOG") or "").strip()
         with tempfile.TemporaryFile("w+", encoding="utf-8", prefix="jev-compare-") as fh:
@@ -2063,7 +2154,16 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     stage = whose(args, env, "stage")
     counted = []
     if not reason:
-        word, reason = budget_spent(stage, env, reserve=True, counted=counted)
+        # Checked, not counted, before the verb reads stdin or `--state`: a
+        # call that may not send declines at once, and an open stdin or a FIFO
+        # cannot hold it. `reserve` below still counts the call atomically.
+        word, reason = budget_spent(stage, env, reserve=False)
+
+    def reserve():
+        # Called by `post`, after the last local refusal (sd:2910).
+        spent = budget_spent(stage, env, reserve=True, counted=counted)[1]
+        if spent:
+            raise BudgetSpent(spent)
     if switched and not reason:
         sys.stderr.write("jev: shadow on; Jev is asked and recorded, and its "
                          "answer is not used\n")
@@ -2075,7 +2175,11 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     else:
         outcome, cause = "ok", None
         try:
-            code = args.run(args, conf, sink, **kw)
+            code = args.run(args, conf, sink, reserve=reserve, **kw)
+        except BudgetSpent as exc:
+            # Nothing was sent: the stage's budget is spent, or its counter
+            # cannot be used. A decline like the ones above, under `budget`.
+            code, outcome, cause = degrade(str(exc), fallback, sink), "unavailable", "budget"
         except (JevError, OSError, json.JSONDecodeError) as exc:
             outcome = cause = cause_of(exc)
             if fallback is not None:
@@ -2087,9 +2191,10 @@ def main(argv=None, out=None, env=None, **kw) -> int:
             # In `finally`: an answer no verb can read still reported its
             # usage, and an uncharged call would lift a token ceiling.
             spent = _EVENT or {}
-            budget_charge(stage, env, (spent.get("tokens_in") or 0) +
-                          (spent.get("tokens_out") or 0),
-                          counted[0] if counted else "")
+            guess = spent.get("_estimate") or {}
+            tokens = sum(guess.get(side, 0) if spent.get(side) is None else spent[side]
+                         for side in ("tokens_in", "tokens_out"))
+            budget_charge(stage, env, tokens, counted[0] if counted else "")
     if shadow is not None:
         # The caller's own answer, always, and exit 0. A stage in shadow mode
         # changes no behaviour, and that has to hold on the run where the call
