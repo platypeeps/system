@@ -508,7 +508,7 @@ class TheTwoArms(JudgmentCase):
             self.write(arm="third")
 
     def test_every_decline_reason_is_its_own_value(self):
-        """Six named reasons and a catch-all, because the repairs differ. The
+        """Five named reasons and a catch-all, because the repairs differ. The
         `no-path` case in particular has already caused a silent outage."""
         for cause in CAUSES:
             self.write(stage=f"stage-{cause}", outcome="fallback", cause=cause)
@@ -516,7 +516,7 @@ class TheTwoArms(JudgmentCase):
         self.assertEqual(
             sorted(found.values()),
             sorted(["switched-off", "unkeyed", "no-path", "timeout", "invalid",
-                    "unavailable", "budget"]),
+                    "unavailable"]),
         )
         self.assertEqual(len(set(found.values())), len(CAUSES))
 

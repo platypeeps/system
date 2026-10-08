@@ -42,11 +42,7 @@ COMPARE_VARS="JEV_METER JEV_METER_DB JEV_CORPUS JEV_CORPUS_DIR JEV_CORPUS_DAYS J
   JEV_COMPARE_HAIKU_VIA JEV_COMPARE_HAIKU_MODEL JEV_COMPARE_HAIKU_USD_IN JEV_COMPARE_HAIKU_USD_OUT
   JEV_COMPARE_ANTHROPIC_KEY JEV_COMPARE_ANTHROPIC_URL JEV_COMPARE_OPENROUTER_KEY
   JEV_COMPARE_OPENROUTER_URL OPENROUTER_API_KEY JEV_COMPARE_BASETEN_KEY JEV_COMPARE_BASETEN_URL
-  JEV_COMPARE_BASETEN_MODEL BASETEN_API_KEY JEV_COMPARE_CLAUDE JEV_COMPARE_TIMEOUT JEV_COMPARE_LOG
-  JEV_BUDGET_DIR"
-# A stage's budget variables (`<STAGE>_MAX_CALLS`, `<STAGE>_MAX_TOKENS`) have
-# no fixed names, so the exported ones are read off the environment (sd:1239).
-COMPARE_VARS="$COMPARE_VARS $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*_MAX_CALLS\)=.*/\1/p; s/^\([A-Za-z_][A-Za-z0-9_]*_MAX_TOKENS\)=.*/\1/p')"
+  JEV_COMPARE_BASETEN_MODEL BASETEN_API_KEY JEV_COMPARE_CLAUDE JEV_COMPARE_TIMEOUT JEV_COMPARE_LOG"
 # Set-ness is kept apart from the value: an exported empty switch, such as
 # `JEV_COMPARE_HAIKU_VIA= jev ...`, is an off arm and must beat an on-value
 # in the .env, so it is restored even when empty.
@@ -207,12 +203,6 @@ a per-caller switch that defaults to off makes every integration added after
 it silently never run. The words it accepts are the switch file's own: 0, off,
 false, no, disabled. Anything else, including a word this does not know,
 leaves the stage on.
-
-A stage may carry a ceiling per UTC day: <STAGE>_MAX_CALLS requests and
-<STAGE>_MAX_TOKENS tokens, e.g. JEV_HEALTH_CHECK_MAX_CALLS=10. Spent, the
-stage declines with cause `budget`, exactly as when Jev is off: `enabled
-STAGE` exits 3 and --fallback is printed. Unset is no ceiling. The counter
-is ~/.local/state/jev/budget.json, or under JEV_BUDGET_DIR.
 
 The switch lives in a file, not only in a variable, because cron and launchd
 read no shell profile. Absent means enabled; `jev off` writes it. A machine

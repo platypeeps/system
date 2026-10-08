@@ -30,7 +30,6 @@ and never included in an error message.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import errno
 import io
 import ipaddress
@@ -111,14 +110,13 @@ GATE = "gate"
 BASELINE_PROVIDER = "local"
 
 #: Why a judgment was not used, as a value and not a boolean. The ledger holds
-#: the same seven, and they are seven because the repairs differ: a switch is
+#: the same six, and they are six because the repairs differ: a switch is
 #: flipped, a key is exported, a link is made, a timeout is tuned, an answer is
-#: a defect, an endpoint is chased, and a budget is raised. `no-path` is named
-#: separately because it has already caused a silent outage here -- every gate
-#: on, the key working, the probe answering, and every PATH consumer skipping
-#: its step. `budget` is a stage's daily ceiling spent (`budget_spent`).
+#: a defect, and an endpoint is chased. `no-path` is named separately because
+#: it has already caused a silent outage here -- every gate on, the key
+#: working, the probe answering, and every PATH consumer skipping its step.
 DECLINES = ("switched-off", "unkeyed", "no-path", "timeout", "invalid",
-            "unavailable", "budget")
+            "unavailable")
 
 # The kill switch. A file and not only an environment variable, because the
 # callers that matter are cron and launchd, and neither reads a shell profile.
@@ -131,10 +129,6 @@ FLAG_OFF = ("0", "off", "false", "no", "disabled")
 
 class JevError(RuntimeError):
     """Something the caller can act on, printed without the key in it."""
-
-
-class BudgetSpent(JevError):
-    """The stage may not call today; nothing was sent (`budget_spent`)."""
 
 
 # --- the switch --------------------------------------------------------------
@@ -334,233 +328,6 @@ def stage_off(name: str, env) -> bool:
     return word in FLAG_OFF
 
 
-# --- budgets (sd:1239) --------------------------------------------------------
-#
-# A stage may carry a ceiling per UTC day: `<STAGE>_MAX_CALLS` requests and
-# `<STAGE>_MAX_TOKENS` input plus output tokens. A spent budget is a decline
-# with cause `budget`, so the caller takes its old path exactly as when Jev
-# is off: `enabled STAGE` exits 3 and a `--fallback` is printed. Unset is no
-# ceiling, and a stage with none touches no file. A ceiling that does not
-# parse, or a counter that cannot be read, declines too: a limit the operator
-# set is never silently lifted, and a decline costs a caller nothing.
-
-#: The two ceilings, as (counter, variable suffix).
-BUDGET_LIMITS = (("calls", "_MAX_CALLS"), ("tokens", "_MAX_TOKENS"))
-
-#: How long a call waits for another call's hold on the counter.
-BUDGET_LOCK_S = 1.0
-
-#: The prefix of a charge `budget_charge` left beside the counter.
-PENDING = "pending-"
-
-#: Bytes of UTF-8 to a token, for a side of a call its response does not
-#: count: `sd_db.calls.BYTES_PER_TOKEN`, mirrored because `jev` runs without
-#: `sd_db`, and checked by the suite. It errs high, as a ceiling should.
-BYTES_PER_TOKEN = 3
-
-WHOLE = re.compile(r"^[0-9]{1,15}$")
-
-
-def budget_file(env) -> str:
-    """`JEV_BUDGET_DIR`/budget.json, else under `XDG_STATE_HOME` or ~/.local/state."""
-    if env.get("JEV_BUDGET_DIR"):
-        return os.path.join(env["JEV_BUDGET_DIR"], "budget.json")
-    base = env.get("XDG_STATE_HOME") or os.path.join(
-        env.get("HOME", os.path.expanduser("~")), ".local", "state")
-    return os.path.join(base, "jev", "budget.json")
-
-
-def budget_limits(stage: str, env) -> tuple[dict, str]:
-    """({counter: ceiling} for the ceilings set, what does not parse)."""
-    limits = {}
-    for counter, suffix in BUDGET_LIMITS:
-        raw = (env.get(stage + suffix) or "").strip()
-        if not raw:
-            continue
-        if not WHOLE.match(raw):
-            return {}, f"{stage}{suffix} is not a whole number: {raw[:40]!r}"
-        limits[counter] = int(raw)
-    return limits, ""
-
-
-def budget_book(env, change):
-    """Run `change(stages)` on today's counters under an exclusive lock.
-
-    `change` returns (result, dirty); a dirty book is written back. The file
-    holds one UTC day, so the first call of a new day starts from zero.
-    Raises on any failure; the callers below turn that into a decline or
-    into nothing.
-
-    The lock is a file of its own, so the book can be replaced whole: a new
-    book is written beside it and renamed over it, and a write that fails
-    leaves the old one in place.
-    """
-    import fcntl
-    path = budget_file(env)
-    folder = os.path.dirname(path)
-    os.makedirs(folder, mode=0o700, exist_ok=True)
-    lock = os.open(path + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        deadline = time.monotonic() + BUDGET_LOCK_S
-        while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() > deadline:
-                    raise OSError("another call holds the counter")
-                time.sleep(0.02)
-        today = utc_day()
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        except FileNotFoundError:
-            book = {"day": today, "stages": {}}
-        else:
-            with os.fdopen(fd, encoding="utf-8") as fh:
-                book = json.load(fh)
-        # Only a well-formed book of another day rolls over. Anything else is
-        # refused as it stands, because resetting it could drop spent counts.
-        if not (isinstance(book, dict) and isinstance(book.get("day"), str)
-                and isinstance(book.get("stages"), dict)
-                and all(whole_counts(used) for used in book["stages"].values())):
-            raise ValueError("the counter file is not a budget book")
-        if book["day"] != today:
-            book = {"day": today, "stages": {}}
-        absorbed = absorb_charges(folder, book["stages"], today)
-        result, dirty = change(book["stages"], today)
-        if dirty or absorbed:
-            temp = os.path.join(folder, f".budget-{os.urandom(8).hex()}.tmp")
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                         os.O_NOFOLLOW, 0o600)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(book, fh, sort_keys=True)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(temp, path)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    os.unlink(temp)
-                raise
-        for done in absorbed:
-            # After the write: a crash between the two counts a charge twice,
-            # which errs toward declining.
-            with contextlib.suppress(OSError):
-                os.unlink(done)
-        return result
-    finally:
-        os.close(lock)
-
-
-def utc_day() -> str:
-    """The day a budget counts, `YYYY-MM-DD` in UTC."""
-    return time.strftime("%Y-%m-%d", time.gmtime())
-
-
-def whole_counts(used) -> bool:
-    """Whether one stage's entry holds counts only: whole numbers from 0, not
-    `True`, which `int()` and `>=` would read as 1."""
-    return isinstance(used, dict) and all(
-        type(n) is int and n >= 0 for n in used.values())
-
-
-def absorb_charges(folder: str, stages: dict, today: str) -> list:
-    """Add the charges `budget_charge` could not write to `stages`, and
-    return their files. Only a charge made on `today` counts; an older one
-    is returned uncounted, a later one is kept. A file that does not parse
-    is left uncounted and kept; `budget_charge` publishes each one whole,
-    by rename."""
-    found = []
-    for name in sorted(os.listdir(folder)):
-        if not (name.startswith(PENDING) and name.endswith(".json")):
-            continue
-        where = os.path.join(folder, name)
-        try:
-            with open(where, encoding="utf-8") as fh:
-                charge = json.load(fh)
-            stage, tokens, day = charge["stage"], charge["tokens"], charge["day"]
-        except (OSError, ValueError, TypeError, KeyError):
-            continue
-        if not isinstance(day, str) or day > today:
-            continue
-        if day == today and isinstance(stage, str) and type(tokens) is int and tokens > 0:
-            used = stages.get(stage) or {}
-            stages[stage] = dict(used, tokens=int(used.get("tokens", 0)) + tokens)
-        found.append(where)
-    return found
-
-
-def budget_spent(stage: str, env, *, reserve: bool, counted=None) -> tuple:
-    """("budget", prose) when the stage may not call today, else ("", "").
-
-    With `reserve`, a call that fits is counted before it is sent, so two
-    callers racing for the last call cannot both have it. Tokens are known
-    only afterwards (`budget_charge`), so a token ceiling stops the call
-    after the one that crossed it. `counted`, a list, gets the UTC day the
-    call was counted on, which is the day its tokens are charged to.
-    """
-    limits, problem = budget_limits(stage, env)
-    if problem:
-        return "budget", problem
-    if not limits:
-        return "", ""
-
-    def check(stages, today):
-        used = stages.get(stage) or {}
-        for counter, ceiling in limits.items():
-            if int(used.get(counter, 0)) >= ceiling:
-                return (f"{stage} spent today's {counter} budget "
-                        f"({int(used.get(counter, 0))} of {ceiling})"), False
-        if not reserve:
-            return "", False
-        if counted is not None:
-            counted.append(today)
-        stages[stage] = dict(used, calls=int(used.get("calls", 0)) + 1)
-        return "", True
-    try:
-        reason = budget_book(env, check)
-    except Exception as exc:
-        return "budget", f"{stage} has a budget and its counter " \
-                         f"{budget_file(env)} cannot be used: {exc}"
-    return ("budget", reason) if reason else ("", "")
-
-
-def budget_charge(stage: str, env, tokens: int, day: str) -> None:
-    """Add a finished call's tokens to the stage's counter for `day`, the
-    UTC day the call was counted on. Never raises.
-
-    A call that crosses midnight charges nothing to the new day: the day it
-    belongs to is gone, and the new day did not admit it."""
-    if not tokens or not budget_limits(stage, env)[0]:
-        return
-
-    def add(stages, today):
-        if day != today:
-            return None, False
-        used = stages.get(stage) or {}
-        stages[stage] = dict(used, tokens=int(used.get("tokens", 0)) + tokens)
-        return None, True
-    try:
-        budget_book(env, add)
-    except Exception:
-        # The counter is locked or unreadable. Leave the charge beside it in
-        # a file of its own, which needs no lock; the next call that holds
-        # the lock adds it, so a lost write cannot lift a token ceiling.
-        # Written under a name absorption ignores, then renamed, so a reader
-        # never sees it half written.
-        try:
-            folder = os.path.dirname(budget_file(env))
-            name = os.urandom(8).hex()
-            temp = os.path.join(folder, f".{PENDING}{name}.tmp")
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                         os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"stage": stage, "tokens": tokens, "day": day}, fh)
-            os.rename(temp, os.path.join(folder, f"{PENDING}{name}.json"))
-        except Exception:
-            pass
-
-
 def cmd_enabled(args, conf, out, env=None, **kw) -> int:
     """`jev enabled [STAGE]` -- can Jev answer here, and is that stage on?
 
@@ -575,10 +342,6 @@ def cmd_enabled(args, conf, out, env=None, **kw) -> int:
     if not reason and args.stage and stage_off(args.stage, env):
         word = "switched-off"
         reason = "%s switched this stage off here" % args.stage
-    if not reason and args.stage:
-        # Read, not reserved: asking costs nothing, and the call that follows
-        # counts itself.
-        word, reason = budget_spent(args.stage, env, reserve=False)
     if args.why:
         if not reason and shadow_on(env):
             out.write("jev: enabled; shadow on (Jev is asked and recorded, "
@@ -1516,13 +1279,11 @@ def retry_after(headers, attempt: int) -> float:
     return BACKOFF * (2 ** attempt)
 
 
-def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
-         reserve=None) -> dict:
+def post(conf: dict, payload: dict, opener=None, sleep=time.sleep) -> dict:
     """POST the payload, retrying the statuses the API says to retry.
 
     `opener` and `sleep` are injected so the suite can drive a throttled
-    server and a doubling backoff without waiting for either. `reserve`
-    counts the call against its stage's budget, or raises `BudgetSpent`.
+    server and a doubling backoff without waiting for either.
     """
     taken = 0
     if conf.get("local"):
@@ -1533,10 +1294,6 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
                            "not a loopback address")
     else:
         payload, taken = redacted_payload(payload, conf.get("privacy", ()))
-    # After the last local refusal and before anything leaves: a call this
-    # machine refuses spends none of its stage's budget (sd:2910).
-    if reserve is not None:
-        reserve()
     if taken:
         sys.stderr.write(f"jev: redacted {taken} span(s) before sending\n")
     if not conf.get("local"):
@@ -1565,11 +1322,6 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
             try:
                 with send(request, timeout=conf["timeout"]) as response:
                     raw = response.read().decode("utf-8")
-                    # What a budget charges for a side the response does not
-                    # count: the bytes each way, never zero (sd:2916).
-                    note(_estimate={
-                        "tokens_in": len(body) // BYTES_PER_TOKEN,
-                        "tokens_out": len(raw.encode("utf-8")) // BYTES_PER_TOKEN})
                     try:
                         parsed = json.loads(raw)
                     except json.JSONDecodeError:
@@ -2172,19 +1924,6 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     out = Teed(out)
     sink = io.StringIO() if shadowed else out
     word, reason = why_unusable(conf, env)
-    stage = whose(args, env, "stage")
-    counted = []
-    if not reason:
-        # Checked, not counted, before the verb reads stdin or `--state`: a
-        # call that may not send declines at once, and an open stdin or a FIFO
-        # cannot hold it. `reserve` below still counts the call atomically.
-        word, reason = budget_spent(stage, env, reserve=False)
-
-    def reserve():
-        # Called by `post`, after the last local refusal (sd:2910).
-        spent = budget_spent(stage, env, reserve=True, counted=counted)[1]
-        if spent:
-            raise BudgetSpent(spent)
     if switched and not reason:
         sys.stderr.write("jev: shadow on; Jev is asked and recorded, and its "
                          "answer is not used\n")
@@ -2196,11 +1935,7 @@ def main(argv=None, out=None, env=None, **kw) -> int:
     else:
         outcome, cause = "ok", None
         try:
-            code = args.run(args, conf, sink, reserve=reserve, **kw)
-        except BudgetSpent as exc:
-            # Nothing was sent: the stage's budget is spent, or its counter
-            # cannot be used. A decline like the ones above, under `budget`.
-            code, outcome, cause = degrade(str(exc), fallback, sink), "unavailable", "budget"
+            code = args.run(args, conf, sink, **kw)
         except (JevError, OSError, json.JSONDecodeError) as exc:
             outcome = cause = cause_of(exc)
             # `post` names a request's failure; this names any other.
@@ -2211,14 +1946,6 @@ def main(argv=None, out=None, env=None, **kw) -> int:
             else:
                 sys.stderr.write(f"jev: {exc}\n")
                 code = EXIT_ERROR
-        finally:
-            # In `finally`: an answer no verb can read still reported its
-            # usage, and an uncharged call would lift a token ceiling.
-            spent = _EVENT or {}
-            guess = spent.get("_estimate") or {}
-            tokens = sum(guess.get(side, 0) if spent.get(side) is None else spent[side]
-                         for side in ("tokens_in", "tokens_out"))
-            budget_charge(stage, env, tokens, counted[0] if counted else "")
     if shadow is not None:
         # The caller's own answer, always, and exit 0. A stage in shadow mode
         # changes no behaviour, and that has to hold on the run where the call

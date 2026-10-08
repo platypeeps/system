@@ -1104,11 +1104,6 @@ class Shaping(unittest.TestCase):
             {"probabilities": {"a": 1.2, "b": 0.0}},
             {"type": "choice", "criteria": {"a": None, "b": None}}))
 
-    def test_a_token_estimate_uses_the_library_s_bytes_per_token(self):
-        # `jev` runs without `sd_db`, so the rule is mirrored, not imported.
-        from sd_db.calls import BYTES_PER_TOKEN
-        self.assertEqual(jev.BYTES_PER_TOKEN, BYTES_PER_TOKEN)
-
     def test_a_distribution_that_is_not_finite_is_no_distribution(self):
         for bad in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(value=bad):
