@@ -28,10 +28,13 @@ LIB = FOLDER.parent / "lib"
 
 # One formula is outdated, so upgrade-report runs the sweep. With BREW_HANG
 # set, `brew upgrade` never finishes; with BREW_QUIET, nothing is outdated.
+# BREW_GREEDY_CASK names a cask with `auto_updates true`: brew lists it as
+# outdated only when asked with --greedy.
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
 case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula ;;
+  "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
            [ -z "$BREW_HANG" ] || exec sleep 60 ;;
 esac
@@ -108,7 +111,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertRegex(result.stderr, STEP.format("brew upgrade", 2))
         self.assertIn("timed out after 2s: brew upgrade", result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "upgrade", "upgrade --cask", "cleanup --prune=all"])
+                         ["update", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
 
@@ -120,7 +123,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "upgrade", "upgrade --cask", "claude update", "cleanup --prune=all"])
+                         ["update", "upgrade", "upgrade --cask --greedy", "claude update", "cleanup --prune=all"])
         self.assertRegex(result.stderr, STEP.format(re.escape(str(self.home / ".local/bin/claude")) + " update", 600))
 
     def test_a_quiet_week_still_updates_claude_code(self):
@@ -147,9 +150,20 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for command, bound in (("brew update", 600), ("brew upgrade", 1800),
-                               ("brew upgrade --cask", 1800),
+                               ("brew upgrade --cask --greedy", 1800),
                                ("brew cleanup --prune=all", 600), ("mas upgrade", 1200)):
             self.assertRegex(result.stderr, STEP.format(re.escape(command), bound))
+
+    def test_a_self_updating_cask_is_outdated_and_upgraded(self):
+        """sd:3062: casks with `auto_updates true` move in the weekly run too,
+        so the outdated lists and the quiet-week check ask with --greedy."""
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", BREW_GREEDY_CASK="example-cask")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("nothing outdated", result.stdout)
+        self.assertIn("outdated --cask --greedy --quiet", self.brew_calls())
+        self.assertIn("upgrade --cask --greedy", self.brew_calls())
+        self.assertNotIn("outdated --cask --quiet", self.brew_calls())
 
     def test_the_report_names_a_hung_step_in_the_job_log_and_mails_it(self):
         result = self.run_verb("upgrade-report", MACHINE_SETUP_STEP_TIMEOUT="2", BREW_HANG="1")
@@ -189,7 +203,7 @@ class UpgradeStepTest(unittest.TestCase):
         result = self.run_verb("upgrade")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("  [dry-run] brew upgrade --cask", result.stdout)
+        self.assertIn("  [dry-run] brew upgrade --cask --greedy", result.stdout)
         self.assertEqual(self.brew_calls(), [])
         self.assertNotIn("[step", result.stdout + result.stderr)
 

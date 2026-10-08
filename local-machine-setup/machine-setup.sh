@@ -3785,7 +3785,9 @@ cmd_upgrade() {
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
     run_step 1800 brew upgrade || failed="$failed, brew upgrade"
-    run_step 1800 brew upgrade --cask || failed="$failed, brew upgrade --cask"
+    # --greedy takes casks with `auto_updates true` too, whose own updaters
+    # stage_macos turns off where the app holds a TCC grant (sd:3062).
+    run_step 1800 brew upgrade --cask --greedy || failed="$failed, brew upgrade --cask --greedy"
   else
     echo "  brew MISSING — https://brew.sh"
   fi
@@ -3812,10 +3814,11 @@ cmd_upgrade() {
 
 # outdated_lists before|after: what brew and mas call outdated, one sorted
 # file per kind under $tmp. Each query is a bounded step; one that fails or
-# times out leaves its file empty.
+# times out leaves its file empty. Casks are asked with --greedy, as
+# cmd_upgrade upgrades them, so a self-updating cask is in both lists.
 outdated_lists() {
   run_step 300 brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.$1" || :
-  run_step 300 brew outdated --cask --quiet 2>/dev/null | sort > "$tmp/cask.$1" || :
+  run_step 300 brew outdated --cask --greedy --quiet 2>/dev/null | sort > "$tmp/cask.$1" || :
   : > "$tmp/mas.$1"
   if command -v mas >/dev/null 2>&1; then
     run_step 300 mas outdated 2>/dev/null | sort > "$tmp/mas.$1" || :
@@ -4199,7 +4202,8 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    is a FAIL
   doctor sd        those sd checks alone, exit 1 on any FAIL
   test             run the unittest suite in tests/ (extra args go to unittest)
-  upgrade          maintenance sweep: brew update/upgrade, claude update
+  upgrade          maintenance sweep: brew update/upgrade (casks with
+                   --greedy, so self-updating ones move too), claude update
                    (when ~/.local/bin/claude exists), brew cleanup + mas
                    upgrade (dry run without --apply, like everything else);
                    an apply logs each step as it starts and stops it at its
