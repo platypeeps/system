@@ -81,6 +81,8 @@ Nothing else: no note body, no file path, no vault name, no
 `obsidian://` link, no priority, no action URL. `tests/` asserts that on the
 exact payload the tool hands to `jev.sh`.
 
+**Ledger subject and run (sd:2953).** The `ask` and its baseline row pass `--subject obsidian-tasks:<16 hex>`: the first 16 hex of the sha256 of the due tasks' file stems, sorted, one per line. An outcome recomputes it with `printf '%s\n' STEM... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`. The script exports `JEV_RUN=obsidian-tasks-<UTC yyyymmddThhmmss>-<4 hex>` once per run, unless it inherited one.
+
 ## Tests
 
 ```sh

@@ -40,6 +40,9 @@ Jev is asked the same question in shadow, in the background, once per failed run
 It sees the job name, the outcome and the rule's class, never a log line.
 `--shadow` hands back the rule's answer, so Jev's score is recorded in the judgment ledger and never shown.
 `JEV_JOB_TRIAGE` switches the shadow off; unset means on.
+Each `score` passes `--subject job-triage:<16 hex>`: the first 16 hex of the sha256 of the row id `job:<name>:<exit code or signalN>`, followed by a newline (sd:2953).
+An outcome recomputes it with `printf '%s\n' ID | shasum -a 256 | cut -c1-16`.
+One shadow pass is one run, `JEV_RUN=job-triage-<UTC yyyymmddThhmmss>-<4 hex>`; the server never reuses an inherited one.
 An interrupted, unloaded or unknown job ranks 2, in the look band (sd:2014). An interrupted one carries the same retry line.
 An unloaded one names the `cron-jobs.sh install` that loads it; an unknown one names the `launchctl print` that shows its record.
 The rows arrive by `/api/now` after

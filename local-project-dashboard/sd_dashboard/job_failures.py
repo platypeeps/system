@@ -23,11 +23,15 @@ switched off, unkeyed or absent, nothing is asked and the page is the same.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+import secrets
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 __all__ = ["LEVELS", "classify", "shadow"]
@@ -117,12 +121,31 @@ def _run(row: dict) -> tuple:
     return row["id"], json.dumps(row.get("run"))
 
 
+def subject(row: dict) -> str:
+    """The ledger's name for one row's triage: `job-triage:<16 hex>` (sd:2953).
+
+    No job name leaves in it. The key is the first 16 hex of the sha256 of
+    the row's id, `job:<name>:<exit code or signalN>`, followed by a newline;
+    an outcome -- did the next run pass -- recomputes it from the same id as
+    `printf '%s\\n' ID | shasum -a 256 | cut -c1-16`.
+    """
+    key = f"{row['id']}\n".encode()
+    return f"job-triage:{hashlib.sha256(key).hexdigest()[:16]}"
+
+
 def _ask(jev: list[str], rows: list[dict]) -> None:
-    """The gate once, then one shadow `score` per row; every failure is swallowed."""
+    """The gate once, then one shadow `score` per row; every failure is swallowed.
+
+    One pass is one run: its calls share a `JEV_RUN` of
+    `job-triage-<UTC yyyymmddThhmmss>-<4 hex>` (sd:2953). It is made here and
+    never inherited, because the server outlives every pass it makes.
+    """
+    run = f"job-triage-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
+    env = {**os.environ, "JEV_RUN": run}
     try:
         gate = subprocess.run(jev + ["enabled", JEV_STAGE, "--record",
                                      "--caller", JEV_CALLER, "--stage", JEV_STAGE],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=env)
         if gate.returncode != 0:
             return
         for row in rows:
@@ -133,8 +156,9 @@ def _ask(jev: list[str], rows: list[dict]) -> None:
             subprocess.run(jev + ["score", QUESTION, "--levels", ",".join(LEVELS),
                                   "--state", "-", "--state-format", "json",
                                   "--shadow", str(row["triage"]["score"]),
-                                  "--caller", JEV_CALLER, "--stage", JEV_STAGE],
-                           input=json.dumps(state), capture_output=True, text=True)
+                                  "--caller", JEV_CALLER, "--stage", JEV_STAGE,
+                                  "--subject", subject(row)],
+                           input=json.dumps(state), capture_output=True, text=True, env=env)
     except (OSError, subprocess.SubprocessError):
         pass  # A shadow may never fail the page.
 

@@ -30,3 +30,5 @@ paths:
 - Keep `jev shadow` off when its file is absent; it sends a real call per decision and changes what callers see.
 - A suite that can reach the real `jev` pins `JEV_METER=0`, `JEV_CORPUS=0` or a temp `JEV_CORPUS_DIR`, and `JEV_TRACES_URL=0`; unpinned, it writes the operator's ledger and corpus.
   - Pin the URL to an off word: `jev.sh` refills an unset or empty one from `<config>/jev/.env` (sd:2799).
+- Give every `jev` call a `--subject <caller>:<stable key>` and export `JEV_RUN` once per run, so an outcome can join the row (sd:2953).
+  - Hash a content-derived key (first 16 hex of sha256); document the key and its recompute in the caller's README.

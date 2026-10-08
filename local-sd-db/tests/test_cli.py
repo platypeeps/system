@@ -287,7 +287,7 @@ class TheConventions(CliCase):
         completed = self.sd_db("--help")
         entries = {
             match.group(1)
-            for match in re.finditer(r"^  ([a-z]+)\b", completed.stderr, re.MULTILINE)
+            for match in re.finditer(r"^  ([a-z-]+)\b", completed.stderr, re.MULTILINE)
         }
         self.assertTrue(self.dispatched, "read no verbs out of the dispatcher")
         for verb in self.dispatched:
@@ -313,7 +313,7 @@ class TheConventions(CliCase):
         verb added to that line is covered here without a list to update.
         """
         body = ENTRYPOINT.read_text(encoding="utf-8")
-        line = re.search(r"^    ([a-z|]+)\)\n(?:.*\n){0,8}?.*-m sd_db\.jobs\.cli ", body, re.MULTILINE)
+        line = re.search(r"^    ([a-z|-]+)\)\n(?:.*\n){0,8}?.*-m sd_db\.jobs\.cli ", body, re.MULTILINE)
         self.assertIsNotNone(line, "found no arm that runs sd_db.jobs.cli")
         verbs = line.group(1).split("|")
         self.assertIn("init", verbs)

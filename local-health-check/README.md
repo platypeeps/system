@@ -178,6 +178,8 @@ The redaction over-reaches on purpose — a clock time can read as an address.
 Losing a timestamp costs the judgment nothing; a leaked tailnet name cannot be
 taken back.
 
+**Ledger subject and run (sd:2953).** The `ask` and its baseline row pass `--subject health-check:<16 hex>`: the first 16 hex of the sha256 of the redacted shareable forms, sorted, one per line. An outcome recomputes it from those lines with `LC_ALL=C sort | shasum -a 256 | cut -c1-16`. The script exports `JEV_RUN=health-check-<UTC yyyymmddThhmmss>-<4 hex>` once, so the report's `notify.sh` call joins the same run.
+
 ## Tests
 
 `./health-check.sh test` runs `tests/test_sweep.py` (`unittest`; arguments

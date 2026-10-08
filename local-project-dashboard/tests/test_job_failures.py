@@ -5,6 +5,7 @@ command, and the command here is a stub that writes down what it was asked.
 The stub answers `enabled STAGE` from that stage's variable, as `jev` does.
 """
 
+import hashlib
 import json
 import os
 import stat
@@ -24,6 +25,7 @@ from test_workflow_actions import BrowserSession
 #: row that used Jev's answer would read differently from one that did not.
 STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "$JEV_STUB_LOG"
+printf '%s\\n' "${JEV_RUN:-}" >> "$JEV_STUB_LOG.run"
 case "$1" in
   enabled) case "${JEV_JOB_TRIAGE:-}" in 0|off|false|no|disabled) exit 3 ;; esac; exit 0 ;;
   score) cat >> "$JEV_STUB_STATE"; printf '\\n' >> "$JEV_STUB_STATE"; echo 3 ;;
@@ -146,6 +148,18 @@ class Shadow(ScreenCase):
         self.assertTrue(calls[1].startswith("score "), calls[1])
         self.assertIn("--shadow 0 --caller local-project-dashboard --stage JEV_JOB_TRIAGE", calls[1])
         self.assertIn("--levels transient,probably transient,unclear,needs a person", calls[1])
+
+    def test_the_score_names_the_row_by_hash_and_the_pass_is_one_run(self):
+        """`--subject` hashes the row id, never the job name; one `JEV_RUN` per pass (sd:2953)."""
+        self.document([str(self.stub)])
+        calls = self.calls_made()
+        # What an outcome recomputes from the row id `job:<name>:<exit code>`.
+        digest = hashlib.sha256(b"job:nightly-sync:1\n").hexdigest()[:16]
+        self.assertTrue(calls[1].endswith(f" --subject job-triage:{digest}"), calls[1])
+        runs = Path(f"{self.calls}.run").read_text().split()
+        self.assertEqual(len(runs), 2, runs)
+        self.assertEqual(len(set(runs)), 1, runs)
+        self.assertRegex(runs[0], r"^job-triage-\d{8}T\d{6}-[0-9a-f]{4}$")
 
     def test_what_jev_sees_is_the_name_the_outcome_and_the_rule_and_no_log_line(self):
         self.document([str(self.stub)])

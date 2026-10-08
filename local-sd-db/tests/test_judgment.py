@@ -283,6 +283,168 @@ class ThePrice(JudgmentCase):
                       text(by_stage(self.connection)))
 
 
+MACHINE = """\
+bills:
+  usage: { cost: usage }
+  local: { cost: local }
+providers:
+  typesafe: { url: "https://api.example.test/v1/systemone", vendor: typesafe,
+              bill: usage, roles: [], price: { in: 0.5, out: 2 } }
+  local:    { url: "http://localhost:8084/v1", model: pinned-coder, vendor: local,
+              bill: local, roles: [], price: { hour: 0.36 } }
+  unrated:  { url: "http://localhost:8085/v1", vendor: local, bill: local, roles: [],
+              price: { in: 1, out: 1 } }
+roles:
+  author: []
+"""
+
+
+class TheMachinePrice(JudgmentCase):
+    """A local arm priced by machine time (sd:2967): `price: {hour: N}` on its
+    provider, `server_ms` else `duration_ms`, at N dollars per hour. The rate
+    is the machine's, so the entry's model pin does not apply; no rate is
+    NULL, never 0.0; token prices are as they were."""
+
+    def setUp(self):
+        super().setUp()
+        (self.path.parent / "providers.yaml").write_text(MACHINE, encoding="utf-8")
+
+    def kev(self, **extra):
+        fields = dict(arm="kev", provider="local", model="jaredpalmer/kev-4b@v1.0",
+                      pair="p1")
+        fields.update(extra)
+        return self.row(self.write(**fields))["usd"]
+
+    def test_server_time_is_priced_at_the_hourly_rate_whatever_the_model(self):
+        # 10 s at $0.36 an hour; the entry pins another model.
+        self.assertAlmostEqual(self.kev(server_ms=10_000, duration_ms=12_000), 0.001)
+
+    def test_the_wall_clock_prices_a_row_with_no_server_time(self):
+        self.assertAlmostEqual(self.kev(duration_ms=20_000), 0.002)
+
+    def test_tokens_do_not_change_a_machine_price(self):
+        self.assertAlmostEqual(self.kev(server_ms=10_000, tokens_in=5_000, tokens_out=50),
+                               0.001)
+
+    def test_a_row_with_no_time_is_unpriced(self):
+        self.assertIsNone(self.kev())
+        self.assertIsNone(self.kev(tokens_in=5_000, tokens_out=50))
+
+    def test_no_rate_is_null_never_zero(self):
+        self.assertIsNone(self.kev(provider="unrated", duration_ms=20_000))
+        (self.path.parent / "providers.yaml").unlink()
+        self.assertIsNone(self.kev(duration_ms=20_000))
+
+    def test_a_token_price_without_an_hour_rate_is_unchanged(self):
+        self.assertAlmostEqual(self.kev(provider="unrated", tokens_in=1_000_000,
+                                        duration_ms=20_000), 1.0)
+        self.assertAlmostEqual(self.row(self.write(
+            tokens_in=400_000, tokens_out=10_000, duration_ms=900))["usd"], 0.22)
+
+    def test_a_baseline_row_on_the_local_provider_is_not_priced_by_time(self):
+        self.assertIsNone(self.row(self.write(
+            arm="baseline", provider="local", primitive="baseline",
+            duration_ms=20_000))["usd"])
+
+    def test_a_cost_the_caller_reports_still_wins(self):
+        self.assertEqual(self.kev(server_ms=10_000, usd=0.0), 0.0)
+
+
+class TheBatch(JudgmentCase):
+    """A batched call's questions as child rows (sd:2966). The batch row is
+    the call; each child is one decision, with `parent` naming the batch."""
+
+    ANSWERS = [
+        {"id": "tier", "primitive": "choice", "answer": "2", "confidence": 0.7,
+         "probabilities": "0.2,0.7,0.1"},
+        {"id": "risky", "primitive": "noul", "answer": "0.91", "confidence": 0.91},
+    ]
+
+    def batch(self, answers=None, **extra):
+        fields = dict(primitive="ask", questions=2, pair="b1", tokens_in=900,
+                      tokens_out=40, duration_ms=800, location="~/repos/system",
+                      run_id="lint-7", answers=self.ANSWERS if answers is None else answers)
+        fields.update(extra)
+        return self.write(**fields)
+
+    def children(self, parent):
+        return list(self.connection.execute(
+            "SELECT * FROM judgment WHERE parent = ? ORDER BY id", (parent,)))
+
+    def test_a_batch_writes_its_row_and_one_child_per_question(self):
+        parent = self.batch()
+        batch = self.row(parent)
+        self.assertEqual((batch["questions"], batch["answer"], batch["parent"],
+                          batch["tokens_in"]), (2, None, None, 900))
+        rows = self.children(parent)
+        self.assertEqual(
+            [(r["question_id"], r["primitive"], r["answer"], r["confidence"],
+              r["probabilities"], r["outcome"]) for r in rows],
+            [("tier:1", "choice", "2", 0.7, "0.2,0.7,0.1", "ok"),
+             ("risky:2", "noul", "0.91", 0.91, None, "ok")])
+        for child in rows:
+            self.assertEqual(
+                (child["pair"], child["stage"], child["caller"], child["location"],
+                 child["run_id"], child["timestamp"]),
+                ("b1", "JEV_MAIL_INTAKE", "local-mail-intake", "~/repos/system",
+                 "lint-7", batch["timestamp"]))
+            self.assertEqual((child["tokens_in"], child["tokens_out"], child["duration_ms"],
+                              child["usd"]), (None, None, None, None))
+
+    def test_a_row_without_answers_has_no_children(self):
+        for answers in (None, {"tier": "2"}, "2"):
+            with self.subTest(answers=answers):
+                parent = self.write(primitive="ask", questions=2, answers=answers)
+                self.assertEqual(self.children(parent), [])
+
+    def test_a_batch_is_one_call_in_the_per_stage_report(self):
+        self.batch()
+        jev = by_stage(self.connection)[0]["arms"]["jev"]
+        self.assertEqual((jev["calls"], jev["ok"], jev["tokens_in"]), (1, 1, 900))
+
+    def test_a_bad_child_is_invalid_and_keeps_the_batch_and_its_siblings(self):
+        answers = [dict(self.ANSWERS[0], answer="/Users/someone/private.txt"),
+                   self.ANSWERS[1],
+                   {"id": "has space", "primitive": "noul", "answer": "0.4"},
+                   "not a dict",
+                   # A valid id too long once its position is added.
+                   {"id": "q" * 96, "primitive": "noul", "answer": "0.5"}]
+        parent = self.batch(answers=answers)
+        self.assertEqual((self.row(parent)["outcome"], self.row(parent)["cause"]),
+                         ("ok", None))
+        rows = self.children(parent)
+        self.assertEqual(
+            [(r["question_id"], r["primitive"], r["answer"], r["outcome"], r["cause"])
+             for r in rows],
+            [("tier:1", "choice", None, "invalid", "invalid"),
+             ("risky:2", "noul", "0.91", "ok", None),
+             ("3", "noul", "0.4", "invalid", "invalid"),
+             ("4", "unknown", None, "invalid", "invalid"),
+             ("5", "noul", "0.5", "invalid", "invalid")])
+
+    def test_a_child_is_labelled_like_a_single_decision(self):
+        parent = self.batch()
+        tier = self.children(parent)[0]["id"]
+        self.assertIn(tier, [r["id"] for r in judgment.unlabelled(
+            self.connection, "JEV_MAIL_INTAKE", prefix="tier:")])
+        self.assertTrue(judgment.label(self.connection, tier, "2", "outcome.example"))
+        jev = by_stage(self.connection)[0]["arms"]["jev"]
+        self.assertEqual((jev["calls"], jev["labelled"], jev["right"]), (1, 1, 1))
+
+    def test_a_schema_21_database_reads_with_no_children(self):
+        self.write()
+        text_ = (judgment_schema_dir() / "022_judgment_batch_children.sql").read_text()
+        self.connection.executescript(
+            "\n".join(line[4:] for line in text_.splitlines() if line.startswith("--   ")))
+        self.assertEqual(self.connection.execute("PRAGMA user_version").fetchone()[0], 21)
+        self.assertEqual(by_stage(self.connection)[0]["arms"]["jev"]["calls"], 1)
+        self.assertEqual(judgment.compare(self.connection)[0]["arms"][0]["calls"], 1)
+
+
+def judgment_schema_dir():
+    from sd_db.schema import SCHEMA_DIR
+    return SCHEMA_DIR
+
 class TheTwoArms(JudgmentCase):
     """One table, one stage key, two mechanisms. A fallback that cannot be
     counted against a judgment on the same stage answers nothing."""
