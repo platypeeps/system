@@ -1171,8 +1171,10 @@ fi
 # mask + provider + ownership tag: keep file:line and the first 8 chars of
 # the match, name the provider the prefix identifies, and — if the match is
 # one of your ~/.bash_profile values — say which variable.
+# A hit is `path US line US match` (see US below); the report prints it as
+# `path:line:`.
 mask_tag() {
-  awk -F: '
+  awk -F "$US" '
     function pre(s)  { return index(m, s) == 1 }
     function has(s)  { return index(m, s) > 0 }
     function kind() {
@@ -1213,7 +1215,7 @@ mask_tag() {
     }
     {
       m = ""
-      for (i = 3; i <= NF; i++) m = m (i > 3 ? ":" : "") $i
+      for (i = 3; i <= NF; i++) m = m (i > 3 ? FS : "") $i
       k = kind()
       ktag = (k != "") ? " [" k "]" : ""
       tag = ""
@@ -1298,11 +1300,16 @@ TRANSIENT_FOUND=0
 TRANSIENT_PATH_RE='/claude-[^/]*/[^/]*/[^/]*/scratchpad/|^\.codex/shell_snapshots/'
 
 # --- pass 1: known credential formats -------------------------------------
+# Each hit is three fields split by US, the ASCII unit separator: path, line,
+# match (sd:2977). The searcher ends the path with NUL (`--null`), so a path
+# holding `:` or `:12:` stays one field; `path:line:match` split on `:` did not.
+US=$(printf '\037')
+to_fields() { tr '\0' '\037' | sed "s/$US\([0-9][0-9]*\):/$US\1$US/"; }
 echo "== pattern scan"
 if [ "$HAVE_RG" = 1 ]; then
   PATTERN_ARGS=$(printf '%s\n' "$PATTERNS" | sed 's/^/-e\n/')
   OUT=$( { rg_args; printf '%s\n' "$PATTERN_ARGS"; targets; } | tr '\n' '\0' \
-        | xargs -0 rg 2>/dev/null || true )
+        | xargs -0 rg --null 2>/dev/null | to_fields || true )
 else
   EX_D=""; for d in $EXCLUDE_DIRS; do EX_D="$EX_D --exclude-dir=$d"; done
   EX_G=""; for g in $EXCLUDE_GLOBS; do EX_G="$EX_G --exclude=$g"; done
@@ -1317,7 +1324,7 @@ TARGETS_EOF
   [ $# -gt 0 ] || set -- .
   RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
-  OUT=$(grep -rEIno $EX_D $EX_G -e "$RE" "$@" 2>/dev/null || true)
+  OUT=$(grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
 fi
 # Known-fake fixtures: AWS docs example keys, and URL matches whose password
 # is a placeholder (${VAR}, <name>) or an obvious dev value. Matches end at
@@ -1369,9 +1376,9 @@ judge_hits() {
   case $wait_s in ''|*[!0-9]*) wait_s=5 ;; esac
   printf '%s\n' "$1" | head -n "$max" | while IFS= read -r hit; do
     [ -n "$hit" ] || continue
-    # The first `:<digits>:` ends the location, so a colon in the path keeps its line.
-    subject="secret-scan:$(printf '%s\n' "$hit" | sed -E 's/(:[0-9]+):.*$/\1/' | shasum -a 256 | cut -c1-16)"
-    printf '%s\n' "$hit" | JEV_TIMEOUT=$wait_s JEV_RETRIES=0 \
+    path=${hit%%"$US"*}; rest=${hit#*"$US"}; line=${rest%%"$US"*}; match=${rest#*"$US"}
+    subject="secret-scan:$(printf '%s:%s\n' "$path" "$line" | shasum -a 256 | cut -c1-16)"
+    printf '%s:%s:%s\n' "$path" "$line" "$match" | JEV_TIMEOUT=$wait_s JEV_RETRIES=0 \
       "$JEV" noul 'Is this a real credential, not a test value or placeholder?' \
         --local-only --stage JEV_SECRET_SCAN --caller local-scan-for-secrets \
         --subject "$subject" \
