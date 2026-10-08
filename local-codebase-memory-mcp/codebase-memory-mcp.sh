@@ -11,7 +11,8 @@ case "${1:-}" in
 usage: codebase-memory-mcp.sh run
 
   run   run the codebase-memory-mcp daemon (UI on :9749) in the foreground
-        with a FIFO stdin; stdout/stderr replace codebase-memory-mcp.log.
+        with a FIFO stdin ($XDG_STATE_HOME/system/codebase-memory-mcp/,
+        default ~/.local/state); stdout/stderr replace codebase-memory-mcp.log.
         This is what launchd invokes (<prefix>.codebase-memory-mcp) —
         the daemon is normally already running, and a second copy exits when
         the port is taken.
@@ -43,10 +44,14 @@ export CBM_SQLITE_MMAP_SIZE
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="$DIR/codebase-memory-mcp.log"
-FIFO="$DIR/.stdin.fifo"
+# The FIFO lives outside the checkout: in ~/repos it blocked `grep -r` for hours.
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/system/codebase-memory-mcp"
+FIFO="$STATE/stdin.fifo"
 
 exec > "$LOG" 2>&1
 
+rm -f "$DIR/.stdin.fifo"
+mkdir -p "$STATE"
 [ -p "$FIFO" ] || mkfifo "$FIFO"
 exec 3<>"$FIFO"
 

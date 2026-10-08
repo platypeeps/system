@@ -31,7 +31,7 @@ In Claude Code a hook rewrites shell commands through `rtk`, a token-saving prox
 Run meta commands such as `rtk gain` directly.
 If `rtk` output looks wrong, re-run through `rtk proxy <cmd>`; if that differs, use the bare command and say so.
 Run `grep -h` as `rtk proxy grep -h …`: the wrapper mangles `-h` (sd:1320).
-Give every `grep -r` over `~/repos` `-D skip`: a FIFO such as `local-codebase-memory-mcp/.stdin.fifo` blocks it forever.
+Give every `grep -r` over `~/repos` `-D skip`: a FIFO in a checkout blocks it forever.
 
 # GitHub
 
