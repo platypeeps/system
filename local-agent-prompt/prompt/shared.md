@@ -11,7 +11,9 @@ Write content the operator shares externally in brief plain English: short sente
 
 # Instruction files
 
-CLAUDE.md, AGENTS.md and `.claude/rules/` hold rules, not history; record incidents and findings in `docs/`.
+CLAUDE.md, AGENTS.md and `.claude/rules/` hold rules, not history.
+The workflow database is the one state store: lane state, to-dos, decisions and incidents go in `sd task note`.
+Write no handoff files (`resume-*.md`) and no claude-mem work-state lists.
 Keep a rule to one line with a short reason.
 Keep this block under 200 lines and each repo CLAUDE.md under 150; move area rules to `.claude/rules/` with `paths:`.
 Keep documents few and history short: one document per work item at most; the tracker holds the rest.
@@ -59,6 +61,8 @@ Send a PushNotification only for a critical question; other decisions wait on th
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
 Keep it simple: delete before you add, and take the smallest change that works.
+Ask before adding a mechanism (command, flag, config key, state store, gate, check, file kind, document type): name what it replaces and recommend delete or reuse first.
+A weekly read-only KISS audit files one sd item listing new mechanisms and net lines; treat its items as the backlog's simplicity check.
 Optimize for one developer's throughput: keep tests, code review and no leaked secrets; skip team ceremony (releases, approval chains, multi-tenant hardening, per-step sign-off).
 The dashboard is the operator's primary surface: give each operator action and state a dashboard view or control.
 Keep operator commands few: fold a new action into an existing verb or a dashboard control before adding a command.
@@ -96,18 +100,13 @@ Never auto-retry a ship on a locked repo, and never use `sd-ship --wait` outside
 After a merge, once its builder has stopped, remove the clean worktree, its branches, its build output and unused agents without asking; keep unpushed unmerged work.
 Put large uncommitted data (run outputs, logs, captures) under the bulk storage root, `<root>/<repo>/`; keep build output (`target/`, `node_modules/`) on the system disk.
 
-# Merge lane (integrator sessions)
+# Merge lane
 
-Keep each lane log at `<bulk root>/<repo>/lane/lane.log`, never in a session scratchpad: the next session must find it.
-Watch it with Monitor: `tail -n 0 -F <lane.log> | grep -E --line-buffered '<outcomes>'`; if the watch is refused, say so and stop.
-Run a lane with `sd-ship lane enqueue|run|watch`; hand-built `sh` chains are legacy.
-In a legacy chain, wait on the chain's own `sh` pid, with `;` between items and `&&` only within one: a failed item must not stop the next.
+The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then `sd-ship lane watch`; build no hand-run chains.
 Request Copilot only on a PR the operator names, once, on the final head (`sd-ship prepare --copilot-review request`); never re-request after a push.
-Fix an open Copilot finding from before 2026-10-02 only for privacy, security, wrong data or a stale action; else file a P3 follow-up.
 Builders run gates in the foreground; a background gate is awaited with Monitor, never with `sleep`, and reported in the same turn.
-Keep lane state in `sd task note` on each item, not in a handoff file; at session start read the lane folder's `resume-*.md` and `sd task show` each open item.
-Before asking a builder to merge main, stop every queued chain for that item: the lane's `git merge --abort` can discard the builder's merge.
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.
+Run mechanical builder work (deletions, renames, doc moves) on Sonnet; keep design, review fixes and concurrency work on Opus.
 
 # Review rounds
 

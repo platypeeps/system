@@ -5,7 +5,7 @@ Every top-level folder is one independent tool with a `README.md`. There is no r
 One operator runs these tools on their own machines; the repository is public so others can read and reuse them.
 `README.md` covers setup and configuration for a human reader; this file holds the rules for changing the code.
 
-This file holds rules. Record incidents and findings in `docs/`, not here.
+This file holds rules. Record incidents and findings in sd notes, not here.
 Area rules load from `.claude/rules/` when you touch matching files (index at the end).
 
 ## Terms
