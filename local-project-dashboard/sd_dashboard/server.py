@@ -981,8 +981,11 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
           host: str = "127.0.0.1", operations_backend=None,
           frontdoor: auth.FrontDoor | None = None, frontdoor_check=None,
           services_backend=None, ports_backend=None, runner_backend=None,
-          peer_lookup=None, fleet_backend=None, jev=None) -> ThreadingHTTPServer:
-    """Build the loopback server and optional, separately authenticated IP socket."""
+          peer_lookup=None, fleet_backend=None, jev=None, bind=True) -> ThreadingHTTPServer:
+    """Build the loopback server and optional, separately authenticated IP socket.
+
+    `bind=False` builds both without binding: the restart probe's check, while the old server holds the ports.
+    """
     if host != "127.0.0.1":
         raise ValueError("The dashboard binds 127.0.0.1 only.")
     if frontdoor is not None and not callable(frontdoor_check):
@@ -1005,12 +1008,12 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         "peer_lookup": staticmethod(peer_lookup) if peer_lookup else None,
         "loaded_build": runtime.build_digests(),
     })
-    primary = DashboardServer((host, port), handler)
+    primary = DashboardServer((host, port), handler, bind_and_activate=bind)
     try:
         if frontdoor is not None and frontdoor.direct is not None:
             direct = frontdoor.direct
             direct_handler = type("DirectDashboard", (handler,), {"direct_listener": True})
-            primary.direct_server = Listener((direct.address, direct.port), direct_handler)
+            primary.direct_server = Listener((direct.address, direct.port), direct_handler, bind_and_activate=bind)
             primary.direct_server.runtime_owner = primary
         return primary
     except BaseException:
@@ -1018,7 +1021,9 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         raise
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, serve: bool = True) -> int:
+    """Start the dashboard. `serve=False` runs every start step short of the bind, then returns 0 (sd:3018)."""
+    argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(description="The local workflow dashboard.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--database", default=None)
@@ -1045,10 +1050,17 @@ def main(argv: list[str] | None = None) -> int:
         options = {"frontdoor": frontdoor, "frontdoor_check": private_frontdoor_unchanged}
     # Only the served dashboard asks Jev; every test build passes no command.
     options["jev"] = runtime.jev_command()
-    server = build(arguments.database, port=arguments.port, **options)
+    server = build(arguments.database, port=arguments.port, bind=serve, **options)
+    if not serve:
+        server.server_close()
+        return 0
     if arguments.config:
-        # The installer's read-only check runs the new checkout's start checks, installed_library included.
-        server.restart_probe = [str(runtime.HERE / "dashboard.sh"), "preflight", "--config", str(arguments.config)]
+        # The restart probe: a fresh interpreter imports the serving code from this checkout, as bootstrap.py
+        # does, and runs this function with the same arguments short of the bind. Only the LaunchAgent's
+        # --config start has a launchd to start the replacement.
+        probe = ("import sys; sys.path.insert(0, sys.argv.pop(1)); from sd_dashboard import server; "
+                 "raise SystemExit(server.main(sys.argv[1:], serve=False))")
+        server.restart_probe = [sys.executable, "-I", "-c", probe, str(runtime.HERE), *argv]
     host, port = server.server_address[:2]
     print(f"sd-dashboard on http://{host}:{port}", flush=True)
     try:

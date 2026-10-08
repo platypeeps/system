@@ -62,9 +62,9 @@ class DirectRemoteAccess(test_remote_access.RemoteAccess):
         self.addCleanup(self.listening.server_close)
         self.addCleanup(self.listening.shutdown)
 
-    def child_server(self, address, handler):
+    def child_server(self, address, handler, **options):
         self.assertEqual(address, ("100.64.0.10", 8768))
-        return PeerFixtureServer(("127.0.0.1", 0), handler)
+        return PeerFixtureServer(("127.0.0.1", 0), handler, **options)
 
     def peer_lookup(self, peer):
         self.peer_calls.append(peer)

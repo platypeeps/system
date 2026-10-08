@@ -663,8 +663,11 @@ class BuildIdentity(unittest.TestCase):
             self.assertEqual(body["library_digest"], original["library_digest"])
             self.assertEqual(body["dashboard_digest"], original["dashboard_digest"])
 
-    def serve_changed_build(self, probe):
-        """Start a server on this build with `probe` as its start check, then change the build on disk (sd:3018)."""
+    def serve_changed_build(self, probe, **disk):
+        """Start a server on this build with `probe` as its start check, then change the build on disk (sd:3018).
+
+        `disk` patches what `build_digests` reads next; by default a changed dashboard digest.
+        """
         from sd_db.migrate import initialise
         from sd_dashboard import server
 
@@ -682,7 +685,7 @@ class BuildIdentity(unittest.TestCase):
                 listening.serve_forever(poll_interval=0.01)
             except BaseException as error:  # noqa: BLE001 - the test reads what ended it
                 ended.append(error)
-        changed = patch.object(runtime, "build_digests", return_value=dict(original, dashboard_digest="0" * 64))
+        changed = patch.object(runtime, "build_digests", **(disk or {"return_value": dict(original, dashboard_digest="0" * 64)}))
         changed.start()
         self.addCleanup(changed.stop)
         thread = threading.Thread(target=serve, daemon=True)
@@ -706,7 +709,7 @@ class BuildIdentity(unittest.TestCase):
         """sd:3018: a merge that also moves local-sd-db/sd_db leaves the installed library behind.
 
         The replacement would fail `installed_library`, and launchd would restart it in a loop. The
-        probe here stands in for `dashboard.sh preflight` refusing that lag. The old server keeps
+        probe here stands in for the new checkout's start refusing that lag. The old server keeps
         serving, says why once, and retries when the build changes again, as the pack's make setup does.
         """
         from sd_dashboard import server
@@ -732,6 +735,26 @@ class BuildIdentity(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "a later build change did not retry the start check")
         self.assertIsInstance(ended[0], server.CodeChanged)
 
+    def assert_keeps_serving(self, probe, logged, **disk):
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            listening, thread, ended = self.serve_changed_build(probe, **disk)
+            thread.join(0.5)
+            alive = thread.is_alive()
+            if alive:
+                listening.shutdown()
+        self.assertTrue(alive, f"the server stopped: {ended}")
+        self.assertEqual("serving the old build: " in stderr.getvalue(), logged)
+
+    def test_a_checkout_mid_update_keeps_the_old_server_serving_without_a_probe(self):
+        """sd:3018: a build that cannot be fingerprinted yet is checked again later, not probed."""
+        runs = self.root / "probe-runs"
+        self.assert_keeps_serving([sys.executable, "-c", "import sys; open(sys.argv[1], 'a').write('run\\n')", str(runs)],
+                                  False, side_effect=runtime.RuntimeRefused("runtime build requires a regular file"))
+        self.assertFalse(runs.exists(), "the probe ran on a build it could not fingerprint")
+
+    def test_a_probe_that_cannot_run_keeps_the_old_server_serving(self):
+        """sd:3018: a probe that cannot even start is a failed start check."""
+        self.assert_keeps_serving([str(self.root / "missing-interpreter")], True)
 
 class LibraryLag(unittest.TestCase):
     """`installed_library` refuses an installed sd_db older than the checkout's library (the #395 class).
