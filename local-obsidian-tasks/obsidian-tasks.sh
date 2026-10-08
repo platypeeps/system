@@ -12,6 +12,11 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 NOTIFY="$DIR/../local-notify/notify.sh"
 ACTIONS="$DIR/../local-task-actions/task-actions.sh"
 JEV="$DIR/../local-jev/jev.sh"
+# One id for every jev call this run makes, so the ledger groups them
+# (sd:2953). A run that started this one keeps its own: it is the same run.
+[ -n "${JEV_RUN:-}" ] || \
+  JEV_RUN="obsidian-tasks-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+export JEV_RUN
 
 # <config>/obsidian-tasks/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
 # default ~/.config/system; see .env.example) provides defaults only; an exported
@@ -82,7 +87,7 @@ trap 'rm -rf "$TMPD"' EXIT INT TERM
 
 body=$(VAULT="$VAULT" TASKS_DIR="$TASKS_DIR" TASKS_SUBDIR="$TASKS_SUBDIR" \
        ACTIONS="$ACTIONS" JEV="$JEV" HTML_OUT="$TMPD/body.html" python3 <<'PYEOF'
-import datetime, html, json, os, pathlib, re, subprocess, sys, tempfile, urllib.parse
+import datetime, hashlib, html, json, os, pathlib, re, subprocess, sys, tempfile, urllib.parse
 
 vault = pathlib.Path(os.environ["VAULT"])
 tasks_dir = pathlib.Path(os.environ["TASKS_DIR"])
@@ -211,7 +216,19 @@ def unsigned(why):
 URGENCY = ["can wait", "this week", "today", "right now"]
 
 
-def jev_record_baseline(jev, cause=None):
+def jev_subject(stems):
+    """The ledger's name for one ordering: `obsidian-tasks:<16 hex>` (sd:2953).
+
+    No title leaves in it. The key is the first 16 hex of the sha256 of the
+    ordered notes' file stems, sorted, each followed by a newline. An outcome
+    recomputes it from the stems the digest showed, as
+    `printf '%s\\n' STEM... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`.
+    """
+    text = "".join(stem + "\n" for stem in sorted(stems))
+    return "obsidian-tasks:" + hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def jev_record_baseline(jev, cause=None, subject=None):
     """Say the digest's usual order -- the control arm -- is what ran.
 
     `--outcome ok` always: the old path completed, and that this row exists
@@ -234,7 +251,8 @@ def jev_record_baseline(jev, cause=None):
                         "--caller", "local-obsidian-tasks",
                         "--stage", "JEV_OBSIDIAN_TASKS",
                         "--arm", "baseline", "--outcome", "ok"]
-                       + (["--decline", cause] if cause else []),
+                       + (["--decline", cause] if cause else [])
+                       + (["--subject", subject] if subject else []),
                        capture_output=True, text=True, timeout=30)
     except Exception:
         pass
@@ -280,6 +298,7 @@ def jev_ranked(order):
                     "the other tasks in the same list?" % qid),
                 "criteria": URGENCY,
             }
+        subject = jev_subject([stem for *_, stem in order])
         # One request, every task a question in it: questions in one `ask`
         # run in parallel, where one call per task would pay the round trip
         # once per line of the mail.
@@ -294,7 +313,8 @@ def jev_ranked(order):
                 ["sh", jev, "ask", "--questions", qf, "--state", sf,
                  "--state-format", "json",
                  "--caller", "local-obsidian-tasks",
-                 "--stage", "JEV_OBSIDIAN_TASKS"],
+                 "--stage", "JEV_OBSIDIAN_TASKS",
+                 "--subject", subject],
                 capture_output=True, text=True, timeout=180)
         if r.returncode != 0:
             raise RuntimeError((r.stderr or r.stdout).strip()[:200]
@@ -310,7 +330,7 @@ def jev_ranked(order):
             jev_record_baseline(
                 jev,
                 "timeout" if isinstance(exc, subprocess.TimeoutExpired)
-                else None)
+                else None, subject)
         return order, False
     ranked = sorted(((-scores["t%d" % i], i, item)
                      for i, item in enumerate(order)), key=lambda t: t[:2])

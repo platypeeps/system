@@ -483,6 +483,8 @@ A prd is internal planning prose, and some of it is not for a third party.
 so a prd written with nothing set is a prd that leaves the machine; keeping it
 here is an action you take. `jev off` and an unkeyed machine stop it too.
 
+**Ledger subject and run (sd:2953).** The `ask` and its baseline row pass `--subject sd-plan:sd-<id>`, the tracker's own number, so an outcome joins by item id with nothing to recompute. A planning run sets `JEV_RUN=sd-plan-<UTC yyyymmddThhmmss>-<4 hex>` once, unless it inherited one.
+
 ## Tests
 
 `./sd-plan.sh test`, and `make check` runs it. Python rather than

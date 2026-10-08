@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -242,6 +244,48 @@ class TheLocalJudgment(unittest.TestCase):
         self.assertTrue(all(r["request"]["state_sha256"] for r in lines if r["arm"] == "kev"))
         self.assertNotIn(self.TOKEN, "".join(path.read_text() for path in files))
 
+    def test_each_hit_is_named_by_its_location_and_the_run_is_one_id(self):
+        """`--subject` hashes `path:line`, never the token; one `JEV_RUN` per run (sd:2953)."""
+        stub = self.root / "stub"
+        stub.mkdir()
+        (stub / "jev").write_text(
+            '#!/bin/sh\nprintf \'%s run=%s\\n\' "$*" "${JEV_RUN:-}" >> "$JEV_STUB_LOG"\n'
+            'cat >/dev/null\n')
+        (stub / "jev").chmod(0o755)
+        log = self.root / "calls"
+        result = self.scan(PATH=f"{stub}:{self.env['PATH']}", JEV_STUB_LOG=str(log), JEV_RUN="")
+        calls = log.read_text().splitlines()
+        self.assertEqual([line.split()[0] for line in calls], ["enabled", "noul", "noul"])
+        subjects = sorted(re.search(r"--subject (\S+)", line).group(1) for line in calls[1:])
+        # The report names each hit's location; ripgrep prints `one.txt`, `grep -E` `./one.txt`.
+        locations = re.findall(r"^\s+(\S*one\.txt:\d+):", result.stdout, re.M)
+        self.assertEqual(len(locations), 2, result.stdout)
+        expected = sorted("secret-scan:" + hashlib.sha256(f"{where}\n".encode()).hexdigest()[:16]
+                          for where in locations)
+        self.assertEqual(subjects, expected)
+        self.assertNotIn(self.TOKEN[4:], " ".join(subjects))
+        runs = {line.rsplit("run=", 1)[1] for line in calls}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^secret-scan-\d{8}T\d{6}-[0-9a-f]{4}$")
+
+    def test_a_colon_in_the_path_keeps_each_line_apart(self):
+        """`a:b.txt:1` and `a:b.txt:2` are two subjects: the path keeps its colon."""
+        (self.root / "tree" / "one.txt").unlink()
+        (self.root / "tree" / "a:b.txt").write_text(f"token = {self.TOKEN}\nother = {self.TOKEN}\n",
+                                                    encoding="utf-8")
+        stub = self.root / "stub"
+        stub.mkdir()
+        (stub / "jev").write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$JEV_STUB_LOG"\ncat >/dev/null\n')
+        (stub / "jev").chmod(0o755)
+        log = self.root / "calls"
+        result = self.scan(PATH=f"{stub}:{self.env['PATH']}", JEV_STUB_LOG=str(log))
+        subjects = sorted(re.search(r"--subject (\S+)", line).group(1)
+                          for line in log.read_text().splitlines()[1:])
+        # ripgrep names the file `a:b.txt`, `grep -E` `./a:b.txt`.
+        where = "./a:b.txt" if "./a:b.txt" in result.stdout else "a:b.txt"
+        self.assertEqual(subjects, sorted("secret-scan:" + hashlib.sha256(f"{where}:{n}\n".encode()).hexdigest()[:16]
+                                          for n in (1, 2)))
+
     def test_the_stage_switched_off_asks_nobody(self):
         self.scan(JEV_SECRET_SCAN="0")
         self.assertEqual((self.kev.seen, self.remote.seen), ([], []))
@@ -401,6 +445,204 @@ class MaskRewrite(unittest.TestCase):
         result = self.run_main([clean], apply=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def apply_through(self, path: Path, wrap) -> tuple[int, str]:
+        """Run `main` in apply mode on `path`, each open handle passed through `wrap`."""
+        real_open = open
+        env = {"S4S_PATTERNS": self.PATTERN, "S4S_PAIRS": "", "S4S_MASK_SETTLE_MIN": "10", "S4S_APPLY": "1"}
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, env), mock.patch.object(sys, "stdin", io.StringIO("%s\n" % path)), \
+                mock.patch.object(self.mod, "open", lambda *a, **k: wrap(real_open(*a, **k)), create=True), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = self.mod.main()
+        return code, err.getvalue()
+
+    def test_a_half_written_file_gets_its_original_bytes_back(self):
+        path = self.log("old.jsonl", self.SETTLED)
+        # The token first, so half the masked bytes differ from the original.
+        original = ("%s and the rest of the line\n" % self.TOKEN).encode()
+        path.write_bytes(original)
+        os.utime(path, (time.time() - self.SETTLED,) * 2)
+
+        class HalfWay:
+            """The disk fills after half the masked bytes land."""
+
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self.handle.close()
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+            def write(self, data):
+                if "+" in self.handle.mode:
+                    self.handle.write(data[: len(data) // 2])
+                    self.handle.flush()
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                return self.handle.write(data)
+
+        code, err = self.apply_through(path, HalfWay)
+        self.assertEqual(code, 1, err)
+        self.assertEqual(path.read_bytes(), original, "a half-masked file was left in place")
+        self.assertIn("original restored", err)
+
+    def half_way_then(self, after_close):
+        """A handle that fills the disk halfway through the masked write,
+        then runs `after_close` once it is closed, before recovery."""
+
+        class HalfWay:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self.handle.close()
+                if "+" in self.handle.mode:
+                    after_close(Path(self.handle.name))
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+            def write(self, data):
+                if "+" in self.handle.mode:
+                    self.handle.write(data[: len(data) // 2])
+                    self.handle.flush()
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                return self.handle.write(data)
+
+        return HalfWay
+
+    def token_first(self) -> Path:
+        path = self.log("old.jsonl", self.SETTLED)
+        path.write_bytes(("%s and the rest of the line\n" % self.TOKEN).encode())
+        os.utime(path, (time.time() - self.SETTLED,) * 2)
+        return path
+
+    def test_recovery_keeps_an_append_that_landed_after_the_failed_write(self):
+        path = self.token_first()
+        event = b'{"line": 2, "text": "written by the live session"}\n'
+
+        def session_appends(target):
+            with open(target, "ab") as f:
+                f.write(event)
+
+        code, err = self.apply_through(path, self.half_way_then(session_appends))
+        self.assertEqual(code, 1, err)
+        self.assertTrue(path.read_bytes().endswith(event), "recovery dropped the appended event")
+        self.assertIn("changed after the failed write", err)
+
+    def test_recovery_leaves_a_replacement_file_alone(self):
+        path = self.token_first()
+        rotated = b'{"line": 1, "text": "a new log after rotation"}\n'
+
+        def rotate(target):
+            fresh = target.with_suffix(".new")
+            fresh.write_bytes(rotated)
+            fresh.replace(target)
+
+        code, err = self.apply_through(path, self.half_way_then(rotate))
+        self.assertEqual(code, 1, err)
+        self.assertEqual(path.read_bytes(), rotated, "recovery wrote into a file it never read")
+        self.assertIn("replaced after the failed write", err)
+
+    def test_recovery_keeps_an_append_that_lands_while_it_restores(self):
+        path = self.token_first()
+        event = b'{"line": 2, "text": "written by the live session"}\n'
+        real_fdopen = os.fdopen
+
+        class AppendOnSeek:
+            """The session appends just as recovery starts its write."""
+
+            def __init__(self, raw):
+                self.raw = raw
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self.raw.__exit__(*exc)
+
+            def __getattr__(self, name):
+                return getattr(self.raw, name)
+
+            def seek(self, *a):
+                with open(path, "ab") as f:
+                    f.write(event)
+                return self.raw.seek(*a)
+
+        with mock.patch.object(self.mod.os, "fdopen", lambda *a, **k: AppendOnSeek(real_fdopen(*a, **k))):
+            code, err = self.apply_through(path, self.half_way_then(lambda _target: None))
+        self.assertEqual(code, 1, err)
+        self.assertTrue(path.read_bytes().endswith(event), "recovery cut the appended event")
+
+    def test_the_cut_short_shape(self):
+        cut = self.mod.cut_short
+        data, new = b"SECRETSECRET tail", b"<m> tail"
+        self.assertTrue(cut(b"<m>RETSECRET tail", data, new), "a prefix of the masked bytes, then the original")
+        self.assertTrue(cut(b"<m> tailCRET tail", data, new), "all masked bytes, no truncate")
+        self.assertFalse(cut(b"<m>RETSECRET tail+event", data, new), "an append since")
+        self.assertFalse(cut(b"<m>RETSECRXT tail", data, new), "a change past the written prefix")
+        longer = b"<masked:$NAME> tail"
+        self.assertFalse(cut(b"<masked:$NAME> ta", b"abc tail", longer),
+                         "a longer write grew the file; restoring it needs a truncate")
+
+    def test_a_rewrite_that_landed_is_not_undone(self):
+        path = self.log("old.jsonl", self.SETTLED)
+
+        class CloseFails:
+            """Every masked byte lands; the close then reports an error."""
+
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self.handle.close()
+                if "+" in self.handle.mode:
+                    raise OSError(errno.EIO, "Input/output error")
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+        code, err = self.apply_through(path, CloseFails)
+        self.assertEqual(code, 1, err)
+        self.assertNotIn(self.TOKEN.encode(), path.read_bytes(), "the restore put the secret back")
+        self.assertIn("the masked bytes landed", err)
+
+    def test_a_read_only_volume_fails_only_when_it_holds_a_match(self):
+        held = self.log("held.jsonl", self.SETTLED)
+        clean = self.root / "clean.jsonl"
+        clean.write_bytes(b'{"line": 1}\n')
+
+        def read_only_volume(handle):
+            if "+" in handle.mode:
+                handle.close()
+                raise OSError(errno.EROFS, "Read-only file system")
+            return handle
+
+        code, err = self.apply_through(held, read_only_volume)
+        self.assertEqual(code, 1, err)
+        self.assertIn("Read-only file system", err)
+        self.assertIn(self.TOKEN.encode(), held.read_bytes())
+        self.assertEqual(self.apply_through(clean, read_only_volume)[0], 0)
+
+    def test_a_symlink_masks_its_target_and_stays_a_link(self):
+        target = self.log("target.jsonl", self.SETTLED)
+        link = self.root / "link.jsonl"
+        link.symlink_to(target)
+        result = self.run_main([link], apply=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(link.is_symlink())
+        self.assertNotIn(self.TOKEN.encode(), target.read_bytes())
+
     def test_a_dry_run_reports_busy_files_and_writes_nothing(self):
         settled = self.log("old.jsonl", self.SETTLED)
         recent = self.log("new.jsonl", 60)
@@ -410,6 +652,62 @@ class MaskRewrite(unittest.TestCase):
         self.assertIn("in 1 file(s); 1 busy (dry run", result.stdout)
         self.assertIn(self.TOKEN.encode(), settled.read_bytes())
 
+
+class ManualMask(unittest.TestCase):
+    """`mask`, which the operator runs by hand, on homes with less in them
+    (sd:1254). A fixture $HOME and fixture scratch roots only: no live file
+    is read or rewritten."""
+
+    #: Joined here, so this file is not a finding of the repository scan.
+    TOKEN = "ghp_" + "Zq7" * 12
+    SETTLED = 20 * 60
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+        self.home = self.root / "home"
+        (self.root / "scratch").mkdir()
+        self.home.mkdir()
+        self.env = dict(os.environ, HOME=str(self.home), SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
+                        S4S_SCRATCH_ROOTS=str(self.root / "scratch"), JEV_SECRET_SCAN="0",
+                        S4S_MASK_SETTLE_MIN="10")
+        self.env.pop("S4S_CONF", None)
+        isolate_jev(self.env)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def plant(self, relative: str, age_seconds: float) -> None:
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"text": "token %s"}\n' % self.TOKEN, encoding="utf-8")
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+
+    def test_mask_without_exports_still_masks_known_patterns(self):
+        # No env.sh and no .bash_profile: the weekly job's mask pass must not
+        # fail, and a pattern hit is still masked (review, sd:1254).
+        self.plant(".codex/sessions/rollout.jsonl", self.SETTLED)
+        dry = subprocess.run(["sh", str(SCRIPT), "mask", "--no-prune"], cwd=self.root, env=self.env,
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(dry.returncode, 2, dry.stdout + dry.stderr)
+        self.assertIn("would mask 0 your-key value(s) + 1 pattern match(es) in 1 file(s)", dry.stdout)
+        applied = subprocess.run(["sh", str(SCRIPT), "mask", "--apply", "--no-prune"], cwd=self.root,
+                                 env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertNotIn(self.TOKEN, (self.home / ".codex/sessions/rollout.jsonl").read_text())
+
+    def test_mask_with_no_targets_touches_nothing(self):
+        # A home with no history, no AI store and no scratchpad: mask must not
+        # fall back to searching the current directory, $HOME (review, sd:1254).
+        self.plant("repos/project/app.py", self.SETTLED)
+        for flags in (["--no-prune"], ["--apply", "--no-prune"]):
+            with self.subTest(flags=flags):
+                result = subprocess.run(["sh", str(SCRIPT), "mask", *flags], cwd=self.root, env=self.env,
+                                        capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(self.TOKEN, (self.home / "repos/project/app.py").read_text())
+                self.assertNotIn("repos/project/app.py", result.stdout)
 
 if __name__ == "__main__":
     unittest.main()

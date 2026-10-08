@@ -6,8 +6,10 @@ when the server changes, and they are tested against captured samples of the
 real format.
 """
 
+import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -811,6 +813,40 @@ class TestTheSwitchReachesTheChild(unittest.TestCase):
             mi.run_jev(["jev", "enabled"], "", {"MAIL_INTAKE_MARKER": "x"})
         self.assertIn("PATH", seen)
         self.assertEqual(seen.get("MAIL_INTAKE_MARKER"), "x")
+
+
+class TestTheLedgerCanJoinAnOutcome(unittest.TestCase):
+    """Each call names its threads by hash, and one run is one `JEV_RUN` (sd:2953)."""
+
+    def test_the_subject_is_a_hash_of_the_message_ids_and_holds_no_id(self):
+        calls = []
+
+        def capture(args, state, environ=None):
+            calls.append(args)
+            return (0, "") if args[1] == "enabled" else (0, "yes")
+
+        rows = [{"subject": "Please approve", "direction": "received",
+                 "message_id": "<m8ab@example.org>"}]
+        with mock.patch.object(mi, "run_jev", side_effect=capture):
+            mi.judge_asks(rows, {}, io.StringIO())
+        subject = calls[1][calls[1].index("--subject") + 1]
+        # What an outcome recomputes from the report's message_id column.
+        digest = hashlib.sha256(b"<m8ab@example.org>\n").hexdigest()[:16]
+        self.assertEqual(subject, f"mail-intake:{digest}")
+
+    def test_two_calls_in_one_run_share_one_jev_run(self):
+        seen = []
+
+        def fake_run(args, **kwargs):
+            seen.append(kwargs["env"].get("JEV_RUN"))
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.dict(os.environ), mock.patch.object(mi.subprocess, "run", fake_run):
+            os.environ.pop("JEV_RUN", None)
+            mi.run_jev(["jev", "enabled"], "", {})
+            mi.run_jev(["jev", "noul"], "", {})
+        self.assertEqual(len(set(seen)), 1, seen)
+        self.assertRegex(seen[0], r"^mail-intake-\d{8}T\d{6}-[0-9a-f]{4}$")
 
 
 class TestNothingPrivateLeavesTheMachine(unittest.TestCase):

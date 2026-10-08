@@ -14,10 +14,12 @@ import itertools
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -373,13 +375,15 @@ def run_planning(root: Path, folder: Path, slug: str, row: dict, written: bool):
     exists, so the prd is written alone first and whatever the judgment keeps
     is asked for second.
     """
+    jev_run()
     consulted = jev_consulted()
     if not written:
         agent(root, slug, row, (PRD,) if consulted else DOCUMENTS)
     if not consulted:
         return DOCUMENTS, None
 
-    probabilities = consult_jev(folder / PRD) if (folder / PRD).is_file() else None
+    probabilities = (consult_jev(folder / PRD, jev_subject(row))
+                     if (folder / PRD).is_file() else None)
     required = judged_documents(probabilities)
     note = f" -- {judgment_note(probabilities)}" if probabilities else ""
     print(f"sd-plan: {slug} plans {', '.join(required)}{note}")
@@ -408,6 +412,27 @@ def jev_argv(*arguments: str) -> list[str]:
             *arguments]
 
 
+def jev_subject(row: dict) -> str:
+    """The ledger's name for this item's judgment: `sd-plan:sd-<id>` (sd:2953).
+
+    The tracker's own number, so an outcome -- which passes the item really
+    needed -- joins the row by the item id alone, with nothing to recompute.
+    """
+    return f"sd-plan:sd-{row['id']}"
+
+
+def jev_run() -> str:
+    """This run's `JEV_RUN`, inherited by every `jev` call it makes (sd:2953).
+
+    The one the run inherited, else `sd-plan-<UTC yyyymmddThhmmss>-<4 hex>`,
+    set in this process's environment so every child sees the same one.
+    """
+    if not os.environ.get("JEV_RUN"):
+        os.environ["JEV_RUN"] = (f"sd-plan-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}"
+                                 f"-{secrets.token_hex(2)}")
+    return os.environ["JEV_RUN"]
+
+
 def declined(reason: str) -> None:
     """Say why the judgment did not happen, and carry on with all three.
 
@@ -419,7 +444,7 @@ def declined(reason: str) -> None:
     return None
 
 
-def record_baseline(cause: str | None = None) -> None:
+def record_baseline(cause: str | None = None, subject: str | None = None) -> None:
     """Say all three documents -- the control arm -- are what got planned.
 
     `--outcome ok` always: the old path completed, and that this row exists at
@@ -442,7 +467,8 @@ def record_baseline(cause: str | None = None) -> None:
         subprocess.run(
             jev_argv("record", "--caller", JEV_CALLER, "--stage", JEV_STAGE,
                      "--arm", "baseline", "--outcome", "ok",
-                     *(("--decline", cause) if cause else ())),
+                     *(("--decline", cause) if cause else ()),
+                     *(("--subject", subject) if subject else ())),
             capture_output=True, stdin=subprocess.DEVNULL, check=False,
             timeout=30,
         )
@@ -484,7 +510,7 @@ def jev_consulted() -> bool:
     return True
 
 
-def consult_jev(prd: Path) -> dict | None:
+def consult_jev(prd: Path, subject: str | None = None) -> dict | None:
     """The two probabilities for one prd, or `None` for every way to miss.
 
     Off, unkeyed, failing, timed out, and answering something this cannot
@@ -495,7 +521,8 @@ def consult_jev(prd: Path) -> dict | None:
     try:
         done = subprocess.run(
             jev_argv("ask", "--questions", "-", "--state", str(prd),
-                     "--caller", JEV_CALLER, "--stage", JEV_STAGE),
+                     "--caller", JEV_CALLER, "--stage", JEV_STAGE,
+                     *(("--subject", subject) if subject else ())),
             input=json.dumps(JEV_QUESTIONS), capture_output=True, text=True,
             check=False, timeout=JEV_SECONDS,
         )
@@ -504,16 +531,16 @@ def consult_jev(prd: Path) -> dict | None:
         # reached its flush, so this row is the only record the run will have.
         record_baseline("timeout"
                         if isinstance(failure, subprocess.TimeoutExpired)
-                        else "unavailable")
+                        else "unavailable", subject)
         return declined(f"could not be run ({failure})")
     if done.returncode != 0:
-        record_baseline()
+        record_baseline(subject=subject)
         return declined(f"exited {done.returncode}: {done.stderr.strip()[:200]}")
     try:
         answers = json.loads(done.stdout)["answers"]
         return {key: float(answers[key]["noul"]) for key in JEV_QUESTIONS}
     except (ValueError, KeyError, TypeError) as unreadable:
-        record_baseline()
+        record_baseline(subject=subject)
         return declined(f"answered something this cannot read ({unreadable})")
 
 

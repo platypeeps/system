@@ -13,6 +13,7 @@ and refused `-1` instead of clamping it to `min` (a7e3487c30be).
 Runs on the fixture in test_notify.py: a copy of notify.sh beside a stub jev.
 """
 
+import hashlib
 import unittest
 
 from test_notify import NotifyTestCase
@@ -55,6 +56,28 @@ class ScoreIsANumberTest(NotifyTestCase):
                 r = self.fx.run(["msg"], env={"JEV_STUB_SCORE": raw})
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertEqual(self.priority_header(), "default", f"{raw!r} reached the priority")
+
+
+class TheLedgerCanJoinAnOutcome(NotifyTestCase):
+    """Each half names the notification by hash, and one run is one `JEV_RUN` (sd:2953)."""
+
+    def test_each_half_names_the_notification_by_hash_and_the_run_is_one_id(self):
+        r = self.fx.run(["-t", "Disk nearly full", "pat@example.org wrote"], env={})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        asked = [ln.split("\t")[1:] for ln in self.jev_calls()
+                 if ln.split("\t")[1] in ("choice", "score")]
+        self.assertEqual([argv[0] for argv in asked], ["choice", "score"])
+        digest = hashlib.sha256(b"Disk nearly full\npat@example.org wrote\n").hexdigest()[:16]
+        self.assertEqual([argv[argv.index("--subject") + 1] for argv in asked],
+                         [f"notify:{digest}:route", f"notify:{digest}:priority"])
+        runs = set(self.fx.read(self.fx.root / "jev.log.run").split())
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^notify-\d{8}T\d{6}-[0-9a-f]{4}$")
+
+    def test_a_run_that_called_notify_keeps_its_own_id(self):
+        self.fx.run(["msg"], env={"JEV_RUN": "health-check-20261007T120000-ab12"})
+        self.assertEqual(set(self.fx.read(self.fx.root / "jev.log.run").split()),
+                         {"health-check-20261007T120000-ab12"})
 
 
 if __name__ == "__main__":
