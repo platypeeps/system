@@ -28,11 +28,18 @@ LIB = FOLDER.parent / "lib"
 
 # One formula is outdated, so upgrade-report runs the sweep. With BREW_HANG
 # set, `brew upgrade` never finishes; with BREW_QUIET, nothing is outdated.
+# BREW_GREEDY_CASK names a cask with `auto_updates true`: brew lists it as
+# outdated only when asked with --greedy.
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
 case "$*" in
-  "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula ;;
+  "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula
+                                [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED" ;;
+  "list --pinned") [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED" ;;
+  "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
+  --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
+           [ -z "$BREW_NEW_PYTHON" ] || mkdir -p "$BREW_NEW_PYTHON"
            [ -z "$BREW_HANG" ] || exec sleep 60 ;;
 esac
 exit 0
@@ -43,10 +50,32 @@ echo "$*" >> "$MAS_LOG"
 exit 0
 """
 
+# One block per call, each ended by a "--" line. NOTIFY_FAIL fails every send.
 NOTIFY_STUB = r"""#!/bin/sh
-printf '%s\n' "$@" > "$NOTIFY_LOG"
-exit 0
+printf '%s\n' "$@" -- >> "$NOTIFY_LOG"
+[ -z "$NOTIFY_FAIL" ]
 """
+
+# The vault-grant probe. GRANTS_OUT is what it prints, GRANTS_RC its exit.
+DASHBOARD_STUB = r"""#!/bin/sh
+[ "$1" = grants ] || exit 2
+echo "grants" >> "$BREW_LOG"
+printf '%s\n' "${GRANTS_OUT:-DASHBOARD_PYTHON python3: ok, lists the vault}"
+exit "${GRANTS_RC:-0}"
+"""
+
+# The AI-app inventory capture. AI_APPS_OUT is what it prints, AI_APPS_RC its
+# exit; each call is logged into brew's log, so one list holds the order.
+AI_APPS_STUB = r"""#!/bin/sh
+echo "ai-apps $*" >> "$BREW_LOG"
+printf '%s\n' "${AI_APPS_OUT:-  none}"
+exit "${AI_APPS_RC:-0}"
+"""
+
+REFUSED = ("SD_DASHBOARD_PYTHON /opt/homebrew/bin/python3: cannot read /vault — macOS is asking for "
+           "Documents access and nothing under launchd can answer the prompt. Grant Full Disk "
+           "Access to /opt/homebrew/bin/python3 in System Settings > Privacy & Security, then "
+           "restart the agent.")
 
 STEP = r"\[step \d\d:\d\d:\d\d\] {} \(bound {}s\)"
 
@@ -67,6 +96,8 @@ class UpgradeStepTest(unittest.TestCase):
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copytree(LIB, repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         write_exec(repo / "local-notify/notify.sh", NOTIFY_STUB)
+        write_exec(repo / "local-project-dashboard/dashboard.sh", DASHBOARD_STUB)
+        write_exec(repo / "local-ai-apps/ai-apps.sh", AI_APPS_STUB)
         self.home = base / "home"
         self.state = self.home / ".config/machine-setup"
         self.state.mkdir(parents=True)
@@ -97,6 +128,29 @@ class UpgradeStepTest(unittest.TestCase):
                               env=self.env(**extra), capture_output=True, text=True,
                               cwd=self.tmp.name, stdin=subprocess.DEVNULL, timeout=30)
 
+    def sends(self):
+        """Each notify call's arguments, one list per call."""
+        if not self.notify_log.exists():
+            return []
+        calls, call = [], []
+        for line in self.notify_log.read_text().splitlines():
+            if line == "--":
+                calls.append(call)
+                call = []
+            else:
+                call.append(line)
+        return calls
+
+    def claude_moves_to(self, old, new):
+        """~/.local/bin/claude links to version OLD; `claude update` relinks it to NEW."""
+        versions = self.home / ".local/share/claude/versions"
+        for version in (old, new):
+            write_exec(versions / version, "#!/bin/sh\nexit 0\n")
+        write_exec(versions / old, f'#!/bin/sh\nln -sf {versions / new} {self.home / ".local/bin/claude"}\n')
+        (self.home / ".local/bin").mkdir(parents=True, exist_ok=True)
+        (self.home / ".local/bin/claude").symlink_to(versions / old)
+        return versions
+
     def brew_calls(self):
         return self.brew_log.read_text().splitlines() if self.brew_log.exists() else []
 
@@ -108,7 +162,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertRegex(result.stderr, STEP.format("brew upgrade", 2))
         self.assertIn("timed out after 2s: brew upgrade", result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "upgrade", "upgrade --cask", "cleanup --prune=all"])
+                         ["update", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
 
@@ -120,7 +174,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "upgrade", "upgrade --cask", "claude update", "cleanup --prune=all"])
+                         ["update", "upgrade", "upgrade --cask --greedy", "claude update", "cleanup --prune=all"])
         self.assertRegex(result.stderr, STEP.format(re.escape(str(self.home / ".local/bin/claude")) + " update", 600))
 
     def test_a_quiet_week_still_updates_claude_code(self):
@@ -147,9 +201,20 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for command, bound in (("brew update", 600), ("brew upgrade", 1800),
-                               ("brew upgrade --cask", 1800),
+                               ("brew upgrade --cask --greedy", 1800),
                                ("brew cleanup --prune=all", 600), ("mas upgrade", 1200)):
             self.assertRegex(result.stderr, STEP.format(re.escape(command), bound))
+
+    def test_a_self_updating_cask_is_outdated_and_upgraded(self):
+        """sd:3062: casks with `auto_updates true` move in the weekly run too,
+        so the outdated lists and the quiet-week check ask with --greedy."""
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", BREW_GREEDY_CASK="example-cask")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("nothing outdated", result.stdout)
+        self.assertIn("outdated --cask --greedy --quiet", self.brew_calls())
+        self.assertIn("upgrade --cask --greedy", self.brew_calls())
+        self.assertNotIn("outdated --cask --quiet", self.brew_calls())
 
     def test_the_report_names_a_hung_step_in_the_job_log_and_mails_it(self):
         result = self.run_verb("upgrade-report", MACHINE_SETUP_STEP_TIMEOUT="2", BREW_HANG="1")
@@ -160,6 +225,117 @@ class UpgradeStepTest(unittest.TestCase):
         mail = self.notify_log.read_text().splitlines()
         self.assertIn("-F", mail)
         self.assertIn("timed out after 2s: brew upgrade", "\n".join(mail))
+
+    def test_the_report_mail_carries_the_grants_result(self):
+        """sd:3062: the weekly mail says whether the vault grants held."""
+        cellar = pathlib.Path(self.tmp.name) / "Cellar"
+        (cellar / "python@3.14/3.14.0").mkdir(parents=True)
+        result = self.run_verb("upgrade-report", BREW_CELLAR=str(cellar),
+                               BREW_NEW_PYTHON=str(cellar / "python@3.14/3.14.1"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sends = self.sends()
+        self.assertEqual(len(sends), 1, sends)
+        body = "\n".join(sends[0])
+        self.assertIn("TCC grants (dashboard.sh grants, exit 0)", body)
+        self.assertIn("DASHBOARD_PYTHON python3: ok, lists the vault", body)
+        self.assertIn(f"new python Cellar path: {cellar}/python@3.14/3.14.1", body)
+
+    def test_a_missing_grant_pushes_what_to_regrant(self):
+        """sd:3062: one push names the binary and the permission; the job
+        still exits 0, since the report went out."""
+        versions = self.claude_moves_to("1.0.0", "1.0.1")
+        result = self.run_verb("upgrade-report", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sends = self.sends()
+        self.assertEqual(len(sends), 2, sends)
+        push = sends[0]
+        self.assertIn("-F", push)
+        self.assertIn("ntfy,email", push)
+        self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", "\n".join(push))
+        self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", "\n".join(push))
+        self.assertIn("TCC grants (dashboard.sh grants, exit 1)", "\n".join(sends[1]))
+
+    def test_a_quiet_week_with_a_missing_grant_pushes_and_exits_0(self):
+        """`claude update` runs in a quiet week too, and can drop a grant."""
+        self.claude_moves_to("1.0.0", "1.0.1")
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing outdated", result.stdout)
+        sends = self.sends()
+        self.assertEqual(len(sends), 1, sends)
+        self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", "\n".join(sends[0]))
+
+    def test_an_inconclusive_probe_is_reported_and_pushes_nothing(self):
+        """Exit 3 is not a missing grant: the mail says so, no push goes."""
+        result = self.run_verb("upgrade-report", GRANTS_OUT="inconclusive: /bin/ls lists the vault too",
+                               GRANTS_RC="3")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sends = self.sends()
+        self.assertEqual(len(sends), 1, sends)
+        self.assertIn("inconclusive: /bin/ls lists the vault too", "\n".join(sends[0]))
+
+    def test_a_lost_grant_push_fails_the_job(self):
+        """The push is the quiet week's only report, so losing it is exit 1."""
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1",
+                               NOTIFY_FAIL="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("grant push FAILED", result.stderr)
+
+    def test_the_inventory_capture_runs_after_the_upgrades_and_before_the_grants(self):
+        """sd:3062: the weekly run takes over the retired ai-apps-nightly, and
+        its mail carries the capture's diff."""
+        result = self.run_verb("upgrade-report", AI_APPS_OUT="  + claude-code|skill|example")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.brew_calls()
+        self.assertLess(calls.index("cleanup --prune=all"), calls.index("ai-apps capture"))
+        self.assertLess(calls.index("ai-apps capture"), calls.index("grants"))
+        body = "\n".join(self.sends()[0])
+        self.assertIn("ai-apps inventory:", body)
+        self.assertIn("+ claude-code|skill|example", body)
+
+    def test_a_failed_capture_is_mailed_and_the_grants_still_run(self):
+        result = self.run_verb("upgrade-report", AI_APPS_OUT="opencode.json does not parse", AI_APPS_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("grants", self.brew_calls())
+        mail = self.sends()[0]
+        self.assertIn("-F", mail)
+        self.assertIn("ai-apps inventory capture FAILED (exit 1)", "\n".join(mail))
+
+    def test_a_quiet_week_captures_and_a_failed_capture_fails_the_job(self):
+        """No mail goes in a quiet week, so the exit reports a failed capture."""
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", AI_APPS_RC="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ai-apps capture", self.brew_calls())
+        self.assertIn("grants", self.brew_calls())
+        self.assertIn("ai-apps inventory capture FAILED (exit 1)", result.stdout)
+
+    def test_a_pinned_formula_is_held_not_failed(self):
+        """sd:3062: python@3.14 is pinned, so a newer version is held on
+        purpose; the report says so, and does not count it as left over."""
+        result = self.run_verb("upgrade-report", BREW_PINNED="python@3.14")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        mail = self.sends()[0]
+        body = "\n".join(mail)
+        self.assertIn("held (pinned):\n  python@3.14", body)
+        self.assertNotIn("still outdated (formula) — held back or failed:\n  example-formula\n  python@3.14", body)
+        self.assertIn("upgrade: 0 upgraded, 1 still outdated", mail[1])
+
+    def test_a_week_with_only_a_pinned_formula_outdated_is_quiet(self):
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", BREW_PINNED="python@3.14")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing outdated", result.stdout)
+        self.assertIn("held (pinned):\n  python@3.14", result.stdout)
+        self.assertEqual(self.sends(), [])
 
     def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
         """The job's limit ends the run; the TERM trap used to remove the
@@ -189,7 +365,7 @@ class UpgradeStepTest(unittest.TestCase):
         result = self.run_verb("upgrade")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("  [dry-run] brew upgrade --cask", result.stdout)
+        self.assertIn("  [dry-run] brew upgrade --cask --greedy", result.stdout)
         self.assertEqual(self.brew_calls(), [])
         self.assertNotIn("[step", result.stdout + result.stderr)
 

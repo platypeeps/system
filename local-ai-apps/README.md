@@ -14,8 +14,6 @@ captured manifests are safe to commit; secrets stay in each app's own config.
 ./ai-apps.sh compare personal work   # cross-PROFILE diff
 ./ai-apps.sh setup [profile] [--apply]  # align machine to a manifest
 ./ai-apps.sh adopt <kind> <name> <from> <to> [--apply]  # move one item
-./ai-apps.sh update              # brew upgrade for these apps but codex and claude-code
-./ai-apps.sh nightly             # update + capture, email on change (cron)
 ```
 
 ## Manifest format
@@ -59,23 +57,18 @@ existing directory, else personal; override with `AI_APPS_PROFILE`. The work
 root is `AI_APPS_WORK_ROOT`, else `SYSTEM_TOOLS_WORK_ROOT`; `local-repo-sync`
 reads the same meaning from `REPO_SYNC_WORK_ROOT`, so the shared name drives
 both. The `.inv` files are a machine's own inventory and keep no git history;
-`nightly` writes them and commits nothing. `profiles/example.inv` in this
+`capture` writes them and commits nothing. `profiles/example.inv` in this
 folder shows the format. To compare machines, copy the other
 machine's `.inv` into the same folder. Then `compare personal work` shows the drift anywhere,
 and `setup <profile> --apply` pulls a machine toward the chosen manifest.
 
-## Cron
+## Weekly capture
 
-`ai-apps-nightly` (04:30, a job in `<config>/cron-jobs/jobs/`; examples in `local-cron-jobs/examples/`) runs `nightly`:
-upgrades the apps through brew and re-captures the inventory, emailing
-via local-notify only when an app was upgraded or the inventory moved.
-It skips codex and claude-code: `machine-setup.sh upgrade` updates them weekly.
+No cron job of its own: the ai-apps-nightly job is retired (sd:3062).
+The weekly `machine-setup.sh upgrade-report` runs `capture` after the upgrades,
+and its report mail carries the capture's diff or its failure.
+The tool upgrades no app; that weekly run upgrades every app.
 The `.inv` diff lands in `<config>/ai-apps/profiles/`.
-Each brew call names itself in the job log as it starts.
-A query stops after 600 s and an upgrade after 1800 s; `AI_APPS_STEP_TIMEOUT` sets one bound in seconds for both.
-A hung call then ends and names its step, instead of running until the job's limit.
-A brew step that fails or times out fails the night with exit 1, so cron-jobs raises its failure banner and push.
-A night with nothing outdated and no inventory change stays quiet.
 
 ## Where inventories come from
 

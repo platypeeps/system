@@ -1,14 +1,13 @@
-"""Regression tests for ai-apps.sh nightly.
+"""Regression tests for ai-apps.sh capture.
 
-The nightly runs unattended and reports by email only when something moved.
-That makes the quiet night the dangerous one: there is no email, so stderr
-and the exit status are the only channels left. A failure that returns 0 on a
-quiet night is invisible until somebody notices the inventory went stale.
+The weekly `machine-setup.sh upgrade-report` runs `capture` unattended and
+mails its diff (sd:3062). A capture that fails must say so with its exit
+status, or the inventory goes stale with nothing saying so.
 
 The fixture is a throwaway tree laid out the way the repository is, because
 the script resolves its siblings as "$DIR/..". `brew` and `notify.sh` are
 doubles, and a `git` double records any call: nothing upgrades or sends, and
-the nightly must not touch git at all.
+capture must touch neither brew nor git.
 
 Each case says which kind it is. REGRESSION means it fails against a script
 without the guard it names. PIN means it records a deliberate decision.
@@ -19,17 +18,15 @@ import hashlib
 import pathlib
 import re
 import shutil
-import signal
 import subprocess
 import tempfile
-import time
 import unittest
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = os.environ.get("AI_APPS_TEST_SCRIPT", str(FOLDER / "ai-apps.sh"))
 
 BREW_STUB = """#!/bin/sh
-# Nothing is ever outdated, so the nightly has no upgrade to report.
+# Nothing is ever outdated.
 exit 0
 """
 
@@ -44,44 +41,20 @@ FORMAT = "# format: app|kind|name[|key]  (names only — safe to commit)\n"
 # The format line before labels were encoded (sd:1273).
 OLD_FORMAT = "# format: app|kind|name  (names only — safe to commit)\n"
 
-# opencode is outdated, and its upgrade never finishes: a brew stalled on a
-# permission check nobody can answer, as on the nights of sd:2660.
-BREW_HANG_STUB = """#!/bin/sh
-case "$1" in
-  outdated) echo opencode ;;
-  upgrade) : > "$BREW_STARTED"; exec sleep 60 ;;
-esac
-"""
-
-# The query itself never finishes, so nothing is checked or upgraded.
-BREW_OUTDATED_HANG_STUB = """#!/bin/sh
-case "$1" in
-  outdated) exec sleep 60 ;;
-esac
-"""
-
-# opencode is outdated, and its upgrade fails at once.
-BREW_UPGRADE_FAILS_STUB = """#!/bin/sh
-case "$1" in
-  outdated) echo opencode ;;
-  upgrade) echo "Error: opencode: download failed" >&2; exit 1 ;;
-esac
-"""
-
-STEP_LINE = r"\[step \d\d:\d\d:\d\d\] brew upgrade opencode \(bound {}s\)"
-
 GIT_STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "$GIT_LOG"
 exit 0
 """
 
 
-# codex and claude-code are outdated; the weekly upgrade owns them (sd:3033).
-BREW_WEEKLY_ONLY_STUB = """#!/bin/sh
+# Two apps are outdated. A tool that still upgraded would call brew, and
+# this double logs every call.
+BREW_LOGGING_STUB = """#!/bin/sh
+printf '%s\\n' "$*" >> "$BREW_LOG"
 case "$1" in
-  outdated) echo codex; echo claude-code ;;
-  upgrade) echo "upgrade $*" >> "$BREW_LOG" ;;
+  outdated) echo opencode; echo claude ;;
 esac
+exit 0
 """
 
 
@@ -148,157 +121,47 @@ class Fixture(unittest.TestCase):
     def inventory(self):
         return (self.folder / "profiles" / "personal.inv").read_text()
 
-    def quiet_night(self):
-        """A night with no upgrade and no inventory change.
+class NoUpgradeTest(Fixture):
+    """The weekly machine-setup upgrade owns every app upgrade (sd:3062).
 
-        The first run writes the inventory, so it is a changed night by
-        definition. The second finds it identical and is the quiet one.
-        """
-        first = self.run_tool("nightly")
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        self.notify_log.unlink(missing_ok=True)
-        return self.run_tool("nightly")
-
-
-class QuietNightTest(Fixture):
-    def test_a_quiet_night_exits_0_without_email(self):
-        """PIN: the ordinary quiet night stays silent and green."""
-        result = self.quiet_night()
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse(self.notify_log.exists(),
-                         self.notify_log.read_text()
-                         if self.notify_log.exists() else "")
-
-    def test_a_changed_night_emails_the_report(self):
-        """PIN: the first capture is a change, and a change is mailed."""
-        result = self.run_tool("nightly")
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("ai-apps: changes on", self.notify_log.read_text())
-
-    def test_the_nightly_never_touches_git(self):
-        """PIN: the inventory keeps no git history.
-
-        The nightly writes its manifest and stops; nothing stages, commits
-        or pushes it, on a changed night or a quiet one.
-        """
-        self.quiet_night()
-
-        self.assertFalse(self.git_log.exists(),
-                         self.git_log.read_text() if self.git_log.exists() else "")
-
-
-class HungStepTest(Fixture):
-    """A brew step that hangs names itself and ends (sd:2660).
-
-    The nightly captures the update's output for its report, so a hang used
-    to leave nothing in the job log until the job's limit killed it.
+    Both Macs then move once a week, together, and the operator re-grants
+    macOS permissions in one sitting rather than after each night's upgrade.
     """
 
-    def setUp(self):
-        super().setUp()
-        self._double(self.bin / "brew", BREW_HANG_STUB)
-        self.started = self.tmp / "brew-started"
+    def test_a_capture_touches_neither_brew_nor_git_and_mails_nothing(self):
+        """REGRESSION: the nightly upgraded opencode, claude, antigravity and
+        copilot-cli through brew. PIN: the inventory keeps no git history,
+        and the weekly upgrade-report mails the diff, not capture."""
+        self._double(self.bin / "brew", BREW_LOGGING_STUB)
+        brew_log = self.tmp / "brew.log"
 
-    def test_a_hung_upgrade_is_logged_and_stopped_at_its_bound(self):
-        """REGRESSION: the step is bounded and named in the log. The night
-        then fails (FailedUpdateTest), and still mails its report."""
-        result = self.run_tool("nightly", extra_env={
-            "AI_APPS_STEP_TIMEOUT": "2", "BREW_STARTED": str(self.started)})
+        for _ in range(2):
+            result = self.run_tool("capture", extra_env={"BREW_LOG": str(brew_log)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertRegex(result.stderr, STEP_LINE.format(2))
-        self.assertIn("timed out after 2s: brew upgrade opencode", result.stdout)
-        self.assertIn("timed out after 2s: brew upgrade opencode", self.notify_log.read_text())
+        for log in (brew_log, self.git_log, self.notify_log):
+            self.assertFalse(log.exists(), log.read_text() if log.exists() else "")
 
-    def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
-        """REGRESSION: the job's limit ends the run; it does not carry on.
-
-        The TERM trap removed the temporary folder and returned, so the run
-        went on to write the capture into it: `cap: No such file or
-        directory` in the log of the night the limit fired.
-        """
-        env = dict(os.environ)
-        env.update(AI_APPS_PROFILE="personal", AI_APPS_PROFILES_DIR=str(self.folder / "profiles"),
-                   MACHINE_SETUP_STATE=str(self.tmp / "no-such-state"), HOME=str(self.home),
-                   NOTIFY_LOG=str(self.notify_log), GIT_LOG=str(self.git_log),
-                   BREW_STARTED=str(self.started), PATH=f"{self.bin}:{env['PATH']}")
-        # A group of its own, as cron-jobs' run_bounded gives a job: its limit
-        # sends TERM to the whole group.
-        process = subprocess.Popen(["sh", str(self.script), "nightly"], env=env,
-                                   cwd=str(self.tmp), stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
-        self.addCleanup(self._reap, process)
-        deadline = time.monotonic() + 20
-        while not self.started.exists() and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertTrue(self.started.exists(), "brew upgrade never started")
-
-        os.killpg(process.pid, signal.SIGTERM)
-        stdout, stderr = process.communicate(timeout=30)
-
-        self.assertEqual(process.returncode, 143, stdout + stderr)
-        self.assertNotIn("No such file or directory", stdout + stderr)
-        self.assertRegex(stderr, STEP_LINE.format(1800))
-
-    @staticmethod
-    def _reap(process):
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-
-
-class FailedUpdateTest(Fixture):
-    """A failed or timed-out update step fails the night (sd:2662).
-
-    The update's code used to be dropped with `|| true`. A brew query that
-    timed out on a quiet night then exited 0 with no mail: the step line in
-    the job log was the only trace. A nonzero exit is the nightly's failure
-    channel, as for a failed capture: cron-jobs raises its failure banner
-    and push.
-    """
-
-    def test_a_timed_out_query_fails_a_quiet_night(self):
-        """REGRESSION: the quiet night is the one nothing else reports."""
-        first = self.run_tool("nightly")
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        self.notify_log.unlink(missing_ok=True)
-        self._double(self.bin / "brew", BREW_OUTDATED_HANG_STUB)
-
-        result = self.run_tool("nightly", extra_env={
-            "AI_APPS_STEP_TIMEOUT": "1", "ST_BOUNDED_GRACE": "1"})
-
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("ai-apps: the app update failed (exit 1)", result.stderr)
-        self.assertIn("timed out after 1s: brew outdated --quiet", result.stdout)
-        self.assertFalse(self.notify_log.exists(), "an unchanged inventory mailed")
-
-    def test_a_failed_upgrade_mails_the_report_and_fails(self):
-        """REGRESSION: the report still goes, and the night still fails."""
-        self._double(self.bin / "brew", BREW_UPGRADE_FAILS_STUB)
-
-        result = self.run_tool("nightly")
-
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("ai-apps: the app update failed (exit 1)", result.stderr)
-        self.assertIn("Error: opencode: download failed", self.notify_log.read_text())
+    def test_neither_update_nor_nightly_is_a_verb(self):
+        """PIN: the weekly run upgrades and captures; ai-apps-nightly is
+        retired (sd:3062)."""
+        for verb in ("update", "nightly"):
+            result = self.run_tool(verb)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("usage:", result.stderr)
+        help_text = self.run_tool("help").stdout
+        self.assertNotIn("update", help_text)
+        self.assertNotIn("nightly", help_text)
 
 
 class ConfigDirTest(Fixture):
     def test_capture_writes_into_the_shared_config_dir(self):
         """PIN. With no AI_APPS_PROFILES_DIR the manifest goes to
-        $SYSTEM_TOOLS_CONFIG/ai-apps/profiles, not beside the script, and
-        nightly writes it there too."""
+        $SYSTEM_TOOLS_CONFIG/ai-apps/profiles, not beside the script."""
         config = self.tmp / "config"
         env = {"AI_APPS_PROFILES_DIR": None, "SYSTEM_TOOLS_CONFIG": str(config)}
         result = self.run_tool("capture", extra_env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((config / "ai-apps" / "profiles" / "personal.inv").is_file())
-        self.assertFalse((self.folder / "profiles" / "personal.inv").exists())
-        (config / "ai-apps" / "profiles" / "personal.inv").unlink()
-        nightly = self.run_tool("nightly", extra_env=env)
-        self.assertEqual(nightly.returncode, 0, nightly.stdout + nightly.stderr)
         self.assertTrue((config / "ai-apps" / "profiles" / "personal.inv").is_file())
         self.assertFalse((self.folder / "profiles" / "personal.inv").exists())
 
@@ -367,7 +230,7 @@ class ConfigReadingTest(Fixture):
         opencode documents JSONC, which is an inline `// note` after a value,
         a `/* */` block, and a comma before a closing bracket. Since an
         unparseable config is now fatal for the whole capture, each of those
-        turned one tolerated file into a nightly that wrote nothing at all.
+        turned one tolerated file into a capture that wrote nothing at all.
         """
         self.opencode_config(
             '{\n'
@@ -389,18 +252,17 @@ class ConfigReadingTest(Fixture):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("opencode|", self.inventory())
 
-    def test_the_nightly_fails_when_the_capture_could_not_run(self):
+    def test_a_capture_that_could_not_run_fails(self):
         """REGRESSION: `cmd_capture ... || true` discarded the refusal.
 
-        The night then emailed and exited 0,
-        leaving the inventory silently a day stale with nothing saying so.
+        The run then emailed and exited 0,
+        leaving the inventory silently stale with nothing saying so.
         """
         # Truncated, not merely JSONC: the reader accepts a trailing comma.
         self.opencode_config('{"mcp": {"github": {}\n')
-        result = self.run_tool("nightly")
+        result = self.run_tool("capture")
 
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn("capture failed", result.stderr)
 
 
 class RowKeyTest(Fixture):
@@ -443,7 +305,7 @@ class RowKeyTest(Fixture):
     def test_the_spec_itself_is_never_written(self):
         """REGRESSION: the key was the spec, credentials and all.
 
-        The manifest is kept and mailed by the nightly, so a
+        The manifest is kept and its diff mailed weekly, so a
         spec carrying a URL password or a download token must not reach it.
         Only a digest of the spec is recorded.
         """
@@ -540,7 +402,7 @@ class RowKeyTest(Fixture):
 
         That revision wrote the spec itself as the fourth field. The first
         capture after it reported the row as gone, spec and all, and the
-        nightly mails that report.
+        weekly upgrade-report mails that report.
         """
         (self.folder / "profiles" / "personal.inv").write_text(
             "opencode|plugin|x|https://user:secret@host/x.tgz\n")
@@ -666,18 +528,6 @@ class RowKeyTest(Fixture):
         self.assertEqual(len(row), 1, matrix)
         self.assertEqual(row[0].split()[1:], ["-", "-", "-", "x", "-"])
 
-
-
-class WeeklyOnlyApps(Fixture):
-    def test_update_leaves_codex_and_claude_code_to_the_weekly_upgrade(self):
-        """sd:3033: codex and Claude Code update in the weekly upgrade only."""
-        self._double(self.bin / "brew", BREW_WEEKLY_ONLY_STUB)
-        brew_log = self.tmp / "brew.log"
-        result = self.run_tool("update", extra_env={"BREW_LOG": str(brew_log)})
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("all AI apps current", result.stdout)
-        self.assertFalse(brew_log.exists(), brew_log.read_text() if brew_log.exists() else "")
 
 
 if __name__ == "__main__":
