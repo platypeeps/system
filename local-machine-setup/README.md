@@ -139,7 +139,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `satellite` | on a profile with a `.satellite`: writes `~/.config/sd/hub.json`, checks that the pack's installed `sd_db` is the hub's build (`DIFFERS` names both values; `--apply` installs the hub's build from `origin/main` of this checkout when its digest is the hub's, `SD_DB_SOURCE_CHECKOUT` overrides the checkout), and installs the hub's `providers.yaml`. A local `sd.db` is `EXTRA` and stops the stage; a hub that does not answer is `SKIP`. On a satellite (a `.satellite` or a `hub.json`, and no hub agent in the profile), each hub-only job in `SD_HUB_ONLY_AGENTS` that is installed or loaded is `EXTRA` and stays. Where `jev` is on `PATH`, a missing jev shadow file is `MISSING`, and `--apply` runs `jev shadow on` (sd:2838). Installs no LaunchAgent | `sd_db.satellite` under `SD_DB_PYTHON` (default: the pack's virtualenv) |
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
-| `macos` | apply `defaults` settings | — |
+| `macos` | turn self-update off in installed apps that hold a TCC grant, then apply `defaults` settings | `python3` |
 | `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), Chrome as mailto handler | `fnm`, `rtk`, `claude`, `opencode`, `duti` |
 | `system` | useLS, sudo grace period, firewall + stealth (needs sudo once), 700 on the credential dirs, Spotlight privacy exclusions from `<profile>.spotlight` | `plutil`, `PlistBuddy`, `launchctl` |
 | `obsidian` | report vault plugins vs `<profile>.obsidian` (report-only) | `python3` |
@@ -442,6 +442,19 @@ and some domains (Safari, AddressBook) are TCC-blocked and read back empty, so
 curating the key list by hand is the only honest version. `capture` refreshes
 the values of listed keys and never invents new ones. Changes need the
 affected app restarted; after a real write the stage prints the `killall` line.
+
+The stage also turns self-update off in the casks that hold a macOS privacy
+(TCC) grant, whatever the profile says (sd:3062). The weekly `upgrade-report`
+moves every cask, so both machines change together and the grants an update
+drops are re-granted in one sitting. Sparkle apps get `SUEnableAutomaticChecks`
+and `SUAutomaticallyUpdate` false in their defaults domain. VS Code gets
+`update.mode` `none`, Zed `auto_update` false, and Docker Desktop
+`AutoDownloadUpdates` false, each in its own settings file after a backup. A
+JSON file with comments keeps them; a key it already sets with comments
+around it is `DIFFERS` and left for a hand. 1Password has no documented key;
+turn off its "Install updates automatically" in Settings > Advanced. The rows
+are `SELF_UPDATE_DEFAULTS` and `self_update_json` in `machine-setup.sh`; an
+app that is not installed is skipped. Other apps keep their own updaters.
 
 ## Standalone applications
 

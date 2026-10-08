@@ -1784,17 +1784,90 @@ report_deferred() {
   echo
 }
 
+# Self-update off in the casks that hold a macOS privacy (TCC) grant
+# (sd:3062). The weekly upgrade-report moves every cask, so both machines
+# change together and the grants an update drops are re-granted in one
+# sitting, not on whatever day an app updated itself. Other apps keep their
+# own updaters. Rows are skipped for an app that is not installed.
+#
+# Sparkle apps: app|domain|key|type|value. Sparkle keeps the user's choice in
+# the app's defaults under its Info.plist key names: SUEnableAutomaticChecks
+# (scheduled checks) and SUAutomaticallyUpdate (silent installs). Grants seen
+# 2026-10-08: iTerm2 (Accessibility, Full Disk Access, Screen Recording),
+# BetterTouchTool, CleanShot X, MacWhisper (Accessibility, Screen Recording),
+# BetterDisplay, ChatGPT, ChatGPT Classic, LanguageTool, NordVPN
+# (Accessibility), Maccy (Accessibility, Post Event), DaisyDisk (Full Disk
+# Access). ChatGPT.app's domain is com.openai.codex, read from its bundle.
+SELF_UPDATE_DEFAULTS='iTerm.app|com.googlecode.iterm2
+BetterTouchTool.app|com.hegenberg.BetterTouchTool
+CleanShot X.app|pl.maketheweb.cleanshotx
+MacWhisper.app|com.goodsnooze.MacWhisper
+BetterDisplay.app|pro.betterdisplay.BetterDisplay
+ChatGPT.app|com.openai.codex
+ChatGPT Classic.app|com.openai.chat
+LanguageTool for Desktop.app|org.languagetool.desktop
+NordVPN.app|com.nordvpn.macos
+Maccy.app|org.p0deje.Maccy
+DaisyDisk.app|com.daisydiskapp.DaisyDiskStandAlone'
+# JSON settings: app|file|key|JSON value. VS Code documents `update.mode`
+# `none`, Zed `auto_update` false. Docker Desktop's settings-store.json holds
+# its "Always download updates" setting as AutoDownloadUpdates. 1Password has
+# only a settings toggle ("Install updates automatically"), no documented
+# key, so it is not here.
+self_update_json() {
+  printf '%s\n' \
+    "Visual Studio Code.app|$HOME/Library/Application Support/Code/User/settings.json|update.mode|\"none\"" \
+    "Zed.app|$HOME/.config/zed/settings.json|auto_update|false" \
+    "Docker.app|$HOME/Library/Group Containers/group.com.docker/settings-store.json|AutoDownloadUpdates|false"
+}
+
+stage_self_update() {
+  echo "  self-update off (apps holding a TCC grant; the weekly upgrade moves them)"
+  while IFS='|' read -r app dom; do
+    [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] || continue
+    for key in SUEnableAutomaticChecks SUAutomaticallyUpdate; do
+      cur=$(defaults read "$dom" "$key" 2>/dev/null || echo "(unset)")
+      if norm_eq bool "$cur" false; then
+        echo "  ok      $dom $key = $cur"
+      else
+        run defaults write "$dom" "$key" -bool false
+      fi
+    done
+  done <<EOF_SELF_UPDATE
+$SELF_UPDATE_DEFAULTS
+EOF_SELF_UPDATE
+  while IFS='|' read -r app file key val; do
+    [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] || continue
+    if ! gap=$(python3 "$DIR/claude_settings.py" pref-missing "$file" "$key" "$val" 2>/dev/null </dev/null); then
+      echo "  DIFFERS $file does not parse; $key not checked"
+      continue
+    fi
+    case "$gap" in
+      '') echo "  ok      $file $key = $val"; continue ;;
+      unset) echo "  MISSING $file $key = $val" ;;
+      *) echo "  DIFFERS $file $key $gap, want $val" ;;
+    esac
+    run backup_file "$file"
+    run mkdir -p "$(dirname "$file")"
+    run python3 "$DIR/claude_settings.py" pref-merge "$file" "$key" "$val" \
+      || echo "  DIFFERS $file $key not changed; set it to $val by hand"
+  done <<EOF_SELF_UPDATE_JSON
+$(self_update_json)
+EOF_SELF_UPDATE_JSON
+}
+
 # .macos lines are "<domain> <key> <type> <value...>". Only keys named in a
 # manifest are ever touched or captured: whole-domain exports rot across macOS
 # releases and hit TCC-blocked domains (Safari, AddressBook) silently.
 stage_macos() {
   echo "== macos"
+  command -v defaults >/dev/null 2>&1 || { echo "  defaults MISSING (not macOS?)"; return 0; }
+  stage_self_update
   entries=$(manifest macos)
   if [ -z "$entries" ]; then
     echo "  no macOS settings in this profile"
     return 0
   fi
-  command -v defaults >/dev/null 2>&1 || { echo "  defaults MISSING (not macOS?)"; return 0; }
 
   changed=0
   # Not a pipeline: `changed` must survive the loop, and a pipeline subshell

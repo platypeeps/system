@@ -5,6 +5,12 @@ file lacks; `claude_settings.py merge SETTINGS` adds those entries in place.
 `opencode-missing` and `opencode-merge` do the same for opencode.json.
 Only missing entries are added: an entry the operator set, to any value, is
 left alone, and nothing is removed. The stage backs the file up first.
+
+`pref-missing FILE KEY VALUE` and `pref-merge FILE KEY VALUE` hold one
+top-level KEY of an app's JSON settings at a JSON VALUE (the macos stage
+turns self-update off with them, sd:3062). Unlike the baseline, a KEY set to
+another value is changed. A file with comments keeps them: the KEY goes in
+as text after the opening brace, and one already there is left for a hand.
 """
 
 import json
@@ -118,7 +124,52 @@ def opencode_merge(text):
     return merged
 
 
+def pref_gap(text, key, value):
+    """'' when KEY holds VALUE; else what the file has instead."""
+    config = load_jsonc(text) if text.strip() else {}
+    if key not in config:
+        return "unset"
+    if config[key] != value:
+        return f"is {json.dumps(config[key])}"
+    return ""
+
+
+def pref_merge(text, key, value):
+    try:
+        config = json.loads(text) if text.strip() else {}
+    except ValueError:
+        config = None
+    if config is not None:
+        config[key] = value
+        return json.dumps(config, indent=2, ensure_ascii=False) + "\n"
+    if key in load_jsonc(text):
+        sys.exit(f"claude_settings.py: the file has comments and its own {key}; set it by hand")
+    entry = "\n  " + json.dumps(key) + ": " + json.dumps(value) + ","
+    return OPENING_BRACE.sub(lambda m: m.group(1) + "{" + entry, text, count=1)
+
+
 def main(argv):
+    if argv[:1] in (["pref-missing"], ["pref-merge"]):
+        verb, path, key, value = argv
+        value = json.loads(value)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except FileNotFoundError:
+            text = ""
+        if verb == "pref-missing":
+            print(pref_gap(text, key, value))
+            return
+        if pref_gap(text, key, value):
+            merged = pref_merge(text, key, value)
+            if pref_gap(merged, key, value):
+                sys.exit(f"claude_settings.py: the merged {path} does not hold {key}")
+            if text:
+                write(path, merged)
+            else:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(merged)
+        return
     verb, path = argv
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
@@ -137,7 +188,8 @@ def main(argv):
     elif verb == "merge" and missing(settings):
         write(path, json.dumps(merge(settings), indent=2, ensure_ascii=False) + "\n")
     elif verb != "merge":
-        sys.exit(f"usage: claude_settings.py missing|merge|opencode-missing|opencode-merge FILE (got {verb})")
+        sys.exit(f"usage: claude_settings.py missing|merge|opencode-missing|opencode-merge FILE"
+                 f" | pref-missing|pref-merge FILE KEY VALUE (got {verb})")
 
 
 def write(path, text):
