@@ -2,6 +2,7 @@
 
 import copy
 import http.client
+import io
 import json
 import os
 import plistlib
@@ -662,13 +663,11 @@ class BuildIdentity(unittest.TestCase):
             self.assertEqual(body["library_digest"], original["library_digest"])
             self.assertEqual(body["dashboard_digest"], original["dashboard_digest"])
 
-    def test_server_stops_when_the_disk_build_changes_and_launchd_restarts_it(self):
-        """sd:3018: a merge that moves the checkout stops the server, so KeepAlive starts the new code."""
+    def serve_changed_build(self, probe):
+        """Start a server on this build with `probe` as its start check, then change the build on disk (sd:3018)."""
         from sd_db.migrate import initialise
         from sd_dashboard import server
 
-        plist = plistlib.loads(runtime._plist(self.root / "dashboard.json", {"port": 8767}, self.root))
-        self.assertIs(plist["KeepAlive"], True)
         database = self.root / "sd.db"
         initialise(database)
         original = self.digests()
@@ -676,19 +675,61 @@ class BuildIdentity(unittest.TestCase):
             listening = server.build(database, port=0)
         self.addCleanup(listening.server_close)
         listening.build_check_seconds = 0
+        listening.restart_probe = probe
         ended = []
         def serve():
             try:
                 listening.serve_forever(poll_interval=0.01)
             except BaseException as error:  # noqa: BLE001 - the test reads what ended it
                 ended.append(error)
-        with patch.object(runtime, "build_digests", return_value=dict(original, dashboard_digest="0" * 64)):
-            thread = threading.Thread(target=serve, daemon=True)
-            thread.start()
-            thread.join(5)
+        changed = patch.object(runtime, "build_digests", return_value=dict(original, dashboard_digest="0" * 64))
+        changed.start()
+        self.addCleanup(changed.stop)
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        return listening, thread, ended
+
+    def test_server_stops_when_the_disk_build_changes_and_launchd_restarts_it(self):
+        """sd:3018: a merge that moves the checkout stops the server, so KeepAlive starts the new code."""
+        from sd_dashboard import server
+
+        plist = plistlib.loads(runtime._plist(self.root / "dashboard.json", {"port": 8767}, self.root))
+        self.assertIs(plist["KeepAlive"], True)
+        listening, thread, ended = self.serve_changed_build([sys.executable, "-c", ""])
+        thread.join(5)
         if thread.is_alive():
             listening.shutdown()
             self.fail("the server kept serving a build that changed on disk")
+        self.assertIsInstance(ended[0], server.CodeChanged)
+
+    def test_a_changed_build_that_cannot_start_leaves_the_old_server_serving(self):
+        """sd:3018: a merge that also moves local-sd-db/sd_db leaves the installed library behind.
+
+        The replacement would fail `installed_library`, and launchd would restart it in a loop. The
+        probe here stands in for `dashboard.sh preflight` refusing that lag. The old server keeps
+        serving, says why once, and retries when the build changes again, as the pack's make setup does.
+        """
+        from sd_dashboard import server
+
+        runs = self.root / "probe-runs"
+        lag = ("dashboard: installed sd_db 1111111 lacks the checkout's library commit 2222222; "
+               "run make setup in the pack, then start the dashboard")
+        refusing = [sys.executable, "-c", "import sys; open(sys.argv[1], 'a').write('run\\n'); sys.exit(sys.argv[2])",
+                    str(runs), lag]
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            listening, thread, ended = self.serve_changed_build(refusing)
+            thread.join(1)
+            alive = thread.is_alive()
+            if alive:
+                listening.restart_probe = [sys.executable, "-c", ""]
+                with patch.object(runtime, "build_digests", return_value=dict(self.digests(), library_digest="1" * 64)):
+                    thread.join(5)
+            if thread.is_alive():
+                listening.shutdown()
+        self.assertTrue(alive, f"the server stopped for a build that cannot start: {ended}")
+        self.assertEqual(runs.read_text(), "run\n")
+        self.assertIn("serving the old build: " + lag, stderr.getvalue())
+        self.assertFalse(thread.is_alive(), "a later build change did not retry the start check")
         self.assertIsInstance(ended[0], server.CodeChanged)
 
 

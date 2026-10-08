@@ -20,6 +20,9 @@ class ServerStartup(unittest.TestCase):
             library.assert_called_once_with("/fixture/sd.db")
             build.assert_called_once_with("/fixture/sd.db", port=8787, jev=runtime.jev_command())
             listening.server_close.assert_called_once()
+            # sd:3018: a changed build restarts only once the new build's own preflight passes.
+            self.assertEqual(listening.restart_probe,
+                             [str(runtime.HERE / "dashboard.sh"), "preflight", "--config", str(config)])
 
     def test_changed_build_exits_non_zero_for_launchd_to_restart(self):
         listening = Mock(server_address=("127.0.0.1", 8767))

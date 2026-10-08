@@ -33,6 +33,7 @@ import re
 import secrets
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -901,27 +902,45 @@ class CodeChanged(Exception):
 class DashboardServer(Listener):
     """Own both listeners so partial startup and shutdown leave no orphan socket.
 
-    It also stops once its build changes on disk, so the LaunchAgent's
-    KeepAlive starts the new code; a stale process answered /health 503 until
-    someone kickstarted it (sd:3018).
+    It also stops once its build changes on disk and the new build's start
+    check passes, so the LaunchAgent's KeepAlive starts the new code; a stale
+    process answered /health 503 until someone kickstarted it (sd:3018). A
+    failed check keeps the old build serving: a replacement that cannot start,
+    such as one ahead of the installed sd_db, would restart in a loop.
     """
 
     direct_server = None
     direct_thread = None
+    # The new build's start check as a command; `main` sets it for a --config start. None never restarts.
+    restart_probe = None
+    refused_build = None
     # A check hashes the library and the package, about 30 ms.
     build_check_seconds = 30
 
     def service_actions(self):
         super().service_actions()
-        if time.monotonic() - self.build_checked < self.build_check_seconds:
+        if self.restart_probe is None or time.monotonic() - self.build_checked < self.build_check_seconds:
             return
         self.build_checked = time.monotonic()
         try:
             current = runtime.build_digests()
         except runtime.RuntimeRefused:
             return  # A checkout mid-update can lack a file; the next check sees it settled.
-        if current != self.RequestHandlerClass.loaded_build:
+        if current in (self.RequestHandlerClass.loaded_build, self.refused_build):
+            return
+        # ponytail: the probe holds new connections for its run (about a second), once per change.
+        try:
+            probe = subprocess.run(self.restart_probe, stdin=subprocess.DEVNULL, capture_output=True,
+                                   text=True, timeout=60, check=False)
+            reason = "" if probe.returncode == 0 else (
+                probe.stderr.strip().splitlines() or [f"exit {probe.returncode}"])[-1]
+        except (OSError, subprocess.SubprocessError) as error:
+            reason = str(error) or type(error).__name__
+        if not reason:
             raise CodeChanged("the dashboard build changed on disk")
+        self.refused_build = current
+        print(f"sd-dashboard: the build changed on disk but cannot start; serving the old build: {reason}",
+              file=sys.stderr, flush=True)
 
     def direct_listener_healthy(self):
         return self.direct_server is None or (
@@ -1027,6 +1046,9 @@ def main(argv: list[str] | None = None) -> int:
     # Only the served dashboard asks Jev; every test build passes no command.
     options["jev"] = runtime.jev_command()
     server = build(arguments.database, port=arguments.port, **options)
+    if arguments.config:
+        # The installer's read-only check runs the new checkout's start checks, installed_library included.
+        server.restart_probe = [str(runtime.HERE / "dashboard.sh"), "preflight", "--config", str(arguments.config)]
     host, port = server.server_address[:2]
     print(f"sd-dashboard on http://{host}:{port}", flush=True)
     try:
