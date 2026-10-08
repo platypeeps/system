@@ -94,7 +94,8 @@ Reason: an allow rule matches the whole line, so `cd <dir> && …` goes to the a
 # Parallel work
 
 Follow pack `WORKFLOW.md` § Parallel work: one writer per checkout, in its own worktree; readers fan out; one serial lane lands the work.
-Run at most 4 code-writing builders at once per machine; readers stay unlimited.
+Run at most 6 code-writing builders at once per machine, and start none while load5 is above 40. Readers stay unlimited.
+Make worktrees outside `~/repos`, such as `~/worktrees/<repo>-<branch>`: repo-sync reads every folder there as a checkout.
 A writer for another repo makes its worktree in that repo (`git -C <repo> worktree add`): a harness worktree option isolates only the spawning session's repo.
 Give every spawned agent a budget and a completion notice; never poll and never assume success.
 On a missed deadline, cancel a writer and confirm it stopped before a replacement starts; only a reader may be replaced on the deadline alone.
@@ -107,8 +108,10 @@ Put large uncommitted data (run outputs, logs, captures) under the bulk storage 
 
 The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then `sd-ship lane watch`; build no hand-run chains.
 Request Copilot only on a PR the operator names, once, on the final head (`sd-ship prepare --copilot-review request`); never re-request after a push.
-Builders run gates in the foreground; a background gate is awaited with a watch (Monitor in Claude Code), never with `sleep`, and reported in the same turn.
+Builders run gates in the foreground or as a background command that wakes the agent on exit (Bash `run_in_background` in Claude Code), never with Monitor or `sleep`: Monitor stops at 30 minutes and leaves the builder idle unreported.
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.
+Stop a ship chain by its process group (`kill -- -<pgid>`): a killed shell alone leaves its children holding a gate slot.
+Before a builder merges main into its branch, stop every queued ship for that item: the ship merges in the same worktree and its abort can discard the builder's merge.
 Run mechanical builder work (deletions, renames, doc moves) on Sonnet; keep design, review fixes and concurrency work on Opus.
 
 # Review rounds

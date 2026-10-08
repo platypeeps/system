@@ -265,6 +265,15 @@ cmd_status() {
     dupes "$path" | while read -r h; do
       echo "          duplicate section outside the block: \"$h\" — remove it by hand"
     done
+    # shared.md holds the user-level rules (sd:3005), so a Claude rule file
+    # is a second copy that no machine but this one gets (sd:3031). Its
+    # heading rarely matches the block's, so every file counts.
+    if [ "$label" = claude ]; then
+      for rule in "$(dirname "$path")"/rules/*.md; do
+        [ -f "$rule" ] || continue
+        echo "  DIFFERS $rule — shared.md holds the user rules; fold anything new into it, then delete this file"
+      done
+    fi
   done
   return 0
 }

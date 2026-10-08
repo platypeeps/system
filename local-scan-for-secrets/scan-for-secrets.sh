@@ -49,12 +49,12 @@ with the provider they identify.
                credential patterns with <masked:pattern>, in SAFE files
                only: ~/.viminfo, shell history (~/.bash_history,
                ~/.zsh_history), the AI-assistant session logs listed
-               above, and the agent scratchpad dirs. Masking rewrites in
-               place on the same inode, so a scratchpad a live session is
-               still using keeps working. A file modified in the last
-               S4S_MASK_SETTLE_MIN minutes (10), or one that grows while
-               it is rewritten, is skipped and listed as busy; the next
-               run masks it. Also prunes AI session log
+               above, and the agent scratchpad dirs. Each mask is as
+               long as the bytes it replaces (padded with *, or all *
+               when shorter than the label), so masking writes in place
+               on the same inode and never changes the length; a live
+               session appending to the file keeps every line. Also
+               prunes AI session log
                files past their directory's retention (30 days, 7 for the
                codex shell-snapshot cache)
                and removes derived build output dirs under ~/repos
@@ -596,8 +596,8 @@ TARGETS_EOF
     [ "$APPLY" = 0 ] && [ "$PRUNE_FOUND" = 1 ] && exit 2
     exit 0
   fi
-  # The rewrite lives in mask_files.py, which says how it masks and why it
-  # rewrites in place. Values reach python only via the environment, never
+  # The rewrite lives in mask_files.py, which says how it masks and why a
+  # same-length mask in place keeps a live session's appends. Values reach python only via the environment, never
   # argv or disk.
   printf '%s\n' "$ALLFILES" | S4S_APPLY="$APPLY" S4S_PATTERNS="$PATTERNS" \
     python3 "$DIR/mask_files.py" || MASK_RC=$?
