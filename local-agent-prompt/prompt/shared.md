@@ -94,6 +94,7 @@ Reason: an allow rule matches the whole line, so `cd <dir> && …` goes to the a
 # Parallel work
 
 Follow pack `WORKFLOW.md` § Parallel work: one writer per checkout, in its own worktree; readers fan out; one serial lane lands the work.
+Run at most 4 code-writing builders at once per machine; readers stay unlimited.
 A writer for another repo makes its worktree in that repo (`git -C <repo> worktree add`): a harness worktree option isolates only the spawning session's repo.
 Give every spawned agent a budget and a completion notice; never poll and never assume success.
 On a missed deadline, cancel a writer and confirm it stopped before a replacement starts; only a reader may be replaced on the deadline alone.
@@ -112,9 +113,10 @@ Run mechanical builder work (deletions, renames, doc moves) on Sonnet; keep desi
 
 # Review rounds
 
+A change that moves state in steps gets the failure table (step, state moved, failure, recovery, test) in its `design.md` or PR body before the first review round.
 Trigger: two findings of the same class in different rounds, or three blocking rounds in a row.
 Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings.
-Write a table (step, state moved, failure, recovery, test) into `design.md` or the PR body; fix each row lacking a recovery or a test, fail-first.
+Add each instance to the failure table; fix each row lacking a recovery or a test, fail-first.
 Send the next round with the table; as integrator, name the class in the round brief and record the trigger in `sd task note`.
 Split the PR if the table shows it does too much; a deferred advisory filed as its own item does not count, so cite it in later rounds.
 
