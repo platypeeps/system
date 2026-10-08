@@ -258,7 +258,9 @@ the model, the per-attempt timeout and the retry count. Retries cover 429, 529
 and 5xx with a doubling backoff, and honour `Retry-After` when it is a finite,
 non-negative number, capped at 60 seconds.
 A 401 and a 422 are not retried: the key or the request is the problem, and
-retrying spends the budget twice to learn the same thing.
+retrying spends the budget twice to learn the same thing. Neither is a
+refused `--local-only` connect, to a loopback port nothing listens on or one
+a sandbox denies: it is refused again 2, 4 and 8 seconds later (sd:2973).
 
 ## What a call is worth
 
@@ -299,6 +301,10 @@ criteria start a new series; and `load_avg`, the one-minute load when the
 row was written. `threshold` and `prompt_hash` describe a question, so only
 the Jev row and the comparison arms' rows carry them; a baseline row joins
 its judgment through `pair`, and a gate or `jev record` row asked nothing.
+A failed call adds why, beside `cause`: `error_class`, the exception's class
+such as `ConnectionRefusedError` or `HTTPError`, and `error_detail`, its errno
+name or HTTP status such as `ECONNREFUSED` or `503`. Never the message, which
+can carry the URL or a response body (sd:2973).
 
 **The same row can go to a trace collector.** With `JEV_TRACES_URL` set,
 `jev_trace.py` posts it as one OTLP/HTTP JSON span, service `jev`, after the
@@ -596,7 +602,7 @@ A record carries:
 
 - `schema`, `id` and `time`, and `call`: one id shared by the Jev record,
   the baseline's and each arm's, with or without a pair;
-- `caller`, `location`, `run_id`, `threshold`, `prompt_hash`, `load_avg`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
+- `caller`, `location`, `run_id`, `threshold`, `prompt_hash`, `load_avg`, `error_class`, `error_detail`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
   `shadow`, and the ledger's fields: answer, confidence, distribution,
   outcome, cause, tokens, duration, `changed`;
 - `request`: the payload as sent, after redaction. A local-only call sends
