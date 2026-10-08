@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import socket
 import sqlite3
 import sys
 import time
@@ -18,7 +20,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import paths, runner_journal
-from .database import refuse_hub_only, transaction
+from .database import connect, served_by, transaction
+from .errors import SdDbError
 from .workflow import WorkflowError, item_state
 from .writes import add_note, now
 
@@ -270,6 +273,112 @@ HELD = "another ship operation owns this repository"
 LOCK_DIRECTORY = "ship-locks"
 
 
+class LaneElsewhere(WorkflowError):
+    """Another machine runs this repository's lane; nothing was locked (sd:3075).
+
+    `host` is the `repo.lane_host` that runs it, None for the hub. The text
+    names the host, then the dashboard control, then the verb, in that order:
+    the dashboard is the operator's surface.
+    """
+
+    code = "lane_elsewhere"
+
+    def __init__(self, repository: str, host: str | None, path: str | None) -> None:
+        self.repository, self.host, self.path = repository, host, path
+        name = re.sub(r"^~/(repos/)?", "", path) if path else repository.rpartition("/")[2]
+        super().__init__(
+            f"The lane for {repository} runs on {host or 'the hub'}, not on this machine.\n"
+            f"Run it there, or move the lane: dashboard, Management, {name}, Move lane;\n"
+            f"or sd-db.sh repo lane-host {path or '<path>'} {this_host()}.")
+
+
+def this_host() -> str:
+    """This machine's lane host name: `hostname -s`, lower-cased, the `local-cron-jobs` folder rule."""
+    return socket.gethostname().split(".")[0].lower()
+
+
+class LaneUnknown(WorkflowError):
+    """This machine cannot tell who runs this repository's lane; nothing was locked (sd:3075).
+
+    A read fault or clone rows that name different hosts. Uncertain ownership
+    refuses: granting the hub here could run a second ship beside the lane host's.
+    """
+
+    code = "lane_unknown"
+
+
+def _lane(connection, database, repository: str) -> tuple[bool, str | None, str | None]:
+    """`(hosted here, lane host, registered path)` for `repository`, an `owner/name`.
+
+    The rows are the ones whose remote gives `repository` (`protection.github_slug`).
+    NULL is the hub; so is no row, and a database without the column, where no
+    host can be named. A read fault or clones that disagree raise `LaneUnknown`.
+    """
+    from .protection import github_slug
+
+    matched = []
+    try:
+        for row in connection.execute("SELECT * FROM repo ORDER BY path"):
+            slug = github_slug(row["remote"])
+            if slug is not None and "/".join(slug).lower() == repository.lower():
+                matched.append((row["path"], row["lane_host"] if "lane_host" in row.keys() else None))
+    except (SdDbError, sqlite3.Error, OSError) as error:
+        raise LaneUnknown(
+            f"Cannot read the lane host for {repository}: {error}. Nothing was locked; "
+            f"retry when the database answers.") from error
+    hosts = {host for _, host in matched}
+    path = matched[0][0] if matched else None
+    if len(hosts) > 1:
+        rows = ", ".join(f"{clone} {host or 'hub'}" for clone, host in matched)
+        raise LaneUnknown(
+            f"The clones of {repository} name different lane hosts: {rows}. Nothing was locked.\n"
+            f"Move the lane once to set every clone: dashboard, Management, Move lane;\n"
+            f"or sd-db.sh repo lane-host {path} <host>.")
+    host = hosts.pop() if hosts else None
+    if host is None:
+        return served_by(database) is None, None, path
+    return host == this_host(), host, path
+
+
+def hosts_lane(connection, database, repository: str) -> bool:
+    """Whether this machine runs `repository`'s lane (sd:3075).
+
+    True when `repo.lane_host` names this machine, or when it is NULL and this
+    machine is the hub (`served_by(database)` is None). Raises `LaneUnknown`
+    when it cannot tell.
+    """
+    return _lane(connection, database, repository)[0]
+
+
+def _owner(database: Path, repository: str) -> None:
+    """Refuse unless this machine runs `repository`'s lane, read on a fresh connection."""
+    try:
+        connection = connect(database, write=False)
+    except (SdDbError, sqlite3.Error, OSError) as error:
+        raise LaneUnknown(
+            f"Cannot open the database to read the lane host for {repository}: {error}. "
+            f"Nothing was locked; retry when the database answers.") from error
+    try:
+        hosted, host, registered = _lane(connection, database, repository)
+    finally:
+        connection.close()
+    if not hosted:
+        raise LaneElsewhere(repository, host, registered)
+
+
+def _lock_directory(database: Path) -> Path:
+    """Beside the database on the hub; on a satellite that hosts a lane, `$XDG_STATE_HOME/sd/ship-locks/`.
+
+    Only a repository's lane host takes its lock, so one machine-local lock is enough.
+    """
+    if served_by(database) is None:
+        return Path(database).parent / LOCK_DIRECTORY
+    state = os.environ.get("XDG_STATE_HOME", "")
+    if not os.path.isabs(state):
+        state = str(Path(getattr(database, "sd_home", None) or Path.home()) / ".local" / "state")
+    return Path(state) / "sd" / LOCK_DIRECTORY
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -333,7 +442,7 @@ def lock_files(database: Path) -> list[dict]:
     is not a hold (sd:1940). `held` means its record names a live pid; `stale`
     means the record names a pid that is gone; `idle` means no record.
     """
-    directory = database.parent / LOCK_DIRECTORY
+    directory = _lock_directory(database)
     if not directory.is_dir():
         return []
     entries = []
@@ -361,17 +470,37 @@ def _write_holder(descriptor: int, record: dict) -> None:
 def repository_lock(database: Path, repository: str, *, holder: dict | None = None, wait: float = 0):
     """Serial per remote across clones; never lock or alter an operator checkout.
 
+    Only the repository's lane host takes it (sd:3075, `hosts_lane`): any
+    other machine raises `LaneElsewhere`, and uncertain ownership raises
+    `LaneUnknown`; both lock nothing. Ownership is read before the flock and
+    again once it is held, so a ship that waited through a lane move refuses.
+    """
+    # sd:3075: only the lane host takes the lock; any other machine refuses before it locks.
+    _owner(database, repository)
+    with repository_flock(database, repository, holder=holder, wait=wait,
+                          held_then=lambda: _owner(database, repository)):
+        yield
+
+
+@contextmanager
+def repository_flock(database: Path, repository: str, *, holder: dict | None = None, wait: float = 0,
+                     held_then=None):
+    """The flock alone, on this machine; `repository_lock` adds the lane-host reads.
+
     Under the flock, the holder writes pid, command, item or review, repository
     and start time into the lock file, and clears it on release. A refusal
     reads it back. `wait` seconds block on the flock, polled every
-    WAIT_POLL_SECONDS, then refuse as `wait=0` refuses at once.
+    WAIT_POLL_SECONDS, then refuse as `wait=0` refuses at once. `held_then`
+    runs once the flock is held; a raise releases it. The key is the
+    repository lower-cased, as GitHub compares names. The hub's lock file sits
+    beside the database; a satellite host's under its state folder.
+    `repos.set_lane_host` holds it while it moves a lane (sd:3075).
     """
     if wait < 0:
         raise WorkflowError("ship lock wait must be zero or more seconds")
-    refuse_hub_only(database, "the sd-ship repository lock")
-    directory = database.parent / "ship-locks"  # LOCK_DIRECTORY
+    directory = _lock_directory(database)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / (hashlib.sha256(repository.encode()).hexdigest() + ".lock")
+    path = directory / (hashlib.sha256(repository.lower().encode()).hexdigest() + ".lock")
 
     def held() -> str:
         waited = f"; waited {wait:g}s" if wait else ""
@@ -379,6 +508,8 @@ def repository_lock(database: Path, repository: str, *, holder: dict | None = No
 
     with runner_journal.lock(path, blocking=False, noun="ship", error=WorkflowError, held=held,
                              wait=wait, poll=WAIT_POLL_SECONDS) as descriptor:
+        if held_then is not None:
+            held_then()
         given = holder or {}
         record = {"pid": os.getpid(), "repository": repository, "started_at": now(),
                   "command": given.get("command") or " ".join([Path(sys.argv[0]).name, *sys.argv[1:]])[:512],

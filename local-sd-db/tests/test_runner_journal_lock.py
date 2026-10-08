@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import runner_journal, ship
+from sd_db import initialise, runner_journal, ship
 from sd_db.runner import RunnerRefused
 from sd_db.testing.wire import hub_only
 from sd_db.workflow import WorkflowError
@@ -162,6 +162,7 @@ class HardenedLock(unittest.TestCase):
     @hub_only
     def test_the_ship_repository_lock_is_the_shared_lock(self):
         database = self.root / "sd.db"
+        initialise(database)  # sd:3075: the lock reads the lane host first
         locks = self.root / "ship-locks"
         with ship.repository_lock(database, "fixture/repo"):
             names = [entry for entry in locks.iterdir()]

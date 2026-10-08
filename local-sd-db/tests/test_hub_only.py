@@ -23,7 +23,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_db import (create_item, database, initialise, ledger, publication_journal, removal, remote,
+from sd_db import (create_item, database, initialise, ledger, publication_journal, removal, remote, repos,
                    retention, runner_controls, runner_exec, seed, ship, writing)
 from sd_db.backup import restore, run as take_backup
 from sd_db.database import default_path
@@ -101,6 +101,8 @@ VERBS = [
     ("the writing cutover",
      lambda c, t: writing.cutover_pieces(c, str(t.root / "repo"), expected_fingerprint="", who="test")),
     ("the writing cutover journal", lambda c, t: writing._journal_path(c, str(t.root / "repo"))),
+    # sd:3075 part 1: a move holds the lane host's ship flock, beside the hub's file.
+    ("repo lane-host", lambda c, t: repos.set_lane_host(c, str(t.root / "repo"), "hub")),
 ]
 
 
@@ -181,15 +183,16 @@ class TheSatellitePaths(Satellite):
         self.hub = f"127.0.0.1:{self.served.port}"
 
     def test_the_repository_lock_refuses_the_default_path_and_creates_nothing(self):
+        """sd:3075: a lane no row moves is the hub's, so a satellite refuses it as `lane_elsewhere`."""
         before = sorted(p for p in self.home.rglob("*"))
         with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
             shapes = (default_path(self.home), default_path(), Path(str(default_path())))
             for shape in shapes:
-                with self.subTest(shape=type(shape).__name__), self.assertRaises(remote.HubOnly) as caught:
+                with self.subTest(shape=type(shape).__name__), self.assertRaises(ship.LaneElsewhere) as caught:
                     with ship.repository_lock(shape, "example/repo"):
                         self.fail("the repository lock was taken on a satellite")
-                self.assertEqual(caught.exception.verb, "the sd-ship repository lock")
-                self.assertEqual(caught.exception.hub, self.hub)
+                self.assertEqual((caught.exception.code, caught.exception.host), ("lane_elsewhere", None))
+                self.assertIn("runs on the hub, not on this machine", str(caught.exception))
         self.assertEqual(sorted(p for p in self.home.rglob("*")), before)
         self.assertFalse((self.home / ".local").exists())
 
@@ -319,8 +322,9 @@ def _tests(suite):
 class TheMarks(unittest.TestCase):
     """A `hub_only` mark is honest: over the wire, the test meets a refusal.
 
-    A refusal is a `HubOnly`, or a `LedgerRefused` with scope `hub`, built
-    while the test runs; the test's own outcome does not count.
+    A refusal is a `HubOnly`, a `LedgerRefused` with scope `hub`, or the
+    ship lock's `LaneElsewhere` (sd:3075: a satellite does not host a NULL
+    lane), built while the test runs; the test's own outcome does not count.
     """
 
     def test_every_marked_test_meets_a_hub_only_refusal_over_the_wire(self):
@@ -331,6 +335,7 @@ class TheMarks(unittest.TestCase):
             served = Served(Path(folder))
             previous = database._opener
             refuse, refused = remote.HubOnly.__init__, ledger.LedgerRefused.__init__
+            elsewhere = ship.LaneElsewhere.__init__
             try:
                 wire.install("127.0.0.1", served.port, served.token, marks=False)
                 for test in marked:
@@ -345,8 +350,13 @@ class TheMarks(unittest.TestCase):
                             hits.append(type(error).__name__)
                         refused(error, message, *args, **kwargs)
 
+                    def lane_elsewhere(error, *args, **kwargs):
+                        hits.append(type(error).__name__)
+                        elsewhere(error, *args, **kwargs)
+
                     with (self.subTest(test=test.id()),
                           mock.patch.object(remote.HubOnly, "__init__", hub_only),
+                          mock.patch.object(ship.LaneElsewhere, "__init__", lane_elsewhere),
                           mock.patch.object(ledger.LedgerRefused, "__init__", ledger_refused)):
                         # A refused CLI verb prints its refusal; the guard reads the hits instead.
                         with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):

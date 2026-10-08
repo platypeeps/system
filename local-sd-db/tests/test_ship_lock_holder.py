@@ -16,7 +16,7 @@ import time
 import unittest
 from pathlib import Path
 
-from sd_db import ship
+from sd_db import initialise, ship
 from sd_db.workflow import WorkflowError
 from sd_db.testing.wire import hub_only
 
@@ -41,6 +41,8 @@ class ShipLockHolder(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.database = self.root / "sd.db"
+        # sd:3075: the lock reads the lane host first, and a missing database refuses.
+        initialise(self.database)
         self.children = []
 
     def tearDown(self):

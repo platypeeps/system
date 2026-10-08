@@ -7,12 +7,17 @@ it fills and the one path it refuses.
 """
 
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from sd_db import connect
+from sd_db import connect, ship
+from sd_db.errors import SdDbError
+from sd_db.workflow import StaleItem
 from sd_db.migrate import initialise
 from sd_db.repos import (
     CI_MODES,
@@ -28,6 +33,7 @@ from sd_db.repos import (
     repo_satellite_gate,
     seed,
     set_ci,
+    set_lane_host,
     set_managed,
     set_runner_merge,
     set_satellite_gate,
@@ -35,6 +41,16 @@ from sd_db.repos import (
 )
 
 from . import support
+
+#: Hold the ship lock as `sd-ship merge` does, say so, and keep it until killed.
+HOLDER = """
+import sys, time
+from pathlib import Path
+from sd_db import ship
+with ship.repository_lock(Path(sys.argv[1]), sys.argv[2], holder={"command": "sd-ship merge --item 41", "item": 41}):
+    print("held", flush=True)
+    time.sleep(60)
+"""
 
 #: The repo-sync folder of this checkout, which ships the `.example` lists.
 REPO_SYNC = Path(__file__).resolve().parents[2] / "local-repo-sync"
@@ -492,3 +508,127 @@ class TheSatelliteGateWriter(RepoCase):
             set_satellite_gate(self.connection, checkout, "accept")
         self.assertIn("not a registered repository", str(caught.exception))
 
+
+
+class TheLaneHostWriter(RepoCase):
+    """sd:3075. `set_lane_host` is the one writer of `repo.lane_host`: a
+    host name, or `hub`, stored as NULL. It moves no other field.
+
+    The class the review named: a lane move can overlap a ship holder on the
+    old host. The move holds that host's ship flock, so this machine,
+    `hub-mac`, moves only a lane it hosts.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(mock.patch("sd_db.ship.this_host", return_value="hub-mac"))
+
+    def _registered(self) -> str:
+        checkout = support.repository(self.checkouts / "one")
+        return add(self.connection, checkout, home=self.home)
+
+    def _stored(self, path: str):
+        return self.connection.execute("SELECT lane_host FROM repo WHERE path = ?", (path,)).fetchone()[0]
+
+    def test_a_host_is_stored_and_hub_stores_null_each_answering_the_value_before(self):
+        path = self._registered()
+        self.assertIsNone(self._stored(path))
+        self.assertEqual(set_lane_host(self.connection, path, "hub-mac"), (path, "hub"))
+        self.assertEqual(self._stored(path), "hub-mac")
+        self.assertEqual(set_lane_host(self.connection, path, "hub"), (path, "hub-mac"))
+        self.assertIsNone(self._stored(path))
+        self.assertEqual(set_lane_host(self.connection, path, "build-2"), (path, "hub"))
+        self.assertEqual(self._stored(path), "build-2")
+
+    def test_it_changes_no_other_field_on_the_row(self):
+        path = self._registered()
+        before = dict(self.connection.execute("SELECT * FROM repo WHERE path = ?", (path,)).fetchone())
+        set_lane_host(self.connection, path, "build-2")
+        after = dict(self.connection.execute("SELECT * FROM repo WHERE path = ?", (path,)).fetchone())
+        self.assertEqual({key for key in before if before[key] != after[key]} - {"updated_at"}, {"lane_host"})
+
+    def test_a_bad_name_and_an_unregistered_path_are_refused(self):
+        path = self._registered()
+        for value in ("Build_2", "build.example.test", "", "build 2"):
+            with self.subTest(value=value), self.assertRaises(RepoRefusal) as caught:
+                set_lane_host(self.connection, path, value)
+            self.assertIn("not a lane host", str(caught.exception))
+        self.assertIsNone(self._stored(path))
+        with self.assertRaises(RepoRefusal) as caught:
+            set_lane_host(self.connection, support.repository(self.checkouts / "two"), "build-2")
+        self.assertIn("not a registered repository", str(caught.exception))
+
+    def _clones(self, *remotes: str) -> list[str]:
+        made = []
+        for index, remote in enumerate(remotes):
+            path = add(self.connection, support.repository(self.checkouts / f"clone-{index}"), home=self.home)
+            self.connection.execute("UPDATE repo SET remote = ? WHERE path = ?", (remote, path))
+            made.append(path)
+        return made
+
+    def test_every_clone_of_the_remote_moves_and_no_other_repository(self):
+        # Round 1: the lane belongs to the remote. Clones that disagree only between NULL and this machine unify.
+        first, second, other = self._clones("git@github.com:example/one.git",
+                                            "https://github.com/Example/One", "git@github.com:example/two.git")
+        self.connection.execute("UPDATE repo SET lane_host = 'hub-mac' WHERE path = ?", (second,))
+        self.assertEqual(set_lane_host(self.connection, first, "build-2"), (first, "hub"))
+        self.assertEqual([self._stored(path) for path in (first, second, other)], ["build-2", "build-2", None])
+
+    def test_a_lane_on_another_machine_refuses_the_move_and_takes_no_lock(self):
+        # Its ship lock lives on that machine; part 1 cannot take it (sd:3003 part 2).
+        first, second = self._clones("git@github.com:example/one.git", "git@github.com:example/one.git")
+        self.connection.execute("UPDATE repo SET lane_host = 'build-2' WHERE path = ?", (second,))
+        for value in ("hub", "build-3"):
+            with self.subTest(value=value), self.assertRaises(RepoRefusal) as caught:
+                set_lane_host(self.connection, first, value)
+            self.assertIn("run the move on build-2 (sd:3003 part 2)", str(caught.exception))
+        self.assertEqual([self._stored(first), self._stored(second)], [None, "build-2"])
+        self.assertFalse((self.root / "ship-locks").exists())
+
+    def test_a_ship_holding_the_lock_refuses_the_move_naming_it_whatever_the_case(self):
+        # A hand-run sd-ship and a runner merge both hold this flock while they run.
+        (path,) = self._clones("https://github.com/Example/One")
+        child = subprocess.Popen([sys.executable, "-c", HOLDER, str(self.root / "sd.db"), "example/one"],
+                                 stdout=subprocess.PIPE, text=True)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.addCleanup(child.stdout.close)
+        self.assertEqual(child.stdout.readline().strip(), "held")
+        with self.assertRaises(SdDbError) as caught:
+            set_lane_host(self.connection, path, "build-2")
+        self.assertIn("another ship operation owns this repository", str(caught.exception))
+        self.assertIn("sd-ship merge --item 41", str(caught.exception))
+        self.assertIsNone(self._stored(path))
+
+    def test_the_lock_is_held_from_before_the_read_until_after_the_commit(self):
+        (path,) = self._clones("git@github.com:example/one.git")
+        events = []
+        real = ship.repository_flock
+
+        @contextmanager
+        def watched(*args, **kwargs):
+            with real(*args, **kwargs):
+                events.append("held")
+                yield
+            events.append("released")
+
+        self.connection.set_trace_callback(lambda sql: events.append(sql.split()[0]) if sql.split()[0] in (
+            "BEGIN", "COMMIT", "UPDATE") else None)
+        with mock.patch.object(ship, "repository_flock", watched):
+            set_lane_host(self.connection, path, "build-2")
+        self.connection.set_trace_callback(None)
+        self.assertEqual(events, ["BEGIN", "held", "UPDATE", "COMMIT", "released"])
+
+    def test_a_move_inside_an_open_transaction_refuses(self):
+        # Its commit would come after the flock is released.
+        path = self._registered()
+        self.connection.execute("BEGIN IMMEDIATE")
+        self.addCleanup(lambda: self.connection.in_transaction and self.connection.execute("ROLLBACK"))
+        with self.assertRaisesRegex(RepoRefusal, "outside a transaction"):
+            set_lane_host(self.connection, path, "build-2")
+
+    def test_a_stale_before_refuses_and_writes_nothing(self):
+        path = self._registered()
+        with self.assertRaises(StaleItem):
+            set_lane_host(self.connection, path, "build-2", before="build-3")
+        self.assertIsNone(self._stored(path))

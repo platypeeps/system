@@ -25,12 +25,12 @@ function absorb(doc) {
   const gitBy = Object.fromEntries((GIT?.repos || []).map(g => [tilde(g.path), g]));
   REPOS = (doc.repos || []).map(r => {
     const m = (r.remote || '').match(/github\.com[:/]([^/]+)\/(.+?)(\.git)?$/);
-    return { path: r.path, remote: r.remote, source: r.status_source, managed: r.managed, merge: r.runner_merge, mode: r.mode, ci: r.ci,
+    return { path: r.path, remote: r.remote, source: r.status_source, managed: r.managed, merge: r.runner_merge, lane: r.lane_host || 'hub', mode: r.mode, ci: r.ci,
       pieces: r.pieces_source, created: r.created_at, updated: r.updated_at, review: r.review, protection: r.protection, runtimes: r.runtimes,
       owner: m ? m[1] : '?', slug: m ? `${m[1]}/${m[2]}` : '', name: nameOf(r.path), registered: true, git: gitBy[r.path] || null };
   });
   const unreg = (GIT?.repos || []).filter(g => !REPOS.some(r => r.path === tilde(g.path)))
-    .map(g => ({ path: tilde(g.path), remote: '', source: '—', managed: '—', merge: '—', mode: '—', owner: '—', slug: '', name: nameOf(tilde(g.path)), registered: false, git: g }));
+    .map(g => ({ path: tilde(g.path), remote: '', source: '—', managed: '—', merge: '—', lane: '—', mode: '—', owner: '—', slug: '', name: nameOf(tilde(g.path)), registered: false, git: g }));
   ALL = [...REPOS, ...unreg];
   ALL.forEach(r => { const g = r.git; r.branch = g ? g.branch : '—'; r.lag = g && g.behind_default !== null ? g.behind_default : -1; r.fetched = g ? g.fetched_iso || '' : ''; });
   // build (sd:1629): the settings columns sort on their shown words.
@@ -180,9 +180,9 @@ function lamps() {
 // ---------- Lists: sort, filter, page (shell.list, sd:2682) ----------
 // build: a page from the URL or an older reading can pass the last page; shell.list clamps it before the slice, and the URL follows.
 function pageOf(rows, st) { const was = st.page, slice = shell.list.pageOf(rows, st); if (st.page !== was) setURL(); return slice; }
-const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['lane', html`Lane<span class="sr"> host</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']];
 // build (sd:1629): the condensed overview, one row per repo with its settings, swaps the git columns for these.
-const SETTING_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['floor', html`Floor<span class="sr"> (review severity floor)</span>`], ['copilot', html`Copilot<span class="sr"> automatic deep review</span>`], [null, 'Required checks'], ['python', 'Python'], ['node', 'Node'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const SETTING_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['lane', html`Lane<span class="sr"> host</span>`], ['floor', html`Floor<span class="sr"> (review severity floor)</span>`], ['copilot', html`Copilot<span class="sr"> automatic deep review</span>`], [null, 'Required checks'], ['python', 'Python'], ['node', 'Node'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const repoCols = () => RS.cols === 'settings' ? SETTING_COLS : REPO_COLS;
 const MERGE_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['id', 'Assignment'], [null, 'Repo'], ['at', 'Ended'], [null, 'Status'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const SCHED_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
@@ -262,6 +262,7 @@ function renderRepos() {
         <td class="what"><button type="button">${r.name}</button>${r.registered ? '' : html`<span class="unreg">not registered</span>`}</td>
         <td class="d mono ${r.managed}" data-k="managed">${r.managed}</td>
         <td class="d mono ${r.merge === 'auto' ? 'yes' : 'no'}" data-k="merge">${r.merge}</td>
+        <td class="d mono" data-k="lane">${r.lane}</td>
         ${RS.cols === 'settings' ? settingCells(r) : gitCells(r)}
         <td class="act end">${shell.commands.rowActions('repo:' + r.path)}</td></tr>`)}</tbody></table>${shell.list.pager(rows.length, RS, 'repos')}`
       : html`<p class="empty">No repo matches ${text.q ? `“${text.q}”` : 'these filters'}. <button class="linkbtn" type="button" data-clear>Clear filters</button></p>`}
@@ -283,6 +284,8 @@ document.getElementById('view-repos').addEventListener('click', e => {
 const pending = [];
 function setRow(k, v, ctl = '', attrs = '') { return html`<div class="row"${attrs}><span class="k">${k}</span><span class="v">${v}</span><span class="ctl">${ctl}</span></div>`; }
 const lock = w => html`<span class="lock">${I('lock')}${w}</span>`;
+// sd:3075: Move lane offers the hub, each host a row already names, and any typed name; the server checks the name.
+const laneHosts = () => ['hub', ...new Set(REPOS.map(r => r.lane).filter(h => h && h !== 'hub').sort())];
 const seg = (key, opts, cur) => html`<span class="segctl" role="group" aria-label="${key}">${opts.map(o => html`<button type="button" data-set="${key}" data-v="${o}" aria-pressed="${String(o === cur)}">${o}</button>`)}</span>`;
 
 function renderRepoPage(el) {
@@ -298,12 +301,14 @@ function renderRepoPage(el) {
       <li><span class="route">${I('shield-check')}GitHub · API</span> read here; edits stay on the classic Protection screen</li>
     </ul>
 
-    <section class="set" aria-labelledby="set-db"><header><h3 id="set-db">sd-db row <button class="help" type="button" aria-label="Help: sd-db row" data-help="<b>The row the runner and dashboard read.</b> Two fields have sd-db verbs: <code>repo runner-merge</code> and <code>repo managed</code>. The rest change only through registration or the docs/work migration.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db · local</span>
+    <section class="set" aria-labelledby="set-db"><header><h3 id="set-db">sd-db row <button class="help" type="button" aria-label="Help: sd-db row" data-help="<b>The row the runner and dashboard read.</b> Three fields have sd-db verbs: <code>repo runner-merge</code>, <code>repo managed</code> and <code>repo lane-host</code>. The rest change only through registration or the docs/work migration.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db · local</span>
       <p class="src">repo table · read ${hhmm(READ)} UTC</p></header>
       ${setRow('path', r.path, lock('primary key'))}
       ${setRow('remote', r.remote || html`<span class="no">none</span>`, lock('from the checkout'))}
       ${setRow(html`<code>runner_merge</code> <button class="help" type="button" aria-label="Help: runner_merge" data-help="<b>auto</b> lets the runner queue a merge after a done author run with a reviewed head, through the exclusive merge lane. <b>manual</b> ends the item at ready_to_send for you. Every row starts at manual.">${I('circle-help')}</button>`, r.merge, seg('runner_merge', ['manual', 'auto'], r.merge), html` data-key="runner_merge"`)}
       ${setRow(html`<code>managed</code>`, r.managed, seg('managed', ['yes', 'no'], r.managed), html` data-key="managed"`)}
+      ${setRow(html`<code>lane_host</code> <button class="help" type="button" aria-label="Help: lane_host" data-help="<b>The machine that runs this repo's merge lane.</b> <b>hub</b>, where every row starts, or a machine's short host name, lower-cased. Only that machine takes this repo's ship lock; every other refuses.">${I('circle-help')}</button>`, r.lane,
+        html`<input class="fld" type="text" data-set="lane_host" list="lane-hosts" value="${r.lane}" aria-label="Move lane to" autocomplete="off" spellcheck="false"><datalist id="lane-hosts">${laneHosts().map(h => html`<option value="${h}"></option>`)}</datalist>`, html` data-key="lane_host"`)}
       ${setRow(html`<code>mode</code>`, r.mode || html`<span class="no">unset</span>`, lock('no sd-db verb writes it'))}
       ${setRow(html`<code>ci</code>`, r.ci, lock('sd-db.sh repo ci'))}
       ${setRow(html`<code>status_source</code>`, r.source, lock('moves only by the docs/work migration'))}
@@ -358,6 +363,11 @@ function propose(key, value) {
     const verb = key === 'runner_merge' ? 'runner-merge' : 'managed';
     p = { key, value, before, verb, route: 'sd-db', icon: 'terminal', title: `${key} ${before} → ${value}`, cmd: `${SDDB} repo ${verb} ${shq(r.path)} ${value}`,
       note: key === 'runner_merge' && value === 'manual' ? 'Items for this repo will stop at ready_to_send for you.' : key === 'runner_merge' ? 'The runner may queue merges for this repo through the exclusive lane.' : 'Writes one column; no new row.' };
+  } else if (key === 'lane_host') {
+    if (!value || value === r.lane) return withdraw(key);
+    p = { key, value, before: r.lane, verb: 'lane-host', route: 'sd-db', icon: 'terminal', title: `Move lane ${r.lane} → ${value}`,
+      cmd: `${SDDB} repo lane-host ${shq(r.path)} ${shq(value)}`,
+      note: `Only ${value === 'hub' ? 'the hub' : value} may take this repo's ship lock; every other machine refuses with the way back.` };
   } else if (key === 'severity_floor' || key === 'automatic_deep') {
     if (value === String(key === 'severity_floor' ? rv.severity_floor || '' : rv.automatic_deep)) return withdraw(key);
     const diff = reviewDiff(rv.file || '', body => {
@@ -495,6 +505,10 @@ function registerCommands() {
     { id: 'repo.managed', on: 'repo', label: 'Switch managed', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db.sh repo add registers it first',
       cli: o => `${SDDB} repo managed ${shq(o.path)} ${o.row.managed === 'yes' ? 'no' : 'yes'}`, executes: true,
       run: o => flipRepo('managed', o), undo: undoOf },
+    // sd:3075: Move lane needs a host, so it opens the repo's settings page, where the lane_host field proposes the move.
+    { id: 'repo.lane-host', on: 'repo', label: 'Move lane', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db.sh repo add registers it first',
+      cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
+      run: o => { location.href = `?view=repos&repo=${encodeURIComponent(o.path)}`; return `Move lane: ${o.label}'s settings page opens`; } },
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
     { id: 'repo.pull', on: 'repo', label: 'Pull', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },

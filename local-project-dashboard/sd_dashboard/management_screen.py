@@ -32,9 +32,9 @@ versions its checkout pins (`_runtimes`).
 
 Every write the page makes goes through a route `server.action_route`
 answers: job retry, service start, stop and
-restart, and the two sd-db repo verbs (`repos.set_runner_merge`,
-`repos.set_managed`), which refuse a stale `before` and, on a satellite,
-refuse with `HubOnly` (sd:1629).
+restart, and the sd-db repo verbs (`repos.set_runner_merge`,
+`repos.set_managed`, `repos.set_lane_host`), which refuse a stale `before`
+and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075).
 """
 
 from __future__ import annotations
@@ -234,6 +234,8 @@ def _repos(connection) -> list[dict]:
         out.append({
             "path": row["path"], "remote": row["remote"] or "", "mode": row["mode"], "ci": row["ci"],
             "runner_merge": row["runner_merge"], "managed": "yes" if row["managed"] else "no",
+            # sd:3075: NULL is the hub; a database before migration 24 has no column and reads as the hub.
+            "lane_host": (row["lane_host"] if "lane_host" in row.keys() else None) or repos.LANE_HUB,
             "status_source": row["status_source"], "pieces_source": row["pieces_source"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
             "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
@@ -404,8 +406,9 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     return out
 
 
-#: The two sd-db repo verbs the page runs: the field, the library call, and how the row reads the value back.
-SETTERS = {"runner-merge": (repos.set_runner_merge, "runner_merge"), "managed": (repos.set_managed, "managed")}
+#: The sd-db repo verbs the page runs: the field, the library call, and how the row reads the value back.
+SETTERS = {"runner-merge": (repos.set_runner_merge, "runner_merge"), "managed": (repos.set_managed, "managed"),
+           "lane-host": (repos.set_lane_host, "lane_host")}
 
 
 class StaleSetting(workflow.StaleItem):
@@ -422,6 +425,10 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value: str, 
     setter, column = SETTERS[field]
     # The runner that reads these columns runs on the hub; a satellite's page reads them and changes nothing (sd:1629).
     database.refuse_hub_only(connection, f"repo {field}")
+    if field == "lane-host":
+        # sd:3075: the move commits under the ship lock, so it holds its own transaction and checks `before` in it.
+        path, was = setter(connection, path, value, before=before)
+        return {"path": path, "field": column, "value": value, "before": was}
     with workflow.transaction(connection):
         row = repos.row_for(connection, path)
         if row is None:

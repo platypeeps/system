@@ -24,7 +24,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import upsert_repo, workflow
+from sd_db import repos, upsert_repo, workflow
 from sd_dashboard import management_screen, server, v2
 
 from support import NOW, ScreenCase
@@ -194,6 +194,38 @@ class TheDocument(ScreenCase):
         management_screen.set_repo(self.connection, "managed", self.ids["checkout"], "yes", "no")
         rows = {row["path"]: row for row in self.document()["repos"]}
         self.assertEqual((rows[self.ids["checkout"]]["runner_merge"], rows[self.ids["checkout"]]["managed"]), ("auto", "yes"))
+
+    def test_the_lane_host_reads_hub_and_moves_refusing_a_stale_before_a_bad_name_and_an_unknown_path(self):
+        """sd:3075, acceptances 2 and 3. NULL reads `hub`; a move writes the name."""
+        checkout = self.ids["checkout"]
+        lane = lambda: {row["path"]: row for row in self.document()["repos"]}[checkout]["lane_host"]  # noqa: E731
+        self.assertEqual(lane(), "hub")
+        got = management_screen.set_repo(self.connection, "lane-host", checkout, "build-2", "hub")
+        self.assertEqual((got["field"], got["value"], got["before"]), ("lane_host", "build-2", "hub"))
+        self.assertEqual(lane(), "build-2")
+        with self.assertRaises(workflow.StaleItem):
+            management_screen.set_repo(self.connection, "lane-host", checkout, "build-3", "hub")
+        with self.assertRaises(repos.RepoRefusal) as refused:
+            management_screen.set_repo(self.connection, "lane-host", checkout, "Build_2", "build-2")
+        self.assertIn("not a lane host", str(refused.exception))
+        with self.assertRaises(repos.RepoRefusal):
+            management_screen.set_repo(self.connection, "lane-host", checkout + "-absent", "hub", "build-2")
+        # sd:3075 part 1: the hub cannot take build-2's ship lock, so it cannot move the lane back (sd:3003 part 2).
+        with self.assertRaises(repos.RepoRefusal) as refused:
+            management_screen.set_repo(self.connection, "lane-host", checkout, "hub", "build-2")
+        self.assertIn("run the move on build-2 (sd:3003 part 2)", str(refused.exception))
+        self.assertEqual(lane(), "build-2")
+
+    def test_a_satellite_refuses_a_lane_move_and_writes_nothing(self):
+        """sd:3075 part 1: a move holds the lane host's ship lock, which only the hub's dashboard reaches."""
+        from sd_db.remote import HubOnly
+
+        with patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
+            with self.assertRaises(HubOnly) as refused:
+                management_screen.set_repo(self.connection, "lane-host", self.ids["checkout"], "build-2", "hub")
+        self.assertIn("repo lane-host runs on the sd hub only", str(refused.exception))
+        self.assertIsNone(self.connection.execute(
+            "SELECT lane_host FROM repo WHERE path = ?", (self.ids["checkout"],)).fetchone()[0])
 
     def test_a_repo_carries_its_required_checks_and_its_runtime_pins(self):
         """sd:1629: the overview's columns. Required checks are the protection reading's; runtimes are the checkout's pins."""
@@ -433,6 +465,20 @@ class ThePage(BrowserSession):
         self.assertEqual(self.post("/api/repos/managed", {"path": self.ids["checkout"], "value": "yes", "before": "yes"})[0], 400)
         self.assertEqual(self.post("/api/repos/mode", {"path": self.ids["checkout"], "value": "x", "before": "y"})[0], 404)
 
+    def test_the_lane_host_route_moves_once_and_refuses_a_stale_before_and_a_bad_name(self):
+        """sd:3075, acceptance 2: `Build_2` is a 400 naming the rule; a repeated move is a stale 409."""
+        body = {"path": self.ids["checkout"], "value": "build-2", "before": "hub"}
+        status, _, got = self.post("/api/repos/lane-host", body)
+        self.assertEqual((status, got["value"], got["before"]), (200, "build-2", "hub"))
+        self.assertEqual(self.post("/api/repos/lane-host", body)[0], 409)
+        status, _, got = self.post("/api/repos/lane-host", {**body, "value": "Build_2", "before": "build-2"})
+        self.assertEqual(status, 400)
+        self.assertIn("not a lane host", got["error"])
+        status, _, got = self.post("/api/repos/lane-host", {**body, "path": "/nowhere", "value": "hub", "before": "build-2"})
+        self.assertEqual(status, 400)
+        self.assertIn("not a registered repository", got["error"])
+        self.assertEqual(self.post("/api/repos/lane-host", {**body, "value": "", "before": "build-2"})[0], 400)
+
     def test_the_repo_write_is_refused_on_a_satellite(self):
         """sd:1629: the POST passes the session and CSRF checks, then the verb refuses: a 400 naming the hub, no change."""
         body = {"path": self.ids["checkout"], "value": "yes", "before": "no"}
@@ -503,6 +549,7 @@ class TheScript(PageScript):
         self.assertEqual(out["R"]["reg"], [
             ["repo.runner-merge", "repo", "undo", "m", True, True],
             ["repo.managed", "repo", "undo", "g", True, True],
+            ["repo.lane-host", "repo", "safe", "h", False, False],
             ["repo.pull", "repo", "safe", "l", False, False],
             ["sddb.run", "sd-db change", "undo", "u", True, True],
             ["file.prepare", "file change", "safe", "p", False, False],
@@ -589,7 +636,7 @@ class TheScript(PageScript):
         repos = out["R"]["repos"]
         self.assertEqual(re.findall(r'<tr data-id="repo:([^"]+)"', repos), [self.ids["checkout"]])
         cells = dict(re.findall(r'data-k="(\w+)">(.*?)</td>', repos))
-        self.assertEqual(set(cells), {"managed", "merge", "floor", "copilot", "checks", "python", "node"})
+        self.assertEqual(set(cells), {"managed", "merge", "lane", "floor", "copilot", "checks", "python", "node"})
         self.assertEqual((cells["managed"], cells["merge"], cells["floor"], cells["copilot"]), ("yes", "manual", "high", "false"))
         self.assertEqual(re.findall(r"<code>([^<]+)</code>", cells["checks"]), ["ci", "sd/local-gate"])
         self.assertIn("3.14", cells["python"])
@@ -642,6 +689,29 @@ R.toast = lastToast().msg; const undo = lastToast().undo; await undo(); await fl
                                  ("/api/repos/runner-merge", {"path": path, "value": "manual", "before": "auto"})])
         self.assertEqual(out["R"]["toast"], f"runner_merge auto · {path}")
         self.assertEqual(out["posts"][0][2], 64)
+
+    def test_the_repo_page_shows_the_lane_host_and_move_lane_runs_the_verb_and_undoes(self):
+        """sd:3075, acceptance 3: the list and the page show the host; the field offers hub and each named host;
+        Run posts the move with the value the page showed, and Undo moves it back."""
+        doc = json.loads(json.dumps(self.doc))
+        doc["repos"].append(dict(doc["repos"][0], path="/srv/other", lane_host="build-3"))
+        path = self.ids["checkout"]
+        out = self.run_page("""R.page = ELS['view-repos'].html; propose('lane_host', 'build-2'); R.cmd = pending[0].cmd;
+C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""",
+                            doc=doc, search=f"?repo={path}", answer="(p, b) => [200, {}]")
+        page = out["R"]["page"]
+        self.assertIn('data-key="lane_host"', page)
+        self.assertIn('data-set="lane_host"', page)
+        self.assertEqual(re.findall(r'<option value="([^"]+)"></option>', page.split('id="lane-hosts"')[1]), ["hub", "build-3"])
+        self.assertEqual(out["R"]["cmd"], f"~/repos/system/local-sd-db/sd-db.sh repo lane-host '{path}' 'build-2'")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/repos/lane-host", {"path": path, "value": "build-2", "before": "hub"}),
+                          ("/api/repos/lane-host", {"path": path, "value": "hub", "before": "build-2"})])
+        self.assertEqual(out["R"]["toast"], "Ran locally · Move lane hub → build-2")
+        out = self.run_page("R.repos = ELS['view-repos'].html;", doc=doc)
+        cells = re.findall(r'data-k="lane">([^<]*)</td>', out["R"]["repos"])
+        self.assertIn("hub", cells)
+        self.assertIn("build-3", cells)
 
     def test_a_refused_write_says_why_and_reads_again(self):
         path = self.ids["checkout"]
