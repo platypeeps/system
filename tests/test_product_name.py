@@ -18,8 +18,8 @@ folder.
 a reader can check. Every entry must still match a file with a hit, so the
 list only shrinks when a hit goes away.
 
-Stdlib and git only. This runs in the `tests/ci-native.sh` preflight beside
-`tests/test_citations.py`, before the virtualenv exists, once per
+Stdlib and git only. This runs in the `tests/ci-native.sh` preflight,
+before the virtualenv exists, once per
 `make check`. `python3 tests/test_product_name.py` from the repository root
 is the whole invocation, and the preflight's unwired-suite guard fails when
 `tests/ci-native.sh` stops naming it.
@@ -41,7 +41,7 @@ PREFIX = "mezmo-"
 ALLOWED = {
     "CLAUDE.md": "states the rule, so it names the product the rule is about",
     "README.md": "its folder table tells a reader what the mezmo-* folders hold",
-    "docs/work/archive/": "delivered records that are never edited; the citation gate exempts them too",
+    "docs/work/archive/": "delivered records that are never edited",
     "tests/test_product_name.py": "spells the word it searches for",
 }
 

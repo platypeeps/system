@@ -307,6 +307,9 @@ def install_plan(config: Config, *, config_path=None) -> dict:
              "StandardErrorPath": str(config.home / "Library/Logs" / f"{label}.err"),
              "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                                       "SD_RUNNER_PYTHON": sys.executable}}
+    # launchd passes only what the plist names; children read the config root.
+    if os.environ.get("SYSTEM_TOOLS_CONFIG"):
+        plist["EnvironmentVariables"]["SYSTEM_TOOLS_CONFIG"] = os.environ["SYSTEM_TOOLS_CONFIG"]
     if config_path is not None:
         plist["ProgramArguments"] += ["--config", str(config_path.resolve())]
     return {"path": str(target), "plist": plistlib.dumps(plist).decode(),

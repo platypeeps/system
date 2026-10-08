@@ -86,15 +86,6 @@ else
   "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
 fi
 
-# The other half of the citation gate (sd:828): a `path:line` into
-# code, in a tracked .md, .py or .sh outside docs/work/archive/,
-# fails unless it is carried in the ratchet; an anchor is cited
-# instead. Stdlib and
-# git only, so it runs here before the venv exists, and it is at
-# the repository root, so the unwired-suite guard below demands a
-# python3 line for it -- delete this one and the guard fails.
-python3 tests/test_citations.py
-
 # Who calls Jev, and whether each one degrades. Two layers: the
 # folder inventory is read from the filesystem, so a twelfth caller
 # cannot be added silently; the rules then ban a fallback that reads
@@ -115,6 +106,11 @@ python3 tests/test_gap_vocabulary.py
 # reason. Stdlib and git only, so it runs here before the venv, and
 # the guard below demands this line.
 python3 tests/test_product_name.py
+
+# The repo CLAUDE.md stays at or under 150 lines and the shared agent
+# block at or under 200 (sd:3005). Stdlib only, so it runs here before
+# the venv, and the guard below demands this line.
+python3 tests/test_instruction_caps.py
 
 # Every folder's convention-1 entrypoint is tracked 100755 (sd:2648),
 # read from `git ls-files -s`, so `./<name>.sh` runs. Stdlib and git

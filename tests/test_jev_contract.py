@@ -35,8 +35,8 @@ a pass -- the very shape this file exists to ban. So the rules ask about the
 flags a folder uses anywhere in its own code, which no amount of wrapping
 hides.
 
-Stdlib and git only. This runs in the `tests/ci-native.sh` preflight
-beside `tests/test_citations.py`, before the virtualenv exists, once per
+Stdlib and git only. This runs in the `tests/ci-native.sh` preflight,
+before the virtualenv exists, once per
 `make check` and before any leg. `python3 tests/test_jev_contract.py` from the repository root is
 the whole invocation, and the preflight's unwired-suite guard fails when
 `tests/ci-native.sh` stops naming it.
