@@ -1139,6 +1139,26 @@ stage_tooling() {
   else
     echo "  SKIP    claude not installed (HUD not set up)"
   fi
+  # opencode gets the same secret-read denies as a top-level permission.read
+  # block, inserted as text so the operator's comments stay. A file with its
+  # own top-level permission block is reported, not edited. Codex has no user
+  # layer for this: its deny_read lives in the root-owned requirements.toml.
+  opencode_json="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"
+  if command -v opencode >/dev/null 2>&1 && [ -f "$opencode_json" ]; then
+    if gaps=$(python3 "$DIR/claude_settings.py" opencode-missing "$opencode_json" 2>/dev/null); then
+      case $gaps in
+        '') echo "  ok      opencode.json read denies" ;;
+        has*) echo "  DIFFERS opencode.json $gaps" ;;
+        *)
+          printf '%s\n' "$gaps" | sed 's/^/  MISSING opencode.json /'
+          run backup_file "$opencode_json"
+          run python3 "$DIR/claude_settings.py" opencode-merge "$opencode_json"
+          ;;
+      esac
+    else
+      echo "  DIFFERS opencode.json does not parse; read denies not checked"
+    fi
+  fi
   # task-actions' digest email buttons need a public URL; the tailscale
   # funnel provides it and --bg persists across reboots. Only on a machine
   # whose profile installs the task-actions agent — funnel on a machine with
