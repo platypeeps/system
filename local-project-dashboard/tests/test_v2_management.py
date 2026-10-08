@@ -171,17 +171,33 @@ class TheDocument(ScreenCase):
             calls.append((argv, options.get("timeout")))
             return subprocess.CompletedProcess(argv, 3, '{"ok": false}\n', "")
 
-        with patch.object(management_screen.subprocess, "run", ran):
-            self.assertEqual(management_screen.runner_status(), (3, '{"ok": false}\n', ""))
-        runner_sh = Path(management_screen.__file__).resolve().parents[2] / "local-sd-runner" / "runner.sh"
-        self.assertEqual(calls, [(["sh", str(runner_sh), "status"], management_screen.RUNNER_SECONDS)])
+        self.assertEqual(management_screen.RUNNER,
+                         Path(management_screen.__file__).resolve().parents[2] / "local-sd-runner" / "runner.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_sh = Path(tmp) / "runner.sh"
+            runner_sh.write_text("#!/bin/sh\n")
+            with patch.object(management_screen, "RUNNER", runner_sh), patch.object(management_screen.subprocess, "run", ran):
+                self.assertEqual(management_screen.runner_status(), (3, '{"ok": false}\n', ""))
+            self.assertEqual(calls, [(["sh", str(runner_sh), "status"], management_screen.RUNNER_SECONDS)])
 
-        def slow(argv, **options):
-            raise subprocess.TimeoutExpired(argv, options["timeout"])
+            def slow(argv, **options):
+                raise subprocess.TimeoutExpired(argv, options["timeout"])
 
-        with patch.object(management_screen.subprocess, "run", slow):
-            doc = self.document(runner=management_screen.runner_status)
+            with patch.object(management_screen, "RUNNER", runner_sh), patch.object(management_screen.subprocess, "run", slow):
+                doc = self.document(runner=management_screen.runner_status)
         self.assertEqual(doc["sources"]["archive"], f"runner.sh status ran past its {management_screen.RUNNER_SECONDS:g} seconds")
+
+    def test_an_absent_runner_sh_is_the_quiet_exit_3_state_and_runs_nothing(self):
+        """sd:3041 deleted local-sd-runner; the archive source reads as not configured, not as exit 127."""
+        def ran(argv, **options):
+            raise AssertionError(f"ran {argv}")
+
+        with patch.object(management_screen, "RUNNER", Path("/nonexistent/local-sd-runner/runner.sh")), \
+                patch.object(management_screen.subprocess, "run", ran):
+            self.assertEqual(management_screen.runner_status()[0], 3)
+            doc = self.document(runner=management_screen.runner_status)
+        self.assertIsNone(doc["archive"])
+        self.assertEqual(doc["sources"]["archive"], "runner.sh status names no archive refresh: no runner in this checkout")
 
     def test_a_repo_carries_its_row_its_review_file_and_its_protection_reading(self):
         rows = {row["path"]: row for row in self.document()["repos"]}

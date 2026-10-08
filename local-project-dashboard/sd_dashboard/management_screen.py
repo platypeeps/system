@@ -365,7 +365,12 @@ def _jobs(connection, backend) -> list[dict]:
 
 
 def runner_status() -> tuple[int, str, str]:
-    """This checkout's `runner.sh status`: its exit code, stdout and stderr, within `RUNNER_SECONDS` (sd:2209)."""
+    """This checkout's `runner.sh status`: its exit code, stdout and stderr, within `RUNNER_SECONDS` (sd:2209).
+
+    No runner.sh (sd:3041 deleted local-sd-runner) answers as its exit 3, not configured, without running anything.
+    """
+    if not RUNNER.is_file():
+        return 3, json.dumps({"ok": False, "reason": "no runner in this checkout"}) + "\n", ""
     try:
         done = subprocess.run(["sh", str(RUNNER), "status"], capture_output=True, text=True, timeout=RUNNER_SECONDS,
                               check=False)
