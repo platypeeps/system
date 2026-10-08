@@ -52,3 +52,4 @@ The weekly job scans and pages; it never rewrites a file.
 - 2026-10-07 pull request 2 built a weekly mask before the scan, plus a settling class in `critical`.
 - 2026-10-07 the hub's lane review blocked it: an unattended in-place rewrite can lose a resumed session's append.
   Operator ruling (option 1): the job scans and pages only; masking stays a manual step. Settling was cut.
+- 2026-10-08 the settle age and the #209 restore were cut (sd:3011): with masking manual, only compare-before-write stays.

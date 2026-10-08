@@ -51,10 +51,9 @@ with the provider they identify.
                ~/.zsh_history), the AI-assistant session logs listed
                above, and the agent scratchpad dirs. Masking rewrites in
                place on the same inode, so a scratchpad a live session is
-               still using keeps working. A file modified in the last
-               S4S_MASK_SETTLE_MIN minutes (10), or one that grows while
-               it is rewritten, is skipped and listed as busy; the next
-               run masks it. Also prunes AI session log
+               still using keeps working. A file that grows while it is
+               rewritten is skipped and listed as busy; the next run
+               masks it. Also prunes AI session log
                files past their directory's retention (30 days, 7 for the
                codex shell-snapshot cache)
                and removes derived build output dirs under ~/repos
