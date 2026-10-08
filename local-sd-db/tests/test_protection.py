@@ -1380,6 +1380,19 @@ class NeedsClosure(unittest.TestCase):
             top + "  ci:\n    name: ci\n" + job + PROPAGATE, encoding="utf-8")
         self.assertEqual(protection.produced_contexts(self.root)[0].needed_by, {"test": {"ci"}})
 
+    def test_an_aggregate_with_a_non_string_name_gates_nothing(self):
+        """sd:2902: a list or mapping `name:` is unhashable, so comparing it
+        with the line read raised TypeError instead of noting the job."""
+        top = "on: [pull_request]\njobs:\n  test:\n    runs-on: x\n"
+        job = "    needs: test\n    if: always()\n    runs-on: x\n"
+        for name in ("[a, b]", "{a: b}"):
+            with self.subTest(name=name):
+                (self.root / ".github" / "workflows" / "a.yml").write_text(
+                    top + f"  ci:\n    name: {name}\n" + job + PROPAGATE, encoding="utf-8")
+                produced, notes = protection.produced_contexts(self.root)
+                self.assertEqual(produced.needed_by, {})
+                self.assertIn("a.yml: job ci reports", " ".join(notes))
+
     def test_a_name_two_jobs_produce_is_covered_only_when_both_are(self):
         """sd:1741 review round 5: `test` gated by `ci` in a.yml says nothing
         of another `test` in b.yml."""

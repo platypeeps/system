@@ -556,8 +556,10 @@ class Promote(WritingCase):
                    if d.identity == "blog-idea:System/Databases/Blog Ideas/vault-idea.md"}
         self.assertEqual(changed, {"title", "stage", "status", "fields", "body"})
 
-    def broken_snapshot(self, snapshot):
-        """A promoted vault idea whose `promoted_from.row` is not a whole snapshot."""
+    def broken_snapshot(self, snapshot, edit=None):
+        """A promoted vault idea whose `promoted_from.row` is not a whole snapshot.
+
+        `edit`, when given, changes `promoted_from` in place instead."""
         vault = self.root / "vault"
         note = vault / "System/Databases/Blog Ideas/vault-idea.md"
         note.parent.mkdir(parents=True)
@@ -568,7 +570,9 @@ class Promote(WritingCase):
         idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
         promote(self.db, idea, who="operator")
         fields = json.loads(self.db.execute("SELECT fields FROM item WHERE id = ?", (idea,)).fetchone()[0])
-        if snapshot is None:
+        if edit is not None:
+            edit(fields["promoted_from"])
+        elif snapshot is None:
             del fields["promoted_from"]["row"]
         else:
             fields["promoted_from"]["row"] = snapshot
@@ -587,6 +591,22 @@ class Promote(WritingCase):
 
     def test_a_promotion_with_an_array_snapshot_imports_normally(self):
         self.broken_snapshot([1])
+
+    # sd:2926: every key present, a value of the wrong type.
+    def test_a_snapshot_with_object_valued_fields_imports_normally(self):
+        self.broken_snapshot(None, edit=lambda origin: origin["row"].update(fields={}))
+
+    def test_a_snapshot_with_fields_that_are_not_json_imports_normally(self):
+        self.broken_snapshot(None, edit=lambda origin: origin["row"].update(body="not json"))
+
+    def test_a_snapshot_with_a_numeric_title_imports_normally(self):
+        self.broken_snapshot(None, edit=lambda origin: origin["row"].update(title=5))
+
+    def test_a_snapshot_with_a_null_created_at_imports_normally(self):
+        self.broken_snapshot(None, edit=lambda origin: origin["row"].update(created_at=None))
+
+    def test_a_promotion_whose_identity_is_not_a_string_imports_normally(self):
+        self.broken_snapshot(None, edit=lambda origin: origin.update(external_id=["x"]))
 
     def test_an_open_outer_transaction_is_refused(self):
         self.db.execute("BEGIN")

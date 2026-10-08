@@ -3360,7 +3360,7 @@ doctor_sd_versions() {
   fi
   echo "  --      sd_db in this checkout: ${checkout_dist:-?} built for schema ${checkout_schema:-?}; database at schema ${db_schema:-none}"
   if [ -n "$db_schema" ] && [ "$db_schema" != "$checkout_schema" ]; then
-    echo "  WARN    database schema $db_schema DIFFERS from this checkout's $checkout_schema — after a backup, with both agents stopped: local-sd-db/sd-db.sh migrate"
+    echo "  WARN    database schema $db_schema DIFFERS from this checkout's $checkout_schema — after a backup, with sd-dashboard, sd-runner and sd-serve stopped: local-sd-db/sd-db.sh migrate"
   fi
   seen=" "
   for py in "$SD_PACK_ROOT/.venv/bin/python" "${SD_DASHBOARD_PYTHON:-}" "${SD_RUNNER_PYTHON:-}" \
