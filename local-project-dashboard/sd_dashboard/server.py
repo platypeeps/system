@@ -33,6 +33,7 @@ import re
 import secrets
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -894,11 +895,52 @@ class Listener(ThreadingHTTPServer):
     request_queue_size = socket.SOMAXCONN
 
 
+class CodeChanged(Exception):
+    """The build on disk is no longer the one this process loaded (sd:3018)."""
+
+
 class DashboardServer(Listener):
-    """Own both listeners so partial startup and shutdown leave no orphan socket."""
+    """Own both listeners so partial startup and shutdown leave no orphan socket.
+
+    It also stops once its build changes on disk and the new build's start
+    check passes, so the LaunchAgent's KeepAlive starts the new code; a stale
+    process answered /health 503 until someone kickstarted it (sd:3018). A
+    failed check keeps the old build serving: a replacement that cannot start,
+    such as one ahead of the installed sd_db, would restart in a loop.
+    """
 
     direct_server = None
     direct_thread = None
+    # The new build's start check as a command; `main` sets it for a --config start. None never restarts.
+    restart_probe = None
+    refused_build = None
+    # A check hashes the library and the package, about 30 ms.
+    build_check_seconds = 30
+
+    def service_actions(self):
+        super().service_actions()
+        if self.restart_probe is None or time.monotonic() - self.build_checked < self.build_check_seconds:
+            return
+        self.build_checked = time.monotonic()
+        try:
+            current = runtime.build_digests()
+        except runtime.RuntimeRefused:
+            return  # A checkout mid-update can lack a file; the next check sees it settled.
+        if current in (self.RequestHandlerClass.loaded_build, self.refused_build):
+            return
+        # ponytail: the probe holds new connections for its run (about a second), once per change.
+        try:
+            probe = subprocess.run(self.restart_probe, stdin=subprocess.DEVNULL, capture_output=True,
+                                   text=True, timeout=60, check=False)
+            reason = "" if probe.returncode == 0 else (
+                probe.stderr.strip().splitlines() or [f"exit {probe.returncode}"])[-1]
+        except (OSError, subprocess.SubprocessError) as error:
+            reason = str(error) or type(error).__name__
+        if not reason:
+            raise CodeChanged("the dashboard build changed on disk")
+        self.refused_build = current
+        print(f"sd-dashboard: the build changed on disk but cannot start; serving the old build: {reason}",
+              file=sys.stderr, flush=True)
 
     def direct_listener_healthy(self):
         return self.direct_server is None or (
@@ -920,6 +962,7 @@ class DashboardServer(Listener):
                 self.direct_thread.start()
                 if not self.direct_thread.is_alive():
                     raise RuntimeError("The required dashboard IP listener did not start.")
+            self.build_checked = time.monotonic()
             super().serve_forever(poll_interval=poll_interval)
         except BaseException:
             self.server_close()
@@ -938,8 +981,11 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
           host: str = "127.0.0.1", operations_backend=None,
           frontdoor: auth.FrontDoor | None = None, frontdoor_check=None,
           services_backend=None, ports_backend=None, runner_backend=None,
-          peer_lookup=None, fleet_backend=None, jev=None) -> ThreadingHTTPServer:
-    """Build the loopback server and optional, separately authenticated IP socket."""
+          peer_lookup=None, fleet_backend=None, jev=None, bind=True) -> ThreadingHTTPServer:
+    """Build the loopback server and optional, separately authenticated IP socket.
+
+    `bind=False` builds both without binding: the restart probe's check, while the old server holds the ports.
+    """
     if host != "127.0.0.1":
         raise ValueError("The dashboard binds 127.0.0.1 only.")
     if frontdoor is not None and not callable(frontdoor_check):
@@ -962,12 +1008,12 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         "peer_lookup": staticmethod(peer_lookup) if peer_lookup else None,
         "loaded_build": runtime.build_digests(),
     })
-    primary = DashboardServer((host, port), handler)
+    primary = DashboardServer((host, port), handler, bind_and_activate=bind)
     try:
         if frontdoor is not None and frontdoor.direct is not None:
             direct = frontdoor.direct
             direct_handler = type("DirectDashboard", (handler,), {"direct_listener": True})
-            primary.direct_server = Listener((direct.address, direct.port), direct_handler)
+            primary.direct_server = Listener((direct.address, direct.port), direct_handler, bind_and_activate=bind)
             primary.direct_server.runtime_owner = primary
         return primary
     except BaseException:
@@ -975,7 +1021,9 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         raise
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, serve: bool = True) -> int:
+    """Start the dashboard. `serve=False` runs every start step short of the bind, then returns 0 (sd:3018)."""
+    argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(description="The local workflow dashboard.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--database", default=None)
@@ -1002,13 +1050,30 @@ def main(argv: list[str] | None = None) -> int:
         options = {"frontdoor": frontdoor, "frontdoor_check": private_frontdoor_unchanged}
     # Only the served dashboard asks Jev; every test build passes no command.
     options["jev"] = runtime.jev_command()
-    server = build(arguments.database, port=arguments.port, **options)
+    server = build(arguments.database, port=arguments.port, bind=serve, **options)
+    if not serve:
+        server.server_close()
+        return 0
+    if arguments.config:
+        # The restart probe, two steps from this checkout. First its dashboard.sh preflight, which runs
+        # its bootstrap.py and runtime. Then a fresh interpreter imports the serving code, as bootstrap.py
+        # does, and runs this function with the same arguments short of the bind. Only the LaunchAgent's
+        # --config start has a launchd to start the replacement.
+        probe = ("import sys; sys.path.insert(0, sys.argv.pop(1)); from sd_dashboard import server; "
+                 "raise SystemExit(server.main(sys.argv[1:], serve=False))")
+        server.restart_probe = ["sh", "-c", '"$1" preflight --config "$2" >/dev/null && shift 2 && exec "$@"', "sh",
+                                str(runtime.HERE / "dashboard.sh"), str(arguments.config),
+                                sys.executable, "-I", "-c", probe, str(runtime.HERE), *argv]
     host, port = server.server_address[:2]
     print(f"sd-dashboard on http://{host}:{port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    except CodeChanged as changed:
+        # Non-zero, and launchd's KeepAlive starts the new build.
+        print(f"sd-dashboard: {changed}; exiting to restart", file=sys.stderr, flush=True)
+        return 1
     finally:
         server.server_close()
     return 0

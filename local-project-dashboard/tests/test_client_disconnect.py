@@ -97,7 +97,7 @@ class DirectClientLeaves(ClientLeaves):
         frontdoor = auth.validate_frontdoor(config, serve, 8767)
         # The fixture IP is not on this host; bind the direct socket to loopback instead.
         with patch.object(server, "Listener",
-                          side_effect=lambda address, handler: self.direct_class(("127.0.0.1", 0), handler)):
+                          side_effect=lambda address, handler, **options: self.direct_class(("127.0.0.1", 0), handler, **options)):
             return server.build(self.path, port=0, frontdoor=frontdoor, frontdoor_check=lambda: True,
                                 peer_lookup=lambda peer: "operator@example.test",
                                 operations_backend=Mock(names=lambda: []))
