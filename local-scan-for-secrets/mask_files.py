@@ -130,13 +130,19 @@ def mask_file(path: str, pairs, pats, apply: bool, before_write=None) -> Result:
 def cut_short(on_disk: bytes, data: bytes, new: bytes) -> bool:
     """True when `on_disk` is `new[:k] + data[k:]` for some k at the
     original length: what an in-place write leaves when it stops partway.
-    A cut-short write that grew the file is not one: putting it back would
-    need a truncate, and a truncate removes what a session appended."""
+    A cut-short write that grew the file is `grew_short` instead."""
     if len(on_disk) != len(data):
         return False
     written = len(os.path.commonprefix([on_disk, new]))
     kept = len(os.path.commonprefix([on_disk[::-1], data[::-1]]))
     return len(data) - kept <= written
+
+
+def grew_short(on_disk: bytes, data: bytes, new: bytes) -> bool:
+    """True when `on_disk` is `new[:k]` for some k past the original length:
+    what a write that grows the file leaves when it stops partway. A line a
+    session appended since breaks the prefix, so that file is not one."""
+    return len(data) < len(on_disk) < len(new) and new.startswith(on_disk)
 
 
 def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> str:
@@ -150,7 +156,9 @@ def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> st
     since undoing a rewrite that landed would put the value back. A cut-short
     write gets the original bytes back over the same length, with no
     truncate, so a line a session appends meanwhile lands after them and
-    stays; the run still fails, and the next one masks it.
+    stays. A write cut short after it grew the file gets them back and a
+    truncate to the original length. Either way the run still fails, and
+    the next one masks it.
     """
     try:
         fd = os.open(path, os.O_RDWR)
@@ -163,12 +171,17 @@ def recover(path: str, data: bytes, new: bytes, identity: tuple[int, int]) -> st
                 return "the masked bytes landed"
             if on_disk == data:
                 return "file unchanged"
-            if not cut_short(on_disk, data, new):
+            grew = grew_short(on_disk, data, new)
+            if not (grew or cut_short(on_disk, data, new)):
                 return "file changed after the failed write; left as is, and it may be half masked"
             raw.seek(0)
             view = memoryview(data)
             while view:
                 view = view[raw.write(view):]
+            if grew:
+                # ponytail: a line appended between the read above and this
+                # truncate is lost; the window is microseconds, as in the rewrite.
+                raw.truncate(len(data))
             os.fsync(fd)
     except OSError as e:
         return "restore failed (%s); the file may be half masked" % e

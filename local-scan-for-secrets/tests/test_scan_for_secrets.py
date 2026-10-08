@@ -581,6 +581,17 @@ class MaskRewrite(unittest.TestCase):
         self.assertEqual(code, 1, err)
         self.assertTrue(path.read_bytes().endswith(event), "recovery cut the appended event")
 
+    def test_a_restore_that_cannot_write_fails_the_run_and_says_so(self):
+        path = self.token_first()
+
+        def lose_write_access(target):
+            os.chmod(target, 0o400)
+
+        code, err = self.apply_through(path, self.half_way_then(lose_write_access))
+        self.assertEqual(code, 1, err)
+        self.assertIn("restore failed", err)
+        self.assertIn("may be half masked", err)
+
     def test_the_cut_short_shape(self):
         cut = self.mod.cut_short
         data, new = b"SECRETSECRET tail", b"<m> tail"
@@ -591,6 +602,48 @@ class MaskRewrite(unittest.TestCase):
         longer = b"<masked:$NAME> tail"
         self.assertFalse(cut(b"<masked:$NAME> ta", b"abc tail", longer),
                          "a longer write grew the file; restoring it needs a truncate")
+
+    def test_a_write_that_grew_the_file_and_stopped_gets_its_original_bytes_back(self):
+        # A short value masks to a longer marker, so the rewrite grows the file.
+        path = self.log("old.jsonl")
+        original = b'{"key":"abc"}\n'
+        path.write_bytes(original)
+        real_open = open
+
+        class PastTheEnd:
+            """The disk fills one byte past the original length."""
+
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self.handle.close()
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+            def write(self, data):
+                if "+" in self.handle.mode:
+                    self.handle.write(data[: len(original) + 1])
+                    self.handle.flush()
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                return self.handle.write(data)
+
+        with mock.patch.object(self.mod, "open", lambda *a, **k: PastTheEnd(real_open(*a, **k)), create=True):
+            with self.assertRaises(self.mod.WriteFailed) as caught:
+                self.mod.mask_file(str(path), [("KEY", b"abc")], [], True)
+        self.assertIn("original restored", str(caught.exception))
+        self.assertEqual(path.read_bytes(), original, "a half-masked file was left in place")
+
+    def test_the_grew_short_shape(self):
+        grew = self.mod.grew_short
+        data, new = b"abc tail", b"<masked:$NAME> tail"
+        self.assertTrue(grew(b"<masked:$NAME> ta", data, new), "a prefix of the masked bytes, past the original length")
+        self.assertFalse(grew(b"<masked:$NAME> ta+event", data, new), "an append since")
+        self.assertFalse(grew(b"<masked", data, new), "not past the original length: cut_short's shape")
 
     def test_a_rewrite_that_landed_is_not_undone(self):
         path = self.log("old.jsonl")
