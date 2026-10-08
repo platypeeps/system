@@ -1132,7 +1132,8 @@ stage_tooling() {
     fi
     # The settings baseline in claude_settings.py, the same on every machine:
     # deny rules (secret reads, GitHub issues, claude-mem work state), no
-    # attribution lines, the `sd today` hook. It adds missing entries after a
+    # attribution lines, the `sd today` hook, and DISABLE_AUTOUPDATER (the
+    # weekly upgrade updates Claude Code). It adds missing entries after a
     # backup and never touches the operator's own.
     if [ -f "$HOME/.claude/settings.json" ]; then
       if gaps=$(python3 "$DIR/claude_settings.py" missing "$HOME/.claude/settings.json" 2>/dev/null); then

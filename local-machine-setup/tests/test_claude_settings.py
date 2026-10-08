@@ -110,6 +110,20 @@ class ClaudeSettingsBaseline(SyntheticHome):
                      "mcp__plugin_claude-mem_mcp-search__work_state_read"):
             self.assertIn(rule, deny)
 
+    def test_a_fresh_baseline_turns_off_the_background_updater(self):
+        """sd:3033: Claude Code updates in the weekly upgrade only."""
+        self.settings.write_text("{}\n")
+        self.run_tooling("--apply")
+
+        self.assertEqual(json.loads(self.settings.read_text())["env"], {"DISABLE_AUTOUPDATER": "1"})
+
+    def test_an_operators_updater_setting_is_left_alone(self):
+        self.settings.write_text(json.dumps({"env": {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"}}) + "\n")
+        out = self.run_tooling("--apply")
+
+        self.assertNotIn("env.DISABLE_AUTOUPDATER", out)
+        self.assertEqual(json.loads(self.settings.read_text())["env"], {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"})
+
     def test_a_second_apply_changes_nothing(self):
         self.run_tooling("--apply")
         after_first = self.settings.read_bytes()

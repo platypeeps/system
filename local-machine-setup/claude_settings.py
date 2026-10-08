@@ -47,6 +47,8 @@ TOOL_DENY = [
     "mcp__plugin_claude-mem_mcp-search__work_state_read",
 ]
 SESSION_START = "sd today 2>/dev/null | head -40"
+#: Claude Code updates in the weekly upgrade only (sd:3033); this stops its background updater.
+ENV = {"DISABLE_AUTOUPDATER": "1"}
 #: The same paths for opencode's read permission, whose `*` also matches `/`.
 OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").replace("**", "*").lstrip("*")
                       for rule in SECRET_READ_DENY]
@@ -67,6 +69,7 @@ def missing(settings):
     gaps += [f"attribution.{key}" for key in ("commit", "pr") if key not in settings.get("attribution", {})]
     if "includeCoAuthoredBy" not in settings:
         gaps.append("includeCoAuthoredBy")
+    gaps += [f"env.{key}" for key in ENV if key not in settings.get("env", {})]
     if SESSION_START not in session_start_commands(settings):
         gaps.append(f"hooks.SessionStart {SESSION_START}")
     return gaps
@@ -79,6 +82,9 @@ def merge(settings):
     attribution.setdefault("commit", "")
     attribution.setdefault("pr", "")
     settings.setdefault("includeCoAuthoredBy", False)
+    env = settings.setdefault("env", {})
+    for key, value in ENV.items():
+        env.setdefault(key, value)
     if SESSION_START not in session_start_commands(settings):
         hook = {"hooks": [{"type": "command", "command": SESSION_START}]}
         settings.setdefault("hooks", {}).setdefault("SessionStart", []).append(hook)
