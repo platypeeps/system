@@ -1,6 +1,6 @@
 // Health v2 (sd:2115): the page script. It loads before shell.js, which reads what it declares.
 // Rows: /api/health, the document health_screen.document builds from the fleet child (worktree registrations),
-// reads.trailer_scan (attribution), Operations > Ports' reader (ports), protection.rows (branch protection, and the
+// Operations > Ports' reader (ports), protection.rows (branch protection, and the
 // alerts behind Dependencies and Security, sd:2205 and sd:2206), the nightly credentials heartbeat (sd:2203) and
 // health_collectors (disk and merged branches, sd:2202 and sd:2204).
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
@@ -16,7 +16,6 @@
   const LOOK = {
     disk: ['hard-drive', '<b>Where the space went.</b> Volume use from df, then the biggest items the fleet itself creates: the storage folders <code>disk.conf</code> names and build output left in worktrees. A merged worktree must not keep build output (rule of 2026-09-25). A volume lights caution at 80% and warning at 90%. Build output is found, not sized.'],
     cred: ['key-round', '<b>Presence and expiry only.</b> Token values are never read into this page. GitHub reports a classic PAT expiry in a response header; Home Assistant tokens carry none the dashboard can read.'],
-    attr: ['signature', '<b>Who wrote each commit.</b> Every commit carries <code>Authored-with:</code> in its last paragraph; sd-review reads a missing one as “authored unknown” and blocks readiness. The count is your commits (each repo’s user.email) of the last 5 weeks on each default branch (origin/HEAD), merges left out. It walks every repo inside a 10 s budget; past it the area says it stopped rather than waited on, and shows no count.'],
     wt: ['folder-x', '<b>Registered is not present.</b> A worktree whose directory is gone still holds its branch. Prune clears the registration only; it never touches a directory that exists.'],
     br: ['git-branch', '<b>Merged but not deleted.</b> Local branches already contained in origin’s default branch. <code>git branch -d</code> refuses any branch that is not merged, so the fix cannot lose work.'],
     dep: ['package', '<b>Dependabot, per repo.</b> Open alerts on the unarchived managed repos, as the nightly sync stored them. A repo whose alerts could not be read is unknown, never clean.'],
@@ -55,8 +54,6 @@
   const lampValue = a => !a.read ? html`<span class="ph">no reader</span>`
     : a.error ? html`<span class="ph">not read</span>`
     : a.id === 'wt' ? html`<span class="ph"><b>${sumFact(a, 'Registered')}</b> dir gone</span>`
-    // The scope decided 2026-09-30 (design 63c9d0c): the operator's own commits, 5 weeks, each repo's default branch.
-    : a.id === 'attr' ? html`<span class="ph"><b>${sumFact(a, 'Missing')}</b> missing</span> <span class="ph">your commits · 5 weeks · default branch</span>`
     : a.id === 'disk' ? fullest(a)
     : a.id === 'br' ? html`<span class="ph"><b>${sumFact(a, 'Merged')}</b> merged</span> <span class="ph">not deleted</span>`
     : a.id === 'dep' || a.id === 'sec' ? alerts(a)
@@ -218,7 +215,7 @@
 
   // ---------- Commands (the design source's commands.md) ----------
   // Ids, labels, keys and risks are the design's. The build runs none of the lines: the dashboard has no route that prunes a
-  // worktree, attributes a commit, deletes a branch or removes build output, so each is copy only and its run says where the
+  // worktree, deletes a branch or removes build output, so each is copy only and its run says where the
   // line runs. A row with `disabled` (a merged branch a worktree holds) names why the line would be refused.
   const copyOnly = o => `Not run here: copy the line from Details and run it in a terminal · ${o.label}`;
   window.PAGE_COMMANDS = [
@@ -244,8 +241,6 @@
       // Volume rows are the build's: the design draws volumes as bars only. Its line shows the volume's use in a terminal.
       { id: 'volume.df', on: 'volume', label: 'Show use', key: 'b', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: copyOnly },
-      { id: 'attribution gap.attribute', on: 'attribution gap', label: 'Attribute', key: 'a', risk: 'safe', executes: false, primary: () => true,
-        cli: () => 'sd attribute <sha|from..to> <entry>  # on a branch, then ship by PR', run: copyOnly },
       { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', key: 'p', risk: 'confirm', bulk: true,
         executes: false, primary: () => true, cli: o => `git -C ${shell.shq(o.repo_path)} worktree prune -v`,
         consequence: o => `Removes ${o.facts.Registered} worktree registrations whose directories are gone. No directory is touched.`, run: copyOnly },
@@ -272,7 +267,7 @@
         cli: o => o.cli, run: copyOnly },
     );
     // Snooze sits on every type that wants you, as the design declares it; sd has no snooze verb, so it stays off.
-    ['storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'attribution gap', 'merged branches', 'port', 'branch protection'].forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', key: 'z', risk: 'undo', bulk: true,
+    ['storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'port', 'branch protection'].forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', key: 'z', risk: 'undo', bulk: true,
       when: () => 'no CLI verb: sd has no snooze', cli: o => `sd now snooze ${o.id} --until 08:00`, run: o => `Snoozed until 08:00 · ${o.label}`, undo: () => {} }));
 
     const u = new URLSearchParams(location.search);

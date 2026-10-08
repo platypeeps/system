@@ -4,7 +4,7 @@ What this slice promises: `/fleet-health` answers under the shared policy and
 loads its script before `shell.js` (`/health` stays the service's own check);
 `/api/health` is every area of the design, in its order, each saying whether a
 reader covers it. Worktrees come from the fleet child's registrations, grouped
-per checkout, and Attribution from `reads.trailer_scan`. An area with no
+per checkout. An area with no
 reader, or whose reader failed, is unknown on the page and names what it does
 not read, never a clean lamp. Ports is Operations > Ports' reader with its
 counts and warnings; Protection is `protection.rows` as a matrix, one column
@@ -33,7 +33,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import credentials, reads, upsert_repo
+from sd_db import credentials, upsert_repo
 from sd_db.writes import record_state
 
 from sd_dashboard import health_collectors, health_screen, server, v2
@@ -63,11 +63,6 @@ def fleet_of(trees, root="/checkouts", exists=True):
         return {"root": root, "rootExists": exists, "worktrees": trees, "processes": [], "processes_error": "",
                 "processes_truncated": False, "abandoned": 0, "counts": {}}
     return read
-
-
-def trailers_of(count, *, no_default=(), no_author=()):
-    scan = {"missing": count, "commits": 10, "repos": 2, "no_default": list(no_default), "no_author": list(no_author)}
-    return lambda connection, *, now: scan
 
 
 def ports_snapshot():
@@ -207,11 +202,10 @@ def cloned(path: Path) -> Path:
 
 
 class TheDocument(Collectors, ScreenCase):
-    """`health_screen.document` from the fleet child and the trailer count."""
+    """`health_screen.document` from the fleet child."""
 
-    def doc(self, trees=TREES, count=3, **kwargs):
+    def doc(self, trees=TREES, **kwargs):
         return health_screen.document(self.connection, now=NOW, fleet=kwargs.get("fleet") or fleet_of(trees),
-                                      trailers=kwargs.get("trailers") or trailers_of(count),
                                       ports=kwargs.get("ports") or ports_snapshot,
                                       protection=kwargs.get("protection") or protection_of(PROTECTION),
                                       disk=kwargs.get("disk"), branches=kwargs.get("branches"))
@@ -219,7 +213,7 @@ class TheDocument(Collectors, ScreenCase):
     def test_every_design_area_is_there_in_order_and_says_whether_a_reader_covers_it(self):
         areas = self.doc()["areas"]
         self.assertEqual([(a["id"], a["read"]) for a in areas],
-                         [("disk", True), ("cred", True), ("attr", True), ("wt", True),
+                         [("disk", True), ("cred", True), ("wt", True),
                           ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True)])
         for area in areas:
             if area["id"] not in ("br", "ports", "prot", "cred", "dep", "sec"):
@@ -228,7 +222,7 @@ class TheDocument(Collectors, ScreenCase):
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
 
     def test_registrations_whose_directory_is_gone_are_one_row_per_checkout(self):
-        wt = self.doc()["areas"][3]
+        wt = self.doc()["areas"][2]
         rows = {row["id"]: row for row in wt["rows"]}
         self.assertEqual(set(rows), {"gone:group/alpha", "unread:beta"})
         gone = rows["gone:group/alpha"]
@@ -240,43 +234,27 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual((unread["state"], unread["type"], unread["list"]), ("unknown", "unread registrations", ["(unnamed) (?)"]))
 
     def test_a_fleet_with_every_registration_present_is_one_ok_row(self):
-        (row,) = self.doc(trees=[TREES[3]])["areas"][3]["rows"]
+        (row,) = self.doc(trees=[TREES[3]])["areas"][2]["rows"]
         self.assertEqual((row["id"], row["state"], row["type"]), ("wt:ok", "ok", "check"))
         self.assertIn("checked 1 registration in 1 checkout under /checkouts", row["detail"])
-
-    def test_the_trailer_count_is_a_caution_row_or_an_ok_check(self):
-        (row,) = self.doc(count=3)["areas"][2]["rows"]
-        self.assertEqual((row["id"], row["state"], row["type"], row["facts"]["Missing"]), ("attr:weeks", "caution", "attribution gap", "3"))
-        self.assertEqual(row["what"], "3 of 10 of your commits in 5 weeks lack Authored-with")
-        (row,) = self.doc(count=0)["areas"][2]["rows"]
-        self.assertEqual((row["id"], row["state"], row["type"]), ("attr:ok", "ok", "check"))
-
-    def test_a_repo_with_no_default_branch_or_no_author_is_named_in_its_own_row(self):
-        rows = {row["id"]: row for row in self.doc(trailers=trailers_of(
-            0, no_default=["/checkouts/alpha"], no_author=["/checkouts/beta"]))["areas"][2]["rows"]}
-        self.assertEqual(list(rows), ["attr:ok", "attr:no_default", "attr:no_author"])
-        self.assertEqual(rows["attr:no_default"]["state"], "unknown")
-        self.assertIn("/checkouts/alpha", str(rows["attr:no_default"]))
-        self.assertIn("remote set-head origin --auto", str(rows["attr:no_default"]))
-        self.assertIn("/checkouts/beta", str(rows["attr:no_author"]))
 
     def test_a_reader_that_fails_is_its_area_error_and_the_other_still_answers(self):
         def broken(area):
             raise ValueError("fleet collection was stopped at its budget: sessions")
         areas = self.doc(fleet=broken)["areas"]
-        self.assertEqual((areas[3]["error"], areas[3]["rows"]), ("fleet collection was stopped at its budget: sessions", []))
-        self.assertEqual(areas[2]["rows"][0]["id"], "attr:weeks")
+        self.assertEqual((areas[2]["error"], areas[2]["rows"]), ("fleet collection was stopped at its budget: sessions", []))
+        self.assertEqual((areas[6]["error"], bool(areas[6]["rows"])), ("", True))
         areas = self.doc(fleet=lambda area: {"root": "/checkouts", "worktrees": [{"repo": "x"}]})["areas"]
-        self.assertEqual(areas[3]["error"], "fleet collector returned an incomplete sessions document")
+        self.assertEqual(areas[2]["error"], "fleet collector returned an incomplete sessions document")
 
     def test_a_checkout_root_that_does_not_exist_is_not_read_rather_than_healthy(self):
         # The collector answers a missing REPO_ROOT with no worktrees, which would read as "checked 0 registrations".
-        worktrees = self.doc(fleet=fleet_of([], root="/checkouts/missing", exists=False))["areas"][3]
+        worktrees = self.doc(fleet=fleet_of([], root="/checkouts/missing", exists=False))["areas"][2]
         self.assertEqual(worktrees["rows"], [], "a missing checkout root was reported as a reading")
         self.assertEqual(worktrees["error"], "the checkout root /checkouts/missing does not exist; REPO_ROOT names it")
 
     def test_ports_are_the_operations_rows_with_its_counts_and_warnings(self):
-        ports = self.doc()["areas"][7]
+        ports = self.doc()["areas"][6]
         rows = {row["id"]: row for row in ports["rows"]}
         self.assertEqual({key: (row["state"], row["type"], row["port"]) for key, row in rows.items()},
                          {"port:observed:5000": ("queued", "port", "5000"), "port:svc-a:9010": ("ok", "port", "9010"),
@@ -294,14 +272,14 @@ class TheDocument(Collectors, ScreenCase):
         def refused():
             raise health_screen.ports_screen.OverBudget("lsof ran past 5 s")
         areas = self.doc(ports=refused)["areas"]
-        self.assertEqual(areas[7]["rows"], [])
-        self.assertIn("exceeded its collection budget and was stopped rather than waited on: lsof ran past 5 s", areas[7]["error"])
-        self.assertEqual(areas[3]["rows"][0]["id"], "gone:group/alpha")
-        empty = self.doc(ports=lambda: {"services": [], "complete": False})["areas"][7]
+        self.assertEqual(areas[6]["rows"], [])
+        self.assertIn("exceeded its collection budget and was stopped rather than waited on: lsof ran past 5 s", areas[6]["error"])
+        self.assertEqual(areas[2]["rows"][0]["id"], "gone:group/alpha")
+        empty = self.doc(ports=lambda: {"services": [], "complete": False})["areas"][6]
         self.assertEqual(empty["error"], "port inventory is unavailable")
 
     def test_protection_cells_follow_the_classic_screen_and_an_unread_repo_has_none(self):
-        prot = self.doc()["areas"][8]
+        prot = self.doc()["areas"][7]
         rows = {row["id"]: row for row in prot["rows"]}
         self.assertEqual(prot["extra"]["columns"],
                          ["prot:/checkouts/beta", "prot:/checkouts/gamma", "prot:/checkouts/alpha", "prot:/checkouts/delta"])
@@ -327,13 +305,13 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual(rows["prot:/checkouts/beta"]["sentence"], "main has no protection")
 
     def test_an_empty_registry_is_one_unknown_row_not_a_protected_fleet(self):
-        (row,) = self.doc(protection=protection_of([]))["areas"][8]["rows"]
+        (row,) = self.doc(protection=protection_of([]))["areas"][7]["rows"]
         self.assertEqual((row["id"], row["state"]), ("prot:none", "unknown"))
 
     def test_the_default_protection_reader_shows_an_unobserved_repo_as_unknown(self):
         self.repo("/checkouts/never")
-        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0), ports=ports_snapshot)
-        (row,) = doc["areas"][8]["rows"]
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot)
+        (row,) = doc["areas"][7]["rows"]
         self.assertEqual((row["state"], row["reason"], row["cells"]), ("unknown", "not yet observed", []))
 
     def test_a_checkout_borrowing_a_siblings_row_names_the_lender(self):
@@ -343,8 +321,8 @@ class TheDocument(Collectors, ScreenCase):
         self.connection.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
                                 "VALUES ('/checkouts/widget', '2026-10-04T01:00:00Z', 'protected', 'main', '{}')")
         self.connection.commit()
-        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0), ports=ports_snapshot)
-        rows = {row["id"]: row for row in doc["areas"][8]["rows"]}
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot)
+        rows = {row["id"]: row for row in doc["areas"][7]["rows"]}
         self.assertEqual(rows["prot:/checkouts/widget-copy"]["status"], "protected")
         self.assertEqual(rows["prot:/checkouts/widget-copy"]["facts"]["Borrowed from"], "/checkouts/widget")
         self.assertNotIn("Borrowed from", rows["prot:/checkouts/widget"]["facts"])
@@ -427,7 +405,7 @@ class TheDocument(Collectors, ScreenCase):
                                 "VALUES ('/checkouts/widget', '2026-09-05T02:20:00Z', 'protected', 'main', ?)",
                                 (json.dumps(body),))
         self.connection.commit()
-        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0), ports=ports_snapshot)
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot)
         areas = {area["id"]: area for area in doc["areas"]}
         self.assertEqual([(row["id"], row["state"]) for row in areas["dep"]["rows"]], [("dep:/checkouts/widget", "warning")])
         self.assertEqual([(row["id"], row["state"]) for row in areas["sec"]["rows"]], [("sec:off:/checkouts/widget", "caution")])
@@ -499,40 +477,8 @@ class TheDocument(Collectors, ScreenCase):
         area = self.area("cred")
         self.assertEqual((area["rows"], area["error"]), ([], "the credentials heartbeat has no probe list"))
 
-    def test_a_slow_git_walk_is_stopped_at_its_budget_and_is_the_attribution_error(self):
-        stub = self.stub("git", self.stalled())
-        for name in ("one", "two"):
-            self.repo(f"/checkouts/{name}")
-        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
-                patch.object(health_screen, "TRAILER_SECONDS", 0.5, create=True):
-            doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot,
-                                         protection=protection_of([]))
-        attr = doc["areas"][2]
-        self.assertFalse(self.finished.exists(), "the page waited on the git walk instead of stopping it")
-        self.assertEqual((attr["rows"], attr["error"]), ([], "the trailer count ran past its budget of 0.5 seconds "
-                                                             "and was stopped rather than waited on"))
-        self.assertEqual(doc["areas"][3]["rows"][0]["id"], "wt:ok")
-
-    def test_the_default_trailer_reader_counts_a_registered_repo(self):
-        repo = Path(self.tmp.name) / "repo"
-        env = {**os.environ, "GIT_AUTHOR_DATE": "2026-09-05T10:00:00Z", "GIT_COMMITTER_DATE": "2026-09-05T10:00:00Z",
-               "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
-               "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
-        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.test"], check=True, env=env)
-        for message in ("no trailer", "with trailer\n\nAuthored-with: human"):
-            subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", message], check=True, env=env)
-        # The default branch as a clone knows it: origin/HEAD, not the checkout's HEAD.
-        subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True, env=env)
-        subprocess.run(["git", "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
-                       check=True, env=env)
-        self.repo(str(repo))
-        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot)
-        self.assertEqual(doc["areas"][2]["rows"][0]["facts"]["Missing"], "1")
-
-
     def test_merged_branches_are_one_row_per_repo_and_a_checked_out_one_is_its_own(self):
-        br = self.doc()["areas"][4]
+        br = self.doc()["areas"][3]
         rows = {row["id"]: row for row in br["rows"]}
         self.assertEqual(list(rows), ["br:/checkouts/alpha", "brs:/checkouts/alpha", "br:no_default"])
         merged = rows["br:/checkouts/alpha"]
@@ -549,10 +495,10 @@ class TheDocument(Collectors, ScreenCase):
 
     def test_no_merged_branch_is_an_ok_check_and_no_repo_is_unknown_not_clean(self):
         clean = {"repos": 3, "merged": [], "no_default": [], "unread": []}
-        (row,) = self.doc(branches=scan_of(clean))["areas"][4]["rows"]
+        (row,) = self.doc(branches=scan_of(clean))["areas"][3]["rows"]
         self.assertEqual((row["id"], row["state"], row["detail"]),
                          ("br:ok", "ok", "checked the local branches of 3 repos against origin/HEAD"))
-        (row,) = self.doc(branches=scan_of({**clean, "repos": 0}))["areas"][4]["rows"]
+        (row,) = self.doc(branches=scan_of({**clean, "repos": 0}))["areas"][3]["rows"]
         self.assertEqual((row["id"], row["state"]), ("br:none", "unknown"))
 
     def test_disk_is_a_row_per_full_volume_the_biggest_storage_folders_and_merged_build_output(self):
@@ -615,7 +561,7 @@ class TheDocument(Collectors, ScreenCase):
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
             doc = self.doc(branches=lambda connection: REAL_BRANCH_SCAN(
                 connection, within=0.5, repo_paths=["/checkouts/one", "/checkouts/two"]))
-        br = doc["areas"][4]
+        br = doc["areas"][3]
         self.assertFalse(self.finished.exists(), "the page waited on the branch walk instead of stopping it")
         self.assertEqual((br["rows"], br["error"]), ([], "the merged-branch walk ran past its budget of 0.5 seconds "
                                                          "and was stopped rather than waited on"))
@@ -704,13 +650,13 @@ class TheDocument(Collectors, ScreenCase):
 
 
     def test_the_walkers_run_at_once_so_the_page_waits_for_the_slowest_not_the_sum(self):
-        # Five walkers that each wait for all five: at once they meet and
+        # Four walkers that each wait for all four: at once they meet and
         # answer; in series the first waits alone until the page's budget
         # leaves it. A meeting, not a stopwatch: 5 x 0.8 s against a 2 s
         # bound failed under gate load with the walkers at once (sd:2667).
         # The timeout only ends a walker that waits alone, as a page that ran
         # them inline would leave it.
-        met = threading.Barrier(5, timeout=10)
+        met = threading.Barrier(4, timeout=10)
         self.addCleanup(met.abort)
 
         def slow(answer):
@@ -718,10 +664,10 @@ class TheDocument(Collectors, ScreenCase):
                 met.wait()
                 return answer(*args, **kwargs)
             return read
-        doc = self.doc(fleet=slow(fleet_of(TREES)), trailers=slow(trailers_of(3)), ports=slow(ports_snapshot),
+        doc = self.doc(fleet=slow(fleet_of(TREES)), ports=slow(ports_snapshot),
                        disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
         self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
-                         [(key, "", True) for key in ("disk", "cred", "attr", "wt", "br", "dep", "sec", "ports", "prot")])
+                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot")])
 
     def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
         # The reader answers only once the page has returned, so a page that
@@ -738,10 +684,10 @@ class TheDocument(Collectors, ScreenCase):
             doc = self.doc(fleet=stuck)
         self.assertFalse(answered.is_set(), "the page waited on a reader past its budget")
         returned.set()
-        wt = doc["areas"][3]
+        wt = doc["areas"][2]
         self.assertEqual((wt["rows"], wt["error"]), ([], "the Worktrees reader was still running at the page's budget of "
                                                          "0.5 seconds and was left rather than waited on"))
-        self.assertEqual(doc["areas"][2]["rows"][0]["id"], "attr:weeks")
+        self.assertEqual((doc["areas"][6]["error"], bool(doc["areas"][6]["rows"])), ("", True))
 
     def test_the_default_walkers_get_the_registry_as_paths_not_the_connection(self):
         # A sqlite connection refuses a second thread: a default walker handed it would be its area's error.
@@ -749,9 +695,8 @@ class TheDocument(Collectors, ScreenCase):
         git("-C", str(alpha), "branch", "merged-one")
         self.repo(str(alpha))
         with patch.object(health_collectors, "branch_scan", REAL_BRANCH_SCAN):
-            doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), trailers=trailers_of(0),
-                                         ports=ports_snapshot, protection=protection_of([]), disk=scan_of(DISK))
-        br = doc["areas"][4]
+            doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot, protection=protection_of([]), disk=scan_of(DISK))
+        br = doc["areas"][3]
         self.assertEqual((br["error"], [row["id"] for row in br["rows"]]), ("", [f"br:{alpha}"]))
 
 
@@ -775,8 +720,7 @@ class OneScanPerArea(Collectors, ScreenCase):
         return read, threads
 
     def doc(self, fleet, now=NOW):
-        return health_screen.document(self.connection, now=now, fleet=fleet, trailers=trailers_of(3),
-                                      ports=ports_snapshot, protection=protection_of(PROTECTION))
+        return health_screen.document(self.connection, now=now, fleet=fleet, ports=ports_snapshot, protection=protection_of(PROTECTION))
 
     def test_timed_out_requests_leave_at_most_one_live_worker_for_a_blocked_reader(self):
         read, threads = self.blocked()
@@ -785,25 +729,25 @@ class OneScanPerArea(Collectors, ScreenCase):
         self.assertLessEqual(len([thread for thread in threads if thread.is_alive()]), 1, threads)
         self.assertEqual(len(threads), 1, "a request started a second scan while the first still ran")
         self.assertTrue(all(thread.daemon for thread in threads), "interpreter exit would wait on the scan")
-        self.assertTrue(all(doc["areas"][3]["error"] for doc in docs))
-        self.assertIn(f"that scan started at {NOW}, and no second one starts while it runs", docs[-1]["areas"][3]["error"])
+        self.assertTrue(all(doc["areas"][2]["error"] for doc in docs))
+        self.assertIn(f"that scan started at {NOW}, and no second one starts while it runs", docs[-1]["areas"][2]["error"])
 
     def test_a_reader_still_running_shows_its_last_answer_marked_stale(self):
-        first = self.doc(fleet_of(TREES))["areas"][3]
+        first = self.doc(fleet_of(TREES))["areas"][2]
         self.assertEqual((first["error"], first["stale"]), ("", ""))
         read, _ = self.blocked()
         later = "2026-09-05T12:30:00Z"
         with patch.object(health_screen, "PAGE_SECONDS", 0.2):
-            wt = self.doc(read, now=later)["areas"][3]
+            wt = self.doc(read, now=later)["areas"][2]
         self.assertEqual((wt["error"], wt["rows"], wt["at"]), ("", first["rows"], NOW))
         self.assertTrue(wt["stale"].startswith("the Worktrees reader was still running at the page's budget"), wt["stale"])
         self.assertTrue(wt["stale"].endswith(f"these rows are the read of {NOW}"), wt["stale"])
 
     def test_a_reader_that_finishes_answers_again_on_the_next_request(self):
         self.doc(fleet_of(TREES))
-        wt = self.doc(fleet_of([]), now="2026-09-05T12:30:00Z")["areas"][3]
+        wt = self.doc(fleet_of([]), now="2026-09-05T12:30:00Z")["areas"][2]
         self.assertEqual((wt["error"], wt["stale"], wt["at"]), ("", "", "2026-09-05T12:30:00Z"))
-        self.assertNotEqual(wt["rows"], self.doc(fleet_of(TREES))["areas"][3]["rows"])
+        self.assertNotEqual(wt["rows"], self.doc(fleet_of(TREES))["areas"][2]["rows"])
 
 
 class ThePage(Collectors, BrowserSession):
@@ -837,8 +781,8 @@ class ThePage(Collectors, BrowserSession):
         self.assertEqual(status, 200)
         doc = json.loads(body)
         self.assertRegex(doc["read"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        self.assertEqual([row["id"] for row in doc["areas"][3]["rows"]], ["gone:group/alpha", "unread:beta"])
-        self.assertEqual(len(doc["areas"][7]["rows"]), 3)
+        self.assertEqual([row["id"] for row in doc["areas"][2]["rows"]], ["gone:group/alpha", "unread:beta"])
+        self.assertEqual(len(doc["areas"][6]["rows"]), 3)
 
     def test_the_rail_opens_health_at_its_page(self):
         self.assertEqual(v2.SECTIONS["Health"], "/fleet-health")
@@ -860,7 +804,7 @@ class TheScript(Collectors, ScreenCase):
 
     def run_page(self, body, doc=None, status=200):
         doc = doc if doc is not None else health_screen.document(
-            self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(3), ports=ports_snapshot,
+            self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
             protection=protection_of(PROTECTION))
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + HEALTH_SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
@@ -884,7 +828,6 @@ class TheScript(Collectors, ScreenCase):
             ["storage folder.du", "storage folder", "safe", "b", False, False],
             ["build output.rm", "build output", "confirm", "r", False, False],
             ["volume.df", "volume", "safe", "b", False, False],
-            ["attribution gap.attribute", "attribution gap", "safe", "a", False, False],
             ["worktree registrations.prune", "worktree registrations", "confirm", "p", False, True],
             ["merged branches.delete", "merged branches", "safe", "d", False, True],
             ["port.inspect", "port", "safe", "i", False, False],
@@ -898,15 +841,13 @@ class TheScript(Collectors, ScreenCase):
             ["volume.snooze", "volume", "undo", "z", None, True],
             ["worktree registrations.snooze", "worktree registrations", "undo", "z", None, True],
             ["unread registrations.snooze", "unread registrations", "undo", "z", None, True],
-            ["attribution gap.snooze", "attribution gap", "undo", "z", None, True],
             ["merged branches.snooze", "merged branches", "undo", "z", None, True],
             ["port.snooze", "port", "undo", "z", None, True],
             ["branch protection.snooze", "branch protection", "undo", "z", None, True],
         ])
 
     def test_an_area_with_no_reader_is_an_unknown_lamp_that_names_what_it_does_not_read(self):
-        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(3),
-                                     ports=ports_snapshot, protection=protection_of(PROTECTION))
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of(PROTECTION))
         cred = next(area for area in doc["areas"] if area["id"] == "cred")
         cred.update(read=False, source=None, rows=[], at=None,
                     missing=["GitHub PAT presence and expiry", "gh CLI sign-in"])
@@ -917,8 +858,6 @@ class TheScript(Collectors, ScreenCase):
         for area in ("dep", "sec"):
             self.assertRegex(lamps, rf'data-area="{area}" data-state="unknown"[^>]*><span class="lbl">[^<]*<svg[^>]*><use[^>]*/></svg></span><span class="val"><span class="ph">not read</span>', area)
         self.assertRegex(lamps, r'data-area="wt" data-state="caution"[^>]*>.*?<b>2</b> dir gone')
-        self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?<b>3</b> missing')
-        self.assertRegex(lamps, r'data-area="attr" data-state="caution"[^>]*>.*?your commits · 5 weeks · default branch')
         self.assertRegex(lamps, r'data-area="disk" data-state="caution"[^>]*>.*?<b>85%</b> fullest</span> <span class="ph">Mac data')
         self.assertRegex(lamps, r'data-area="br" data-state="caution"[^>]*>.*?<b>3</b> merged')
         areas = out["R"]["areas"]
@@ -926,13 +865,12 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
         self.assertIn("<b>Not read here:</b> build output sizes", areas)
         self.assertIn('data-id="gone:group/alpha"', areas)
-        self.assertIn("9 areas · 1 warning, 6 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
+        self.assertIn("8 areas · 1 warning, 5 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
 
     def test_an_alert_lamp_keeps_a_paged_total_and_says_when_a_repo_was_not_read(self):
-        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(3),
-                                     ports=ports_snapshot, protection=protection_of(ALERTED))
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of(ALERTED))
         lamps = self.run_page("R.lamps = ELS.annunciator.html;", doc)["R"]["lamps"]
         self.assertRegex(lamps, r'data-area="dep"[^>]*>.*?<b>102\+</b> open alerts</span> · <span class="ph">not all read</span>')
         self.assertRegex(lamps, r'data-area="sec"[^>]*>.*?<b>1</b> open alerts</span> · <span class="ph">not all read</span>')
@@ -940,7 +878,7 @@ class TheScript(Collectors, ScreenCase):
     def test_a_failed_reader_is_a_partial_read_and_its_lamp_is_unknown(self):
         def broken(area):
             raise ValueError("fleet collection was stopped at its budget: sessions")
-        doc = health_screen.document(self.connection, now=NOW, fleet=broken, trailers=trailers_of(0), ports=ports_snapshot,
+        doc = health_screen.document(self.connection, now=NOW, fleet=broken, ports=ports_snapshot,
                                      protection=protection_of([]), disk=scan_of(CLEAN_DISK), branches=scan_of(CLEAN_BRANCHES))
         out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html;", doc)
         self.assertRegex(out["R"]["lamps"], r'data-area="wt" data-state="unknown"[^>]*>.*?not read')
@@ -949,10 +887,9 @@ class TheScript(Collectors, ScreenCase):
         self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": "findings to watch"})
 
     def test_a_stale_area_keeps_its_rows_and_says_it_was_not_re_read(self):
-        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=trailers_of(0),
-                                     ports=ports_snapshot, protection=protection_of([]), disk=scan_of(CLEAN_DISK),
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of([]), disk=scan_of(CLEAN_DISK),
                                      branches=scan_of(CLEAN_BRANCHES))
-        wt = doc["areas"][3]
+        wt = doc["areas"][2]
         wt["stale"] = "the Worktrees reader was still running; these rows are the read of " + NOW
         out = self.run_page("R.areas = ELS.areas.html;", doc)
         self.assertIn("<b>Not re-read:</b> the Worktrees reader was still running; these rows are the read of " + NOW,
@@ -960,18 +897,6 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn(f'data-id="{wt["rows"][0]["id"]}"', out["R"]["areas"])
         self.assertEqual(out["states"][-1]["kind"], "partial")
         self.assertIn("Worktrees: the Worktrees reader was still running", out["states"][-1]["text"])
-
-    def test_a_trailer_count_over_its_budget_shows_as_the_refusal_not_a_stall(self):
-        def refused(connection, *, now):
-            raise reads.OverBudget("the trailer count ran past its budget of 10 seconds")
-        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), trailers=refused, ports=ports_snapshot,
-                                     protection=protection_of([]))
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html;", doc)
-        self.assertRegex(out["R"]["lamps"], r'data-area="attr" data-state="unknown"[^>]*>.*?not read')
-        self.assertIn("<b>Not read:</b> the trailer count ran past its budget of 10 seconds and was stopped rather than "
-                      "waited on", out["R"]["areas"])
-        self.assertNotIn('data-id="attr:', out["R"]["areas"])
-        self.assertEqual(out["states"][-1]["kind"], "partial")
 
     def test_a_document_that_does_not_arrive_leaves_no_row_and_says_so(self):
         out = self.run_page("""R.before = ELS.areas.html;
@@ -1040,7 +965,7 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = ELS.areas.html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("Filtered to Credentials only: 1 of 21 rows.", out["R"]["note"])
+        self.assertIn("Filtered to Credentials only: 1 of 20 rows.", out["R"]["note"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown),
                          ["cred", "wt", "br", "dep", "sec", "ports", "prot"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown),

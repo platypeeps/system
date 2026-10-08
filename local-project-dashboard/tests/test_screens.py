@@ -132,33 +132,8 @@ class Today(ScreenCase):
         self.assertGreaterEqual(page.count("<summary>Inputs</summary>"), 4)
         self.assertNotIn(" title=", page)
 
-    def test_the_missing_trailer_count_and_the_cost_tile(self):
-        page = self.render("/operations", {"area": ["usage"]})
-        self.assertIn("commits missing a trailer", page)
-        self.assertIn("cost-tile", page)
-
-    def test_a_slow_trailer_walk_is_stopped_at_its_budget_and_the_tile_says_so(self):
-        from sd_dashboard import operations_screen
-
-        stub = Path(self.tmp.name) / "bin"
-        stub.mkdir()
-        # Only the trailer walk's first call stalls; the page's other git reads go to the real git.
-        # The budget kills the shell, the one holding the pipes; its sleep
-        # holds none, and the marker is written only if the 5 s run out
-        # (sd:2667): no elapsed bound to lose under load.
-        finished = Path(self.tmp.name) / "stalled-finished"
-        (stub / "git").write_text('#!/bin/sh\ncase "$*" in *"rev-parse --verify -q origin/HEAD"*) '
-                                  f'sleep 5 >/dev/null 2>&1; touch "{finished}"; exit 0;; esac\n'
-                                  f'exec {shutil.which("git")} "$@"\n')
-        (stub / "git").chmod(0o755)
-        for name in ("one", "two"):
-            self.repo(f"/checkouts/{name}")
-        with mock.patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
-                mock.patch.object(operations_screen, "TRAILER_SECONDS", 0.5):
-            page = self.render("/operations", {"area": ["usage"]})
-        self.assertFalse(finished.exists(), "Progress waited on the git walk instead of stopping it")
-        self.assertIn('class="tile-value">not read', page)
-        self.assertIn("the trailer count ran past its budget of 0.5 seconds and was stopped rather than waited on", page)
+    def test_the_cost_tile(self):
+        self.assertIn("cost-tile", self.render("/operations", {"area": ["usage"]}))
 
     def test_open_followups(self):
         self.note(self.running, "chase the reviewer")
@@ -213,7 +188,7 @@ class Today(ScreenCase):
         self.assertIn("$/pass", page)
         today = self.render("/classic/today")
         for label in ("Week, cost and provider details", "Providers this month",
-                      "cost per shipped item", "commits missing a trailer", "cost-tile"):
+                      "cost per shipped item", "cost-tile"):
             self.assertNotIn(label, today)
 
     def test_an_empty_today_says_so(self):
