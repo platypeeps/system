@@ -3912,6 +3912,24 @@ grant_paths() {
   fi
 }
 
+# The AI-app inventory, captured after the upgrades and before the grants
+# probe, in both paths: the ai-apps-nightly job is retired and this run takes
+# its place (sd:3062). Writes $tmp/inventory, the mail's section, and returns
+# capture's code; the caller reports a failure and goes on to the probe.
+inventory_capture() {
+  i_rc=0
+  run_step 600 sh "$ROOT/local-ai-apps/ai-apps.sh" capture > "$tmp/inventory.out" 2>&1 || i_rc=$?
+  {
+    if [ "$i_rc" -eq 0 ]; then
+      printf '\nai-apps inventory:\n'
+    else
+      printf '\nai-apps inventory capture FAILED (exit %s); the inventory was not rewritten:\n' "$i_rc"
+    fi
+    sed 's/^/  /' "$tmp/inventory.out"
+  } > "$tmp/inventory"
+  return "$i_rc"
+}
+
 # After the sweep, in both paths (sd:3062): run the dashboard's vault-grant
 # probe and write $tmp/grants, the mail's section. $tmp/regrant gets one line
 # per binary that lost Full Disk Access, and $tmp/changed the grant droppers
@@ -3958,12 +3976,12 @@ grants_push() {
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
 # after the sweep, and emails what got upgraded / what failed / what is still
-# pending through local-notify's email channel, with the TCC grants probe's
-# result. When nothing is outdated it only updates Claude Code and probes the
-# grants. A missing grant sends one push naming each binary to re-grant.
+# pending through local-notify's email channel, with the AI-app inventory
+# capture and the TCC grants probe's result. When nothing is outdated it only
+# updates Claude Code, captures the inventory and probes the grants. A missing grant sends one push naming each binary to re-grant.
 # Exits 1 when the email or that push could not be delivered, or when the
-# quiet-week Claude update failed, so the cron failure push covers a lost
-# report or a silent failure, not mere findings.
+# quiet-week Claude update or capture failed, so the cron failure push covers
+# a lost report or a silent failure, not mere findings.
 cmd_upgrade_report() {
   APPLY=1
   notify="$ROOT/local-notify/notify.sh"
@@ -3995,6 +4013,8 @@ cmd_upgrade_report() {
       run_step 600 "$HOME/.local/bin/claude" update || rc=1
     fi
     echo "nothing outdated — no upgrade, no email"
+    inventory_capture || rc=1
+    cat "$tmp/inventory"
     grants_report
     cat "$tmp/grants"
     grants_push || rc=1
@@ -4004,6 +4024,8 @@ cmd_upgrade_report() {
   rc=0
   cmd_upgrade > "$tmp/out" 2>&1 || rc=1
   cat "$tmp/out"
+  inv_rc=0
+  inventory_capture || inv_rc=1
 
   outdated_lists after
   grants_report
@@ -4026,6 +4048,7 @@ cmd_upgrade_report() {
       printf '\nupgrade sweep exited nonzero; last output:\n'
       tail -30 "$tmp/out" | sed 's/^/  /'
     fi
+    cat "$tmp/inventory"
     cat "$tmp/grants"
   } > "$tmp/body"
 
@@ -4036,7 +4059,7 @@ cmd_upgrade_report() {
   # flagging, so -F is conditional here where the other status jobs hardcode it.
   # Those only send at all when they have findings; this one always sends.
   fu=""
-  if [ "$n_left" -gt 0 ]; then fu="-F"; fi
+  if [ "$n_left" -gt 0 ] || [ "$inv_rc" -ne 0 ]; then fu="-F"; fi
   push_rc=0
   grants_push || push_rc=1
   if ! sh "$notify" -t "$subject" -k status $fu -c ntfy,email -b "$(cat "$tmp/body")"; then
@@ -4353,11 +4376,13 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    runs the rest, and exits 1 naming the steps that failed
   upgrade-report   cron flavor of upgrade: always applies, emails what got
                    upgraded / what failed / what is still outdated, with the
-                   result of local-project-dashboard's `grants` probe; when
-                   nothing is outdated it only runs claude update and the
-                   probe; a missing grant sends one push naming each binary
-                   to re-grant; exits 1 when the email or that push could
-                   not be delivered or that quiet-week claude update failed
+                   ai-apps inventory capture and the result of
+                   local-project-dashboard's `grants` probe; when nothing
+                   is outdated it only runs claude update, the capture and
+                   the probe; a missing grant sends one push naming each
+                   binary to re-grant; exits 1 when the email or that push
+                   could not be delivered or that quiet-week claude update
+                   or capture failed
   checklist        print the manual new-machine steps no stage automates
                    (accounts, licenses, key restores; plus checklist.txt from the config)
   decommission     retire this machine: list dirty/unpushed repos, uninstall

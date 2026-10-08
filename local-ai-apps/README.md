@@ -14,7 +14,6 @@ captured manifests are safe to commit; secrets stay in each app's own config.
 ./ai-apps.sh compare personal work   # cross-PROFILE diff
 ./ai-apps.sh setup [profile] [--apply]  # align machine to a manifest
 ./ai-apps.sh adopt <kind> <name> <from> <to> [--apply]  # move one item
-./ai-apps.sh nightly             # capture, email on change (cron)
 ```
 
 ## Manifest format
@@ -58,19 +57,18 @@ existing directory, else personal; override with `AI_APPS_PROFILE`. The work
 root is `AI_APPS_WORK_ROOT`, else `SYSTEM_TOOLS_WORK_ROOT`; `local-repo-sync`
 reads the same meaning from `REPO_SYNC_WORK_ROOT`, so the shared name drives
 both. The `.inv` files are a machine's own inventory and keep no git history;
-`nightly` writes them and commits nothing. `profiles/example.inv` in this
+`capture` writes them and commits nothing. `profiles/example.inv` in this
 folder shows the format. To compare machines, copy the other
 machine's `.inv` into the same folder. Then `compare personal work` shows the drift anywhere,
 and `setup <profile> --apply` pulls a machine toward the chosen manifest.
 
-## Cron
+## Weekly capture
 
-`ai-apps-nightly` (04:30, a job in `<config>/cron-jobs/jobs/`; examples in `local-cron-jobs/examples/`) runs `nightly`:
-it re-captures the inventory and emails via local-notify only when the inventory moved.
+No cron job of its own: the ai-apps-nightly job is retired (sd:3062).
+The weekly `machine-setup.sh upgrade-report` runs `capture` after the upgrades,
+and its report mail carries the capture's diff or its failure.
+The tool upgrades no app; that weekly run upgrades every app.
 The `.inv` diff lands in `<config>/ai-apps/profiles/`.
-It upgrades no app: `machine-setup.sh upgrade-report` upgrades every app once a week.
-Both machines then move together, and macOS permissions need re-granting in one sitting.
-A night with no inventory change stays quiet.
 
 ## Where inventories come from
 

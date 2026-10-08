@@ -41,7 +41,7 @@ the receiving account:
       -> +Briefs/Status Updates, -INBOX, -SPAM
 
 The filter archives every `Status:` mail on arrival, so routine receipts
-(brew-doctor warnings, maintenance findings, ai-apps changes) never reach the
+(brew-doctor warnings, maintenance findings, upgrade receipts) never reach the
 inbox; `-F` puts the ones reporting a real problem back. The split is
 deliberately *not* expressed in the filter, because a filter cannot test for
 `!Followup` — that label is applied by `notify.sh` after the message has

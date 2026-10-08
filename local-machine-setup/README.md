@@ -55,8 +55,9 @@ The chosen profile is recorded in `~/.config/machine-setup/profile`, so `update`
 and `capture` need no argument after the first `setup`.
 
 **The weekly `upgrade-report` owns every package and app upgrade** (sd:3062).
-`ai-apps nightly` upgrades nothing, and the `macos` stage turns self-update off
-in apps that hold a macOS privacy (TCC) grant. Both machines then move once a
+It also runs the `ai-apps.sh capture` the retired ai-apps-nightly job ran, and
+mails its diff. The `macos` stage turns self-update off in every cask that
+updates itself, where the app documents a switch. Both machines then move once a
 week, and grants are re-granted in one sitting. After the sweep, and in a quiet
 week after `claude update`, it runs `local-project-dashboard/dashboard.sh
 grants` and puts the result in the mail. The cron job runs under launchd, where

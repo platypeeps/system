@@ -3,7 +3,7 @@
 # (claude-code, claude-desktop, codex, copilot, opencode, antigravity):
 # which skills, MCP servers, agents, and plugins each app has, captured into
 # committable per-machine-profile manifests (names only — never secrets).
-# Usage: ai-apps.sh status|capture|compare|setup|adopt|nightly
+# Usage: ai-apps.sh status|capture|compare|setup|adopt
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
@@ -50,7 +50,7 @@ case "$PROFILE" in
 esac
 
 usage() {
-  echo "usage: $(basename "$0") status|capture [profile]|compare [p1 p2]|setup [profile] [--apply]|adopt <kind> <name> <from> <to> [--apply]|nightly|test" >&2
+  echo "usage: $(basename "$0") status|capture [profile]|compare [p1 p2]|setup [profile] [--apply]|adopt <kind> <name> <from> <to> [--apply]|test" >&2
   exit 1
 }
 
@@ -123,7 +123,7 @@ def strip_jsonc(text):
     Whole-line `//` was all this removed, and every app here accepts more than
     that: an inline `// note` after a value, a `/* */` block, a comma before a
     closing brace. Since a parse error is now fatal for the whole capture, a
-    partial reader turns one tolerated config into a nightly that writes
+    partial reader turns one tolerated config into a capture that writes
     nothing. Comment bytes become spaces rather than disappearing, so the
     column a parse error reports is still the column in the file.
     """
@@ -206,7 +206,7 @@ def jload(path):
     # not parse means every row it would have contributed is missing, and a
     # capture that writes that absence looks exactly like an uninstall. Exit
     # instead: cmd_capture is what refuses to overwrite the inventory, and the
-    # nightly turns this into a failed run rather than a wrong file.
+    # weekly upgrade-report mails that failure rather than a wrong file.
     try:
         with open(path) as f:
             text = f.read()
@@ -370,7 +370,7 @@ cmd_capture() {
     rm -f "$old_rows"
     # The header carries a capture date, so writing unconditionally made the
     # file differ every single day even when nothing on the machine had
-    # changed — and the nightly cron then left the repo permanently dirty.
+    # changed — and the old nightly cron then left the repo permanently dirty.
     # Compare the inventory itself, ignoring comments: unchanged means the
     # existing file is already correct, and the date it carries goes on
     # meaning "when this last actually changed" instead of "when it last ran".
@@ -690,52 +690,6 @@ PY
   esac
 }
 
-# Cron flavor: re-capture the inventory and email only when it changed. It
-# upgrades nothing: the weekly `machine-setup.sh upgrade-report` owns every
-# app upgrade, so both machines move together once a week (sd:3062).
-# Exits 1 when the email could not be delivered, and with capture's code when
-# capture failed.
-cmd_nightly() {
-  NOTIFY="$DIR/../local-notify/notify.sh"
-  TMPD=$(mktemp -d)
-  # EXIT removes the folder; a signal exits, and so runs EXIT. A TERM trap
-  # that only removed it returned into the run, which then wrote the capture
-  # into the folder it had just removed (sd:2660).
-  trap 'rm -rf "$TMPD"' EXIT
-  trap 'exit 129' HUP
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-
-  # The rc is kept, not discarded. `capture` refuses to write when a config it
-  # reads is present and unparseable, and the old `|| true` turned that refusal
-  # into a night that emailed and exited 0 -- the inventory silently a day
-  # stale with nothing saying so.
-  cap_rc=0
-  cmd_capture > "$TMPD/cap" 2>&1 || cap_rc=$?
-  cat "$TMPD/cap"
-  if [ "$cap_rc" -ne 0 ]; then
-    echo "ai-apps: capture failed; the inventory was not rewritten." >&2
-    exit "$cap_rc"
-  fi
-
-  if ! grep -q '^  none$' "$TMPD/cap"; then
-    send_report
-  fi
-  return 0
-}
-
-# The nightly's report mail. Exits 1 when it could not be delivered.
-send_report() {
-
-  subject="ai-apps: changes on $(hostname -s)"
-  body=$(printf 'ai-apps nightly — %s on %s\n\nInventory (profile %s):\n%s\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$PROFILE" "$(cat "$TMPD/cap")")
-  if ! sh "$NOTIFY" -t "$subject" -k status -c ntfy,email -b "$body"; then
-    echo "email FAILED — exiting 1 so the cron failure push fires" >&2
-    exit 1
-  fi
-}
-
 case "${1:-}" in
   # The suite lives beside the tool and CI reaches it through this verb, so a
   # suite with no verb is a suite CI never runs.
@@ -745,17 +699,18 @@ case "${1:-}" in
   compare) shift; cmd_compare "$@" ;;
   setup)   shift; cmd_setup "$@" ;;
   adopt)   shift; cmd_adopt "$@" ;;
-  nightly) cmd_nightly ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--apply]|adopt ...|nightly
+usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--apply]|adopt ...
 
   status                     which apps are installed and how many MCP
                              servers / skills / agents / plugins each has
   capture [profile]          snapshot the live inventory (names only, no
                              secrets) into <config>/ai-apps/profiles/
                              <profile>.inv; shows the
-                             diff against the previous capture
+                             diff against the previous capture. The weekly
+                             machine-setup.sh upgrade-report runs it after
+                             the upgrades and mails the diff
   compare                    cross-APP matrix on this machine: every skill,
                              MCP server, agent and plugin vs the apps that
                              could carry it
@@ -771,15 +726,6 @@ usage: ai-apps.sh status|capture [profile]|compare [p1 p2]|setup [profile] [--ap
                              app's config snippet with secret values REDACTED
                              (never written automatically); plugins print the
                              install command
-  nightly                    capture into the config folder, emailing the
-                             report when the inventory changed (what the
-                             ai-apps-nightly cron job runs). It upgrades
-                             nothing: machine-setup.sh upgrade-report owns
-                             every app upgrade, weekly. Exits 1 when the email
-                             could not be delivered, and with capture's code
-                             when capture failed and the inventory was not
-                             rewritten.
-
 apps: claude-code, claude-desktop, codex, copilot, opencode, antigravity
 manifests: <config>/ai-apps/profiles/<profile>.inv, where <config> is
 $SYSTEM_TOOLS_CONFIG (default ~/.config/system); AI_APPS_PROFILES_DIR

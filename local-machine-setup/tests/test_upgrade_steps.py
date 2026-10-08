@@ -57,8 +57,17 @@ printf '%s\n' "$@" -- >> "$NOTIFY_LOG"
 # The vault-grant probe. GRANTS_OUT is what it prints, GRANTS_RC its exit.
 DASHBOARD_STUB = r"""#!/bin/sh
 [ "$1" = grants ] || exit 2
+echo "grants" >> "$BREW_LOG"
 printf '%s\n' "${GRANTS_OUT:-DASHBOARD_PYTHON python3: ok, lists the vault}"
 exit "${GRANTS_RC:-0}"
+"""
+
+# The AI-app inventory capture. AI_APPS_OUT is what it prints, AI_APPS_RC its
+# exit; each call is logged into brew's log, so one list holds the order.
+AI_APPS_STUB = r"""#!/bin/sh
+echo "ai-apps $*" >> "$BREW_LOG"
+printf '%s\n' "${AI_APPS_OUT:-  none}"
+exit "${AI_APPS_RC:-0}"
 """
 
 REFUSED = ("SD_DASHBOARD_PYTHON /opt/homebrew/bin/python3: cannot read /vault — macOS is asking for "
@@ -86,6 +95,7 @@ class UpgradeStepTest(unittest.TestCase):
         shutil.copytree(LIB, repo / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         write_exec(repo / "local-notify/notify.sh", NOTIFY_STUB)
         write_exec(repo / "local-project-dashboard/dashboard.sh", DASHBOARD_STUB)
+        write_exec(repo / "local-ai-apps/ai-apps.sh", AI_APPS_STUB)
         self.home = base / "home"
         self.state = self.home / ".config/machine-setup"
         self.state.mkdir(parents=True)
@@ -273,6 +283,37 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("grant push FAILED", result.stderr)
+
+    def test_the_inventory_capture_runs_after_the_upgrades_and_before_the_grants(self):
+        """sd:3062: the weekly run takes over the retired ai-apps-nightly, and
+        its mail carries the capture's diff."""
+        result = self.run_verb("upgrade-report", AI_APPS_OUT="  + claude-code|skill|example")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.brew_calls()
+        self.assertLess(calls.index("cleanup --prune=all"), calls.index("ai-apps capture"))
+        self.assertLess(calls.index("ai-apps capture"), calls.index("grants"))
+        body = "\n".join(self.sends()[0])
+        self.assertIn("ai-apps inventory:", body)
+        self.assertIn("+ claude-code|skill|example", body)
+
+    def test_a_failed_capture_is_mailed_and_the_grants_still_run(self):
+        result = self.run_verb("upgrade-report", AI_APPS_OUT="opencode.json does not parse", AI_APPS_RC="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("grants", self.brew_calls())
+        mail = self.sends()[0]
+        self.assertIn("-F", mail)
+        self.assertIn("ai-apps inventory capture FAILED (exit 1)", "\n".join(mail))
+
+    def test_a_quiet_week_captures_and_a_failed_capture_fails_the_job(self):
+        """No mail goes in a quiet week, so the exit reports a failed capture."""
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", AI_APPS_RC="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ai-apps capture", self.brew_calls())
+        self.assertIn("grants", self.brew_calls())
+        self.assertIn("ai-apps inventory capture FAILED (exit 1)", result.stdout)
 
     def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
         """The job's limit ends the run; the TERM trap used to remove the

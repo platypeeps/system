@@ -559,8 +559,9 @@ git under launchd on either machine. A satellite `sd-ship` runs in the
 operator's shell, with the operator's `SSH_AUTH_SOCK`.
 
 The unattended jobs a satellite runs come from `common.cron`, which every
-machine carries. Since `0fa622c` (2026-09-27), `repo-sync-nightly` and
-`ai-apps-nightly` write their files to the config folder and push nothing.
+machine carries. Since `0fa622c` (2026-09-27), `repo-sync-nightly` writes
+its files to the config folder and pushes nothing. `ai-apps-nightly` did the
+same until sd:3062 retired it; the weekly upgrade-report now runs that capture.
 `local-autocommit` and its per-machine deploy key are gone, so step 10
 needs no key. The rest of the 02:45 slot on a laptop is covered by `CLAUDE.md`, "The 02:xx cron
 slot needs a scheduled wake", satellite or not.
