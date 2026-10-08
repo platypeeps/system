@@ -194,9 +194,8 @@ class TheLocalJudgment(unittest.TestCase):
             JEV_ENABLED="1",
             JEV_FLAG_FILE=str(self.root / "config" / "enabled"), JEV_SHADOW="0", JEV_METER="0",
             TYPESAFE_API_KEY="test-key", JEV_URL=remote + "/v1/systemone",
-            # Listed and switched on: a local-only stage still reaches no arm.
-            JEV_COMPARE_STAGES="JEV_SECRET_SCAN",
-            JEV_COMPARE_KEV="1", JEV_COMPARE_HAIKU_VIA="anthropic",
+            # Listed, with both arms on: a local-only stage still reaches no arm.
+            JEV_COMPARE_STAGES="JEV_SECRET_SCAN", JEV_COMPARE_HAIKU_VIA="anthropic",
             JEV_COMPARE_ANTHROPIC_KEY="test-key", JEV_COMPARE_ANTHROPIC_URL=remote + "/v1/messages",
             JEV_CORPUS="1", JEV_CORPUS_DIR=str(self.root / "corpus"))
         self.env.pop("S4S_CONF", None)

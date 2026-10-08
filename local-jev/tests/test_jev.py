@@ -161,7 +161,7 @@ class StubServer(unittest.TestCase):
         env = {"TYPESAFE_API_KEY": "test-key", "JEV_URL": self.url,
                "JEV_RETRIES": "3", "JEV_TIMEOUT": "10",
                "JEV_METER": "0", "JEV_CORPUS_DIR": str(self.corpus),
-               "JEV_COMPARE_KEV": "0", "JEV_COMPARE_HAIKU_VIA": "off",
+               "JEV_COMPARE_HAIKU_VIA": "off",
                "JEV_FLAG_FILE": self.switch,
                "SYSTEM_TOOLS_CONFIG": str(self.config)}
         env.update(extra)

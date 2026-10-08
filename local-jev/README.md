@@ -466,8 +466,8 @@ one records no old answer, and its `changed` is `unknown`.
 
 - The request goes to the local Kev alone, at `JEV_COMPARE_KEV_URL`
   (default `http://127.0.0.1:8009/v1/systemone`). It never goes to Jev or to
-  a comparison arm, whatever `JEV_COMPARE_KEV`, `JEV_COMPARE_HAIKU_VIA` and
-  `JEV_COMPARE_STAGES` say.
+  a comparison arm, whatever `JEV_COMPARE_HAIKU_VIA` and `JEV_COMPARE_STAGES`
+  say.
 - A Kev URL whose host is not a literal loopback address is refused before
   anything is sent; `localhost` is refused too, since a name is resolved. The
   request uses no proxy and follows no redirect.
@@ -555,17 +555,14 @@ ledger records. An exported empty switch (`JEV_COMPARE_HAIKU_VIA=`) is off,
 and it beats an on-value in `<config>/jev/.env`. A fallback answer, `enabled`, a meter that is off, and a call
 Jev never gets start no arm.
 
-Switch the Kev arm on with an on-word (`JEV_COMPARE_KEV=1`) and the Haiku arm
-by naming a transport (`JEV_COMPARE_HAIKU_VIA=anthropic`). Unset or an
-off-word is off: unlike a Jev stage, where unset means on, an arm sends every
-live request to a second endpoint, so it is opt-in. An off arm starts no
-child and writes no row.
-
-**An arm runs only for a stage `JEV_COMPARE_STAGES` lists**, stage names
+**The arms run only for a stage `JEV_COMPARE_STAGES` lists**, stage names
 separated by commas: `JEV_COMPARE_STAGES=JEV_SD_REVIEW`. Unset or empty lists
-none, so a machine with an arm on and no list sends nothing extra. Until
-sd:2824 an arm ran for every stage, so set the list when you upgrade, or the
-arms stop. A local-only stage stays out of every arm even when listed.
+none: unlike a Jev stage, where unset means on, an arm sends every live
+request to a second endpoint, so it is opt-in. A listed stage runs the Kev
+arm, and the Haiku arm when `JEV_COMPARE_HAIKU_VIA` names a transport
+(`anthropic`); unset or an off-word leaves Haiku out. The list is the one
+switch for Kev (sd:3011); a `JEV_COMPARE_KEV` line left in a config file is
+not read. A local-only stage stays out of every arm even when listed.
 
 **Put a comparison key in `<config>/jev/.env`.** `jev.sh` reads that file on
 every call, so a key there reaches every caller at once. A key exported from
