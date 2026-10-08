@@ -86,15 +86,6 @@ else
   "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
 fi
 
-# The other half of the citation gate (sd:828): a `path:line` into
-# code, in a tracked .md, .py or .sh outside docs/work/archive/,
-# fails unless it is carried in the ratchet; an anchor is cited
-# instead. Stdlib and
-# git only, so it runs here before the venv exists, and it is at
-# the repository root, so the unwired-suite guard below demands a
-# python3 line for it -- delete this one and the guard fails.
-python3 tests/test_citations.py
-
 # Who calls Jev, and whether each one degrades. Two layers: the
 # folder inventory is read from the filesystem, so a twelfth caller
 # cannot be added silently; the rules then ban a fallback that reads

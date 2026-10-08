@@ -1740,8 +1740,6 @@ class TheApply(Store):
         on a default macOS shell), and the apply exited 4 with the lines
         printed. The limit is lowered inside this process to a number above
         what it already holds and below the run count, and restored after.
-        The import sits here so no line above the keyed citation at
-        `contribution_sync.py` moves (`tests/test_citations.py`'s ratchet).
         """
         import resource
         late = [self.attempt(self.works[0], self.source, number=number) for number in range(2, 50)]

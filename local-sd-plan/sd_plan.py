@@ -287,10 +287,7 @@ def unpushed_plan(root: Path, branch: str, slug: str, identifier: int) -> str | 
 
 # --- the optional Jev judgment ----------------------------------------------
 #
-# All of it below `plan`, including the one import this section adds. It was
-# put here while a citation in `plan` was keyed by its line number in
-# `tests/test_citations.py`; that citation is a snippet now (sd:1181), and
-# nothing here is needed before `plan` runs, so it stays where it is.
+# All of it below `plan`, including the one import this section adds.
 
 import json
 
@@ -646,8 +643,7 @@ CITATION_RULES = (
     "declared more than once in its file by the file alone.",
     "Before you finish, run this checkout's citation gate as a whole, from this "
     "checkout: `python3 -m unittest tests.test_doc_citations` in the command "
-    "pack, or `python3 tests/test_citations.py` where that file exists. Fix "
-    "every failure it names on the pages you wrote.",
+    "pack. Fix every failure it names on the pages you wrote.",
     "Claim that a failure also happens on the registered checkout only after "
     "reproducing it there, with the command and its output in your log; "
     "otherwise do not claim it.",
@@ -666,8 +662,7 @@ def agent(root: Path, slug: str, row: dict, documents=DOCUMENTS) -> None:
     correct the day it was written and pointed into an unrelated comment by
     the time anyone re-read it: insertions above the target walked the call
     from 418 to 521 while the citation stood still (sd:825, #365 N3). A
-    snippet cannot drift that way, and the repository's `tests/test_citations.py`
-    fails the preflight if the one named here ever leaves that file.
+    snippet cannot drift that way.
 
     `/sd-plan` carries `disable-model-invocation: true`, so it must be named
     explicitly -- an agent asked to "write planning documents" will not find

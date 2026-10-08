@@ -848,9 +848,7 @@ class TheRetireVerb(MigrationVerbCase):
         self.assertIn("docs-work", completed.stderr)
 
 
-# The remove-verb cases' own imports sit here, below the two line-keyed
-# citations in `WhichInterpreterItRuns`, so those lines keep their numbers in
-# `tests/test_citations.py`.
+# The remove-verb cases' own imports.
 import json  # noqa: E402
 import shlex  # noqa: E402
 import signal  # noqa: E402

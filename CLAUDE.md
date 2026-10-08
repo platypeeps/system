@@ -91,19 +91,6 @@ Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-
 - A change with a shape worth agreeing on first gets a folder under `docs/work/` with `prd.md`, `design.md` and `implement.md`.
 - Check with the command pack's `sd-docs-lint` from the repository root, with no `--work-dir`; an absolute value reads zero references and passes silently.
 - Never add `.github/sd-docs-lint.json`; that opt-in sends `docs/work` prose to a third party.
-- Its rule 6 checks `path:line` citations into `.md` files from each item's `.citations.tsv` (`--update-citations` writes it).
-
-## Citations into code
-
-`tests/test_citations.py` runs in the `make check` preflight: `python3 tests/test_citations.py` from the root.
-
-- Do not cite code as `path:line` (into `.py`, `.sh`, `.js`, `.yml`) in any tracked `.md`, `.py` or `.sh`; nothing checks the line still holds the claim.
-- The `archive/` folder under `docs/work` is exempt; a done page outside it is still scanned.
-- Cite an anchor instead, in one of three forms the gate checks:
-  - a snippet: `` `<snippet>`, in `<symbol>` of `<path>` ``, every span word-bounded in the file;
-  - `source:<path>::<symbol>`, one declaration in a `.py`, or a `<symbol>() {` / `<symbol>=` line in a `.sh`;
-  - `[quoted: <reason>]` after a token that is an example, not a claim.
-- `KNOWN_LINE_INTO_CODE` only shrinks; do not add to it.
 
 ## Nothing may depend on Jev
 

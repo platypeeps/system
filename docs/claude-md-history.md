@@ -34,34 +34,6 @@ guard silently not running, with a green gate on top. Filed as
 `platypeeps/sd-ai-command-pack#809`; until it lands, omitting the flag is the
 fix.
 
-## Citations into code: why the gate exists
-
-It reads each item's status, refuses one that claims to be workable without
-acceptance criteria, an open `BLOCKING:` line resolved or a branch recorded,
-and checks the `path:line` citations the documents make **into other
-markdown files** — rule 6 matches `.md` targets only, resolved against
-`docs/work`, and reads them from the item's `.citations.tsv`, which
-`--update-citations` writes — an item it was never run on is silently
-skipped. A citation into source is `tests/test_citations.py`'s, which runs in
-the same preflight (sd:828): a `path:line` into a `.py`, `.sh`, `.js` or
-`.yml` file, `local-sd-db/sd_db/runner.py:191` [quoted: the shape the gate bans],
-fails anywhere in a tracked `.md`, `.py` or `.sh` except in the work
-archive (the `archive/` folder under `docs/work`), which is done by where it
-lives and is not scanned; the gate reads no item status, so a done page
-still outside the archive is scanned, its sites carried in the ratchet. It
-fails because nothing can check
-that the line still carries the claim — on 2026-09-11 one pointing past the
-end of a 260-line file linted clean, and six more pointed at comments while
-they sat in green pages (sd:439, sd:440, sd:825). Cite an anchor
-instead, in one of three forms the gate checks against the file: a
-backticked snippet, `` `<snippet>`, in `<symbol>` of `<path>` ``, every span
-word-bounded in the file; `source:<path>::<symbol>`, one `ast` declaration
-for `.py`, a `<symbol>() {` or `<symbol>=` line for `.sh`; or
-`[quoted: <reason>]` after a token that is an example and not a claim. The
-sites older than the gate sit in its `KNOWN_LINE_INTO_CODE` ratchet, which
-only shrinks. Run the lint before asking for a review and before merging; a
-drifted document citation is the usual finding.
-
 ## `sd-docs-lint` became a CI gate (#238, #230)
 
 **Since #238 it is a gate and not only a habit.** `system-native` runs it on

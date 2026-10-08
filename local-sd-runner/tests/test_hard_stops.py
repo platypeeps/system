@@ -170,7 +170,7 @@ class HardStops(unittest.TestCase):
             result = self.runner.execute(self.db, request)
         self.assertEqual(read.call_args.args[1], request["run"]["id"])
         self.assert_stopped(request, result, hard_stops.BLOCKING_FINDING,
-                            "sd_runner/runtime.py:12 retry loop never ends", "2 of 2 automatic passes spent")  # [quoted: a finding string from the fixture, not a citation]
+                            "sd_runner/runtime.py:12 retry loop never ends", "2 of 2 automatic passes spent")
         self.assertNotIn("README.md", result["detail"], "advisory findings hold nothing")
 
     def test_a_receipt_left_by_an_earlier_run_does_not_stop_this_one(self):
@@ -224,7 +224,7 @@ class Classifiers(unittest.TestCase):
     def test_one_spent_pass_says_so(self):
         stop = hard_stops.from_receipt({"passes": [{"report": {"status": "blocking", "findings": [{"disposition": "blocking", "path": "a.py", "line": 3, "summary": "s"}]}}]})
         self.assertEqual(stop.kind, hard_stops.BLOCKING_FINDING)
-        self.assertEqual(stop.evidence, "a.py:3 s (1 of 2 automatic passes spent)")  # [quoted: fixture evidence text, not a citation]
+        self.assertEqual(stop.evidence, "a.py:3 s (1 of 2 automatic passes spent)")
 
     def test_check_result_names_failed_checks_or_the_tail(self):
         self.assertIsNone(hard_stops.from_check({"exit_code": 0, "stdout": "", "stderr": ""}))
