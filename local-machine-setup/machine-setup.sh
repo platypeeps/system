@@ -3912,7 +3912,7 @@ run_step() { # seconds, command...
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
 cmd_upgrade() {
-  echo "upgrade : brew + App Store maintenance sweep"
+  echo "upgrade : brew + Claude Code + App Store maintenance sweep"
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will change; re-run with --apply"
   echo
   failed=""
@@ -3920,9 +3920,16 @@ cmd_upgrade() {
     run_step 600 brew update || failed="$failed, brew update"
     run_step 1800 brew upgrade || failed="$failed, brew upgrade"
     run_step 1800 brew upgrade --cask || failed="$failed, brew upgrade --cask"
-    run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
     echo "  brew MISSING — https://brew.sh"
+  fi
+  # Claude Code's native install updates here, weekly only: the settings
+  # baseline turns its background updater off (sd:3033).
+  if [ -x "$HOME/.local/bin/claude" ]; then
+    run_step 600 "$HOME/.local/bin/claude" update || failed="$failed, claude update"
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   fi
   if command -v mas >/dev/null 2>&1; then
     run_step 1200 mas upgrade || failed="$failed, mas upgrade"
@@ -4319,7 +4326,8 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    is a FAIL
   doctor sd        those sd checks alone, exit 1 on any FAIL
   test             run the unittest suite in tests/ (extra args go to unittest)
-  upgrade          maintenance sweep: brew update/upgrade/cleanup + mas
+  upgrade          maintenance sweep: brew update/upgrade, claude update
+                   (when ~/.local/bin/claude exists), brew cleanup + mas
                    upgrade (dry run without --apply, like everything else);
                    an apply logs each step as it starts and stops it at its
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
