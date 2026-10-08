@@ -2530,7 +2530,7 @@ port_defaults() { # reads stdin
 # Host ports a service folder publishes: overridable defaults plus whatever is
 # still written literally on a `docker run -p` flag or in a compose ports list.
 # Read out of the files on every run for the same reason the folder list is —
-# the port table in .claude/rules/services.md is documentation, not a source.
+# the port table in README.md is documentation, not a source.
 service_ports() {
   cand_svc="$1"
   cand_entry="$ROOT/$cand_svc/${cand_svc#local-}.sh"

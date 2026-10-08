@@ -10,8 +10,8 @@ pins the documents against the code and so against each other.
 
 What is pinned is the SET OF ROUTES TO EACH EXIT STATUS, not the prose. The
 routes are named conditions, and a document claims one by saying it in any
-words that carry the same concepts, so the three documents here -- a help
-screen, a README bullet and a TCC rules bullet, none of which share a
+words that carry the same concepts, so the documents here -- a help
+screen and a README bullet, which share no
 sentence -- all satisfy the same signatures. `RewordingIsNotADifference`
 below holds a paraphrase of the help sentence that must still read as the
 same set, and `TruncationIsADifference` holds the pre-fix help sentence
@@ -45,8 +45,7 @@ driven through the real function and the exit status it produces is recorded.
 `test_every_control_answer_in_the_code_has_a_route_name` fails when the code
 grows a fifth answer that no document has been taught to name.
 
-A document may leave a status out entirely -- `.claude/rules/macos-tcc.md` says nothing about
-exit 1 -- but a document that names a status must name every route to it.
+A document may leave a status out entirely, but a document that names a status must name every route to it.
 Naming some of them is what made `--help` misread.
 
 A status can also be characterised instead of conditioned, and that is a
@@ -371,7 +370,7 @@ class Routes(unittest.TestCase):
         # and is held to the same rule by the test below. This fails when the
         # extraction stops finding the documents that do make it, which is how
         # a comparison quietly comes to pin nothing.
-        self.assertLessEqual({"dashboard.sh --help", "local-project-dashboard/README.md", ".claude/rules/macos-tcc.md"},
+        self.assertLessEqual({"dashboard.sh --help", "local-project-dashboard/README.md"},
                              set(self.documents))
 
     def test_every_document_that_names_a_status_names_every_route_to_it(self):
