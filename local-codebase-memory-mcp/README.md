@@ -69,5 +69,5 @@ Port/UI flags live in `codebase-memory-mcp.sh`. Edit, then restart (`launchctl k
 
 ## Notes
 
-- Binary is an MCP stdio server — it exits immediately if stdin hits EOF. The script keeps stdin open via a FIFO (`.stdin.fifo`) so the process stays alive as a standalone daemon.
+- Binary is an MCP stdio server — it exits immediately if stdin hits EOF. The script keeps stdin open via a FIFO (`${XDG_STATE_HOME:-~/.local/state}/system/codebase-memory-mcp/stdin.fifo`) so the process stays alive as a standalone daemon. The FIFO stays outside the checkout: in `~/repos` it blocked `grep -r`. `run` removes the old `.stdin.fifo` from this folder.
 - If port 9749 is already in use by another manually-started instance, kill that process first (`lsof -i :9749`) before loading the agent.

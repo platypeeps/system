@@ -5,11 +5,7 @@ paths:
 
 # A stage that can remediate must name what it is remediating
 
-Moved from the root `CLAUDE.md`. History: `docs/claude-md-history.md`.
-
-- `machine-setup.sh status` counts drift by grepping stage output for marker words.
-  - Markers: `DIFFERS`, `MISSING`, `STALE`, `ABSENT`, `UNLOADED`, `EXTRA`, `defaults write`.
-- Print a marker word whenever a stage finds drift; a remediation line alone lets `--fail-on-drift` exit 0.
+- Print a marker word that the drift grep in `status` counts (read that grep in `machine-setup.sh`); a remediation line alone lets `--fail-on-drift` exit 0.
 - Replacing a daemon is not restarting it.
   - Config inside a daemon's own state (a tailscale serve config, anything under `/Library/<vendor>`) vanishes when its provider changes.
   - When a migration swaps a service's provider, enumerate what the service was holding.

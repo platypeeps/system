@@ -493,13 +493,9 @@ def price(env, name: str, default: float | None) -> float | None:
 
 # The arms are opt-in, unlike a Jev stage ("unset means on"): an arm sends
 # every live Jev request to a second endpoint, and that is a change the
-# operator turns on, one arm at a time.
-
-def kev_on(env) -> bool:
-    """The Kev arm runs only when `JEV_COMPARE_KEV` is one of `jev.py`'s
-    on-words; unset, an off-word or anything else is off."""
-    return (env.get("JEV_COMPARE_KEV") or "").strip().lower() in jev.FLAG_ON
-
+# operator turns on, one stage at a time. `JEV_COMPARE_STAGES` is the one
+# switch; Kev stays on this machine and runs for every listed stage, and
+# `JEV_COMPARE_HAIKU_VIA` picks the third party the Haiku arm sends to.
 
 def haiku_via(env) -> str:
     """The selected transport, or "" when the arm is off: unset or one of
@@ -520,7 +516,7 @@ def stage_listed(env, stage) -> bool:
 def wanted(env, stage) -> bool:
     """Whether any arm runs for `stage` here. `jev.py` asks this before it
     starts one."""
-    return stage_listed(env, stage) and (kev_on(env) or bool(haiku_via(env)))
+    return stage_listed(env, stage)
 
 
 def kev_arm(job: dict, env) -> dict:
@@ -755,9 +751,7 @@ def main(argv=None, env=None) -> int:
         sys.stderr.write(f"jev-compare: not run, {job.get('stage')!r} is not "
                          "in JEV_COMPARE_STAGES\n")
         return 0
-    work = []
-    if kev_on(env):
-        work.append(("kev", lambda: kev_arm(job, env)))
+    work = [("kev", lambda: kev_arm(job, env))]
     via = haiku_via(env)
     if via:
         work.append(("haiku", lambda: haiku_arm(job, env, via)))

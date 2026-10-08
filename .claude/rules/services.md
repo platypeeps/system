@@ -8,35 +8,18 @@ paths:
 
 ## Ports
 
-- No two `local-*` services collide; all can run at once.
-- Same-role pairs moved the non-canonical holder:
-  - falkordb on **6380**, graphiti's bundled falkordb on **6381** (redis keeps 6379);
-  - graphiti's UI on **3004** (falkordb keeps 3003);
-  - jaeger's OTLP on **4327/4328** (the collector keeps 4317/4318);
-  - local-genai-traces on **4337/4338**, Phoenix UI **6016**, health **13137** (local-phoenix keeps 6006);
-  - the clickhouse MCP on **8002** (redisinsight keeps 8001).
-- Remaining overlaps are with software outside this repo:
-  - `8080-8083`: jaeger HotROD;
-  - `8084`: llama-cpp, overridable via `PORT`;
-  - `8766`: task-actions, overridable via `TASK_ACTIONS_PORT`.
-- graphiti's MCP HTTP sits on `8085` to avoid 8083/8084.
-- `local-kev` serves on loopback `8009`, Kev's documented port, overridable via `KEV_PORT`.
-- `8767` is the workflow dashboard's loopback port, served by `local-project-dashboard/dashboard.sh serve --port`.
-  - Its explicit configuration must use the same backend port.
-  - Private Tailscale access uses HTTPS on 8443.
-  - Optional IP access binds the node's Tailscale address on 8768 and authenticates its TCP peer.
-  - Both leave public 443 alone.
-- `local-postgres` sits on **5434** and `local-qdrant` on **6337**, both overridable, to leave the conventional ports to other software.
+- No two `local-*` services share a port; `README.md` § Ports is the one table. Move the non-canonical holder and update that table.
+- `8767` is the workflow dashboard's loopback port (`dashboard.sh serve --port`); its explicit configuration must use the same backend port.
+  - Private Tailscale access uses HTTPS on 8443; optional IP access binds the Tailscale address on 8768 and authenticates its TCP peer; both leave public 443 alone.
 
 ## launchd plists hold absolute paths
 
-- Tools that install a LaunchAgent fill a committed `*.plist.template` at install time.
-- Every template passes `SYSTEM_TOOLS_CONFIG` as `@CONFIG@`: launchd gives the agent only the environment the plist names.
+- Every installed LaunchAgent passes `SYSTEM_TOOLS_CONFIG` in its environment (`@CONFIG@` in a `*.plist.template`, or the plist a tool builds): launchd gives the agent only the environment the plist names.
 - The label prefix is `SYSTEM_TOOLS_LABEL_PREFIX` (default `local.system-tools`); keep it identical for every tool on a machine.
 - Renaming a script or folder a plist references requires reinstalling the plist.
 - The pack's registry holds this repo's root, and `sd-plugin.json` points at the dashboard entrypoint.
 - Renaming `local-project-dashboard` requires both a LaunchAgent and a plugin update.
-- `local.system-tools.sd-serve` names `local-sd-db/sd-db.sh`; renaming either means editing and reloading that plist.
+- `<prefix>.sd-serve` (example plist in `local-machine-setup/examples/launchagents/`) names `local-sd-db/sd-db.sh`; renaming either means editing and reloading it.
 
 ## Wrappers and vendored code
 

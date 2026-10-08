@@ -5,7 +5,7 @@ Every top-level folder is one independent tool with a `README.md`. There is no r
 One operator runs these tools on their own machines; the repository is public so others can read and reuse them.
 `README.md` covers setup and configuration for a human reader; this file holds the rules for changing the code.
 
-This file holds rules. Record incidents and findings in `docs/`, not here.
+This file holds rules. Record incidents and findings in sd notes, not here.
 Area rules load from `.claude/rules/` when you touch matching files (index at the end).
 
 ## Terms
@@ -30,15 +30,11 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 - Merges gate on `make check` through the local gate (`repo.ci=local`): `sd-ship merge` runs it via `sd-check` and posts `sd/local-gate`, the one required check.
 - `make check` runs `tests/check.sh`: the preflight and all four legs of `tests/ci-native.sh`, plus `tests/run-macos-only.sh` suites on a Mac.
-- Actions CI is off on purpose (billing); who, when and how to revert: `docs/local-ci-rollout.md`.
-- No GitHub workflow runs the suites; do not add one, since `make check` is the gate.
+- Actions CI is off on purpose; add no workflow. Who, when, revert: `docs/local-ci-rollout.md`.
 - A test that needs macOS goes in a suite named in `tests/macos-only-suites.txt`, never behind a skip; Linux cannot run it.
 - Do not count suites in prose; the `run_suite` lines in `tests/ci-native.sh` are the enumeration, and prose counts go stale.
-- Wire a new `*/tests/test_*.py` folder into a `run_suite` line or the macOS-only list; the preflight fails naming any unwired folder.
-- Write shell-script tests as Python `unittest`; the `run_suite` wrapper asserts a unittest summary.
-- Skipped tests fail the check; do not add a skip.
-- The check uses an isolated home, an installed library, Python 3.14, and the command pack at the SHA in `.sd-pack-rev`, fetched into `.ci/`.
-- A test that drives `launchctl` stubs it on PATH; `make check` fails any call that reaches the real one.
+- Write tests as Python `unittest`, wired into a `run_suite` line or `tests/macos-only-suites.txt`; never skip one.
+  `tests/ci-native.sh` fails an unwired folder, a skip or a missing summary; `tests/check.sh` fails a real `launchctl` call.
 
 ## Structure
 
@@ -91,19 +87,6 @@ Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-
 - A change with a shape worth agreeing on first gets a folder under `docs/work/` with `prd.md`, `design.md` and `implement.md`.
 - Check with the command pack's `sd-docs-lint` from the repository root, with no `--work-dir`; an absolute value reads zero references and passes silently.
 - Never add `.github/sd-docs-lint.json`; that opt-in sends `docs/work` prose to a third party.
-- Its rule 6 checks `path:line` citations into `.md` files from each item's `.citations.tsv` (`--update-citations` writes it).
-
-## Citations into code
-
-`tests/test_citations.py` runs in the `make check` preflight: `python3 tests/test_citations.py` from the root.
-
-- Do not cite code as `path:line` (into `.py`, `.sh`, `.js`, `.yml`) in any tracked `.md`, `.py` or `.sh`; nothing checks the line still holds the claim.
-- The `archive/` folder under `docs/work` is exempt; a done page outside it is still scanned.
-- Cite an anchor instead, in one of three forms the gate checks:
-  - a snippet: `` `<snippet>`, in `<symbol>` of `<path>` ``, every span word-bounded in the file;
-  - `source:<path>::<symbol>`, one declaration in a `.py`, or a `<symbol>() {` / `<symbol>=` line in a `.sh`;
-  - `[quoted: <reason>]` after a token that is an example, not a claim.
-- `KNOWN_LINE_INTO_CODE` only shrinks; do not add to it.
 
 ## Nothing may depend on Jev
 
@@ -115,15 +98,9 @@ Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-
       if jev enabled JEV_MY_STAGE; then verdict=$(jev noul ...); else verdict=$(old_way); fi
       verdict=$(jev choice ... --fallback "$(old_way)")
 
-- `jev enabled STAGE` exits 0 when Jev can answer and the stage is on, 3 otherwise, and calls nothing.
-- `--fallback` prints your answer and exits 0 when Jev is off, unkeyed or failing, with the reason on stderr.
-- Name the stage in the `jev enabled` call; do not test `[ "$JEV_X" = 1 ]` yourself.
-- Unset means on; a stage variable only switches off (`0 off false no disabled`, as parsed in `local-jev/jev.py`).
-- `jev off` writes the kill switch file `~/.config/jev/enabled`; `JEV_ENABLED=0` switches one call off.
-- No `TYPESAFE_API_KEY` behaves exactly like the switch off.
-- A test suite that runs a caller end to end switches its stage off; unset reaches the live endpoint.
 - Use Jev for ordering, routing and triage only; it does not approve, merge, send or delete.
 - Pipe nothing sensitive into Jev; every call leaves the machine.
+- `tests/test_jev_contract.py` enforces callers and shapes; switch, exit codes and test pins: `.claude/rules/jev.md`.
 
 ## Area rules
 
@@ -136,4 +113,4 @@ These files load when you touch matching paths.
 | `local-bin-links` and the research kit | `.claude/rules/bin-links.md` |
 | macOS TCC under launchd | `.claude/rules/macos-tcc.md` |
 | The 02:xx cron slot needs a scheduled wake | `.claude/rules/cron-wake.md` |
-| Nothing may depend on Jev (detail) | `.claude/rules/jev.md` |
+| Jev switch, exit codes, test pins | `.claude/rules/jev.md` |

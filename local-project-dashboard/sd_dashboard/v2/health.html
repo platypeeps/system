@@ -2,7 +2,7 @@
 <!--
   Health (sd:2115), at /fleet-health: /health is the service's own check (runtime.py reads it). Built from the design source's
   products/system/designs/v2/health.{html,css,js} at d82daa1, with design.md and commands.md.
-  Data: /api/health (health_screen.document: the fleet child's worktree registrations, reads.trailer_scan, Operations >
+  Data: /api/health (health_screen.document: the fleet child's worktree registrations, Operations >
   Ports' collect_ports and protection.rows), read when the page opens and on Refresh. Five of the design's areas have no reader
   yet; the document names them and the page shows them as not read. Every fix is a CLI line for Copy. The one write is
   Re-run collector: POST /api/shadow/sync starts the server's shadow sync, as Contributions' does (sd:2894).

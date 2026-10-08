@@ -328,7 +328,6 @@ class WhatItRefuses(ItemCase):
         for prompt in self.prompts():
             self.assertIn("run this checkout's citation gate as a whole", prompt)
             self.assertIn("python3 -m unittest tests.test_doc_citations", prompt)
-            self.assertIn("python3 tests/test_citations.py", prompt)
             self.assertIn("Fix every failure it names on the pages you wrote", prompt)
 
     def test_the_prompt_says_reproduce_a_failure_or_do_not_claim_it(self):

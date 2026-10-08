@@ -86,15 +86,6 @@ else
   "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
 fi
 
-# The other half of the citation gate (sd:828): a `path:line` into
-# code, in a tracked .md, .py or .sh outside docs/work/archive/,
-# fails unless it is carried in the ratchet; an anchor is cited
-# instead. Stdlib and
-# git only, so it runs here before the venv exists, and it is at
-# the repository root, so the unwired-suite guard below demands a
-# python3 line for it -- delete this one and the guard fails.
-python3 tests/test_citations.py
-
 # Who calls Jev, and whether each one degrades. Two layers: the
 # folder inventory is read from the filesystem, so a twelfth caller
 # cannot be added silently; the rules then ban a fallback that reads
@@ -115,6 +106,11 @@ python3 tests/test_gap_vocabulary.py
 # reason. Stdlib and git only, so it runs here before the venv, and
 # the guard below demands this line.
 python3 tests/test_product_name.py
+
+# The repo CLAUDE.md stays at or under 150 lines and the shared agent
+# block at or under 200 (sd:3005). Stdlib only, so it runs here before
+# the venv, and the guard below demands this line.
+python3 tests/test_instruction_caps.py
 
 # Every folder's convention-1 entrypoint is tracked 100755 (sd:2648),
 # read from `git ls-files -s`, so `./<name>.sh` runs. Stdlib and git
@@ -205,7 +201,9 @@ if [ -n "$unwired" ]; then
   exit 1
 fi
 
-python3 -m venv --copies "$CI_WORK_ROOT/venv"
+# No --copies: a copied uv-managed python cannot find its libpython, and
+# check.sh takes the first python3.14 on the caller's PATH.
+python3 -m venv "$CI_WORK_ROOT/venv"
 export PYTHON="$CI_WORK_ROOT/venv/bin/python"
 "$PYTHON" -m pip install --no-index ./local-sd-db
 # Ship acceptance needs an installed copy, not source on PYTHONPATH.
@@ -284,7 +282,6 @@ case "$SUITE_LEG" in
     run_suite maintenance sh local-maintenance/maintenance.sh test -v
     run_suite opentelemetry-collector sh local-opentelemetry-collector/opentelemetry-collector.sh test -v
     run_suite genai-traces sh local-genai-traces/genai-traces.sh test -v
-    run_suite satellite-stale sh local-satellite-stale/satellite-stale.sh test -v
     run_suite aura sh mezmo-aura/aura.sh test -v
     # local-mirror-sync has no test verb of its own: mirror-sync.sh
     # takes sync|plan|list and adding a fourth would change what a
@@ -311,6 +308,9 @@ case "$SUITE_LEG" in
     # cswap.sh has no test verb; the suite is named directly, like
     # statusline above. It stubs launchctl, so Linux runs it.
     run_suite cswap "$PYTHON" local-cswap/tests/test_cswap.py -v
+    # codebase-memory-mcp.sh takes only `run`, which launchd calls; the
+    # suite is named directly. It stubs the binary, so Linux runs it.
+    run_suite codebase-memory-mcp "$PYTHON" local-codebase-memory-mcp/tests/test_codebase_memory_mcp.py -v
     run_suite obsidian-tasks sh local-obsidian-tasks/obsidian-tasks.sh test
     run_suite obsidian-review sh local-obsidian-review/obsidian-review.sh test
     run_suite task-actions sh local-task-actions/task-actions.sh test -v

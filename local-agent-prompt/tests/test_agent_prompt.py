@@ -44,7 +44,9 @@ class PromptDistribution(unittest.TestCase):
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=30,
+            # A hang guard, not a speed check: a refresh takes under 1s alone and
+            # passed 30s in a loaded gate (sd:3005, 2026-10-08).
+            timeout=180,
         )
         self.assertEqual(expected, result.returncode, result.stdout + result.stderr)
         return result

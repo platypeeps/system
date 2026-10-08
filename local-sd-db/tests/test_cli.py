@@ -326,31 +326,16 @@ class TheConventions(CliCase):
 
 
 class TheVerbs(CliCase):
-    def test_init_creates_the_database_and_seeds_the_registry(self):
+    def test_init_creates_the_database_and_writes_no_provider_row(self):
+        # The database is the one source for providers and bills: init seeds nothing from the file (sd:3016).
         (self.home / ".local/share/sd/providers.yaml").write_text(REGISTRY, encoding="utf-8")
         completed = self.sd_db("init")
         self.assertIn(f"schema version {SCHEMA_VERSION}", completed.stdout)
-        self.assertIn("seeded 4 row(s)", completed.stdout)
-        self.assertTrue((self.home / ".local/share/sd/sd.db").is_file())
-
-    def test_init_without_a_registry_says_so_rather_than_failing(self):
-        completed = self.sd_db("init")
-        self.assertIn("providers.yaml yet", completed.stdout)
-        # The line promises what the library keeps: a writable read seeds.
-        # It used to say "will seed on first read" while no read seeded.
-        self.assertIn("writable connection", completed.stdout)
-        self.assertNotIn("will seed on first read", completed.stdout)
-
-    def test_a_second_init_reports_the_seed_without_duplicating_it(self):
-        (self.home / ".local/share/sd/providers.yaml").write_text(REGISTRY, encoding="utf-8")
-        self.assertIn("seeded 4 row(s)", self.sd_db("init").stdout)
-        again = self.sd_db("init")
-        self.assertIn("already seeded", again.stdout)
-        self.assertNotIn("seeded 4 row(s)", again.stdout)
+        self.assertNotIn("providers.yaml", completed.stdout)
         connection = sqlite3.connect(self.home / ".local/share/sd/sd.db")
         try:
-            self.assertEqual(connection.execute("SELECT count(*) FROM provider").fetchone()[0], 2)
-            self.assertEqual(connection.execute("SELECT count(*) FROM bill").fetchone()[0], 2)
+            self.assertEqual([connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                              for table in ("provider", "bill")], [0, 0])
         finally:
             connection.close()
 
@@ -848,9 +833,7 @@ class TheRetireVerb(MigrationVerbCase):
         self.assertIn("docs-work", completed.stderr)
 
 
-# The remove-verb cases' own imports sit here, below the two line-keyed
-# citations in `WhichInterpreterItRuns`, so those lines keep their numbers in
-# `tests/test_citations.py`.
+# The remove-verb cases' own imports.
 import json  # noqa: E402
 import shlex  # noqa: E402
 import signal  # noqa: E402

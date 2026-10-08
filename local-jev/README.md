@@ -184,45 +184,6 @@ different question and gets this one wrong in both directions: it returns
 switches, and grepping for `enabled JEV_` instead misses every caller that
 passes the name through a constant. Two of the nine appear in neither result.
 
-### Per-stage budgets
-
-```sh
-JEV_HEALTH_CHECK_MAX_CALLS=10       # requests per UTC day
-JEV_HEALTH_CHECK_MAX_TOKENS=20000   # input plus output tokens per UTC day
-```
-
-A stage can carry a ceiling for each UTC day (sd:1239). A spent budget is a
-decline with cause `budget`, exactly like Jev off: `jev enabled STAGE` exits
-3, a `--fallback` is printed, and a call without one exits 3. The caller's
-old path runs, and the ledger counts the decline under that cause.
-
-- Unset means no ceiling. A stage with none reads and writes no file.
-- A call counts itself after its last local check and before it is sent,
-  so two callers cannot share the last call. A call refused here (bad
-  arguments, a redacted key) counts nothing, and neither does `enabled`.
-- Tokens are known only after the answer, so a token ceiling stops the call
-  after the one that crossed it.
-- A response that does not report a side's tokens is charged an estimate
-  for it, three bytes of the request or response to a token, never zero.
-  The ledger still records only the counts the response reported.
-- A ceiling that is not a whole number declines, and so does a counter that
-  cannot be read or locked within a second, or that is not a budget book. A
-  limit you set is never lifted silently.
-- A token charge that cannot take the lock is left beside the counter as a
-  `pending-*.json` file; the next call that holds the lock adds it.
-- Tokens count toward the UTC day their call was counted on. A call that
-  crosses midnight charges nothing to the new day.
-- Every counter in the book must be a whole number from 0; a book holding
-  anything else declines, like a book that does not parse.
-- The counter is one file, `~/.local/state/jev/budget.json`
-  (`XDG_STATE_HOME`, or `JEV_BUDGET_DIR`), locked through `budget.json.lock`
-  beside it. It holds the current UTC day only, and each write replaces it
-  whole, so a failed write leaves the last counts.
-- `status` and the comparison arms are not counted; `JEV_COMPARE_STAGES`
-  bounds the arms.
-
-Put the ceilings in `<config>/jev/.env`; an exported value wins over it.
-
 ## Exit codes
 
 `status` answers `0` ok, `3` no key on this machine, `1` configured and
@@ -365,7 +326,7 @@ them on their own line, `never reached a decision`. A stage whose callers only
 ever decline still has a number there, which is the only number it ever had.
 
 The decline reason is a value and not a boolean: `switched-off`, `unkeyed`,
-`no-path`, `timeout`, `invalid`, `unavailable`, `budget`. They are separate
+`no-path`, `timeout`, `invalid`, `unavailable`. They are separate
 because the repairs are separate, and `no-path` in particular has already
 caused a silent outage here -- every gate on, the key working, the probe
 answering `0.98`, and every PATH consumer skipping its step.
@@ -466,8 +427,8 @@ one records no old answer, and its `changed` is `unknown`.
 
 - The request goes to the local Kev alone, at `JEV_COMPARE_KEV_URL`
   (default `http://127.0.0.1:8009/v1/systemone`). It never goes to Jev or to
-  a comparison arm, whatever `JEV_COMPARE_KEV`, `JEV_COMPARE_HAIKU_VIA` and
-  `JEV_COMPARE_STAGES` say.
+  a comparison arm, whatever `JEV_COMPARE_HAIKU_VIA` and `JEV_COMPARE_STAGES`
+  say.
 - A Kev URL whose host is not a literal loopback address is refused before
   anything is sent; `localhost` is refused too, since a name is resolved. The
   request uses no proxy and follows no redirect.
@@ -555,17 +516,14 @@ ledger records. An exported empty switch (`JEV_COMPARE_HAIKU_VIA=`) is off,
 and it beats an on-value in `<config>/jev/.env`. A fallback answer, `enabled`, a meter that is off, and a call
 Jev never gets start no arm.
 
-Switch the Kev arm on with an on-word (`JEV_COMPARE_KEV=1`) and the Haiku arm
-by naming a transport (`JEV_COMPARE_HAIKU_VIA=anthropic`). Unset or an
-off-word is off: unlike a Jev stage, where unset means on, an arm sends every
-live request to a second endpoint, so it is opt-in. An off arm starts no
-child and writes no row.
-
-**An arm runs only for a stage `JEV_COMPARE_STAGES` lists**, stage names
+**The arms run only for a stage `JEV_COMPARE_STAGES` lists**, stage names
 separated by commas: `JEV_COMPARE_STAGES=JEV_SD_REVIEW`. Unset or empty lists
-none, so a machine with an arm on and no list sends nothing extra. Until
-sd:2824 an arm ran for every stage, so set the list when you upgrade, or the
-arms stop. A local-only stage stays out of every arm even when listed.
+none: unlike a Jev stage, where unset means on, an arm sends every live
+request to a second endpoint, so it is opt-in. A listed stage runs the Kev
+arm, and the Haiku arm when `JEV_COMPARE_HAIKU_VIA` names a transport
+(`anthropic`); unset or an off-word leaves Haiku out. The list is the one
+switch for Kev (sd:3011); a `JEV_COMPARE_KEV` line left in a config file is
+not read. A local-only stage stays out of every arm even when listed.
 
 **Put a comparison key in `<config>/jev/.env`.** `jev.sh` reads that file on
 every call, so a key there reaches every caller at once. A key exported from

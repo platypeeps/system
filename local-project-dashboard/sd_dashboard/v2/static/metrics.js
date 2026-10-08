@@ -34,9 +34,6 @@
     if (!d.trend.error) d.trend.series.forEach(s => s.points.forEach(([day, p, at], i) => put1(`t:${s.provider}:${day}`, { kind: 'Window reading', title: `${s.provider} · ${day}`, s: pctState(p),
       facts: [['Used', `${p}%`], ['Window', `${d.trend.window} min (7 days)`], ['Reading', `last meter row of the day · ${at}`], ['Source', 'reads.meter_days']], cli: 'sd-db.sh usage --json' })));
     if (!d.numbers.error) d.numbers.rows.forEach(n => put1(`num:${n.key}`, { kind: 'The week', title: n.label, s: n.value == null ? 'unknown' : 'ok', facts: [['Value', numText(n)], ...n.inputs, ['Source', 'reads.weekly_numbers']], cli: '/operations?area=usage' }));
-    put1('num:trailers', { kind: 'The week', title: 'commits missing a trailer', s: d.trailers.error ? 'unknown' : d.trailers.count ? 'caution' : 'ok',
-      facts: [['Value', d.trailers.error ? `not read: ${d.trailers.error}` : d.trailers.count], ['Scope', 'your commits of the last five weeks on each default branch, merges left out, with no Authored-with: trailer'], ['Source', 'reads.missing_trailers']],
-      cli: 'sd attribute <sha|from..to> <entry>  # on a branch, then ship by PR' });
     if (!d.scorecard.error) d.scorecard.rows.forEach(r => put1(`sc:${r.provider}`, { type: 'provider', kind: 'Provider · this month', title: r.provider, label: r.provider, p: r.provider, s: scState(r),
       facts: [['Author rank', r.author_rank ?? '—'], ['Reviewer rank', r.reviewer_rank ?? '—'], ['Passes', r.passes], ['Blocking', r.blocking], ['$/pass', money(r.usd_per_pass)], ['Skipped', r.fallthrough], ['State', r.enabled ? 'enabled' : `disabled: ${r.reason || '—'}`]],
       note: scState(r) === 'caution' ? `Asked ${r.fallthrough} times and fell through every time this month.` : '', cli: 'sd providers configure --file CONFIG.json' }));
@@ -60,8 +57,6 @@
     if (!u.error) u.meter.filter(m => m.window_minutes === d.trend.window).forEach(m => out.push({ id: `w-${m.provider}`, label: `${m.provider} week`, state: pctState(m.used_percent), ev: `win:${m.provider}:${m.window_minutes}`,
       val: html`<b>${Math.round(m.used_percent)}%</b> used`, small: `meter ${String(m.timestamp).slice(5, 16).replace('T', ' ')}Z` }));
     if (!u.error) out.push({ id: 'bound', label: 'Estimated spend', state: u.bound.length ? 'caution' : 'ok', ev: 'bound', val: html`<b>${u.bound.length}</b> bound`, small: u.bound.length ? 'rows to check against invoices' : 'no row to check' });
-    out.push(d.trailers.error ? { id: 'trailers', label: 'Trailers', state: 'unknown', ev: 'num:trailers', val: html`<b>—</b> not read`, small: d.trailers.error }
-      : { id: 'trailers', label: 'Trailers', state: d.trailers.count ? 'caution' : 'ok', ev: 'num:trailers', val: html`<b>${fmt(d.trailers.count)}</b> commits`, small: 'no Authored-with: · 5 weeks' });
     out.push({ id: 'ci', label: 'CI 7d', state: 'unknown', ev: 'unread:ci', val: html`<b>—</b> not read`, small: 'no local-gate store' });
     return out;
   }
@@ -108,8 +103,7 @@
     const d = DOC, C = window.shell.commands;
     const nums = d && !d.numbers.error ? d.numbers.rows : [];
     put($('week-body'), !d ? html`` : html`${d.numbers.error ? html`<tr><td colspan="4">${unknownBlock(d.numbers.error)}</td></tr>` : ''}${nums.map(n => { const st = n.value == null ? 'unknown' : 'ok';
-      return row(`num:${n.key}`, html`<td class="g g-${st}">${G[st]}<span class="sr">${st}</span></td><td class="what"><button type="button">${n.label}</button></td><td class="num">${numText(n)}</td><td class="mono hide-sm">${n.inputs.map(i => i.join(' ')).join(' · ')}</td>`); })}${(() => { const e = EV['num:trailers'];
-      return row('num:trailers', html`<td class="g g-${e.s}">${G[e.s]}<span class="sr">${e.s}</span></td><td class="what"><button type="button">commits missing a trailer</button></td><td class="num">${d.trailers.error ? '—' : fmt(d.trailers.count)}</td><td class="mono hide-sm">${d.trailers.error || 'five weeks · default branches'}</td>`); })()}`);
+      return row(`num:${n.key}`, html`<td class="g g-${st}">${G[st]}<span class="sr">${st}</span></td><td class="what"><button type="button">${n.label}</button></td><td class="num">${numText(n)}</td><td class="mono hide-sm">${n.inputs.map(i => i.join(' ')).join(' · ')}</td>`); })}`);
     put($('sc-body'), !d ? html`` : d.scorecard.error ? html`<tr><td colspan="9">${unknownBlock(d.scorecard.error)}</td></tr>` : html`${d.scorecard.rows.map(r => { const st = scState(r);
       return row(`sc:${r.provider}`, html`<td class="g g-${st}">${G[st]}<span class="sr">${st === 'caution' ? 'caution: skipped every call' : 'normal'}</span></td><td class="what"><button type="button">${r.provider}</button>${r.enabled ? '' : html`<small>disabled</small>`}</td><td class="num hide-sm">${r.author_rank ?? '—'}</td><td class="num hide-sm">${r.reviewer_rank ?? '—'}</td><td class="num">${r.passes}</td><td class="num hide-sm">${r.blocking}</td><td class="num">${money(r.usd_per_pass)}</td><td class="num">${r.fallthrough}</td><td class="act">${C.rowActions(`sc:${r.provider}`)}</td>`); })}`);
     const u = d?.usage;
@@ -167,7 +161,7 @@
     adopt: doc => {
       DOC = doc; evidence(); CELLS = cells(); attention();
       document.body.dataset.observed = doc.read;
-      const failed = ['usage', 'trend', 'numbers', 'trailers', 'scorecard', 'skills', 'age', 'observed'].filter(k => doc[k].error);
+      const failed = ['usage', 'trend', 'numbers', 'scorecard', 'skills', 'age', 'observed'].filter(k => doc[k].error);
       FIRST = CELLS.find(c => c.state === 'warning' || c.state === 'caution')?.ev || Object.keys(EV).find(k => k.startsWith('win:')) || null;
       put($('subhead'), html`Spend against budget, the week, providers, skill use and the month's usage · read <time class="rel" datetime="${doc.read}"></time>`);
       return { objects: Object.entries(EV).map(([id, e]) => ({ ...e, id, type: e.type || 'reading', label: e.label || e.title })),
