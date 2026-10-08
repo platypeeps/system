@@ -1560,6 +1560,8 @@ def post(conf: dict, payload: dict, opener=None, sleep=time.sleep,
     started = time.monotonic()
     try:
         for attempt in range(conf["retries"] + 1):
+            # The row says how the last attempt ended, not an earlier one.
+            note(_cause=None, error_class=None, error_detail=None)
             try:
                 with send(request, timeout=conf["timeout"]) as response:
                     raw = response.read().decode("utf-8")

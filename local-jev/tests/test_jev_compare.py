@@ -1016,6 +1016,28 @@ class LocalOnly(CompareCase):
         row = self.only()
         self.assertEqual((row["error_class"], row["error_detail"]), ("HTTPError", "503"))
 
+    def test_the_row_names_the_last_attempt_and_not_an_earlier_one(self):
+        """A 503, then a reset: the row says the reset. A 503, then an answer:
+        the row says nothing failed."""
+        real = jev.LOCAL_OPENER.open
+        for second, want in ((ConnectionResetError(errno.ECONNRESET, "Connection reset"),
+                              ("ConnectionResetError", "ECONNRESET")),
+                             (None, (None, None))):
+            failures = iter([urllib.error.HTTPError(jev.KEV_URL, 503, "busy", {}, None), second])
+
+            def send(request, timeout=None):
+                failure = next(failures)
+                if failure is not None:
+                    raise failure
+                return real(request, timeout=timeout)
+
+            with self.subTest(second=want), unittest.mock.patch.object(
+                    jev.LOCAL_OPENER, "open", side_effect=send), \
+                    unittest.mock.patch.object(jev.time, "sleep"):
+                self.run_local(["noul", "is it?", "--fallback", "keep"], JEV_RETRIES="1")
+                row = self.rows()[-1]
+                self.assertEqual((row["error_class"], row["error_detail"]), want)
+
     def test_the_kill_switch_still_stops_it(self):
         self.write_switch("off")
         code, out, _ = self.run_local(["noul", "is it?", "--fallback", "keep"])
