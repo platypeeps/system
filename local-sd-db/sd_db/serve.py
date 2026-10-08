@@ -595,6 +595,7 @@ class Session(socketserver.BaseRequestHandler):
                         gap = received - last_answer
                         gap_before = _brief(frame)
                 hang_up = False
+                restart = False
                 try:
                     op = frame.get("op")
                     opening = connection is None and op == "open"
@@ -728,6 +729,7 @@ class Session(socketserver.BaseRequestHandler):
                     elif isinstance(error, (remote.BuildMismatch, remote.HubRestartNeeded, PeerRefused)):
                         server.log.line(f"session {self.number} refused before open: {error}")
                         hang_up = isinstance(error, PeerRefused)
+                        restart = isinstance(error, remote.HubRestartNeeded)
                 if connection is not None:
                     # A ROLLBACK, or a transaction SQLite ended on an error.
                     self._settle(connection)
@@ -758,6 +760,13 @@ class Session(socketserver.BaseRequestHandler):
                 if hang_up:
                     # A refused peer gets one answer, not a second try.
                     return
+                if restart and not server.restart_needed:
+                    # This process refuses every session from here on, so it
+                    # stops after the answer; launchd's KeepAlive starts the
+                    # installed build (sd:3058).
+                    server.restart_needed = True
+                    server.log.line("stopping so launchd starts the installed build")
+                    threading.Thread(target=server.shutdown, daemon=True).start()
                 last_answer = time.monotonic()
         finally:
             if connection is not None:
@@ -775,6 +784,7 @@ class Server(socketserver.ThreadingTCPServer):
 
     daemon_threads = True
     allow_reuse_address = True
+    restart_needed = False
 
     def __init__(self, port: int, database_path: Path, log: Log, token: str, token_file: Path,
                  node: tailnet.Node | None = None, idle_timeout: float = IDLE_TIMEOUT) -> None:
@@ -901,7 +911,8 @@ def serve(port: int, database_path: Path, stream=sys.stderr, *, loopback: bool =
     except RunnerRefused as refused:
         log.line(str(refused))
         return 1
-    return 0
+    # Non-zero: nobody asked this stop, the install did.
+    return 1 if server.restart_needed else 0
 
 
 def main(argv: list[str] | None = None) -> int:

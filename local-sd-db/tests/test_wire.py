@@ -531,6 +531,27 @@ class TheHandshake(ServedCase):
         self.addCleanup(wire.close)
         self.assertEqual(wire.execute("SELECT 1").fetchone()[0], 1)
 
+    def test_a_hub_that_meets_its_own_newer_install_stops_for_launchd_to_restart_it(self):
+        """sd:3058. A post-merge install under a running hub refused every satellite until a manual kickstart.
+
+        The old process can serve nobody once its files hold another build, so the
+        first such refusal also stops it, exit 1, and the LaunchAgent's KeepAlive
+        starts the installed build.
+        """
+        build = other_build(self.root)
+        hub = Served(self.root, "installed.db", build=build)
+        self.addCleanup(hub.stop)
+        (build / "sd_db" / "reads.py").write_bytes((HERE / "sd_db" / "reads.py").read_bytes())
+        with self.assertRaises(remote.RemoteError) as caught:
+            hub.connect()
+        self.assertEqual(type(caught.exception).__name__, "HubRestartNeeded")
+        try:
+            code = hub.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.fail("the hub kept running a build its files no longer hold")
+        self.assertEqual(code, 1)
+        self.assertIn("stopping so launchd starts the installed build", hub.log.read_text())
+
     def test_the_schema_and_the_protocol_are_checked_too(self):
         with mock.patch.object(schema, "SCHEMA_VERSION", schema.SCHEMA_VERSION + 1):
             with self.assertRaises(remote.BuildMismatch) as caught:
