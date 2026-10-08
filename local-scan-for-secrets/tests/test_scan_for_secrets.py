@@ -653,5 +653,61 @@ class MaskRewrite(unittest.TestCase):
         self.assertIn(self.TOKEN.encode(), settled.read_bytes())
 
 
+class ManualMask(unittest.TestCase):
+    """`mask`, which the operator runs by hand, on homes with less in them
+    (sd:1254). A fixture $HOME and fixture scratch roots only: no live file
+    is read or rewritten."""
+
+    #: Joined here, so this file is not a finding of the repository scan.
+    TOKEN = "ghp_" + "Zq7" * 12
+    SETTLED = 20 * 60
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+        self.home = self.root / "home"
+        (self.root / "scratch").mkdir()
+        self.home.mkdir()
+        self.env = dict(os.environ, HOME=str(self.home), SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
+                        S4S_SCRATCH_ROOTS=str(self.root / "scratch"), JEV_SECRET_SCAN="0",
+                        S4S_MASK_SETTLE_MIN="10")
+        self.env.pop("S4S_CONF", None)
+        isolate_jev(self.env)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def plant(self, relative: str, age_seconds: float) -> None:
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"text": "token %s"}\n' % self.TOKEN, encoding="utf-8")
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+
+    def test_mask_without_exports_still_masks_known_patterns(self):
+        # No env.sh and no .bash_profile: the weekly job's mask pass must not
+        # fail, and a pattern hit is still masked (review, sd:1254).
+        self.plant(".codex/sessions/rollout.jsonl", self.SETTLED)
+        dry = subprocess.run(["sh", str(SCRIPT), "mask", "--no-prune"], cwd=self.root, env=self.env,
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(dry.returncode, 2, dry.stdout + dry.stderr)
+        self.assertIn("would mask 0 your-key value(s) + 1 pattern match(es) in 1 file(s)", dry.stdout)
+        applied = subprocess.run(["sh", str(SCRIPT), "mask", "--apply", "--no-prune"], cwd=self.root,
+                                 env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertNotIn(self.TOKEN, (self.home / ".codex/sessions/rollout.jsonl").read_text())
+
+    def test_mask_with_no_targets_touches_nothing(self):
+        # A home with no history, no AI store and no scratchpad: mask must not
+        # fall back to searching the current directory, $HOME (review, sd:1254).
+        self.plant("repos/project/app.py", self.SETTLED)
+        for flags in (["--no-prune"], ["--apply", "--no-prune"]):
+            with self.subTest(flags=flags):
+                result = subprocess.run(["sh", str(SCRIPT), "mask", *flags], cwd=self.root, env=self.env,
+                                        capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(self.TOKEN, (self.home / "repos/project/app.py").read_text())
+                self.assertNotIn("repos/project/app.py", result.stdout)
+
 if __name__ == "__main__":
     unittest.main()
