@@ -34,6 +34,7 @@ JEV_STUB = r"""#!/bin/sh
   for a in "$@"; do printf '\t%s' "$a"; done
   printf '\n'
 } >> "$JEV_LOG"
+printf '%s\n' "${JEV_RUN:-}" >> "$JEV_LOG.run"
 verb="$1"
 state_next=0
 if [ "$verb" = enabled ]; then
@@ -509,11 +510,12 @@ class FailureDegradesTest(NotifyTestCase):
         rows = self.baseline_rows()
         self.assertTrue(rows, "the timeout wrote no control-arm row at all")
         for row in rows:
+            self.assertRegex(row.pop(), r"^notify:[0-9a-f]{16}:(route|priority)$")
             self.assertEqual(
                 row,
                 ["record", "--caller", "local-notify", "--stage",
                  "JEV_NOTIFY", "--arm", "baseline", "--outcome", "ok",
-                 "--decline", "timeout"],
+                 "--decline", "timeout", "--subject"],
                 "a killed jev recorded no cause, so nothing anywhere counts "
                 "this timeout as a decline")
 

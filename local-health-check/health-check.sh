@@ -525,6 +525,11 @@ info "status sweep: $declared tool(s) declared, $checked checked"
 # runs nothing in this repository, so there is no recursion to stop, only a
 # doubled bill to avoid.
 JEV="${HEALTH_CHECK_JEV:-$DIR/../local-jev/jev.sh}"
+# One id for every jev call this run makes, the report's notify.sh included,
+# so the ledger groups them (sd:2953). A run that started this one keeps its own.
+[ -n "${JEV_RUN:-}" ] || \
+  JEV_RUN="health-check-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+export JEV_RUN
 
 # Bookkeeping only: one row saying the stages' own order -- the control arm --
 # is what the report carried, under the same stage key the switch reads. It
@@ -541,7 +546,8 @@ JEV="${HEALTH_CHECK_JEV:-$DIR/../local-jev/jev.sh}"
 jev_record_baseline() {
   [ -f "$JEV" ] || return 0
   sh "$JEV" record --caller local-health-check --stage JEV_HEALTH_CHECK \
-    --arm baseline --outcome ok >/dev/null 2>&1 || true
+    --arm baseline --outcome ok ${JEV_SUBJECT:+--subject "$JEV_SUBJECT"} \
+    >/dev/null 2>&1 || true
   return 0
 }
 
@@ -613,6 +619,10 @@ jev_order() {
   fi
   jev_write_redactions
   sed -f "$TMPD/redact.sed" "$JEVLINES" > "$TMPD/jev.headlines"
+  # The ledger's name for this ordering (sd:2953): the first 16 hex of the
+  # sha256 of the redacted shareable forms, sorted, one per line. No finding
+  # leaves in it; an outcome recomputes it from those same lines.
+  JEV_SUBJECT="health-check:$(LC_ALL=C sort "$TMPD/jev.headlines" | shasum -a 256 | cut -c1-16)"
   # Findings whose shareable forms are identical -- two cron jobs that both
   # failed, say -- are one question, not several. Asked twice, the same
   # evidence gets two answers, and any difference between them is noise that
@@ -640,7 +650,7 @@ jev_order() {
   ' "$TMPD/jev.headlines"
   if ! sh "$JEV" ask --questions "$TMPD/jev.questions" --state "$TMPD/jev.state" \
        --state-format json --caller local-health-check --stage JEV_HEALTH_CHECK \
-       > "$TMPD/jev.answers" 2> "$TMPD/jev.err"; then
+       --subject "$JEV_SUBJECT" > "$TMPD/jev.answers" 2> "$TMPD/jev.err"; then
     _why=$(head -1 "$TMPD/jev.err" 2>/dev/null | cut -c1-120 || true)
     info "jev ordering skipped: ask failed${_why:+ -- $_why}"
     jev_record_baseline

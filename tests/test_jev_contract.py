@@ -800,6 +800,26 @@ class EveryCallerNamesItselfInTheLedger(unittest.TestCase):
             f"{missing}",
         )
 
+    def test_each_caller_names_what_it_judged_and_its_run(self):
+        """`--subject` and `JEV_RUN` in every caller's own code (sd:2953).
+
+        Without a subject an outcome cannot be joined to the decision, and
+        without a run id one run's calls cannot be grouped. Read from the
+        folder's code outside `tests/`, so a suite naming either word cannot
+        stand in for a caller that does not.
+        """
+        missing = []
+        for folder in sorted(KNOWN_CALLERS):
+            code = "\n".join(line for rel, _, line in folder_code(folder)
+                             if "/tests/" not in rel)
+            missing += [f"{folder} never names {word}"
+                        for word in ("--subject", "JEV_RUN") if word not in code]
+        self.assertEqual(
+            missing, [],
+            "a caller files its rows with no subject or no run, so no outcome "
+            f"can be joined to them: {missing}",
+        )
+
     def test_each_caller_passes_the_stage_its_own_switch_reads(self):
         missing = []
         for folder in sorted(KNOWN_CALLERS):

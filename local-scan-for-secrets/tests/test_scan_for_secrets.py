@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -241,6 +243,48 @@ class TheLocalJudgment(unittest.TestCase):
                          [("JEV_SECRET_SCAN", "baseline")] * 2 + [("JEV_SECRET_SCAN", "kev")] * 2)
         self.assertTrue(all(r["request"]["state_sha256"] for r in lines if r["arm"] == "kev"))
         self.assertNotIn(self.TOKEN, "".join(path.read_text() for path in files))
+
+    def test_each_hit_is_named_by_its_location_and_the_run_is_one_id(self):
+        """`--subject` hashes `path:line`, never the token; one `JEV_RUN` per run (sd:2953)."""
+        stub = self.root / "stub"
+        stub.mkdir()
+        (stub / "jev").write_text(
+            '#!/bin/sh\nprintf \'%s run=%s\\n\' "$*" "${JEV_RUN:-}" >> "$JEV_STUB_LOG"\n'
+            'cat >/dev/null\n')
+        (stub / "jev").chmod(0o755)
+        log = self.root / "calls"
+        result = self.scan(PATH=f"{stub}:{self.env['PATH']}", JEV_STUB_LOG=str(log), JEV_RUN="")
+        calls = log.read_text().splitlines()
+        self.assertEqual([line.split()[0] for line in calls], ["enabled", "noul", "noul"])
+        subjects = sorted(re.search(r"--subject (\S+)", line).group(1) for line in calls[1:])
+        # The report names each hit's location; ripgrep prints `one.txt`, `grep -E` `./one.txt`.
+        locations = re.findall(r"^\s+(\S*one\.txt:\d+):", result.stdout, re.M)
+        self.assertEqual(len(locations), 2, result.stdout)
+        expected = sorted("secret-scan:" + hashlib.sha256(f"{where}\n".encode()).hexdigest()[:16]
+                          for where in locations)
+        self.assertEqual(subjects, expected)
+        self.assertNotIn(self.TOKEN[4:], " ".join(subjects))
+        runs = {line.rsplit("run=", 1)[1] for line in calls}
+        self.assertEqual(len(runs), 1, runs)
+        self.assertRegex(runs.pop(), r"^secret-scan-\d{8}T\d{6}-[0-9a-f]{4}$")
+
+    def test_a_colon_in_the_path_keeps_each_line_apart(self):
+        """`a:b.txt:1` and `a:b.txt:2` are two subjects: the path keeps its colon."""
+        (self.root / "tree" / "one.txt").unlink()
+        (self.root / "tree" / "a:b.txt").write_text(f"token = {self.TOKEN}\nother = {self.TOKEN}\n",
+                                                    encoding="utf-8")
+        stub = self.root / "stub"
+        stub.mkdir()
+        (stub / "jev").write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$JEV_STUB_LOG"\ncat >/dev/null\n')
+        (stub / "jev").chmod(0o755)
+        log = self.root / "calls"
+        result = self.scan(PATH=f"{stub}:{self.env['PATH']}", JEV_STUB_LOG=str(log))
+        subjects = sorted(re.search(r"--subject (\S+)", line).group(1)
+                          for line in log.read_text().splitlines()[1:])
+        # ripgrep names the file `a:b.txt`, `grep -E` `./a:b.txt`.
+        where = "./a:b.txt" if "./a:b.txt" in result.stdout else "a:b.txt"
+        self.assertEqual(subjects, sorted("secret-scan:" + hashlib.sha256(f"{where}:{n}\n".encode()).hexdigest()[:16]
+                                          for n in (1, 2)))
 
     def test_the_stage_switched_off_asks_nobody(self):
         self.scan(JEV_SECRET_SCAN="0")

@@ -36,9 +36,11 @@ worse than committing one, so nothing else is sent. See `state_for_jev`.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -430,6 +432,31 @@ def jev_script() -> Path:
     return Path(__file__).resolve().parent.parent / "local-jev" / "jev.sh"
 
 
+def jev_subject(rows: list[dict]) -> str:
+    """The ledger's name for one call: `mail-intake:<16 hex>` (sd:2953).
+
+    No subject line and no address leaves in it. The key is the first 16 hex
+    of the sha256 of the asked threads' `message_id` values, sorted, each
+    followed by a newline: one for a `noul`, the batch for an `ask`. An
+    outcome recomputes it from the report rows' `message_id` column, as
+    `printf '%s\\n' ID... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`.
+    """
+    text = "".join(f"{mid}\n" for mid in sorted(row.get("message_id") or "" for row in rows))
+    return f"mail-intake:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
+
+
+def jev_run(environ: dict[str, str] | None) -> str:
+    """This run's `JEV_RUN`, one id for every `jev` call it makes (sd:2953).
+
+    The one the run inherited, else `mail-intake-<UTC yyyymmddThhmmss>-<4 hex>`,
+    made on the first call and kept in this process for the rest of it.
+    """
+    if not ((environ or {}).get("JEV_RUN") or os.environ.get("JEV_RUN")):
+        os.environ["JEV_RUN"] = (f"mail-intake-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}"
+                                 f"-{secrets.token_hex(2)}")
+    return (environ or {}).get("JEV_RUN") or os.environ["JEV_RUN"]
+
+
 def state_for_jev(row: dict) -> str:
     """The entire payload: a subject line and a direction word.
 
@@ -490,13 +517,15 @@ def run_jev(args: list[str], state: str,
     """
     completed = subprocess.run(args, input=state, capture_output=True,
                                text=True, timeout=JEV_TIMEOUT,
-                               env={**os.environ, **(environ or {})})
+                               env={**os.environ, **(environ or {}),
+                                    "JEV_RUN": jev_run(environ)})
     return completed.returncode, completed.stdout.strip()
 
 
 def record_baseline(script: Path,
                     environ: dict[str, str] | None = None,
-                    cause: str | None = None) -> None:
+                    cause: str | None = None,
+                    subject: str | None = None) -> None:
     """Say today's order -- the control arm -- is what the report carried.
 
     `--outcome ok` always: the old path completed, and that this row exists at
@@ -519,7 +548,8 @@ def record_baseline(script: Path,
         run_jev([str(script), "record", "--caller", JEV_CALLER,
                  "--stage", JEV_STAGE, "--arm", "baseline",
                  "--outcome", "ok"]
-                + (["--decline", cause] if cause else []), "", environ)
+                + (["--decline", cause] if cause else [])
+                + (["--subject", subject] if subject else []), "", environ)
     except Exception:  # noqa: BLE001 - bookkeeping may never fail the caller
         pass
 
@@ -581,7 +611,7 @@ def judge_asks(rows: list[dict], environ: dict[str, str], err) -> None:
             record_baseline(
                 script, environ,
                 "timeout" if isinstance(error, subprocess.TimeoutExpired)
-                else "unavailable")
+                else "unavailable", jev_subject(batch))
             _drop_answers(rows)
             return
         if verdicts is None:
@@ -589,7 +619,7 @@ def judge_asks(rows: list[dict], environ: dict[str, str], err) -> None:
                   f"(rc={code}); the report keeps today's order", file=err)
             # `jev` returned, so it has written its own cause; this row says
             # only that today's order is what the report carried.
-            record_baseline(script, environ)
+            record_baseline(script, environ, subject=jev_subject(batch))
             _drop_answers(rows)
             return
         for row, verdict in zip(batch, verdicts):
@@ -609,7 +639,8 @@ def ask_batch(script: Path, batch: list[dict],
         code, answer = run_jev(
             [str(script), "noul", JEV_QUESTION, "--state", "-",
              "--gate", str(JEV_GATE), "--caller", JEV_CALLER,
-             "--stage", JEV_STAGE, "--fallback", JEV_DEGRADED],
+             "--stage", JEV_STAGE, "--subject", jev_subject(batch),
+             "--fallback", JEV_DEGRADED],
             state_for_jev(batch[0]), environ)
         return code, [answer] if code == 0 and answer in ("yes", "no") else None
     questions = {f"q{n}": {"type": "noul",
@@ -621,7 +652,8 @@ def ask_batch(script: Path, batch: list[dict],
         code, answer = run_jev(
             [str(script), "ask", "--questions", str(path), "--state", "-",
              "--state-format", "json", "--caller", JEV_CALLER,
-             "--stage", JEV_STAGE, "--fallback", JEV_DEGRADED],
+             "--stage", JEV_STAGE, "--subject", jev_subject(batch),
+             "--fallback", JEV_DEGRADED],
             state_for_batch(batch), environ)
     return code, read_batch(answer, len(batch)) if code == 0 else None
 

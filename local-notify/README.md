@@ -209,6 +209,8 @@ and must not become one — triaging its hits would post candidate credentials
 to a third party, which is why it stays out of `KNOWN_CALLERS` in
 `tests/test_jev_contract.py`.
 
+**Ledger subject and run (sd:2953).** The two halves pass `--subject notify:<16 hex>:route` and `notify:<16 hex>:priority`. The key is the first 16 hex of the sha256 of the title and the message, each followed by a newline, before redaction. An outcome recomputes it with `printf '%s\n%s\n' TITLE MESSAGE | shasum -a 256 | cut -c1-16`. `notify.sh` keeps an inherited `JEV_RUN`, so a health check's alert joins that run; alone, it exports `notify-<UTC yyyymmddThhmmss>-<4 hex>`.
+
 ## Tests
 
     python3 tests/test_notify.py -v
