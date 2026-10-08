@@ -1120,6 +1120,22 @@ stage_tooling() {
       echo "  MISSING statusLine -> local-statusline"
       run sh "$ROOT/local-statusline/statusline.sh" install
     fi
+    # The settings baseline in claude_settings.py, the same on every machine:
+    # secret-read deny rules, no attribution lines, the `sd today` hook. It
+    # adds missing entries after a backup and never touches the operator's own.
+    if [ -f "$HOME/.claude/settings.json" ]; then
+      if gaps=$(python3 "$DIR/claude_settings.py" missing "$HOME/.claude/settings.json" 2>/dev/null); then
+        if [ -z "$gaps" ]; then
+          echo "  ok      settings.json baseline"
+        else
+          printf '%s\n' "$gaps" | sed 's/^/  MISSING settings.json /'
+          run backup_file "$HOME/.claude/settings.json"
+          run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
+        fi
+      else
+        echo "  DIFFERS settings.json is not valid JSON; baseline not checked"
+      fi
+    fi
   else
     echo "  SKIP    claude not installed (HUD not set up)"
   fi
