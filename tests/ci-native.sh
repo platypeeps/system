@@ -107,6 +107,11 @@ python3 tests/test_gap_vocabulary.py
 # the guard below demands this line.
 python3 tests/test_product_name.py
 
+# The repo CLAUDE.md stays at or under 150 lines and the shared agent
+# block at or under 200 (sd:3005). Stdlib only, so it runs here before
+# the venv, and the guard below demands this line.
+python3 tests/test_instruction_caps.py
+
 # Every folder's convention-1 entrypoint is tracked 100755 (sd:2648),
 # read from `git ls-files -s`, so `./<name>.sh` runs. Stdlib and git
 # only, so it runs here before the venv, and the guard below demands
