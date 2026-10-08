@@ -1,10 +1,13 @@
 """Production startup validates a built library and explicit local settings."""
 
+import io
 import json
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -63,6 +66,57 @@ class ServerStartup(unittest.TestCase):
             (package / "server.py").write_text("def main(argv, *, serve=True):\n    print(argv, serve)\n    return 0\n")
             ready = probe()
             self.assertEqual((ready.returncode, ready.stdout.strip()), (0, f"{argv} False"))
+
+    def test_a_new_checkout_whose_launcher_fails_keeps_the_old_server_serving(self):
+        """sd:3018: the probe runs the new checkout's dashboard.sh preflight, which runs its bootstrap.py, before the import.
+
+        The fake checkout's server imports and starts; only its launcher or its bootstrap fails.
+        """
+        launcher = "#!/bin/sh\nexec '{python}' -I \"$(dirname \"$0\")/sd_dashboard/bootstrap.py\" runtime \"$@\"\n"
+        cases = {
+            "preflight refuses": ("#!/bin/sh\necho 'dashboard: preflight refused' >&2\nexit 1\n", "import sys\n",
+                                  "dashboard: preflight refused"),
+            "bootstrap cannot import": (launcher.format(python=sys.executable),
+                                        "raise ImportError('bootstrap cannot import')\n", "bootstrap cannot import"),
+        }
+        for case, (script, bootstrap, reason) in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                config = root / "dashboard.json"
+                config.write_text(json.dumps({"port": 8787}))
+                (root / "dashboard.sh").write_text(script)
+                (root / "dashboard.sh").chmod(0o755)
+                package = root / "sd_dashboard"
+                package.mkdir()
+                (package / "__init__.py").write_text("")
+                (package / "bootstrap.py").write_text(bootstrap)
+                (package / "server.py").write_text("def main(argv, *, serve=True):\n    return 0\n")
+                loaded = {"library_digest": "a" * 64, "dashboard_digest": "b" * 64}
+                listening = Mock(server_address=("127.0.0.1", 8787))
+                with patch.object(runtime, "installed_library"), patch.object(server, "build", return_value=listening), \
+                        patch.object(runtime, "HERE", root):
+                    server.main(["--config", str(config), "--port", "8787"])
+                with patch.object(runtime, "build_digests", return_value=loaded):
+                    old = server.build(None, port=0)
+                self.addCleanup(old.server_close)
+                old.build_check_seconds = 0
+                old.restart_probe = listening.restart_probe
+                ended = []
+                def serve():
+                    try:
+                        old.serve_forever(poll_interval=0.01)
+                    except BaseException as error:  # noqa: BLE001 - the test reads what ended it
+                        ended.append(error)
+                with patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                        patch.object(runtime, "build_digests", return_value=dict(loaded, dashboard_digest="0" * 64)):
+                    thread = threading.Thread(target=serve, daemon=True)
+                    thread.start()
+                    thread.join(3)
+                    alive = thread.is_alive()
+                    if alive:
+                        old.shutdown()
+                self.assertTrue(alive, f"the old server stopped for a checkout whose launcher fails: {ended}")
+                self.assertIn(reason, stderr.getvalue())
 
     def test_check_only_start_refuses_where_a_start_refuses_and_binds_nothing(self):
         """sd:3018: main(serve=False) is the probe's body: each start step, then no bind."""

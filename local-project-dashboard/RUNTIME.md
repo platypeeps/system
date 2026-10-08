@@ -52,8 +52,9 @@ process ID must match the newly loaded LaunchAgent. Health reports the build
 captured when the server started and becomes unhealthy if its files change;
 an older process cannot claim the new bytes just installed. A server started
 with `--config` rechecks those files every 30 seconds. On a change it runs the
-new code's own start in a child process: imports, configuration, installed
-library and listeners, short of the bind. If that passes, it exits, and the
+new checkout's `dashboard.sh preflight`, then the new code's own start in a
+child process: imports, configuration, installed library and listeners, short
+of the bind. If that passes, it exits, and the
 LaunchAgent's `KeepAlive` starts the new code. If it fails, the old build keeps
 serving and logs one line; an installed sd_db behind the checkout waits for the
 pack's `make setup`, whose new library bytes retry it. An ordinary

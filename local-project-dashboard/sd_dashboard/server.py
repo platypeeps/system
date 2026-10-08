@@ -1055,12 +1055,15 @@ def main(argv: list[str] | None = None, *, serve: bool = True) -> int:
         server.server_close()
         return 0
     if arguments.config:
-        # The restart probe: a fresh interpreter imports the serving code from this checkout, as bootstrap.py
+        # The restart probe, two steps from this checkout. First its dashboard.sh preflight, which runs
+        # its bootstrap.py and runtime. Then a fresh interpreter imports the serving code, as bootstrap.py
         # does, and runs this function with the same arguments short of the bind. Only the LaunchAgent's
         # --config start has a launchd to start the replacement.
         probe = ("import sys; sys.path.insert(0, sys.argv.pop(1)); from sd_dashboard import server; "
                  "raise SystemExit(server.main(sys.argv[1:], serve=False))")
-        server.restart_probe = [sys.executable, "-I", "-c", probe, str(runtime.HERE), *argv]
+        server.restart_probe = ["sh", "-c", '"$1" preflight --config "$2" >/dev/null && shift 2 && exec "$@"', "sh",
+                                str(runtime.HERE / "dashboard.sh"), str(arguments.config),
+                                sys.executable, "-I", "-c", probe, str(runtime.HERE), *argv]
     host, port = server.server_address[:2]
     print(f"sd-dashboard on http://{host}:{port}", flush=True)
     try:
