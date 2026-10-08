@@ -97,6 +97,19 @@ class ClaudeSettingsBaseline(SyntheticHome):
         [backup] = self.backups()
         self.assertEqual(json.loads(backup.read_text()), OPERATOR)
 
+    def test_a_fresh_baseline_blocks_github_issues_and_claude_mem_work_state(self):
+        """No GitHub issues, and the tracker holds work state (rv-local-sync)."""
+        self.settings.write_text("{}\n")
+        self.run_tooling("--apply")
+
+        deny = json.loads(self.settings.read_text())["permissions"]["deny"]
+        for rule in ("Bash(gh issue create:*)", "Bash(gh issue transfer:*)",
+                     "Bash(gh api *repos/*/issues --method POST*)", "Bash(gh api *repos/*/issues -X POST*)",
+                     "mcp__github__issue_write", "mcp__github__sub_issue_write",
+                     "mcp__plugin_claude-mem_mcp-search__work_state_write",
+                     "mcp__plugin_claude-mem_mcp-search__work_state_read"):
+            self.assertIn(rule, deny)
+
     def test_a_second_apply_changes_nothing(self):
         self.run_tooling("--apply")
         after_first = self.settings.read_bytes()

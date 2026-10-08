@@ -35,6 +35,17 @@ SECRET_READ_DENY = [
     "Read(~/.aws/credentials)",
     "Read(~/.config/gh/hosts.yml)",
 ]
+#: Work is tracked in sd, not GitHub issues or claude-mem work state.
+TOOL_DENY = [
+    "Bash(gh issue create:*)",
+    "Bash(gh issue transfer:*)",
+    "Bash(gh api *repos/*/issues --method POST*)",
+    "Bash(gh api *repos/*/issues -X POST*)",
+    "mcp__github__issue_write",
+    "mcp__github__sub_issue_write",
+    "mcp__plugin_claude-mem_mcp-search__work_state_write",
+    "mcp__plugin_claude-mem_mcp-search__work_state_read",
+]
 SESSION_START = "sd today 2>/dev/null | head -40"
 #: The same paths for opencode's read permission, whose `*` also matches `/`.
 OPENCODE_READ_DENY = ["*" + rule[5:-1].removeprefix("//**/").removeprefix("~/").replace("**", "*").lstrip("*")
@@ -52,7 +63,7 @@ def session_start_commands(settings):
 
 def missing(settings):
     deny = settings.get("permissions", {}).get("deny", [])
-    gaps = [f"permissions.deny {rule}" for rule in SECRET_READ_DENY if rule not in deny]
+    gaps = [f"permissions.deny {rule}" for rule in SECRET_READ_DENY + TOOL_DENY if rule not in deny]
     gaps += [f"attribution.{key}" for key in ("commit", "pr") if key not in settings.get("attribution", {})]
     if "includeCoAuthoredBy" not in settings:
         gaps.append("includeCoAuthoredBy")
@@ -63,7 +74,7 @@ def missing(settings):
 
 def merge(settings):
     deny = settings.setdefault("permissions", {}).setdefault("deny", [])
-    deny += [rule for rule in SECRET_READ_DENY if rule not in deny]
+    deny += [rule for rule in SECRET_READ_DENY + TOOL_DENY if rule not in deny]
     attribution = settings.setdefault("attribution", {})
     attribution.setdefault("commit", "")
     attribution.setdefault("pr", "")
