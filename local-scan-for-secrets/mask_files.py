@@ -13,13 +13,15 @@ BEGIN..END block, not just the header line.
 
 Every mask is as long as the bytes it replaces: `<masked:$NAME>` or
 `<masked:pattern>`, padded with `*`, or all `*` when the match is shorter than
-the label (sd:3042). The file length never changes, so mask writes only the
-changed blocks in place, on the same inode, and never truncates. A session
-that appends while mask runs, through any descriptor, keeps every byte: its
-writes land past the end mask read, which mask never touches. Before each
-block is written it is read again; a block that changed since the first read
-stops the file as FAILED. docs/work/2026-10-08-mask-rewrite/design.md has the
-failure table.
+the label (sd:3042). The file length never changes, so mask writes each match
+in place with one `pwrite` of its own span, on the same inode, and never
+truncates. A session that appends while mask runs, through any descriptor,
+keeps every byte: its writes land past the end mask read, which mask never
+touches. Each span is read again just before its write. A span that changed,
+or a failed or short write, stops the file, and mask prints the offset and
+length of every match not yet fully written, because a half-masked value no
+longer matches and the next run cannot find it. A failed fsync lists them
+all. docs/work/2026-10-08-mask-rewrite/design.md has the failure table.
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ PEM = re.compile(
     rb"(?:[\s\S]{0,10000}?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----)?"
 )
 MARK = b"<masked:pattern>"
-BLOCK = 4096
 
 
 class WriteFailed(Exception):
@@ -72,30 +73,36 @@ def fit(label: bytes, n: int) -> bytes:
     return label + b"*" * (n - len(label)) if n >= len(label) else b"*" * n
 
 
-def masked(data: bytes, pairs, pats) -> tuple[bytes, int, int]:
-    """Return the masked bytes, as long as `data`, the your-key count and the pattern count."""
-    new, count = data, 0
+def masked(data: bytes, pairs, pats) -> tuple[bytes, int, int, list[tuple[int, int]]]:
+    """Return the masked bytes, as long as `data`, the your-key count, the
+    pattern count, and the sorted spans that changed, overlaps merged."""
+    new, count, spans = data, 0, []
     for name, val in pairs:
-        c = new.count(val)
-        if c:
-            new = new.replace(val, fit(b"<masked:$" + name.encode() + b">", len(val)))
-            count += c
+        if not val:
+            continue
+        label = fit(b"<masked:$" + name.encode() + b">", len(val))
+        found = [m.span() for m in re.finditer(re.escape(val), new)]
+        if found:
+            new = new.replace(val, label)
+            count += len(found)
+            spans += found
     pcount = 0
     for pat in pats:
-        new, n = pat.subn(lambda m: fit(MARK, len(m.group(0))), new)
-        pcount += n
-    return new, count, pcount
-
-
-def pwrite_all(fd: int, data: bytes, offset: int) -> None:
-    view = memoryview(data)
-    while view:
-        n = os.pwrite(fd, view, offset)
-        view, offset = view[n:], offset + n
+        found = [m.span() for m in pat.finditer(new)]
+        new = pat.sub(lambda m: fit(MARK, len(m.group(0))), new)
+        pcount += len(found)
+        spans += found
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        elif end > start:
+            merged.append((start, end))
+    return new, count, pcount, merged
 
 
 def mask_file(path: str, pairs, pats, apply: bool) -> Result:
-    """Mask one file in place, block by block, without changing its length."""
+    """Mask one file in place, one pwrite per match span, without changing its length."""
     try:
         fd = os.open(path, os.O_RDWR if apply else os.O_RDONLY)
         writable = True
@@ -105,28 +112,30 @@ def mask_file(path: str, pairs, pats, apply: bool) -> Result:
         fd, writable = os.open(path, os.O_RDONLY), False
     with os.fdopen(fd, "rb") as f:
         data = f.read()
-        new, count, pcount = masked(data, pairs, pats)
+        new, count, pcount, spans = masked(data, pairs, pats)
         if not (count or pcount) or not apply:
             return Result(count, pcount)
-        left = "%d match(es) found" % (count + pcount)
         if not writable:
-            raise WriteFailed("%s: not writable; %s, none masked" % (path, left))
-        written = 0
+            raise WriteFailed("%s: not writable; %d match(es) found, none masked" % (path, count + pcount))
+
+        def stop(reason: str, left: list[tuple[int, int]]) -> WriteFailed:
+            lines = ["    offset %d length %d" % (start, end - start) for start, end in left]
+            return WriteFailed("%s: %s; %d match span(s) not fully masked (a second run cannot find a"
+                               " half-masked value; rotate its key):\n%s" % (path, reason, len(left), "\n".join(lines)))
+
+        for i, (start, end) in enumerate(spans):
+            try:
+                if os.pread(fd, end - start, start) != data[start:end]:
+                    raise stop("changed while it was masked", spans[i:])
+                n = os.pwrite(fd, new[start:end], start)
+            except OSError as e:
+                raise stop(str(e), spans[i:]) from e
+            if n != end - start:
+                raise stop("short write, %d of %d bytes" % (n, end - start), spans[i:])
         try:
-            for start in range(0, len(data), BLOCK):
-                old = data[start:start + BLOCK]
-                block = new[start:start + BLOCK]
-                if old == block:
-                    continue
-                if os.pread(fd, len(old), start) != old:
-                    raise WriteFailed("%s: changed while it was masked; %s, %d block(s) masked before it" % (
-                        path, left, written))
-                pwrite_all(fd, block, start)
-                written += 1
             os.fsync(fd)
         except OSError as e:
-            raise WriteFailed("%s: %s; %s, %d block(s) masked before the error; run mask again" % (
-                path, e, left, written)) from e
+            raise stop("fsync: %s, nothing is known to be on disk" % e, spans) from e
     return Result(count, pcount)
 
 

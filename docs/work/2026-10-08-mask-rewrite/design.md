@@ -12,14 +12,17 @@ The problem and requirements are in `prd.md`.
 ## Shape
 
 1. Open the file read-write (read-only for a dry run) and read it.
-2. Mask each match with a label of the same length: `<masked:$NAME>` or `<masked:pattern>`, padded with `*`, or all `*` when the match is shorter than the label.
+2. Mask each match with a label of the same length: `<masked:$NAME>` or `<masked:pattern>`, padded with `*`, or all `*` when the match is shorter than the label. Record each match's span; merge spans that overlap.
 3. No match, or a dry run: stop. A match in a file that did not open to write: FAILED.
-4. For each 4 KiB block whose masked bytes differ: read the block again; if it differs from the first read, FAILED; else `pwrite` the masked block at its offset.
+4. For each span, in order: `pread` it again; if it differs from the first read, stop. Then write it with one `pwrite` of exactly that span.
 5. fsync the file.
+
+On any stop in steps 4 and 5, mask prints FAILED with the file, the reason, and the offset and length of every span not yet fully written, then exits 1.
+A half-masked value no longer matches, so a second run cannot find it; the list is the only record, and the operator rotates that key.
 
 The length never changes, so mask never truncates and never writes past the end it read.
 An appender, `O_APPEND` or not, writes past that end, so no append is lost at any moment.
-No temp file, rename, holder probe, settle window, backup store or new flag.
+No temp file, rename, holder probe, settle window, sidecar file or new flag.
 
 ## Format change
 
@@ -37,17 +40,23 @@ Same length in place has no such gap, so the probe is gone.
 
 ## Failure table
 
+Class: a mask write fails after partial progress (review rounds: the rename, then the 4 KiB block).
+Every step that writes or decides a write, from `mask_file` in `mask_files.py`:
+
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
-| 1 open | none | file or volume not writable | FAILED only with a match, file as it was | `test_an_unwritable_file_fails_only_when_it_holds_a_match` |
-| 2 mask | none | value shorter or longer than its label | label cut to `*` or padded with `*` | `test_a_value_shorter_than_its_label_masks_to_stars`, `test_a_value_longer_than_its_label_keeps_the_label` |
-| 4 write | some blocks masked | a writer appends during the mask | none needed: appends land past the end mask read | `test_a_session_that_opens_the_file_mid_mask_keeps_every_record`, `test_a_live_appender_process_keeps_every_record` |
-| 4 write | some blocks masked | another program rewrote a block since the read | stop the file as FAILED; that block and later ones stay as the other program left them | `test_a_block_rewritten_by_another_program_stops_the_file` |
-| 4 write, 5 fsync | some blocks masked | EIO, or ENOSPC on a copy-on-write volume | FAILED with the count of masked blocks; length unchanged; run mask again | `test_a_failed_write_or_sync_fails_the_file_and_keeps_its_length` |
-| all | file masked | sound run | length, inode and mode kept; hard links and symlink targets see the mask; a dry run writes nothing | `test_a_mask_keeps_the_length_the_inode_and_the_mode`, `test_a_match_that_spans_blocks_is_masked_whole`, `test_a_hard_link_sees_the_mask`, `test_a_symlink_masks_its_target_and_stays_a_link`, `test_a_dry_run_writes_nothing` |
+| 1 open read-write | none | file or volume not writable | FAILED only with a match; nothing written | `test_an_unwritable_file_fails_only_when_it_holds_a_match` |
+| 2 mask | none | value shorter or longer than its label | all `*`, or the label padded with `*` | `test_a_value_shorter_than_its_label_masks_to_stars`, `test_a_value_longer_than_its_label_keeps_the_label` |
+| 2 spans | none | a match crosses a 4 KiB boundary, or two matches overlap | one span, one `pwrite` | `test_a_token_across_a_4k_boundary_is_written_by_one_pwrite`, `test_overlapping_matches_are_one_span_and_one_pwrite` |
+| 4 re-read | earlier spans written | the span changed since the read, or `pread` fails | stop; list this span and every later one | `test_a_span_changed_or_unreadable_before_its_write_stops_the_file` |
+| 4 pwrite | earlier spans written; this one unknown | `pwrite` raises (EIO, ENOSPC on copy-on-write) | stop; list this span and every later one | `test_a_failed_pwrite_lists_every_span_not_yet_written` |
+| 4 pwrite | earlier spans written; this one half | short write | stop; list this span and every later one | `test_a_short_pwrite_lists_the_half_written_span` |
+| 5 fsync | every span written, none known on disk | fsync fails | list every span | `test_a_failed_fsync_lists_every_span` |
+| 4, 5 | appended bytes past the end read | a writer appends during the mask | none needed: mask never writes there | `test_a_session_that_opens_the_file_mid_mask_keeps_every_record`, `test_a_live_appender_process_keeps_every_record` |
+| all | file masked | sound run | length, inode and mode kept; hard links and symlink targets see the mask; a dry run writes nothing | `test_a_mask_keeps_the_length_the_inode_and_the_mode`, `test_a_hard_link_sees_the_mask`, `test_a_symlink_masks_its_target_and_stays_a_link`, `test_a_dry_run_writes_nothing` |
 
 ## Residual risk
 
-1. A program that rewrites the file in place between the re-read of a block and its write loses to mask's write for that block. The window is two system calls wide. The README asks the operator to quit vim and open shells first.
-2. A `pwrite` cut short inside one block leaves part of a match in clear. The run reports FAILED; the next run cannot see a partial value, so rotate that key.
+1. A program that rewrites the file in place between the re-read of a span and its write loses that span to mask's write. The window is two system calls wide. The README asks the operator to quit vim and open shells first.
+2. A failed or short `pwrite` can leave part of a match in clear. The FAILED list names its offset and length; the next run cannot find it, so rotate that key.
 3. A match whose length is shorter than its label no longer names its key.

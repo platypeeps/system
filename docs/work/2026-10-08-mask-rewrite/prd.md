@@ -20,7 +20,7 @@ The settle window (`S4S_MASK_SETTLE_MIN`) shrank blocker 3 but did not close it.
 
 1. A byte a writer appends while `mask` runs is kept, through any descriptor, opened at any time.
 2. The file length and inode never change; mask never truncates.
-3. A failed write or sync says how far it got, and a second run finishes the mask.
+3. A failed write or sync names the offset and length of every match not yet fully masked.
 4. No settle window, holder probe, backup store or new flag.
 
 The failure table in `design.md` maps each requirement to a test.

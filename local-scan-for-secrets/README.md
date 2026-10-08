@@ -105,13 +105,14 @@ Every mask is as long as the bytes it replaces (sd:3042). A key value
 becomes `<masked:$VARNAME>` padded with `*` to the value's length, and a
 pattern match becomes `<masked:pattern>` padded the same way. A match shorter
 than its label becomes all `*`, so a 6-byte value masks to `******`. The file
-length never changes, so `mask --apply` writes only the changed 4 KiB blocks,
-in place, and never truncates. A session that appends while mask runs keeps
-every line, because its bytes land past the end mask read. Before each block
-is written, mask reads it again; a block another program rewrote since the
-first read stops that file as `FAILED <path>`, exit 1, with no further write.
-A write or fsync error also prints `FAILED`, says how many blocks were
-masked first, and asks for another run. A file that will not open to write
+length never changes, so `mask --apply` writes each match in place with one
+`pwrite` of its own span, and never truncates. A session that appends while
+mask runs keeps every line, because its bytes land past the end mask read.
+Before each span is written, mask reads it again. A span another program
+rewrote, or a failed or short write, stops that file as `FAILED <path>`
+with exit 1. The lines under it give the offset and length of every match not yet fully
+masked. A half-masked value no longer matches, so another run cannot find
+it: rotate that key. A failed fsync lists every match. A file that will not open to write
 fails when it holds a match and passes when it holds none. The rewrite is in `mask_files.py`.
 
 With no key-like export, `mask` still masks the known patterns and says so on

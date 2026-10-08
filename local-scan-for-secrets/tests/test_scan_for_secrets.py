@@ -401,13 +401,6 @@ class MaskRewrite(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(path.read_bytes(), b"x <masked:$K>" + b"*" * 9 + b" y\n")
 
-    def test_a_match_that_spans_blocks_is_masked_whole(self):
-        path = self.root / "big.jsonl"
-        head = b"x" * (self.mod.BLOCK - 10)
-        path.write_bytes(head + self.TOKEN.encode() + b"\n")
-        self.mod.mask_file(str(path), [], self.pats, True)
-        self.assertEqual(path.read_bytes(), head + self.MASKED.encode() + b"\n")
-
     # Row 2: a writer appends while mask runs (the review's reproduction).
     def test_a_session_that_opens_the_file_mid_mask_keeps_every_record(self):
         path = self.log("session.jsonl")
@@ -450,37 +443,110 @@ class MaskRewrite(unittest.TestCase):
         self.assertGreater(passes, 1)
         self.assertEqual(path.read_text().splitlines(), [record % (n, self.MASKED) for n in range(1, 2002)])
 
-    # Row 3: a block changed between the read and its write.
-    def test_a_block_rewritten_by_another_program_stops_the_file(self):
-        path = self.log("history")
-        rewritten = b"y" * len(path.read_bytes())
-        real_pread = os.pread
+    # Write rows: one pwrite per match span; on any failure, list every span
+    # not yet fully written, because a second run cannot find a half-masked value.
+    def three_tokens(self) -> tuple[Path, list[str]]:
+        path = self.root / "three.jsonl"
+        lines = ['{"line": %d, "text": "token %s"}' % (n, self.TOKEN) for n in (1, 2, 3)]
+        path.write_bytes(("\n".join(lines) + "\n").encode())
+        data = path.read_bytes()
+        offsets, at = [], 0
+        for _ in lines:
+            at = data.index(self.TOKEN.encode(), at)
+            offsets.append("    offset %d length %d" % (at, len(self.TOKEN)))
+            at += 1
+        return path, offsets
 
-        def rewrite_first(fd, n, offset):
-            path.write_bytes(rewritten)
-            return real_pread(fd, n, offset)
+    def fail_on_second(self, name, action):
+        real, calls = getattr(os, name), []
 
-        with mock.patch.object(self.mod.os, "pread", rewrite_first):
-            code, err = self.main_in_process(path)
-        self.assertEqual(code, 1, err)
-        self.assertIn("changed while it was masked", err)
-        self.assertEqual(path.read_bytes(), rewritten)
+        def wrapped(*args):
+            calls.append(args)
+            if len(calls) == 2:
+                return action(real, *args)
+            return real(*args)
 
-    # Row 4: the write or the fsync fails (ENOSPC on a copy-on-write volume, EIO).
-    def test_a_failed_write_or_sync_fails_the_file_and_keeps_its_length(self):
-        def eio(*_a):
+        return mock.patch.object(self.mod.os, name, wrapped), calls
+
+    def test_a_token_across_a_4k_boundary_is_written_by_one_pwrite(self):
+        path = self.root / "big.jsonl"
+        head = b"x" * (4096 - 10)
+        path.write_bytes(head + self.TOKEN.encode() + b"\n")
+        patch, calls = self.fail_on_second("pwrite", lambda real, *a: real(*a))
+        with patch:
+            self.mod.mask_file(str(path), [], self.pats, True)
+        self.assertEqual([(len(bytes(data)), offset) for _fd, data, offset in calls], [(len(self.TOKEN), len(head))])
+        self.assertEqual(path.read_bytes(), head + self.MASKED.encode() + b"\n")
+
+    def test_overlapping_matches_are_one_span_and_one_pwrite(self):
+        path = self.root / "history"
+        path.write_bytes(b"secret=abcdef12 x\n")
+        pats = self.mod.parse_patterns("secret=[^ ]+")
+        patch, calls = self.fail_on_second("pwrite", lambda real, *a: real(*a))
+        with patch:
+            self.mod.mask_file(str(path), [("K", b"abcdef12")], pats, True)
+        self.assertEqual([(len(bytes(data)), offset) for _fd, data, offset in calls], [(15, 0)])
+        self.assertEqual(path.read_bytes(), b"*" * 15 + b" x\n")
+
+    def test_a_failed_pwrite_lists_every_span_not_yet_written(self):
+        path, offsets = self.three_tokens()
+
+        def eio(_real, *_a):
             raise OSError(errno.EIO, "Input/output error")
 
-        for name in ("pwrite", "fsync"):
-            with self.subTest(name):
-                path = self.log("old.jsonl")
-                size = path.stat().st_size
-                with mock.patch.object(self.mod.os, name, eio):
+        patch, _calls = self.fail_on_second("pwrite", eio)
+        with patch:
+            code, err = self.main_in_process(path)
+        self.assertEqual(code, 1, err)
+        self.assertIn("2 match span(s) not fully masked", err)
+        self.assertEqual([line for line in err.splitlines() if line.startswith("    offset")], offsets[1:])
+        self.assertEqual(path.read_bytes().count(self.MASKED.encode()), 1)
+
+    def test_a_short_pwrite_lists_the_half_written_span(self):
+        path, offsets = self.three_tokens()
+
+        def half(real, fd, data, offset):
+            return real(fd, bytes(data)[: len(data) // 2], offset)
+
+        patch, _calls = self.fail_on_second("pwrite", half)
+        with patch:
+            code, err = self.main_in_process(path)
+        self.assertEqual(code, 1, err)
+        self.assertIn("short write, 20 of 40 bytes", err)
+        self.assertEqual([line for line in err.splitlines() if line.startswith("    offset")], offsets[1:])
+
+    def test_a_span_changed_or_unreadable_before_its_write_stops_the_file(self):
+        def rewrite(real, fd, n, offset):
+            os.pwrite(fd, b"y" * n, offset)
+            return real(fd, n, offset)
+
+        def eio(_real, *_a):
+            raise OSError(errno.EIO, "Input/output error")
+
+        for label, action, reason in (("rewritten", rewrite, "changed while it was masked"),
+                                      ("unreadable", eio, "Input/output error")):
+            with self.subTest(label):
+                path, offsets = self.three_tokens()
+                patch, _calls = self.fail_on_second("pread", action)
+                with patch:
                     code, err = self.main_in_process(path)
                 self.assertEqual(code, 1, err)
-                self.assertIn("FAILED", err)
-                self.assertIn("run mask again", err)
-                self.assertEqual(path.stat().st_size, size)
+                self.assertIn(reason, err)
+                self.assertEqual([line for line in err.splitlines() if line.startswith("    offset")], offsets[1:])
+
+    def test_a_failed_fsync_lists_every_span(self):
+        path, offsets = self.three_tokens()
+        size = path.stat().st_size
+
+        def eio(_fd):
+            raise OSError(errno.EIO, "Input/output error")
+
+        with mock.patch.object(self.mod.os, "fsync", eio):
+            code, err = self.main_in_process(path)
+        self.assertEqual(code, 1, err)
+        self.assertIn("nothing is known to be on disk", err)
+        self.assertEqual([line for line in err.splitlines() if line.startswith("    offset")], offsets)
+        self.assertEqual(path.stat().st_size, size)
 
     # Row 5: the file will not open to write.
     def test_an_unwritable_file_fails_only_when_it_holds_a_match(self):
