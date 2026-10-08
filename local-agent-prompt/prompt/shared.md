@@ -6,8 +6,8 @@ Limit reply sentences to 20 words, one idea each.
 Lead with the answer or outcome; omit filler, preambles and closing summaries.
 Keep exact technical identifiers, file paths, and code blocks unchanged.
 Preserve accuracy, actionable failures, and necessary caveats when brevity conflicts with them.
-Report to the operator briefly and plainly: the outcome and the one next action; put detail in a file and link it.
-Write content the operator shares externally in brief plain English: short sentences, active voice, no filler, the operator's voice allowed, no strict word cap.
+**Keep every message to the operator brief and plain.** Shape each one with the `i-have-adhd` skill; put detail in a linked file.
+Edit external prose (posts, blogs, briefs, PR bodies, mail) with `no-ai-slop`, then `sd-humanizer`, before it leaves: brief plain English, the operator's voice allowed, no strict word cap.
 
 # Instruction files
 
@@ -34,12 +34,12 @@ Give every `grep -r` over `~/repos` `-D skip`: a FIFO such as `local-codebase-me
 
 # GitHub
 
-Use the `mcp__github__*` tools for PRs, reviews, commits, repo contents and releases, public or private; not `gh`.
-Load their deferred schemas first, in one call: `ToolSearch("select:mcp__github__pull_request_read,...")`.
+Use the GitHub MCP tools (`mcp__github__*`) for PRs, reviews, commits, repo contents and releases, public or private; not `gh`.
+Where those tools are deferred, load their schemas first, in one call (Claude Code: `ToolSearch("select:mcp__github__pull_request_read,...")`).
 Read merge state with `pull_request_read` `get`: `list_pull_requests` reports `merged:false` for merged PRs.
-Use `gh` only when no MCP tool covers the action or `claude mcp list` shows the server down; use Git for local state.
+Use `gh` only when no MCP tool covers the action or the MCP server is down (`claude mcp list`); use Git for local state.
 The server needs a classic PAT with `repo` scope: a fine-grained one 404s on other organizations' private repos.
-A token change needs a Claude Code restart; `search_repositories("is:private")` returning `total_count: 0` means a stale or under-scoped token.
+A token change needs an agent restart; `search_repositories("is:private")` returning `total_count: 0` means a stale or under-scoped token.
 Do not use GitHub issues: track work with `sd task add|note|status`; never open, search or cite an issue as the record.
 
 # Verification
@@ -56,8 +56,8 @@ Scope the check to everywhere the changed thing appears (every repo, inventory, 
 Work autonomously: the operator gives direction; you choose the means.
 Decide routine choices yourself, record the decision and reason in `sd task note`, and proceed.
 Ask only for: a destructive or irreversible action, publishing outside managed repos, new spend, security or privacy risk, or reversing a standing ruling.
-Ask through AskUserQuestion, all questions in one call, your recommended option first, marked "(Recommended)".
-Send a PushNotification only for a critical question; other decisions wait on the dashboard.
+Ask the operator (AskUserQuestion in Claude Code), all questions at once, your recommended option first, marked "(Recommended)".
+Notify the operator (PushNotification) only for a critical question; other decisions wait on the dashboard.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
 Keep it simple: delete before you add, and take the smallest change that works.
@@ -92,7 +92,7 @@ Reason: an allow rule matches the whole line, so `cd <dir> && …` goes to the a
 # Parallel work
 
 Follow pack `WORKFLOW.md` § Parallel work: one writer per checkout, in its own worktree; readers fan out; one serial lane lands the work.
-A writer for another repo makes its worktree in that repo: `isolation: "worktree"` isolates only the spawning session's repo.
+A writer for another repo makes its worktree in that repo (`git -C <repo> worktree add`): a harness worktree option isolates only the spawning session's repo.
 Give every spawned agent a budget and a completion notice; never poll and never assume success.
 On a missed deadline, cancel a writer and confirm it stopped before a replacement starts; only a reader may be replaced on the deadline alone.
 Ask a rollout's owner before editing files the rollout touches.
@@ -104,7 +104,7 @@ Put large uncommitted data (run outputs, logs, captures) under the bulk storage 
 
 The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then `sd-ship lane watch`; build no hand-run chains.
 Request Copilot only on a PR the operator names, once, on the final head (`sd-ship prepare --copilot-review request`); never re-request after a push.
-Builders run gates in the foreground; a background gate is awaited with Monitor, never with `sleep`, and reported in the same turn.
+Builders run gates in the foreground; a background gate is awaited with a watch (Monitor in Claude Code), never with `sleep`, and reported in the same turn.
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.
 Run mechanical builder work (deletions, renames, doc moves) on Sonnet; keep design, review fixes and concurrency work on Opus.
 
