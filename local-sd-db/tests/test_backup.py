@@ -53,6 +53,12 @@ class BackupCase(unittest.TestCase):
         initialise(home=self.home)
         self.database = self.state / "sd.db"
 
+    def killed(self, script, *args):
+        """Run a restore `script` that kills itself mid-run (sd:3059). A killed restore skips the `finally` that
+        removes its `sd-restore-` stage, so the child's `TMPDIR` is this test's folder, which cleanup removes."""
+        return subprocess.run([sys.executable, "-c", script, *map(str, args)], capture_output=True, text=True,
+                              check=False, env={**os.environ, "TMPDIR": self.tmp.name})
+
     def open(self, **kwargs):
         connection = connect(home=self.home, **kwargs)
         self.addCleanup(connection.close)
@@ -327,8 +333,7 @@ def interrupted(source, destination):
 runner_exec_backup.os.link = interrupted
 restore(sys.argv[1], home=sys.argv[2])
 """
-        result = subprocess.run([sys.executable, "-c", script, str(snapshot.directory), str(other)],
-            capture_output=True, text=True, check=False)
+        result = self.killed(script, snapshot.directory, other)
         self.assertEqual(result.returncode, 77, result.stderr)
         restored_log = other / ".local/share/sd/executions" / Path(value["output_path"]).name
         self.assertEqual(restored_log.read_bytes(), Path(value["output_path"]).read_bytes())
@@ -519,8 +524,7 @@ def interrupt(path, data):
 backup._write_recovery_record = interrupt
 backup.restore(sys.argv[1], home=sys.argv[2])
 """
-        result = subprocess.run([sys.executable, "-c", script, str(snapshot.directory), str(other)],
-                                capture_output=True, text=True, check=False)
+        result = self.killed(script, snapshot.directory, other)
         self.assertEqual(result.returncode, 79, result.stderr)
         state = other / ".local/share/sd"
         self.assertTrue((state / "publication-restore-intent.json").is_file())
@@ -629,8 +633,7 @@ def interrupt(source, target):
 backup.os.link = interrupt
 backup.restore(sys.argv[1], home=sys.argv[2])
 """
-        result = subprocess.run([sys.executable, "-c", script, str(snapshot.directory), str(other), when],
-                                capture_output=True, text=True, check=False)
+        result = self.killed(script, snapshot.directory, other, when)
         self.assertEqual(result.returncode, 77 if when == "before" else 78, result.stderr)
         return other / ".local/share/sd"
 
@@ -645,6 +648,16 @@ backup.restore(sys.argv[1], home=sys.argv[2])
         self.assertEqual(self.links(self.state), ({"c" * 32 + ".json": 1, "d" * 32 + ".json": 1}, []))
         material = next((self.state / "runner-recovery-evidence").glob("restore-*/runner-journal"))
         self.assertEqual(journal.validate_path(material), journal.records(self.database))
+
+    def test_a_killed_restore_leaves_nothing_in_the_outer_temp_dir(self):
+        """sd:3059: a restore killed mid-run never reaches the `finally` that removes its `sd-restore-` stage."""
+        self.run_record()
+        snapshot = run(home=self.home)
+        outer = Path(self.tmp.name) / "outer-tmp"
+        outer.mkdir()
+        with mock.patch.dict(os.environ, {"TMPDIR": str(outer)}):
+            self.interrupted_restore(snapshot, Path(self.tmp.name) / "killed-home", "before")
+        self.assertEqual(sorted(path.name for path in outer.iterdir()), [])
 
     def test_crash_before_the_link_resumes_with_one_link_and_no_install_copy(self):
         from sd_db import runner_journal as journal
