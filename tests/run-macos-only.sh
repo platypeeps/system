@@ -44,7 +44,7 @@ logs="$(mktemp -d "${TMPDIR:-/tmp}/run-macos-only.XXXXXX")"
 # As the preflight does: the ship lifecycle runs the pack's sd-ship, which imports an
 # installed sd_db, not source on PYTHONPATH. Suites run under this venv.
 echo "== installing local-sd-db into a throwaway venv"
-python3 -m venv --copies "$logs/venv"
+python3 -m venv "$logs/venv"  # no --copies: see tests/ci-native.sh
 "$logs/venv/bin/python" -m pip install -q --no-index "$ROOT/local-sd-db" > "$logs/pip.log" 2>&1 || {
   cat "$logs/pip.log" >&2
   echo "run-macos-only.sh: could not install local-sd-db" >&2

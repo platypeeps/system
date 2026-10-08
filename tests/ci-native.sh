@@ -201,7 +201,9 @@ if [ -n "$unwired" ]; then
   exit 1
 fi
 
-python3 -m venv --copies "$CI_WORK_ROOT/venv"
+# No --copies: a copied uv-managed python cannot find its libpython, and
+# check.sh takes the first python3.14 on the caller's PATH.
+python3 -m venv "$CI_WORK_ROOT/venv"
 export PYTHON="$CI_WORK_ROOT/venv/bin/python"
 "$PYTHON" -m pip install --no-index ./local-sd-db
 # Ship acceptance needs an installed copy, not source on PYTHONPATH.
