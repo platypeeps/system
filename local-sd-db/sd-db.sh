@@ -147,8 +147,8 @@ sd-db.sh — the one database, and the fixture harness both faces test with.
 
 Usage: sd-db.sh <command>
 
-  init        Create ~/.local/share/sd/sd.db, bring it to the current schema
-              version, and seed provider and bill from providers.yaml.
+  init        Create ~/.local/share/sd/sd.db and bring it to the current
+              schema version.
   migrate     Apply every migration the database has not seen. Run it with
               the dashboard and the runner stopped, after `backup` (which
               copies a database it cannot yet write). Nothing migrates on

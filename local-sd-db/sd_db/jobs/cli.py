@@ -31,9 +31,6 @@ from ..backup import restore as restore_snapshot
 from ..database import connect, default_path, schema_version, tables
 from ..errors import SdDbError
 from ..migrate import initialise, migrate
-from ..registry import ensure_seeded
-from ..registry import read as read_registry
-from ..registry import registry_path
 from ..repos import absolute_under_home
 from ..repos import add as add_repo
 from ..repos import registered
@@ -56,40 +53,12 @@ def _home() -> Path:
     return Path(os.environ.get("HOME", "~")).expanduser()
 
 
-def _seed_registry(home: Path) -> str:
-    """Seed `provider` and `bill` from the file, if there is a file.
-
-    A machine with no registry yet is not an error at `init`: the file
-    arrives with the pack, and `registry.read` seeds the tables on the first
-    read through a writable connection that finds it -- a dashboard action,
-    or this verb run again. The message names that, because it used to
-    promise "on first read" while no read seeded anything.
-    """
-    path = registry_path(home)
-    if not path.exists():
-        return (
-            f"no {path.name} yet; provider and bill seed on the first read "
-            f"through a writable connection once it exists (a dashboard "
-            f"action, or `sd-db.sh init` again)"
-        )
-    connection = connect(home=home)
-    try:
-        registry = read_registry(path, connection=None)
-        written = ensure_seeded(connection, registry)
-    finally:
-        connection.close()
-    if written == 0:
-        return f"provider and bill already seeded from {path}; nothing written"
-    return f"seeded {written} row(s) from {path}"
-
-
 def command_init(_argv: list[str]) -> int:
     home = _home()
     result = initialise(home=home)
     print(f"sd-db: {result.path} at schema version {result.after}")
     if result.applied:
         print(f"sd-db: applied migration(s) {result.applied}")
-    print(f"sd-db: {_seed_registry(home)}")
     return 0
 
 

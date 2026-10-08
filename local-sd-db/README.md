@@ -152,7 +152,7 @@ backup, and the fixture harness both repositories test against.
 
 ## Using it
 
-    ./sd-db.sh init           # create ~/.local/share/sd/sd.db and seed it
+    ./sd-db.sh init           # create ~/.local/share/sd/sd.db
     ./sd-db.sh migrate        # apply migrations; nothing migrates on open
     ./sd-db.sh status         # the path, the schema version, what is unresolved
     ./sd-db.sh restore DIR    # put a dated backup directory back
