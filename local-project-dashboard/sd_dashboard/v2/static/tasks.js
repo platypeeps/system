@@ -215,7 +215,6 @@ addEventListener('DOMContentLoaded', () => {
       grp('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
       grp('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
       grp('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`)}${
-      (SKILL ? html`<div class="fgroup"><span class="label">Run with</span><div class="chips"><button type="button" class="chip" data-skill-clear aria-pressed="true" aria-label="Run without ${SKILL}">${SKILL}${ICON('x')}</button></div><span class="why">${SKILLREV ? 'Pick tasks, then Run in the bar.' : `Run is off: ${SKILLWHY}.`}</span></div>` : '')}${
       (on() ? window.shell.list.chips(activeFilters(), visible().length, tasks.length) : html`<div class="fsum">${ICON('filter')}<span>${tasks.length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
@@ -224,7 +223,6 @@ addEventListener('DOMContentLoaded', () => {
     : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? 'open only' : v;
   const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
   document.getElementById('filters').addEventListener('click', e => {
-    if (e.target.closest('[data-skill-clear]')) { SKILL = ''; SKILLREV = null; SKILLWHY = null; render(); return; }
     const c = e.target.closest('[data-f]');
     if (c) { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); L.page = 1; render(); return; }
     if (e.target.closest('[data-unfilter-all]')) { clearFilters(); return; }
@@ -272,7 +270,7 @@ addEventListener('DOMContentLoaded', () => {
     Object.values(DET.items).forEach(d => {
       const as = live(String(d.item.id)) ? o => o : o => ({ id: o.id, type: 'not listed', label: `${o.label} (no longer listed)` });
       d.notes.forEach(n => C.put(as({ id: `note:${n.id}`, type: 'note', label: `${n.kind} ${n.id} on #${d.item.id}`, note: n.id, kind: n.kind, resolved: n.resolved, item: d.item.id })));
-      d.assignments.forEach(a => C.put(as({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo, can: a.runner })));
+      d.assignments.forEach(a => C.put(as({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo, can: a.cancel })));
     });
   }
   const redrawDet = id => { staleDet(id); readDet(id, true); };
@@ -357,19 +355,6 @@ addEventListener('DOMContentLoaded', () => {
       when: o => !!T(o)?.id || 'this row has no sd id to attach a note to',
       cli: o => idOr(o, t => `sd task note ${t.id} --kind comment --body "…"`),
       run: o => { window.shell.capture(o); const r = document.querySelector('dialog.capture input[value="note"]'); if (r && !r.disabled) { r.checked = true; r.form.dispatchEvent(new Event('input')); } return 'Write the note'; } },
-    // build: sd run queues through POST /api/run (runner_controls.enqueue); Undo cancels the queued assignment it made. The
-    // copied line is `sd run --sequential <id>`: sd run needs --sequential or --parallel, as runner_screen.py writes it.
-    // build (sd:2590): picked rows run as one batch (askRun), as v1 /backlog's run selection did; ?skill= rides on both.
-    { id: 'item.run', on: 'item', label: 'Run', key: 'r', risk: 'undo', icon: 'play', bulk: true, batch: (objs, done) => askRun(objs, done),
-      // build: runner_controls.readiness, the check /api/run makes, read with the Details (review, PR #46), else the row's.
-      when: o => { const t = T(o), d = detOf(t), r = d ? d.run : t?.run; return !t?.id ? 'this row has no sd id to run' : !r ? 'run readiness was not read for this row'
-        : SKILL && !SKILLREV ? SKILLWHY : r.allowed || r.reason; },
-      cli: o => idOr(o, t => `sd run --sequential ${t.id}`),
-      run: o => { const t = T(o);
-        // The Details hold the item's assignments and its run readiness: read them again after the run and after its Undo.
-        const p = window.shell.post('/api/run', { items: [t.id], revisions: { [t.id]: t.revision }, ...withSkill() }).then(out => { redrawDet(t.id); return reread().then(() => out.assignments?.[0]); });
-        return landing(p, () => `${label(t)} queued for the runner · sd run --sequential ${t.id}`, a => unqueue(a, t.id)); },
-      undo: undoOf },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
       cli: o => idOr(o, t => `sd task delete ${t.id}`),
@@ -417,90 +402,20 @@ addEventListener('DOMContentLoaded', () => {
     NOTE_RESOLVE(o => { const item = String(o.item);
       return landing(write(item, () => `/api/notes/${o.note}/resolve`, {}).then(() => redrawDet(o.item)), () => `Resolved note ${o.note} · sd note resolve ${o.note}`); }),
     // Assignments: the same declarations as Management (commands.md § Shared declarations).
-    // build: requeue and cancel post to /api/runner/<n>/(requeue|cancel) with the assignment's queue revision.
-    { id: 'asg.requeue', on: 'assignment', label: 'Requeue', key: 'q', risk: 'undo', bulk: true, primary: o => o.status === 'blocked',
-      when: o => o.can.requeue.allowed || o.can.requeue.reason, cli: o => `sd runner requeue ${o.n}`,
-      run: o => landing(runner(o, 'requeue'), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, () => readDet(o.item, true).then(() => runner(o, 'cancel'))),
-      undo: undoOf },
+    // build (sd:3041): cancel is sd assignments cancel, POST /api/assignments/<n>/cancel with the revision the Details read
+    // (operations.assignment_state); the runner's cancel went with the runner. No verb reopens a cancelled row: confirm, no Undo.
     { id: 'asg.cancel', on: 'assignment', label: 'Cancel', key: 'x', risk: 'confirm',
-      when: o => o.can.cancel.allowed || o.can.cancel.reason, cli: o => `sd runner cancel ${o.n}`,
-      consequence: o => `Stops assignment #${o.n} in ${o.repo} and releases its lease.`,
-      run: o => landing(runner(o, 'cancel'), () => `Cancel requested · #${o.n} · sd runner cancel ${o.n}`) },
+      when: o => o.can.allowed || o.can.reason, cli: o => `sd assignments cancel ${o.n}`,
+      consequence: o => `Ends assignment #${o.n} in ${o.repo} as cancelled. The item's status is unchanged.`,
+      run: o => landing(cancelAsg(o), () => `Cancelled · #${o.n} · sd assignments cancel ${o.n}`) },
     { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: o => o.status !== 'blocked', cli: o => `sd assignments get ${o.n}`, run: o => `Assignment #${o.n} shown in Details` },
   );
-  const asgOf = o => Object.values(DET.items).flatMap(d => d.assignments).find(a => a.id === o.n);
-  // A refused write reads the Details again too: they hold the assignment revision a retry sends (review, PR #46).
-  async function runner(o, verb) {
-    const a = asgOf(o); if (!a) throw new Error(`assignment #${o.n} was not read`);
-    try { await window.shell.post(`/api/runner/${o.n}/${verb}`, { revision: a.revision }); } catch (err) { if (err.stale) redrawDet(o.item); throw err; }
+  // A refused cancel reads the Details again too: they hold the revision a retry sends.
+  async function cancelAsg(o) {
+    const a = Object.values(DET.items).flatMap(d => d.assignments).find(x => x.id === o.n);
+    if (!a) throw new Error(`assignment #${o.n} was not read`);
+    try { await window.shell.post(`/api/assignments/${o.n}/cancel`, { revision: a.revision }); } catch (err) { if (err.stale) redrawDet(o.item); throw err; }
     redrawDet(o.item); await reread();
-  }
-  // ---------- Run picked (build, sd:2590) ----------
-  // v1 /backlog's run selection: the picked tasks queue in one POST /api/run (runner_controls.enqueue), which queues all of
-  // them or refuses the whole selection. Sequential chains each after the one before; parallel runs independent branches.
-  // The time limit and the dollar budget are per assignment, as v1's form had them.
-  const runCli = (ids, parallel, minutes) => `sd run ${parallel ? '--parallel' : '--sequential'} --budget-minutes ${minutes} ${ids.join(' ')}`;
-  function askRun(objs, done) {
-    const ts = objs.map(o => byKey(o.id)).filter(Boolean);
-    if (!ts.length) { toast('Nothing queued: the picked tasks are no longer listed.'); return; }
-    if (ts.length > 50) { toast(`Nothing queued: the runner takes at most 50 tasks in one run; ${ts.length} are picked.`); return; }
-    put(dateDlg, html`<form method="dialog" class="date-form run-form">
-      <h2 id="date-h">Run ${plural(ts.length, 'task')}</h2>
-      <p class="why">One request queues an author assignment for each, in this order. If the runner refuses one, none is queued.</p>
-      <ol class="runlist">${ts.map(t => html`<li><span class="mono">${label(t)}</span> ${t.title}</li>`)}</ol>
-      ${SKILL ? html`<p class="why">With the skill <code>${SKILL}</code>.</p>` : ''}
-      <fieldset class="modes"><legend class="label">Run mode</legend>
-        <label><input type="radio" name="mode" value="sequential" checked> Sequential: each waits for the one before to deliver</label>
-        <label><input type="radio" name="mode" value="parallel"> Parallel: independent branches</label></fieldset>
-      <label class="label" for="run-min">Time limit per assignment (minutes)</label>
-      <input id="run-min" type="number" required min="1" max="1440" step="1" value="90">
-      <label class="label" for="run-usd">Budget per assignment (USD, optional)</label>
-      <input id="run-usd" type="number" min="0" step="0.01" value="">
-      <div class="cli"><code id="run-cli"></code></div>
-      <p class="why">sd run has no flag for the dollar budget or the skill; the dashboard sends both with the request.</p>
-      <div class="actions"><button class="btn" value="run" type="submit">Queue ${plural(ts.length, 'task')}</button><button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button></div></form>`);
-    const f = dateDlg.querySelector('form');
-    const vals = () => ({ parallel: f.querySelector('[name="mode"]:checked')?.value === 'parallel', minutes: Number(f.querySelector('#run-min').value),
-      usd: f.querySelector('#run-usd').value.trim() });
-    const show = () => { const v = vals(); f.querySelector('#run-cli').textContent = runCli(ts.map(t => t.id), v.parallel, v.minutes); };
-    f.addEventListener('input', show); show();
-    dateDlg.onclose = () => { if (dateDlg.returnValue === 'run') { done?.(); runPicked(ts, vals()); } else toast(`Nothing queued for ${plural(ts.length, 'task')}.`); };
-    dateDlg.returnValue = '';
-    dateDlg.showModal(); f.querySelector('[name="mode"]').focus();
-  }
-  function runPicked(ts, v) {
-    const ids = ts.map(t => t.id), cli = runCli(ids, v.parallel, v.minutes);
-    const body = { items: ids, revisions: Object.fromEntries(ts.map(t => [t.id, t.revision])), parallel: v.parallel, budget_minutes: v.minutes,
-      ...(v.usd !== '' ? { budget_usd: Number(v.usd) } : {}), ...withSkill() };
-    return window.shell.post('/api/run', body).then(out => { ids.forEach(staleDet); const open = byKey(selected)?.id; if (ids.includes(open)) readDet(open, true);
-      return reread().then(() => { const made = out.assignments || [];
-        toast(`Queued ${plural(ids.length, 'task')} for the runner · ${cli}`, made.length ? () => unqueueAll(made, ids) : undefined); }); },
-    err => { if (err.stale) refused(); toast(`Nothing queued: ${err.message}`); });
-  }
-  // The batch's Undo cancels what it queued, the last first, so no assignment is left waiting on one already cancelled.
-  function unqueueAll(made, ids) {
-    let done = 0, why = null;
-    return made.map((a, i) => [a, ids[i]]).reverse().reduce((p, [a, id]) => p.then(() => window.shell.post(`/api/runner/${a.id}/cancel`, { revision: a.revision })
-      .then(() => { done++; staleDet(id); }, err => { why = why || err.message; })), Promise.resolve())
-      .then(() => reread()).then(() => toast(why ? `Undo cancelled ${done} of ${made.length} · not cancelled: ${why}` : `Run undone · ${plural(done, 'assignment')} cancelled`));
-  }
-  // build (sd:2590): ?skill=<name>, from the classic Skills page's Run with agent. A run sends the skill with its catalog
-  // revision, read from /api/skills (skills_screen.document); /api/run refuses a stale one.
-  let SKILL = '', SKILLREV = null, SKILLWHY = null;
-  const withSkill = () => (SKILL ? { skill: SKILL, skill_revision: SKILLREV } : {});
-  function readSkill() {
-    const name = SKILL; if (!name) return;
-    SKILLREV = null; SKILLWHY = `the skill catalog is being read for ${name}`;
-    window.shell.getJSON('/api/skills').then(doc => { if (SKILL !== name) return; const k = (doc.skills || []).find(x => x.name === name);
-      SKILLREV = k ? k.revision : null; SKILLWHY = k ? null : `no catalog skill ${name}`; render(); },
-    err => { if (SKILL !== name) return; SKILLWHY = `the skill catalog was not read: ${err.message}`; render(); });
-  }
-  // Requeue's Undo puts the assignment back: sd runner cancel while the run is still queued (commands.md). Run's Undo
-  // cancels the assignment that run queued.
-  function unqueue(a, item) {
-    if (!a) return Promise.reject(new Error('the runner named no queued assignment'));
-    return window.shell.post(`/api/runner/${a.id}/cancel`, { revision: a.revision }).then(() => { redrawDet(item); return reread(); },
-      err => { if (err.stale) redrawDet(item); throw err; });
   }
 
   // ---------- Rendering ----------
@@ -909,14 +824,12 @@ addEventListener('DOMContentLoaded', () => {
     // A page is decimal digits, as on Documents (sd:2427).
     window.shell.list.listParams(q, L, { sorts: Object.keys(SORTS), size: LIST.size });
     if (!/^[1-9]\d*$/.test(q.get('page') || '')) seek = !!selected;
-    SKILL = (q.get('skill') || '').trim();
   }
   function writeURL() {
     const q = new URLSearchParams(); q.set('view', view);
     FKEYS.forEach(key => { if (F[key].size) q.set(key, [...F[key]].join(',')); });
     if (Q) q.set('q', Q);
     if (view === 'list') window.shell.list.listQuery(q, L, LIST);
-    if (SKILL) q.set('skill', SKILL);
     shell.url(q); // the shell keeps ?row=
   }
   document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
@@ -1009,7 +922,6 @@ addEventListener('DOMContentLoaded', () => {
       if (row && byKey(row)) selected = row;
       readFilterURL();
       setView(['list', 'board', 'matrix'].includes(q.get('view')) ? q.get('view') : 'board');
-      readSkill();
     } else { subhead(); render(); }
     attention();
   }
@@ -1028,5 +940,5 @@ addEventListener('DOMContentLoaded', () => {
   function load() { return reading.load(); }
   function reread() { return reading.reread(); }
   load();
-  suggest(['What is overdue across repos?', 'Which ready tasks can the runner take tonight?', 'Draft the reply that closes the selected task']);
+  suggest(['What is overdue across repos?', 'Which ready tasks are oldest?', 'Draft the reply that closes the selected task']);
 });

@@ -279,21 +279,28 @@ def _triage(job, cron_root):
     return tag("p", f"Triage: {found['class']}, {found['why']}. Advisory only; nothing retries it.", class_="hint")
 
 
-def _assignment(assignment, connection):
-    from sd_db import runner
-    from .runner_screen import assignment_controls
+def assignment_cancel(connection, identity: int):
+    """`sd assignments cancel` as a form, where `operations.cancel_assignment` takes it; else nothing.
 
+    The runner's cancel went with the runner (sd:3041); this one ends a queued row with no process to stop.
+    """
+    state = operations.assignment_state(connection, identity)
+    if not state["capabilities"]["cancel"]["allowed"]:
+        return ""
+    return form(f"/api/assignments/{identity}/cancel", label="Cancel assignment",
+                command=f"sd assignments cancel {identity}", revision=state["revision"], compact=True)
+
+
+def _assignment(assignment, connection):
     title = assignment["title"] or f"Assignment #{assignment['id']}"
     heading = tag("a", title, href=f"/item/{assignment['item']}") if assignment["item"] is not None else title
     return tag("article", tag("h3", heading),
         tag("p", tag("strong", assignment["status"].replace("_", " ").capitalize()),
             f" · {assignment['role']} · {assignment['provider']}"),
-        assignment_controls(runner.queue_state(connection, assignment["id"])), class_="operation-card")
+        assignment_cancel(connection, assignment["id"]), class_="operation-card")
 
 
 def _jobs(connection, backend):
-    from .runner_screen import jobs_panel
-
     backend = backend or operations.LaunchdBackend()
     root = getattr(backend, "cron_root", None)
     cron_root = Path(root) if isinstance(root, (str, Path)) else None
@@ -306,7 +313,6 @@ def _jobs(connection, backend):
     active = [assignment for assignment in assignments if assignment["status"] in ("queued", "running", "ending")]
     history = [assignment for assignment in assignments if assignment not in active]
     return join((
-        jobs_panel(connection),
         tag("p", "Job state is observed from this Mac. An accepted request is not proof that a job finished.", class_="hint"),
         tag("p", tag("a", "Refresh observations", href="/operations?area=jobs")),
         tag("section", tag("h2", "Jobs needing attention"),

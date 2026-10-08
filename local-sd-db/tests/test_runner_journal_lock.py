@@ -29,9 +29,9 @@ from sd_db.workflow import WorkflowError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-#: The one opener, and the two package trees that may take a lock.
+#: The one opener, and the package tree that may take a lock.
 OPENER = "local-sd-db/sd_db/runner_journal.py"
-PACKAGES = ("local-sd-db/sd_db", "local-sd-runner/sd_runner")
+PACKAGES = ("local-sd-db/sd_db",)
 
 
 def foreign(details):
@@ -280,7 +280,7 @@ class HardenedLock(unittest.TestCase):
             runner_journal.persist(database, record)
         self.assertEqual(list(elsewhere.iterdir()), [])
 
-    def test_every_lock_in_both_packages_goes_through_the_one_opener(self):
+    def test_every_lock_in_the_package_goes_through_the_one_opener(self):
         """Code, not prose: only the opener may reach fcntl, under any spelling.
 
         Imports, not call sites: `from fcntl import flock` and an aliased

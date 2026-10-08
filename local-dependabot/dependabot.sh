@@ -33,8 +33,7 @@ in the first place is still the agent's judgement.
 USAGE
 }
 
-# The same interpreter loop as `local-sd-plan/sd-plan.sh`, for the same
-# reason: under launchd `python3` is Xcode's 3.9, and `holds.py` is written
+# An interpreter loop: under launchd `python3` is Xcode's 3.9, and `holds.py` is written
 # against 3.11 (`str | None` in signatures, `datetime` and dataclass idioms
 # the older runtime rejects at import). Pin the provisioned interpreter the
 # pack ships, fall back to PATH for CI and machines without the pack, and

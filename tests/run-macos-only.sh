@@ -34,7 +34,7 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 
-# As local-sd-runner/runner.sh does: the ship lifecycle needs the pack.
+# The ship lifecycle needs the pack.
 pack="$HOME/repos/platypeeps/sd-ai-command-pack"
 if [ -z "${SD_ACCEPTANCE_PACK:-}" ] && [ -f "$pack/bin/sd-ship" ]; then
   SD_ACCEPTANCE_PACK="$pack"; export SD_ACCEPTANCE_PACK

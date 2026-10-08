@@ -168,7 +168,7 @@ function lamps() {
   if (DOC?.repos) set('repos', 'ok', html`<b>${REPOS.length}</b> rows · ${REPOS.filter(r => r.merge === 'auto').length} auto`);
   else set('repos', 'unknown', html`▨ not read`);
   const live = LANE ? LANE.live.length : 0;
-  if (LANE) set('lane', LANE.heartbeat.ok ? 'ok' : 'caution', html`<b>${LANE.live.filter(a => a.status === 'queued').length}</b> queued · ${LANE.live.some(a => a.status === 'running') ? 'running' : live ? 'waiting' : 'idle'}${LANE.heartbeat.ok ? '' : ' · ▲ runner'}`);
+  if (LANE) set('lane', 'ok', html`<b>${LANE.live.filter(a => a.status === 'queued').length}</b> queued · ${LANE.live.some(a => a.status === 'running') ? 'running' : live ? 'waiting' : 'idle'}`);
   else set('lane', 'unknown', html`▨ not read`);
   if (SESS) set('sessions', SESS.abandoned ? 'caution' : 'ok', html`<b>${SESS.processes.length}</b> sd-* · ${SESS.abandoned ? `▲ ${SESS.abandoned} abandoned` : 'no abandoned'}`);
   else set('sessions', 'unknown', html`▨ not read`);
@@ -466,23 +466,6 @@ function flipRepo(field, o) {
 }
 const colOf = field => field === 'runner-merge' ? 'runner_merge' : 'managed';
 const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.latest || [])].find(a => a.id === n);
-async function runner(o, verb) {
-  const a = asgOf(o.n); if (!a) throw new Error(`assignment #${o.n} was not read`);
-  const answer = await window.shell.post(`/api/runner/${o.n}/${verb}`, { revision: a.revision });
-  await reread();
-  return answer;
-}
-// build (local review of PR #50): requeue's Undo cancels the queued attempt the requeue made, with the revision the requeue
-// answered and never a later read's. Once the runner claimed it, or anything else moved it, Undo refuses and Cancel (which
-// asks first) is the way to stop it; the server refuses that revision too.
-async function unrequeue(o, answer) {
-  if (!answer || answer.status !== 'queued' || !answer.revision) throw new Error('the requeue answered no queued attempt to reverse');
-  const now = asgOf(o.n);
-  if (!now || now.status !== 'queued' || now.revision !== answer.revision)
-    throw new Error(`assignment #${o.n} is ${now ? now.status : 'not read'} now; Undo cancels only the queued attempt the requeue made, so use Cancel`);
-  await window.shell.post(`/api/runner/${o.n}/cancel`, { revision: answer.revision });
-  await reread();
-}
 
 // ---------- Commands (products/system/commands.md) ----------
 // build (sd:2485): one object per drawn row, for shell.read to put and to retire once a read stops listing it. A queue row
@@ -525,17 +508,7 @@ function registerCommands() {
       run: () => 'Copy it into a terminal in the checkout: the dashboard does not open pull requests' },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
-    // Assignments. build: requeue and cancel post the runner routes with the assignment's queue revision.
-    // Requeue's Undo is sd runner cancel while the run is still queued (commands.md).
-    { id: 'asg.requeue', on: 'assignment', label: 'Requeue', key: 'q', risk: 'undo', bulk: true, primary: o => o.status === 'blocked',
-      when: o => o.status === 'blocked' || `the assignment is ${o.status}`, cli: o => `sd runner requeue ${o.n}`,
-      run: o => landing(runner(o, 'requeue'), () => `Requeued · #${o.n}. The runner starts it on its next tick.`, answer => unrequeue(o, answer)),
-      undo: undoOf },
-    { id: 'asg.cancel', on: 'assignment', label: 'Cancel', key: 'x', risk: 'confirm',
-      when: o => ['queued', 'running'].includes(o.status) || `the assignment is ${o.status}, not queued or running`, cli: o => `sd runner cancel ${o.n}`,
-      consequence: o => `Stops assignment #${o.n} in ${o.repo} and releases its lease.`,
-      run: o => landing(runner(o, 'cancel'), () => `Cancel requested · #${o.n}`) },
-    { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: o => o.status !== 'blocked', cli: o => `sd assignments get ${o.n}`, executes: false,
+    { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd assignments get ${o.n}`, executes: false,
       run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } },
     // build: the item opens in Tasks, whose Details read it.
     { id: 'item.show', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
@@ -570,28 +543,19 @@ document.addEventListener('shell:picked', e => document.querySelectorAll('.ledge
 
 // ---------- Ship lane ----------
 const LS = { sort: 'id', dir: -1, page: 1, size: 25 }; // unpaged; page and size are the shared grammar's defaults
-// build (sd:2209): runner.sh status names the last and next archive refresh; the dashboard does not read the runner's config.
-function archiveVal() {
-  const a = DOC.archive;
-  if (!a) return html`<span class="g-unknown" aria-hidden="true">▨</span> not read: ${why('archive') || 'no reading'}`;
-  if (!a.last) return html`<span class="g-caution" aria-hidden="true">▲</span> never run${a.due ? ' · due' : ''}`;
-  return html`last <time class="rel" datetime="${a.last}"></time> · ${a.due ? html`<span class="g-caution" aria-hidden="true">▲</span> due` : html`next <time class="rel" datetime="${a.next}" data-future></time>`}`;
-}
 const asgRepo = a => (a.repo || 'no repo').replace(/^~\/repos\//, '');
 function renderLane() {
   const el = document.getElementById('view-lane');
-  if (!LANE) { put(el, unknown('The lane was not read', why('lane'), 'sd runner status')); return; }
+  if (!LANE) { put(el, unknown('The lane was not read', why('lane'), 'sd assignments list')); return; }
   const { free } = tokens();
-  const hb = LANE.heartbeat, queued = LANE.live.filter(a => a.status === 'queued'), running = LANE.live.filter(a => a.status !== 'queued');
+  const queued = LANE.live.filter(a => a.status === 'queued'), running = LANE.live.filter(a => a.status !== 'queued');
   const rows = LANE.merges.filter(m => free.every(f => (asgRepo(m) + ' ' + (m.title || '')).toLowerCase().includes(f)));
   const lease = running.filter(a => a.role === 'merge');
   put(el, html`
     <ul class="strip" aria-label="Lane state">
-      <li><span class="label">Runner</span><span class="val">${hb.ok ? html`<span class="g-ok">●</span> healthy${hb.interval_seconds ? ` · ${hb.interval_seconds} s tick` : ''}` : html`<span class="g-caution">▲</span> ${hb.reason || 'heartbeat stale'}`}</span></li>
       <li><span class="label">Queue</span><span class="val">${queued.length} queued · ${running.length} running</span></li>
       <li><span class="label">Claim</span><span class="val">${lease.length ? `${lease.length} merge running` : 'no merge running'}</span></li>
       <li><span class="label">Runner merge</span><span class="val">${REPOS.filter(r => r.merge === 'auto').length} repos auto</span></li>
-      <li><span class="label">Archive refresh</span><span class="val">${archiveVal()}</span></li>
     </ul>
     <div class="sec-head"><h2 id="queue-h">Queue <button class="help" type="button" aria-label="Help: merge lane" data-help="<b>One writer per repo.</b> A merge or serial assignment takes an exclusive lease on its repo; nothing else in that repo starts until the lease is released. The runner queues a merge only for runner_merge=auto repos, after a done author run with a reviewed head.">${I('circle-help')}</button></h2><p class="tally">assignment table · ${hhmm(READ)} UTC</p></div>
     ${LANE.live.length ? html`<table class="ledger" aria-labelledby="queue-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Assignment</th><th scope="col">Repo</th><th scope="col">Role</th><th scope="col">Since</th>${ACTH}</tr></thead>

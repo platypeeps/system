@@ -219,7 +219,7 @@ class Fixture:
         return (self.tmp / "claude-call.argv").exists()
 
 
-PROMPT_JOB = 'JOB_SCHEDULE="0 3 * * *"\nJOB_PROMPT="/sd-plan nightly"\n'
+PROMPT_JOB = 'JOB_SCHEDULE="0 3 * * *"\nJOB_PROMPT="/sd-digest nightly"\n'
 
 # A workload that SIGKILLs the runner, the shell `cron-jobs.sh exec` is. Not
 # `$PPID`: the workload's parent is the perl that enforces JOB_TIMEOUT, and the
@@ -245,7 +245,7 @@ class PromptJobEnvironmentTest(unittest.TestCase):
         result = self.fx.exec_job("nightly")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.fx.claude_env().get("SD_HANDOFF_RESTORE"), "0")
-        self.assertEqual(self.fx.claude_argv()[:2], ["-p", "/sd-plan nightly"])
+        self.assertEqual(self.fx.claude_argv()[:2], ["-p", "/sd-digest nightly"])
 
     def test_prompt_job_overrides_an_inherited_value(self):
         # REGRESSION. launchd's environment is the plist's, but a hand `run`

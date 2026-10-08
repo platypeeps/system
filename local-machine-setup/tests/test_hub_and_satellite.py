@@ -191,7 +191,6 @@ class TheSatellite(Case):
         super().setUp()
         (self.fixture.state / "profile").write_text("work\n")
         # A satellite holds no registry until the stage installs the hub's.
-        self.fixture.registry.unlink()
         self.hub_json = self.fixture.home / ".config/sd/hub.json"
         self.agents = self.fixture.home / "Library/LaunchAgents"
         self.launchctl_log = self.stub_launchd(self.fixture)
@@ -239,7 +238,6 @@ class TheSatellite(Case):
         self.addCleanup(terra.destroy)
         fixture_config.seal(self, terra.stubs)
         (terra.state / "profile").write_text("terra\n")
-        terra.registry.unlink()
         self.stub_launchd(terra)
         self.assertNotEqual(self.fixture.home, terra.home)
         for fixture in (self.fixture, terra):
@@ -269,10 +267,10 @@ class TheSatellite(Case):
 
     def test_a_loaded_hub_agent_with_no_plist_is_extra(self):
         (self.profiles / "work.satellite").write_text("hub.example.test\n")
-        runner = f"{fixture_config.LABEL_PREFIX}.sd-runner"
-        out = self.satellite("--apply", loaded=[runner])
+        agent = f"{fixture_config.LABEL_PREFIX}.sd-serve"
+        out = self.satellite("--apply", loaded=[agent])
         extra = [line for line in markers(out) if line.startswith("  EXTRA")]
-        self.assertEqual(extra, [f"  EXTRA   {runner} loaded with no plist — hub only, and this machine is "
+        self.assertEqual(extra, [f"  EXTRA   {agent} loaded with no plist — hub only, and this machine is "
                                  "a satellite; boot it out by hand"])
         self.assertLessEqual(self.launchctl_verbs(), {"print"})
 

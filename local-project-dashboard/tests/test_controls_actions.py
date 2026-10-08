@@ -10,16 +10,13 @@ from sd_db import (
     connect,
     create_assignment,
     provider_controls,
-    reads,
     registry,
     reporting,
-    runner,
     skills_catalog,
     workflow,
 )
-from sd_db.writes import add_note, create_item, set_item_fields, upsert_repo
+from sd_db.writes import add_note, create_item, upsert_repo
 from sd_dashboard import controls
-from sd_dashboard.runner_screen import item_controls as run_controls
 
 from .test_capture_screen import Fields
 from .test_workflow_actions import BrowserSession
@@ -54,7 +51,7 @@ class WorkflowControls(BrowserSession):
 
     def test_every_new_route_refuses_bad_session_before_work(self):
         before = self.snapshot()
-        for path in ("/api/run", "/api/providers/configure", "/api/bills/c/cap", "/api/skills/sd-fixture/try", "/api/items/1/prepare", "/api/runner/1/cancel", "/api/runner/1/requeue", "/api/runner/1/resume", "/api/runner/1/restore", "/api/skill-reviews/1/apply", "/api/reports/1/acknowledge", "/api/reports/acknowledge-clean"):
+        for path in ("/api/providers/configure", "/api/bills/c/cap", "/api/skills/sd-fixture/try", "/api/skill-reviews/1/apply", "/api/reports/1/acknowledge", "/api/reports/acknowledge-clean"):
             self.assertEqual(self.post(path, {}, **{"X-SD-CSRF": "0" * 64})[0], 403, path)
             self.assertEqual(self.request(path)[0], 404, path)
         self.assertEqual(before, self.snapshot())
@@ -240,59 +237,21 @@ class WorkflowControls(BrowserSession):
         self.assertNotIn(self.START_BILL_SENTENCE_HTML, page)
         self.assertEqual(re.findall(r'action="/api/bills/([^"]+)/cap"', page), ["c"])
 
-    def test_stale_batch_creates_nothing_then_parallel_cancel_and_requeue(self):
+    def test_the_stopped_runners_routes_are_gone(self):
+        """sd:3041: the runner stopped, so its run, prepare and control routes answer 404 and write nothing."""
         self.repo()
-        items = [self.item(str(n), kind="task", repo="/repos/system", branch=f"task/{n}", status="ready") for n in range(2)]
-        payload = {"items": items, "parallel": True, "revisions": {str(item): workflow.item_state(self.connection, item)["revision"] for item in items}}
-        set_item_fields(self.connection, items[1], title="new")
+        item = self.item("Ready", kind="task", repo="/repos/system", branch="task/ready", status="ready")
+        revision = workflow.item_state(self.connection, item)["revision"]
         before = self.snapshot()
-        self.assertEqual(self.post("/api/run", payload)[0], 400)
+        for path, body in (("/api/run", {"items": [item], "revisions": {str(item): revision}}),
+                           (f"/api/items/{item}/prepare", {"revision": revision, "repo": "/repos/system", "branch": "x"}),
+                           ("/api/runner/1/cancel", {"revision": "0" * 64}), ("/api/runner/1/requeue", {"revision": "0" * 64}),
+                           ("/api/runner/1/resume", {"revision": "0" * 64}),
+                           ("/api/runner/1/restore", {"revision": "0" * 64, "destination": "/tmp/x"})):
+            with self.subTest(path=path):
+                self.assertEqual(self.post(path, body)[0], 404)
         self.assertEqual(before, self.snapshot())
-        payload["revisions"] = {str(item): workflow.item_state(self.connection, item)["revision"] for item in items}
-        status, _, result = self.post("/api/run", payload)
-        self.assertEqual(status, 200); self.assertEqual(len(result["assignments"]), 2)
-        assignment = result["assignments"][0]
-        self.assertEqual(self.post(f"/api/runner/{assignment['id']}/cancel", {"revision": assignment["revision"]})[0], 200)
-        current = runner.queue_state(self.connection, assignment["id"])
-        self.assertEqual(current["status"], "cancelled")
-        self.assertEqual(self.post(f"/api/runner/{assignment['id']}/requeue", {"revision": current["revision"]})[0], 200)
-        self.assertEqual(runner.queue_state(self.connection, assignment["id"])["status"], "queued")
-
-    def prepared_followup(self):
-        """sd:809. A task prepared for a run and then reclassified keeps its
-        repository and branch, so only its kind can refuse the run."""
-        self.repo()
-        prepared = self.item("Prepared then reclassified", kind="task", repo="/repos/system", branch="task/prepared", status="planning")
-        workflow.edit_item(self.connection, prepared, {"kind": "followup"}, who="operator")
-        return prepared
-
-    def test_a_followup_with_a_repository_and_a_branch_is_not_offered_a_run(self):
-        prepared = self.prepared_followup()
-        runnable = self.item("Still a task", kind="task", repo="/repos/system", branch="task/runnable", status="planning")
-        self.assertIn('action="/api/run"', self.request(f"/item/{runnable}")[2])
-        # A followup's page has no run panel; the route's refusal is the next test's.
-        self.assertNotIn('action="/api/run"', self.request(f"/item/{prepared}")[2])
-
-    def test_the_tasks_run_post_still_queues_with_the_classic_backlog_gone(self):
-        """sd:2622 deleted v1's run selection and kept /api/run: Tasks posts it, in tasks.js's shape."""
-        self.repo()
-        items = [self.item(str(n), kind="task", repo="/repos/system", branch=f"task/{n}", status="ready") for n in range(2)]
-        self.assertEqual(self.request("/classic/backlog")[0], 404)
-        status, _, result = self.post("/api/run", {
-            "items": items, "revisions": {str(item): workflow.item_state(self.connection, item)["revision"] for item in items},
-            "parallel": True, "budget_minutes": 45})
-        self.assertEqual(status, 200, result)
-        self.assertEqual([runner.queue_state(self.connection, one["id"])["status"] for one in result["assignments"]],
-                         ["queued", "queued"])
-
-    def test_the_run_route_refuses_a_followup_with_a_repository_and_a_branch(self):
-        prepared = self.prepared_followup()
-        revision = workflow.item_state(self.connection, prepared)["revision"]
-        before = self.snapshot()
-        status, _, result = self.post("/api/run", {"items": [prepared], "revisions": {str(prepared): revision}})
-        self.assertEqual(status, 400)
-        self.assertIn(f"item {prepared} is a followup item", json.dumps(result))
-        self.assertEqual(before, self.snapshot())
+        self.assertNotIn('action="/api/run"', self.request(f"/item/{item}")[2])
 
     def test_catalog_and_new_operations_reads_do_not_write(self):
         before = self.snapshot()
@@ -309,54 +268,6 @@ class WorkflowControls(BrowserSession):
         before = self.snapshot()
         self.assertEqual(self.post("/api/skills/sd-fixture/try", {"revision": skill["revision"]})[0], 409)
         self.assertEqual(before, self.snapshot())
-
-    def test_offline_service_control_binds_revision_run_and_refuses_missing_install(self):
-        self.repo()
-        item = self.item("Owned", kind="task", repo="/repos/system", branch="main", status="ready")
-        assignment = runner.enqueue(self.connection, [item], who="operator")[0]["id"]
-        root = Path(self.tmp.name)
-        runner.claim(self.connection, assignment, owner="fixture", work_root=root / "work", retention_root=root / "retained")
-        current = runner.queue_state(self.connection, assignment)
-        calls = []
-        def backend(installation, verb, identity, **options):
-            calls.append((verb, identity, options))
-            return {"id": identity, "control": {"signalled_owned_group": True}}
-        self.listening.RequestHandlerClass.runner_backend = staticmethod(backend)
-        before = self.snapshot()
-        with patch("sd_db.runner_controls.service_installation", return_value={"database": str(self.path)}):
-            self.assertEqual(self.post(f"/api/runner/{assignment}/cancel", {"revision": "0" * 64})[0], 409)
-            self.assertEqual(calls, [])
-            status, _, result = self.post(f"/api/runner/{assignment}/cancel", {"revision": current["revision"]})
-        self.assertEqual(status, 200); self.assertTrue(result["control"]["signalled_owned_group"])
-        self.assertEqual(calls[0][2]["run"], current["run"]["id"])
-        self.assertEqual(before, self.snapshot())
-        with patch("sd_db.runner_controls.service_installation", side_effect=workflow.WorkflowError("Runner controls are unavailable until installed")):
-            status, _, result = self.post(f"/api/runner/{assignment}/cancel", {"revision": current["revision"]})
-        self.assertEqual(status, 400); self.assertIn("unavailable", result["error"])
-        self.assertEqual(len(calls), 1)
-
-    def test_resume_and_restore_bind_owned_attempt_and_new_destination(self):
-        self.repo()
-        item = self.item("Kept", kind="task", repo="/repos/system", branch="main", status="ready")
-        assignment = runner.enqueue(self.connection, [item], who="operator")[0]["id"]
-        root = Path(self.tmp.name)
-        held = runner.claim(self.connection, assignment, owner="fixture", work_root=root / "work", retention_root=root / "retained")["run"]
-        runner.begin_ending(self.connection, held["id"], outcome="blocked", detail="fixture")
-        runner.update_run(self.connection, held["id"], end_step="kept")
-        current = runner.queue_state(self.connection, assignment)
-        calls = []
-        self.listening.RequestHandlerClass.runner_backend = staticmethod(lambda installation, verb, identity, **options: calls.append((verb, options)) or {"accepted": True})
-        with patch("sd_db.runner_controls.service_installation", return_value={"database": str(self.path)}):
-            self.assertEqual(self.post(f"/api/runner/{assignment}/resume", {"revision": current["revision"]})[0], 200)
-            self.assertEqual(calls[0][0], "resume")
-            runner.update_run(self.connection, held["id"], end_step="retained", quarantine=None)
-            runner.release(self.connection, held["id"])
-            current = runner.queue_state(self.connection, assignment)
-            self.assertEqual(self.post(f"/api/runner/{assignment}/restore", {"revision": current["revision"], "destination": str(root)})[0], 400)
-            destination = str(root / "restored")
-            self.assertEqual(self.post(f"/api/runner/{assignment}/restore", {"revision": current["revision"], "destination": destination})[0], 200)
-        self.assertEqual(len(calls), 2); self.assertEqual(calls[1][1]["destination"], destination)
-        self.assertEqual(calls[1][1]["run"], held["id"])
 
     def test_usage_does_not_treat_missing_costs_as_measured_zero(self):
         item = self.item("Delivered", kind="task", status="done")
@@ -471,12 +382,7 @@ class ItemRepository(BrowserSession):
     """
 
     def details_form(self, item):
-        """The `Save details` form only.
-
-        `runner_screen.item_controls` renders a second `name="repo"` select on
-        the same page, from a *different* option set, so a whole-page parse
-        would read whichever came last and prove nothing about this field.
-        """
+        """The `Save details` form only, so a whole-page parse proves nothing about another form's field."""
         panel = str(controls.item_controls(self.connection, item))
         return re.search(rf'<form[^>]*action="/api/items/{item}"[^>]*>.*?</form>', panel).group(0)
 
@@ -498,12 +404,8 @@ class ItemRepository(BrowserSession):
         self.assertEqual([entry["attributes"]["value"] for entry in options],
                          ["", remote_less, "/repos/system"])
         self.assertEqual(options[0]["text"], "No repository")
-        # A checkout with no remote is still a checkout a task can sit in, so
-        # this set is wider than the runner's. The runner filters on `remote`
-        # because a run has to clone; belonging does not.
+        # A checkout with no remote is still a checkout a task can sit in.
         self.assertIn(remote_less, [entry["attributes"]["value"] for entry in options])
-        run_repo = Fields(str(run_controls(self.connection, reads.item_by_id(self.connection, item))))
-        self.assertNotIn(remote_less, [entry["attributes"]["value"] for entry in run_repo.options["repo"]])
 
         # Nothing is marked selected, so the browser selects the first option
         # and `dataset.initialValue` becomes "" -- an unchanged field, which
@@ -654,45 +556,6 @@ class ItemKind(BrowserSession):
         self.assertEqual(state["item"]["kind"], "personal")
         self.assertEqual((state["notes"][-1]["body"], state["notes"][-1]["session"]),
                          ("Changed kind task -> personal by dashboard", "dashboard"))
-
-
-class RunPanelKinds(BrowserSession):
-    """sd:824 (N-a) -- the run panel draws for `runner.RUNNABLE_KINDS` and no other kind.
-
-    Nothing in the panel can queue a run for another kind: `runner._item`
-    refuses it, so `readiness` reports the refusal and `Queue assignment` is
-    never rendered. What a kind that slipped into this check would still draw
-    is a "Run with an agent" heading and, for a `followup`, the run setup form
-    -- an offer over a row that can never take it. Until this test, a mutation
-    adding `followup` to the check passed every dashboard test.
-
-    The kinds come from `item.kind`'s CHECK and not from a list written here,
-    so a kind a migration adds is a kind this already covers. The CHECK is
-    read by `workflow.schema_kinds`, the library's own parser, and not by a
-    second one here: a copy assumed one spelling of the clause and answered
-    `AttributeError` on any other, where the library refuses by name (PR
-    #370 review).
-    """
-
-    def schema_kinds(self):
-        return sorted(workflow.schema_kinds(self.connection))
-
-    def panel(self, kind):
-        item = self.item(f"A {kind} item", kind=kind, repo=self.repo(), branch="work/panel")
-        return str(run_controls(self.connection, reads.item_by_id(self.connection, item)))
-
-    def test_only_the_runnable_kinds_draw_the_run_panel(self):
-        kinds = self.schema_kinds()
-        # The CHECK is the whole population, so every runnable kind is in it.
-        self.assertEqual(sorted(set(runner.RUNNABLE_KINDS)), sorted(set(runner.RUNNABLE_KINDS) & set(kinds)))
-        self.assertIn("followup", kinds)
-        for kind in kinds:
-            with self.subTest(kind=kind):
-                markup = self.panel(kind)
-                if kind in runner.RUNNABLE_KINDS:
-                    self.assertIn("Run with an agent", markup)
-                else:
-                    self.assertEqual(markup, "")
 
 
 class ItemStatusOnly(BrowserSession):

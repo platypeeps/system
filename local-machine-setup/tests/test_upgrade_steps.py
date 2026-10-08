@@ -27,11 +27,11 @@ FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
 # One formula is outdated, so upgrade-report runs the sweep. With BREW_HANG
-# set, `brew upgrade` never finishes.
+# set, `brew upgrade` never finishes; with BREW_QUIET, nothing is outdated.
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
 case "$*" in
-  "outdated --formula --quiet") echo example-formula ;;
+  "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
            [ -z "$BREW_HANG" ] || exec sleep 60 ;;
 esac
@@ -111,6 +111,36 @@ class UpgradeStepTest(unittest.TestCase):
                          ["update", "upgrade", "upgrade --cask", "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
+
+    def test_the_sweep_updates_claude_code_before_brew_cleanup(self):
+        """sd:3033: Claude Code updates in the weekly upgrade only."""
+        # The stub logs into brew's log, so one list holds the order.
+        write_exec(self.home / ".local/bin/claude", f'#!/bin/sh\necho "claude $*" >> {self.brew_log}\n')
+        result = self.run_verb("upgrade", "--apply")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.brew_calls(),
+                         ["update", "upgrade", "upgrade --cask", "claude update", "cleanup --prune=all"])
+        self.assertRegex(result.stderr, STEP.format(re.escape(str(self.home / ".local/bin/claude")) + " update", 600))
+
+    def test_a_quiet_week_still_updates_claude_code(self):
+        """sd:3033: upgrade-report returns before the sweep when nothing is
+        outdated, and Claude Code updates outside brew."""
+        write_exec(self.home / ".local/bin/claude", f'#!/bin/sh\necho "claude $*" >> {self.brew_log}\n')
+        result = self.run_verb("upgrade-report", BREW_QUIET="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing outdated", result.stdout)
+        self.assertEqual(self.brew_calls().count("claude update"), 1, self.brew_calls())
+        self.assertFalse(self.notify_log.exists())
+
+    def test_a_failed_quiet_week_claude_update_fails_the_job(self):
+        """No mail goes in a quiet week, so the exit is what reports it."""
+        write_exec(self.home / ".local/bin/claude", "#!/bin/sh\nexit 1\n")
+        result = self.run_verb("upgrade-report", BREW_QUIET="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(self.notify_log.exists())
 
     def test_each_step_has_its_own_default_bound(self):
         result = self.run_verb("upgrade", "--apply")

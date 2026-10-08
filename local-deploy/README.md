@@ -19,30 +19,27 @@ Changes under a `tests/` folder and to `*.md` files restart nothing.
 | --- | --- |
 | `local-sd-db/` | restart sd-serve |
 | `local-project-dashboard/` | restart dashboard |
-| `local-sd-runner/` | restart runner |
-| `local-sd-db/sd_db/` | report `needs sd_db install`, then restart sd-serve, dashboard and runner |
+| `local-sd-db/sd_db/` | report `needs sd_db install`, then restart sd-serve and dashboard |
 | a `*.plist` or `*.plist.template`, or `.py`/`.sh` lines that name launchd keys or the plist environment | report `needs <folder> install`; the service still restarts |
 | `local-sd-db/sd_db/schema.py` or `local-sd-db/sd_db/schema/` | report `needs migration; restart after migrate`; nothing restarts, since new code may read a schema not yet there |
 
-The install check greps changed lines, because the dashboard and the runner write their plists in code.
+The install check greps changed lines, because the dashboard writes its plist in code.
 It skips `local-deploy/`, which names those keys but writes no plist.
 A plist value computed outside those lines goes unseen.
 
-The dashboard and the runner import an installed `sd_db`, not this checkout's.
-A library change reaches them only after `local-sd-db/sd-db.sh install <venv>` for each one's interpreter.
+The dashboard imports an installed `sd_db`, not this checkout's.
+A library change reaches it only after `local-sd-db/sd-db.sh install <venv>` for its interpreter.
 
 ## How `apply` restarts each service
 
-`apply` prints the reports, then refuses with exit 1 before any restart in three cases:
+`apply` prints the reports, then refuses with exit 1 before any restart in two cases:
 
 - `lsof` cannot answer for port 8769: it is missing, or exits other than 1 with no output (its "no match").
-- The dashboard's or the runner's installed `sd_db` differs in content from the checkout's `local-sd-db/sd_db`.
+- The dashboard's installed `sd_db` differs in content from the checkout's `local-sd-db/sd_db`.
   The check runs `source:local-project-dashboard/sd_dashboard/runtime.py::_build_manifest` on both and compares them file by file.
   It does not use `_library_lag`: that compares commits, and a wheel from `sd-db.sh install` records none.
-  It runs under the interpreter the agent's plist names (`SD_DASHBOARD_PYTHON`, `SD_RUNNER_PYTHON`).
+  It runs under the interpreter the agent's plist names (`SD_DASHBOARD_PYTHON`).
   The refusal names the `sd-db.sh install <venv>` that provisions it.
-- The plan restarts the runner, and the runner's load limit refuses (`local-sd-runner/sd_runner/load.py`).
-  `runner.sh restart` uses the same module, so the limit is the core count unless `--max-load` says otherwise.
 
 Then it restarts each service:
 
@@ -50,7 +47,6 @@ Then it restarts each service:
 | --- | --- | --- |
 | sd-serve | `launchctl kickstart -k gui/<uid>/<prefix>.sd-serve` | a new listener on port 8769 within `DEPLOY_WAIT` seconds (default 30) |
 | dashboard | `launchctl kickstart -k gui/<uid>/<prefix>.sd-dashboard` | `dashboard.sh health --wait`, up to `DEPLOY_WAIT` seconds |
-| runner | `runner.sh restart`, which drains first; never a kickstart | its exit code |
 
 - The label prefix is `SYSTEM_TOOLS_LABEL_PREFIX`, default `local.system-tools`.
 - A service whose agent launchd does not hold is skipped, so a satellite skips sd-serve.
@@ -77,20 +73,20 @@ sh ~/repos/system/local-deploy/deploy.sh upgrade
    The first run has no record: give `--from SHA`, the sha the services run now. `--from` always overrides the record.
 4. An empty plan records the new sha and exits 0.
 5. A plan that needs a migration refuses. Migrate and restart by hand, then record with `upgrade --from <new sha>`.
-6. Every refusal that needs no new `sd_db` comes before the first stop: the runner's load limit and an open sd-serve session.
+6. Every refusal that needs no new `sd_db` comes before the first stop: an open sd-serve session.
 7. A `needs sd_db install` plan installs into each venv a loaded agent's plist names with a `*_PYTHON` variable.
    Before that, every loaded sd agent (`<prefix>.sd-*.plist`) whose interpreter lives in such a venv stops.
-   An agent whose plist names no interpreter runs the pack venv's, the default of all three entrypoints.
+   An agent whose plist names no interpreter runs the pack venv's, the default of both entrypoints.
    Each one imports `sd_db` lazily, so none may run while the library is replaced.
-   The runner stops with `runner.sh stop` (the restart's drain and idle checks, then `launchctl bootout`); the others with `launchctl bootout`.
+   Each stops with `launchctl bootout`.
 8. It runs `local-sd-db/sd-db.sh install <venv>` once per venv, then `apply` for the agents still loaded.
    Inside upgrade, `apply` prints no `needs sd_db install` report and no `skip` line for an agent upgrade stopped.
-9. It starts each stopped agent: sd-serve (a new listener), the dashboard (`health --wait`), the runner (`runner.sh start`).
+9. It starts each stopped agent: sd-serve (a new listener), then the dashboard (`health --wait`).
    An agent whose wait fails after its bootstrap is booted out again, so it stays stopped.
 10. A failure after the first stop leaves every stopped agent stopped, never running on a mixed library.
     It exits 1 and prints the rerun that finishes: `sh <checkout>/local-deploy/deploy.sh upgrade --from <from>`.
     The file `stopped` beside the record lists them, each label once, so the rerun installs into their venvs and starts them.
-    The rerun bootstraps only a listed agent that launchd does not hold; a held one still passes its wait, the runner `runner.sh status`.
+    The rerun bootstraps only a listed agent that launchd does not hold; a held one still passes its wait.
 11. It records the new sha only when every step passed and no session held sd-serve back.
    A `needs <folder> install` report also holds the record: install the agent, then record with `upgrade --from <new sha>`.
    After a failure the old record stays, so a rerun replays the same range; the restarts are idempotent.
@@ -111,4 +107,4 @@ The lane needs allow rules for the two `launchctl kickstart -k` labels.
 ## Tests
 
 `deploy.sh test` runs `tests/test_deploy.py`.
-It stubs `launchctl`, `lsof`, `dashboard.sh` and `runner.sh`, so it runs on Linux.
+It stubs `launchctl`, `lsof` and `dashboard.sh`, so it runs on Linux.

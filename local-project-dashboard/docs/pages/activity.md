@@ -12,7 +12,7 @@ merge carried, read from the same delivery note's `review_selection` and
 dispositions were accepted are a caution, and a merge with no review record is
 counted, not drawn. A review that never reached a merge is not recorded, and a
 review's time is its merge's. Deploys and mail have no collector; the document
-names each with its reason and the page draws it unknown, not zero. Requeue carries Undo; job retry posts the job's revision
+names each with its reason and the page draws it unknown, not zero. Job retry posts the job's revision
 and is off for exit 127, command not found (sd:2415); Show output reads the
 execution record, page by page past 64 KiB (sd:2416). The page reads through
 the shell's reader, `read.js` (sd:2489): a landed write rereads, and a failed

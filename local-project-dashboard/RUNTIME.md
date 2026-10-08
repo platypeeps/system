@@ -165,15 +165,9 @@ queue isolated runner work. They never move files or create branches in the
 operator checkout. Review proposals carry the source snapshot and actual
 reviewer identity; all latest author vendors are excluded.
 
-Tasks queues a revision-bound selection sequentially or in parallel; an item page queues its one item.
-Tasks need a registered repository and an item branch. A new branch is bound to
-the verified remote default head during preparation, then created only in the
-runner clone; changed source heads and branch collisions refuse the start. Runner cancellation, resume and restore use the installed
-`<prefix>.sd-runner` LaunchAgent definition even when its daemon is stopped.
-Only the generated argument shape, owned service files, provisioned interpreter
-and matching database are accepted. Requests bind the exact assignment revision
-and attempt UUID. Resume requires a resolved kept checkout; restore copies into
-a new destination. Neither action deletes retained work.
+The dashboard queues no runs: the runner stopped (sd:3041). A queued
+assignment is cancelled through `/api/assignments/<id>/cancel`, the route
+`sd assignments cancel` matches, bound to the assignment's revision.
 
 Operations renders one area per entry of `operations_screen.AREAS`.
 [README.md](README.md) names them, and no list here repeats that inventory.

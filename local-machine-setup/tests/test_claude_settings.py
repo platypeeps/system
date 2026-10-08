@@ -110,6 +110,20 @@ class ClaudeSettingsBaseline(SyntheticHome):
                      "mcp__plugin_claude-mem_mcp-search__work_state_read"):
             self.assertIn(rule, deny)
 
+    def test_a_fresh_baseline_turns_off_the_background_updater(self):
+        """sd:3033: Claude Code updates in the weekly upgrade only."""
+        self.settings.write_text("{}\n")
+        self.run_tooling("--apply")
+
+        self.assertEqual(json.loads(self.settings.read_text())["env"], {"DISABLE_AUTOUPDATER": "1"})
+
+    def test_an_operators_updater_setting_is_left_alone(self):
+        self.settings.write_text(json.dumps({"env": {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"}}) + "\n")
+        out = self.run_tooling("--apply")
+
+        self.assertNotIn("env.DISABLE_AUTOUPDATER", out)
+        self.assertEqual(json.loads(self.settings.read_text())["env"], {"DISABLE_AUTOUPDATER": "0", "OTHER": "x"})
+
     def test_a_second_apply_changes_nothing(self):
         self.run_tooling("--apply")
         after_first = self.settings.read_bytes()
@@ -136,6 +150,24 @@ OPENCODE = """{
   "agent": {"build": {"permission": {"edit": "ask"}}},
 }
 """
+
+
+class OpeningBrace(unittest.TestCase):
+    """CodeQL alerts 38 and 39: the old pattern backtracked exponentially on a run of `//`."""
+
+    def test_a_long_run_of_comment_starts_without_a_brace_fails_fast(self):
+        import time
+        import claude_settings
+
+        started = time.monotonic()
+        self.assertIsNone(claude_settings.OPENING_BRACE.match("//" * 5000 + "x"))
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_comments_and_space_before_the_brace_are_kept(self):
+        import claude_settings
+
+        text = ' \n// a {\n/* b { */\n\t{"x": 1}'
+        self.assertEqual(claude_settings.OPENING_BRACE.match(text).group(1), ' \n// a {\n/* b { */\n\t')
 
 
 class OpencodeReadDeny(SyntheticHome):

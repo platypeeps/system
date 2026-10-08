@@ -190,7 +190,6 @@ def today(connection, *, now: str, parameters) -> str:
 
     from .contribution_screen import preview
     from .now_screen import now_panel
-    from .runner_screen import jobs_panel
 
     return page(
         "Today",
@@ -209,7 +208,6 @@ def today(connection, *, now: str, parameters) -> str:
         tag("h2", "Open followups"),
         followup_list.render(),
         tag("p", tag("a", "Choose the next task from Tasks", href="/tasks", class_="button-link")),
-        jobs_panel(connection),
         join(board_section),
         cli_equivalents=False,
     )
@@ -376,8 +374,8 @@ def item(connection, item_id: int, *, now: str, parameters) -> str | None:
     kind_label = "writing" if writing_state else row["kind"]
     status_label = row["stage"] if writing_state else row["status"]
 
+    from .operations_screen import assignment_cancel
     from .reports_screen import report_controls
-    from .runner_screen import item_controls as run_controls
     from .skills_screen import review_controls
 
     return page(
@@ -389,7 +387,7 @@ def item(connection, item_id: int, *, now: str, parameters) -> str | None:
             controls.writing_controls(connection, row, state=writing_state),
             controls.item_controls(connection, item_id),
             controls.progress_controls(connection, item_id),
-            run_controls(connection, row),
+            join(assignment_cancel(connection, one["id"]) for one in assignments),
             review_controls(connection, row, revision),
             report_controls(connection, row, revision),
             tag("h2", "Status history"),

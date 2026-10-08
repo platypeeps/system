@@ -203,10 +203,9 @@ the selected tab travels in the URL, for example `/operations?area=services`.
 Every job or service control rechecks the observed state and revision. The last
 request's acceptance is shown separately from the current state; acceptance is
 not proof that a job finished or that an application is healthy.
-Queued assignments can be cancelled without completing their item. A blocked
-assignment can be cancelled once its item is done and no runner attempt holds
-its lease. A running assignment no runner attempt owns names `sd runner cancel`,
-which ends it. A restore
+Queued assignments can be cancelled without completing their item, with
+`sd assignments cancel`. A blocked assignment can be cancelled once its item is
+done. A restore
 blocks starting jobs and starting or restarting services, while supported stop
 controls remain available. Stopping a service unloads it for the current login;
 its plist stays installed and may load again at the next login. Equivalent
@@ -536,7 +535,7 @@ The manifest now declares only the four queue actions.
 
 | Tab | What it shows | Where it comes from |
 | --- | --- | --- |
-| **Toolbox** | Cron jobs with launchd's own last-exit code **and the next time each one fires**, launch agents, docker containers, and `machine-setup` drift with the age of the measurement | `launchctl list`, `jobs/*.job`, `docker ps`, and the nightly drift job's log rather than a fresh `machine-setup.sh status`, which cost most of the five-second budget |
+| **Toolbox** | Cron jobs with launchd's own last-exit code **and the next time each one fires**, launch agents, docker containers, and `machine-setup` drift with the age of the measurement | `launchctl list`, `jobs/*.job`, `docker ps`, and the status part of `machine-setup-update-nightly`'s log rather than a fresh `machine-setup.sh status`, which cost most of the five-second budget |
 | **Briefs** | Everything the scheduled routines wrote, newest first, grouped by kind, each readable inline | `System/AI Generated/Briefs` |
 | **Vault** | One card per `* Home` area with note and open-task counts, plus overdue/due-today and Inbox pressure | vault frontmatter |
 | **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus the built page's mtime in `docs/dashboard/` (or the older `build/`) |

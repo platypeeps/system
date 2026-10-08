@@ -232,31 +232,6 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
             raise ValueError("Provide the new monthly cap, or null to clear it, and the current revision.")
         return lambda connection: provider_controls.set_cap(connection, match[1], values["cap_usd_month"],
             expected_revision=values["revision"], who="dashboard")
-    if path == "/api/run":
-        from sd_db import runner_controls
-
-        if set(values) - {"items", "revisions", "parallel", "budget_minutes", "budget_usd", "skill", "skill_revision"} or not {"items", "revisions"} <= set(values):
-            raise ValueError("Provide selected items and their current revisions.")
-        return lambda connection: runner_controls.enqueue(connection, who="dashboard", **values)
-    match = re.fullmatch(r"/api/runner/([1-9][0-9]*)/(cancel|requeue|resume|restore)", path)
-    if match:
-        from sd_db import runner, runner_controls
-
-        allowed = {"revision", "destination"} if match[2] == "restore" else {"revision"}
-        if set(values) != allowed:
-            raise ValueError("Provide the current assignment revision and required destination.")
-        if match[2] == "requeue":
-            return lambda connection: runner.requeue(connection, int(match[1]), expected_revision=values["revision"], who="dashboard")
-        return lambda connection: runner_controls.control(connection, int(match[1]), match[2],
-            expected_revision=values["revision"], destination=values.get("destination"), who="dashboard", backend=runner_backend)
-    match = re.fullmatch(r"/api/items/([1-9][0-9]*)/prepare", path)
-    if match:
-        from sd_db import runner_controls
-
-        if set(values) != {"revision", "repo", "branch"}:
-            raise ValueError("Provide the repository, branch and current revision.")
-        return lambda connection: runner_controls.configure_item(connection, int(match[1]), repo=values["repo"],
-            branch=values["branch"], expected_revision=values["revision"], who="dashboard")
     match = re.fullmatch(r"/api/skills/(sd-[a-z0-9-]+)/(try|review|promote|demote)", path)
     if match:
         from sd_db import skills_catalog

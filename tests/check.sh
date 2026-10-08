@@ -15,7 +15,7 @@ ROOT="$(cd "$DIR/.." && pwd)"
 PIN_FILE="$ROOT/.sd-pack-rev"
 PACK_URL="${CI_PACK_URL:-https://github.com/platypeeps/sd-ai-command-pack.git}"
 PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
-LEGS="shared dashboard runner tools"
+LEGS="shared dashboard tools"
 TOOLS_SHARDS=3
 
 usage() {
@@ -23,7 +23,7 @@ usage() {
 Usage: check.sh run
        check.sh legs
 
-  run   the preflight, then the four legs and (on macOS) each suite of
+  run   the preflight, then the three legs and (on macOS) each suite of
         tests/macos-only-suites.txt in parallel; exits 1 when any fails
   legs  print the leg names
 
@@ -50,7 +50,7 @@ esac
 
 # The pack pin: one full commit sha in `.sd-pack-rev`; bump it deliberately.
 # sd:1439: schema 14 stores repository paths as `~/` keys, and a pack older
-# than pack #1166 writes the absolute path, so local-sd-plan's registration
+# than pack #1166 writes the absolute path, so a nightly planner's registration
 # failed its foreign key. Pack #1166 merged as 6d6214f6.
 pin="$(cat "$PIN_FILE" 2>/dev/null || true)"
 case "$pin" in
@@ -136,13 +136,13 @@ isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" preflight
 
 # Every leg and, on a Mac, every macOS-only suite run at once, unless a gate
 # cap below lowers that. Run one after another they took 24 minutes here,
-# most of it runner-macos alone, and sd-check stops a check at 15. Each job
+# and sd-check stops a check at 15. Each job
 # writes its own log, printed whole once it ends, so the output does not
 # interleave.
 # The tools leg is the longest: dozens of short suites, one after another.
 # It runs as TOOLS_SHARDS processes, each taking every n-th suite.
-# The macOS-only suites go first: runner-macos is the longest job, and when
-# the jobs run fewer at a time (below) it must start at once.
+# The macOS-only suites go first, so that when the jobs run fewer at a time
+# (below) they start at once.
 jobs=""
 if [ "$(uname -s)" = Darwin ]; then
   for suite in $(sh "$DIR/run-macos-only.sh" list | awk '{ print $1 }'); do

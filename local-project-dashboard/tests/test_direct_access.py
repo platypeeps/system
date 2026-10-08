@@ -12,7 +12,6 @@ import re
 import threading
 from unittest.mock import Mock, patch
 
-from sd_db import runner
 
 from sd_dashboard import auth, runtime, server
 
@@ -117,50 +116,6 @@ class DirectRemoteAccess(test_remote_access.RemoteAccess):
         _, _, secure_received = self.session()
         self.assertIn("Secure", secure_received["Set-Cookie"])
         self.assertEqual(self.serve, before_serve)
-
-    def test_ip_runner_cancel_preserves_backend_revision_and_attempt_guards(self):
-        self.repo()
-        item = self.item("Owned IP task", kind="task", repo="/repos/system", branch="main", status="ready")
-        queued = runner.enqueue(self.connection, [item], who="operator")[0]
-        assignment = queued["id"]
-        root = self.path.parent
-        runner.claim(self.connection, assignment, owner="fixture",
-                     work_root=root / "work", retention_root=root / "retained")
-        current = runner.queue_state(self.connection, assignment)
-        self.assertEqual(current["status"], "running")
-        self.assertNotEqual(queued["revision"], current["revision"])
-        cookie, csrf, _ = self.direct_session()
-        headers = self.direct_headers(cookie, csrf)
-        path = f"/api/runner/{assignment}/cancel"
-        payload = {"revision": current["revision"]}
-        installation = {"database": str(self.path)}
-        before = self.snapshot()
-        with patch("sd_db.runner_controls.service_installation", return_value=installation) as installed, \
-                patch("sd_db.runner_controls.invoke_service", side_effect=AssertionError("native runner control must not run")):
-            status, _, body = self.direct_request(path, method="POST", headers=headers, payload=payload)
-            self.assertEqual(status, 200)
-            self.assertTrue(json.loads(body)["control"]["signalled_owned_group"])
-            self.runner_backend.assert_called_once_with(
-                installation, "cancel", assignment, revision=current["revision"],
-                run=current["run"]["id"], who="dashboard", destination=None)
-            self.assertEqual(self.snapshot(), before)
-
-            stale = self.direct_request(path, method="POST", headers=headers,
-                                        payload={"revision": queued["revision"]})
-            self.assertEqual(stale[0], 409)
-            self.assertEqual(self.runner_backend.call_count, 1)
-            self.assertEqual(self.snapshot(), before)
-
-            wrong_origin = [(key, self.origin if key == "Origin" else value) for key, value in headers]
-            self.assertEqual(self.direct_request(path, method="POST", headers=wrong_origin, payload=payload)[0], 403)
-            self.assertEqual(self.runner_backend.call_count, 1)
-            self.assertEqual(self.snapshot(), before)
-
-            self.lookup_login = "other@example.test"
-            self.assertEqual(self.direct_request(path, method="POST", headers=headers, payload=payload)[0], 403)
-            self.assertEqual(self.runner_backend.call_count, 1)
-            self.assertEqual(self.snapshot(), before)
-            installed.assert_called_once()
 
     def test_ip_identity_and_runtime_are_revalidated_for_every_route(self):
         before = self.snapshot()

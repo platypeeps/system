@@ -181,14 +181,17 @@ class TheDocuments(ScreenCase):
                          ("github", "https://example.invalid/i/1", "open"))
         self.assertEqual(set(external["freshness"]), {"state", "last_success_at", "reason"})
 
-    def test_an_assignment_carries_its_queue_revision_and_cancel_capability(self):
-        from sd_db import operations, runner
+    def test_an_assignment_carries_the_revision_and_cancel_capability_sd_assignments_cancel_checks(self):
+        from sd_db import operations
 
         got = tasks_screen.details(self.connection, self.ids["port"], now=NOW)
         (row,) = got["assignments"]
         self.assertEqual((row["role"], row["status"]), ("author", "running"))
-        self.assertEqual(row["revision"], runner.queue_state(self.connection, row["id"])["revision"])
-        self.assertEqual(row["cancel"], operations.assignment_state(self.connection, row["id"])["capabilities"]["cancel"])
+        state = operations.assignment_state(self.connection, row["id"])
+        self.assertEqual((row["revision"], row["cancel"]), (state["revision"], state["capabilities"]["cancel"]))
+        # sd:3041: no runner readiness or runner capabilities ride on the Details.
+        self.assertNotIn("run", got)
+        self.assertNotIn("runner", row)
         self.assertIsNone(got["external"])
         self.assertEqual(got["item"]["path"], "docs/work/port/prd.md")
 
@@ -204,40 +207,6 @@ class TheDocuments(ScreenCase):
         rows = {row["id"]: row for row in tasks_screen.document(self.connection, now=NOW)["rows"]}
         self.assertTrue(rows[report]["urgent_otherwise"])
         self.assertFalse(rows[self.ids["plan"]]["urgent_otherwise"], "a due date is the page's own rule, not sent")
-
-    def test_each_row_carries_the_run_readiness_enqueue_checks(self):
-        # A run of picked rows is offered only where every row can queue, so each row carries runner_controls.readiness,
-        # read from the row's own item_state (sd:2590).
-        from sd_db import runner_controls
-
-        rows = {row["id"]: row for row in tasks_screen.document(self.connection, now=NOW)["rows"]}
-        for item, row in rows.items():
-            ready = runner_controls.readiness(self.connection, item)
-            self.assertEqual(row["run"], {"allowed": ready["allowed"], "reason": ready["reason"]}, f"item {item}")
-        self.assertEqual(rows[self.ids["port"]]["run"]["reason"], "An assignment already owns this item.")
-
-    def test_details_carry_run_readiness_and_runner_capabilities(self):
-        from sd_db import runner_controls
-
-        got = tasks_screen.details(self.connection, self.ids["ask"], now=NOW)
-        ready = runner_controls.readiness(self.connection, self.ids["ask"])
-        self.assertEqual(got["run"], {"allowed": ready["allowed"], "reason": ready["reason"]})
-        self.assertFalse(got["run"]["allowed"])
-        (row,) = tasks_screen.details(self.connection, self.ids["port"], now=NOW)["assignments"]
-        self.assertEqual(row["runner"], {
-            "requeue": {"allowed": False, "reason": "the assignment is running, not blocked or cancelled"},
-            "cancel": {"allowed": False, "reason": "a legacy running assignment has no owned runner attempt to stop"}})
-
-    def test_runner_capabilities_follow_the_runner_rules(self):
-        caps = tasks_screen._runner_capabilities
-        run = lambda **k: {"released_at": None, "cancel_requested": None, **k}
-        self.assertTrue(caps({"role": "author", "status": "blocked", "run": None})["requeue"]["allowed"])
-        self.assertTrue(caps({"role": "author", "status": "cancelled", "run": run(released_at="x")})["requeue"]["allowed"])
-        self.assertFalse(caps({"role": "author", "status": "blocked", "run": run()})["requeue"]["allowed"])
-        self.assertFalse(caps({"role": "exec", "status": "blocked", "run": None})["requeue"]["allowed"])
-        self.assertTrue(caps({"role": "author", "status": "queued", "run": None})["cancel"]["allowed"])
-        self.assertTrue(caps({"role": "author", "status": "running", "run": run()})["cancel"]["allowed"])
-        self.assertFalse(caps({"role": "author", "status": "running", "run": run(cancel_requested="x")})["cancel"]["allowed"])
 
     def test_a_missing_item_raises_for_the_route_to_answer_404(self):
         with self.assertRaises(workflow.MissingItem):
@@ -557,14 +526,12 @@ class TheScript(ScreenCase):
             ["item.move", "item", "safe", "m", None, True, False],
             ["item.p2", "item", "undo", None, None, True, True],
             ["item.note", "item", "safe", "n", None, True, False],
-            ["item.run", "item", "undo", "r", None, True, True],
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
             ["work.cancel", "item", "confirm", "w", True, True, False],
             ["item.recur", "item", "undo", None, None, True, True],
             ["item.recur.clear", "item", "undo", None, None, True, True],
             ["note.resolve", "note", "confirm", "v", None, True, False],
-            ["asg.requeue", "assignment", "undo", "q", None, True, True],
             ["asg.cancel", "assignment", "confirm", "x", None, True, False],
             ["asg.get", "assignment", "safe", "o", None, True, False],
         ])
@@ -819,17 +786,13 @@ release(); await flush(); R.html = ELS.details.html; R.reads = reads;""", answer
         (asg,) = self.details[str(port)]["assignments"]
         out = self.run_page(f"""open({ask}); await flush(); open({port}); await flush(); open({plan}); await flush();
 R.p2 = cmd('item.p2').when(C.get('{plan}'));
-R.run = cmd('item.run').when(C.get('{ask}'));
 R.recur = cmd('item.recur').when(C.get('{port}'));
-R.requeue = cmd('asg.requeue').when(C.get('asg:{asg["id"]}'));
 R.cancel = cmd('asg.cancel').when(C.get('asg:{asg["id"]}'));""")
         self.assertEqual(out["R"], {
             "p2": "it is already P2",
-            "run": self.details[str(ask)]["run"]["reason"],
             "recur": "a work item cannot recur",
-            "requeue": "the assignment is running, not blocked or cancelled",
-            "cancel": "a legacy running assignment has no owned runner attempt to stop"})
-        self.assertTrue(out["R"]["run"])
+            "cancel": asg["cancel"]["reason"]})
+        self.assertTrue(out["R"]["cancel"])
 
     def test_edit_controls_are_off_for_a_work_row_its_files_own(self):
         # The seeded work row's repository lets its files own status, so edit_item refuses every field edit: Edit, P2 and a
@@ -1151,27 +1114,17 @@ R.bulk = cmd('item.complete').bulk;""", answer)
         self.assertIn(["Status → Done · 1 item", True], out["toasts"])
         self.assertIsNone(out["R"].get("bulk"))
 
-    def test_run_and_its_undo_read_the_details_again(self):
-        # The Details hold the item's assignments and its run readiness: a run and its Undo each read them again, or Run
-        # stays on beside a run it already queued (review, PR #46).
-        plan = self.ids["plan"]
-        answer = "(path) => path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'r'.repeat(64) }] }] : path === '/api/runner/7/cancel' ? [200, {}] : [404, {}]"
-        out = self.run_page(f"""open({plan}); await flush(); R.opened = OUT.gets.filter(g => g === '/api/tasks/{plan}').length;
-const r = await cmd('item.run').run(C.get('{plan}')); await flush(); R.ran = OUT.gets.filter(g => g === '/api/tasks/{plan}').length;
-await r.undo(); await flush(); R.undone = OUT.gets.filter(g => g === '/api/tasks/{plan}').length;""", answer)
-        self.assertEqual((out["R"]["opened"], out["R"]["ran"], out["R"]["undone"]), (1, 2, 3))
-
-    def test_a_refused_runner_write_reads_the_assignment_again(self):
+    def test_a_refused_cancel_reads_the_assignment_again(self):
         # A 409 means the assignment revision the Details hold is old; a retry would send it again unless they are read
         # again (review, PR #46).
         port = self.ids["port"]
         (asg,) = self.details[str(port)]["assignments"]
-        answer = f"(path) => path === '/api/runner/{asg['id']}/requeue' ? [409, {{ error: 'The assignment changed. Reload it.' }}] : [404, {{}}]"
+        answer = f"(path) => path === '/api/assignments/{asg['id']}/cancel' ? [409, {{ error: 'The assignment changed. Reload it.' }}] : [404, {{}}]"
         out = self.run_page(f"""open({port}); await flush();
-try {{ await cmd('asg.requeue').run(C.get('asg:{asg['id']}')); }} catch (e) {{ R.err = e.message; }} await flush();
+try {{ await cmd('asg.cancel').run(C.get('asg:{asg['id']}')); }} catch (e) {{ R.err = e.message; }} await flush();
 R.reads = OUT.gets.filter(g => g === '/api/tasks/{port}').length;""", answer)
         self.assertEqual(out["R"]["err"], "The assignment changed. Reload it.")
-        # The runner's own refusal path and the rows' re-read each read the open Details again.
+        self.assertEqual([p[:2] for p in out["posts"]], [[f"/api/assignments/{asg['id']}/cancel", {"revision": asg["revision"]}]])
         self.assertGreaterEqual(out["R"]["reads"], 2, "the Details were not read again after the refusal")
 
     def test_a_task_added_under_a_filter_that_hides_it_is_not_selected(self):
@@ -1183,100 +1136,6 @@ var box = document.getElementById('shift-in'); box.value = 'Call the bank';
 box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""", answer)
         self.assertIn(["Added #99 to Planning · the filters hide it; Clear all shows it", False], out["toasts"])
         self.assertNotIn("/api/tasks/99", out["gets"], "the hidden task was selected and its Details read")
-
-    def test_the_copied_run_line_is_a_valid_sd_run(self):
-        plan = self.ids["plan"]
-        out = self.run_page(f"""R.cli = cmd('item.run').cli(C.get('{plan}'));
-R.text = (await cmd('item.run').run(C.get('{plan}'))).text;""",
-                            "(path) => path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'r'.repeat(64) }] }] : [404, {}]")
-        self.assertEqual(out["R"]["cli"], f"sd run --sequential {plan}")
-        self.assertTrue(out["R"]["text"].endswith(f"· sd run --sequential {plan}"), out["R"]["text"])
-
-    # ---------- Run picked and ?skill= (sd:2590) ----------
-    RUN_FORM = """const D = MADE.find(e => /date-dlg/.test(e.className || ''));
-const F = { form: El('form'), cli: El('run-cli'), mode: { value: MODE }, min: { value: MIN }, usd: { value: USD } };
-D.querySelector = sel => sel === 'form' ? F.form : sel === '[name="mode"]:checked' ? F.mode : sel === '#run-min' ? F.min
-  : sel === '#run-usd' ? F.usd : sel === '#run-cli' ? F.cli : El(sel);
-F.form.querySelector = D.querySelector;
-const pickRun = async (keys, v) => { C.runBulk(cmd('item.run'), keys.map(k => C.get(String(k)))); await flush();
-  R.dialog = D.html; R.cli = F.cli.textContent; D.returnValue = v; D.onclose(); await flush(); };
-"""
-
-    def runnable(self, *names):
-        for name in names:
-            self.row(name)["run"] = {"allowed": True, "reason": None}
-
-    def test_picked_rows_queue_in_one_request_in_pick_order_and_undo_cancels_the_last_first(self):
-        self.runnable("plan", "port")
-        plan, port = self.ids["plan"], self.ids["port"]
-        answer = ("(path, body) => path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'a'.repeat(64) }, { id: 8, revision: 'b'.repeat(64) }] }]"
-                  " : /^\\/api\\/runner\\/\\d+\\/cancel$/.test(path) ? [200, {}] : [404, {}]")
-        out = self.run_page(self.RUN_FORM + f"""await pickRun([{port}, {plan}], 'run');
-await lastUndo().undo(); await flush();""", answer, prelude="var MODE = 'parallel', MIN = '45', USD = '2.5';\n")
-        runs = [p for p in out["posts"] if p[0] == "/api/run"]
-        self.assertEqual(len(runs), 1, "the picked rows were queued one request each")
-        self.assertEqual(runs[0][1], {"items": [port, plan], "revisions": {str(port): self.row("port")["revision"], str(plan): self.row("plan")["revision"]},
-                                      "parallel": True, "budget_minutes": 45, "budget_usd": 2.5})
-        self.assertIn("Run 2 tasks", out["R"]["dialog"])
-        self.assertEqual(out["R"]["cli"], f"sd run --parallel --budget-minutes 45 {port} {plan}")
-        self.assertEqual(out["cleared"], 1)
-        self.assertIn([f"Queued 2 tasks for the runner · sd run --parallel --budget-minutes 45 {port} {plan}", True], out["toasts"])
-        self.assertEqual([p[0] for p in out["posts"][1:]], ["/api/runner/8/cancel", "/api/runner/7/cancel"])
-        self.assertEqual(out["toasts"][-1], ["Run undone · 2 assignments cancelled", False])
-
-    def test_a_cancelled_run_form_queues_nothing_and_keeps_the_picks(self):
-        self.runnable("plan", "port")
-        out = self.run_page(self.RUN_FORM + f"await pickRun([{self.ids['plan']}, {self.ids['port']}], 'cancel');",
-                            "() => [500, { error: 'nothing should post' }]", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
-        self.assertEqual(out["posts"], [])
-        self.assertNotIn("cleared", out)
-        self.assertEqual(out["toasts"][-1], ["Nothing queued for 2 tasks.", False])
-
-    def test_a_refused_selection_queues_nothing_and_reads_the_rows_again(self):
-        self.runnable("plan", "port")
-        reads_before = "R.before = OUT.gets.filter(g => g === '/api/tasks').length;\n"
-        out = self.run_page(self.RUN_FORM + reads_before + f"""await pickRun([{self.ids['plan']}, {self.ids['port']}], 'run');
-R.after = OUT.gets.filter(g => g === '/api/tasks').length;""",
-                            "() => [409, { error: 'item 3 changed; reload it' }]", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
-        (run,) = out["posts"]
-        self.assertEqual(run[1]["parallel"], False)
-        self.assertNotIn("budget_usd", run[1])
-        self.assertEqual(out["toasts"][-1], ["Nothing queued: item 3 changed; reload it", False])
-        self.assertGreater(out["R"]["after"], out["R"]["before"], "a stale refusal did not read the rows again")
-
-    def test_run_is_off_with_the_row_reason_before_the_details_are_read(self):
-        # The row carries readiness (sd:2590), so Run says why it is off without opening the Details first.
-        out = self.run_page(f"shellRun(cmd('item.run'), C.get('{self.ids['plan']}')); await flush();")
-        self.assertEqual(out["toasts"][-1], [f"off: item {self.ids['plan']} needs a valid branch", False])
-        self.assertEqual(out["posts"], [])
-
-    SKILLS = "(path) => path === '/api/skills' ? [200, { skills: [{ name: 'sd-review', revision: 's'.repeat(64) }] }] : path === '/api/run' ? [200, { assignments: [{ id: 7, revision: 'r'.repeat(64) }] }] : [404, {}]"
-
-    def test_a_skill_in_the_address_rides_on_the_run_with_its_catalog_revision(self):
-        self.runnable("plan", "port")
-        plan, port = self.ids["plan"], self.ids["port"]
-        out = self.run_page(self.RUN_FORM + f"""R.filters = ELS.filters.html; shellRun(cmd('item.run'), C.get('{plan}')); await flush();
-await pickRun([{plan}, {port}], 'run');""", self.SKILLS, search="?skill=sd-review", prelude="var MODE = 'sequential', MIN = '90', USD = '';\n")
-        one, picked = [p[1] for p in out["posts"] if p[0] == "/api/run"]
-        self.assertEqual((one["skill"], one["skill_revision"]), ("sd-review", "s" * 64))
-        self.assertEqual((picked["skill"], picked["skill_revision"], picked["items"]), ("sd-review", "s" * 64, [plan, port]))
-        self.assertIn("Run with", out["R"]["filters"])
-        self.assertIn("sd-review", out["R"]["filters"])
-        self.assertIn("With the skill <code>sd-review</code>", out["R"]["dialog"])
-        self.assertIn("skill=sd-review", out["urls"][-1])
-
-    def test_an_unknown_or_unread_skill_keeps_run_off_and_says_why(self):
-        self.runnable("plan")
-        plan = self.ids["plan"]
-        cases = {"?skill=nope": (self.SKILLS, "off: no catalog skill nope"),
-                 "?skill=sd-review": ("(path) => path === '/api/skills' ? [503, { error: 'the skill catalog is unavailable' }] : [404, {}]",
-                                      "off: the skill catalog was not read: the skill catalog is unavailable")}
-        for search, (answer, why) in cases.items():
-            with self.subTest(search=search):
-                out = self.run_page(f"R.filters = ELS.filters.html; shellRun(cmd('item.run'), C.get('{plan}')); await flush();", answer, search=search)
-                self.assertEqual(out["toasts"][-1], [why, False])
-                self.assertEqual(out["posts"], [])
-                self.assertIn("Run is off: " + why.removeprefix("off: "), out["R"]["filters"])
 
     def test_the_confirm_names_the_rule_of_a_byday_series(self):
         set_item_fields(self.connection, self.ids["plan"], recurrence="FREQ=WEEKLY;BYDAY=MO,TH")

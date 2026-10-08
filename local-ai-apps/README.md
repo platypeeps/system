@@ -14,7 +14,7 @@ captured manifests are safe to commit; secrets stay in each app's own config.
 ./ai-apps.sh compare personal work   # cross-PROFILE diff
 ./ai-apps.sh setup [profile] [--apply]  # align machine to a manifest
 ./ai-apps.sh adopt <kind> <name> <from> <to> [--apply]  # move one item
-./ai-apps.sh update              # brew upgrade for just these six apps
+./ai-apps.sh update              # brew upgrade for these apps but codex and claude-code
 ./ai-apps.sh nightly             # update + capture, email on change (cron)
 ```
 
@@ -67,8 +67,9 @@ and `setup <profile> --apply` pulls a machine toward the chosen manifest.
 ## Cron
 
 `ai-apps-nightly` (04:30, a job in `<config>/cron-jobs/jobs/`; examples in `local-cron-jobs/examples/`) runs `nightly`:
-upgrades the six apps through brew and re-captures the inventory, emailing
+upgrades the apps through brew and re-captures the inventory, emailing
 via local-notify only when an app was upgraded or the inventory moved.
+It skips codex and claude-code: `machine-setup.sh upgrade` updates them weekly.
 The `.inv` diff lands in `<config>/ai-apps/profiles/`.
 Each brew call names itself in the job log as it starts.
 A query stops after 600 s and an upgrade after 1800 s; `AI_APPS_STEP_TIMEOUT` sets one bound in seconds for both.

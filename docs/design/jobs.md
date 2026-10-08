@@ -12,7 +12,7 @@ and **exactly one** of two verbs.
 
 ```sh
 JOB_SCHEDULE="45 4 * * *"
-JOB_COMMAND="sh \"$HOME/repos/system/local-sd-plan/sd-plan.sh\" nightly"
+JOB_COMMAND="sh \"$HOME/repos/system/local-sd-db/sd-db.sh\" backup"
 ```
 
 - **`JOB_COMMAND`** runs a shell command under `bash -c`.
@@ -23,10 +23,9 @@ JOB_COMMAND="sh \"$HOME/repos/system/local-sd-plan/sd-plan.sh\" nightly"
 Setting neither is an error. Setting **both** is also an error, caught when the
 job file is sourced: *"pick one"*.
 
-The choice is a real design decision, not a style preference. `sd-plan-nightly`
-explains its own: selection is deterministic and happens in the job, while the
-agent runs in the runner's isolated clone. **Cron picks the work; the runner
-does it.**
+The choice is a real design decision, not a style preference: a deterministic
+step belongs in `JOB_COMMAND`, and only work that needs an agent belongs in
+`JOB_PROMPT`.
 
 @diagram jobs-anatomy
 

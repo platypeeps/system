@@ -10,16 +10,14 @@ query of the store:
   accepts for it, so the board refuses a move for the reason the library
   would, before it posts. Each row carries its `reads.age_bucket` key and the
   document names the buckets (`ages`), so the page's age filter is the one
-  Operations' histogram counts with (sd:2589). Each row carries
-  `runner_controls.readiness`, the check `/api/run` makes, so a run of picked
-  rows is offered only where every one of them can queue (sd:2590). Each row also carries whether `workflow.edit_item`
+  Operations' histogram counts with (sd:2589). Each row also carries whether `workflow.edit_item`
   takes its fields (`_edit_capability`), so Edit, P2, recurrence and a
   matrix drop are off, with the library's reason, where the edit would fail.
 - `/api/tasks/<id>` is `details`: what `sd task show <id> --json` prints
   (`item`, `notes`, `revision`, from `workflow.item_state`), split into the
   status history and the other notes as v1's item page splits them, plus the
   item's assignments (`reads.item_assignments`, with the cancel capability
-  and queue revision `sd assignments get` and `sd runner` use), a work
+  and revision `sd assignments cancel` checks), a work
   item's relink and cancel availability (`progress.work_controls`) and its
   external context (`reads.item_shadow` and `progress.tracker_freshness`,
   v1's "External context" block), or `null` when the item has none.
@@ -29,7 +27,7 @@ query of the store:
 
 Every write the page makes goes through a route `server.action_route`
 already answered for v1: status, edit (priority, due, recurrence), note
-resolve, work relink and cancel, runner requeue and cancel. Nothing here
+resolve, work relink and cancel. Nothing here
 writes.
 """
 
@@ -37,7 +35,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sd_db import reads, repos, runner_controls, workflow
+from sd_db import reads, repos, workflow
 
 __all__ = ["details", "document"]
 
@@ -113,17 +111,10 @@ def _document(connection, *, now: str) -> dict:
             # The row's own `item_state`, so each row reads its history once (sd:2380).
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(connection, row),
-            "run": _run(connection, row["id"], state),
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
     return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out}
-
-
-def _run(connection, item: int, state: dict) -> dict:
-    """`runner_controls.readiness` for the row, from the row's own `item_state` (sd:2380)."""
-    ready = runner_controls.readiness(connection, item, state=state)
-    return {"allowed": ready["allowed"], "reason": ready["reason"]}
 
 
 def _note(note) -> dict:
@@ -150,59 +141,27 @@ def _external(connection, row, *, now: str) -> dict | None:
                           "reason": freshness["reason"]}}
 
 
-def _runner_capabilities(queue: dict) -> dict:
-    """What `sd runner requeue` and `sd runner cancel` accept for this assignment, with the reason when they refuse.
-
-    The same rules `runner_screen.assignment_controls` uses to offer v1's buttons, from `runner.requeue` and
-    `runner_controls.control`.
-    """
-    held, status = queue["run"], queue["status"]
-    if queue["role"] == "exec":
-        requeue = "finite execution authorizations are single-use"
-    elif status not in ("blocked", "cancelled"):
-        requeue = f"the assignment is {status}, not blocked or cancelled"
-    elif held and not held.get("released_at"):
-        requeue = "its runner lease is not released yet"
-    else:
-        requeue = None
-    if held and held.get("cancel_requested"):
-        cancel = "a stop is already requested; the runner still owns cleanup"
-    elif status == "queued" or (status == "running" and held):
-        cancel = None
-    elif status == "running":
-        cancel = "a legacy running assignment has no owned runner attempt to stop"
-    else:
-        cancel = f"the assignment is {status}, not queued or running"
-    return {"requeue": {"allowed": requeue is None, "reason": requeue},
-            "cancel": {"allowed": cancel is None, "reason": cancel}}
-
-
 def details(connection, item: int, *, now: str) -> dict:
     """One item's Details sections. Raises `workflow.MissingItem` for an id with no item."""
-    from sd_db import operations, progress, runner, runner_controls
+    from sd_db import operations, progress
 
     state = workflow.item_state(connection, item)
     row = reads.item_by_id(connection, item)
     assignments = []
     for assignment in reads.item_assignments(connection, item):
-        cancel = operations.assignment_state(connection, assignment["id"])["capabilities"]["cancel"]
-        queue = runner.queue_state(connection, assignment["id"])
+        held = operations.assignment_state(connection, assignment["id"])
         assignments.append({
             "id": assignment["id"], "role": assignment["role"], "provider": assignment["provider"],
             "status": assignment["status"], "started": assignment["started"], "ended": assignment["ended"],
             "usd": assignment["usd"], "estimated": bool(assignment["estimated"]),
-            "revision": queue["revision"], "cancel": cancel, "runner": _runner_capabilities(queue),
+            "revision": held["revision"], "cancel": held["capabilities"]["cancel"],
         })
-    ready = runner_controls.readiness(connection, item)
     return {
         "read": now, "item": state["item"], "revision": state["revision"],
         "history": [_note(note) for note in state["notes"] if note["kind"] == "status_change"],
         "notes": [_note(note) for note in state["notes"] if note["kind"] != "status_change"],
         "assignments": assignments, "allowed": workflow.allowed_statuses(connection, item, state=state),
         "external": _external(connection, row, now=now),
-        # `sd run` readiness, as `/api/run` checks it (`runner_controls.readiness`): read here, for one item, rather
-        # than for every row, because it reads the item's assignments and leases.
-        "run": {"allowed": ready["allowed"], "reason": ready["reason"]},
         # `sd work relink` and `sd work cancel` availability, as the mutation checks it under its lock
         # (`progress.work_controls`), for a work item; None for any other kind (sd:2200).
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,

@@ -25,23 +25,20 @@ change I made on this machine back into its profile*.
                                        # keys, loaded agents, unfilled .env files,
                                        # firewall, useLS, credential dir modes,
                                        # shell, rtk hook, iTerm2; with an sd agent in
-                                       # the profile, also the database, runner
-                                       # heartbeat, dashboard route and HTTPS answer,
-                                       # the sd_db build in each virtualenv, and
-                                       # every enabled provider's variables (names
-                                       # only) in the environment the runner sources;
+                                       # the profile, also the database, the
+                                       # dashboard route and HTTPS answer, and
+                                       # the sd_db build in each virtualenv;
                                        # no sqlite3 on PATH, Funnel on the
                                        # dashboard's :8443 origin, :8443 held by
-                                       # another route, a service config naming
-                                       # another database, or an env.sh that fails
-                                       # when sourced, is a FAIL
+                                       # another route, or a service config naming
+                                       # another database, is a FAIL
 ./machine-setup.sh doctor sd           # those sd checks alone
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
-./machine-setup.sh upgrade --apply     # brew update/upgrade/cleanup + mas upgrade
+./machine-setup.sh upgrade --apply     # brew update/upgrade, claude update, brew cleanup + mas upgrade
                                        # each step is logged as it starts and
                                        # stopped at its bound (300-1800 s, or
                                        # MACHINE_SETUP_STEP_TIMEOUT seconds)
-./machine-setup.sh upgrade-report      # upgrade + email summary (cron: Sundays 04:00)
+./machine-setup.sh upgrade-report      # upgrade + email summary (cron: weekly)
 ./machine-setup.sh checklist           # manual new-machine steps
 ./machine-setup.sh decommission        # retire machine: dirty-repo scan, job/agent
                                        # removal with --apply (asks you to type
@@ -138,7 +135,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `prompts` | shared agent system prompt into each tool's global instructions | `local-agent-prompt` |
 | `repos` | clone/pull the repo fleet | `local-repo-sync` |
 | `cron` | install launch agents: the profile's `.cron` jobs plus every job in this host's own folder (`cron-jobs/jobs/<host>/`). A `CRON_JOBS_EXTRA_DIRS` job runs only when the profile names it. Any other job that `local-cron-jobs` installed is `EXTRA` and is uninstalled. An agent under `<prefix>.cron.` that `local-cron-jobs` did not install is `FOREIGN` and stays in place, even when the profile names it; one whose plist cannot be read is `UNKNOWN` and stays too. The stage knows its own plists by their label and their `cron-jobs.sh exec <job>` command, which every installed job carries. When the host folder cannot be read, the stage prints `MISSING host job list` and uninstalls nothing | `local-cron-jobs` |
-| `sd` | the workflow database (`sd-db.sh init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard` or `<prefix>.sd-runner`. Runs before `agents`, because both agents open the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/runner.json` or `dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db`. On the hub, a profile without `<prefix>.sd-serve` or a config folder without its template is `MISSING`, and a `~/.config/sd/hub.json` is `EXTRA` and stays | `local-sd-db`, `tailscale` |
+| `sd` | the workflow database (`sd-db.sh init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard`. Runs before `agents`, because the dashboard opens the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db`. On the hub, a profile without `<prefix>.sd-serve` or a config folder without its template is `MISSING`, and a `~/.config/sd/hub.json` is `EXTRA` and stays | `local-sd-db`, `tailscale` |
 | `satellite` | on a profile with a `.satellite`: writes `~/.config/sd/hub.json`, checks that the pack's installed `sd_db` is the hub's build (`DIFFERS` names both values; `--apply` installs the hub's build from `origin/main` of this checkout when its digest is the hub's, `SD_DB_SOURCE_CHECKOUT` overrides the checkout), and installs the hub's `providers.yaml`. A local `sd.db` is `EXTRA` and stops the stage; a hub that does not answer is `SKIP`. On a satellite (a `.satellite` or a `hub.json`, and no hub agent in the profile), each hub-only job in `SD_HUB_ONLY_AGENTS` that is installed or loaded is `EXTRA` and stays. Where `jev` is on `PATH`, a missing jev shadow file is `MISSING`, and `--apply` runs `jev shadow on` (sd:2838). Installs no LaunchAgent | `sd_db.satellite` under `SD_DB_PYTHON` (default: the pack's virtualenv) |
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
@@ -328,10 +325,10 @@ alone does not count — `[dry-run] mas install <id>` looked like a note rather
 than a finding, which is why the appstore and cron stages now name what is
 missing before offering to fix it.
 
-`status --fail-on-drift` exits 1 when anything drifted, and the
-`machine-setup-drift` job in `local-cron-jobs` (listed in `common.cron`, so
-every machine installs it) runs that nightly — drift triggers the cron failure
-notification (banner + ntfy push). A clean machine stays silent.
+`status --fail-on-drift` exits 1 when anything drifted. The
+`machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last
+step, after `update --apply`, so drift the update could not fix triggers the
+cron failure notification (banner + ntfy push). A clean machine stays silent.
 
 ### Additive capture, unattended
 
@@ -484,16 +481,8 @@ new machine gets the list without the secrets. This folder ships a generic
 list; `doctor` reads `$SYSTEM_TOOLS_CONFIG/machine-setup/shell-env.example`
 instead when it exists, so the operator's own list stays private. `doctor` reports the file's
 presence and mode, and which names in the example this machine has not set.
-With an sd agent in the profile it also reads the provider registry through
-the runner's own interpreter — the merged view, so an entry the dashboard
-switched off is skipped — sources this file in a subshell the way
-`local-sd-runner/runner.sh` does on `serve`, and prints a `FAIL … MISSING`
-line naming each enabled entry whose `env:` variable is unset or empty there.
-Names only, never a value.
 
-**Outside that check, an empty value is fine and doctor stays quiet about
-it.** A name an enabled provider entry reads through `env:` must carry a value,
-as the paragraph above says; every other name may be empty. The names are
+**An empty value is fine and doctor stays quiet about it.** The names are
 deliberately the same on every machine so the file diffs cleanly, so a machine
 with no business holding a given credential keeps the name with nothing after
 the `=`. That is a statement, not an unfinished edit: it needs no value, no
