@@ -465,14 +465,14 @@ Exact Clopper-Pearson intervals for single proportions with few events; rule of 
 
 Written on 2026-10-07 MDT, after C2's live shadow collection started.
 The first `JEV_SD_REVIEW` shadow row is 2026-10-06T13:55:12Z (07:55 MDT, note #10627 on sd:2764).
-So this section is an amendment under the rule above: it adds four exploratory analyses, and every result it adds is reported as exploratory.
+So this section is an amendment under the rule above: it adds five exploratory analyses, and every result it adds is reported as exploratory.
 It changes no line above it. The question, populations, hypotheses H1 to H8 and X1, thresholds, decision rule lines 1 to 6, stopping rule, confirmatory analysis order and every `PREDICTION` line stay as registered.
 No result in this section can select, keep or drop an arm.
 
 **What its author had seen.** The addendum's author read no outcome (finding, label or review status) for a C1 or C2 head.
 The jev-conversion article work had read C2 answers, not outcomes, from the live ledger on 2026-10-07.
 Those reads were arm agreement on review questions, Jev's tier against the rule's tier on 53 pairs (none labelled), and Kev failure counts.
-Each of the four topics below came from those reads or from the article's review, not from an outcome.
+A1 to A4 came from those reads or from the article's review, not from an outcome. A5 is the operator's, written before its paired data exists.
 
 ### What this section touches
 
@@ -485,6 +485,7 @@ Each of the four topics below came from those reads or from the article's review
 | Analysis plan, exploratory "Calibration curves, Brier score and expected calibration error per model arm" | Defined by A2 |
 | Analysis plan, exploratory "Cost and latency tables" | Machine cost defined by A4 |
 | Stopping rule | Not touched; C2 still ends after 14 days |
+| A5, agreement beyond the review question | Not touched; new exploratory analysis |
 
 | Ledger rows | Used by |
 |---|---|
@@ -492,6 +493,8 @@ Each of the four topics below came from those reads or from the article's review
 | Stage `JEV_SD_REVIEW`, every arm, C2 window | A1, A2, A3, A4 |
 | Arm `kev`, split at 2026-10-07T19:12:02Z | A1, A4 |
 | Rows with a non-null `load_avg` (sd_db schema 21, sd:2950) | A4 |
+| Stage `JEV_SD_DOCS_LINT`, arms `jev`, `kev` and `haiku`, from the first per-question row (sd:2966, migration 022) | A5 |
+| Stages `JEV_SD_REVIEW_TRIAGE`, `JEV_SD_TASK_DEDUPE` and `JEV_SECRET_SCAN`, arm `kev` and the baseline row, C2 window | A5 |
 
 ### A1, availability
 
@@ -542,3 +545,20 @@ A blind answer never enters a confirmatory metric; the registered metrics read t
 Load is read from rows with a non-null `load_avg`, which exist only after the operator migrates the live database to sd_db schema 21 (sd:2950); earlier rows are counted as unmeasured.
 When sd:2967 lands, a local arm's price is its wait at the operator's hourly rate, and a row without a rate is reported as unpriced, not as $0.
 Hosted spend is reported as before. Neither figure enters the decision rule.
+
+### A5, agreement beyond the review question
+
+**Why.** The registered agreement analysis reads `JEV_SD_REVIEW` only.
+Two more callers can be measured, and this section is written before their paired data exists.
+
+**Docs linter (`JEV_SD_DOCS_LINT`).** Per-question agreement between the Jev, Kev and Haiku arms.
+It reads from the first per-question row that sd:2966 writes (migration 022). Earlier rows are batched, and A5 does not use them.
+Report the pairwise and the three-way agreement shares with their counts, and the table of disagreements.
+
+**Local callers, Kev against the rule.** Stages `JEV_SD_REVIEW_TRIAGE`, `JEV_SD_TASK_DEDUPE` and `JEV_SECRET_SCAN`, over the C2 window.
+They are Kev only by design, because their content stays on this machine.
+Per stage, report the share of calls where Kev's answer matches the rule's baseline row, joined on subject, with the counts.
+
+**Left out.** The low-volume callers (mail intake, the health check, the Obsidian review and tasks) give about one question a day, which is too few.
+
+No A5 result can select, keep or drop an arm.
