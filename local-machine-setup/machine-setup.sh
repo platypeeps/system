@@ -396,6 +396,21 @@ valid_profile() {
 
 # ---------------------------------------------------------------- stages ----
 
+# Formulae kept pinned (sd:3062). Homebrew python is ad-hoc signed, so every
+# patch upgrade drops the macOS grants its binary held; the operator unpins
+# and re-grants on purpose. python@3.12 is left as it is.
+BREW_PINNED="python@3.14"
+
+# Each BREW_PINNED formula that is installed and not pinned, one per line.
+unpinned_formulae() {
+  _have=$(brew list --formula 2>/dev/null | sed 's|.*/||')
+  _pinned=$(brew list --pinned 2>/dev/null | sed 's|.*/||')
+  for _f in $BREW_PINNED; do
+    printf '%s\n' "$_have" | grep -qx "$_f" || continue
+    printf '%s\n' "$_pinned" | grep -qx "$_f" || echo "$_f"
+  done
+}
+
 stage_brew() {
   echo "== brew"
   command -v brew >/dev/null 2>&1 || {
@@ -434,6 +449,15 @@ stage_brew() {
       # nothing. maccy and zoom were both hand-installed here and blocked the
       # brew stage until this.
       run brew install --cask --adopt "$c"
+    fi
+  done
+
+  unpinned=$(unpinned_formulae)
+  for f in $BREW_PINNED; do
+    if printf '%s\n' "$unpinned" | grep -qx "$f"; then
+      run brew pin "$f"
+    elif brew list --formula 2>/dev/null | sed 's|.*/||' | grep -qx "$f"; then
+      echo "  ok      pinned $f"
     fi
   done
 }
@@ -3890,12 +3914,25 @@ cmd_upgrade() {
 # times out leaves its file empty. Casks are asked with --greedy, as
 # cmd_upgrade upgrades them, so a self-updating cask is in both lists.
 outdated_lists() {
-  run_step 300 brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.$1" || :
+  run_step 300 brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.all.$1" || :
+  # A pinned formula with a newer version is held on purpose (BREW_PINNED),
+  # not left over: it goes to its own list, out of the counts.
+  run_step 300 brew list --pinned 2>/dev/null | sed 's|.*/||' | sort > "$tmp/pinned" || :
+  comm -12 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/held.$1"
+  comm -23 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/formula.$1"
   run_step 300 brew outdated --cask --greedy --quiet 2>/dev/null | sort > "$tmp/cask.$1" || :
   : > "$tmp/mas.$1"
   if command -v mas >/dev/null 2>&1; then
     run_step 300 mas outdated 2>/dev/null | sort > "$tmp/mas.$1" || :
   fi
+}
+
+# held_section before|after: the pinned formulae a newer version waits for.
+held_section() {
+  [ -s "$tmp/held.$1" ] || return 0
+  printf '\nheld (pinned):\n'
+  sed 's/^/  /' "$tmp/held.$1"
+  printf '  unpin with brew unpin <formula>, upgrade, then re-grant its binary\n'
 }
 
 # grant_paths before|after: the paths whose change drops a macOS grant, one
@@ -4013,6 +4050,7 @@ cmd_upgrade_report() {
       run_step 600 "$HOME/.local/bin/claude" update || rc=1
     fi
     echo "nothing outdated — no upgrade, no email"
+    held_section before
     inventory_capture || rc=1
     cat "$tmp/inventory"
     grants_report
@@ -4033,6 +4071,7 @@ cmd_upgrade_report() {
   {
     printf 'machine-setup upgrade report — %s on %s\n' \
       "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)"
+    held_section after
     for kind in formula cask mas; do
       comm -23 "$tmp/$kind.before" "$tmp/$kind.after" > "$tmp/$kind.done"
       if [ -s "$tmp/$kind.done" ]; then
@@ -4053,7 +4092,7 @@ cmd_upgrade_report() {
   } > "$tmp/body"
 
   n_done=$(cat "$tmp"/*.done 2>/dev/null | wc -l | tr -d ' ')
-  n_left=$(cat "$tmp"/*.after 2>/dev/null | wc -l | tr -d ' ')
+  n_left=$(cat "$tmp/formula.after" "$tmp/cask.after" "$tmp/mas.after" 2>/dev/null | wc -l | tr -d ' ')
   subject="upgrade: $n_done upgraded, $n_left still outdated on $(hostname -s)"
   # A clean upgrade is a receipt, not a problem — only the leftovers are worth
   # flagging, so -F is conditional here where the other status jobs hardcode it.
@@ -4276,7 +4315,11 @@ cmd_status() {
     status_line missing "$mc"
     status_line extra "$xc"
     [ -n "$mc$xc" ] || echo "  ok      in sync"
-    for v in "$mb" "$xb" "$mc" "$xc"; do
+    up=$(unpinned_formulae)
+    echo "pins"
+    status_line unpinned "$up"
+    [ -n "$up" ] || echo "  ok      $BREW_PINNED pinned or not installed"
+    for v in "$mb" "$xb" "$mc" "$xc" "$up"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else

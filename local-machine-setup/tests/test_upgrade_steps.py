@@ -33,7 +33,9 @@ LIB = FOLDER.parent / "lib"
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
 case "$*" in
-  "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula ;;
+  "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula
+                                [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED" ;;
+  "list --pinned") [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED" ;;
   "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
@@ -314,6 +316,26 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("ai-apps capture", self.brew_calls())
         self.assertIn("grants", self.brew_calls())
         self.assertIn("ai-apps inventory capture FAILED (exit 1)", result.stdout)
+
+    def test_a_pinned_formula_is_held_not_failed(self):
+        """sd:3062: python@3.14 is pinned, so a newer version is held on
+        purpose; the report says so, and does not count it as left over."""
+        result = self.run_verb("upgrade-report", BREW_PINNED="python@3.14")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        mail = self.sends()[0]
+        body = "\n".join(mail)
+        self.assertIn("held (pinned):\n  python@3.14", body)
+        self.assertNotIn("still outdated (formula) — held back or failed:\n  example-formula\n  python@3.14", body)
+        self.assertIn("upgrade: 0 upgraded, 1 still outdated", mail[1])
+
+    def test_a_week_with_only_a_pinned_formula_outdated_is_quiet(self):
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", BREW_PINNED="python@3.14")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing outdated", result.stdout)
+        self.assertIn("held (pinned):\n  python@3.14", result.stdout)
+        self.assertEqual(self.sends(), [])
 
     def test_a_term_mid_step_exits_without_writing_into_the_removed_temp_dir(self):
         """The job's limit ends the run; the TERM trap used to remove the

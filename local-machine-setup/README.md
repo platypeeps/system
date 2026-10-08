@@ -141,7 +141,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae, casks | — |
+| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed) | — |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
 | `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
