@@ -27,7 +27,8 @@ If Archify is unavailable, name the limitation and use a suitable available form
 
 # RTK
 
-A hook rewrites shell commands through `rtk`, a token-saving proxy: `git status` becomes `rtk git status`; run meta commands such as `rtk gain` directly.
+In Claude Code a hook rewrites shell commands through `rtk`, a token-saving proxy (`git status` becomes `rtk git status`); Codex and opencode run them bare.
+Run meta commands such as `rtk gain` directly.
 If `rtk` output looks wrong, re-run through `rtk proxy <cmd>`; if that differs, use the bare command and say so.
 Run `grep -h` as `rtk proxy grep -h …`: the wrapper mangles `-h` (sd:1320).
 Give every `grep -r` over `~/repos` `-D skip`: a FIFO such as `local-codebase-memory-mcp/.stdin.fifo` blocks it forever.
@@ -37,10 +38,11 @@ Give every `grep -r` over `~/repos` `-D skip`: a FIFO such as `local-codebase-me
 Use the GitHub MCP tools (`mcp__github__*`) for PRs, reviews, commits, repo contents and releases, public or private; not `gh`.
 Where those tools are deferred, load their schemas first, in one call (Claude Code: `ToolSearch("select:mcp__github__pull_request_read,...")`).
 Read merge state with `pull_request_read` `get`: `list_pull_requests` reports `merged:false` for merged PRs.
-Use `gh` only when no MCP tool covers the action or the MCP server is down (`claude mcp list`); use Git for local state.
+Use `gh` only when no MCP tool covers the action or the MCP server is down (`claude mcp list`, `codex mcp list`, `opencode mcp list`); use Git for local state.
 The server needs a classic PAT with `repo` scope: a fine-grained one 404s on other organizations' private repos.
-A token change needs an agent restart; `search_repositories("is:private")` returning `total_count: 0` means a stale or under-scoped token.
+A token change needs an agent restart: the server reads the token at launch. `search_repositories("is:private")` returning `total_count: 0` means a stale or under-scoped token.
 Do not use GitHub issues: track work with `sd task add|note|status`; never open, search or cite an issue as the record.
+If no `sd today` output is in context, run `sd today | head -40` before the first task.
 
 # Verification
 
@@ -57,7 +59,7 @@ Work autonomously: the operator gives direction; you choose the means.
 Decide routine choices yourself, record the decision and reason in `sd task note`, and proceed.
 Ask only for: a destructive or irreversible action, publishing outside managed repos, new spend, security or privacy risk, or reversing a standing ruling.
 Ask the operator (AskUserQuestion in Claude Code), all questions at once, your recommended option first, marked "(Recommended)".
-Notify the operator (PushNotification) only for a critical question; other decisions wait on the dashboard.
+Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
 Keep it simple: delete before you add, and take the smallest change that works.
