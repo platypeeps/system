@@ -11,25 +11,23 @@ too, with two adaptations: the URL-credentials class must not swallow quotes
 or backslashes (it would corrupt JSONL), and PEM masking covers the whole
 BEGIN..END block, not just the header line.
 
-The masked bytes go to a temp file in the same folder, which is fsynced and
-renamed over the original (sd:3042). Until the rename the original is
-untouched, so a full disk or an I/O error leaves it whole. A file another
-process holds open, such as a live session's log, is skipped as busy and
-waits for the next run; masking is manual, so a later run is cheap. A
-writer that got in after that check is caught twice: a size or mtime change
-on the read handle before the rename skips the file as busy, and bytes that
-reach the old inode during the rename are masked and appended to the new
-file. docs/work/2026-10-08-mask-rewrite/design.md has the failure table.
+Every mask is as long as the bytes it replaces: `<masked:$NAME>` or
+`<masked:pattern>`, padded with `*`, or all `*` when the match is shorter than
+the label (sd:3042). The file length never changes, so mask writes only the
+changed blocks in place, on the same inode, and never truncates. A session
+that appends while mask runs, through any descriptor, keeps every byte: its
+writes land past the end mask read, which mask never touches. Before each
+block is written it is read again; a block that changed since the first read
+stops the file as FAILED. docs/work/2026-10-08-mask-rewrite/design.md has the
+failure table.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 from typing import NamedTuple
 
 PEM = re.compile(
@@ -37,17 +35,17 @@ PEM = re.compile(
     rb"(?:[\s\S]{0,10000}?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----)?"
 )
 MARK = b"<masked:pattern>"
+BLOCK = 4096
 
 
 class WriteFailed(Exception):
-    """A file that holds a match and was not masked; the original is whole.
+    """A file that holds a match and was not fully masked.
     Not an OSError, so the read-time skip in `main` does not swallow it."""
 
 
 class Result(NamedTuple):
     count: int
     pcount: int
-    busy: bool = False
 
 
 def parse_pairs(text: str) -> list[tuple[str, bytes]]:
@@ -69,129 +67,66 @@ def parse_patterns(text: str) -> list[re.Pattern]:
     return pats
 
 
+def fit(label: bytes, n: int) -> bytes:
+    """`label` padded with `*` to `n` bytes, or `n` stars when it does not fit."""
+    return label + b"*" * (n - len(label)) if n >= len(label) else b"*" * n
+
+
 def masked(data: bytes, pairs, pats) -> tuple[bytes, int, int]:
-    """Return the masked bytes, the your-key count and the pattern count."""
+    """Return the masked bytes, as long as `data`, the your-key count and the pattern count."""
     new, count = data, 0
     for name, val in pairs:
         c = new.count(val)
         if c:
-            new = new.replace(val, b"<masked:$" + name.encode() + b">")
+            new = new.replace(val, fit(b"<masked:$" + name.encode() + b">", len(val)))
             count += c
     pcount = 0
     for pat in pats:
-        new, n = pat.subn(MARK, new)
+        new, n = pat.subn(lambda m: fit(MARK, len(m.group(0))), new)
         pcount += n
     return new, count, pcount
 
 
-def holders(path: str) -> list[int] | None:
-    """Other processes holding `path` open, or None when nothing can tell.
-
-    Linux answers from /proc; macOS through lsof, whose exit 1 with no output
-    means nobody holds it.
-    """
-    me = os.getpid()
-    if os.path.isdir("/proc/self/fd"):
-        found = set()
-        for pid in filter(str.isdigit, os.listdir("/proc")):
-            try:
-                fds = os.listdir("/proc/%s/fd" % pid)
-            except OSError:
-                continue
-            for fd in fds:
-                try:
-                    if os.readlink("/proc/%s/fd/%s" % (pid, fd)) == path:
-                        found.add(int(pid))
-                except OSError:
-                    continue
-        return sorted(found - {me})
-    lsof = shutil.which("lsof") or ("/usr/sbin/lsof" if os.access("/usr/sbin/lsof", os.X_OK) else None)
-    if lsof is None:
-        return None
-    done = subprocess.run([lsof, "-t", "--", path], capture_output=True, text=True, timeout=60)
-    if done.returncode not in (0, 1):
-        return None
-    return sorted({int(pid) for pid in done.stdout.split()} - {me})
-
-
-def write_all(fd: int, data: bytes) -> None:
+def pwrite_all(fd: int, data: bytes, offset: int) -> None:
     view = memoryview(data)
     while view:
-        view = view[os.write(fd, view):]
+        n = os.pwrite(fd, view, offset)
+        view, offset = view[n:], offset + n
 
 
-def mask_file(path: str, pairs, pats, apply: bool, before_rename=None) -> Result:
-    """Mask one file, or leave it alone as busy.
-
-    `before_rename` is called with the path once the temp file is synced and
-    before the rename. It exists for the tests, which append to the file there.
-    """
-    path = os.path.realpath(path)
-    with open(path, "rb") as f:
-        seen = os.fstat(f.fileno())
+def mask_file(path: str, pairs, pats, apply: bool) -> Result:
+    """Mask one file in place, block by block, without changing its length."""
+    try:
+        fd = os.open(path, os.O_RDWR if apply else os.O_RDONLY)
+        writable = True
+    except OSError as e:
+        if not apply or e.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        fd, writable = os.open(path, os.O_RDONLY), False
+    with os.fdopen(fd, "rb") as f:
         data = f.read()
         new, count, pcount = masked(data, pairs, pats)
         if not (count or pcount) or not apply:
             return Result(count, pcount)
-        left = "%d match(es) left unmasked; the original is unchanged" % (count + pcount)
-        held = holders(path)
-        if held is None:
-            raise WriteFailed("%s: cannot tell whether another process holds it open (no lsof); %s" % (path, left))
-        if held:
-            return Result(0, 0, busy=True)
-        if seen.st_nlink > 1:
-            raise WriteFailed("%s: has %d hard links, and a rename would split them; %s" % (path, seen.st_nlink, left))
-        if not os.access(path, os.W_OK):
-            raise WriteFailed("%s: not writable; %s" % (path, left))
-        folder, name = os.path.split(path)
+        left = "%d match(es) found" % (count + pcount)
+        if not writable:
+            raise WriteFailed("%s: not writable; %s, none masked" % (path, left))
+        written = 0
         try:
-            fd, temp = tempfile.mkstemp(prefix=".%s.mask-" % name, dir=folder)
+            for start in range(0, len(data), BLOCK):
+                old = data[start:start + BLOCK]
+                block = new[start:start + BLOCK]
+                if old == block:
+                    continue
+                if os.pread(fd, len(old), start) != old:
+                    raise WriteFailed("%s: changed while it was masked; %s, %d block(s) masked before it" % (
+                        path, left, written))
+                pwrite_all(fd, block, start)
+                written += 1
+            os.fsync(fd)
         except OSError as e:
-            raise WriteFailed("%s: %s; %s" % (path, e, left)) from e
-        try:
-            try:
-                os.fchmod(fd, seen.st_mode & 0o7777)
-                write_all(fd, new)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            if before_rename:
-                before_rename(path)
-            # Asked again just before the rename: a session that opened the
-            # file since the first check, or wrote to it, makes it busy.
-            now, there = os.fstat(f.fileno()), os.stat(path)
-            if (now.st_size, now.st_mtime_ns) != (seen.st_size, seen.st_mtime_ns) or \
-                    (there.st_dev, there.st_ino) != (seen.st_dev, seen.st_ino) or holders(path):
-                os.unlink(temp)
-                return Result(0, 0, busy=True)
-            os.replace(temp, path)
-        except OSError as e:
-            try:
-                os.unlink(temp)
-            except OSError:
-                pass
-            raise WriteFailed("%s: %s; %s" % (path, e, left)) from e
-        # A writer that held the old inode got bytes in during the rename:
-        # they are on the handle still open here, and go after the masked bytes.
-        late = f.read()
-    try:
-        if late:
-            tail, c, pc = masked(late, pairs, pats)
-            fd = os.open(path, os.O_WRONLY | os.O_APPEND)
-            try:
-                write_all(fd, tail)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            count, pcount = count + c, pcount + pc
-        dirfd = os.open(folder, os.O_RDONLY)
-        try:
-            os.fsync(dirfd)
-        finally:
-            os.close(dirfd)
-    except OSError as e:
-        raise WriteFailed("%s: masked, then %s; %s" % (
-            path, e, "%d appended byte(s) may be missing" % len(late) if late else "the rename may not be durable")) from e
+            raise WriteFailed("%s: %s; %s, %d block(s) masked before the error; run mask again" % (
+                path, e, left, written)) from e
     return Result(count, pcount)
 
 
@@ -199,7 +134,7 @@ def main() -> int:
     apply = os.environ.get("S4S_APPLY") == "1"
     pairs = parse_pairs(os.environ.get("S4S_PAIRS", ""))
     pats = parse_patterns(os.environ.get("S4S_PATTERNS", ""))
-    total = ptotal = files = busy = failed = 0
+    total = ptotal = files = failed = 0
     for path in sys.stdin.read().splitlines():
         if not path:
             continue
@@ -212,10 +147,6 @@ def main() -> int:
             print("  FAILED %s" % e, file=sys.stderr)
             failed += 1
             continue
-        if result.busy:
-            busy += 1
-            print("  busy %s" % path)
-            continue
         count, pcount = result.count, result.pcount
         if count or pcount:
             files += 1
@@ -223,11 +154,11 @@ def main() -> int:
             ptotal += pcount
             print("  %s: %d your-key value(s), %d pattern match(es)" % (path, count, pcount))
     if apply:
-        print("== masked %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy; %d failed"
-              % (total, ptotal, files, busy, failed))
+        print("== masked %d your-key value(s) + %d pattern match(es) in %d file(s); %d failed"
+              % (total, ptotal, files, failed))
         return 1 if failed else 0
-    print("== would mask %d your-key value(s) + %d pattern match(es) in %d file(s); %d busy"
-          " (dry run; add --apply)" % (total, ptotal, files, busy))
+    print("== would mask %d your-key value(s) + %d pattern match(es) in %d file(s)"
+          " (dry run; add --apply)" % (total, ptotal, files))
     return 2 if (total or ptotal) else 0
 
 

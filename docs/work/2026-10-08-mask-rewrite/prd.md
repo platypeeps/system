@@ -1,9 +1,9 @@
 ---
-title: Mask rewrite writes a temp file and renames it
+title: Mask rewrite keeps the length and the inode
 created: 2026-10-08
 item: sd:3042
 ---
-# PRD — mask rewrite writes a temp file and renames it
+# PRD — mask rewrite keeps the length and the inode
 
 ## Problem
 
@@ -18,9 +18,9 @@ The settle window (`S4S_MASK_SETTLE_MIN`) shrank blocker 3 but did not close it.
 
 ## Requirements
 
-1. A failed write, sync or rename leaves the original byte-identical and no temp file behind.
-2. A file another process holds open is skipped as busy, not rewritten.
-3. A byte a writer adds while `mask` runs is kept.
-4. No settle window, backup store or new flag.
+1. A byte a writer appends while `mask` runs is kept, through any descriptor, opened at any time.
+2. The file length and inode never change; mask never truncates.
+3. A failed write or sync says how far it got, and a second run finishes the mask.
+4. No settle window, holder probe, backup store or new flag.
 
 The failure table in `design.md` maps each requirement to a test.
