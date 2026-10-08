@@ -116,6 +116,10 @@ original length and never truncates, so a line appended while it writes
 stays too. A file that will not open to
 write fails the same way when it holds a match, and passes when it holds none. The rewrite is in `mask_files.py`.
 
+With no key-like export, `mask` still masks the known patterns and says so on
+stderr. With no target present at all (no history, AI store or scratchpad),
+it searches nothing; it never falls back to the current directory (sd:1254).
+
 Caveats: quit vim before masking `.viminfo` (vim rewrites it
 on exit from memory), same idea for open shells and history files, and
 masking is cleanup, not un-leaking — rotate any key that sat in these
@@ -355,13 +359,16 @@ legible rather than re-argued each Monday.
   under 30 days old and nothing on the machine is older than 90, so the
   exposed material is in current, active work and no retention window reaches
   it. Do not read the prune as remediation of the exposure.
-- **Still open.** The transcript findings themselves (~1340 durable pattern
-  hits under `~/.claude/projects` and `~/.codex/sessions`) are unchanged by
-  any of the above, so `critical` still exits 2 and the Monday alarm still
-  fires. The actionable remediation for them is `mask --apply`, which rewrites
-  the values in place on the same inode; it has not been run and needs an
-  operator decision, because it rewrites files live sessions may still be
-  appending to.
+- **Masked by hand, not by the job (rulings 2026-09-30 and 2026-10-07).**
+  The transcript findings are not touched by any of the above. The operator
+  ruled to clear them with `mask --apply`, run by hand after reading a dry
+  run (`mask --no-prune`). The weekly job only scans: `mask` rewrites in
+  place, and a session that resumes while it runs can append between its
+  last check and its truncate, so the line is lost. Run by hand, the operator
+  picks a quiet time. Sessions keep echoing the exported values into new log
+  lines, so `critical` exits 2 again after a mask until those keys leave the
+  shell environment. Design record:
+  `docs/work/2026-10-07-secret-scan-mask-durable/`.
 - **`~/.bash_history` stays in scope.** The 2026-09-21 run flagged four lines
   carrying `sts_` ingestion keys. It is not excluded, because the
   finding is actionable without deleting anything: `sts_[0-9a-f]{20,}` is in

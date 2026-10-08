@@ -70,6 +70,10 @@ backup, and the fixture harness both repositories test against.
                     `skill_use.cwd`), `threshold`, `run_id`, `prompt_hash`
                     and `load_avg`, NULL on every older row. Carries its
                     reverse in its header, run before 020's (sd:2950)
+      schema/022_judgment_batch_children.sql  `judgment.parent`, the
+                    batch row a child row answers one question of; NULL
+                    on every older row. Carries its reverse in its header,
+                    run before 021's (sd:2966)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -520,6 +524,17 @@ question definition -- instructions, criteria, levels -- and never the state.
 `load_avg` is the one-minute load average when the call was made, zero or
 more.
 
+A batched call asks several questions at once. Its row is the call: tokens,
+latency, cost, `questions=N`, and no answer. Given `answers`, one entry per
+question in order, `record` also writes one child row per question, with
+`parent` naming the batch row (sd:2966). A child has the batch's pair,
+stage, caller and context, `question_id` `<id>:<position>`, the question's
+type as `primitive`, and its own answer and confidence. It carries no tokens,
+latency or cost, so nothing is counted twice. Every report counts calls from
+batch rows only; agreement and labels read the children. A child whose field
+fails its shape is kept as `invalid` with that field NULL, and the batch row
+and the other children are unchanged.
+
 A gate event is not a decision. A caller that declines at the gate and then
 records what its own mechanism did writes two rows for one decision, so the
 comparison leaves the gate row out of the calls and the declines and counts it
@@ -539,6 +554,20 @@ and the token counts are the record; the report names those rows per arm as
 priced: `local-jev` rows name provider `typesafe`, and its price is the
 operator's to enter. An entry with `roles: []` is never chosen for a role.
 
+A local model is priced by machine time instead (sd:2967). An entry with
+`price: { hour: N }` prices a `jev`, `kev` or `haiku` row at N dollars per
+hour of `server_ms`, or of `duration_ms` when the server reported no time.
+The rate is the machine's, so it applies whatever the entry's `model`; token
+prices keep the model rule. A baseline row is not priced by time. With no
+`hour` price, a `local` row stays NULL, never 0.0. A rate prices the rows
+written after it is entered; old rows are never repriced.
+
+The rate is the operator's measure. Either take the machine's hourly cost, or
+measure its power under load and multiply by the electricity price:
+
+    sudo powermetrics --samplers cpu_power,gpu_power -n 1   # watts, while Kev answers
+    # hour = watts / 1000 * dollars per kWh; 40 W at $0.15/kWh is 0.006
+
     sd-db.sh judgments                 # every stage, both arms
     sd-db.sh judgments --since 2026-09 # a month; bounds are compared as text
     sd-db.sh judgments --json          # the same read, for a screen
@@ -549,8 +578,8 @@ Reported confidence is not accuracy. A row can carry a label: `override` is
 the answer an authoritative later source says it should have been, a number
 in the shape of `answer`; `override_source` names the rule that produced it,
 and `override_at` says when. A row is right when the label equals the answer,
-compared exactly as decimals. A row with no answer (a failed call, a batch)
-cannot be labelled. The report counts labelled and right rows per arm, and per
+compared exactly as decimals. A row with no answer (a failed call, a batch
+row) cannot be labelled; a batch's child rows can. The report counts labelled and right rows per arm, and per
 arm by reported confidence in tenths, so a floor is read off numbers instead
 of guessed. It
 prints each rule's known blind spot beside the stage it labelled.
@@ -585,6 +614,10 @@ accuracy and Brier score on pairs whose Jev row carries a label. A noul agrees
 when both sit on the same side of 0.5, and the mean `|Δp|` is printed beside
 it. A score agrees when the rounded scores are equal; its distribution feeds
 the Brier score only. Percentiles are nearest-rank, so every printed number is one a call took.
+
+A batch is compared question by question: each child row against the Jev
+child with the same pair and `question_id`. Its calls, latency, tokens and
+cost come from the batch row alone.
 
 Each arm, Jev included, is also read against the old mechanism: the baseline
 row a shadow call writes under the same pair id (sd:2761). The line gives

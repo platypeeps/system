@@ -157,7 +157,8 @@ def estimate_tokens(prompt: str) -> int:
 
 
 def _price(entry: Provider, side: str) -> float | None:
-    """The entry's price per million on `side`, or None when the file gives
+    """The entry's price on `side` -- per million tokens for `in` and `out`,
+    per hour of machine time for `hour` -- or None when the file gives
     none the library can use: not a number, negative, or an int too large
     for a float (`registry.parse` does not validate prices)."""
     value = entry.price.get(side)

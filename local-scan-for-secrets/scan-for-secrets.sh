@@ -200,8 +200,17 @@ Library/Application Support/Claude/claude-code-sessions'
 # <root>/claude-<uid>/<project>/<session>/scratchpad, and a glob written one
 # level short matches nothing and reports clean, which is the exact failure
 # this function exists to end.
+# S4S_SCRATCH_ROOTS (one root per line) replaces the two roots, so a test
+# reaches only its own fixture and never a live session's scratchpad.
+scratch_roots() {
+  if [ -n "${S4S_SCRATCH_ROOTS:-}" ]; then
+    printf '%s\n' "$S4S_SCRATCH_ROOTS"
+  else
+    printf '%s\n' "${TMPDIR:-/tmp}" /private/tmp
+  fi
+}
 agent_scratch_dirs() {
-  for root in "${TMPDIR:-/tmp}" /private/tmp; do
+  scratch_roots | while IFS= read -r root; do
     [ -d "$root" ] || continue
     # `|| :` is load-bearing: find exits non-zero when it cannot read a
     # subdirectory (routine under $TMPDIR), the loop body runs inside the
@@ -396,9 +405,11 @@ MASK_EXCLUDE_DIRS=".git node_modules .venv venv __pycache__ .npm .cargo target d
 # backs up. Deleting it is not a fix either; it comes straight back.
 MASK_EXCLUDE_PATHS=".gemini/extensions .codex/plugins .codex/.tmp .codex/tool-venvs .codex/vendor_imports .codex/process_manager .codex/.codex-global-state.json .codex/.codex-global-state.json.bak"
 if [ "$MODE" = mask ] || [ "$MODE" = prune ]; then
+  # No exports is not a failure: the known credential patterns need none, so
+  # mask still masks them, and a machine with no key-like exports is not left
+  # holding every pattern hit (sd:1254).
   if [ "$MODE" = mask ] && [ -z "$S4S_PAIRS" ]; then
-    echo "no key-like exports found in ~/.config/shell/env.sh or ~/.bash_profile, nothing to mask" >&2
-    exit 1
+    echo "no key-like exports found in ~/.config/shell/env.sh or ~/.bash_profile; masking known patterns only" >&2
   fi
   MASK_TARGETS=""
   # if, not `[ -f "$f" ] && MASK_TARGETS=...`: the AND-list is the last
@@ -560,13 +571,23 @@ PRUNE_EOF
       for g in $MASK_EXCLUDE_GLOBS; do set -- "$@" "--exclude=$g"; done
     fi
     # targets read on fd 3 — stdin stays reserved for the pattern list
-    while IFS= read -r t <&3; do [ -n "$t" ] && set -- "$@" "$t"; done 3<<TARGETS_EOF
+    MASK_TARGET_COUNT=0
+    while IFS= read -r t <&3; do
+      if [ -n "$t" ]; then set -- "$@" "$t"; MASK_TARGET_COUNT=$((MASK_TARGET_COUNT + 1)); fi
+    done 3<<TARGETS_EOF
 $MASK_TARGETS
 TARGETS_EOF
+    # No target, no search: rg and grep -r given no path search the current
+    # directory, which is $HOME here, and mask would rewrite files far outside
+    # its safe list, ~/repos among them (review, sd:1254).
+    [ "$MASK_TARGET_COUNT" -gt 0 ] || return 0
     if [ "$HAVE_RG" = 1 ]; then rg "$@" 2>/dev/null || true
     else grep "$@" 2>/dev/null || true; fi
   }
-  FILES=$(printf '%s\n' "$VALS" | mask_file_list fixed)
+  # No values, no literal pass: an empty line is an empty pattern, and an
+  # empty pattern matches every file.
+  FILES=""
+  if [ -n "$VALS" ]; then FILES=$(printf '%s\n' "$VALS" | mask_file_list fixed); fi
   if [ "$HAVE_RG" = 1 ]; then PFILES=$(printf '%s\n' "$PATTERNS" | mask_file_list regex)
   else PFILES=$(ere_patterns | mask_file_list regex); fi
   ALLFILES=$(printf '%s\n%s\n' "$FILES" "$PFILES" | awk 'NF' | sort -u)

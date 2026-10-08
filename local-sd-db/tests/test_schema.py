@@ -1051,7 +1051,10 @@ class TheJudgmentCallContextColumns(SchemaCase):
     def test_the_reverse_returns_the_file_to_twenty(self):
         self._at_version_twenty()
         before = self._dump()
-        migrate(self.path)
+        # Through 21 only: 22 adds a `judgment` column 21's reverse leaves.
+        through = [m for m in schema_module.migrations() if m[0] <= 21]
+        with mock.patch("sd_db.migrate.migrations", return_value=through):
+            migrate(self.path)
         text = dict(schema_module.migrations())[21].read_text(encoding="utf-8")
         raw = sqlite3.connect(self.path, isolation_level=None)
         self.addCleanup(raw.close)
@@ -1060,6 +1063,50 @@ class TheJudgmentCallContextColumns(SchemaCase):
         left = {row[1] for row in raw.execute("PRAGMA table_info(judgment)")}
         self.assertEqual(left & {name for name, _ in self.CONTEXT}, set())
         self.assertEqual(self._dump(), before)
+
+
+class TheJudgmentBatchChildren(TheJudgmentCallContextColumns):
+    """Migration 22. `judgment.parent` names the batch row a child row
+    answers one question of (sd:2966). Every existing row is a call of its
+    own, so it reads NULL, and the reverse returns the file to 21."""
+
+    def _at_version_twenty_one(self):
+        self._at_version_twenty()
+        through = [m for m in schema_module.migrations() if m[0] <= 21]
+        with mock.patch("sd_db.migrate.migrations", return_value=through):
+            migrate(self.path)
+
+    def test_every_existing_row_arrives_at_null_and_keeps_its_values(self):
+        self._at_version_twenty_one()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied),
+                         (21, list(range(22, SCHEMA_VERSION + 1))))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        columns = [(row[1], row[2], row[3], row[4])
+                   for row in connection.execute("PRAGMA table_info(judgment)")]
+        self.assertIn(("parent", "INTEGER", 0, None), columns)
+        self.assertEqual(
+            [tuple(row) for row in connection.execute(
+                "SELECT caller, answer, parent FROM judgment ORDER BY id")],
+            [("one", "0.9", None), ("two", "1", None)])
+        self.assertIn("judgment_by_parent", {row[1] for row in connection.execute(
+            "PRAGMA index_list(judgment)")})
+
+    def test_the_reverse_returns_the_file_to_twenty_one(self):
+        self._at_version_twenty_one()
+        before = self._dump()
+        migrate(self.path)
+        text = dict(schema_module.migrations())[22].read_text(encoding="utf-8")
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        self.assertEqual(schema_version(raw), 21)
+        self.assertEqual(self._dump(), before)
+
+    # The parent class's own tests are migration 21's; they run there.
+    test_the_reverse_returns_the_file_to_twenty = None
+
 
 class TheConnection(SchemaCase):
     def test_wal_and_foreign_keys_are_on(self):
