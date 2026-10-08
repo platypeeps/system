@@ -483,6 +483,7 @@ EQUALITY_LOOKUPS = {
     "progress.py": (6, "stored row values; `item.path` is repo-relative; `shadow.repo` is a slug"),
     "recovery.py": (2, "`_work` and `_pieces` take the row path `reimport` found with `row_for`"),
     "removal.py": (7, "`_plan_repo` rebinds `path` to the row `row_for` found; `_detach` reads it off the plan"),
+    "repos.py": (1, "`set_lane_host` writes the row path its `paths.keys` probe found"),
     "runner.py": (6, "every argument is an item or run row's `repo`"),
     "runner_controls.py": (1, "the item row's `repo`"),
     "runner_exec.py": (1, "the item row's `repo`"),

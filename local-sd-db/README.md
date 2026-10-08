@@ -79,6 +79,10 @@ backup, and the fixture harness both repositories test against.
                     an errno name or HTTP status; NULL on every older row.
                     Carries its reverse in its header, run before 022's
                     (sd:2973)
+      schema/024_repo_lane_host.sql  `repo.lane_host`, the machine that
+                    runs the repository's lane; NULL, the hub, on every
+                    row. Set with `repo lane-host`. Carries its reverse in
+                    its header, run before 023's (sd:3075)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -169,8 +173,9 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh repo managed PATH yes|no   # does the operator manage it
     ./sd-db.sh repo ci PATH github|local  # where its checks run
     ./sd-db.sh repo satellite-gate PATH off|accept  # may the hub merge on a satellite's pass
+    ./sd-db.sh repo lane-host PATH HOST|hub  # which machine runs its lane
 
-A `repo list` row reads `path remote status_source managed ci satellite_gate runner_merge`.
+A `repo list` row reads `path remote status_source managed ci satellite_gate lane_host runner_merge`.
 `remote` is the checkout's origin URL as written, ssh or https: the runner clones over it, so it is not respelled.
 Rows are compared by repository identity, so the two spellings of one GitHub repository match.
 `repo add` on a registered path rereads the checkout, so it refreshes a row whose repository moved to a new owner.
@@ -346,7 +351,7 @@ A file lock or a directory beside the database exists on the hub only.
 So off the hub each verb that needs one raises `HubOnly` before it locks or writes.
 The message names the verb and the hub.
 
-- the `sd-ship` repository lock, and the control gate of service controls and restore;
+- the control gate of service controls and restore;
 - `backup`, `restore`, `init` and `migrate`;
 - runner controls and the runner's executions directory;
 - `repo remove` and `item remove`;
@@ -355,6 +360,7 @@ The message names the verb and the hub.
 
 `ledger.reserve` raises `LedgerRefused` with scope `hub`: provider calls are charged on the hub.
 `ledger.release_orphans` sweeps nothing off the hub, because it asks the local kernel about owner pids.
+The `sd-ship` repository lock follows the lane host instead; see "Lane host".
 
 ### A lost `COMMIT`: `request_outcome`
 
@@ -432,6 +438,22 @@ It installs nothing in these cases, and the error names the reason:
 A self-install builds a wheel, so pip records no VCS commit for it.
 The pack's ancestry guard reads that commit, so it cannot see a self-installed build (sd:2845).
 A stale `make setup` can then install older code once; the next hub call self-installs the hub's build again.
+
+### Lane host
+
+`repo.lane_host` names the machine that runs a repository's merge lane (sd:3075; pack design sd:3003).
+The value is that machine's `hostname -s`, lower-cased. NULL, shown as `hub`, means the hub; every row starts there.
+
+    ./sd-db.sh repo lane-host PATH build-2   # move the lane; prints before and after
+    ./sd-db.sh repo lane-host PATH hub       # back to the hub
+
+The dashboard does the same: Management, the repository's page, `lane_host`, Move lane, with Undo.
+Both refuse an unregistered path and a name outside `[a-z0-9-]+`.
+
+`sd_db.ship.hosts_lane` answers whether this machine hosts a repository.
+`repository_lock` asks it first. On any other machine it raises `LaneElsewhere` (`lane_elsewhere`) and locks nothing.
+The hub's lock file sits beside the database; a satellite host's sits under `$XDG_STATE_HOME/sd/ship-locks/`.
+A missing row, a read fault, or clones that disagree read as the hub.
 
 ### Satellite gate offload: the satellite gates, the hub merges
 
