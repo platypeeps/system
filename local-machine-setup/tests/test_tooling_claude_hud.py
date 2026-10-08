@@ -145,7 +145,8 @@ class ToolingClaudeHudTest(unittest.TestCase):
 
         self.assertIn("ok      claude-hud plugin", out)
         self.assertIn("ok      statusLine -> local-statusline", out)
-        self.assertNotIn("MISSING", out)
+        self.assertNotIn("MISSING claude-hud", out)
+        self.assertNotIn("MISSING statusLine", out)
         self.assertEqual(self.calls(self.claude_log), [])
         self.assertEqual(self.calls(self.statusline_log), [])
 

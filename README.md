@@ -35,8 +35,7 @@ with the public command pack
 - Docker `update` subcommands delete images by IMAGE ID (`awk '{print $3}'`),
   with the grep anchored to the real image name.
 - launchd labels share one prefix, read from `SYSTEM_TOOLS_LABEL_PREFIX`
-  (default `local.system-tools`). Tools that install a LaunchAgent fill it
-  into a committed `*.plist.template` at install time.
+  (default `local.system-tools`).
 
 ## Getting started
 
@@ -88,10 +87,13 @@ script's `-h`.
 | `3003` | local-falkordb browser UI | graphiti UI `3004` |
 | `4317/4318` (OTLP) | local-opentelemetry-collector | jaeger `4327/4328` |
 | `8001` | local-redis RedisInsight | clickhouse MCP `8002` |
+| `6006` | local-phoenix | local-genai-traces OTLP `4337/4338`, Phoenix UI `6016`, health `13137` |
 
 Other fixed ports:
 
+- `8080-8083`: jaeger's HotROD demo.
 - `8084`: local-llama-cpp (override with `PORT`); graphiti MCP HTTP is on 8085.
+- `8009`: local-kev on loopback, Kev's documented port (override with `KEV_PORT`).
 - `8766`: local-task-actions (override with `TASK_ACTIONS_PORT`).
 - `8767`: the workflow dashboard in `local-project-dashboard` (override with
   `dashboard.sh serve --port`).

@@ -1310,8 +1310,8 @@ MACHINE_SETUP = SYSTEM / "local-machine-setup" / "machine-setup.sh"
 @budgeted(seconds=5.0)
 def collect_ports(*, within=None):
     """The port map, read out of the scripts by machine-setup rather than
-    recited from prose — .claude/rules/services.md says the prose list goes stale and to ask
-    the machine, so this asks the machine.
+    recited from prose — a prose port list goes stale, so this asks
+    the machine.
 
     **The budget is this function's, not its caller's.** It declares 5 seconds
     (see the comment above) and inherits the shared 64KB; every command it

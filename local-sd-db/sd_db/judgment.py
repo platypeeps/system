@@ -153,13 +153,13 @@ MODEL_ARMS = ("jev", "kev", "haiku")
 #: How it ended. The five classes, in one column.
 OUTCOMES = ("ok", "timeout", "fallback", "unavailable", "invalid")
 
-#: Why the model was not used. A value and not a boolean, because the six
+#: Why the model was not used. A value and not a boolean, because the five
 #: reasons need different repairs: a switch is flipped, a key is exported, a
-#: link is made, a timeout is tuned, an answer is a defect, and a budget is
-#: raised. `unavailable` is the seventh and the catch-all -- the endpoint
-#: refused or could not be reached.
+#: link is made, a timeout is tuned, and an answer is a defect. `unavailable`
+#: is the sixth and the catch-all -- the endpoint refused or could not be
+#: reached.
 CAUSES = ("switched-off", "unkeyed", "no-path", "timeout", "invalid",
-          "unavailable", "budget")
+          "unavailable")
 
 #: Whether this changed what the caller did.
 CHANGED = ("yes", "no", "unknown")

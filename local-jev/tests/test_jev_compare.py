@@ -154,7 +154,6 @@ class CompareCase(MeteringCase):
 
     def env(self, **extra):
         settings = {
-            "JEV_COMPARE_KEV": "1",
             # Every stage these cases call under; an unlisted one runs no arm.
             "JEV_COMPARE_STAGES": "unknown, JEV_NOTIFY,JEV_SD_REVIEW",
             "JEV_COMPARE_KEV_URL": self.base + "/v1/systemone",
@@ -306,16 +305,6 @@ class TheKevArm(CompareCase):
         self.assertEqual(kev["pair"], rows["jev"]["pair"])
         self.assertGreaterEqual(kev["duration_ms"], 1000)
 
-    def test_an_off_word_sends_nothing_and_writes_nothing(self):
-        for word in ("0", "off", "False", "no", "disabled"):
-            with self.subTest(word=word):
-                Arm.seen = []
-                self.run_main(["noul", "is it?"], JEV_COMPARE_KEV=word)
-                time.sleep(0.5)
-                self.assertEqual(Arm.seen, [])
-        self.assertEqual({row["arm"] for row in self.rows()}, {"jev"})
-        self.assertTrue(all(row["pair"] is None for row in self.rows()))
-
     def test_no_arm_runs_when_the_meter_is_off(self):
         self.run_main(["noul", "is it?"], JEV_METER="0")
         time.sleep(0.5)
@@ -393,12 +382,13 @@ class TheKevArm(CompareCase):
 
 class TheHaikuArm(CompareCase):
     def haiku(self, via, argv=("noul", "is it?"), **extra):
-        env = {"JEV_COMPARE_KEV": "0", "JEV_COMPARE_HAIKU_VIA": via}
+        # Kev runs for every listed stage; a closed port keeps it off the stand-in.
+        env = {"JEV_COMPARE_KEV_URL": "http://127.0.0.1:9/v1/systemone", "JEV_COMPARE_HAIKU_VIA": via}
         env.update(extra)
         before = len(self.rows())    # a subtest's earlier rows must not count
         code, _out = self.run_main(list(argv), **env)
         self.assertEqual(code, 0)
-        return self.by_arm(self.wait_rows(before + 2)[before:])["haiku"]
+        return self.by_arm(self.wait_rows(before + 3)[before:])["haiku"]
 
     def test_anthropic_messages(self):
         Arm.reply = json.dumps({"probability": 0.25})
@@ -667,10 +657,10 @@ class TheConfigFile(CompareCase):
         folder = self.config / "jev"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / ".env").write_text(
-            'JEV_COMPARE_KEV="1"\n'
+            'JEV_COMPARE_STAGES="unknown"\n'
             'JEV_COMPARE_HAIKU_VIA="openrouter"\n'
             'JEV_COMPARE_OPENROUTER_KEY="or-key"\n')
-        result = self.via_entrypoint(JEV_COMPARE_KEV="", JEV_COMPARE_HAIKU_VIA="")
+        result = self.via_entrypoint(JEV_COMPARE_STAGES="", JEV_COMPARE_HAIKU_VIA="")
         self.assertEqual(result.returncode, 0, result.stderr)
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and len(self.rows()) < 2:
@@ -730,13 +720,12 @@ class TheConfigFile(CompareCase):
 
 
 class TheArmsAreOptIn(CompareCase):
-    """Unset means off for both arms: a live Jev call stays what it was."""
+    """An unlisted stage runs no arm: a live Jev call stays what it was."""
 
     def call_with(self, **settings):
         from unittest import mock
         env = self.env()
-        for name in ("JEV_COMPARE_KEV", "JEV_COMPARE_HAIKU_VIA"):
-            env.pop(name, None)
+        env.pop("JEV_COMPARE_HAIKU_VIA", None)
         # None unsets a variable, so a case can drop the default stage list.
         for name, value in settings.items():
             if value is None:
@@ -759,29 +748,12 @@ class TheArmsAreOptIn(CompareCase):
         self.assertEqual(code, 0)
         return spawned
 
-    def test_with_nothing_set_no_arm_starts_and_no_row_is_written(self):
-        self.assertEqual(self.call_with(), [])
+    def test_with_no_stage_listed_no_arm_starts_and_no_row_is_written(self):
+        self.assertEqual(self.call_with(JEV_COMPARE_STAGES=None), [])
         self.assertEqual(Arm.seen, [])
         rows = self.rows()
         self.assertEqual([row["arm"] for row in rows], ["jev"])
         self.assertIsNone(rows[0]["pair"])
-
-    def test_only_an_on_word_starts_the_kev_arm(self):
-        for word in ("1", "on", "true", "yes", "enabled"):
-            with self.subTest(word=word):
-                self.assertEqual(len(self.call_with(JEV_COMPARE_KEV=word)), 1)
-        for word in ("", "0", "off", "maybe"):
-            with self.subTest(word=word):
-                self.assertEqual(self.call_with(JEV_COMPARE_KEV=word), [])
-
-    def test_only_a_named_transport_starts_the_haiku_arm(self):
-        for via in ("anthropic", "openrouter", "claude-cli", "baseten"):
-            with self.subTest(via=via):
-                self.assertEqual(len(self.call_with(JEV_COMPARE_HAIKU_VIA=via)), 1)
-        for word in ("", "off", "0", "disabled"):
-            with self.subTest(word=word):
-                self.assertEqual(self.call_with(JEV_COMPARE_HAIKU_VIA=word), [])
-
 
 class TheStageList(TheArmsAreOptIn):
     """sd:2824: an arm runs only for a stage `JEV_COMPARE_STAGES` lists."""
@@ -789,15 +761,12 @@ class TheStageList(TheArmsAreOptIn):
     def test_an_unset_or_empty_list_starts_no_arm(self):
         for stages in (None, "", " , "):
             with self.subTest(stages=stages):
-                self.assertEqual(self.call_with(JEV_COMPARE_KEV="1",
-                                                JEV_COMPARE_STAGES=stages), [])
+                self.assertEqual(self.call_with(JEV_COMPARE_STAGES=stages), [])
 
     def test_only_a_listed_stage_starts_an_arm(self):
-        listed = self.call_with(JEV_COMPARE_KEV="1", JEV_STAGE="JEV_SD_REVIEW",
-                                JEV_COMPARE_STAGES="JEV_NOTIFY, JEV_SD_REVIEW")
+        listed = self.call_with(JEV_STAGE="JEV_SD_REVIEW", JEV_COMPARE_STAGES="JEV_NOTIFY, JEV_SD_REVIEW")
         self.assertEqual(len(listed), 1)
-        self.assertEqual(self.call_with(JEV_COMPARE_KEV="1", JEV_STAGE="JEV_NOTIFY",
-                                        JEV_COMPARE_STAGES="JEV_SD_REVIEW"), [])
+        self.assertEqual(self.call_with(JEV_STAGE="JEV_NOTIFY", JEV_COMPARE_STAGES="JEV_SD_REVIEW"), [])
 
     def child(self, stage, **settings):
         """The child run as `jev.py` runs it; its arms finish before it returns."""
@@ -807,8 +776,7 @@ class TheStageList(TheArmsAreOptIn):
                            "questions": {"q": {"type": "noul", "instructions": "is it?"}}}}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
             json.dump(job, fh)
-        env = self.env(JEV_COMPARE_HAIKU_VIA="anthropic", JEV_COMPARE_ANTHROPIC_KEY="k",
-                       **settings)
+        env = self.env(**{"JEV_COMPARE_HAIKU_VIA": "anthropic", "JEV_COMPARE_ANTHROPIC_KEY": "k", **settings})
         Arm.reply = json.dumps({"probability": 0.2})
         self.assertEqual(jev_compare.main([fh.name], env=env), 0)
         return sorted(s["path"] for s in Arm.seen)
@@ -821,6 +789,34 @@ class TheStageList(TheArmsAreOptIn):
         self.assertEqual(self.child("JEV_SD_REVIEW", JEV_COMPARE_STAGES="JEV_SD_REVIEW"),
                          ["/v1/messages", "/v1/systemone"])
         self.assertEqual(sorted(row["arm"] for row in self.rows()), ["haiku", "kev"])
+
+    def test_an_off_word_leaves_the_haiku_arm_out(self):
+        for word in ("", "off", "0", "disabled"):
+            with self.subTest(word=word):
+                Arm.seen = []
+                self.assertEqual(self.child("JEV_SD_REVIEW", JEV_COMPARE_STAGES="JEV_SD_REVIEW",
+                                            JEV_COMPARE_HAIKU_VIA=word), ["/v1/systemone"])
+
+    #: `JEV_COMPARE_STAGES` as the hub sets it on 2026-10-08 (sd:3011).
+    HUB_STAGES = ("JEV_SD_REVIEW", "JEV_SD_REVIEW_BLIND", "JEV_SD_REVIEW_TRIAGE", "JEV_SD_TASK_DEDUPE",
+                  "JEV_SD_DOCS_LINT", "JEV_SD_FACT_CHECK", "JEV_SD_PROSE_SCORE", "JEV_SD_PUBLISH", "JEV_SD_PLAN",
+                  "JEV_ADVERSARIAL_GATE", "JEV_MAIL_INTAKE", "JEV_DRIVE_INTAKE", "JEV_NOTIFY", "JEV_HEALTH_CHECK",
+                  "JEV_OBSIDIAN_REVIEW", "JEV_OBSIDIAN_TASKS", "JEV_JOB_TRIAGE", "JEV_REPO_SYNC_HYGIENE",
+                  "JEV_GENAI_FIELD_AUDIT", "JEV_WEEKLY_DIGEST")
+
+    def test_every_stage_the_hub_lists_runs_all_three_arms(self):
+        # The stage list is the one switch (sd:3011).
+        stages = ",".join(self.HUB_STAGES)
+        for stage in self.HUB_STAGES:
+            with self.subTest(stage=stage):
+                self.assertEqual(len(self.call_with(JEV_STAGE=stage, JEV_COMPARE_STAGES=stages,
+                                                    JEV_COMPARE_HAIKU_VIA="anthropic")), 1)
+                Arm.seen = []
+                self.assertEqual(self.child(stage, JEV_COMPARE_STAGES=stages),
+                                 ["/v1/messages", "/v1/systemone"])
+        arms = {(row["stage"], row["arm"]) for row in self.rows()}
+        for stage in self.HUB_STAGES:
+            self.assertLessEqual({(stage, "jev"), (stage, "kev"), (stage, "haiku")}, arms, stage)
 
 
 class TheOutputCap(CompareCase):
@@ -1078,8 +1074,7 @@ class TheRequestFile(unittest.TestCase):
                                  setattr(jev, "_ENV", saved[1]),
                                  setattr(tempfile, "tempdir", saved[2])))
         jev._EVENT = {"caller": "c", "stage": "S", "primitive": "noul", "questions": 1}
-        jev._ENV = {"JEV_METER": "1", "JEV_COMPARE_KEV": "1",
-                    "JEV_COMPARE_HAIKU_VIA": "off", "JEV_COMPARE_STAGES": "S"}
+        jev._ENV = {"JEV_METER": "1", "JEV_COMPARE_HAIKU_VIA": "off", "JEV_COMPARE_STAGES": "S"}
         tempfile.tempdir = folder
         # A child that dies before it reads: Popen starts nothing.
         with mock.patch("subprocess.Popen",
@@ -1108,11 +1103,6 @@ class Shaping(unittest.TestCase):
         self.assertIsNone(jev.distribution_of(
             {"probabilities": {"a": 1.2, "b": 0.0}},
             {"type": "choice", "criteria": {"a": None, "b": None}}))
-
-    def test_a_token_estimate_uses_the_library_s_bytes_per_token(self):
-        # `jev` runs without `sd_db`, so the rule is mirrored, not imported.
-        from sd_db.calls import BYTES_PER_TOKEN
-        self.assertEqual(jev.BYTES_PER_TOKEN, BYTES_PER_TOKEN)
 
     def test_a_distribution_that_is_not_finite_is_no_distribution(self):
         for bad in (float("nan"), float("inf"), float("-inf")):

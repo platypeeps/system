@@ -147,8 +147,8 @@ sd-db.sh — the one database, and the fixture harness both faces test with.
 
 Usage: sd-db.sh <command>
 
-  init        Create ~/.local/share/sd/sd.db, bring it to the current schema
-              version, and seed provider and bill from providers.yaml.
+  init        Create ~/.local/share/sd/sd.db and bring it to the current
+              schema version.
   migrate     Apply every migration the database has not seen. Run it with
               the dashboard, the runner and sd-serve stopped, after `backup`
               (which copies a database it cannot yet write), then start all
@@ -342,22 +342,6 @@ Usage: sd-db.sh <command>
               same side of 0.5 and the mean |dp|), and accuracy and Brier on
               pairs that carry a label. The old `judgments` report reads only
               the jev and baseline arms. A read only.
-  claim ITEM [--branch B] [--quiet-until ISO] [--host H]
-              On a satellite: declare that this machine holds ITEM, so the
-              hub alarms when it goes quiet (sd:2918). A second claim
-              replaces the first; --quiet-until silences it until then.
-              Refused on the hub.
-  unclaim ITEM
-              Release ITEM's claim and close its alert episode.
-  satellite-stale [status | --notify] [--now ISO]
-              On the hub: one line per open claim, fresh, stale, quiet or
-              skipped. Progress is the newest note, the item's updated_at
-              and the claimed branch's head on origin. --notify sends one
-              alert per stale episode through $SD_NOTIFY, inside
-              SD_SATELLITE_STALE_WINDOW (default 7-22, local hours).
-              SD_SATELLITE_STALE_HOURS sets the threshold (default 3).
-              `status` exits 0 none stale, 1 one stale, 3 nothing to check;
-              local-satellite-stale/satellite-stale.sh wraps it.
   credentials Probe credential presence and expiry and record them as the
               `credentials:nightly` heartbeat, which Health reads: the
               GitHub PAT (GET /user, its expiry header), gh auth status,
@@ -474,7 +458,7 @@ case "${1:-}" in
         fi
         echo "$output"
         ;;
-    init|migrate|status|restore|repo|item|work|import|verify|retire|usage|judgments|credentials|claim|unclaim|satellite-stale)
+    init|migrate|status|restore|repo|item|work|import|verify|retire|usage|judgments|credentials)
         # Convention 1 for every verb here: `-h` or `--help` anywhere prints
         # the usage and acts on nothing. `init --help` ran init on the live
         # database (sd:2716): `sd_db.jobs.cli` reads no flags of its own.

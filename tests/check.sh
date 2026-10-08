@@ -216,9 +216,9 @@ if [ -n "$failed" ]; then
     echo "== tail of $job"
     [ ! -f "$work/$job.log" ] || grep -E '^(FAIL|ERROR):|^[A-Za-z]*Error|: (skipped tests|no unittest)|FAILED' "$work/$job.log" | tail -n 20
   done
-  # Kept for the full logs; a pass removes it.
-  trap - EXIT
-  echo "check.sh: failed:$failed; logs kept in $work" >&2
+  # Each job's whole log is printed above, and sd-check keeps a failing
+  # check's whole output, so the EXIT trap removes $work here too.
+  echo "check.sh: failed:$failed" >&2
   exit 1
 fi
 echo "check.sh: every suite passed"

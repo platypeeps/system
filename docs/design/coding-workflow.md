@@ -95,11 +95,10 @@ It runs `tests/check.sh`: one preflight, then four legs in parallel, plus the
 macOS-only suites on a Mac. The preflight runs once, before any leg:
 
 1. `sd-docs-lint`, from the repository root with no `--work-dir`
-2. `tests/test_citations.py`
-3. `tests/test_jev_contract.py`
-4. `tests/test_product_name.py`, which fails naming each tracked line outside
+2. `tests/test_jev_contract.py`
+3. `tests/test_product_name.py`, which fails naming each tracked line outside
    a `mezmo-*` folder that names the product
-5. a guard that enumerates `*/tests/test_*.py` from the filesystem and fails
+4. a guard that enumerates `*/tests/test_*.py` from the filesystem and fails
    naming any folder no `run_suite` line names
 
 The guard closes a specific failure: a suite that exists but was never
@@ -148,28 +147,6 @@ Two things this rule does **not** do, both worth knowing:
 
 So the gate checks spelling. It does not check truth.
 
-## Citations into code are banned
-
-Any `path:line` pointing into a `.py`, `.sh`, `.js` or `.yml` file fails
-anywhere in a tracked `.md`, `.py` or `.sh`. The reason is simple: nothing can
-check that the line still carries the claim. One citation pointed past the end
-of a 260-line file and linted clean; six more pointed at comments while
-sitting in pages that read as green.
-
-Three anchor forms are accepted instead, each verified against the file named:
-
-1. A backticked snippet — `` `<snippet>`, in `<symbol>` of `<path>` `` — with
-   every span word-bounded in the file.
-2. `source:<path>::<symbol>`, resolved by `ast` for Python and by a
-   `<symbol>() {` or `<symbol>=` line for shell.
-3. `[quoted: <reason>]` after a token that is an example rather than a claim.
-
-Sites older than the gate sit in a ratchet that only shrinks. The work archive
-— the `archive/` folder under `docs/work` — is not scanned, because an
-archived page is a record nobody edits again. Spelling the archive's own path
-here would be a work reference to a folder no checkout has to carry, and rule
-7 fails one of those.
-
 ## Where this fits
 
 The pack's own `docs/coding-to-release.md` is the outer loop: the generic
@@ -184,9 +161,8 @@ not the one described here.
 ## Status
 
 **Verified in this build.** The status list and the refusal of a direct write
-to `done`; the `Work:` line grammar and that an absent line passes; the four
-preflight steps and the unwired-suite guard; the citation gate's three
-accepted anchor forms.
+to `done`; the `Work:` line grammar and that an absent line passes; the
+preflight steps and the unwired-suite guard.
 
 **Not verified here.** Whether any individual repository currently sets
 `repo.merge_policy` to `auto` — that is a per-repository database value, not a

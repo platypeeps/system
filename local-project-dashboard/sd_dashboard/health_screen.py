@@ -8,12 +8,6 @@ port adds no collector:
   Today's Now read. A registration whose directory is gone is a row per
   checkout, carrying the registrations behind it; one whose files could not
   be read is a row of its own, in the unknown state.
-- Attribution: `reads.trailer_scan`, the scope the design decided on
-  2026-09-30: your commits (each repository's `user.email`) of the last five
-  weeks on each default branch (`origin/HEAD`), merges left out, with no
-  `Authored-with:` trailer. A repository with no `origin/HEAD`, or no
-  `user.email`, is a row that says so. The walk runs inside
-  `TRAILER_SECONDS`; past it the area is the refusal and no count.
 - Ports: `ports_screen.port_rows` over `collect_ports`, Operations > Ports'
   reader, with its counts and warnings; collected for the request.
 - Protection: `protection.rows`, what the nightly `sd shadow sync` left in
@@ -29,14 +23,15 @@ port adds no collector:
   `sd-db.sh credentials` writes each night: presence, validity and expiry,
   never a value. Expiry is judged against the request's time.
 
-The design source shows nine areas. The parts no reader covers are in the
+The design source shows nine areas; the page leaves out its Attribution
+(sd:3011). The parts no reader covers are in the
 document as `missing`, by name, so
 the page says what it does not read instead of showing a clean lamp. A
 reader that fails is its area's `error`, never an empty area: a fleet
 nobody could read must not look like a fleet with nothing wrong.
 
 Nothing here writes. The page's fixes are CLI lines for Copy; no route
-prunes a worktree or attributes a commit.
+prunes a worktree.
 """
 
 from __future__ import annotations
@@ -58,7 +53,6 @@ from sd_db import protection as protection_module
 
 from . import fleet as fleet_module
 from . import health_collectors, ports_screen
-from .operations_screen import TRAILER_SECONDS
 from .protection_screen import APPLICABLE, FLAGS, GAPS, ORDER
 
 __all__ = ["AREAS", "document"]
@@ -68,8 +62,6 @@ AREAS = (
     ("disk", "Disk", "df -kPl · du -k -d 1 per disk.conf storage folder · git worktree list per registered repo",
      ("build output sizes (its presence is read, not its size)", "build output in worktrees not yet merged")),
     ("cred", "Credentials", "sd-db.sh credentials (nightly) → state heartbeat credentials:nightly", ()),
-    ("attr", "Attribution", "git log origin/HEAD --no-merges --since='5 weeks ago' --author='<user.email>' -i -F per registered repo · %(trailers)",
-     ("counts per repo", "the per-week history")),
     ("wt", "Worktrees", "the fleet's .git/worktrees registrations",
      ("merged worktrees still on disk (merge-base --is-ancestor)",)),
     ("br", "Branches", "git for-each-ref --merged=origin/HEAD refs/heads per registered repo", ()),
@@ -134,36 +126,6 @@ def _worktree_rows(document) -> list[dict]:
             "kind": "Worktrees", "facts": {"Registrations": str(len(trees)), "Root": root},
             "cli": "git worktree list --porcelain  # per repo",
         })
-    return rows
-
-
-def _attribution_rows(scan: dict) -> list[dict]:
-    """The count as one caution or ok row, and one unknown row per reason a repository was not read."""
-    missing, commits, repos = scan["missing"], scan["commits"], scan["repos"]
-    scope = f"your commits on the default branch of {repos} {_plural(repos, 'repo', 'repos')} · 5 weeks · merges left out"
-    facts = {"Missing": str(missing), "Commits": str(commits), "Window": "5 weeks to the reading", "Branch": "origin/HEAD",
-             "Author": "each repo's git config user.email"}
-    cli = "git -C <repo> log origin/HEAD --no-merges -z --since='5 weeks ago' --author=\"<$(git -C <repo> config user.email)>\" -i -F --format='%H%x1f%(trailers)'"
-    if missing:
-        rows = [{"id": "attr:weeks", "state": "caution", "type": "attribution gap",
-                 "what": f"{missing} of {commits} of your commits in 5 weeks lack Authored-with",
-                 "detail": scope, "kind": "Attribution · 5 weeks", "facts": facts}]
-    else:
-        rows = [{"id": "attr:ok", "state": "ok", "type": "check",
-                 "what": f"Each of your {commits} {_plural(commits, 'commit', 'commits')} in 5 weeks carries Authored-with",
-                 "detail": scope, "kind": "Attribution · 5 weeks", "facts": facts, "cli": cli}]
-    for key, reason, fix in (
-            ("no_default", "no origin/HEAD, so the default branch is unknown and nothing was read",
-             "git -C <repo> remote set-head origin --auto"),
-            ("no_author", "no git config user.email, so there is no author to count",
-             "git -C <repo> config user.email <address>")):
-        found = scan.get(key) or []
-        if found:
-            count = len(found)
-            rows.append({"id": f"attr:{key}", "state": "unknown", "type": "check",
-                         "what": f"{count} {_plural(count, 'repo has', 'repos have')} {reason.split(',')[0]}: not counted",
-                         "detail": reason, "kind": "Attribution · not read", "facts": {"Repos": str(count)},
-                         "list": list(found), "cli": fix})
     return rows
 
 
@@ -656,7 +618,7 @@ def _credential_rows(found: tuple[str, dict] | None, *, now: str) -> tuple[list[
 PAGE_SECONDS = 13.0
 #: The areas whose reader walks subprocesses, each on its own scan thread; Protection, Dependencies, Security and
 #: Credentials read only the database, on this thread.
-POOLED = ("disk", "attr", "wt", "br", "ports")
+POOLED = ("disk", "wt", "br", "ports")
 
 
 class _Scans:
@@ -723,12 +685,12 @@ def _settle(area: dict, name: str, read) -> None:
         area["error"] = str(failure) or f"the {name} reader failed without a reason"
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=None, ports=None, protection=None,
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None, protection=None,
              disk=None, branches=None, credentials=None) -> dict:
     """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
 
-    `fleet` is `fleet.collect`'s shape, `area -> document`, `trailers`
-    `reads.trailer_scan`'s, `ports` `collect_ports`' (no argument) and
+    `fleet` is `fleet.collect`'s shape, `area -> document`, `ports`
+    `collect_ports`' (no argument) and
     `protection` `protection.rows`', and `disk` and `branches`
     `health_collectors.disk_scan`'s and `branch_scan`'s, and `credentials`
     `read_credentials`'; each is a seam a test fills. Each reader
@@ -737,8 +699,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
     page draws above them (`extra`).
 
     **The walkers run at once.** Each waits on subprocesses inside its own
-    budget, so in series the budgets add up (the trailer count's 10 seconds,
-    Disk's and Branches' 8, the fleet's 12) and at once the slowest decides.
+    budget, so in series the budgets add up (Disk's and Branches' 8, the
+    fleet's 12) and at once the slowest decides.
     A sqlite connection belongs to the thread that opened it, so the
     registry the default walkers need is read here first and handed to them
     as paths; Protection, which reads only the database, stays on this
@@ -758,8 +720,6 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
         return known
 
     read_fleet = fleet or fleet_module.collect
-    count_trailers = trailers or (lambda connection, *, now: reads.trailer_scan(
-        connection, now=now, within=TRAILER_SECONDS, repo_paths=registered()))
     collect_ports = ports or ports_screen._collect
     read_protection = protection or protection_module.rows
     read_creds = credentials or read_credentials
@@ -767,7 +727,6 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, trailers=N
     scan_branches = branches or (lambda connection: health_collectors.branch_scan(connection, repo_paths=registered()))
     readers = {
         "disk": lambda: _disk_rows(scan_disk(connection)),
-        "attr": lambda: _attribution_rows(count_trailers(connection, now=now)),
         "wt": lambda: _worktree_rows(read_fleet("sessions")),
         "br": lambda: _branch_rows(scan_branches(connection)),
         "ports": lambda: _port_rows(collect_ports()),

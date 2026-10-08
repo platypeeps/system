@@ -1130,8 +1130,45 @@ stage_tooling() {
       echo "  MISSING statusLine -> local-statusline"
       run sh "$ROOT/local-statusline/statusline.sh" install
     fi
+    # The settings baseline in claude_settings.py, the same on every machine:
+    # deny rules (secret reads, GitHub issues, claude-mem work state), no
+    # attribution lines, the `sd today` hook. It adds missing entries after a
+    # backup and never touches the operator's own.
+    if [ -f "$HOME/.claude/settings.json" ]; then
+      if gaps=$(python3 "$DIR/claude_settings.py" missing "$HOME/.claude/settings.json" 2>/dev/null); then
+        if [ -z "$gaps" ]; then
+          echo "  ok      settings.json baseline"
+        else
+          printf '%s\n' "$gaps" | sed 's/^/  MISSING settings.json /'
+          run backup_file "$HOME/.claude/settings.json"
+          run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
+        fi
+      else
+        echo "  DIFFERS settings.json is not valid JSON; baseline not checked"
+      fi
+    fi
   else
     echo "  SKIP    claude not installed (HUD not set up)"
+  fi
+  # opencode gets the same secret-read denies as a top-level permission.read
+  # block, inserted as text so the operator's comments stay. A file with its
+  # own top-level permission block is reported, not edited. Codex has no user
+  # layer for this: its deny_read lives in the root-owned requirements.toml.
+  opencode_json="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"
+  if command -v opencode >/dev/null 2>&1 && [ -f "$opencode_json" ]; then
+    if gaps=$(python3 "$DIR/claude_settings.py" opencode-missing "$opencode_json" 2>/dev/null); then
+      case $gaps in
+        '') echo "  ok      opencode.json read denies" ;;
+        has*) echo "  DIFFERS opencode.json $gaps" ;;
+        *)
+          printf '%s\n' "$gaps" | sed 's/^/  MISSING opencode.json /'
+          run backup_file "$opencode_json"
+          run python3 "$DIR/claude_settings.py" opencode-merge "$opencode_json"
+          ;;
+      esac
+    else
+      echo "  DIFFERS opencode.json does not parse; read denies not checked"
+    fi
   fi
   # task-actions' digest email buttons need a public URL; the tailscale
   # funnel provides it and --bg persists across reboots. Only on a machine
@@ -2540,7 +2577,7 @@ port_defaults() { # reads stdin
 # Host ports a service folder publishes: overridable defaults plus whatever is
 # still written literally on a `docker run -p` flag or in a compose ports list.
 # Read out of the files on every run for the same reason the folder list is —
-# the port table in .claude/rules/services.md is documentation, not a source.
+# the port table in README.md is documentation, not a source.
 service_ports() {
   cand_svc="$1"
   cand_entry="$ROOT/$cand_svc/${cand_svc#local-}.sh"

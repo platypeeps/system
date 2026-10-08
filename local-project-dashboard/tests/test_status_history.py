@@ -103,8 +103,7 @@ class ThreeStatusChanges(ScreenCase):
             ["git", "-C", str(ROOT), "grep", "-n", "-I",
              "-e", "UPDATE item SET status",
              # Code, not prose. `prd.md` and `implement.md` quote the pattern
-             # in the sentence that asks for this grep, and a `.citations.tsv`
-             # row quotes them quoting it; none of the three writes a row.
+             # in the sentence that asks for this grep; neither writes a row.
              "--", "*.py", "*.sql", "*.sh", "*.rs", "*.js"],
             capture_output=True, text=True,
         )

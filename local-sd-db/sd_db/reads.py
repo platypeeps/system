@@ -22,11 +22,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
-import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
 from . import paths
 from .errors import SdDbError
@@ -35,7 +34,6 @@ __all__ = [
     "AgeBucket",
     "Number",
     "ScorecardRow",
-    "TRAILER",
     "age_bounds",
     "age_bucket",
     "age_histogram",
@@ -52,8 +50,6 @@ __all__ = [
     "item_by_id",
     "item_notes",
     "item_shadow",
-    "missing_trailers",
-    "trailer_scan",
     "OverBudget",
     "on_branch",
     "open_followups",
@@ -106,11 +102,6 @@ BOARD_COLUMNS = ("planning", "ready", "in_progress", "ready_to_send", "blocked",
 
 #: Days in a status, bucketed. The last bucket is open-ended.
 AGE_EDGES = (1, 3, 7, 14, 30, 45)
-
-#: The trailer every commit in this fleet carries. Named once because
-#: `missing_trailers` counts the commits without it.
-TRAILER = "Authored-with:"
-
 
 def _now(now: str | None) -> str:
     return now if now is not None else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -521,108 +512,6 @@ def weekly_numbers(
 
 class OverBudget(SdDbError):
     """A read that ran past the budget its caller set and was stopped, not waited on."""
-
-
-#: How far back the trailer count reads: five weeks, as the Health design decided on 2026-09-30.
-TRAILER_WEEKS = 5
-
-
-def trailer_scan(
-    connection: sqlite3.Connection, *, now: str | None = None, repo_paths: list[str] | None = None,
-    within: float | None = None,
-) -> dict[str, Any]:
-    """The operator's own commits of the last five weeks on each default branch, and which lack `Authored-with:`.
-
-    Scope, per repository: `origin/HEAD` (the default branch as the clone
-    knows it), `--no-merges`, `TRAILER_WEEKS` weeks to `now`, and the author
-    the repository's own `git config user.email` names, read at run time. A
-    repository with no `origin/HEAD` is listed in `no_default`, not read on
-    its checkout's HEAD instead; one with no `user.email` is listed in
-    `no_author`; a path git cannot read at all is skipped, as before.
-
-    **The record separator is not a newline, because `%(trailers)` is not one
-    line.** The first version of this function asked for `%H%x00%(trailers)`
-    and split the output on `\\n`, so only a commit's *first* trailer line
-    carried the NUL that identified the record; a commit whose
-    `Authored-with:` was its second trailer had that line skipped by the
-    "no NUL here" guard and was counted as missing. Two commits, one of them
-    correctly trailered, came back as two missing.
-
-    So `-z` separates the records, which puts the NUL *between* commits where
-    a newline cannot reach it, and `%x1f` separates the two fields inside a
-    record -- a unit separator, because it cannot occur in a hash and, unlike
-    the NUL, does not collide with what `-z` is already using.
-
-    `within` is an overall time budget in seconds, for a caller that must not
-    wait on a slow fleet (the Health page). The walk stops when it is spent
-    and raises `OverBudget`: a partial count is not the count. Without it
-    each git call still has its own 20 s timeout.
-    """
-    end = _parse(_now(now))
-    since = (end - timedelta(weeks=TRAILER_WEEKS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    until = end.strftime("%Y-%m-%dT%H:%M:%SZ")
-    if repo_paths is None:
-        repo_paths = [
-            row["path"]
-            for row in connection.execute("SELECT path FROM repo ORDER BY path").fetchall()
-        ]
-    stop = None if within is None else time.monotonic() + within
-    refusal = f"the trailer count ran past its budget of {within:g} seconds" if within is not None else ""
-
-    def git(path: str, *args: str) -> subprocess.CompletedProcess | None:
-        """One git call inside the budget, or None when git could not answer."""
-        timeout = 20.0
-        if stop is not None:
-            timeout = min(timeout, stop - time.monotonic())
-            if timeout <= 0:
-                raise OverBudget(refusal)
-        try:
-            return subprocess.run(["git", "-C", str(paths.disk(path)), *args],
-                                  capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            if stop is not None and time.monotonic() >= stop:
-                raise OverBudget(refusal) from None
-            return None
-        except (OSError, subprocess.SubprocessError):
-            return None
-
-    scan: dict[str, Any] = {"missing": 0, "commits": 0, "repos": 0, "no_default": [], "no_author": []}
-    for path in repo_paths:
-        ref = git(path, "rev-parse", "--verify", "-q", "origin/HEAD")
-        if ref is None or ref.returncode not in (0, 1):
-            continue  # not a repository git can read
-        if ref.returncode == 1:
-            scan["no_default"].append(path)
-            continue
-        email = git(path, "config", "user.email")
-        author = email.stdout.strip() if email is not None and email.returncode == 0 else ""
-        if not author:
-            scan["no_author"].append(path)
-            continue
-        # git matches --author against "Name <address>" as a substring; the <...> make it the whole address.
-        done = git(path, "log", "origin/HEAD", "--no-merges", "-z", f"--since={since}", f"--until={until}",
-                   f"--author=<{author}>", "-i", "-F", "--format=%H%x1f%(trailers)")
-        if done is None or done.returncode != 0:
-            continue
-        scan["repos"] += 1
-        for record in done.stdout.split("\x00"):
-            if not record.strip():
-                continue
-            _, separator, trailers = record.partition("\x1f")
-            if not separator:
-                continue
-            scan["commits"] += 1
-            if TRAILER not in trailers:
-                scan["missing"] += 1
-    return scan
-
-
-def missing_trailers(
-    connection: sqlite3.Connection, *, now: str | None = None, repo_paths: list[str] | None = None,
-    within: float | None = None,
-) -> int:
-    """The missing-trailer count: `trailer_scan`'s `missing`, in its scope."""
-    return trailer_scan(connection, now=now, repo_paths=repo_paths, within=within)["missing"]
 
 
 def runner_board(

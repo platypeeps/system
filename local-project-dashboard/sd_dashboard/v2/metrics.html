@@ -2,7 +2,7 @@
 <!--
   Metrics (sd:2119), at /metrics. Built from the design source's products/system/designs/pages/metrics.{html,css,js}.
   Data: /api/metrics (metrics_screen.document: sd usage's month, the 7-day window meter per day, the week's numbers,
-  missing trailers, the provider scorecard, skill use, age in status and observed activity), read when the page opens and
+  the provider scorecard, skill use, age in status and observed activity), read when the page opens and
   on Refresh. A part that did not read is unknown with its reason. By model, CI health and flaky tests have no reader and
   show as unknown. Writes: none; the cap form stays on the classic Usage screen. Nothing here is sample data.
 -->
@@ -55,7 +55,7 @@
   </section>
 
   <section class="panel" id="week" aria-labelledby="week-h">
-    <div class="panel-head"><div><h2 id="week-h">The week</h2><p>The Usage tab's weekly numbers, and commits missing an <code>Authored-with:</code> trailer.</p></div></div>
+    <div class="panel-head"><div><h2 id="week-h">The week</h2><p>The Usage tab's weekly numbers.</p></div></div>
     <table class="tbl" id="week-table" aria-labelledby="week-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Number</th><th scope="col" class="num">Value</th><th scope="col" class="hide-sm">Inputs</th></tr></thead><tbody id="week-body"></tbody></table>
     <div id="observed"></div>
   </section>

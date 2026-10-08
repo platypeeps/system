@@ -32,7 +32,6 @@ Run these checks from the repository root:
 ```sh
 sh -n local-agent-prompt/agent-prompt.sh
 sh local-agent-prompt/agent-prompt.sh test -v
-python3 tests/test_citations.py
 sd-docs-lint
 ```
 

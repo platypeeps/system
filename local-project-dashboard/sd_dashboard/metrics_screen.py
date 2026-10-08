@@ -10,9 +10,7 @@ Progress areas already make:
   would be a second computation of the same ledger.
 - `trend`: the last 7-day-window meter reading of each day for the last week
   (`reads.meter_days`).
-- `numbers` and `trailers`: the week's four numbers (`reads.weekly_numbers`)
-  and the commits missing an `Authored-with:` trailer (`reads.missing_trailers`,
-  stopped at `TRAILER_SECONDS` rather than waited on).
+- `numbers`: the week's four numbers (`reads.weekly_numbers`).
 - `scorecard`: the providers this month (`reads.scorecard`).
 - `skills`: skill uses per day and skill for four weeks (`reads.skill_use_days`).
 - `age`: open items by days in their current status (`reads.age_histogram`).
@@ -32,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 from sd_db import reads, reporting, usage
 from sd_db.errors import SdDbError
 
-__all__ = ["SKILL_WEEKS", "TRAILER_SECONDS", "TREND_DAYS", "UNREAD", "WINDOW", "document"]
+__all__ = ["SKILL_WEEKS", "TREND_DAYS", "UNREAD", "WINDOW", "document"]
 
 #: The vendor window the trend draws: seven days, in minutes.
 WINDOW = 10080
@@ -42,9 +40,6 @@ TREND_DAYS = 7
 
 #: Monday-start weeks of skill use, this week included.
 SKILL_WEEKS = 4
-
-#: The trailer walk's budget, as the classic Usage area gives it.
-TRAILER_SECONDS = 10.0
 
 #: The design's panels no reader covers, and why; the page draws each as unknown with its reason.
 UNREAD = (
@@ -63,8 +58,6 @@ def _stamp(now: str) -> datetime:
 def _guard(read):
     try:
         return read()
-    except reads.OverBudget as refused:
-        return {"error": f"{refused} and was stopped rather than waited on"}
     except FAILURES as error:
         return {"error": f"{error.__class__.__name__}: {error}"}
 
@@ -114,16 +107,14 @@ def _age(connection, now):
                                       "other": b.counts["other"]} for b in reads.age_histogram(rows, now=now)]}
 
 
-def document(connection, *, now: str, trailers=None) -> dict:
+def document(connection, *, now: str) -> dict:
     """The Metrics page's document: every reading, each guarded on its own, and the panels no reader covers."""
     today = _stamp(now).date()
-    trailers = trailers or (lambda: reads.missing_trailers(connection, now=now, within=TRAILER_SECONDS))
     return {
         "read": now,
         "usage": _guard(lambda: {"error": "", **usage.read(connection, month=None, now=now).document()}),
         "trend": _guard(lambda: _trend(connection, today)),
         "numbers": _guard(lambda: _numbers(connection, now)),
-        "trailers": _guard(lambda: {"error": "", "count": trailers()}),
         "scorecard": _guard(lambda: _scorecard(connection, now)),
         "skills": _guard(lambda: _skills(connection, today)),
         "age": _guard(lambda: _age(connection, now)),
