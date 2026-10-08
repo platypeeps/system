@@ -34,11 +34,13 @@ change I made on this machine back into its profile*.
                                        # another database, is a FAIL
 ./machine-setup.sh doctor sd           # those sd checks alone
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
-./machine-setup.sh upgrade --apply     # brew update/upgrade, claude update, brew cleanup + mas upgrade
+./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy), claude update, brew cleanup + mas upgrade
                                        # each step is logged as it starts and
                                        # stopped at its bound (300-1800 s, or
                                        # MACHINE_SETUP_STEP_TIMEOUT seconds)
 ./machine-setup.sh upgrade-report      # upgrade + email summary (cron: weekly)
+                                       # plus the TCC grants probe; one push
+                                       # names each binary to re-grant
 ./machine-setup.sh checklist           # manual new-machine steps
 ./machine-setup.sh decommission        # retire machine: dirty-repo scan, job/agent
                                        # removal with --apply (asks you to type
@@ -51,6 +53,18 @@ unfamiliar machine should be inspected before it is touched.
 
 The chosen profile is recorded in `~/.config/machine-setup/profile`, so `update`
 and `capture` need no argument after the first `setup`.
+
+**The weekly `upgrade-report` owns every package and app upgrade** (sd:3062).
+It also runs the `ai-apps.sh capture` the retired ai-apps-nightly job ran, and
+mails its diff. The `macos` stage turns self-update off in every cask that
+updates itself, where the app documents a switch. Both machines then move once a
+week, and grants are re-granted in one sitting. After the sweep, and in a quiet
+week after `claude update`, it runs `local-project-dashboard/dashboard.sh
+grants` and puts the result in the mail. The cron job runs under launchd, where
+the probe's answer is the binary's own. A binary that lost Full Disk Access gets
+one push (`-F`, ntfy and email) naming its path. The push also lists a new Claude Code
+binary or python Cellar path, the two known grant droppers. A missing grant
+does not fail the job; a push or mail that cannot be delivered does.
 
 ## Configuration
 
@@ -127,7 +141,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae, casks | — |
+| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed) | — |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
 | `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
@@ -139,7 +153,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `satellite` | on a profile with a `.satellite`: writes `~/.config/sd/hub.json`, checks that the pack's installed `sd_db` is the hub's build (`DIFFERS` names both values; `--apply` installs the hub's build from `origin/main` of this checkout when its digest is the hub's, `SD_DB_SOURCE_CHECKOUT` overrides the checkout), and installs the hub's `providers.yaml`. A local `sd.db` is `EXTRA` and stops the stage; a hub that does not answer is `SKIP`. On a satellite (a `.satellite` or a `hub.json`, and no hub agent in the profile), each hub-only job in `SD_HUB_ONLY_AGENTS` that is installed or loaded is `EXTRA` and stays. Where `jev` is on `PATH`, a missing jev shadow file is `MISSING`, and `--apply` runs `jev shadow on` (sd:2838). Installs no LaunchAgent | `sd_db.satellite` under `SD_DB_PYTHON` (default: the pack's virtualenv) |
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
-| `macos` | apply `defaults` settings | — |
+| `macos` | turn self-update off in installed apps that hold a TCC grant, then apply `defaults` settings | `python3` |
 | `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), Chrome as mailto handler | `fnm`, `rtk`, `claude`, `opencode`, `duti` |
 | `system` | useLS, sudo grace period, firewall + stealth (needs sudo once), 700 on the credential dirs, Spotlight privacy exclusions from `<profile>.spotlight` | `plutil`, `PlistBuddy`, `launchctl` |
 | `obsidian` | report vault plugins vs `<profile>.obsidian` (report-only) | `python3` |
@@ -442,6 +456,20 @@ and some domains (Safari, AddressBook) are TCC-blocked and read back empty, so
 curating the key list by hand is the only honest version. `capture` refreshes
 the values of listed keys and never invents new ones. Changes need the
 affected app restarted; after a real write the stage prints the `killall` line.
+
+The stage also turns self-update off in every installed cask with
+`auto_updates true` whose app documents a switch, whatever the profile says
+(sd:3062). The weekly `upgrade-report` runs `brew upgrade --cask --greedy`, so
+brew is the one updater. Both machines change together, and the macOS privacy
+(TCC) grants an update drops are re-granted in one sitting. Sparkle apps get
+`SUEnableAutomaticChecks` and `SUAutomaticallyUpdate` false in their defaults
+domain. Claude desktop gets `disableAutoUpdates` true. VS Code gets `update.mode`
+`none`, Zed `auto_update` false, and Docker Desktop `AutoDownloadUpdates` false,
+each in its own settings file after a backup. A JSON file with comments keeps
+them; a key it already sets with comments around it is `DIFFERS` and left for
+a hand. The rows, and the casks left on for want of a documented switch, are in
+`self_update_rows` in `machine-setup.sh`; an app that is not installed is
+skipped. Updater agents are never deleted to stop an app.
 
 ## Standalone applications
 
