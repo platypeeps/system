@@ -147,10 +147,11 @@ class TheMigration(unittest.TestCase):
             path = Path(tmp) / "sd.db"
             initialise(path)
             raw = sqlite3.connect(path, isolation_level=None)
-            # 021 to 018 came after 017 and are reversed first: their `ADD
-            # COLUMN` and `CREATE TABLE` do not replay (sd:2950, sd:2704,
-            # sd:1335, sd:2581).
-            for name in ("021_judgment_call_context.sql", "020_repo_satellite_gate.sql",
+            # 022 to 018 came after 017 and are reversed first: their `ADD
+            # COLUMN` and `CREATE TABLE` do not replay (sd:2966, sd:2950,
+            # sd:2704, sd:1335, sd:2581).
+            for name in ("022_judgment_batch_children.sql",
+                         "021_judgment_call_context.sql", "020_repo_satellite_gate.sql",
                          "019_request_outcome.sql",
                          "018_runner_run_repo_nullable.sql", "017_judgment_compare_arms.sql"):
                 text = (SCHEMA_DIR / name).read_text()
@@ -245,6 +246,23 @@ class TheComparison(CompareCase):
         kev = self.arm(report, "kev")
         self.assertEqual(kev["usd"], 0.0)
         self.assertEqual(kev["server_p50_ms"], 50)
+
+    def test_a_batch_compares_question_by_question_and_counts_one_call(self):
+        # sd:2966: one batched call per arm, two questions, the same pair.
+        for arm, provider, risky, tier in (("jev", "typesafe", "0.9", "2"),
+                                           ("kev", "local", "0.8", "1"),
+                                           ("haiku", "anthropic", "0.3", "2")):
+            self.write(arm=arm, provider=provider, pair="b", primitive="ask",
+                       questions=2, tokens_in=10, tokens_out=2, duration_ms=500,
+                       answers=[{"id": "risky", "primitive": "noul", "answer": risky},
+                                {"id": "tier", "primitive": "choice", "answer": tier}])
+        report = compare(self.connection)
+        kev, haiku = self.arm(report, "kev"), self.arm(report, "haiku")
+        self.assertEqual((kev["paired"], kev["agree"]), (2, 1))
+        self.assertEqual((haiku["paired"], haiku["agree"]), (2, 1))
+        for arm in ("jev", "kev", "haiku"):
+            entry = self.arm(report, arm)
+            self.assertEqual((entry["calls"], entry["tokens_in"]), (1, 10), arm)
 
     def test_a_choice_agrees_on_the_position_that_won(self):
         self.decision("a", "2", "2", "1", primitive="choice")

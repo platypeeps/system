@@ -68,6 +68,23 @@ run, in the identifier grammar; `prompt_hash` is 16 lowercase hex digits
 hashing the question definition, never the state; `load_avg` is the
 one-minute load average, zero or more. Each value that fails its shape is
 stored as NULL and the row is kept.
+
+**A batch is one call and N decisions.** A batched call's row measures the
+request and holds no answer. `answers` gives each question its own child
+row: `parent` names the batch row, `question_id` is `<id>:<index>`, and the
+child carries the question's primitive, answer, confidence and distribution
+and no tokens, time or cost. The per-stage counts read rows with no parent,
+so a batch stays one call; `compare`, `label` and `unlabelled` read the
+children, so a batched question compares and labels like a single one. A
+child whose fields fail their shapes is written with those fields NULL and
+outcome `invalid`, and its batch row and siblings are kept (sd:2966).
+
+**A local arm is priced by machine time.** A provider entry in
+`providers.yaml` may carry `price: {hour: <dollars>}`, the operator's rate
+for one hour of the machine. A model arm's row on that provider costs
+`server_ms` (else `duration_ms`) / 3,600,000 x rate, whatever its model:
+the rate is the machine's, not a model's. No rate is NULL, never 0.0, and a
+row is priced once, when it is written (sd:2967).
 """
 
 from __future__ import annotations
@@ -367,6 +384,51 @@ def _soft_match(value: object, shape: re.Pattern, limit: int) -> str | None:
     return value
 
 
+def _child(index: int, entry: object, batch: dict) -> dict:
+    """One question of a batch as a row of its own, beside the batch row.
+
+    Never refuses: a field that fails its shape is NULL and the child is
+    `invalid`, because one bad answer may not cost the batch its other
+    answers. The batch row's context is copied; its measurements are not.
+    """
+    entry = entry if isinstance(entry, dict) else {}
+    bad = False
+
+    def soft(check, *args, **keywords):
+        nonlocal bad
+        try:
+            return check(*args, **keywords)
+        except JudgmentRefused:
+            bad = True
+            return None
+
+    # A bad id still leaves the position, so every arm's child of one
+    # question keeps the same `question_id` and the arms still compare.
+    name = soft(_identifier, "question_id", entry.get("id"), required=True)
+    qid = soft(_identifier, "question_id", f"{name}:{index}" if name else str(index),
+               required=True) or str(index)
+    primitive = soft(_identifier, "primitive", entry.get("primitive"), required=True)
+    child = dict(batch, parent=None, questions=1, tokens_in=None, tokens_out=None,
+                 duration_ms=None, server_ms=None, usd=None, ordering=None,
+                 question_id=qid, primitive=primitive or "unknown",
+                 answer=soft(_answer, entry.get("answer")),
+                 confidence=soft(_fraction, "confidence", entry.get("confidence")),
+                 probabilities=soft(_probabilities, entry.get("probabilities")))
+    if bad:
+        child.update(outcome="invalid", cause="invalid")
+    elif child["answer"] is not None:
+        child.update(outcome="ok", cause=None)
+    return child
+
+
+def _insert(connection: sqlite3.Connection, row: dict) -> int:
+    names = ", ".join(row)
+    marks = ", ".join("?" for _ in row)
+    cursor = connection.execute(
+        f"INSERT INTO judgment ({names}) VALUES ({marks})", tuple(row.values()))
+    return int(cursor.lastrowid)
+
+
 def record(
     connection: sqlite3.Connection,
     *,
@@ -397,6 +459,7 @@ def record(
     run_id: str | None = None,
     prompt_hash: str | None = None,
     load_avg: float | None = None,
+    answers: list[dict] | None = None,
     now: str | None = None,
 ) -> int:
     """Write one row and return its id.
@@ -404,6 +467,10 @@ def record(
     Every refusal comes before the transaction, so a refused call writes
     nothing. `now` is the moment the decision was made, in any aware ISO-8601
     shape; the clock when omitted.
+
+    `answers` is a batch's questions in order, each a dict of `id`,
+    `primitive`, `answer`, `confidence` and `probabilities`; each becomes a
+    child row in the same transaction. Anything but a list writes no child.
     """
     caller = _identifier("caller", caller, required=True)
     stage = _identifier("stage", stage, required=True)
@@ -444,24 +511,29 @@ def record(
                             or usd < 0):
         raise JudgmentRefused(f"usd must be a finite number of zero or more; got {usd!r}")
     if usd is None:
-        usd = registered_usd(connection, provider, model, tokens_in, tokens_out)
-    moment = _now() if now is None else stamp(now)
+        # Machine time prices a model arm only: a baseline row's provider is
+        # `local` too, and the old mechanism is not what the rate measures.
+        machine_ms = (server_ms if server_ms is not None else duration_ms) \
+            if arm in MODEL_ARMS else None
+        usd = registered_usd(connection, provider, model, tokens_in, tokens_out,
+                             machine_ms)
+    row = dict(
+        timestamp=_now() if now is None else stamp(now), caller=caller, stage=stage,
+        arm=arm, pair=pair, shadow=1 if shadow else 0, provider=provider, model=model,
+        primitive=primitive, question_id=question_id, questions=questions,
+        outcome=outcome, cause=cause, answer=answer, confidence=confidence,
+        ordering=ordering, tokens_in=tokens_in, tokens_out=tokens_out,
+        duration_ms=duration_ms, usd=None if usd is None else float(usd),
+        changed=changed, server_ms=server_ms, probabilities=probabilities,
+        location=location, threshold=threshold, run_id=run_id,
+        prompt_hash=prompt_hash, load_avg=load_avg)
+    children = ([_child(index, entry, row) for index, entry in enumerate(answers, 1)]
+                if isinstance(answers, list) else [])
     with transaction(connection):
-        cursor = connection.execute(
-            "INSERT INTO judgment (timestamp, caller, stage, arm, pair, shadow, "
-            "provider, model, primitive, question_id, questions, outcome, cause, "
-            "answer, confidence, ordering, tokens_in, tokens_out, duration_ms, "
-            "usd, changed, server_ms, probabilities, location, threshold, run_id, "
-            "prompt_hash, load_avg) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?)",
-            (moment, caller, stage, arm, pair, 1 if shadow else 0, provider,
-             model, primitive, question_id, questions, outcome, cause, answer,
-             confidence, ordering, tokens_in, tokens_out, duration_ms,
-             None if usd is None else float(usd), changed, server_ms,
-             probabilities, location, threshold, run_id, prompt_hash, load_avg),
-        )
-    return int(cursor.lastrowid)
+        row_id = _insert(connection, row)
+        for child in children:
+            _insert(connection, dict(child, parent=row_id))
+    return row_id
 
 
 def registered_usd(
@@ -470,9 +542,14 @@ def registered_usd(
     model: str | None,
     tokens_in: int | None,
     tokens_out: int | None,
+    machine_ms: int | None = None,
 ) -> float | None:
-    """What a row's tokens cost at the price `providers.yaml` gives its
-    provider, per million tokens; None when there is no such price.
+    """What a row cost at the price `providers.yaml` gives its provider; None
+    when there is no such price.
+
+    An entry with an `hour` price is a machine, priced by time: `machine_ms`
+    at that rate per hour, whatever the model, and None without a time. Any
+    other entry is priced by its tokens, per million.
 
     The registry is the file beside the connection's database, read alone:
     no seeding write, so a row needs no `provider` row. An entry that names a
@@ -482,7 +559,7 @@ def registered_usd(
     missing, unreadable or refused registry is no price, never a refused row:
     the tokens are the record either way.
     """
-    if tokens_in is None and tokens_out is None:
+    if tokens_in is None and tokens_out is None and machine_ms is None:
         return None
     from .calls import _price
     from .registry import beside, read as read_registry
@@ -490,7 +567,17 @@ def registered_usd(
         entry = read_registry(beside(connection)).providers.get(provider)
     except Exception:          # a price list may not cost the ledger its row
         return None
-    if entry is None or (entry.model is not None and entry.model != model):
+    if entry is None:
+        return None
+    hour = _price(entry, "hour")
+    if hour is not None:
+        if machine_ms is None:
+            return None
+        usd = float(machine_ms * Decimal(repr(hour)) / 3_600_000)
+        return usd if math.isfinite(usd) else None
+    if tokens_in is None and tokens_out is None:
+        return None
+    if entry.model is not None and entry.model != model:
         return None
     total = Decimal(0)
     for tokens, side in ((tokens_in, "in"), (tokens_out, "out")):
@@ -634,7 +721,7 @@ SELECT stage, arm,
        SUM(usd)                                          AS usd,
        AVG(duration_ms)                                  AS avg_ms,
        MAX(duration_ms)                                  AS max_ms
-FROM judgment
+FROM {calls}
 WHERE primitive <> :gate
   AND arm IN ('jev', 'baseline')
   AND (:since IS NULL OR timestamp >= :since)
@@ -647,7 +734,7 @@ ORDER BY stage, arm
 #: price was registered for that provider (or model) when they were recorded.
 UNPRICED = """
 SELECT stage, arm, provider, COUNT(*) AS n
-FROM judgment
+FROM {calls}
 WHERE usd IS NULL
   AND COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0) > 0
   AND primitive <> :gate
@@ -662,7 +749,7 @@ ORDER BY stage, arm, provider
 #: counted separately, so a stage's fallbacks name their cause.
 DECLINES = """
 SELECT stage, cause, COUNT(*) AS n
-FROM judgment
+FROM {calls}
 WHERE cause IS NOT NULL
   AND primitive <> :gate
   AND arm IN ('jev', 'baseline')
@@ -691,7 +778,7 @@ ORDER BY stage, cause
 PAIRS = """
 SELECT stage, COUNT(*) AS paired FROM (
   SELECT stage, pair
-  FROM judgment
+  FROM {calls}
   WHERE pair IS NOT NULL
     AND primitive <> :gate
     AND arm IN ('jev', 'baseline')
@@ -756,6 +843,21 @@ def present(connection: sqlite3.Connection) -> bool:
     ).fetchone() is not None
 
 
+def _columns(connection: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in connection.execute("PRAGMA table_info(judgment)")}
+
+
+def _calls(connection: sqlite3.Connection) -> str:
+    """The rows that are calls: every row but a batch's children (sd:2966).
+
+    A reader may open a schema-21 database it does not migrate; it has no
+    `parent` column and no children, so every row is a call.
+    """
+    if "parent" not in _columns(connection):
+        return "judgment"
+    return "(SELECT * FROM judgment WHERE parent IS NULL)"
+
+
 def by_stage(
     connection: sqlite3.Connection,
     *,
@@ -778,6 +880,7 @@ def by_stage(
     if not present(connection):
         return []
     bounds = {"since": since, "until": until, "gate": GATE_PRIMITIVE}
+    calls = _calls(connection)
 
     def entry_for(stage: str) -> dict:
         return stages.setdefault(
@@ -787,22 +890,22 @@ def by_stage(
         )
 
     stages: dict[str, dict] = {}
-    for row in connection.execute(BY_STAGE_ARM, bounds):
+    for row in connection.execute(BY_STAGE_ARM.format(calls=calls), bounds):
         arm = dict(row, unpriced=0, unpriced_providers=[])
         entry = entry_for(arm.pop("stage"))
         entry["arms"][arm.pop("arm")] = arm
-    for row in connection.execute(UNPRICED, bounds):
+    for row in connection.execute(UNPRICED.format(calls=calls), bounds):
         arm = stages[row["stage"]]["arms"][row["arm"]]
         arm["unpriced"] += row["n"]
         arm["unpriced_providers"].append(row["provider"])
-    for row in connection.execute(DECLINES, bounds):
+    for row in connection.execute(DECLINES.format(calls=calls), bounds):
         if row["stage"] in stages:
             stages[row["stage"]]["declines"][row["cause"]] = row["n"]
     # A gate event makes its stage appear even when no decision on it was ever
     # recorded, which is the common case: most callers decline and stop.
     for row in connection.execute(GATES, bounds):
         entry_for(row["stage"])["gates"][row["cause"]] = row["n"]
-    for row in connection.execute(PAIRS, bounds):
+    for row in connection.execute(PAIRS.format(calls=calls), bounds):
         if row["stage"] in stages:
             stages[row["stage"]]["paired"] = row["paired"]
     for arm in (a for entry in stages.values() for a in entry["arms"].values()):
@@ -947,9 +1050,9 @@ def json_text(stages: list[dict]) -> str:
 #: Every row the comparison reads. One stage at a time is a small read, and
 #: percentiles and exact agreement are decided in Python: SQLite has neither.
 COMPARE_ROWS = """
-SELECT stage, arm, provider, pair, primitive, outcome, cause, answer,
-       probabilities, duration_ms, server_ms, tokens_in, tokens_out, usd,
-       override
+SELECT stage, arm, provider, pair, question_id, {parent} AS parent, primitive,
+       outcome, cause, answer, probabilities, duration_ms, server_ms, tokens_in,
+       tokens_out, usd, override
 FROM judgment
 WHERE arm IN ('jev', 'kev', 'haiku')
   AND primitive <> :gate
@@ -963,7 +1066,7 @@ ORDER BY stage, timestamp, id
 #: The caller's own answer of each pair: the baseline row a shadow call
 #: (`--shadow`, or `jev shadow on`) writes beside the judgment (sd:2761).
 OLD_ANSWERS = """
-SELECT stage, pair, answer
+SELECT stage, pair, question_id, {parent} AS parent, answer
 FROM judgment
 WHERE arm = 'baseline'
   AND pair IS NOT NULL
@@ -973,6 +1076,13 @@ WHERE arm = 'baseline'
   AND (:until IS NULL OR timestamp < :until)
 """
 
+def _key(row) -> tuple:
+    """What one decision is called across arms: its stage and pair, and for a
+    batch's child also its question, because one pair holds a whole batch."""
+    return (row["stage"], row["pair"],
+            row["question_id"] if row["parent"] is not None else None)
+
+
 #: How many disagreement pairs of values the report lists per arm.
 SPLIT_TOP = 5
 
@@ -981,8 +1091,7 @@ def _has_arms(connection: sqlite3.Connection) -> bool:
     """Whether migration 017 has run. A reader may open a schema 11-16
     database it does not migrate; that table holds no kev or haiku row and
     has neither column the comparison reads, so it has nothing to compare."""
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(judgment)")}
-    return {"server_ms", "probabilities"} <= columns
+    return {"server_ms", "probabilities"} <= _columns(connection)
 
 
 def percentile(values: list, share: float):
@@ -1071,15 +1180,18 @@ def compare(
     if not present(connection) or not _has_arms(connection):
         return []
     bounds = {"since": since, "until": until, "stage": stage, "gate": GATE_PRIMITIVE}
-    rows = [dict(row) for row in connection.execute(COMPARE_ROWS, bounds)]
-    old = {(row["stage"], row["pair"]): row["answer"]
-           for row in connection.execute(OLD_ANSWERS, bounds)}
-    reference: dict[tuple[str, str], dict] = {}
-    labels: dict[tuple[str, str], str] = {}
+    # A schema-21 database has no `parent` and no children (sd:2966).
+    parent = "parent" if "parent" in _columns(connection) else "NULL"
+    rows = [dict(row) for row in connection.execute(
+        COMPARE_ROWS.format(parent=parent), bounds)]
+    old = {_key(row): row["answer"]
+           for row in connection.execute(OLD_ANSWERS.format(parent=parent), bounds)}
+    reference: dict[tuple, dict] = {}
+    labels: dict[tuple, str] = {}
     for row in rows:
         if row["pair"] is None:
             continue
-        key = (row["stage"], row["pair"])
+        key = _key(row)
         if row["arm"] == "jev":
             reference[key] = row
             # The pair's label lives on its Jev row; `label` refuses an arm
@@ -1095,25 +1207,28 @@ def compare(
             "_ms": [], "_server": [], "paired": 0, "agree": None, "_dp": [],
             "labelled": 0, "right": 0, "_brier": [],
             "old_pairs": 0, "old_compared": 0, "old_agree": 0, "_split": {}})
-        entry["calls"] += 1
-        entry["ok"] += row["outcome"] == "ok"
-        if row["cause"]:
-            entry["declines"][row["cause"]] = entry["declines"].get(row["cause"], 0) + 1
-        entry["tokens_in"] += row["tokens_in"] or 0
-        entry["tokens_out"] += row["tokens_out"] or 0
-        if row["usd"] is not None:
-            entry["usd"] = (entry["usd"] or 0.0) + row["usd"]
-        if row["duration_ms"] is not None:
-            entry["_ms"].append(row["duration_ms"])
-        if row["server_ms"] is not None:
-            entry["_server"].append(row["server_ms"])
+        # A batch's child is a decision, not a call: its batch row holds the
+        # call's outcome, time, tokens and cost.
+        if row["parent"] is None:
+            entry["calls"] += 1
+            entry["ok"] += row["outcome"] == "ok"
+            if row["cause"]:
+                entry["declines"][row["cause"]] = entry["declines"].get(row["cause"], 0) + 1
+            entry["tokens_in"] += row["tokens_in"] or 0
+            entry["tokens_out"] += row["tokens_out"] or 0
+            if row["usd"] is not None:
+                entry["usd"] = (entry["usd"] or 0.0) + row["usd"]
+            if row["duration_ms"] is not None:
+                entry["_ms"].append(row["duration_ms"])
+            if row["server_ms"] is not None:
+                entry["_server"].append(row["server_ms"])
         mine = top(row)
-        if (row["stage"], row["pair"]) in old:
+        if _key(row) in old:
             # The old answer is read in this row's primitive: a baseline row
             # is `primitive=baseline`, and its number means what the
             # judgment's would.
             entry["old_pairs"] += 1
-            theirs = top({"answer": old[(row["stage"], row["pair"])],
+            theirs = top({"answer": old[_key(row)],
                           "primitive": row["primitive"]})
             if theirs is not None and mine is not None:
                 entry["old_compared"] += 1
@@ -1124,7 +1239,7 @@ def compare(
                     split[(theirs, mine)] = split.get((theirs, mine), 0) + 1
         if mine is None or row["pair"] is None:
             continue
-        key = (row["stage"], row["pair"])
+        key = _key(row)
         jev = reference.get(key)
         if row["arm"] != "jev" and jev is not None and top(jev) is not None \
                 and jev["primitive"] == row["primitive"]:
