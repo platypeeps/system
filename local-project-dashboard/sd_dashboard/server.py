@@ -295,14 +295,19 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
                     "restart": services.restart_service}[action]
         return lambda connection: mutation(connection, label, backend=services_backend,
             expected_revision=values["revision"], who="dashboard")
-    match = re.fullmatch(r"/api/repos/(runner-merge|managed)", path)
+    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host)", path)
     if match:
         from .management_screen import set_repo
 
-        # The two sd-db repo verbs Management runs (sd:2118); `before` is what the page showed, refused when stale.
-        words = ("manual", "auto") if match[1] == "runner-merge" else ("yes", "no")
+        # The sd-db repo verbs Management runs (sd:2118); `before` is what the page showed, refused when stale.
+        # A lane host is `hub` or a typed host name (sd:3075): `repos.set_lane_host` refuses a bad one by its rule.
+        def word(value) -> bool:
+            if match[1] == "lane-host":
+                return isinstance(value, str) and value != ""
+            return value in (("manual", "auto") if match[1] == "runner-merge" else ("yes", "no"))
+
         if (set(values) != {"path", "value", "before"} or not isinstance(values["path"], str)
-                or values["value"] not in words or values["before"] not in words or values["value"] == values["before"]):
+                or not word(values["value"]) or not word(values["before"]) or values["value"] == values["before"]):
             raise ValueError(f"Provide the repository path, the new {match[1]} value and the value the page showed.")
         return lambda connection: set_repo(connection, match[1], values["path"], values["value"], values["before"])
     operation = re.fullmatch(r"/api/(jobs|assignments)/([a-z0-9][a-z0-9_-]{0,99})/(retry|cancel)", path)
