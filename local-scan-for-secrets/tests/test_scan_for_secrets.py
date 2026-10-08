@@ -286,6 +286,40 @@ class TheLocalJudgment(unittest.TestCase):
         self.assertEqual(subjects, sorted("secret-scan:" + hashlib.sha256(f"{where}:{n}\n".encode()).hexdigest()[:16]
                                           for n in (1, 2)))
 
+    def test_a_colon_digits_colon_in_the_path_keeps_each_line_apart(self):
+        """`a:12:b.txt` holds two hits, so two subjects: the path is its own field (sd:2977)."""
+        (self.root / "tree" / "one.txt").unlink()
+        (self.root / "tree" / "a:12:b.txt").write_text(f"token = {self.TOKEN}\nother = {self.TOKEN}\n",
+                                                       encoding="utf-8")
+        stub = self.root / "stub"
+        stub.mkdir()
+        (stub / "jev").write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$JEV_STUB_LOG"\ncat >> "$JEV_STUB_LOG.in"\n')
+        (stub / "jev").chmod(0o755)
+        log = self.root / "calls"
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                log.unlink(missing_ok=True)
+                Path(f"{log}.in").unlink(missing_ok=True)
+                result = self.scan(PATH=f"{stub}:{path}", JEV_STUB_LOG=str(log))
+                subjects = sorted(re.search(r"--subject (\S+)", line).group(1)
+                                  for line in log.read_text().splitlines()[1:])
+                where = "./a:12:b.txt" if "./a:12:b.txt" in result.stdout else "a:12:b.txt"
+                self.assertEqual(subjects, sorted("secret-scan:" + hashlib.sha256(f"{where}:{n}\n".encode())
+                                                  .hexdigest()[:16] for n in (1, 2)))
+                # Kev still reads the hit as `path:line:match`.
+                self.assertEqual(sorted(Path(f"{log}.in").read_text().splitlines()),
+                                 [f"{where}:{n}:{self.TOKEN}" for n in (1, 2)])
+
+    def test_the_report_prints_a_colon_path_with_its_line_and_kind(self):
+        """`a:b.txt` reports as `a:b.txt:1: ghp_…`, the provider named (sd:2977)."""
+        (self.root / "tree" / "one.txt").unlink()
+        (self.root / "tree" / "a:b.txt").write_text(f"token = {self.TOKEN}\n", encoding="utf-8")
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(PATH=path, JEV_SECRET_SCAN="0")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertRegex(result.stdout, r"(?m)^  (\./)?a:b\.txt:1: ghp_Zq7Z… \[GitHub classic PAT\]$")
+
     def test_the_stage_switched_off_asks_nobody(self):
         self.scan(JEV_SECRET_SCAN="0")
         self.assertEqual((self.kev.seen, self.remote.seen), ([], []))

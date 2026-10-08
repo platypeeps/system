@@ -180,7 +180,7 @@ nothing; the orphan sweep that `sd-db.sh usage` runs is the verb's alone. Provid
 complete proposal passes the author/reviewer guard. Resources reuse bounded
 read-only collectors; research configuration is parsed as data, never executed.
 The obsolete Obsidian Skill Proposals action is replaced by the Skills workflow.
-Contributions' Re-run collector runs `sd_db.sync_shadow` for each tracker in a server thread (sd:2207, `shadow_run`).
+Re-run collector on Contributions and Health runs `sd_db.sync_shadow` for each tracker in a server thread (sd:2207, sd:2894, `shadow_run`).
 A run has one 120-second deadline; a Jira request in flight may take 30 seconds more.
 A second start is refused while a run is live, or while another `sd shadow sync` holds the library's shadow-sync lock.
 A satellite refuses a start: the lock sits beside the hub's database file.
