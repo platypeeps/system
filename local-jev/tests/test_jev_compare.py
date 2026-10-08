@@ -47,6 +47,12 @@ import sd_db  # noqa: E402  (test_jev_metering puts it on the path)
 #: The child is a fresh interpreter; it finds `sd_db` the way this one did.
 SD_DB_PATH = str(Path(sd_db.__file__).resolve().parents[1])
 
+#: How long a case waits for the arm children it started. A child bounds
+#: itself once running; under gate load its start alone took over 20 s
+#: (sd:3063). ponytail: fixed ceiling; a child slower than this is killed
+#: and its case fails, raise it if a loaded gate ever needs more.
+CHILD_CEILING = 120.0
+
 
 class Arm(BaseHTTPRequestHandler):
     """One stub for every HTTP arm: Kev's System One, Anthropic's Messages,
@@ -127,22 +133,29 @@ class Arm(BaseHTTPRequestHandler):
 
 
 class CompareCase(MeteringCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.arms = ArmServer(("127.0.0.1", 0), Arm)
-        cls.arms.daemon_threads = True
-        threading.Thread(target=cls.arms.serve_forever, daemon=True).start()
-        cls.base = "http://127.0.0.1:%d" % cls.arms.server_address[1]
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.arms.shutdown()
-        cls.arms.server_close()
-        super().tearDownClass()
-
     def setUp(self):
         super().setUp()
+        # One stub per case: a detached child an earlier case left running
+        # posts to a closed port, not into this case's `Arm.seen` (sd:3063).
+        arms = ArmServer(("127.0.0.1", 0), Arm)
+        arms.daemon_threads = True
+        threading.Thread(target=arms.serve_forever, daemon=True).start()
+        self.addCleanup(arms.server_close)
+        self.addCleanup(arms.shutdown)
+        self.base = "http://127.0.0.1:%d" % arms.server_address[1]
+        # The arm children this case starts in-process, joined at its end.
+        self.children = []
+        popen = subprocess.Popen
+
+        def spawn(*args, **kwargs):
+            child = popen(*args, **kwargs)
+            self.children.append(child)
+            return child
+
+        patcher = unittest.mock.patch.object(subprocess, "Popen", spawn)
+        patcher.start()
+        self.addCleanup(self.join_children)
+        self.addCleanup(patcher.stop)
         Arm.delay = 0.0
         Arm.status = 200
         Arm.seen = []
@@ -169,12 +182,28 @@ class CompareCase(MeteringCase):
         settings.update(extra)
         return super().env(**settings)
 
+    def join_children(self):
+        for child in self.children:
+            try:
+                child.wait(timeout=CHILD_CEILING)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+
     def wait_rows(self, count, timeout=20.0):
-        """Every row once `count` exist, or a failure naming what did."""
-        deadline = time.monotonic() + timeout
+        """Every row once `count` exist, or a failure naming what did.
+
+        While an arm child of this case still runs, its row may still come,
+        so the wait lasts until it exits, up to `CHILD_CEILING`.
+        """
+        started = time.monotonic()
         while True:
+            # Polled before the read: a child that exits in between has
+            # written its row by then.
+            running = any(child.poll() is None for child in self.children)
             found = self.rows()
-            if len(found) >= count or time.monotonic() > deadline:
+            waited = time.monotonic() - started
+            if len(found) >= count or waited > CHILD_CEILING or (waited > timeout and not running):
                 break
             time.sleep(0.05)
         self.assertGreaterEqual(len(found), count,
