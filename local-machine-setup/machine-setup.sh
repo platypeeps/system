@@ -1808,76 +1808,97 @@ report_deferred() {
   echo
 }
 
-# Self-update off in the casks that hold a macOS privacy (TCC) grant
-# (sd:3062). The weekly upgrade-report moves every cask, so both machines
-# change together and the grants an update drops are re-granted in one
-# sitting, not on whatever day an app updated itself. Other apps keep their
-# own updaters. Rows are skipped for an app that is not installed.
+# Self-update off in every installed cask with `auto_updates true`, where the
+# app documents a switch (sd:3062). The weekly upgrade-report runs
+# `brew upgrade --cask --greedy`, so brew is the one updater: both machines
+# change together, and the macOS privacy (TCC) grants an update drops are
+# re-granted in one sitting. An app that is not installed is skipped.
 #
-# Sparkle apps: app|domain|key|type|value. Sparkle keeps the user's choice in
-# the app's defaults under its Info.plist key names: SUEnableAutomaticChecks
-# (scheduled checks) and SUAutomaticallyUpdate (silent installs). Grants seen
-# 2026-10-08: iTerm2 (Accessibility, Full Disk Access, Screen Recording),
-# BetterTouchTool, CleanShot X, MacWhisper (Accessibility, Screen Recording),
-# BetterDisplay, ChatGPT, ChatGPT Classic, LanguageTool, NordVPN
-# (Accessibility), Maccy (Accessibility, Post Event), DaisyDisk (Full Disk
-# Access). ChatGPT.app's domain is com.openai.codex, read from its bundle.
-SELF_UPDATE_DEFAULTS='iTerm.app|com.googlecode.iterm2
-BetterTouchTool.app|com.hegenberg.BetterTouchTool
-CleanShot X.app|pl.maketheweb.cleanshotx
-MacWhisper.app|com.goodsnooze.MacWhisper
-BetterDisplay.app|pro.betterdisplay.BetterDisplay
-ChatGPT.app|com.openai.codex
-ChatGPT Classic.app|com.openai.chat
-LanguageTool for Desktop.app|org.languagetool.desktop
-NordVPN.app|com.nordvpn.macos
-Maccy.app|org.p0deje.Maccy
-DaisyDisk.app|com.daisydiskapp.DaisyDiskStandAlone'
-# JSON settings: app|file|key|JSON value. VS Code documents `update.mode`
-# `none`, Zed `auto_update` false. Docker Desktop's settings-store.json holds
-# its "Always download updates" setting as AutoDownloadUpdates. 1Password has
-# only a settings toggle ("Install updates automatically"), no documented
-# key, so it is not here.
-self_update_json() {
+# One row per app: cask|app|mechanism|target|key|value.
+# - sparkle: target is the defaults domain. Sparkle keeps the user's choice
+#   there under its Info.plist key names, SUEnableAutomaticChecks (scheduled
+#   checks) and SUAutomaticallyUpdate (silent installs); both go false. Each
+#   app ships Sparkle.framework. ChatGPT.app's domain is com.openai.codex,
+#   read from its bundle.
+# - defaults: a documented boolean in the app's domain. Claude desktop reads
+#   disableAutoUpdates from com.anthropic.claudefordesktop.
+# - json: one top-level key in the app's settings file, through
+#   claude_settings.py. VS Code documents update.mode none and Zed
+#   auto_update false. Docker Desktop keeps its "Always download updates"
+#   setting as AutoDownloadUpdates in settings-store.json.
+#
+# No documented per-user switch, so left on (checked 2026-10-08): 1Password
+# (a Settings > Advanced toggle only); Electron apps Antigravity, Beekeeper
+# Studio, Discord, Dropbox, Notion, Obsidian, OpenWhispr, Postman and Slack;
+# Beyond Compare, iStat Menus, Malwarebytes, Piezo and Sync with their own
+# updaters; Firefox, Google Chrome, Google Drive and Zoom, whose switches are
+# system-wide managed policy; and the CLIs antigravity-cli, copilot-cli and
+# gcloud-cli. Updater agents are never removed to stop an app.
+self_update_rows() {
   printf '%s\n' \
-    "Visual Studio Code.app|$HOME/Library/Application Support/Code/User/settings.json|update.mode|\"none\"" \
-    "Zed.app|$HOME/.config/zed/settings.json|auto_update|false" \
-    "Docker.app|$HOME/Library/Group Containers/group.com.docker/settings-store.json|AutoDownloadUpdates|false"
+    "appcleaner|AppCleaner.app|sparkle|net.freemacsoft.AppCleaner" \
+    "betterdisplay|BetterDisplay.app|sparkle|pro.betterdisplay.BetterDisplay" \
+    "bettertouchtool|BetterTouchTool.app|sparkle|com.hegenberg.BetterTouchTool" \
+    "chatgpt|ChatGPT.app|sparkle|com.openai.codex" \
+    "chatgpt-classic|ChatGPT Classic.app|sparkle|com.openai.chat" \
+    "cleanshot|CleanShot X.app|sparkle|pl.maketheweb.cleanshotx" \
+    "daisydisk|DaisyDisk.app|sparkle|com.daisydiskapp.DaisyDiskStandAlone" \
+    "handbrake-app|HandBrake.app|sparkle|fr.handbrake.HandBrake" \
+    "iterm2|iTerm.app|sparkle|com.googlecode.iterm2" \
+    "languagetool-desktop|LanguageTool for Desktop.app|sparkle|org.languagetool.desktop" \
+    "maccy|Maccy.app|sparkle|org.p0deje.Maccy" \
+    "macwhisper|MacWhisper.app|sparkle|com.goodsnooze.MacWhisper" \
+    "medis|Medis.app|sparkle|li.zihua.medis2" \
+    "nordvpn|NordVPN.app|sparkle|com.nordvpn.macos" \
+    "vlc|VLC.app|sparkle|org.videolan.vlc" \
+    "claude|Claude.app|defaults|com.anthropic.claudefordesktop|disableAutoUpdates|true" \
+    "visual-studio-code|Visual Studio Code.app|json|$HOME/Library/Application Support/Code/User/settings.json|update.mode|\"none\"" \
+    "zed|Zed.app|json|$HOME/.config/zed/settings.json|auto_update|false" \
+    "docker-desktop|Docker.app|json|$HOME/Library/Group Containers/group.com.docker/settings-store.json|AutoDownloadUpdates|false"
+}
+
+# One boolean in a defaults domain: ok, or the write that converges it.
+self_update_default() { # domain key true|false
+  cur=$(defaults read "$1" "$2" 2>/dev/null || echo "(unset)")
+  if norm_eq bool "$cur" "$3"; then
+    echo "  ok      $1 $2 = $cur"
+  else
+    run defaults write "$1" "$2" -bool "$3"
+  fi
+}
+
+# One key in a JSON settings file: ok, or MISSING/DIFFERS and the merge.
+self_update_json() { # file key json-value
+  if ! gap=$(python3 "$DIR/claude_settings.py" pref-missing "$1" "$2" "$3" 2>/dev/null </dev/null); then
+    echo "  DIFFERS $1 does not parse; $2 not checked"
+    return 0
+  fi
+  case "$gap" in
+    '') echo "  ok      $1 $2 = $3"; return 0 ;;
+    unset) echo "  MISSING $1 $2 = $3" ;;
+    *) echo "  DIFFERS $1 $2 $gap, want $3" ;;
+  esac
+  run backup_file "$1"
+  run mkdir -p "$(dirname "$1")"
+  run python3 "$DIR/claude_settings.py" pref-merge "$1" "$2" "$3" \
+    || echo "  DIFFERS $1 $2 not changed; set it to $3 by hand"
 }
 
 stage_self_update() {
-  echo "  self-update off (apps holding a TCC grant; the weekly upgrade moves them)"
-  while IFS='|' read -r app dom; do
+  echo "  self-update off (casks that update themselves; the weekly upgrade moves them)"
+  while IFS='|' read -r cask app how target key val; do
     [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] || continue
-    for key in SUEnableAutomaticChecks SUAutomaticallyUpdate; do
-      cur=$(defaults read "$dom" "$key" 2>/dev/null || echo "(unset)")
-      if norm_eq bool "$cur" false; then
-        echo "  ok      $dom $key = $cur"
-      else
-        run defaults write "$dom" "$key" -bool false
-      fi
-    done
-  done <<EOF_SELF_UPDATE
-$SELF_UPDATE_DEFAULTS
-EOF_SELF_UPDATE
-  while IFS='|' read -r app file key val; do
-    [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] || continue
-    if ! gap=$(python3 "$DIR/claude_settings.py" pref-missing "$file" "$key" "$val" 2>/dev/null </dev/null); then
-      echo "  DIFFERS $file does not parse; $key not checked"
-      continue
-    fi
-    case "$gap" in
-      '') echo "  ok      $file $key = $val"; continue ;;
-      unset) echo "  MISSING $file $key = $val" ;;
-      *) echo "  DIFFERS $file $key $gap, want $val" ;;
+    case "$how" in
+      sparkle)
+        self_update_default "$target" SUEnableAutomaticChecks false
+        self_update_default "$target" SUAutomaticallyUpdate false ;;
+      defaults) self_update_default "$target" "$key" "$val" ;;
+      json) self_update_json "$target" "$key" "$val" ;;
+      *) echo "  DIFFERS $cask: unknown self-update mechanism '$how'" ;;
     esac
-    run backup_file "$file"
-    run mkdir -p "$(dirname "$file")"
-    run python3 "$DIR/claude_settings.py" pref-merge "$file" "$key" "$val" \
-      || echo "  DIFFERS $file $key not changed; set it to $val by hand"
-  done <<EOF_SELF_UPDATE_JSON
-$(self_update_json)
-EOF_SELF_UPDATE_JSON
+  done <<EOF_SELF_UPDATE
+$(self_update_rows)
+EOF_SELF_UPDATE
 }
 
 # .macos lines are "<domain> <key> <type> <value...>". Only keys named in a

@@ -1,4 +1,4 @@
-"""The macos stage turns self-update off in apps that hold a TCC grant (sd:3062).
+"""The macos stage turns self-update off in casks that update themselves (sd:3062).
 
 The weekly upgrade-report moves every cask, so both machines change together
 and the operator re-grants macOS privacy permissions in one sitting. An app
@@ -70,7 +70,7 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.state.mkdir(parents=True)
         (self.state / "profile").write_text("personal\n")
         self.apps = base / "Applications"
-        for app in ("iTerm.app", "Zed.app", "Visual Studio Code.app", "Docker.app"):
+        for app in ("iTerm.app", "Zed.app", "Visual Studio Code.app", "Docker.app", "Claude.app"):
             (self.apps / app).mkdir(parents=True)
         self.defaults_db = base / "defaults.db"
         self.zed = self.home / ".config/zed/settings.json"
@@ -107,6 +107,7 @@ class SelfUpdateOffTest(unittest.TestCase):
         writes = self.defaults_db.read_text().splitlines()
         self.assertIn("com.googlecode.iterm2 SUEnableAutomaticChecks 0", writes)
         self.assertIn("com.googlecode.iterm2 SUAutomaticallyUpdate 0", writes)
+        self.assertIn("com.anthropic.claudefordesktop disableAutoUpdates 1", writes)
         # Only installed apps are touched: BetterTouchTool is not in the folder.
         self.assertFalse([w for w in writes if "BetterTouchTool" in w], writes)
         zed = self.zed.read_text()
@@ -130,8 +131,8 @@ class SelfUpdateOffTest(unittest.TestCase):
 
         drift_before = int(clean.stdout.split("drift   : ")[1].split()[0])
         drift_after = int(converged.stdout.split("drift   : ")[1].split()[0])
-        # Two iTerm2 keys, Zed, VS Code and Docker.
-        self.assertEqual(drift_before - drift_after, 5, clean.stdout)
+        # Two iTerm2 keys, Claude desktop, Zed, VS Code and Docker.
+        self.assertEqual(drift_before - drift_after, 6, clean.stdout)
         self.assertIn("[dry-run] defaults write com.googlecode.iterm2 SUEnableAutomaticChecks -bool false",
                       clean.stdout)
         self.assertIn("MISSING", clean.stdout)

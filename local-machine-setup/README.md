@@ -457,18 +457,19 @@ curating the key list by hand is the only honest version. `capture` refreshes
 the values of listed keys and never invents new ones. Changes need the
 affected app restarted; after a real write the stage prints the `killall` line.
 
-The stage also turns self-update off in the casks that hold a macOS privacy
-(TCC) grant, whatever the profile says (sd:3062). The weekly `upgrade-report`
-moves every cask, so both machines change together and the grants an update
-drops are re-granted in one sitting. Sparkle apps get `SUEnableAutomaticChecks`
-and `SUAutomaticallyUpdate` false in their defaults domain. VS Code gets
-`update.mode` `none`, Zed `auto_update` false, and Docker Desktop
-`AutoDownloadUpdates` false, each in its own settings file after a backup. A
-JSON file with comments keeps them; a key it already sets with comments
-around it is `DIFFERS` and left for a hand. 1Password has no documented key;
-turn off its "Install updates automatically" in Settings > Advanced. The rows
-are `SELF_UPDATE_DEFAULTS` and `self_update_json` in `machine-setup.sh`; an
-app that is not installed is skipped. Other apps keep their own updaters.
+The stage also turns self-update off in every installed cask with
+`auto_updates true` whose app documents a switch, whatever the profile says
+(sd:3062). The weekly `upgrade-report` runs `brew upgrade --cask --greedy`, so
+brew is the one updater. Both machines change together, and the macOS privacy
+(TCC) grants an update drops are re-granted in one sitting. Sparkle apps get
+`SUEnableAutomaticChecks` and `SUAutomaticallyUpdate` false in their defaults
+domain. Claude desktop gets `disableAutoUpdates` true. VS Code gets `update.mode`
+`none`, Zed `auto_update` false, and Docker Desktop `AutoDownloadUpdates` false,
+each in its own settings file after a backup. A JSON file with comments keeps
+them; a key it already sets with comments around it is `DIFFERS` and left for
+a hand. The rows, and the casks left on for want of a documented switch, are in
+`self_update_rows` in `machine-setup.sh`; an app that is not installed is
+skipped. Updater agents are never deleted to stop an app.
 
 ## Standalone applications
 
