@@ -50,7 +50,6 @@ from ..sources.frontmatter import FrontmatterError
 from ..sources.frontmatter import read as read_frontmatter
 from ..workflow import WorkflowError, register_work_item
 from ..writes import OPEN_STATE_KINDS
-from .satellite_cli import command_claim, command_satellite_stale, command_unclaim
 
 
 def _home() -> Path:
@@ -961,9 +960,6 @@ COMMANDS = {
     "usage": command_usage,
     "judgments": command_judgments,
     "credentials": command_credentials,
-    "claim": command_claim,
-    "unclaim": command_unclaim,
-    "satellite-stale": command_satellite_stale,
 }
 
 

@@ -474,19 +474,6 @@ The opt-in is a `repo` column, set per repository on the hub:
 - Roll out one repository at a time: set `accept`, install the hub's job, then request from the satellite.
 - The job is `local-cron-jobs/examples/satellite-lane-run.job`, one copy per opted-in repository, on the hub only.
 
-## Satellite claims and the staleness alarm
-
-A satellite session claims the item it works on, and the hub alarms when the claim goes quiet (sd:2918).
-
-    ./sd-db.sh claim ITEM [--branch B] [--quiet-until ISO]   # on a satellite; refused on the hub
-    ./sd-db.sh unclaim ITEM                                  # release; closes the alert episode
-    ./sd-db.sh satellite-stale [status | --notify]           # on the hub
-
-- A claim is a `heartbeat` row keyed `satellite-claim:<item>`; no migration. The nightly prune keeps one row per key and ranks an open row first, so the open claim survives whatever its timestamp.
-- An alert episode is a `watermark` row keyed `satellite-stale:<item>`, holding the progress instant it alerted on.
-- `local-satellite-stale/satellite-stale.sh` is the convention 1 entrypoint, its `status` the convention 6 one, and its `run` the cron job's verb.
-- The record is `docs/work/2026-10-07-satellite-staleness-alarm/`.
-
 ## `judgments`: what the judgment models cost, by stage
 
 `sd-db.sh judgments` compares the stages that route a decision through a

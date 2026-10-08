@@ -203,17 +203,11 @@ def expire_exec_outputs(connection, *, now: datetime) -> int:
 
 
 def compact_heartbeats(connection) -> int:
-    """One `heartbeat` row per key: the one every reader orders first.
-
-    An open row ranks before a resolved one: a satellite claim (sd:2918) is
-    written on the satellite's clock, so its replacement may carry an older
-    timestamp than the claim it resolved. Other heartbeats are never
-    resolved, so for them the order is the timestamp, as before."""
+    """One `heartbeat` row per key: the one every reader orders first."""
     with transaction(connection):
         cursor = connection.execute(
             "DELETE FROM state WHERE kind='heartbeat' AND id NOT IN ("
-            "  SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY key ORDER BY resolved_at IS NULL DESC,"
-            "                  timestamp DESC, id DESC) AS rank"
+            "  SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY key ORDER BY timestamp DESC, id DESC) AS rank"
             "                  FROM state WHERE kind='heartbeat') WHERE rank = 1)")
     return cursor.rowcount
 
