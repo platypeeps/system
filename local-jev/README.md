@@ -184,6 +184,8 @@ different question and gets this one wrong in both directions: it returns
 switches, and grepping for `enabled JEV_` instead misses every caller that
 passes the name through a constant. Two of the nine appear in neither result.
 
+The command pack's skills no longer call Jev; their old stage text is in [PACK-STAGES.md](PACK-STAGES.md), for a manual run.
+
 ## Exit codes
 
 `status` answers `0` ok, `3` no key on this machine, `1` configured and
