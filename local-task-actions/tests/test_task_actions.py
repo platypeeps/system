@@ -147,6 +147,17 @@ class LabelPrefixTest(unittest.TestCase):
         self.assertEqual(plist["EnvironmentVariables"]["SYSTEM_TOOLS_CONFIG"],
                          str(self.config))
 
+    def test_the_agent_runs_at_standard_priority(self):
+        # sd:3175. launchd's Background process type throttles the agent under
+        # load, and it serves the dashboard's and the phone's actions. The
+        # plist names no ProcessType, so launchd uses Standard.
+        import plistlib
+        result = self.run_script("start")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        agent = (self.home / "Library" / "LaunchAgents"
+                 / "local.system-tools.task-actions.plist")
+        self.assertNotIn("ProcessType", plistlib.loads(agent.read_bytes()))
+
 
 if __name__ == "__main__":
     unittest.main()
