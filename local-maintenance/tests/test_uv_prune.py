@@ -223,6 +223,11 @@ class UvPrune(unittest.TestCase):
                          "org.example.google-workspace-mcp")
         self.assertEqual(plist["StandardErrorPath"], "/tmp/org.example.uv-cache-prune.err")
 
+    def test_the_agent_runs_at_standard_priority(self):
+        # sd:3175. launchd's Background process type throttles the agent under
+        # load. The plist names no ProcessType, so launchd uses Standard.
+        self.assertNotIn("ProcessType", self.render_plist())
+
     def test_the_agent_reads_the_config_root_it_was_rendered_under(self):
         # REGRESSION (sd:1959). launchd passes only the environment the plist
         # names, so a non-default SYSTEM_TOOLS_CONFIG was lost and uv-prune

@@ -72,6 +72,11 @@ class StartTest(unittest.TestCase):
         self.assertEqual(plist["EnvironmentVariables"]["SYSTEM_TOOLS_CONFIG"],
                          str(self.home / ".config" / "system"))
 
+    def test_the_agent_runs_at_standard_priority(self):
+        # sd:3175. launchd's Background process type throttles the agent under
+        # load. The plist names no ProcessType, so launchd uses Standard.
+        self.assertNotIn("ProcessType", self.start())
+
 
 if __name__ == "__main__":
     unittest.main()

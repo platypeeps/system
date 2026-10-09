@@ -31,8 +31,6 @@
 	</dict>
 	<key>ThrottleInterval</key>
 	<integer>60</integer>
-	<key>ProcessType</key>
-	<string>Background</string>
 	<key>StandardErrorPath</key>
 	<string>/tmp/@LABEL@.err</string>
 	<key>StandardOutPath</key>

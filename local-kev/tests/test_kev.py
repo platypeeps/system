@@ -240,6 +240,17 @@ class TheAgent(KevCase):
         self.assertIn(f"launchctl kickstart gui/{os.getuid()}/example.test.kev", calls)
         self.assertTrue((self.folder / "logs").is_dir())
 
+    def test_the_agent_runs_at_standard_priority(self):
+        # sd:3175. launchd's Background process type throttles the agent under
+        # load. The plist names no ProcessType, so launchd uses Standard.
+        import plistlib
+        self.installed()
+        result = self.run_script("agent-install")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        agent = (self.home / "Library" / "LaunchAgents"
+                 / "local.system-tools.kev.plist")
+        self.assertNotIn("ProcessType", plistlib.loads(agent.read_bytes()))
+
     def test_the_agent_reads_the_config_root_agent_install_read(self):
         # run_script points SYSTEM_TOOLS_CONFIG at a root of its own; launchd
         # passes the agent only what the plist names, so the plist names it.
