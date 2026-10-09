@@ -55,6 +55,13 @@ class PinFixture(HygieneFixture):
         self.others = 0
         (self.bin / "sd").write_text(SD_STUB)
         (self.bin / "sd").chmod(0o755)
+        # The drain reads the repo registry through this checkout's sd-db.sh;
+        # the stub prints REPO_LIST, or fails with REPO_LIST_RC.
+        sd_db = self.tmp / "local-sd-db" / "sd-db.sh"
+        sd_db.parent.mkdir()
+        sd_db.write_text('[ "$1 $2" = "repo list" ] || exit 2\n'
+                         '[ -z "${REPO_LIST_RC:-}" ] || { echo "sd-db: boom" >&2; exit "$REPO_LIST_RC"; }\n'
+                         'cat "${REPO_LIST:-/dev/null}"\n')
         self.sd_log = self.tmp / "sd.log"
         self.lanes = self.tmp / "lanes"
         self.lanes.mkdir()

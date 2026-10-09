@@ -6,16 +6,20 @@ held, that lane's `lane run` exits at once and its queued entries stay
 pending. A running lane keeps its lock until its run ends. With every lock
 held it waits until `sd gate status --json` shows no holders and no waiters,
 then runs the refresh steps with REPO_SYNC_LANES_HELD=1 and exits with their
-status. The locks drop when this process exits: the kernel releases a flock
-with its holder, and the child never inherits the descriptors (Python opens
-files non-inheritable), so a step that leaves a process behind cannot keep a
-lane stopped. TERM, INT and HUP do not end this process before the child:
-they are passed to the child, and this process waits for it.
+status. The child inherits the lock descriptors and this process keeps its
+copies, so the locks stay held until both have exited: a `kill -9` of this
+process leaves them with the child until its last step ends. No step leaves
+a process behind to keep them: services restart through launchd, which
+passes no descriptor on, and the child's git runs gc and maintenance in the
+foreground and starts no fsmonitor daemon. TERM, INT and HUP do not end
+this process before the child; it waits for it.
 
 A lane whose runner never ran has no lock file yet: every folder under the
-lane root, and every name in REPO_SYNC_LANE_NAMES (the conf's checkouts, a
-lane being named after its checkout), gets one, made and held here. The gate
-is checked again after the last pass over the locks, just before the child.
+lane root, every repository in the registry (`sd-db.sh repo list`, which
+`lane run --hosted` reads) and every name in REPO_SYNC_LANE_NAMES (the
+conf's checkouts) gets one, made and held here; a lane is named after its
+checkout's folder. The gate is checked again after the last pass over the
+locks, just before the child.
 
 The wait is bounded: 45 minutes in total for the locks and the gate
 together (operator ruling), or REPO_SYNC_DRAIN_WAIT seconds. Past it, refresh refuses with nothing moved and
@@ -136,7 +140,23 @@ def gate_busy(env):
     return f"the gate: {len(holders)} holder(s), {len(waiters)} waiter(s)"
 
 
-def drain(env):
+def registry_names(script, env):
+    """The checkout folder names of every repository `sd-db.sh repo list` holds."""
+    sd_db = pathlib.Path(script).resolve().parent.parent / "local-sd-db" / "sd-db.sh"
+    try:
+        out = subprocess.run(["sh", str(sd_db), "repo", "list"], capture_output=True,
+                             text=True, env=env, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise Refused(f"{sd_db} repo list did not answer in 120s", manual=True) from None
+    if out.returncode != 0:
+        raise Refused(f"{sd_db} repo list exited {out.returncode}: "
+                      f"{(out.stderr or out.stdout).strip()[-300:]}", manual=True)
+    # "sd-db: <path>  <remote>  ...": two spaces end the path, which may hold one.
+    return [os.path.basename(line[len("sd-db: "):].split("  ")[0].rstrip("/"))
+            for line in out.stdout.splitlines() if line.startswith("sd-db: ")]
+
+
+def drain(env, names=()):
     """Hold every lane lock and see an idle gate; returns the held handles."""
     raw = env.get("REPO_SYNC_DRAIN_WAIT", str(DEFAULT_WAIT))
     if not raw.isdigit():
@@ -147,7 +167,6 @@ def drain(env):
     has_sd = shutil.which("sd", path=env.get("PATH")) is not None
     if not has_sd:
         print("sd is not on PATH: no gate to wait on", flush=True)
-    names = env.get("REPO_SYNC_LANE_NAMES", "").split()
     held = {}
     # A lane folder made during the gate wait is taken on the next pass, and
     # a gate a runner left behind is seen: the last step is a gate check.
@@ -168,7 +187,7 @@ def main(argv):
     script, args = argv[1], argv[2:]
     env = dict(os.environ)
     try:
-        held = drain(env)
+        held = drain(env, env.get("REPO_SYNC_LANE_NAMES", "").split() + registry_names(script, env))
     except Refused as refusal:
         print(f"repo-sync.sh refresh: refused, nothing moved: {refusal}", file=sys.stderr)
         if refusal.manual:
@@ -177,19 +196,36 @@ def main(argv):
     except KeyboardInterrupt:
         print("repo-sync.sh refresh: interrupted, nothing moved", file=sys.stderr)
         return 130
-    code = run_child(["sh", script, "refresh", *args], {**env, "REPO_SYNC_LANES_HELD": "1"})
+    code = run_child(["sh", script, "refresh", *args], {**env, "REPO_SYNC_LANES_HELD": "1"}, held)
     for handle in held.values():
         handle.close()
     return code
 
 
-def run_child(command, env):
+# Git settings that would leave a process behind holding the inherited locks.
+FOREGROUND_GIT = (("gc.autoDetach", "false"), ("maintenance.autoDetach", "false"),
+                  ("core.fsmonitor", "false"))
+
+
+def foreground_git(env):
+    """env with FOREGROUND_GIT added as command-line git config (GIT_CONFIG_COUNT)."""
+    env = dict(env)
+    count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    for key, value in FOREGROUND_GIT:
+        env[f"GIT_CONFIG_KEY_{count}"], env[f"GIT_CONFIG_VALUE_{count}"] = key, value
+        count += 1
+    env["GIT_CONFIG_COUNT"] = str(count)
+    return env
+
+
+def run_child(command, env, held):
     """Run the child in this process group and wait for it, through TERM, INT
     and HUP. One group, so a terminal's signal or a group kill reaches the
     child and its steps too, and the child keeps the terminal for a git
-    prompt. A signal to this process alone is not passed on: a child shell
-    it ends would leave its running step without the locks."""
-    child = subprocess.Popen(command, env=env)
+    prompt. A signal to this process alone is not passed on, so the refresh
+    steps finish. The child gets the held lock descriptors."""
+    child = subprocess.Popen(command, env=foreground_git(env),
+                             pass_fds=[handle.fileno() for handle in held.values()])
 
     def hold(signum, _frame):
         print(f"refresh: got signal {signum}; the lanes stay held until the refresh steps end",

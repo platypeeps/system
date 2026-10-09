@@ -169,9 +169,9 @@ class DrainTest(unittest.TestCase):
         self.assertEqual(new, f.head(pack))
         self.assertEqual("free", f.state(lock))
 
-    def test_the_child_does_not_inherit_the_locks(self):
-        """NEW. Only the helper holds the locks: kill it mid-refresh and the
-        kernel frees them, even while the refresh child still runs."""
+    def test_kill_9_of_the_helper_leaves_the_locks_held_until_the_child_ends(self):
+        """NEW (review round 4). The refresh child holds the locks too: kill -9
+        of the helper mid-refresh leaves them held until the child exits."""
         f = self.fixture()
         f.pinned_pack()
         lock = f.lane("some-repo")
@@ -186,7 +186,22 @@ class DrainTest(unittest.TestCase):
 
         f.run("refresh", expect=None, extra_env={"MAKE_HOOK": hook})
 
-        self.assertEqual("free\n", during.read_text())
+        self.assertEqual("held\n", during.read_text())
+        self.assertEqual("free", f.state(lock))
+
+    def test_git_in_the_refresh_leaves_no_process_behind(self):
+        """NEW (review round 4). A detached gc or maintenance run, or an
+        fsmonitor daemon, would hold the inherited locks after the refresh;
+        the child's git runs each in the foreground or not at all."""
+        f = self.fixture()
+        f.pinned_pack()
+        during = f.tmp / "during"
+        hook = "; ".join(f"git config --get {key} >> {during}"
+                         for key in ("gc.autoDetach", "maintenance.autoDetach", "core.fsmonitor"))
+
+        f.run("refresh", expect=0, extra_env={"MAKE_HOOK": hook})
+
+        self.assertEqual("false\nfalse\nfalse\n", during.read_text())
 
     def test_the_gate_wait_waits_for_an_idle_gate(self):
         """NEW. With every lock held, refresh waits until `sd gate status
@@ -377,6 +392,34 @@ class ExclusionTest(unittest.TestCase):
         f.run("refresh", expect=0, extra_env={"MAKE_HOOK": hook})
 
         self.assertEqual("held\n", (f.tmp / "during").read_text())
+
+    def test_a_registered_repo_with_no_lane_folder_is_held(self):
+        """NEW (review round 4). A repository in the registry (`sd-db.sh repo
+        list`, which `lane run --hosted` reads) and not in the conf, whose
+        lane never ran: the drain makes and holds its lock, named after the
+        checkout's folder."""
+        f = self.fixture()
+        f.pinned_pack()
+        listing = f.tmp / "repo-list"
+        listing.write_text(f"sd-db: {f.tmp / 'elsewhere' / 'registered repo'}  -  file  yes  local  off  hub  auto\n")
+        lock = f.lanes / "registered repo" / "lane" / "queue" / "runner.lock"
+        hook = f'mkdir -p "{lock.parent}"; {sys.executable} {f.probe} "{lock}" >> {f.tmp / "during"}'
+
+        f.run("refresh", expect=0, extra_env={"MAKE_HOOK": hook, "REPO_LIST": str(listing)})
+
+        self.assertEqual("held\n", (f.tmp / "during").read_text())
+
+    def test_an_unreadable_repo_registry_refuses(self):
+        """NEW (review round 4). A registry the drain cannot read is a lane
+        list it cannot hold: refuse, nothing moved, with the manual move."""
+        f = self.fixture()
+        repo, before, _ = f.pinned_behind()
+
+        result = f.run("refresh", expect=1, extra_env={"REPO_LIST_RC": "3"})
+
+        self.assertIn("repo list", result.stderr)
+        self.assertIn("git -C <checkout> switch --detach origin/main", result.stderr)
+        self.assertEqual(before, f.head(repo))
 
     def test_the_gate_is_checked_again_after_the_last_lock_pass(self):
         """NEW. A gate that starts after the first idle check and before the

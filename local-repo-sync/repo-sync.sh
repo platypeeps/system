@@ -1406,11 +1406,13 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|test
   refresh [path ...]
              drain the lanes first: hold every lane's runner lock under the
              lane root (SD_LANE_ROOT, else sd.lane_root, else
-             ~/.local/state/sd/lanes), making it for a lane folder or conf
-             checkout whose runner never ran, so `lane run` exits at once,
+             ~/.local/state/sd/lanes), making it for a lane folder, a
+             registered repository (sd-db.sh repo list) or a conf checkout
+             whose runner never ran, so `lane run` exits at once,
              and wait for `sd gate status` to show no holders or waiters,
-             checked again after the last lock. TERM, INT or HUP to the
-             helper waits for the refresh steps to end. The wait is
+             checked again after the last lock. TERM, INT, HUP or kill -9
+             of the helper leaves the locks held until the refresh steps
+             end. The wait is
              bounded: 45 minutes in total for the lane locks and the gate
              together (REPO_SYNC_DRAIN_WAIT seconds overrides it); past it,
              refresh refuses with nothing moved and names what was busy.

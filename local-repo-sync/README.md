@@ -76,15 +76,19 @@ pack's lanes read it. While a lock is held, that lane's `lane run` exits at
 once and its queued entries stay pending. A running lane keeps its lock until
 its run ends, so refresh waits for it. A lane whose runner never ran has no
 lock yet. The helper makes and holds one for every folder under the lane
-root and for every checkout in the conf, since a lane is named after its
-checkout. With every lock held, the helper waits until `sd gate status
+root, every repository in the registry (`sd-db.sh repo list`) and every
+checkout in the conf, since a lane is named after its checkout's folder. A
+registry it cannot read refuses with nothing moved. With every lock held, the helper waits until `sd gate status
 --json` shows no holders and no waiters, and checks again after its last
 pass over the locks. Then it runs the refresh steps as its child and
 releases the locks when it exits. TERM, INT or HUP sent to the helper alone
 does not end it early: it waits for the child, which is in its process
-group. Ctrl-C reaches both. The kernel releases the locks if the helper is
-killed with `kill -9`; the child does not hold them, so a step that leaves a
-process behind cannot keep a lane stopped.
+group. Ctrl-C reaches both. The child inherits the lock descriptors, so a
+`kill -9` of the helper leaves the locks held until the child's last step
+ends. No step leaves a process behind to hold them: services restart through
+launchd, which passes no descriptor on, and the child's git runs with
+`gc.autoDetach`, `maintenance.autoDetach` and `core.fsmonitor` set to
+`false`.
 
 A gate started by hand (`sd-ship prepare`, `sd-check`) while the refresh
 steps run is not excluded: no `sd gate` verb holds every slot. Run no gate
