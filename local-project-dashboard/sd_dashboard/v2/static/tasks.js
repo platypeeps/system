@@ -126,6 +126,8 @@ addEventListener('DOMContentLoaded', () => {
   const noEdit = t => t.edit?.reason || `a ${t.kind} item uses its own editing workflow`;
   // build: sd_db.workflow.TASK_STATUS_KINDS; workflow._recurring refuses a rule on any other kind.
   const RECURS = ['task', 'personal', 'followup'];
+  // build (sd:3012): sd_db.progress.CANCELLABLE_TASK_KINDS, the kinds task_guard lets sd task cancel close.
+  const CLOSES = ['task', 'followup'];
   const repeats = t => !!t?.recurrence;
   // build (sd:2250): sd stores a rule only from sd_db.recurrence.PARTS. A rule with any other part (BYDAY), written around
   // the library, cannot be walked: completing it ends the series. test_v2_tasks holds this set to the library's.
@@ -346,11 +348,26 @@ addEventListener('DOMContentLoaded', () => {
       when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; const L = STATUSES.map(([s]) => legal(t, s)); return L.some(x => x.ok) || L.find(x => x.reason !== 'Already here.').reason; },
       cli: o => idOr(o, t => `sd task status ${t.id} <status>`),
       run: o => { askMove(T(o)); return null; } },
-    { id: 'item.p2', on: 'item', label: 'Edit → P2', risk: 'undo', bulk: true, icon: 'flag-triangle-right',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : !EDITABLE(t) ? noEdit(t) : t.p === 2 ? 'it is already P2' : true; },
-      cli: o => idOr(o, t => `sd task edit ${t.id} --priority 2`),
-      run: o => { const t = must(o), was = t.p; return editRun(t, { p: 2 }, () => `${label(t)} P${was || '–'} → P2`); },
-      undo: undoOf },
+    // Priorities 1–4, workflow.edit_item's range, each a bulk edit with Undo (sd:3012 triage re-prioritizes in bulk). A row
+    // already at the priority is refused as its write leaves, not by `when`: the bar offers only what every picked row is
+    // on for, so a pick that mixes priorities would otherwise offer none.
+    ...[1, 2, 3, 4].map(n => ({ id: `item.p${n}`, on: 'item', label: `Edit → P${n}`, risk: 'undo', bulk: true, icon: 'flag-triangle-right',
+      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : EDITABLE(t) || noEdit(t); },
+      cli: o => idOr(o, t => `sd task edit ${t.id} --priority ${n}`),
+      run: o => { const t = must(o), was = t.p; return editRun(t, { p: n }, () => `${label(t)} P${was || '–'} → P${n}`, { check: r => r.p !== n || `it is already P${n}` }); },
+      undo: undoOf })),
+    // Close is sd task cancel (sd:3012): done, with a cancelled receipt and the reason, through progress.task_guard. A bulk
+    // close asks once for one reason and runs every picked row with its own revision. No Undo: no sd verb takes it back.
+    { id: 'item.close', on: 'item', label: 'Close', risk: 'confirm', executes: true, bulk: true, icon: 'ban',
+      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id' : !CLOSES.includes(t.kind) ? `sd task cancel closes a task or followup; this is a ${t.kind} item`
+        : t.status === 'done' ? 'it is done' : repeats(t) ? 'a recurring task cannot be cancelled; clear its recurrence first, or complete it'
+        : t.assignment === 'running' || t.assignment === 'queued' ? `a runner assignment is ${t.assignment}` : true; },
+      fields: () => [{ name: 'reason', label: 'Reason', required: true, placeholder: 'why nobody will do it', help: 'Recorded on each closed task. A close without a reason is refused.' }],
+      cli: (o, v = {}) => idOr(o, t => `sd task cancel ${t.id} --reason ${v.reason ? window.shell.shq(v.reason) : "'<why>'"}`),
+      sends: o => `POST /api/items/${T(o).id}/cancel-task {reason}`,
+      consequence: () => 'Each task closes as done, with a cancelled receipt and your reason. No sd verb takes it back.',
+      run: (o, v) => { const t = must(o);
+        return landing(write(t.key, x => `/api/items/${x.id}/cancel-task`, { reason: v.reason }), () => `${label(t)} closed · sd task cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
     { id: 'item.note', on: 'item', label: 'Note', key: 'n', risk: 'safe', icon: 'notebook-pen',
       when: o => !!T(o)?.id || 'this row has no sd id to attach a note to',
       cli: o => idOr(o, t => `sd task note ${t.id} --kind comment --body "…"`),

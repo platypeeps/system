@@ -352,8 +352,8 @@
   const textOf = (v, fallback) => (typeof v === 'string' && v) || (v && typeof v.text === 'string' && v.text) || fallback;
   const undoOne = (c, o, v) => Promise.resolve().then(() => c.undo(o, v));
   // One run per picked object, each its own promise: a run that throws is that row's rejection, so the rows after it
-  // still run and the group's toast names it (review, PR #46).
-  const runEach = (c, objs) => objs.map(o => { try { return c.run?.(o); } catch (e) { return Promise.reject(e); } });
+  // still run and the group's toast names it (review, PR #46). `v` is what the group's confirm took, the same for every row.
+  const runEach = (c, objs, v) => objs.map(o => { try { return c.run?.(o, v); } catch (e) { return Promise.reject(e); } });
   function settleOne(c, o, p, { toast }) {
     return p.then(v => {
       const undo = c.risk === 'undo' && c.undo ? () => undoOne(c, o, v).then(
@@ -363,20 +363,24 @@
       return true;
     }, e => { toast(`${o.label} not changed: ${whyOf(e)}`); return false; });
   }
-  // A bulk run waits for every run, then toasts once: how many landed, and how many did not with the first reason. Its Undo
-  // reverses only the rows that landed, waits for each, and says how many of the group were reversed and which were not.
+  // A bulk run waits for every run, then toasts once: how many landed, which rows the server refused as stale (a 409: the
+  // page reads them again), and which did not change, each with its reason (sd:3012). Its Undo reverses only the rows that
+  // landed, waits for each, and says how many of the group were reversed and which were not.
   function settleBulk(c, objs, results, { toast, plural }) {
     return Promise.allSettled(results.map(r => Promise.resolve(r))).then(rs => {
-      const landed = [], failed = [];
-      rs.forEach((r, i) => r.status === 'fulfilled' ? landed.push({ o: objs[i], v: r.value }) : failed.push({ o: objs[i], why: whyOf(r.reason) }));
-      const text = `${c.label} · ${plural(landed.length, c.on)}${failed.length ? ` · ${failed.length} of ${objs.length} not changed: ${failed[0].why}` : ''}`;
+      const landed = [], stale = [], failed = [];
+      rs.forEach((r, i) => r.status === 'fulfilled' ? landed.push({ o: objs[i], v: r.value })
+        : (r.reason && r.reason.stale ? stale : failed).push({ o: objs[i], why: whyOf(r.reason) }));
+      const of = n => `${n} of ${objs.length}`;
+      const text = `${c.label} · ${plural(landed.length, c.on)}${stale.length ? ` · ${of(stale.length)} refused stale, read again: ${stale.map(x => x.o.label).join(', ')}` : ''}`
+        + (failed.length ? ` · ${of(failed.length)} not changed: ${failed.map(x => `${x.o.label} (${x.why})`).join(', ')}` : '');
       const undo = c.risk === 'undo' && c.undo && landed.length ? () => Promise.allSettled(landed.map(x => undoOne(c, x.o, x.v))).then(us => {
-        const not = failed.map(x => `${x.o.label} (its change did not land)`).concat(us.map((u, i) => u.status === 'rejected' ? `${landed[i].o.label} (${whyOf(u.reason)})`
+        const not = stale.concat(failed).map(x => `${x.o.label} (its change did not land)`).concat(us.map((u, i) => u.status === 'rejected' ? `${landed[i].o.label} (${whyOf(u.reason)})`
           : u.value === false ? `${landed[i].o.label} (nothing to reverse)` : '').filter(Boolean));
         toast(`${c.label} undone · ${objs.length - not.length} of ${objs.length} reversed${not.length ? ` · not reversed: ${not.join(', ')}` : ''}`);
       }) : null;
       toast(text, undo);
-      return { landed: landed.length, failed: failed.length };
+      return { landed: landed.length, stale: stale.length, failed: failed.length };
     });
   }
   // build (sd:2590): a command with batch(objs, done) takes the whole group in one call.
@@ -437,7 +441,7 @@
   // design source's shell has them (sd:2200). The line under them follows what is typed (cli(values)). OK stays off while a
   // required field is empty or spaces only, and the close asks again, so no path runs the command without its text. Enter in a
   // field is OK, not the form's first button, which is Keep and would drop what was typed (the design's sd:2369).
-  const fieldOf = f => html`<label class="label" for="cf-${f.name}">${f.label}</label><input class="cap-in" id="cf-${f.name}" name="${f.name}" autocomplete="off" spellcheck="false"${f.required ? html` required aria-required="true"` : ''} placeholder="${f.placeholder || ''}"${f.help ? html` aria-describedby="cf-${f.name}-help"` : ''}>${f.help ? html`<p id="cf-${f.name}-help">${f.help}</p>` : ''}`;
+  const fieldOf = f => html`<label class="label" for="cf-${f.name}">${f.label}</label><input class="cap-in" id="cf-${f.name}" name="${f.name}" autocomplete="off" spellcheck="false"${f.required ? html` required aria-required="true"` : ''} placeholder="${f.placeholder || ''}"${f.help ? html` aria-describedby="${`cf-${f.name}-help`}"` : ''}>${f.help ? html`<p id="cf-${f.name}-help">${f.help}</p>` : ''}`;
   function confirmAction({ title, body: text = '', cli = '', ok = 'Confirm', keep = 'Keep it', danger = true, fields = [] }) {
     let from = null;
     const line = v => typeof cli === 'function' ? cli(v) : cli;
@@ -588,7 +592,8 @@
     const consequence = c.consequence && (() => { const lines = [...new Set(objs.map(o => c.consequence(o)))]; return lines.length > 4 ? `${lines.slice(0, 4).join(' ')} And ${lines.length - 4} more.` : lines.join(' '); });
     // build (sd:2124): the group's toast and Undo wait for every run (settleBulk); run() sees null and toasts nothing itself.
     if (handOver(c, objs, () => { picked.clear(); renderBulk(); })) return;
-    const one = { ...c, cli: () => objs.map(o => cliOf(c, o)).join(' && '), run: () => { const rs = runEach(c, objs); picked.clear(); renderBulk(); settleBulk(c, objs, rs, { toast, plural }); return null; },
+    // A command with fields asks once for the group (run's confirm); each row's run and CLI line get what was typed.
+    const one = { ...c, cli: (_, v) => objs.map(o => cliOf(c, o, v)).join(' && '), run: (_, v) => { const rs = runEach(c, objs, v); picked.clear(); renderBulk(); settleBulk(c, objs, rs, { toast, plural }); return null; },
       consequence, askFirst: objs.length > 25, risk: c.risk };
     run(one, group);
   }

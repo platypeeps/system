@@ -340,7 +340,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if parent is not None and (type(parent) is not int or not 1 <= parent <= 9223372036854775807):
             raise ValueError("Choose a valid item for the followup to follow up.")
         return lambda connection: capture_followup(connection, followup_of=parent, who="dashboard", **values)
-    match = re.fullmatch(r"/api/(items|notes)/([1-9][0-9]*)(/status|/notes|/resolve|/relink|/cancel|/stage|/park|/revive)?", path)
+    match = re.fullmatch(r"/api/(items|notes)/([1-9][0-9]*)(/status|/notes|/resolve|/relink|/cancel|/cancel-task|/stage|/park|/revive)?", path)
     if not match:
         raise NotFound(path)
     entity, number, suffix = match.groups()
@@ -389,6 +389,13 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if suffix == "/cancel" and set(values) == {"reason"}:
             return lambda connection: progress.cancel_work(connection, number, reason=values["reason"], **options)
         raise ValueError("Provide the artifact path or cancellation reason.")
+    if entity == "items" and suffix == "/cancel-task":
+        from sd_db import progress
+
+        # `sd task cancel` (sd:3012, the Tasks page's Close): task_guard admits a task or followup, never work or a recurrence.
+        if set(values) != {"reason"}:
+            raise ValueError("Provide the reason nobody will do the task.")
+        return lambda connection: progress.cancel_work(connection, number, reason=values["reason"], guard=progress.task_guard, **options)
     raise NotFound(path)
 
 
