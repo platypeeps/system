@@ -155,7 +155,7 @@ def _dirty(row):
     # no number, and "?" is not "0".
     #
     # `truncated` names the git commands that were cut, not a single boolean:
-    # a cut `log`, `rev-parse` or `remote` says nothing about the dirt count,
+    # a cut `log` or `remote` says nothing about the dirt count,
     # and collapsing them made every cut read as a cut `status`.
     if row["dirty"] is None:
         return "?"

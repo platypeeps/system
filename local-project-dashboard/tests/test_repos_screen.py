@@ -55,6 +55,27 @@ class ReposArea(FleetCase):
         self.assertEqual(by_name["remote/origin"], "unknown")
         self.assertIn(" · 1 ahead", page)
 
+    def test_one_status_answers_the_branch_the_dirt_and_the_divergence(self):
+        # Branch, dirt and divergence were three git commands per checkout,
+        # and starting git is most of what the fleet read costs (sd:2195).
+        origin = self.checkout("origin", "remote")
+        clone = self.root / "clone"
+        self.git(self.root, "clone", "-q", str(origin), str(clone))
+        self.configure(clone)
+        (clone / "README").write_text("more\n")
+        self.git(clone, "commit", "-q", "-am", "ahead by one")
+        (clone / "README").write_text("edited\n")
+        (clone / "new.txt").write_text("untracked\n")
+        calls = self.root.parent / "git.calls"
+        self.shim("git", f'echo "$*" >> "{calls}"; exec /usr/bin/git "$@"')
+        row = fleet.facts(fleet._collectors(), clone)
+        self.assertEqual((row["branch"], row["dirty"], row["ahead"], row["behind"]), ("main", 2, 1, 0))
+        self.assertEqual((row["default"], row["behind_default"]), ("main", 0))
+        self.assertEqual(len(calls.read_text().splitlines()), 5)
+        # A detached checkout is named as `rev-parse --abbrev-ref` named it.
+        self.git(clone, "checkout", "-q", "--detach")
+        self.assertEqual(fleet.facts(fleet._collectors(), clone)["branch"], "HEAD")
+
     def test_the_area_is_in_the_navigation_and_the_subtitle_names_it(self):
         page = self.repos()
         navigation = re.search(r'<nav[^>]*aria-label="Operations areas"[^>]*>(.*?)</nav>', page).group(1)
@@ -220,7 +241,7 @@ class ReposArea(FleetCase):
         with patch.dict(os.environ, {"PATH": str(self.bin)}):
             page = self.repos()
         self.assertEqual(self.cells(page, "repo-dirty"), ["?"])
-        self.assertIn("git rev-parse did not run", page)
+        self.assertIn("git status did not run", page)
         self.assertIn("1 checkout could not be read", page)
 
     def test_a_cut_log_is_named_and_leaves_the_dirt_count_exact(self):
