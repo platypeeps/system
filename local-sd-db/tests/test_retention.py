@@ -617,7 +617,6 @@ class TheCostRow(PruneCase):
         self.assertEqual(sum(row["usd"] for row in ledger), total_before, "the item screen's total")
 
 
-@hub_only
 class TheUntouchedP4(PruneCase):
     """sd:3007: a P4 item untouched for thirty days is parked, and stays readable."""
 
@@ -669,6 +668,7 @@ class TheUntouchedP4(PruneCase):
         self.assertIn(stale, [row["id"] for row in reads.capture_items(self.db)])
         self.assertEqual(workflow.item_state(self.db, stale)["item"]["id"], stale)
 
+    @hub_only
     def test_the_prune_parks_and_its_report_names_the_items(self):
         stale = self.seed(days=31)
         pruned = prune(self.db, self.backup(), now=NOW)
