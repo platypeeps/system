@@ -149,7 +149,7 @@ Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane 
 Up, down, top, hold, release and cancel run `sd-ship lane move|hold|release|cancel` and nothing else.
 Cancel asks first: no verb takes it back, so the entry must be enqueued again from its worktree.
 The page sends the lane's revision; a queue that changed since the read is refused, and the page reads it again.
-That check is best effort: a write that lands between the check and the verb is not caught, so a reorder answers with the order it left.
+Move, hold and release pass it as `--expected-revision`, so the verb checks it again under the queue's lock; cancel takes no revision, so its check is best effort.
 The runner reads the queue at each item boundary, so an edit never changes a merge in progress.
 
 **Protection** at `/protection` is one table, one row per registered repository:
