@@ -2376,12 +2376,16 @@ capture_dotfiles() {
 # for agents some other installer writes under its own prefix. A label that
 # once carried the account name needed a glob wider than one prefix, and the
 # narrower one reported 0 on a machine with two such agents running.
+# A label the profile's .agent already names is owned too, while its plist
+# is installed: a capture run without the glob wrote the work roster empty
+# (sd:3106).
 # <prefix>.cron.* is excluded throughout: local-cron-jobs owns those and they
 # are reported under `cron`.
 owned_agent_plists() {
   # shellcheck disable=SC2086 # the globs expand here, on purpose
   for oap in "$HOME/Library/LaunchAgents/$LABEL_PREFIX".*.plist \
-             $(for oag in ${MACHINE_SETUP_AGENT_GLOBS:-}; do printf '%s ' "$HOME/Library/LaunchAgents/$oag.plist"; done); do
+             $(for oag in ${MACHINE_SETUP_AGENT_GLOBS:-}; do printf '%s ' "$HOME/Library/LaunchAgents/$oag.plist"; done) \
+             $(manifest agent | while read -r oal; do printf '%s ' "$HOME/Library/LaunchAgents/$oal.plist"; done); do
     [ -e "$oap" ] || continue
     case "$(basename "$oap" .plist)" in "$LABEL_PREFIX.cron."*) continue ;; esac
     echo "$oap"
