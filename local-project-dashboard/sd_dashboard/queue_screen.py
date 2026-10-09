@@ -14,11 +14,11 @@ The five states, from each entry's `status`:
             with the first line of its reason.
   landed    `merged` today, in this machine's zone, with the merge commit and the pull request its subject names.
 
-Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel`, the queue's only writers. The verbs take no
-revision, so this compares the page's revision (a digest of the pending order and holds) with a fresh `lane list`
-first and refuses a stale one. That check is best effort: each verb holds the queue lock only inside itself, so a
-write that lands between the check and the verb is not caught. The answer names the order the verb left instead.
-The runner reads the queue again at each item boundary, so an edit takes effect there.
+Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel`, the queue's only writers. It compares the
+page's revision (a digest of the pending order and holds, the one `lane list` prints) with a fresh `lane list` first
+and refuses a stale one. `move`, `hold` and `release` also take it as `--expected-revision` and check it again under
+the queue's lock, so a write that lands between the two checks is refused too. `cancel` takes no revision, so its
+check stays best effort. The runner reads the queue again at each item boundary, so an edit takes effect there.
 """
 
 from __future__ import annotations
@@ -235,7 +235,11 @@ def move(payload: dict):
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         item, action = str(values["item"]), values["action"]
         verb = ["move", item, action] if action in ("up", "down", "top") else [action, item]
+        if action != "cancel":
+            verb += ["--expected-revision", values["revision"]]
         answer = _run([command("sd-ship"), "-C", path, "lane", *verb], WRITE_SECONDS)
+        if answer.get("code") == "stale_revision":
+            raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         if not answer.get("ok"):
             raise ValueError(answer.get("error") or "sd-ship lane refused the change.")
         return {"ok": True, "action": action, "item": values["item"], "pending": answer.get("pending"), "edits": EDITS}

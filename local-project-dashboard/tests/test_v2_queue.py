@@ -44,7 +44,7 @@ printf '%s\\n' "$*" >> "$QUEUE_LOG"
 case "$*" in
   *"lane list") cat "$QUEUE_FIXTURE" ;;
   "gate status --json") printf '{"slots": 4, "holders": [{"slot": 1}], "waiters": [], "load": [1, 2, 3]}\\n' ;;
-  *) if [ -n "$QUEUE_REFUSE" ]; then printf '{"ok": false, "error": "%s"}\\n' "$QUEUE_REFUSE"; exit 3; fi
+  *) if [ -n "$QUEUE_REFUSE" ]; then printf '{"ok": false, "error": "%s", "code": "%s"}\\n' "$QUEUE_REFUSE" "$QUEUE_CODE"; exit 3; fi
      printf '{"ok": true}\\n' ;;
 esac
 """
@@ -184,22 +184,30 @@ class TheRows(Lane, ScreenCase):
 class TheMove(Lane, BrowserSession):
     """`/api/queue/move` runs one lane verb, and only under the page's session, CSRF and Origin."""
 
+    def revision(self):
+        return queue_screen.revision(json.loads(self.fixture.read_text())["entries"])
+
     def move(self, action="up", item=12, **headers):
-        revision = queue_screen.revision(json.loads(self.fixture.read_text())["entries"])
-        payload = {"repo": str(self.checkout), "item": item, "action": action, "revision": revision}
+        payload = {"repo": str(self.checkout), "item": item, "action": action, "revision": self.revision()}
         return self.post("/api/queue/move", payload, **headers)
 
-    def test_a_reorder_calls_exactly_lane_move_with_the_item_and_place(self):
+    def test_a_reorder_calls_exactly_lane_move_with_the_item_place_and_revision(self):
         status, _, answer = self.move("up")
         self.assertEqual((status, answer["ok"]), (200, True))
         self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"],
-                                        ["-C", str(self.checkout), "lane", "move", "12", "up"]])
+                                        ["-C", str(self.checkout), "lane", "move", "12", "up", "--expected-revision", self.revision()]])
 
-    def test_top_hold_and_release_call_their_verbs(self):
+    def test_top_hold_and_release_call_their_verbs_with_the_revision(self):
         for action, verb in (("top", ["move", "12", "top"]), ("hold", ["hold", "12"]), ("release", ["release", "12"])):
             self.log.write_text("")
             status, _, _ = self.move(action)
-            self.assertEqual((status, self.calls()[-1]), (200, ["-C", str(self.checkout), "lane", *verb]))
+            self.assertEqual((status, self.calls()[-1]),
+                             (200, ["-C", str(self.checkout), "lane", *verb, "--expected-revision", self.revision()]))
+
+    def test_a_verb_that_refuses_a_stale_revision_asks_the_page_to_read_again(self):
+        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "the queue changed since revision x", "QUEUE_CODE": "stale_revision"}):
+            status, _, answer = self.move("hold")
+        self.assertEqual((status, answer.get("reload")), (409, True), answer)
 
     def test_cancel_calls_exactly_lane_cancel_with_the_item(self):
         status, _, answer = self.move("cancel", item=9)
@@ -290,9 +298,9 @@ class TheRealLane(BrowserSession):
                                                      "revision": lane["revision"]})
         self.assertEqual((status, self.order()), (409, [3, 1, 2]))
 
-    def test_a_write_between_the_check_and_the_verb_is_not_caught_and_the_answer_names_the_order(self):
-        # Best effort: the verbs take no revision and hold the queue lock only inside themselves, so another
-        # writer can land after the check. The answer carries the order the verb left, so the page shows it.
+    def test_a_write_between_the_check_and_the_verb_is_refused_and_moves_nothing(self):
+        # The verb checks the revision again under the queue's lock, so a writer that lands after the page's
+        # check makes it refuse; the queue keeps the other writer's order.
         lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
         listed = queue_screen.lane_list
 
@@ -303,8 +311,8 @@ class TheRealLane(BrowserSession):
         with mock.patch.object(queue_screen, "lane_list", then_another_writer):
             status, _, answer = self.post("/api/queue/move", {"repo": str(self.checkout), "item": 3, "action": "top",
                                                               "revision": lane["revision"]})
-        self.assertEqual((status, answer.get("pending")), (200, [3, 2, 1]), answer)
-        self.assertEqual(self.order(), [3, 2, 1])
+        self.assertEqual((status, answer.get("reload")), (409, True), answer)
+        self.assertEqual(self.order(), [2, 1, 3])
 
 
 class TheScript(Lane, ScreenCase):
