@@ -4,9 +4,9 @@
 # tests/check.sh, which the root Makefile's `check` target runs and the local
 # merge gate runs through sd-check, calls it for every leg on this machine.
 # The caller starts it under `env -i` with an isolated HOME and TMPDIR and
-# with CI_WORK_ROOT, CI_SYSTEM_ROOT, SD_ACCEPTANCE_PACK, SD_WRITING_MANIFEST
-# and SD_PR_BODY set. Bash, not POSIX sh: `pipefail` is what fails a suite
-# whose output goes through tee.
+# with CI_WORK_ROOT, CI_SYSTEM_ROOT, SD_ACCEPTANCE_PACK and SD_PR_BODY set.
+# Bash, not POSIX sh: `pipefail` is what fails a suite whose output goes
+# through tee.
 set -euo pipefail
 
 usage() {
@@ -35,7 +35,6 @@ cd "$CI_SYSTEM_ROOT"
 python3 -c 'import sys; assert sys.version_info[:2] == (3, 14), sys.version'
 test -f "$SD_ACCEPTANCE_PACK/bin/sd-ship"
 test -f "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
-test -f "$SD_WRITING_MANIFEST"
 
 if [ "$1" = leg ]; then
   # The preflight built it; a leg never builds its own.
@@ -48,9 +47,8 @@ else
 python3 - <<'PY_VERIFY'
 import hashlib
 import json
-import os
 from pathlib import Path
-fixture = Path(os.environ["SD_WRITING_MANIFEST"])
+fixture = Path(".github/fixtures/writing-sd-plugin.json")
 source = json.loads(fixture.with_suffix(".source.json").read_text())
 if hashlib.sha256(fixture.read_bytes()).hexdigest() != source["sha256"]:
     raise SystemExit("writing manifest fixture differs from its pinned source digest")

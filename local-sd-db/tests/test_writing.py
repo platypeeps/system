@@ -23,6 +23,13 @@ from sd_db.sources import verify as verify_source
 from sd_db.sources.vault import Reader as VaultReader
 from sd_db.writes import create_item, now
 
+from . import support
+
+
+def vault_reader(vault):
+    """The vault import over the writing pack's two declared kinds (sd:1425)."""
+    return VaultReader.from_plugins([support.plugin_entry()], environ={"OBSIDIAN_VAULT": str(vault)})
+
 
 class WritingCase(unittest.TestCase):
     def setUp(self):
@@ -490,7 +497,7 @@ class Promote(WritingCase):
         note.parent.mkdir(parents=True)
         (vault / "System/Databases/Topics").mkdir(parents=True)
         note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
-        reader = VaultReader.at(vault)
+        reader = vault_reader(vault)
         reader.land(self.db, reader.freeze())
         idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
         promote(self.db, idea, who="operator")
@@ -518,7 +525,7 @@ class Promote(WritingCase):
         note.parent.mkdir(parents=True)
         (vault / "System/Databases/Topics").mkdir(parents=True)
         note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
-        reader = VaultReader.at(vault)
+        reader = vault_reader(vault)
         reader.land(self.db, reader.freeze())
         promote(self.db, self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0], who="operator")
         self.assertEqual(verify_source(self.db, reader, reader.freeze()), [])
@@ -532,7 +539,7 @@ class Promote(WritingCase):
         identity = "blog-idea:System/Databases/Blog Ideas/vault-idea.md"
         create_item(self.db, kind="idea", title="Decoy", source="vault", external_id="decoy",
                     fields={"promoted_from": {"source": "vault", "external_id": identity}})
-        reader = VaultReader.at(vault)
+        reader = vault_reader(vault)
         missing = [d.identity for d in verify_source(self.db, reader, reader.freeze()) if d.what == "missing from the rows"]
         self.assertEqual(missing, [identity])
         self.assertEqual(reader.land(self.db, reader.freeze()).inserted, 1)
@@ -543,7 +550,7 @@ class Promote(WritingCase):
         note.parent.mkdir(parents=True)
         (vault / "System/Databases/Topics").mkdir(parents=True)
         note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
-        reader = VaultReader.at(vault)
+        reader = vault_reader(vault)
         reader.land(self.db, reader.freeze())
         idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
         promote(self.db, idea, who="operator")
@@ -565,7 +572,7 @@ class Promote(WritingCase):
         note.parent.mkdir(parents=True)
         (vault / "System/Databases/Topics").mkdir(parents=True)
         note.write_text("---\ntitle: Vault idea\nstatus: inbox\ndateCreated: 2026-01-02\n---\nThe angle.\n")
-        reader = VaultReader.at(vault)
+        reader = vault_reader(vault)
         reader.land(self.db, reader.freeze())
         idea = self.db.execute("SELECT id FROM item WHERE title = 'Vault idea'").fetchone()[0]
         promote(self.db, idea, who="operator")

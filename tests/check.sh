@@ -123,7 +123,6 @@ isolated() {
   env -i PATH="$tool_path" HOME="$work/$job/home" TMPDIR="$work/$job/tmp.noindex" \
     CI_WORK_ROOT="$work" CI_SYSTEM_ROOT="$ROOT" \
     SD_ACCEPTANCE_PACK="$pack" \
-    SD_WRITING_MANIFEST="$ROOT/.github/fixtures/writing-sd-plugin.json" \
     SD_PR_BODY="" \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 \
     LANG=en_US.UTF-8 PYTHONDONTWRITEBYTECODE=1 NO_PROXY='*' no_proxy='*' \

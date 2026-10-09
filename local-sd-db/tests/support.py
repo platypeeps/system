@@ -201,6 +201,35 @@ tags:
 """
 
 
+#: The writing pack's `workflow` maps, as its manifest declares them (sd:1425).
+BLOG_IDEA = {"inbox": "planning", "accepted": "ready", "drafting": "in_progress",
+             "published": "done", "declined": "done"}
+TOPIC = {"candidate": "planning", "active": "in_progress", "parked": "blocked",
+         "retired": "done"}
+
+
+def plugin_entry(prefix="sdw", root="$OBSIDIAN_VAULT", workflow=None, **extra):
+    """One `sd plugin list --json` entry, as the pack's `describe` builds it.
+
+    `workflow=None` declares both writing kinds; `{}` declares none.
+    """
+    found = {
+        "root": f"/plugins/{prefix}",
+        "readable": True,
+        "prefix": prefix,
+        "store": {"driver": "vault", "root": root, "bases": {
+            "blog-idea": "System/Databases/Blog Ideas",
+            "topic": "System/Databases/Topics",
+        }},
+        **extra,
+    }
+    if workflow is None:
+        workflow = {"blog-idea": {"status": dict(BLOG_IDEA)}, "topic": {"status": dict(TOPIC)}}
+    if workflow:
+        found["workflow"] = workflow
+    return found
+
+
 def vault(root: Path, *, ideas: dict[str, str], topics: dict[str, str]) -> Path:
     """A vault with the two bases requirement 2 migrates. `{name: stage}`."""
     for base, kind, entries in (

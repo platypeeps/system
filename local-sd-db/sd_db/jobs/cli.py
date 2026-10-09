@@ -322,7 +322,7 @@ SOURCES = {
     "index": lambda connection: index_cache.Reader.at(),
     "docs-work": docs_work.Reader.from_table,
     "register": lambda connection: register.Reader.at(),
-    "vault": lambda connection: vault.Reader.at(),
+    "vault": lambda connection: vault.Reader.at(home=_home()),
     "issues": lambda connection: issues.Reader(),
 }
 
