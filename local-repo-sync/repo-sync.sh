@@ -1013,13 +1013,14 @@ hyg_busy() {
 # Drops the ignored entries of `git status --porcelain --ignored=matching`
 # (each ignored path itself, not a folder holding only ignored files) that are
 # build output: it rebuilds, and `worktree remove` takes it with the tree.
-# Any other line stays, so an .env or a local database still keeps a
-# worktree; so does a quoted path, which this cannot read.
+# Only a directory counts, which git prints with a trailing slash; a regular
+# file of the same name may be anyone's data. Any other line stays, so an
+# .env or a local database still keeps a worktree; so does a quoted path,
+# which this cannot read.
 hyg_not_build() {
-  awk '!/^!! / { print; next }
+  awk '!/^!! .*\/$/ { print; next }
     { p = substr($0, 4); sub(/\/$/, "", p); n = split(p, s, "/")
-      if (s[n] ~ /^(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|node_modules|target|dist)$/ \
-          || s[n] ~ /^\.coverage(\..*)?$/) next
+      if (s[n] ~ /^(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|node_modules|target|dist)$/) next
       print }'
 }
 

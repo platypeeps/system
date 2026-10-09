@@ -470,6 +470,28 @@ class HygieneTest(unittest.TestCase):
         self.assertNotEqual("", f.branch_sha(repo, "env-and-build"))
         self.assertIn("KEEP     branch env-and-build", result.stdout)
 
+    def test_a_regular_file_named_like_build_output_keeps_the_worktree(self):
+        """NEW (sd:1677 review round 1). Only a directory with a build
+        output name is build output; an ignored regular file named target,
+        dist, node_modules or .coverage may be the operator's data."""
+        for rel in ("target", "pkg/dist", "web/node_modules", ".coverage"):
+            with self.subTest(rel=rel):
+                f = self.fixture()
+                repo = f.repo()
+                (repo / ".gitignore").write_text(f"{rel.rsplit('/', 1)[-1]}\n")
+                f.git(repo, "add", ".gitignore")
+                f.git(repo, "commit", "-q", "-m", "ignore a file")
+                f.git(repo, "push", "-q", "origin", "main")
+                wt = f.merged_worktree(repo, "named-file")
+                (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+                (wt / rel).write_text("operator data\n")
+
+                result = f.run("hygiene", "--apply", expect=0)
+
+                self.assertTrue((wt / rel).exists(), result.stdout)
+                self.assertNotEqual("", f.branch_sha(repo, "named-file"))
+                self.assertIn("KEEP     branch named-file", result.stdout)
+
     def test_a_merged_worktree_with_a_file_held_open_is_kept(self):
         """NEW (sd:1677). A process with its cwd elsewhere that holds a file
         open inside the worktree keeps it: removal would pull the file away

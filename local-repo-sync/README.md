@@ -175,9 +175,9 @@ safe classes:
   branch survives;
 - remove a worktree that holds such a branch, wherever it sits, when it has
   no uncommitted or untracked files, no ignored files but build output
-  (`target/`, `node_modules/`, `dist/`, Python caches, `.coverage*`), and no
-  process has its cwd or an open file inside it; the build output goes with
-  it;
+  directories (`target/`, `node_modules/`, `dist/`, Python caches; a regular
+  file of that name still counts), and no process has its cwd or an open
+  file inside it; the build output goes with it;
 - delete lane logs and scratch under the bulk storage root
   (`sd config get sd.bulk_storage_root`): in each `<root>/<repo>/lane/`, a
   file unmodified for 14 days, then a folder unchanged for 14 days that is
