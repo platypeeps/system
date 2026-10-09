@@ -1801,14 +1801,14 @@ stage_iterm2() {
   if [ "$cur" = "$dir" ]; then
     echo "  ok      PrefsCustomFolder = $cur"
   else
-    run defaults write com.googlecode.iterm2 PrefsCustomFolder -string "$dir"
+    defaults_write com.googlecode.iterm2 PrefsCustomFolder string "$dir"
     changed=1
   fi
   cur=$(defaults read com.googlecode.iterm2 LoadPrefsFromCustomFolder 2>/dev/null || echo "(unset)")
   if [ "$cur" = "1" ]; then
     echo "  ok      LoadPrefsFromCustomFolder = 1"
   else
-    run defaults write com.googlecode.iterm2 LoadPrefsFromCustomFolder -bool true
+    defaults_write com.googlecode.iterm2 LoadPrefsFromCustomFolder bool true
     changed=1
   fi
 
@@ -1903,8 +1903,17 @@ self_update_default() { # domain key true|false
   if norm_eq bool "$cur" "$3"; then
     echo "  ok      $1 $2 = $cur"
   else
-    run defaults write "$1" "$2" -bool "$3"
+    defaults_write "$1" "$2" bool "$3"
   fi
+}
+
+# A sandboxed app keeps its domain in its container, and macOS refuses a
+# write there from a terminal without Full Disk Access (Maccy, sd:3103).
+# Under set -e that one refusal ended the run, so the key is reported and the
+# stage goes on.
+defaults_write() { # domain key type value
+  run defaults write "$1" "$2" "-$3" "$4" \
+    || echo "  DIFFERS $1 $2 not written; set it by hand to $4, or grant the terminal Full Disk Access and re-run"
 }
 
 # One key in a JSON settings file: ok, or MISSING/DIFFERS and the merge.
@@ -1963,7 +1972,7 @@ stage_macos() {
     if norm_eq "$typ" "$cur" "$val"; then
       echo "  ok      $dom $key = $cur"
     else
-      run defaults write "$dom" "$key" "-$typ" "$val"
+      defaults_write "$dom" "$key" "$typ" "$val"
       changed=1
     fi
   done <<EOF_MACOS
