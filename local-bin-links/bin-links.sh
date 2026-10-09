@@ -16,11 +16,9 @@ ROOT="$(cd "$DIR/.." && pwd)"
 
 BIN_DIR="${BIN_LINKS_DIR:-$HOME/bin/common}"
 
-# Where the sd-ai-command-pack checkout lives. Every command it ships is linked
-# from that checkout, rather than copied into this repository: the pack's
-# installer renders surfaces and links no executable, so PATH is ours to wire.
-# Overridable, and a missing checkout SKIPs with a message rather than failing:
-# the pack is a different repository and may simply not be cloned here.
+# Where the sd-ai-command-pack checkout lives. Its installer owns the pack's
+# commands (links in ~/.local/bin), so this script links none of them and only
+# sweeps the links it made earlier: they shadow the installed commands.
 SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 
 # "<link name> <target>", one per line. A bare target is relative to this repo's
@@ -39,29 +37,8 @@ llama-cpp  local-llama-cpp/llama-cpp.sh
 jev        local-jev/jev.sh
 "
 
-# The pack's commands, read from its bin/ on every run rather than listed here:
-# two hand-written rows once stood for a checkout shipping seventeen. The rule
-# is the one the pack's own `sd_install.py --status` counts with -- `sd*`,
-# no extension, a regular executable file -- so the `sd_*.py` modules beside
-# them are not commands. Printed as rows in the LINKS format.
-pack_links() {
-  for pc in "$SD_PACK_ROOT"/bin/sd*; do
-    pn=$(basename "$pc")
-    case "$pn" in *.*) continue ;; esac
-    [ -f "$pc" ] && [ -x "$pc" ] || continue
-    # shellcheck disable=SC2016 # the row carries $SD_PACK_ROOT literally, like LINKS
-    printf '%s $SD_PACK_ROOT/bin/%s\n' "$pn" "$pn"
-  done
-}
-
 all_links() {
   echo "$LINKS"
-  pack_links
-}
-
-pack_note() {
-  [ -d "$SD_PACK_ROOT/bin" ] ||
-    printf '%-16s SKIP    sd-ai-command-pack not found: %s\n' "sd*" "$SD_PACK_ROOT"
 }
 
 # A target is either repo-relative or absolute. `$SD_PACK_ROOT` is the one
@@ -114,9 +91,8 @@ install_links() {
     printf '%-16s linked  -> %s\n' "$name" "$rel"
   done
 
-  pack_note
   sweep_retired remove
-  sweep_stale_pack remove
+  sweep_pack remove
 
   echo
   case ":$PATH:" in
@@ -149,9 +125,8 @@ status() {
     printf '%-16s %-22s %s\n' "$name" "$state" "$rel"
   done
 
-  pack_note
   sweep_retired report
-  sweep_stale_pack report
+  sweep_pack report
 
   echo
   case ":$PATH:" in
@@ -186,22 +161,23 @@ sweep_retired() {
   done
 }
 
-# A command the pack stops shipping leaves a link to nothing, and no row names it
-# any more. Only a dangling symlink whose target is inside the pack's bin/ is
-# touched; STALE is in machine-setup's drift vocabulary.
-sweep_stale_pack() {
+# The pack's installer owns its commands, so a link into the pack checkout is
+# one this script made before that, and it shadows the installed command (or
+# dangles, when the pack dropped the command). Only a symlink is touched, never
+# a regular file; STALE is in machine-setup's drift vocabulary.
+sweep_pack() {
   for sl in "$BIN_DIR"/*; do
-    [ -L "$sl" ] && [ ! -e "$sl" ] || continue
+    [ -L "$sl" ] || continue
     st=$(readlink "$sl")
     case "$st" in
-      "$SD_PACK_ROOT/bin/"*) ;;
+      "$SD_PACK_ROOT/"*) ;;
       *) continue ;;
     esac
     if [ "$1" = "remove" ]; then
       rm -f "$sl"
-      printf '%-16s removed stale link -> %s\n' "$(basename "$sl")" "$st"
+      printf '%-16s removed pack link -> %s\n' "$(basename "$sl")" "$st"
     else
-      printf '%-16s %-22s %s\n' "$(basename "$sl")" "STALE (target gone)" "$st"
+      printf '%-16s %-22s %s\n' "$(basename "$sl")" "STALE (pack installs it)" "$st"
     fi
   done
 }
@@ -222,7 +198,7 @@ remove_links() {
   done
 
   sweep_retired remove
-  sweep_stale_pack remove
+  sweep_pack remove
 }
 
 case "$1" in
@@ -246,21 +222,21 @@ usage: bin-links.sh install|status|remove|test
   install   symlink this repo's CLI tools into ~/bin/common, creating the
             directory if needed; existing correct links are left alone and a
             real file in the way is skipped rather than overwritten, and links
-            this repo has retired are swept away
-  status    report each link's state, any retired link still present, and
-            whether the bin dir is on PATH
+            this repo has retired, or the pack now installs, are swept away
+  status    report each link's state, any retired or pack link still present,
+            and whether the bin dir is on PATH
   remove    delete only the symlinks that point into this repo or the pack,
-            retired and stale ones included
+            retired and pack ones included
   test      run the unittest suite in tests/
 
 Linked tools: repo-sync, gito, prism, mac-utils, notify, agent-prompt,
-adversarial-gate, ha-mcp, llama-cpp, and every command in the sd-ai-command-pack
-checkout's bin/ (sd, sd-status, sd-review, ...), read from it on each run. A
-link to a pack command that no longer exists is STALE and swept.
+adversarial-gate, ha-mcp, llama-cpp, jev. The sd-ai-command-pack's commands
+(sd, sd-status, ...) are not linked: its installer links them into
+~/.local/bin. An older link into the pack checkout is STALE and swept.
 
 environment:
   BIN_LINKS_DIR   directory to link into (default ~/bin/common)
-  SD_PACK_ROOT    sd-ai-command-pack checkout whose bin/sd* commands are linked
+  SD_PACK_ROOT    sd-ai-command-pack checkout whose old links are swept
                   (default ~/repos/platypeeps/sd-ai-command-pack)
 HELPEOF
     exit 0

@@ -24,26 +24,16 @@ Linked tools:
 | `adversarial-gate` | `local-adversarial-gate/adversarial-gate.sh` |
 | `ha-mcp` | `local-ha-mcp/ha-mcp.sh` |
 | `llama-cpp` | `local-llama-cpp/llama-cpp.sh` |
-| `sd`, `sd-status`, `sd-review`, … | `$SD_PACK_ROOT/bin/<same name>` |
 
-**Every command the `platypeeps/sd-ai-command-pack` checkout ships is linked**,
-and they are not listed here or in the script: `bin-links.sh` reads the pack's
-`bin/` on each run. The rule is the one the pack's `sd_install.py --status`
-counts with — `sd*`, no extension, a regular executable file — so the
-`sd_*.py` modules beside them are skipped. The pack's installer renders skills
-and hooks and links no executable, so this is what puts `sd-status` or
-`sd-handoff` on `PATH`. Its `--status` line still reads `not on PATH`
-afterwards: it asks whether the pack's `bin/` directory itself is on `PATH`,
-which links do not make true. What it does check is that nothing competes —
-a `[N shadowed by another install]` suffix would mean some other copy of a
-command wins. `SD_PACK_ROOT` defaults to
-`~/repos/platypeeps/sd-ai-command-pack` and a missing checkout is a `SKIP`,
-not a failure.
-
-A command the pack stops shipping leaves a link to nothing, and no row names
-it. `status` reports such a link `STALE` — a word machine-setup's drift count
-reads — and `install` and `remove` delete it. Only a dangling link whose target
-is inside the pack's `bin/` is touched.
+**The `platypeeps/sd-ai-command-pack` commands are not linked here.** The pack's
+installer (`python3 bin/sd_install.py --user`) links `sd`, `sd-status` and the
+rest into `~/.local/bin`. A link this script made earlier into the pack checkout
+shadows that install (`sd_install.py --verify` reports `command_shadowed`), or
+dangles once the pack drops the command. `status` reports such a link `STALE`
+— a word machine-setup's drift count reads — and `install` and `remove` delete
+it and print each removal. Only a symlink whose target is inside the checkout
+(`SD_PACK_ROOT`, default `~/repos/platypeeps/sd-ai-command-pack`) is touched; a
+regular file is never removed.
 
 `./bin-links.sh test` runs `tests/`, against a fake pack and bin dir.
 
