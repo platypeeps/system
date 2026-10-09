@@ -502,8 +502,17 @@ refresh_one() {
     echo "!!! failed: $r_dir has no origin/HEAD, origin/main or origin/master; still at $r_short"
     return 1
   fi
-  if ! git -C "$r_dir" switch -q --detach "origin/$r_def" \
-     || ! git -C "$r_dir" submodule update -q --init --recursive; then
+  # `git submodule update` would overwrite an ignored file in a submodule and
+  # has no switch to stop it, so a checkout with submodules is moved by hand.
+  for r_rev in HEAD "origin/$r_def"; do
+    if git -C "$r_dir" ls-tree -r "$r_rev" | awk '$2 == "commit" { f = 1 } END { exit !f }'; then
+      echo "!!! refused: $r_rev in $r_dir holds a submodule; refresh does not move one; still at $r_short"
+      return 1
+    fi
+  done
+  # An ignored file is often local config or data; git overwrites one that
+  # origin now tracks unless told not to, and then refuses the whole switch.
+  if ! git -C "$r_dir" switch -q --detach --no-overwrite-ignore "origin/$r_def"; then
     echo "!!! failed: switch to origin/$r_def in $r_dir; HEAD is now $(git -C "$r_dir" rev-parse --short HEAD)"
     return 1
   fi
@@ -1388,7 +1397,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|test
   refresh [path ...]
              move each pinned checkout named, or with no path every pinned
              conf checkout, to origin's default branch, still detached. It
-             refuses a checkout with uncommitted changes and leaves one on a
+             refuses a checkout with uncommitted changes or a submodule,
+             never overwrites an ignored file, and leaves a checkout on a
              branch alone. In the command pack (bin/sd_install.py) it then
              runs `make setup`. When local-sd-db's SCHEMA_VERSION changed it
              prints the backup and migrate steps and runs neither. Prints the

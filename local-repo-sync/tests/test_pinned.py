@@ -295,23 +295,55 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(before, f.head(repo))
         self.assertEqual("untracked here\n", (repo / "later").read_text())
 
-    def test_a_failed_submodule_update_fails_and_a_rerun_recovers(self):
-        """NEW. The switch already moved HEAD, so the failure names where it
-        is; a second refresh finds it current and runs the update again."""
+    def test_an_ignored_file_origin_now_tracks_fails_the_refresh(self):
+        """NEW. `git switch` overwrites an ignored file by default. Refresh
+        must not: a local config or data file is often ignored, and origin
+        may start tracking its path. The switch refuses, nothing moves, and
+        refresh exits 1."""
+        f = self.fixture()
+        repo = f.repo()
+        f.commit(repo, ".gitignore", "local.conf\n", "ignore local.conf")
+        f.git(repo, "push", "-q", "origin", "main")
+        f.pin(repo)
+        before = f.head(repo)
+        (repo / "local.conf").write_text("operator value\n")
+        f.others += 1
+        other = f.tmp / "other" / str(f.others)
+        f.git(f.tmp, "clone", "-q", "-b", "main",
+              f.git(repo, "remote", "get-url", "origin"), str(other))
+        (other / "local.conf").write_text("from origin\n")
+        f.git(other, "add", "-f", "local.conf")
+        f.git(other, "commit", "-q", "-m", "track local.conf")
+        f.git(other, "push", "-q", "origin", "main")
+
+        result = f.run("refresh", expect=1)
+
+        self.assertIn("switch to origin/main", result.stdout)
+        self.assertEqual("operator value\n", (repo / "local.conf").read_text())
+        self.assertEqual(before, f.head(repo))
+
+    def test_a_checkout_with_submodules_is_refused(self):
+        """NEW. `git submodule update` has no way to keep an ignored file a
+        submodule checkout would overwrite, so refresh moves no checkout
+        whose current or target commit holds a submodule."""
         f = self.fixture()
         repo = f.repo()
         f.pin(repo)
-        new = f.advance_origin(repo)
-        f.wrap_git("before", "*submodule*", "exit 1")
+        before = f.head(repo)
+        f.others += 1
+        other = f.tmp / "other" / str(f.others)
+        f.git(f.tmp, "clone", "-q", "-b", "main",
+              f.git(repo, "remote", "get-url", "origin"), str(other))
+        f.git(other, "update-index", "--add", "--cacheinfo",
+              f"160000,{before},sub")
+        f.git(other, "commit", "-q", "-m", "add a submodule")
+        f.git(other, "push", "-q", "origin", "main")
 
-        failed = f.run("refresh", expect=1)
-        self.assertIn(f"HEAD is now {new[:7]}", failed.stdout)
+        result = f.run("refresh", expect=1)
 
-        (f.bin / "git").write_text(
-            '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GIT_LOG"\nexec "$REAL_GIT" "$@"\n')
-        again = f.run("refresh", expect=0)
-        self.assertIn("already at origin/main", again.stdout)
-        self.assertEqual(new, f.head(repo))
+        self.assertIn("submodule", result.stdout)
+        self.assertEqual(before, f.head(repo))
+        self.assertEqual([], [c for c in f.git_verbs() if c.startswith("submodule")])
 
     def test_refresh_prints_the_migrate_remedy_when_the_schema_changes(self):
         """NEW. A new local-sd-db SCHEMA_VERSION needs a migrate. Refresh

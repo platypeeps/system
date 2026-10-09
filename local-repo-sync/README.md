@@ -59,7 +59,9 @@ on. A pinned checkout is not a failure, and nightly mails nothing about it.
 
 `refresh` moves each pinned checkout to `origin/<default>`, still detached,
 and prints the old and new sha. It refuses a checkout with uncommitted
-changes and leaves one on a branch alone. In the command pack (it has
+changes or a submodule, never overwrites an ignored file that origin now
+tracks (the switch fails and nothing moves), and leaves a checkout on a
+branch alone. In the command pack (it has
 `bin/sd_install.py`) it then runs `make setup`. When local-sd-db's
 `SCHEMA_VERSION` changed, it prints the steps: stop the dashboard, the runner
 and `sd-serve`, run `sd-db.sh backup`, then `sd-db.sh migrate`. It runs
