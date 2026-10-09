@@ -18,12 +18,15 @@
       ${REFUSED.has(d.note) ? html`<p class="refused" role="alert">Not recorded: ${REFUSED.get(d.note)}</p>` : ''}`;
   }
 
+  // today.js counts the waiting decisions in Today's badge; a failed read counts none.
+  const tell = n => document.dispatchEvent(new CustomEvent('today:decisions', { detail: n }));
+
   function draw() {
     const tb = $('decisions');
     if (!LIST) {
       put(tb, html`<tr class="empty"><td colspan="4">Decisions could not be read: ${failed}. Refresh tries again.</td></tr>`);
       put($('decisions-tally'), html``);
-      return;
+      return tell(0);
     }
     put(tb, LIST.length ? html`${LIST.map(d => { const ruled = RULED.has(d.note); return html`<tr data-item="${d.item}"${BUSY.has(d.note) ? html` aria-busy="true"` : ''}>
       <td class="g ${ruled ? 'g-ok' : 'g-caution'}" title="${ruled ? 'ruled' : 'waiting'}">${ruled ? '●' : '▲'}</td>
@@ -33,6 +36,7 @@
       : html`<tr class="empty"><td colspan="4">No decision waits on you. A question note with two Option: lines appears here.</td></tr>`);
     const waiting = LIST.filter(d => !RULED.has(d.note)).length;
     put($('decisions-tally'), LIST.length ? html`<span class="g-caution">▲ ${waiting} waiting</span>${RULED.size ? html`<span class="g-ok">● ${RULED.size} ruled</span>` : ''}` : html``);
+    tell(waiting);
   }
 
   // Of overlapping reads only the newest draws.
