@@ -321,7 +321,7 @@ class TheExecNote(PruneCase):
         self.assertEqual(marked["command"], "inspect")
         self.assertEqual(marked["argv"][1], str(self.item))
 
-        # The read the dashboard's /api/executions route and `sd runner commands output` share.
+        # The read the dashboard's /api/executions route and the palette's history share.
         read = runner_exec.read_execution(self.db, note)
         self.assertEqual(read["state"], "output expired")
         self.assertEqual(read["output_expired"], NOW.isoformat(timespec="seconds"))

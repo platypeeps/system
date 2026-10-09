@@ -379,8 +379,8 @@
       return { landed: landed.length, failed: failed.length };
     });
   }
-  // build (sd:2590): a command with batch(objs, done) takes the whole group in one call, as sd run queues a selection as one
-  // request. Its own form names the count and asks first; it calls done() to clear the picks once the group was sent, and
+  // build (sd:2590): a command with batch(objs, done) takes the whole group in one call.
+  // Its own form names the count and asks first; it calls done() to clear the picks once the group was sent, and
   // the page toasts the result. Answers whether the command took the group.
   function handOver(c, objs, done) {
     if (!c.batch) return false;

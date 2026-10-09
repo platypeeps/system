@@ -234,8 +234,8 @@ Usage: sd-db.sh <command>
               status is always `planning`. The branch is the one this
               checkout is on when that is a local branch other than
               the default (a runner clone on plan/<slug>); on the
-              default, or detached, it is left NULL for `sd runner
-              prepare --branch` to fill -- never `origin/main`, which
+              default, or detached, it is left NULL for `sd work
+              register` to fill -- never `origin/main`, which
               names no head. Registering twice reports the existing
               row and changes nothing.
   import S    Freeze one source, import it, and verify the rows against it.

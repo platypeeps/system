@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from sd_db import reads, runner, runner_controls, seed, workflow
+from sd_db import reads, runner, seed, workflow
 from sd_db.calls import CallRefused, bound_for
 from sd_db.database import connect
 from sd_db.errors import SdDbError
@@ -55,18 +55,13 @@ class Queue(unittest.TestCase):
             with self.subTest(item=item):
                 row = item_state(self.db, item)['item']
                 self.assertEqual((row['kind'], row['repo'], bool(row['branch'])), ('followup', '/fixture/repo', True))
-                ready = runner_controls.readiness(self.db, item)
-                self.assertEqual((ready['allowed'], ready['reason']), (False, reason.format(item)))
-                with self.assertRaisesRegex(runner.RunnerRefused, 'is a followup item'):
+                with self.assertRaisesRegex(runner.RunnerRefused, reason.format(item)):
                     runner.enqueue(self.db, [item], who='operator')
-                with self.assertRaisesRegex(workflow.WorkflowError, 'is a followup item'):
-                    runner_controls.enqueue(self.db, [item], revisions={item: ready['revision']}, who='operator')
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM assignment').fetchone()[0], 0)
         legacy = create_assignment(self.db, item=by_hand, role='author', status='queued')
         with self.assertRaisesRegex(runner.RunnerRefused, 'is a followup item'):
             self.claim(legacy)
         self.assertEqual(runner.active_runs(self.db), [])
-        self.assertTrue(runner_controls.readiness(self.db, self.items[0])['allowed'])
 
     def test_duplicate_branch_selection_is_atomic(self):
         self.db.execute('UPDATE item SET branch = ? WHERE id = ?', ('work/0',self.items[1]))
@@ -139,12 +134,8 @@ class Queue(unittest.TestCase):
         unbranched = create_item(self.db, kind='task', title='No branch yet',
                                  repo='/fixture/repo', branch=None, status='ready')
         reason = f'item {unbranched} needs a valid branch'
-        ready = runner_controls.readiness(self.db, unbranched)
-        self.assertEqual((ready['allowed'], ready['reason']), (False, reason))
         with self.assertRaisesRegex(runner.RunnerRefused, reason):
             runner.enqueue(self.db, [unbranched], who='operator')
-        with self.assertRaisesRegex(workflow.WorkflowError, reason):
-            runner_controls.enqueue(self.db, [unbranched], revisions={unbranched: ready['revision']}, who='operator')
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM assignment').fetchone()[0], 0)
         legacy = create_assignment(self.db, item=unbranched, role='author', status='queued')
         with self.assertRaisesRegex(runner.RunnerRefused, reason):

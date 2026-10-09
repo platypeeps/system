@@ -527,7 +527,7 @@ function registerCommands() {
     // build: the item opens in Tasks, whose Details read it.
     { id: 'item.show', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
       run: o => { location.href = `/tasks?row=${o.item}`; return `#${o.item} opens in Tasks`; } },
-    { id: 'wt.prune', on: 'worktrees', label: 'Prune', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no CLI verb: sd worktree has restore and resume only', cli: () => 'sd sessions prune --abandoned',
+    { id: 'wt.prune', on: 'worktrees', label: 'Prune', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no dashboard route: run the CLI line', cli: () => 'sd sessions prune --abandoned',
       consequence: o => `Removes ${o.n} worktree registrations whose directories are gone. Branches and files stay.` },
     // Services on this Mac. build: each posts /api/services/<label>/<action> with the service's revision; when() is its capability.
     { id: 'svc.restart', on: 'service', label: 'Restart', key: 't', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
@@ -612,7 +612,7 @@ function renderSessions() {
       : html`<p class="empty">${SESS.processes_error ? html`<span class="g-unknown" aria-hidden="true">▨</span> ${SESS.processes_error}` : 'No sd-* command is running.'}</p>`}
 
     <div class="sec-head"><h2 id="runner-h">Runner assignments</h2><p class="tally">${ASG ? html`<span>${total} in history</span><span>latest ${latest.length} shown</span><span>assignment table · ${hhmm(READ)} UTC</span>` : ''}</p></div>
-    ${!ASG ? unknown('Assignments were not read', why('assignments'), 'sd runner list') : html`
+    ${!ASG ? unknown('Assignments were not read', why('assignments'), 'sd assignments list') : html`
     <div class="bars" role="group" aria-label="Assignment history by outcome. Select a bar to filter.">
       ${hist.map(([k, n]) => html`<button class="bar" type="button" data-hist="${k}" aria-pressed="${String(histFilter === k)}"><span>${k}</span><svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect class="track" x="0" y="0" width="100" height="10"/><rect class="fill" x="0" y="0" width="${(n / max * 100).toFixed(1)}" height="10"/></svg><span class="n">${n}</span></button>`)}
     </div>

@@ -584,69 +584,28 @@ class RunsAndClones(Store):
         self.assertEqual([entry["row"]["run"] for entry in plan["rows"] if entry["table"] == "runner_lease"],
                          sorted(runs))
 
-    def remedy(self, assignment=None):
-        """sd:1793: the runner's verb, not a raw `chflags -R nouchg` and `rm -rf`."""
-        return f"runner.sh retained-remove --clone-only --assignment {assignment or self.work} --who NAME"
-
-    def test_a_retained_clone_prints_the_retained_remove_command(self):
+    def test_a_retained_clone_refuses_with_no_command_and_says_what_may_stay(self):
+        """sd:3041: the runner's retained-remove is gone; the operator removes the clone by hand."""
         run = self.attempt(self.work, self.source, clone=True)
         clone = str(self.retained / str(self.work) / "1" / "clone")
         refusal, = self.i6()
-        self.assertEqual(refusal["commands"], [self.remedy()])
+        self.assertEqual(refusal["commands"], [])
         message = refusal["message"]
-        self.assertLess(message.index(clone), message.index(self.remedy()))
-        self.assertIn("with your name for NAME", message)
-        # The scope of the pair it replaces: the clone goes, the preserved outputs stay.
-        self.assertIn(f"removes only the retained clones of assignment {self.work}"
-                      " and keeps kept.tar, archives and ignored outputs", message)
-        self.assertNotIn("chflags", message)
-        self.assertNotIn("rm -rf", message)
+        self.assertIn(f"retained clone still on disk: {clone}", message)
+        self.assertIn("remove it yourself", message)
+        self.assertIn(f"kept.tar, archives and ignored outputs of assignment {self.work} may stay", message)
+        self.assertNotIn("runner.sh", message)
         self.assertEqual(refusal["key"], run)
         shutil.rmtree(clone)
         self.assertEqual(self.i6(), [])
 
-    def test_a_clone_path_with_a_space_prints_the_same_command(self):
-        """The path is no longer on the command line, so no quoting can split it."""
+    def test_a_clone_path_with_a_space_is_named_whole(self):
         root = self.root / "re tained"; root.mkdir()
         self.attempt(self.work, self.source, clone=True, root=root)
         clone = str(root / str(self.work) / "1" / "clone")
         refusal, = self.i6()
-        self.assertEqual([shlex.split(command) for command in refusal["commands"]],
-                         [["runner.sh", "retained-remove", "--clone-only", "--assignment", str(self.work),
-                           "--who", "NAME"]])
+        self.assertEqual(refusal["commands"], [])
         self.assertIn(clone, refusal["message"])
-
-    def test_an_interrupted_runner_prune_refuses_until_its_leftover_is_gone(self):
-        """sd:770: a prune renames the clone to `.pruning-clone` first; what it leaves still refuses."""
-        run = self.attempt(self.work, self.source)
-        leftover = self.retained / str(self.work) / "1" / ".pruning-clone"
-        self.assertEqual(self.i6(), [])
-        leftover.mkdir(parents=True)
-        refusal, = self.i6()
-        self.assertEqual((refusal["key"], refusal["commands"]), (run, [self.remedy()]))
-        self.assertIn("an interrupted runner prune left part of a retained clone", refusal["message"])
-        self.assertNotIn("retained clone still on disk", refusal["message"])
-        leftover.rmdir()
-        self.assertEqual(self.i6(), [])
-
-    def test_a_clone_and_a_leftover_print_one_command(self):
-        """retained-remove finishes the leftover and removes the clone in one run."""
-        self.attempt(self.work, self.source, clone=True)
-        clone = self.retained / str(self.work) / "1" / "clone"
-        leftover = clone.parent / ".pruning-clone"; leftover.mkdir()
-        refusal, = self.i6()
-        self.assertEqual(refusal["commands"], [self.remedy()])
-        self.assertIn(str(clone), refusal["message"])
-        self.assertIn(str(leftover), refusal["message"])
-
-    def test_a_linked_leftover_has_an_unexpected_shape(self):
-        run = self.attempt(self.work, self.source)
-        elsewhere = self.root / "elsewhere"; elsewhere.mkdir()
-        run_directory = self.retained / str(self.work) / "1"; run_directory.mkdir(parents=True)
-        (run_directory / ".pruning-clone").symlink_to(elsewhere)
-        refusal, = self.i6()
-        self.assertEqual((refusal["key"], refusal["commands"]), (run, []))
-        self.assertIn("retained path has an unexpected shape", refusal["message"])
 
     def test_a_path_of_another_assignment_has_an_unexpected_shape(self):
         other = self.retained / "999" / "1" / "clone"; other.mkdir(parents=True)
@@ -739,7 +698,7 @@ class RepoRefusals(Store):
         clone = str(self.retained / str(work) / "1" / "clone")
         refusal, = self.refused(self.plan_repo(self.source), "P4")
         self.assertEqual((refusal["key"], refusal["commands"]),
-                         (run, [f"runner.sh retained-remove --clone-only --assignment {work} --who NAME"]))
+                         (run, []))
         self.assertIn(clone, refusal["message"])
 
     def test_p4_a_path_of_the_wrong_shape_prints_nothing(self):
@@ -987,8 +946,7 @@ class TheProbe(Store):
         for refusal, work in zip(p4, self.works):
             clone = str(self.retained / str(work) / "1" / "clone")
             self.assertIn(clone, refusal["message"])
-            self.assertEqual(refusal["commands"],
-                             [f"runner.sh retained-remove --clone-only --assignment {work} --who NAME"])
+            self.assertEqual(refusal["commands"], [])
         self.clear_clones()
         plan = self.plan_repo(self.source)
         self.assertEqual(self.refused(plan, "P4"), [])

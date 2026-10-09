@@ -209,7 +209,7 @@ class TheVerb(CliCase):
         name that passes `runner.py:_item`'s shape check and names no head,
         so the row read as runnable and failed only inside the clone. On
         the default the honest answer is NULL, the state a task row starts
-        in and `sd runner prepare --branch` fills."""
+        in and `sd work register` fills."""
         support.git(self.repo, "remote", "add", "origin", str(self.home / "bare.git"))
         support.git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
         support.git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD",

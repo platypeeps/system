@@ -44,8 +44,8 @@ its snapshot restored and compared, and never before. What the table says:
                      hourly job keeps a rolling week with `--keep-days 7`
                      and skips this prune with `--no-row-prune`, so it
                      files no report item.
-    kept worktrees   never.  A kept clone may hold work; its retention is the
-                     runner's (`runner_retention`), not the prune's.
+    kept worktrees   never.  A kept clone may hold work; this prune does not
+                     touch it.
 
 There is no request-log rule, and the prd's table no longer names one (it
 said "the request log thirty days" until the 2026-09-12 amendment, sd:541).
