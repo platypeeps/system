@@ -35,6 +35,19 @@ def copy_config(base):
     return target
 
 
+def copy_capture_config(base):
+    """`copy_config` for a case that runs capture: no agent roster.
+
+    The fixture `personal.agent` names agents a test HOME never installs, and
+    capture refuses to write a roster empty (sd:3106), so a capture case keeps
+    a roster only when it writes one. The file stays, as a comment, so the
+    profile still exists when a case deletes its other files.
+    """
+    target = copy_config(base)
+    (target / "machine-setup/profiles/personal.agent").write_text("# no agents in a capture case\n")
+    return target
+
+
 def env(config=CONFIG):
     """The variables that point machine-setup.sh at `config`."""
     return {"SYSTEM_TOOLS_CONFIG": str(config),
