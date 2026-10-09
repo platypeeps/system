@@ -1,0 +1,7 @@
+# Retired cron jobs. The machine-setup cron stage uninstalls each one that
+# local-cron-jobs installed, on every machine, and never installs it again,
+# even where a profile or a host jobs folder still names it.
+# One job name per line, then `# sd:<item> <date retired>`.
+satellite-stale  # sd:3011 2026-10-08
+sd-plan-nightly  # sd:3041 2026-10-08
+ai-apps-nightly  # sd:3062 2026-10-08
