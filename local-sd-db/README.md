@@ -1037,7 +1037,8 @@ one and swallows the other.
 What it removed goes into one `report` item (`sd-db-prune:<run id>`, on the
 Operations screen's Reports list) with the counts under `report.removed`,
 and onto the verb's one output line as `pruned: N exec output(s) expired,
-M stale heartbeat row(s) removed, K clean report(s) settled`. A clean report
+M stale heartbeat row(s) removed, K clean report(s) settled, P untouched P4
+item(s) parked`. The report text names each parked item. A clean report
 is one `ingest` opened with `attention` false: no followup was ever opened
 for it, so `acknowledge` was the only thing that moved one and the operator
 had nothing to review on it -- 127 sat in `planning` on 2026-09-12 with
@@ -1046,6 +1047,13 @@ the dashboard's history: the entry, the
 arguments and the exit code are there, and the output says it expired
 instead of reading as empty. The next backup knows the mark too -- a
 completed execution without its log is otherwise an incomplete backup.
+
+An open P4 item nobody touched for thirty days is parked (sd:3007).
+Touched means its `updated_at` or its newest note; the later one counts.
+The item keeps its status and gets `parked_at` and a `decision` note by
+`retention`. It leaves Today and the backlog; `sd task show N` and the
+capture list still find it. Writing pieces keep their own park, and P1-P3
+are never parked. A lead triages P3 by hand once a month.
 
 ## What the harness will not do
 

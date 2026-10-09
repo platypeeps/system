@@ -46,6 +46,12 @@ its snapshot restored and compared, and never before. What the table says:
                      files no report item.
     kept worktrees   never.  A kept clone may hold work; this prune does not
                      touch it.
+    untouched P4     thirty days, then parked (sd:3007).  An open priority-4
+                     item whose newest `updated_at` or note is older than the
+                     age gets `parked_at` and a `decision` note by
+                     `retention`. Parked items leave Today and the backlog and
+                     stay readable by id and in the capture list. Writing
+                     pieces keep their own park; P1-P3 are never touched.
 
 There is no request-log rule, and the prd's table no longer names one (it
 said "the request log thirty days" until the 2026-09-12 amendment, sd:541).
@@ -74,7 +80,7 @@ from . import reporting
 from .backup import Snapshot, passed
 from .database import refuse_hub_only, transaction
 from .errors import SdDbError
-from .writes import transition
+from .writes import add_note, set_item_fields, transition
 
 #: How long an `exec` note keeps its output file.
 EXEC_OUTPUT_AGE = timedelta(days=90)
@@ -82,6 +88,9 @@ EXEC_OUTPUT_AGE = timedelta(days=90)
 #: How long a clean run report waits in `planning` for an acknowledgement
 #: before retention settles it.
 CLEAN_REPORT_AGE = timedelta(days=7)
+
+#: How long an open P4 item may go untouched before retention parks it.
+P4_PARK_AGE = timedelta(days=30)
 
 #: The `who` on the status_change note a settled report carries.
 RETENTION = "retention"
@@ -118,16 +127,18 @@ class Pruned:
     heartbeats: int
     clean_reports: int
     report: int
+    parked: int = 0
 
     @property
     def counts(self) -> dict[str, int]:
         return {"exec_outputs": self.exec_outputs, "heartbeats": self.heartbeats,
-                "clean_reports": self.clean_reports}
+                "clean_reports": self.clean_reports, "parked": self.parked}
 
     def __str__(self) -> str:
         return (f"{self.exec_outputs} exec output(s) expired, "
                 f"{self.heartbeats} stale heartbeat row(s) removed, "
-                f"{self.clean_reports} clean report(s) settled")
+                f"{self.clean_reports} clean report(s) settled, "
+                f"{self.parked} untouched P4 item(s) parked")
 
 
 def _cutoff(now: datetime, age: timedelta) -> str:
@@ -245,6 +256,33 @@ def settle_clean_reports(connection, *, now: datetime) -> int:
     return len(rows)
 
 
+#: An item's last touch: its own `updated_at` or its newest note, whichever is later.
+_UNTOUCHED_P4 = """
+SELECT id FROM item
+ WHERE priority = 4 AND status != 'done' AND parked_at IS NULL AND piece IS NULL
+   AND max(updated_at, coalesce((SELECT max(timestamp) FROM note WHERE note.item = item.id), '')) < ?
+ ORDER BY id
+"""
+
+
+def park_untouched_p4(connection, *, now: datetime) -> list[int]:
+    """Park every open P4 item nobody touched for `P4_PARK_AGE`; return their ids.
+
+    Touched means the item row changed (`updated_at`) or a note landed on it.
+    The read sits inside the `BEGIN IMMEDIATE` transaction, as in
+    `settle_clean_reports`, so a note landing mid-sweep is seen or waits.
+    """
+    cutoff = _cutoff(now, P4_PARK_AGE)
+    stamp = now.astimezone(UTC).isoformat(timespec="seconds")
+    days = P4_PARK_AGE.days
+    with transaction(connection):
+        ids = [row[0] for row in connection.execute(_UNTOUCHED_P4, (cutoff,))]
+        for item in ids:
+            set_item_fields(connection, item, parked_at=stamp)
+            add_note(connection, item, "decision", f"Parked: P4 untouched for {days} days", session=RETENTION)
+    return ids
+
+
 def _unreadable(ids: list[int], limit: int) -> str:
     named = ", ".join(f"#{item}" for item in ids[:limit])
     more = f" and {len(ids) - limit} more" if len(ids) > limit else ""
@@ -277,9 +315,13 @@ def prune(connection, backup: Snapshot, *, now: datetime | None = None) -> Prune
     exec_outputs = expire_exec_outputs(connection, now=now)
     heartbeats = compact_heartbeats(connection)
     clean_reports = settle_clean_reports(connection, now=now)
-    result = Pruned(exec_outputs=exec_outputs, heartbeats=heartbeats, clean_reports=clean_reports, report=0)
+    parked = park_untouched_p4(connection, now=now)
+    result = Pruned(exec_outputs=exec_outputs, heartbeats=heartbeats, clean_reports=clean_reports, report=0,
+                    parked=len(parked))
     text = (f"sd-db prune after backup {backup.directory.name} ({backup.run_id}): {result}; "
             f"cost rows and exec notes are never pruned.\n")
+    if parked:
+        text += "Parked: " + ", ".join(f"#{item}" for item in parked) + "\n"
     # A report the settle cannot read would otherwise sit in `planning`
     # silently, where before the guard it failed the whole prune. So the
     # prune report names it and asks for a person. The predicate is the dry
@@ -299,4 +341,4 @@ def prune(connection, backup: Snapshot, *, now: datetime | None = None) -> Prune
                              exit_code=0, text=text, source_path=str(backup.directory), removed=result.counts,
                              **attention)
     return Pruned(exec_outputs=exec_outputs, heartbeats=heartbeats, clean_reports=clean_reports,
-                  report=state["item"]["id"])
+                  report=state["item"]["id"], parked=len(parked))
