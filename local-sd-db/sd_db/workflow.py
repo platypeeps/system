@@ -40,6 +40,11 @@ RECURRENCE_FIELDS = frozenset({"recurrence", "recurrence_anchor"})
 #: `RECURRENCE_FIELDS`.
 BRANCH_FIELDS = frozenset({"branch"})
 
+#: `parked_at`, which `edit_item` only clears (sd:3007): the nightly prune
+#: parks an untouched P4 item, and this is its way back. A writing piece
+#: parks and revives through `sd writing park`, which also moves its file.
+PARK_FIELDS = frozenset({"parked_at"})
+
 #: The item kinds a person may set by hand: the five the pack's `sd task add`
 #: files (`ADD_KINDS`, `bin/sd_work.py`), for the reason that list gives. Each
 #: other kind in `item.kind`'s CHECK has a producer -- `work` the work lane,
@@ -215,12 +220,14 @@ def schema_kinds(connection: sqlite3.Connection) -> tuple[str, ...]:
 def _fields(connection: sqlite3.Connection, changes: dict) -> dict:
     if not isinstance(changes, dict) or any(not isinstance(key, str) for key in changes):
         raise WorkflowError("changes must be an object with named fields")
-    unknown = set(changes) - USER_FIELDS - RECURRENCE_FIELDS - BRANCH_FIELDS
+    unknown = set(changes) - USER_FIELDS - RECURRENCE_FIELDS - BRANCH_FIELDS - PARK_FIELDS
     if unknown:
         raise WorkflowError(f"fields cannot be edited here: {', '.join(sorted(unknown))}")
     result = dict(changes)
     if result.get("branch") is not None:
         raise WorkflowError("branch can only be cleared here; `sd work register` sets one")
+    if result.get("parked_at") is not None:
+        raise WorkflowError("parked_at can only be cleared here; the nightly prune parks")
     if "title" in result:
         result["title"] = _text(result["title"], "title")
     if "body" in result:
@@ -515,13 +522,17 @@ def edit_item(
         row = state["item"]
         reclassify = (isinstance(changes, dict) and "kind" in changes
                       and set(changes) <= {"kind", "repo"} and changes.get("repo") is None)
-        if row["kind"] not in DETAIL_KINDS and not reclassify:
+        # An unpark alone touches no detail, so any kind takes it.
+        unpark = isinstance(changes, dict) and set(changes) == PARK_FIELDS
+        if row["kind"] not in DETAIL_KINDS and not reclassify and not unpark:
             raise WorkflowError(f"{row['kind']} items use their own editing workflow")
-        if row["kind"] == "work":
+        if row["kind"] == "work" and not unpark:
             owner = connection.execute("SELECT status_source FROM repo WHERE path = ?", (row["repo"],)).fetchone()
             if owner is None or owner["status_source"] != "row":
                 raise WorkflowError("work metadata belongs to its file owner until database cutover completes")
         values = _fields(connection, changes)
+        if "parked_at" in values and row["piece"]:
+            raise WorkflowError("a writing piece revives with `sd writing park --revive`, which moves its file")
         if "body" in values and row["kind"] not in ("task", "followup"):
             raise WorkflowError("body text can only be edited here for task and followup items")
         if "repo" in values and row["kind"] == "work" and values["repo"] != row["repo"]:
@@ -531,7 +542,7 @@ def edit_item(
             key: value for key, value in values.items()
             if row[key] != (json.dumps(value, sort_keys=True) if key == "body" else value)
         }
-        if row["kind"] not in DETAIL_KINDS and changed and "kind" not in changed:
+        if row["kind"] not in DETAIL_KINDS and changed and "kind" not in changed and not unpark:
             # A repository clear rides only on a real reclassification.
             raise WorkflowError(f"{row['kind']} items use their own editing workflow")
         if "kind" in changed:
@@ -544,7 +555,9 @@ def edit_item(
             lines = []
             if "kind" in changed:
                 lines.append(f"Changed kind {row['kind']} -> {changed['kind']} by {who}")
-            fields = sorted(set(changed) - {"kind"})
+            if "parked_at" in changed:
+                lines.append(f"Unparked by {who}")
+            fields = sorted(set(changed) - {"kind", "parked_at"})
             if fields:
                 lines.append(f"Updated {', '.join(fields)} by {who}")
             add_note(connection, item, "comment", "\n".join(lines), session=who)

@@ -428,9 +428,6 @@ EOF
         <key>SYSTEM_TOOLS_CONFIG</key>
         <string>$x_config</string>
     </dict>
-
-    <key>ProcessType</key>
-    <string>Background</string>
 </dict>
 </plist>
 EOF

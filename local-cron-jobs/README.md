@@ -85,6 +85,13 @@ mv ~/.config/system/cron-jobs/jobs/<job>.job ~/.config/system/cron-jobs/jobs/"$h
 The plist does not change, so `verify` stays `ok`. On the other machines,
 `uninstall <job>` before the file leaves the shared folder.
 
+## Retiring a job
+
+Add its name to `retired-jobs.txt`, with its sd item and date. The
+`local-machine-setup` cron stage then uninstalls the job on every machine where
+`local-cron-jobs` installed it, and never installs it again. It also tells you
+when a profile or a host jobs folder still names the job; remove it there.
+
 ## Examples
 
 `examples/` holds sample jobs that run tools in this repository. They are

@@ -263,7 +263,7 @@ Usage: sd-db.sh <command>
   backup [--destination PATH] [--keep all|N | --keep-days N]
          [--require-mount PATH] [--no-row-prune]
               Snapshot the database, then restore the snapshot to prove it:
-              VACUUM INTO a dated directory under
+              count and copy it in one read transaction into a dated directory under
               /Volumes/local/Backup/sd-backups/ (refused while /Volumes/local
               is not mounted; --destination or SD_DB_BACKUP_ROOT names
               another root and skips that check),
@@ -301,7 +301,9 @@ Usage: sd-db.sh <command>
               said it needed no attention, with no unresolved followup and
               past seven days -- is settled to `done`, so the week's runs
               stay visible and the older ones stop accumulating in
-              `planning`; `cost` rows are never pruned.
+              `planning`; an open P4 item untouched (row or note) for
+              thirty days is parked: off Today and the backlog, still
+              found by id; `cost` rows are never pruned.
               It writes one `report` item with the counts and prints them
               on this verb's one output line.
               On failure it sends one email through the cron mail path,

@@ -305,3 +305,48 @@ class BrowserActions(BrowserSession):
             "revision": state["revision"], "title": "Changed title"})
         self.assertEqual(status, 200)
         self.assertEqual(state["item"]["priority"], 0)
+
+
+class Unparking(BrowserSession):
+    """sd:3007: the item page unparks an item the nightly prune parked, under its revision."""
+
+    def parked(self, **columns):
+        item = self.item("Old idea", priority=4, **columns)
+        set_item_fields(self.connection, item, parked_at="2026-10-09T08:10:00+00:00")
+        self.connection.commit()
+        return workflow.item_state(self.connection, item)
+
+    def unpark_form(self, item):
+        _, _, page = self.request(f"/item/{item}")
+        return re.search(rf'<form[^>]*action="/api/items/{item}"[^>]*data-cli="sd task edit {item} --unpark"[^>]*>(.*?)</form>',
+                         page, re.S)
+
+    def test_a_parked_item_offers_unpark_with_its_revision(self):
+        for kind in ("task", "personal"):
+            with self.subTest(kind=kind):
+                state = self.parked(kind=kind)
+                form = self.unpark_form(state["item"]["id"])
+                self.assertIsNotNone(form, "no Unpark form on the parked item's page")
+                self.assertIn('<input type="hidden" name="parked_at" value="">', form.group(1))
+                self.assertIn(f'name="revision" value="{state["revision"]}"', form.group(1))
+        self.assertIsNone(self.unpark_form(self.item("Open", kind="task")))
+
+    def test_the_post_unparks_and_a_stale_revision_writes_nothing(self):
+        state = self.parked(kind="task")
+        item = state["item"]["id"]
+        workflow.add_item_note(self.connection, item, body="Touched elsewhere", who="operator")
+        before = self.snapshot()
+        status, _, result = self.post(f"/api/items/{item}", {"revision": state["revision"], "parked_at": None})
+        self.assertEqual((status, result["reload"]), (409, True))
+        self.assertEqual(self.snapshot(), before)
+        fresh = workflow.item_state(self.connection, item)
+        status, _, result = self.post(f"/api/items/{item}", {"revision": fresh["revision"], "parked_at": None})
+        self.assertEqual(status, 200)
+        self.assertIsNone(workflow.item_state(self.connection, item)["item"]["parked_at"])
+        self.assertIn(item, [row["id"] for row in reads.backlog_items(self.connection, now="2026-10-09T12:00:00Z")])
+
+    def test_the_form_script_sends_a_blank_parked_at_as_null(self):
+        script = (Path(server.__file__).parent / "static" / "dashboard.js").read_text(encoding="utf-8")
+        blank = re.search(r'\[([^\]]*)\]\.forEach\(function \(key\) \{\s*if \(Object\.prototype\.hasOwnProperty\.call\(values, key\) && values\[key\] === ""\)', script)
+        self.assertIsNotNone(blank)
+        self.assertIn('"parked_at"', blank.group(1))

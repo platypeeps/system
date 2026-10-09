@@ -131,9 +131,26 @@ def _status_control(connection, item_id, row, revision, statuses=None):
         if statuses else tag("p", "Status is controlled by the active workflow.", class_="hint"))
 
 
+def _unpark_control(item_id, row, revision):
+    # sd:3007: the nightly prune parks an untouched P4 item; this brings it back. A writing piece revives
+    # through its own control in `writing_controls`, which moves its file.
+    if not row["parked_at"] or row["piece"]:
+        return Markup("")
+    return tag("section", tag("h2", "Parked"),
+        tag("p", f"Parked {row['parked_at'][:10]}: this item is off Today and the task lists. "
+                 "Unpark brings it back with its fields and history.", class_="hint"),
+        form(f"/api/items/{item_id}", tag("input", type="hidden", name="parked_at", value=""),
+             label="Unpark", command=f"sd task edit {item_id} --unpark", revision=revision, compact=True),
+        class_="control-panel")
+
+
 def item_controls(connection, item_id):
     state = workflow.item_state(connection, item_id)
     row, revision = state["item"], state["revision"]
+    return join((_unpark_control(item_id, row, revision), _item_controls(connection, item_id, row, revision)))
+
+
+def _item_controls(connection, item_id, row, revision):
     if row["kind"] not in ("task", "work", *workflow.TASK_STATUS_KINDS):
         return Markup("")
     if row["kind"] not in ("task", "work", "followup"):

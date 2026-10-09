@@ -112,7 +112,7 @@ backup, and the fixture harness both repositories test against.
                     (sd:1439)
       repos.py      how the `repo` table fills, which is what bounds the
                     `docs/work` enumeration
-      backup.py     VACUUM INTO a dated directory, then restore and compare
+      backup.py     snapshot into a dated directory, then restore and compare
       retention.py  the nightly row prune `backup` runs after its snapshot
                     passed: exec output files at ninety days, one heartbeat
                     row per key, clean run reports settled `done` after a
@@ -914,10 +914,14 @@ general-purpose backend to do here.
 ## The backup restores itself
 
 A backup nobody has restored is a file. `sd-db.sh backup` writes a
-`checkpoint` row *before* the snapshot, `VACUUM INTO`s a dated directory, copies
+`checkpoint` row *before* the snapshot, counts every table and copies the database
+into a dated directory inside one read transaction, copies
 `providers.yaml` and `commands.yaml` beside it, then reopens the copy, runs
 `PRAGMA integrity_check`, finds that checkpoint row and compares every
-table's count against the source. A path-bound manifest records every backup entry,
+table's count against the source.
+The one transaction makes the counts and the copy one moment, so a concurrent writer cannot fail the comparison (sd:3121).
+The copy uses SQLite's backup API, because `VACUUM INTO` cannot run inside a transaction.
+A path-bound manifest records every backup entry,
 its content hash, and the database checkpoint. The default keeps every backup.
 The default destination is `/Volumes/local/Backup/sd-backups/`, on the USB disk attached to this Mac.
 `local-mirror-sync` mirrors `/Volumes/local/Backup` to iCloud Drive nightly, so the default copy also leaves the machine.
@@ -949,7 +953,7 @@ Same-day backups sort by their numeric suffix.
 is the version gate, and the checkpoint row is a write, so until 2026-09-13
 `backup` refused the very database `migrate` told the operator to back up
 first. Now `SchemaTooOld` on the writable open reopens the file `mode=ro`
-(`VACUUM INTO` writes only its output file), takes no checkpoint row, proves
+(the snapshot only reads the source), takes no checkpoint row, proves
 the copy by integrity and counts, and says so: `taken read-only before
 migrate`. The manifest records `checkpoint: false` as a note; retention does
 not read it — it re-verifies through the checkpoint row, so such a snapshot is
@@ -972,14 +976,13 @@ rather than a second script beside it.
 ### A broken source is exit 3, and is not a failed backup
 
 `backup` runs `PRAGMA foreign_key_check` on the snapshot it just wrote.
-On the copy and not on the live source, because the source connection has
-`isolation_level=None` and holds no read transaction across the check and the
-`VACUUM INTO`: a writer landing between the two would orphan a row the check
-never saw, while the table counts `verify` compares stayed equal. The copy
+On the copy and not on the live source, because the source's read transaction
+ends with the copy: a writer landing between the copy and a source-side check
+would orphan a row the check never saw, while the table counts `verify` compares stayed equal. The copy
 cannot move, and it is the image `restore` would consume.
 `integrity_check` -- which `verify` runs on the same copy -- does not answer
 this question: it asks whether the b-tree pages are well formed, so a database of
-nothing but orphans passes it, and `VACUUM INTO` copies the orphans
+nothing but orphans passes it, and the snapshot copies the orphans
 faithfully. sd:744's six orphan rows survived the
 nightly backups of 2026-09-11, -12 and -13, each of which reported "restored
 and compared".
@@ -1034,7 +1037,8 @@ one and swallows the other.
 What it removed goes into one `report` item (`sd-db-prune:<run id>`, on the
 Operations screen's Reports list) with the counts under `report.removed`,
 and onto the verb's one output line as `pruned: N exec output(s) expired,
-M stale heartbeat row(s) removed, K clean report(s) settled`. A clean report
+M stale heartbeat row(s) removed, K clean report(s) settled, P untouched P4
+item(s) parked`. The report text names each parked item. A clean report
 is one `ingest` opened with `attention` false: no followup was ever opened
 for it, so `acknowledge` was the only thing that moved one and the operator
 had nothing to review on it -- 127 sat in `planning` on 2026-09-12 with
@@ -1043,6 +1047,16 @@ the dashboard's history: the entry, the
 arguments and the exit code are there, and the output says it expired
 instead of reading as empty. The next backup knows the mark too -- a
 completed execution without its log is otherwise an incomplete backup.
+
+An open P4 item nobody touched for thirty days is parked (sd:3007).
+Touched means its `updated_at` or its newest note; the later one counts.
+The item keeps its status and gets `parked_at` and a `comment` note by
+`retention`. It leaves Today and the backlog; `sd task show N` and the
+capture list still find it. Writing pieces keep their own park, an item
+with a due date (every recurring one) waits on it, and P1-P3 are never
+parked. A lead triages P3 by hand once a month.
+To bring one back, use the item page's Unpark control or `sd task edit N --unpark`;
+both clear `parked_at` through `workflow.edit_item` under the item's revision.
 
 ## What the harness will not do
 
@@ -1455,6 +1469,33 @@ reason. A 403, a timeout, a malformed body or an exhausted budget is
 reads as `unknown` too. The collector cannot fail the tracker's sync or hold
 its watermark; it records its own `protection-sync:github` heartbeat.
 `rows` is what the dashboard's Protection screen reads.
+
+## Renaming a repository
+
+There is no rename verb (sd:3172). A rename by hand changes the keyed rows
+and the runner journal together; otherwise `sd-db.sh backup` refuses with
+"runner row ... differs from the backup journal".
+
+1. Stop the lanes, the dashboard and `sd-serve`, then run `sd-db.sh backup`.
+2. In one transaction, change the old key (`~/repos/old`) to the new one in
+   `repo.path` and every `repo` column: `item`, `cost`, `repo_protection`,
+   `runner_lease`, `runner_run` (its `detached_from` too) and `shadow`.
+   `SELECT m.name, p.name FROM sqlite_master m, pragma_table_info(m.name) p
+   WHERE m.type = 'table' AND p.name LIKE '%repo%'` lists the columns.
+3. Rewrite each file in `runner-journal/` beside `sd.db` whose `record.repo`
+   names the old repository, by its key or its absolute path. Never edit the
+   text: `runner_journal.read` checks the envelope's sha256. Recompute it as
+   `runner_journal.persist` writes it, sorted keys and compact separators:
+
+       import hashlib, json, pathlib
+       path = pathlib.Path("~/.local/share/sd/runner-journal/<id>.json").expanduser()
+       record = {**json.loads(path.read_text())["record"], "repo": "~/repos/new"}
+       def compact(value):
+           return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+       envelope = {"record": record, "sha256": hashlib.sha256(compact(record)).hexdigest()}
+       path.write_bytes(compact(envelope) + b"\n")
+
+4. Run `sd-db.sh backup` again; it passes when rows and journal agree.
 
 ## Retiring a row: `item remove` and `repo remove`
 

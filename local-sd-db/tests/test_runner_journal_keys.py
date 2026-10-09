@@ -105,8 +105,10 @@ class BackupCheck(unittest.TestCase):
 
     def test_a_record_for_another_repository_still_fails(self):
         write_raw(self.database, {**self.row, "repo": str(self.home / "repos" / "other")})
-        with self.assertRaisesRegex(BackupError, "differs from the backup journal"):
+        with self.assertRaisesRegex(BackupError, "differs from the backup journal") as caught:
             backup._check_runner_records(self.db, self.database.parent)
+        # A repository renamed by hand ends here; the refusal names the fix (sd:3172).
+        self.assertIn('local-sd-db/README.md, "Renaming a repository"', str(caught.exception))
 
     def test_read_returns_the_record_as_written(self):
         absolute = {**self.row, "repo": str(self.home / "repos" / "x")}
