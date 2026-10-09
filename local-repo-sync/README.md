@@ -67,6 +67,42 @@ branch alone. In the command pack (it has
 and `sd-serve`, run `sd-db.sh backup`, then `sd-db.sh migrate`. It runs
 neither. It exits 1 when any checkout failed.
 
+`refresh` drains the lanes before it moves anything (sd:3099). POSIX sh
+cannot hold a flock, so `refresh_drain.py`, a stdlib helper beside the
+script, holds every lane's `runner.lock` under the lane root. The root is
+`SD_LANE_ROOT`, else the `sd.lane_root` setting, else
+`$XDG_STATE_HOME/sd/lanes` (default `~/.local/state/sd/lanes`), as the
+pack's lanes read it. While a lock is held, that lane's `lane run` exits at
+once and its queued entries stay pending. A running lane keeps its lock until
+its run ends, so refresh waits for it. A lane whose runner never ran has no
+lock yet. The helper makes and holds one for every folder under the lane
+root, every repository in the registry (`sd-db.sh repo list`) and every
+checkout in the conf, since a lane is named after its checkout's folder. A
+registry it cannot read refuses with nothing moved. With every lock held, the helper waits until `sd gate status
+--json` shows no holders and no waiters, and checks again after its last
+pass over the locks. Then it runs the refresh steps as its child and
+releases the locks when it exits. TERM, INT or HUP sent to the helper alone
+does not end it early: it waits for the child, which is in its process
+group. Ctrl-C reaches both. The child inherits the lock descriptors, so a
+`kill -9` of the helper leaves the locks held until the child's last step
+ends. No step leaves a process behind to hold them: services restart through
+launchd, which passes no descriptor on, and the child's git runs with
+`gc.autoDetach`, `maintenance.autoDetach` and `core.fsmonitor` set to
+`false`.
+
+A gate started by hand (`sd-ship prepare`, `sd-check`) while the refresh
+steps run is not excluded: no `sd gate` verb holds every slot. Run no gate
+by hand during a refresh.
+
+The wait is bounded at 45 minutes in total, for the locks and the gate
+together, not 45 minutes each. `REPO_SYNC_DRAIN_WAIT` overrides it in
+seconds (default 2700). It prints what it waits on
+when the wait starts and once a minute after that. Past the bound, refresh
+refuses with nothing moved and names the busy lane or the gate. When `sd`
+itself fails, as a broken pack would make it, the refusal prints the manual
+move: `git -C <checkout> switch --detach origin/main`, then `make setup` in
+the pack.
+
 ## Hygiene
 
 Agents leave worktrees and branches behind. `hygiene` sweeps each conf
@@ -218,6 +254,8 @@ offline.
 
 `tests/test_pinned.py` covers pinned checkouts in `sync`, `nightly` and
 `refresh` with the same fixtures and a `make` stub; its cases are `NEW` too.
+`tests/test_refresh_drain.py` covers the drain with a fixture lane root of
+real lock files, held from another process, and an `sd` stub.
 
 One case reads the conf files in this folder instead of building a tree:
 `ShippedConfTest` enumerates the shipped `repos.*.conf.example` files, plus

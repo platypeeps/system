@@ -1209,6 +1209,15 @@ case "$1" in
     ;;
   refresh)
     shift
+    # The helper holds every lane's runner lock and waits for an idle gate,
+    # then runs this again as its child with REPO_SYNC_LANES_HELD=1 (sd:3099).
+    if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
+      # A lane folder is named after its checkout: the drain holds these
+      # lanes too, before a first runner makes their folder.
+      REPO_SYNC_LANE_NAMES=$(repo_list | while read -r subdir full_repo; do printf '%s ' "${full_repo##*/}"; done)
+      export REPO_SYNC_LANE_NAMES
+      exec python3 "$DIR/refresh_drain.py" "$DIR/repo-sync.sh" "$@"
+    fi
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     refresh "$@"
@@ -1395,8 +1404,21 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|test
              and commits nothing. Exits 1 when an email could not be
              delivered or when half or more of the fleet failed.
   refresh [path ...]
-             move each pinned checkout named, or with no path every pinned
-             conf checkout, to origin's default branch, still detached. It
+             drain the lanes first: hold every lane's runner lock under the
+             lane root (SD_LANE_ROOT, else sd.lane_root, else
+             ~/.local/state/sd/lanes), making it for a lane folder, a
+             registered repository (sd-db.sh repo list) or a conf checkout
+             whose runner never ran, so `lane run` exits at once,
+             and wait for `sd gate status` to show no holders or waiters,
+             checked again after the last lock. TERM, INT, HUP or kill -9
+             of the helper leaves the locks held until the refresh steps
+             end. The wait is
+             bounded: 45 minutes in total for the lane locks and the gate
+             together (REPO_SYNC_DRAIN_WAIT seconds overrides it); past it,
+             refresh refuses with nothing moved and names what was busy.
+             Then move each pinned checkout named, or with no path every
+             pinned conf checkout, to origin's default branch, still
+             detached, and release the locks. It
              refuses a checkout with uncommitted changes or a submodule,
              never overwrites an ignored file, and leaves a checkout on a
              branch alone. In the command pack (bin/sd_install.py) it then
@@ -1445,6 +1467,16 @@ environment:
                       live, abandoned or superseded and records the answer;
                       the report is mailed unchanged. Jev must also be on
                       and keyed (`jev enabled`)
+  REPO_SYNC_DRAIN_WAIT
+                      seconds refresh waits for the lane locks and an idle
+                      gate together before it refuses (default 2700,
+                      45 minutes)
+  REPO_SYNC_LANES_HELD
+                      set to 1 only by refresh_drain.py for its child: the
+                      lanes are already held, so refresh moves checkouts
+  REPO_SYNC_LANE_NAMES
+                      set only by refresh for refresh_drain.py: the conf's
+                      checkout names, whose lane locks it makes and holds
   REPO_SYNC_JEV       local-jev's entrypoint (default: the local-jev
                       folder of this checkout)
 HELPEOF
