@@ -29,6 +29,11 @@ FAIL_FIRST_SETUP = ('git -C "$2" rev-parse HEAD >> "$MAKE_LOG.heads"; '
                     'else : > "$MAKE_LOG.failed"; MAKE_RC=1; fi')
 
 
+# The --serve help line of a pack that serves its own HEAD (pack sd:3111).
+SERVES_HEAD = ("#  --serve          in the serving tree, render it; elsewhere, clone the tree if it is\n"
+               "#                   missing, detach it at this checkout's HEAD and run its\n")
+
+
 class FollowFixture(DrainFixture):
     def satellite(self):
         config = self.tmp / "home" / ".config" / "sd"
@@ -89,6 +94,14 @@ class FollowFixture(DrainFixture):
         installer.write_text("import json, sys\n"
                              "assert sys.argv[1:] == ['--verify', '--json'], sys.argv\n"
                              f"print(json.dumps({{'checks': [{check!r}], 'status': 'failed'}}))\n")
+
+    def serving_clone(self, pack, rev):
+        """The serving tree, a clone of pack's origin detached at `rev`."""
+        tree = self.tmp / "data" / "sd-ai-command-pack" / "serving"
+        tree.parent.mkdir(parents=True, exist_ok=True)
+        self.git(self.tmp, "clone", "-q", self.bare(pack), str(tree))
+        self.git(tree, "checkout", "-q", "--detach", rev)
+        return tree
 
     def setup_heads(self):
         """The pack HEAD at each make setup FAIL_FIRST_SETUP saw."""
@@ -391,6 +404,45 @@ class FollowTest(unittest.TestCase):
         self.assertIn("sd_install.py --verify reports source_commit_changed", result.stdout)
         self.assertEqual([f"-C {pack} setup"], f.make_calls())
         self.assertTrue(f.gate_calls())
+
+    def test_a_setup_cut_before_the_serving_tree_moved_runs_again_at_the_pin(self):
+        """NEW (round 5, kill point 7). A pack that serves its own HEAD leaves
+        the serving tree there after a completed setup: a tree elsewhere means
+        a follow killed after the venv build, and the next run sets up again
+        until the tree is at the pack's HEAD."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        pinned = f.commit(pack, "bin/sd_install.py", SERVES_HEAD, "serve the checkout's HEAD")
+        f.git(pack, "push", "-q", "origin", "HEAD:main")
+        f.set_hub_pin(system, old[0], pack=pinned)
+        tree = f.serving_clone(pack, old[1])
+        serve = f'git -C "{tree}" fetch -q "$2" HEAD && git -C "{tree}" checkout -q --detach FETCH_HEAD'
+
+        result = f.run("follow", expect=0, extra_env={"MAKE_HOOK": serve})
+
+        self.assertIn("the serving tree is not at the pack's HEAD", result.stdout)
+        self.assertEqual([f"-C {pack} setup"], f.make_calls())
+        self.assertTrue(f.gate_calls())
+        self.assertEqual(pinned, f.head(tree))
+
+        f.run("follow", expect=0)
+
+        self.assertEqual(1, len(f.make_calls()))
+
+    def test_a_pack_that_serves_origin_main_is_not_set_up_on_every_run(self):
+        """PIN (round 5). A pack from before sd:3111 serves origin/main, so its
+        serving tree is rarely at the pack's HEAD: follow does not compare
+        them there, and two runs set up nothing."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.serving_clone(pack, f.git(pack, "rev-parse", "HEAD~1"))
+
+        for _ in range(2):
+            result = f.run("follow", expect=0)
+            self.assertIn("pack already at the hub's pin", result.stdout)
+        self.assertEqual([], f.make_calls())
+        self.assertEqual([], f.gate_calls())
 
     def test_a_verified_serving_tree_at_the_pin_is_a_no_op(self):
         """PIN (round 3). A --verify that names no source mismatch, even a

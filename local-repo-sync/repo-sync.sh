@@ -665,15 +665,24 @@ drain_exec() {
 # alone cannot tell (sd:3100). The pack's Makefile keeps .venv/sd-provisioning
 # while it builds the venv; `sd_install.py --verify` reports
 # source_commit_changed while the serving tree has moved past its receipt.
+# A pack that serves its own HEAD (pack sd:3111, which its --serve help says)
+# leaves the serving tree at that HEAD after a completed setup, so a tree
+# elsewhere means the setup stopped before it moved; an older pack serves
+# origin/main, where that test would set up again on every run.
 # The serving tree is the pack's serving_tree(): <data home>/sd-ai-command-pack/serving.
 setup_cut() {
   if [ -e "$1/.venv/sd-provisioning" ]; then
     echo "$1/.venv/sd-provisioning is left"; return 0
   fi
-  s_installer="${XDG_DATA_HOME:-$HOME/.local/share}/sd-ai-command-pack/serving/bin/sd_install.py"
+  s_serving="${XDG_DATA_HOME:-$HOME/.local/share}/sd-ai-command-pack/serving"
+  s_installer="$s_serving/bin/sd_install.py"
   [ -f "$s_installer" ] || s_installer="$1/bin/sd_install.py"
   if python3 "$s_installer" --verify --json 2>/dev/null | grep -q '"source_commit_changed"'; then
     echo "sd_install.py --verify reports source_commit_changed"; return 0
+  fi
+  if [ -d "$s_serving/.git" ] && grep -q "detach it at this checkout's HEAD" "$1/bin/sd_install.py" \
+      && [ "$(git -C "$s_serving" rev-parse HEAD 2>/dev/null)" != "$(git -C "$1" rev-parse HEAD)" ]; then
+    echo "the serving tree is not at the pack's HEAD"; return 0
   fi
   return 1
 }
@@ -1676,9 +1685,10 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              nothing moved. When a move fails, each checkout it moved goes
              back to its old sha and the pack runs `make setup` again there,
              so the next run retries the pair. A pack at the pin whose last
-             make setup did not finish (.venv/sd-provisioning left, or
-             sd_install.py --verify reports source_commit_changed) is set up
-             again. Already there, or no hub-pin tag, is a no-op. On the hub it says so and
+             make setup did not finish (.venv/sd-provisioning left,
+             sd_install.py --verify reports source_commit_changed, or, for a
+             pack that serves its own HEAD, the serving tree elsewhere) is
+             set up again. Already there, or no hub-pin tag, is a no-op. On the hub it says so and
              does nothing. On a satellite, sync and nightly never pull system or
              pack; only follow moves them.
   test       run the regression suite in tests/ (unittest; override the
