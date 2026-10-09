@@ -1470,6 +1470,33 @@ reads as `unknown` too. The collector cannot fail the tracker's sync or hold
 its watermark; it records its own `protection-sync:github` heartbeat.
 `rows` is what the dashboard's Protection screen reads.
 
+## Renaming a repository
+
+There is no rename verb (sd:3172). A rename by hand changes the keyed rows
+and the runner journal together; otherwise `sd-db.sh backup` refuses with
+"runner row ... differs from the backup journal".
+
+1. Stop the lanes, the dashboard and `sd-serve`, then run `sd-db.sh backup`.
+2. In one transaction, change the old key (`~/repos/old`) to the new one in
+   `repo.path` and every `repo` column: `item`, `cost`, `repo_protection`,
+   `runner_lease`, `runner_run` (its `detached_from` too) and `shadow`.
+   `SELECT m.name, p.name FROM sqlite_master m, pragma_table_info(m.name) p
+   WHERE m.type = 'table' AND p.name LIKE '%repo%'` lists the columns.
+3. Rewrite each file in `runner-journal/` beside `sd.db` whose `record.repo`
+   names the old repository, by its key or its absolute path. Never edit the
+   text: `runner_journal.read` checks the envelope's sha256. Recompute it as
+   `runner_journal.persist` writes it, sorted keys and compact separators:
+
+       import hashlib, json, pathlib
+       path = pathlib.Path("~/.local/share/sd/runner-journal/<id>.json").expanduser()
+       record = {**json.loads(path.read_text())["record"], "repo": "~/repos/new"}
+       def compact(value):
+           return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+       envelope = {"record": record, "sha256": hashlib.sha256(compact(record)).hexdigest()}
+       path.write_bytes(compact(envelope) + b"\n")
+
+4. Run `sd-db.sh backup` again; it passes when rows and journal agree.
+
 ## Retiring a row: `item remove` and `repo remove`
 
     sd-db.sh item remove ID --who NAME --reason TEXT [--apply --if-fingerprint HEX]

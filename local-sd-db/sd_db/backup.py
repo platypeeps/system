@@ -410,7 +410,9 @@ def _check_runner_records(connection: sqlite3.Connection, directory: Path) -> No
         if (any(record.get(name) != row[name] for name in identity)
                 or record.get("journal_version", -1) < row["journal_version"]
                 or record.get("journal_version") == row["journal_version"] and record != dict(row)):
-            raise BackupError(f"runner row {row['id']} differs from the backup journal")
+            # Most often a repository renamed by hand: the rows moved, the journal did not (sd:3172).
+            raise BackupError(f"runner row {row['id']} differs from the backup journal; after a "
+                              f"repository rename, see local-sd-db/README.md, \"Renaming a repository\"")
 
 
 def _compatible_runner_records(saved: dict[str, bytes], live: dict[str, bytes]) -> None:
