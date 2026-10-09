@@ -56,8 +56,10 @@ class FollowFixture(DrainFixture):
 
     def run(self, *args, expect=0, extra_env=None):
         # The hub's refresh makes an annotated tag, which needs a committer.
+        # The data home holds the serving tree follow asks --verify of; it is
+        # the fixture's, never the machine's.
         env = {"GIT_COMMITTER_NAME": "Hub", "GIT_COMMITTER_EMAIL": "hub@example.test",
-               **(extra_env or {})}
+               "XDG_DATA_HOME": str(self.tmp / "data"), **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 
     def set_hub_pin(self, system, sha, pack=None, body=None):
@@ -77,6 +79,16 @@ class FollowFixture(DrainFixture):
 
     def refs(self, repo, pattern="*hub-pin*"):
         return self.git(self.bare(repo), "for-each-ref", "--format=%(refname)", f"refs/**/{pattern}")
+
+    def serving_verify(self, code):
+        """A serving tree whose installer's --verify --json reports `code`
+        for the source check, as the pack's sd_install.py does."""
+        installer = self.tmp / "data" / "sd-ai-command-pack" / "serving" / "bin" / "sd_install.py"
+        installer.parent.mkdir(parents=True, exist_ok=True)
+        check = {"component": "source", "status": "passed" if code == "ok" else "failed", "code": code}
+        installer.write_text("import json, sys\n"
+                             "assert sys.argv[1:] == ['--verify', '--json'], sys.argv\n"
+                             f"print(json.dumps({{'checks': [{check!r}], 'status': 'failed'}}))\n")
 
     def setup_heads(self):
         """The pack HEAD at each make setup FAIL_FIRST_SETUP saw."""
@@ -342,6 +354,84 @@ class FollowTest(unittest.TestCase):
         f.run("follow", expect=0)
 
         self.assertEqual(pinned, (f.head(system), f.head(pack)))
+
+    def test_a_setup_cut_during_the_venv_build_runs_again_at_the_pin(self):
+        """NEW (round 3, kill point 5). A follow killed while the pack's make
+        setup built the venv leaves HEAD at the pin and .venv/sd-provisioning
+        behind: the next run drains and runs make setup again, and once the
+        marker is gone it is a no-op."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        (pack / ".venv").mkdir()
+        (pack / ".venv" / "sd-provisioning").write_text("make setup is building this environment\n")
+
+        result = f.run("follow", expect=0, extra_env={"MAKE_HOOK": 'rm -f "$2/.venv/sd-provisioning"'})
+
+        self.assertIn("its last make setup did not finish", result.stdout)
+        self.assertEqual([f"-C {pack} setup"], f.make_calls())
+        self.assertTrue(f.gate_calls())
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+
+        f.run("follow", expect=0)
+
+        self.assertEqual(1, len(f.make_calls()))
+
+    def test_a_setup_cut_during_the_serving_step_runs_again_at_the_pin(self):
+        """NEW (round 3, kill point 6). A follow killed while --serve moved the
+        serving tree leaves its receipt behind it: --verify says
+        source_commit_changed, and the next run drains and sets up again."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.serving_verify("source_commit_changed")
+
+        result = f.run("follow", expect=0)
+
+        self.assertIn("sd_install.py --verify reports source_commit_changed", result.stdout)
+        self.assertEqual([f"-C {pack} setup"], f.make_calls())
+        self.assertTrue(f.gate_calls())
+
+    def test_a_verified_serving_tree_at_the_pin_is_a_no_op(self):
+        """PIN (round 3). A --verify that names no source mismatch, even a
+        failed one, does not set up again."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.serving_verify("receipt_malformed")
+
+        result = f.run("follow", expect=0)
+
+        self.assertIn("pack already at the hub's pin", result.stdout)
+        self.assertEqual([], f.make_calls())
+
+    def test_a_failed_setup_at_the_pin_exits_1_and_names_the_command(self):
+        """NEW (round 3). make setup at the pin that fails again exits 1 and
+        names the command; the marker it leaves makes the next run retry."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        (pack / ".venv").mkdir()
+        (pack / ".venv" / "sd-provisioning").write_text("building\n")
+
+        result = f.run("follow", expect=1, extra_env={"MAKE_RC": "1"})
+
+        self.assertIn(f"by hand: make -C '{pack}' setup", result.stdout)
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+
+    def test_system_at_the_pin_and_pack_behind_moves_the_pack(self):
+        """PIN (round 3, kill point 4). A follow killed between the two moves
+        leaves system at the pin: the next run moves the pack alone."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        pinned = f.advance_origin(pack)
+        f.set_hub_pin(system, old[0], pack=pinned)
+
+        result = f.run("follow", expect=0)
+
+        self.assertIn("system already at the hub's pin", result.stdout)
+        self.assertEqual((old[0], pinned), (f.head(system), f.head(pack)))
+        self.assertEqual([f"-C {pack} setup"], f.make_calls())
 
     def test_a_dirty_tree_refuses_and_moves_nothing(self):
         """NEW. Uncommitted changes in one checkout stop the whole follow,

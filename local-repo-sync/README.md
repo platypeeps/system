@@ -131,7 +131,15 @@ pair is never left split and the next run retries both. It then runs `make
 setup` in the pack again at the old sha, so the installed commands and the
 venv's pinned requirements match the pack's HEAD again; a package only the
 hub's pin added stays in the venv, unused. If that fails too, it prints the
-one command to run by hand. With no `hub-pin`
+one command to run by hand.
+
+A follow killed during the pack's `make setup` leaves HEAD at the pin, so
+HEAD alone does not show it. With the pack at the pin, `follow` drains and
+runs `make setup` again when `.venv/sd-provisioning` is left, which the pack's
+Makefile keeps while it builds the venv, or when the serving tree's
+`sd_install.py --verify` reports `source_commit_changed`. One gap is known: a
+kill after the venv build and before the serving step leaves neither, so run
+`make -C <pack> setup` by hand after a follow was killed. With no `hub-pin`
 tag yet, or with every checkout already there, it does nothing and drains
 nothing. On
 the hub it says so and does nothing. If the move changed `SCHEMA_VERSION`,

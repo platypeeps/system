@@ -660,12 +660,36 @@ drain_exec() {
   exec python3 "$DIR/refresh_drain.py" "$DIR/repo-sync.sh" "$@"
 }
 
+# Prints why the last `make setup` in pack checkout $1 did not finish, or
+# returns 1. A follow killed during setup leaves HEAD at the pin, so HEAD
+# alone cannot tell (sd:3100). The pack's Makefile keeps .venv/sd-provisioning
+# while it builds the venv; `sd_install.py --verify` reports
+# source_commit_changed while the serving tree has moved past its receipt.
+# The serving tree is the pack's serving_tree(): <data home>/sd-ai-command-pack/serving.
+setup_cut() {
+  if [ -e "$1/.venv/sd-provisioning" ]; then
+    echo "$1/.venv/sd-provisioning is left"; return 0
+  fi
+  s_installer="${XDG_DATA_HOME:-$HOME/.local/share}/sd-ai-command-pack/serving/bin/sd_install.py"
+  [ -f "$s_installer" ] || s_installer="$1/bin/sd_install.py"
+  if python3 "$s_installer" --verify --json 2>/dev/null | grep -q '"source_commit_changed"'; then
+    echo "sd_install.py --verify reports source_commit_changed"; return 0
+  fi
+  return 1
+}
+
 # Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
-# already there and is clean; counts a dirty one in f_failed. Fields split
-# on $US, so a path with spaces stays whole.
+# already there and is clean, or a pack at $2 for `make setup` when its last
+# one did not finish; counts a dirty one in f_failed. Fields split on $US,
+# so a path with spaces stays whole.
 follow_want() {
   if is_pinned "$3" && [ "$(git -C "$3" rev-parse HEAD)" = "$2" ]; then
-    echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
+    if [ "$1" = pack ] && f_why=$(setup_cut "$3"); then
+      echo "follow: pack at the hub's pin, but its last make setup did not finish ($f_why); setting up again"
+      printf '%s\n' "setup$US$2$US$3" >> "$TMPD/moves"
+    else
+      echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
+    fi
   elif [ -n "$(git -C "$3" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
     echo "!!! refused: $3 has uncommitted changes; commit or stash them"
     f_failed=$((f_failed + 1))
@@ -734,6 +758,13 @@ follow() {
   : > "$TMPD/moved"
   while IFS=$US read -r f_name f_sha f_dir <&3; do
     echo "=== follow $f_name $f_dir"
+    if [ "$f_name" = setup ]; then
+      echo "--- make setup"
+      if make -C "$f_dir" setup; then continue; fi
+      echo "!!! failed: make setup; the next run tries again; by hand: make -C '$f_dir' setup"
+      f_failed=1
+      break
+    fi
     printf '%s\n' "$(git -C "$f_dir" rev-parse HEAD)$US$f_dir" >> "$TMPD/moved"
     if ! pin_move "$f_dir" "$f_sha" follow followed; then
       f_failed=1
@@ -1644,8 +1675,10 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              pack= line, uncommitted changes or a drain timeout refuses with
              nothing moved. When a move fails, each checkout it moved goes
              back to its old sha and the pack runs `make setup` again there,
-             so the next run retries the pair. Already there, or no hub-pin
-             tag, is a no-op. On the hub it says so and
+             so the next run retries the pair. A pack at the pin whose last
+             make setup did not finish (.venv/sd-provisioning left, or
+             sd_install.py --verify reports source_commit_changed) is set up
+             again. Already there, or no hub-pin tag, is a no-op. On the hub it says so and
              does nothing. On a satellite, sync and nightly never pull system or
              pack; only follow moves them.
   test       run the regression suite in tests/ (unittest; override the
