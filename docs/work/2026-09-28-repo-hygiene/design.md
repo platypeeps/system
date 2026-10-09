@@ -123,12 +123,14 @@ first. The worktree goes only when all of these hold:
 
 - it is a linked worktree, not the main checkout;
 - its directory exists and it is not locked;
-- `git status --porcelain --ignored` prints nothing (untracked and ignored
-  files both count: an ignored `.env` or local database is not rebuildable);
-- no process has its cwd at or under it.
+- `git status --porcelain --ignored=matching` prints nothing but build
+  output (untracked and ignored files both count: an ignored `.env` or local
+  database is not rebuildable; build output is, and goes with the tree,
+  sd:1677);
+- no process has its cwd or an open file at or under it.
 
-`source:local-repo-sync/repo-sync.sh::hyg_cwds` reads process cwds from
-`/proc` on Linux, else from `lsof -d cwd`. A failed `lsof`, an empty scan,
+`source:local-repo-sync/repo-sync.sh::hyg_inuse` reads process cwds and open
+files from `/proc` on Linux, else from `lsof`. A failed `lsof`, an empty scan,
 or neither source makes the worktree count as in use. So does a `/proc`
 entry of this user whose cwd stays unreadable; one that vanished during
 the scan is an exited process and is skipped (sd:2074). Another user's cwd

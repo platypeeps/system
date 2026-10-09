@@ -173,8 +173,16 @@ safe classes:
   the branch must also sit unmoved for `REPO_SYNC_HYGIENE_MIN_AGE` seconds
   (default 86400, at most 12 digits, read from its reflog), so a fresh
   branch survives;
-- remove a worktree that holds such a branch, when it has no uncommitted,
-  untracked or ignored files and no process has its cwd inside it.
+- remove a worktree that holds such a branch, wherever it sits, when it has
+  no uncommitted or untracked files, no ignored files but build output
+  (`target/`, `node_modules/`, `dist/`, Python caches, `.coverage*`), and no
+  process has its cwd or an open file inside it; the build output goes with
+  it;
+- delete lane logs and scratch under the bulk storage root
+  (`sd config get sd.bulk_storage_root`): in each `<root>/<repo>/lane/`, a
+  file unmodified for 14 days, then a folder unchanged for 14 days that is
+  empty after that. `lane/queue/` and anything a process holds open stay;
+  unset or not mounted, nothing is swept.
 
 Every deletion prints the branch and its tip sha with the command that
 restores it. Of the branches whose content is not on the default branch,
