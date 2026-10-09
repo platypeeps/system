@@ -17,7 +17,6 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from . import paths, runner_journal
 from .database import connect, served_by, transaction
@@ -64,30 +63,9 @@ def _manual_merge_repository(connection: sqlite3.Connection, repo: str, reposito
     return canonical
 
 
-def _other_remote_host(remote: str) -> bool:
-    """Recognize another transport host without trusting user or path text."""
-    try:
-        if "://" in remote:
-            parsed = urlsplit(remote)
-            if parsed.scheme not in {"http", "https", "ssh", "git"}:
-                return False
-        else:
-            authority, separator, _path = remote.partition(":")
-            if not separator or "/" in authority or "\\" in authority:
-                return False
-            parsed = urlsplit("ssh://" + authority)
-        # Reject malformed ports as ambiguous instead of guessing a host.
-        _port = parsed.port
-        host = parsed.hostname
-    except ValueError:
-        return False
-    # Malformed GitHub-looking hosts remain unknown, never unrelated.
-    return bool(host and "github.com" not in host.lower())
-
-
 def manual_merge_guard(connection: sqlite3.Connection, repo: str, *, repository: str | None = None) -> None:
     """Block manual authority while any registered clone retains active ownership."""
-    from .protection import github_slug
+    from .repos import parse_remote
 
     canonical = _manual_merge_repository(connection, repo, repository)
     # Item metadata can move or clear during a run. Durable ownership remains
@@ -107,13 +85,10 @@ def manual_merge_guard(connection: sqlite3.Connection, repo: str, *, repository:
         "ORDER BY ownership.id, ownership.source, ownership.repo"
     )
     for assignment in active:
-        remote = assignment["remote"]
-        slug = github_slug(remote)
-        if slug is None:
-            if not remote or ("github.com" in remote.lower() and not _other_remote_host(remote)):
-                raise WorkflowError(f"assignment {assignment['id']} has an unknown repository identity; manual merge authority is held")
-            continue
-        if "/".join(slug).lower() == canonical:
+        found = parse_remote(assignment["remote"])
+        if found.kind == "unknown":
+            raise WorkflowError(f"assignment {assignment['id']} has an unknown repository identity; manual merge authority is held")
+        if found.kind == "github" and found.key == f"github.com/{canonical}":
             held = (f"is {assignment['status']}" if assignment["source"] == "assignment"
                     else f"retains an unreleased {assignment['source']}")
             raise WorkflowError(
@@ -219,11 +194,11 @@ def prepare_delivery(connection: sqlite3.Connection, run_id: str, *, verificatio
 
 
 def _github_repository(remote: str) -> str:
-    from .repos import remote_identity
-    value = remote_identity(remote)
-    if not value.startswith("github.com/"):
+    from .repos import parse_remote
+    found = parse_remote(remote)
+    if found.kind != "github":
         raise WorkflowError("runner delivery requires the registered GitHub remote")
-    return value[len("github.com/"):]
+    return found.key.removeprefix("github.com/")
 
 
 def finalize_delivery(connection: sqlite3.Connection, run_id: str, descriptor: dict) -> dict:
