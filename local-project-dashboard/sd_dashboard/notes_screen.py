@@ -21,7 +21,7 @@ A source that raises is named in `sources` with its reason and adds no rows,
 so a failed read never looks like a quiet day. The document writes nothing.
 
 Quick notes (sd:2549) are `sdw.quick-note` items in the vault, a kind
-sd-writing-pack declares (sd:2196). `quick_notes` lists them through `sd store
+the writing pack declares (sd:2196). `quick_notes` lists them through `sd store
 list`, and `quick_add` keeps one through `sd store add`, each `sd` from PATH
 with an argv list and no shell. sd does not enforce the kind's rules, so
 `quick_text` does (operator ruling on sd:2549): non-empty, one line, no other

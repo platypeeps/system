@@ -50,4 +50,27 @@ FALKORDB_USER=change-me
 FALKORDB_PASSWORD=change-me
 HA_TOKEN=change-me
 NTFY_TOPIC=change-me
+IMESSAGE_TO=change-me
+JIRA_BASE_URL=change-me
+JIRA_EMAIL=change-me
+JIRA_API_TOKEN=change-me
+OPENWHISPR_API_KEY=change-me
+YDC_API_KEY=change-me
+SOCKET_SECURITY_API_KEY=change-me
+SYSTEM_TOOLS_LABEL_PREFIX=local.system-tools
+TYPESAFE_API_KEY=change-me
+
+# Jev stage switches (local-jev/README.md). Unset means on, once
+# TYPESAFE_API_KEY is set; 0 keeps the stage off. Each caller's help names
+# its own variable.
+JEV_ADVERSARIAL_GATE=0
+JEV_DRIVE_INTAKE=0
+JEV_HEALTH_CHECK=0
+JEV_JOB_TRIAGE=0
+JEV_MAIL_INTAKE=0
+JEV_NOTIFY=0
+JEV_OBSIDIAN_REVIEW=0
+JEV_OBSIDIAN_TASKS=0
+JEV_REPO_SYNC_HYGIENE=0
+JEV_SECRET_SCAN=0
 __SHELL_ENV_LOADED=change-me

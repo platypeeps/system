@@ -439,6 +439,21 @@ class CaptureTest(StageTest):
         self.assertIn("own-job", cron)
         self.assertNotIn("foreign-job", cron)
 
+    def test_capture_keeps_an_installed_agent_the_profile_names(self):
+        # sd:3106: the work profile names agents outside the label prefix,
+        # owned through MACHINE_SETUP_AGENT_GLOBS. A capture run without that
+        # glob read "manifest: 0 label(s)" and wrote the roster empty, though
+        # every plist was still installed.
+        (self.profiles / "personal.agent").write_text("org.example.helper\n")
+        (self.agents / "org.example.helper.plist").write_bytes(plistlib.dumps({
+            "Label": "org.example.helper",
+            "ProgramArguments": ["/opt/example/helper"],
+        }))
+        result = self.capture()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("manifest: 1 label(s)", result.stdout)
+        self.assertIn("org.example.helper", (self.profiles / "personal.agent").read_text())
+
     def test_capture_keeps_a_profile_app_now_installed_as_a_beta(self):
         # update counts "222 Beta App" as installed by its id-0 name; capture
         # must not drop it, or a rebuild would never install the store build.
