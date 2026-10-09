@@ -14,10 +14,9 @@ dashboard, the runner.
 gets done with: `sd`, `sd-review`, `sd-check`, `sd-ship`, `sd-status`,
 `sd-docs-lint`, `sd-research-kit`, and the skills and standards they enforce.
 
-Neither is copied into the other. `local-bin-links` symlinks both onto `PATH`
-from wherever they are checked out, reading the pack's `bin/` on every run
-rather than keeping a list — because two hand-written rows once stood for a
-checkout shipping seventeen commands.
+Neither is copied into the other. `local-bin-links` symlinks this repository's
+tools onto `PATH`; the pack's installer links the pack's commands, and
+`local-bin-links` sweeps any older link of its own into the pack checkout.
 
 The dependency runs **both** ways, which is the part that surprises people. The
 pack tells its readers to run `adversarial-gate`, and that command lives
