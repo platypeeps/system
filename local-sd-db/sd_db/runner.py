@@ -159,7 +159,7 @@ def enqueue(connection, items: list[int], *, parallel=False, role="author", scop
                                       budget_usd=budget_usd, after=after)
             connection.execute("UPDATE assignment SET scope = ?, queued_at = ?, started = NULL WHERE id = ?",
                                (scope, now(), ident))
-            add_note(connection, item["id"], "decision", f"Assignment {ident} queued by {who}; {role}, {scope}, {budget_minutes} minutes"
+            add_note(connection, item["id"], "comment", f"Assignment {ident} queued by {who}; {role}, {scope}, {budget_minutes} minutes"
                      + (f", budget {budget_usd:.2f} USD" if budget_usd is not None else ""))
             created.append(ident)
             if not parallel:
@@ -296,7 +296,7 @@ def recover_from_journal(connection, record: dict, *, expected_snapshot: str) ->
             # The journal proves ownership. It does not prove restored item progress.
             connection.execute("UPDATE runner_run SET outcome='blocked',detail=?,end_action=NULL,delivery_proof=NULL,journal_version=journal_version+1,updated_at=? WHERE id=?",
                 ("ownership recovered; operator must review and requeue", now(), record["id"]))
-        add_note(connection, request["item"], "decision", f"Recovered run {record['id']} ownership from durable journal; no delivery inferred")
+        add_note(connection, request["item"], "comment", f"Recovered run {record['id']} ownership from durable journal; no delivery inferred")
         return run_state(connection, record["id"])
 
 
@@ -572,7 +572,7 @@ def record_merge(connection, item: int, *, evidence: dict, run_id: str | None = 
             return int(old["id"])
         ident = create_assignment(connection, item=item, role="merge", status="done")
         connection.execute("UPDATE assignment SET phase = 'merged', ended = ?, result = ? WHERE id = ?", (now(), json.dumps(evidence, sort_keys=True), ident))
-        add_note(connection, item, "decision", f"Merge verified: {evidence['url']}; whole-item delivery remains the ship receipt's decision", session="runner")
+        add_note(connection, item, "comment", f"Merge verified: {evidence['url']}; whole-item delivery remains the ship receipt's decision", session="runner")
         return ident
 
 
@@ -646,7 +646,7 @@ def request_resume(connection, assignment: int, *, expected_revision: str, who) 
                   else f"kept attempt resolved; fresh run requested by {who}")
         connection.execute("UPDATE runner_run SET outcome = ?, end_action = 'resume', detail = ?, journal_version = journal_version + 1, updated_at = ? WHERE id = ?",
                            (run["outcome"] if finite else "blocked", detail, now(), run["id"]))
-        add_note(connection, current["item"], "decision", detail, session=who)
+        add_note(connection, current["item"], "comment", detail, session=who)
         return queue_state(connection, assignment)
 
 
@@ -654,7 +654,8 @@ def request_resume(connection, assignment: int, *, expected_revision: str, who) 
 
 #: The note kinds a session may leave for the runner to file. `exec` and
 #: `status_change` are the runner's and the transition's own; `comment` is a
-#: person's. Item B's requirement 7 names these four as what a session records.
+#: person's and the library's audit line (sd:3008). Item B's requirement 7
+#: names these four as what a session records.
 SESSION_NOTE_KINDS = ("followup", "decision", "proposal", "question")
 
 #: The three hard stops item A names, in the words the row and the note carry.
