@@ -313,9 +313,14 @@ function shellRun(c, o) {
 C.run = shellRun;
 // shell.js's runBulk: runEach starts one run per picked object in the same tick, settled by settleBulk. A command with
 // batch(objs, done) takes the whole group in one call instead (handOver, sd:2590); done() clears the picks, recorded here.
+// A command with fields asks once for the group, and every row's run gets what was typed (sd:3012).
 function shellBulk(c, objs) {
   if (handOver(c, objs, () => { OUT.cleared = (OUT.cleared || 0) + 1; })) return;
-  var rs = runEach(c, objs);
+  var fs = c.fields ? c.fields({ id: 'bulk' }) : [], v = fs.length ? Object.fromEntries(fs.map(f => [f.name, String(FIELD_VALUES[f.name] || '').trim()])) : undefined;
+  if (c.risk === 'confirm' || fs.length || objs.length > 25) OUT.confirms.push(c.id);
+  if (fs.some(f => f.required && !v[f.name])) { OUT.toasts.push({ msg: 'not run: OK is off until ' + fs.filter(f => f.required && !v[f.name]).map(f => f.label).join(', ') + ' is typed' }); return; }
+  OUT.bulkCli = objs.map(o => c.cli ? c.cli(o, v || {}) : '').join(' && ');
+  var rs = runEach(c, objs, v);
   settleBulk(c, objs, rs, { toast: shellToast, plural: window.markup.plural });
   document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: 'bulk', form: true } }));
 }
@@ -378,9 +383,9 @@ const p = settleBulk(c, objs, [Promise.resolve('a1'), Promise.reject(new Error('
 OUT.early = OUT.toasts.length; OUT.result = await p;
 OUT.toasts[0].undo(); await flush();""")
         self.assertEqual(out["early"], 0, "the group toasted before its runs settled")
-        self.assertEqual(out["result"], {"landed": 2, "failed": 1})
+        self.assertEqual(out["result"], {"landed": 2, "stale": 0, "failed": 1})
         self.assertEqual(out["undone"], [["1", "a1"], ["3", "sync"]])
-        self.assertEqual(out["toasts"], [["Move · 2 items · 1 of 3 not changed: stale", True],
+        self.assertEqual(out["toasts"], [["Move · 2 items · 1 of 3 not changed: #2 (stale)", True],
                                          ["Move undone · 2 of 3 reversed · not reversed: #2 (its change did not land)", False]])
 
     def test_a_run_that_throws_fails_its_own_row_and_the_rows_after_it_still_run(self):
@@ -390,12 +395,21 @@ OUT.toasts[0].undo(); await flush();""")
 c.run = o => { if (o.id === '2') throw new Error('the task is no longer listed'); ran.push(o.id); return Promise.resolve(o.id); };
 OUT.result = await settleBulk(c, objs, runEach(c, objs), { toast, plural }); OUT.ran = ran;""")
         self.assertEqual(out["ran"], ["1", "3"])
-        self.assertEqual(out["result"], {"landed": 2, "failed": 1})
-        self.assertEqual(out["toasts"], [["Move · 2 items · 1 of 3 not changed: the task is no longer listed", True]])
+        self.assertEqual(out["result"], {"landed": 2, "stale": 0, "failed": 1})
+        self.assertEqual(out["toasts"], [["Move · 2 items · 1 of 3 not changed: #2 (the task is no longer listed)", True]])
 
     def test_a_bulk_group_with_nothing_landed_offers_no_undo(self):
         out = self.settle(self.COMMAND + """await settleBulk(c, [obj(1)], [Promise.reject(new Error('refused'))], { toast, plural });""")
-        self.assertEqual(out["toasts"], [["Move · 0 items · 1 of 1 not changed: refused", False]])
+        self.assertEqual(out["toasts"], [["Move · 0 items · 1 of 1 not changed: #1 (refused)", False]])
+
+    def test_a_bulk_group_names_each_row_it_did_not_change_and_the_stale_ones_apart(self):
+        # sd:3012: the group runs every row, and its toast says which landed, which the server refused as stale (409, the
+        # rows are read again) and which failed, each with its reason.
+        out = self.settle(self.COMMAND + """const stale = Object.assign(new Error('item 2 changed; reload it'), { stale: true });
+OUT.result = await settleBulk(c, [obj(1), obj(2), obj(3), obj(4)],
+  [Promise.resolve('a'), Promise.reject(stale), Promise.reject(new Error('a recurring task cannot be cancelled')), Promise.resolve('d')], { toast, plural });""")
+        self.assertEqual(out["result"], {"landed": 2, "stale": 1, "failed": 1})
+        self.assertEqual(out["toasts"], [["Move · 2 items · 1 of 4 refused stale, read again: #2 · 1 of 4 not changed: #3 (a recurring task cannot be cancelled)", True]])
 
     def test_an_undo_that_had_nothing_to_reverse_is_named(self):
         out = self.settle(self.COMMAND + """await settleBulk(c, [obj(1), obj(2)], [Promise.resolve('gone'), Promise.resolve('b')], { toast, plural });
@@ -524,7 +538,11 @@ class TheScript(ScreenCase):
             ["item.complete", "item", "confirm", "5", True, True, False],
             ["item.edit", "item", "safe", "e", None, True, False],
             ["item.move", "item", "safe", "m", None, True, False],
+            ["item.p1", "item", "undo", None, None, True, True],
             ["item.p2", "item", "undo", None, None, True, True],
+            ["item.p3", "item", "undo", None, None, True, True],
+            ["item.p4", "item", "undo", None, None, True, True],
+            ["item.close", "item", "confirm", None, True, True, False],
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
@@ -781,6 +799,46 @@ release(); await flush(); R.html = ELS.details.html; R.reads = reads;""", answer
         self.assertIn("Written after the move", out["R"]["html"])
         self.assertNotIn("Check the budget first", out["R"]["html"])
 
+    # sd:3012: backlog triage. Close and the priorities run on every picked row, each with its own revision, and the group
+    # says which rows landed, which were stale and which failed.
+    def test_close_runs_on_every_picked_row_with_one_reason_and_names_the_stale_one(self):
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = f"""(path, body) => path === '/api/items/{ask}/cancel-task' ? [409, {{ error: 'item {ask} changed; reload it before applying this change', reload: true }}]
+  : [200, {{ item: {{ id: {plan}, status: 'done', priority: 2, due: '2026-09-09', recurrence: null }}, notes: [], revision: 'c'.repeat(64) }}]"""
+        out = self.run_page(f"""FIELD_VALUES = {{ reason: "nobody's doing it" }};
+C.runBulk(cmd('item.close'), [C.get('{plan}'), C.get('{ask}')]); await flush();""", answer)
+        self.assertEqual(out["confirms"], ["item.close"])
+        self.assertEqual(out["posts"], [
+            [f"/api/items/{plan}/cancel-task", {"reason": "nobody's doing it", "revision": self.row("plan")["revision"]}, 64],
+            [f"/api/items/{ask}/cancel-task", {"reason": "nobody's doing it", "revision": self.row("ask")["revision"]}, 64]])
+        self.assertEqual(out["bulkCli"], f"sd task cancel {plan} --reason 'nobody'\\''s doing it' && sd task cancel {ask} --reason 'nobody'\\''s doing it'")
+        self.assertEqual(out["toasts"], [[f"Close · 1 item · 1 of 2 refused stale, read again: #{ask} Answer the question", False]])
+        self.assertEqual(out["gets"].count("/api/tasks"), 3, "the landed close and the stale refusal each read the rows again")
+
+    def test_close_with_no_reason_posts_nothing(self):
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        out = self.run_page(f"""FIELD_VALUES = {{ reason: '  ' }}; C.runBulk(cmd('item.close'), [C.get('{plan}'), C.get('{ask}')]); await flush();""")
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"], [["not run: OK is off until Reason is typed", False]])
+
+    def test_close_is_off_where_sd_task_cancel_refuses(self):
+        self.repeat_plan()
+        plan, ask, port, old = self.ids["plan"], self.ids["ask"], self.ids["port"], self.ids["old"]
+        out = self.run_page(f"""R.off = [{plan}, {ask}, {port}, {old}].map(i => C.get(String(i)) ? cmd('item.close').when(C.get(String(i))) : 'not listed');""")
+        self.assertEqual(out["R"]["off"], [
+            "a recurring task cannot be cancelled; clear its recurrence first, or complete it", True,
+            "sd task cancel closes a task or followup; this is a work item", "not listed"])
+
+    def test_a_priority_runs_on_every_picked_row_with_its_own_revision(self):
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = """(path, body) => { const id = +path.split('/').pop(); return [200, { item: { id, status: 'ready', priority: body.priority, due: null, recurrence: null }, notes: [], revision: String(id).repeat(64).slice(0, 64) }]; }"""
+        out = self.run_page(f"""C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush(); R.p4 = cmd('item.p4').when(C.get('{ask}'));""", answer)
+        self.assertEqual(out["posts"], [[f"/api/items/{plan}", {"priority": 1, "revision": self.row("plan")["revision"]}, 64],
+                                        [f"/api/items/{ask}", {"priority": 1, "revision": self.row("ask")["revision"]}, 64]])
+        self.assertEqual(out["bulkCli"], f"sd task edit {plan} --priority 1 && sd task edit {ask} --priority 1")
+        self.assertEqual(out["toasts"], [["Edit → P1 · 2 items", True]])
+        self.assertIs(out["R"]["p4"], True)
+
     def test_commands_are_off_where_the_library_would_refuse_them(self):
         plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
         (asg,) = self.details[str(port)]["assignments"]
@@ -940,7 +998,7 @@ R.early = OUT.toasts.length; await flush(); lastUndo().undo(); await flush();"""
 R.gets = OUT.gets.length; lastUndo().undo(); await flush();""", answer)
         # The first read, the landed write's reread, and the refused write's load (sd:2484).
         self.assertEqual(out["R"]["gets"], 3, "the refused write did not read the rows again")
-        self.assertIn(["Status → Blocked · 1 item · 1 of 2 not changed: The item changed. Reload it.", True], out["toasts"])
+        self.assertIn([f"Status → Blocked · 1 item · 1 of 2 refused stale, read again: #{ask} Answer the question", True], out["toasts"])
         self.assertEqual(out["toasts"][-1], [f"Status → Blocked undone · 1 of 2 reversed · not reversed: #{ask} Answer the question (its change did not land)", False])
         self.assertEqual([p[0] for p in out["posts"]].count(f"/api/items/{ask}/status"), 1, "Undo wrote the refused item")
         self.assertEqual(out["posts"][-1][:2], [f"/api/items/{plan}/status", {"status": "ready", "revision": "b" * 64}])

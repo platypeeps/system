@@ -17,6 +17,8 @@ The CLI and the page call the same `sd_db.workflow` functions. Saving uses a
 revision checked inside the write transaction: an old tab gets a conflict
 instead of overwriting a newer change. Capture keeps its draft and offers
 Refresh related item; other item forms offer a reload link.
+Tasks triages in bulk (sd:3012): pick rows, then set a priority or Close them with one reason (`sd task cancel`).
+Each row is written with its own revision, and the toast names the rows refused as stale and the rows that failed.
 
 **Today** opens with **Now**: the fleet's loudest facts, ranked, loudest first —
 scheduled jobs that failed or want attention, checkouts with unpushed commits, checkouts with uncommitted files, abandoned

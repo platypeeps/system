@@ -244,6 +244,25 @@ class BrowserActions(BrowserSession):
         self.assertEqual(moved.read_text(), "Archived content")
         self.assertEqual(self.post(f"/api/items/{item}/deliver", {"revision": state["revision"]})[0], 404)
 
+    def test_cancel_task_closes_a_task_with_its_reason_under_its_revision(self):
+        # sd:3012: the Tasks page's Close is `sd task cancel`: cancel_work with task_guard, the row's revision and a reason.
+        task, work = self.item("Nobody will do this", kind="task"), self.item("Work item", kind="work")
+        old = workflow.item_state(self.connection, task)["revision"]
+        self.assertEqual(self.post(f"/api/items/{task}/cancel-task", {"revision": old})[0], 400)
+        status, _, state = self.post(f"/api/items/{task}/cancel-task", {"revision": old, "reason": "Superseded"})
+        self.assertEqual(status, 200)
+        self.assertEqual(state["item"]["status"], "done")
+        completion = json.loads(state["item"]["fields"])["completion"]
+        self.assertEqual((completion["outcome"], completion["reason"]), ("cancelled", "Superseded"))
+        followup = self.item("A followup", kind="followup")
+        before = workflow.item_state(self.connection, followup)["revision"]
+        workflow.edit_item(self.connection, followup, {"priority": 1}, who="elsewhere")
+        status, _, answer = self.post(f"/api/items/{followup}/cancel-task", {"revision": before, "reason": "Stale"})
+        self.assertEqual((status, answer.get("reload")), (409, True))
+        self.assertEqual(workflow.item_state(self.connection, followup)["item"]["status"], "planning")
+        revision = workflow.item_state(self.connection, work)["revision"]
+        self.assertEqual(self.post(f"/api/items/{work}/cancel-task", {"revision": revision, "reason": "No"})[0], 400)
+
     def test_active_assignments_and_file_owned_work_do_not_offer_cancel(self):
         self.repo()
         item = self.item("Source-owned", repo="/repos/system")
