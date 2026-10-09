@@ -22,6 +22,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from test_refresh_drain import DrainFixture  # noqa: E402
 
 
+# For the make stub: record the HEAD each `make -C <dir> setup` ran at, and
+# fail the first call only, as a pack setup that breaks at the hub's pin.
+FAIL_FIRST_SETUP = ('git -C "$2" rev-parse HEAD >> "$MAKE_LOG.heads"; '
+                    'if [ -e "$MAKE_LOG.failed" ]; then MAKE_RC=0; '
+                    'else : > "$MAKE_LOG.failed"; MAKE_RC=1; fi')
+
+
 class FollowFixture(DrainFixture):
     def satellite(self):
         config = self.tmp / "home" / ".config" / "sd"
@@ -70,6 +77,11 @@ class FollowFixture(DrainFixture):
 
     def refs(self, repo, pattern="*hub-pin*"):
         return self.git(self.bare(repo), "for-each-ref", "--format=%(refname)", f"refs/**/{pattern}")
+
+    def setup_heads(self):
+        """The pack HEAD at each make setup FAIL_FIRST_SETUP saw."""
+        heads = pathlib.Path(f"{self.make_log}.heads")
+        return heads.read_text().splitlines() if heads.exists() else []
 
     def gate_calls(self):
         if not self.sd_log.exists():
@@ -273,10 +285,59 @@ class FollowTest(unittest.TestCase):
         pinned = (f.advance_origin(system), f.advance_origin(pack))
         f.set_hub_pin(system, pinned[0], pack=pinned[1])
 
+        result = f.run("follow", expect=1, extra_env={"MAKE_HOOK": FAIL_FIRST_SETUP})
+
+        self.assertIn("back at its old sha, so a migrate note above does not apply; the next run retries",
+                      result.stdout)
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+
+        f.run("follow", expect=0)
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+
+    def test_the_rollback_reinstalls_the_pack_commands_at_the_old_sha(self):
+        """NEW (round 2). A make setup that failed part way may have installed
+        commands from the hub's pin: the rollback runs make setup again once
+        the pack is back, so the commands match its HEAD."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+
+        result = f.run("follow", expect=1, extra_env={"MAKE_HOOK": FAIL_FIRST_SETUP})
+
+        self.assertEqual([pinned[1], old[1]], f.setup_heads())
+        self.assertNotIn("by hand", result.stdout)
+
+    def test_a_failed_reinstall_prints_the_command_to_run_by_hand(self):
+        """NEW (round 2). When make setup fails at the old sha too, follow
+        names the one command that puts the commands back."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, f.advance_origin(system), pack=f.advance_origin(pack))
+
         result = f.run("follow", expect=1, extra_env={"MAKE_RC": "1"})
 
-        self.assertIn("back at its old sha, and the next run retries", result.stdout)
+        self.assertIn(f"make setup at the old sha; the pack's commands may be from the hub's pin; "
+                      f"by hand: make -C '{pack}' setup", result.stdout)
         self.assertEqual(old, (f.head(system), f.head(pack)))
+        self.assertEqual(2, len(f.make_calls()))
+
+    def test_the_rollback_keeps_a_checkout_path_with_a_space(self):
+        """NEW (round 2). The rollback list holds whole paths: under a root
+        with a space, both checkouts still go back to the old pair."""
+        f = self.fixture()
+        f.root = f.tmp / "checkout root"
+        f.root.mkdir()
+        system, pack, old = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+
+        result = f.run("follow", expect=1, extra_env={"MAKE_HOOK": FAIL_FIRST_SETUP})
+
+        self.assertIn(f"put {system} back", result.stdout)
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+        self.assertEqual([pinned[1], old[1]], f.setup_heads())
 
         f.run("follow", expect=0)
 

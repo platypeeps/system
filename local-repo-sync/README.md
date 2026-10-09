@@ -127,8 +127,11 @@ pack. It never moves to origin's default branch. It checks every checkout
 first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
 a drain timeout refuses with nothing moved. It moves system, then pack; when
 a move fails, it switches each checkout it moved back to its old sha, so the
-pair is never left split and the next run retries both. A pack venv that a
-failed `make setup` left behind stays as `make` left it. With no `hub-pin`
+pair is never left split and the next run retries both. It then runs `make
+setup` in the pack again at the old sha, so the installed commands and the
+venv's pinned requirements match the pack's HEAD again; a package only the
+hub's pin added stays in the venv, unused. If that fails too, it prints the
+one command to run by hand. With no `hub-pin`
 tag yet, or with every checkout already there, it does nothing and drains
 nothing. On
 the hub it says so and does nothing. If the move changed `SCHEMA_VERSION`,

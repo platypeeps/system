@@ -661,7 +661,8 @@ drain_exec() {
 }
 
 # Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
-# already there and is clean; counts a dirty one in f_failed.
+# already there and is clean; counts a dirty one in f_failed. Fields split
+# on $US, so a path with spaces stays whole.
 follow_want() {
   if is_pinned "$3" && [ "$(git -C "$3" rev-parse HEAD)" = "$2" ]; then
     echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
@@ -669,7 +670,7 @@ follow_want() {
     echo "!!! refused: $3 has uncommitted changes; commit or stash them"
     f_failed=$((f_failed + 1))
   else
-    printf '%s %s %s\n' "$1" "$2" "$3" >> "$TMPD/moves"
+    printf '%s\n' "$1$US$2$US$3" >> "$TMPD/moves"
   fi
 }
 
@@ -731,9 +732,9 @@ follow() {
     drain_exec follow
   fi
   : > "$TMPD/moved"
-  while read -r f_name f_sha f_dir <&3; do
+  while IFS=$US read -r f_name f_sha f_dir <&3; do
     echo "=== follow $f_name $f_dir"
-    echo "$f_dir $(git -C "$f_dir" rev-parse HEAD)" >> "$TMPD/moved"
+    printf '%s\n' "$(git -C "$f_dir" rev-parse HEAD)$US$f_dir" >> "$TMPD/moved"
     if ! pin_move "$f_dir" "$f_sha" follow followed; then
       f_failed=1
       break
@@ -745,15 +746,25 @@ follow() {
     return 0
   fi
   # Back to the old pair: the next run sees both off their pins and retries.
-  while read -r f_dir f_old <&3; do
+  # The pack's make setup runs again at the old sha, so the commands it
+  # installs match its HEAD again.
+  while IFS=$US read -r f_old f_dir <&3; do
     if [ "$(git -C "$f_dir" rev-parse HEAD)" = "$f_old" ]; then continue; fi
-    if git -C "$f_dir" switch -q --detach --no-overwrite-ignore "$f_old"; then
-      echo "follow: put $f_dir back at $(git -C "$f_dir" rev-parse --short HEAD)"
-    else
-      echo "!!! failed: cannot put $f_dir back; by hand: git -C $f_dir switch --detach $f_old"
+    f_setup=
+    if [ -f "$f_dir/bin/sd_install.py" ]; then f_setup=" && make -C '$f_dir' setup"; fi
+    if ! git -C "$f_dir" switch -q --detach --no-overwrite-ignore "$f_old"; then
+      echo "!!! failed: cannot put $f_dir back; by hand: git -C '$f_dir' switch --detach $f_old$f_setup"
+      continue
+    fi
+    echo "follow: put $f_dir back at $(git -C "$f_dir" rev-parse --short HEAD)"
+    if [ -n "$f_setup" ]; then
+      echo "--- make setup at the old sha"
+      if ! make -C "$f_dir" setup; then
+        echo "!!! failed: make setup at the old sha; the pack's commands may be from the hub's pin; by hand: make -C '$f_dir' setup"
+      fi
     fi
   done 3< "$TMPD/moved"
-  echo "follow  : failed; each checkout it moved is back at its old sha, and the next run retries"
+  echo "follow  : failed; each checkout it moved is back at its old sha, so a migrate note above does not apply; the next run retries"
   return 1
 }
 
@@ -1632,8 +1643,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              the pack. Every check runs first: a failed fetch, a tag with no
              pack= line, uncommitted changes or a drain timeout refuses with
              nothing moved. When a move fails, each checkout it moved goes
-             back to its old sha, so the next run retries the pair. Already
-             there, or no hub-pin tag, is a no-op. On the hub it says so and
+             back to its old sha and the pack runs `make setup` again there,
+             so the next run retries the pair. Already there, or no hub-pin
+             tag, is a no-op. On the hub it says so and
              does nothing. On a satellite, sync and nightly never pull system or
              pack; only follow moves them.
   test       run the regression suite in tests/ (unittest; override the
