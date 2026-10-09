@@ -1274,6 +1274,15 @@ R.work = five('{port}'); R.done = five('{ask}'); R.ops = five('{plan}');""")
         self.assertIsNotNone(rule, "the narrow block sets no carousel")
         self.assertEqual({sel.strip() for sel in rule.group(1).split(",")}, {".board", ".board[data-other]"})
 
+    def test_the_list_scrolls_inside_its_wrap_and_holds_its_hidden_labels(self):
+        # The Actions header's `.sr` label is absolutely placed. With no positioned ancestor its box sat at the table's
+        # right edge, outside the wrap's scroller, so the page scrolled sideways at 320 and 375 px (sd:3138).
+        css = (V2 / "static" / "tasks.css").read_text(encoding="utf-8")
+        wrap = re.search(r"^\.list-wrap \{([^}]*)\}", css, re.M)
+        self.assertIsNotNone(wrap, "tasks.css sets no .list-wrap rule")
+        self.assertIn("overflow-x: auto;", wrap.group(1))
+        self.assertIn("position: relative;", wrap.group(1), "the wrap does not contain the table's absolutely placed labels")
+
     def test_a_plain_toast_clears_a_live_undo_and_the_bulk_bar(self):
         # The bar lifts both toasts one layer, and a plain message over a live Undo is one more: with all three up, the plain
         # one sits two layers above the bar's, or "Copied" covers the Undo (review, PR #46).
