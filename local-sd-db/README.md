@@ -112,7 +112,7 @@ backup, and the fixture harness both repositories test against.
                     (sd:1439)
       repos.py      how the `repo` table fills, which is what bounds the
                     `docs/work` enumeration
-      backup.py     VACUUM INTO a dated directory, then restore and compare
+      backup.py     snapshot into a dated directory, then restore and compare
       retention.py  the nightly row prune `backup` runs after its snapshot
                     passed: exec output files at ninety days, one heartbeat
                     row per key, clean run reports settled `done` after a
@@ -914,10 +914,14 @@ general-purpose backend to do here.
 ## The backup restores itself
 
 A backup nobody has restored is a file. `sd-db.sh backup` writes a
-`checkpoint` row *before* the snapshot, `VACUUM INTO`s a dated directory, copies
+`checkpoint` row *before* the snapshot, counts every table and copies the database
+into a dated directory inside one read transaction, copies
 `providers.yaml` and `commands.yaml` beside it, then reopens the copy, runs
 `PRAGMA integrity_check`, finds that checkpoint row and compares every
-table's count against the source. A path-bound manifest records every backup entry,
+table's count against the source.
+The one transaction makes the counts and the copy one moment, so a concurrent writer cannot fail the comparison (sd:3121).
+The copy uses SQLite's backup API, because `VACUUM INTO` cannot run inside a transaction.
+A path-bound manifest records every backup entry,
 its content hash, and the database checkpoint. The default keeps every backup.
 The default destination is `/Volumes/local/Backup/sd-backups/`, on the USB disk attached to this Mac.
 `local-mirror-sync` mirrors `/Volumes/local/Backup` to iCloud Drive nightly, so the default copy also leaves the machine.
@@ -949,7 +953,7 @@ Same-day backups sort by their numeric suffix.
 is the version gate, and the checkpoint row is a write, so until 2026-09-13
 `backup` refused the very database `migrate` told the operator to back up
 first. Now `SchemaTooOld` on the writable open reopens the file `mode=ro`
-(`VACUUM INTO` writes only its output file), takes no checkpoint row, proves
+(the snapshot only reads the source), takes no checkpoint row, proves
 the copy by integrity and counts, and says so: `taken read-only before
 migrate`. The manifest records `checkpoint: false` as a note; retention does
 not read it — it re-verifies through the checkpoint row, so such a snapshot is
@@ -972,14 +976,13 @@ rather than a second script beside it.
 ### A broken source is exit 3, and is not a failed backup
 
 `backup` runs `PRAGMA foreign_key_check` on the snapshot it just wrote.
-On the copy and not on the live source, because the source connection has
-`isolation_level=None` and holds no read transaction across the check and the
-`VACUUM INTO`: a writer landing between the two would orphan a row the check
-never saw, while the table counts `verify` compares stayed equal. The copy
+On the copy and not on the live source, because the source's read transaction
+ends with the copy: a writer landing between the copy and a source-side check
+would orphan a row the check never saw, while the table counts `verify` compares stayed equal. The copy
 cannot move, and it is the image `restore` would consume.
 `integrity_check` -- which `verify` runs on the same copy -- does not answer
 this question: it asks whether the b-tree pages are well formed, so a database of
-nothing but orphans passes it, and `VACUUM INTO` copies the orphans
+nothing but orphans passes it, and the snapshot copies the orphans
 faithfully. sd:744's six orphan rows survived the
 nightly backups of 2026-09-11, -12 and -13, each of which reported "restored
 and compared".

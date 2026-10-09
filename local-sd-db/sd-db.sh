@@ -263,7 +263,7 @@ Usage: sd-db.sh <command>
   backup [--destination PATH] [--keep all|N | --keep-days N]
          [--require-mount PATH] [--no-row-prune]
               Snapshot the database, then restore the snapshot to prove it:
-              VACUUM INTO a dated directory under
+              count and copy it in one read transaction into a dated directory under
               /Volumes/local/Backup/sd-backups/ (refused while /Volumes/local
               is not mounted; --destination or SD_DB_BACKUP_ROOT names
               another root and skips that check),

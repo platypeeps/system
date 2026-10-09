@@ -2,14 +2,15 @@
 
 A live WAL database is not a file a file-level mirror can copy consistently.
 So the backup is its own step:
-`VACUUM INTO` a dated directory, the two configuration files copied beside
+a snapshot into a dated directory, the two configuration files copied beside
 it, and then **the copy is opened and checked**, because a backup nobody has
 restored is a file, not a backup.
 
 The order is the design:
 
 1. Write a `checkpoint` row, with this run's id, **before** the snapshot.
-2. `VACUUM INTO` the dated directory.
+2. Count the source and copy it into the dated directory, in one read
+   transaction (`_snapshot`).
 3. Copy configuration and the complete validated publication journal beside it.
 4. Open the copy. Run `PRAGMA integrity_check`. Find the checkpoint row.
    Compare every table's count against the source.
@@ -667,6 +668,36 @@ def _counts(connection: sqlite3.Connection) -> dict[str, int]:
     }
 
 
+def _snapshot(connection: sqlite3.Connection, copy: Path) -> dict[str, int]:
+    """Count the source and copy it to `copy` inside one read transaction.
+
+    The counts `verify` compares and the copy are then one moment of the
+    source, whatever other connections commit meanwhile: under WAL a reader
+    holds its snapshot and does not block a writer. `VACUUM INTO` cannot run
+    inside a transaction, so on 2026-10-09 two rows committed between the
+    count and the copy failed the comparison (sd:3121). The backup API
+    copies in one step on the transaction already open. Its copy keeps the
+    source's WAL header, so the journal is switched back: the snapshot is a
+    closed single file, as `restore` expects.
+    """
+    connection.execute("BEGIN")
+    try:
+        expected = _counts(connection)
+        try:
+            target = sqlite3.connect(copy, isolation_level=None)
+            try:
+                connection.backup(target)
+                target.execute("PRAGMA journal_mode = DELETE")
+            finally:
+                target.close()
+        except sqlite3.Error as error:
+            # A full volume arrives here, as `database or disk is full`.
+            raise BackupError(f"the snapshot was not written to {copy}: {error}") from None
+    finally:
+        connection.execute("ROLLBACK")
+    return expected
+
+
 def verify(copy: Path, *, run_id: str, expected: dict[str, int], checkpointed: bool = True) -> dict[str, int]:
     """Open the copy and prove it is the database that was just checked.
 
@@ -1021,12 +1052,10 @@ def run(
         except SchemaTooOld:
             # A database waiting for `migrate` is exactly the one to snapshot
             # first, and the writable open is what refuses it. Read-only,
-            # `mode=ro` keeps every write off the source; `query_only` would
-            # also refuse the output file `VACUUM INTO` creates, so it is
-            # lifted for this connection alone. The checkpoint row is a write,
-            # so it is not taken and the copy is proved by counts only.
+            # `mode=ro` keeps every write off the source; `_snapshot` only
+            # reads it. The checkpoint row is a write, so it is not taken and
+            # the copy is proved by counts only.
             connection = connect(database, home=home, write=False)
-            connection.execute("PRAGMA query_only = 0")
             checkpointed = False
     except (OSError, sqlite3.Error, SdDbError, ValueError) as error:
         raise BackupError(f"the database did not open: {error}") from None
@@ -1038,7 +1067,6 @@ def run(
                 record_state(connection, "checkpoint", key=run_id, body=when.isoformat())
             except sqlite3.Error as error:
                 raise BackupError(f"the checkpoint row was not written: {error}") from None
-        expected = _counts(connection)
         try:
             root.mkdir(parents=True, exist_ok=True)
             directory = _dated_directory(root, when)
@@ -1047,11 +1075,7 @@ def run(
             raise BackupError(f"the backup directory was not created: {error}") from None
 
         copy = directory / source.name
-        try:
-            connection.execute("VACUUM INTO ?", (str(copy),))
-        except sqlite3.Error as error:
-            # A full volume arrives here, as `database or disk is full`.
-            raise BackupError(f"the snapshot was not written to {copy}: {error}") from None
+        expected = _snapshot(connection, copy)
     finally:
         connection.close()
 
@@ -1079,10 +1103,9 @@ def run(
     checked = connect(copy, write=False)
     try:
         # The referential check, and it runs on the COPY. The first reason is
-        # correctness and not taste: `connect` opens with `isolation_level=
-        # None`, so no read transaction spans the source connection and the
-        # `VACUUM INTO` above. A check on the source would answer for an image
-        # that is not the one on disk here -- a writer landing between the two
+        # correctness and not taste: the source's read transaction ended with
+        # the copy (`_snapshot`), so a check on the source would answer for a
+        # later image than the one on disk here -- a writer landing in between
         # turns a valid row into an orphan the check never saw, and the table
         # counts `verify` compares stay equal while it happens. The copy
         # cannot move. The second reason is that the copy is the image
@@ -1091,7 +1114,7 @@ def run(
         # `verify` runs `integrity_check` on this same copy, but that pragma
         # asks whether the b-tree pages are well formed, not whether rows
         # point at rows that exist -- a database of nothing but orphans passes
-        # it, and `VACUUM INTO` copies orphans faithfully. Measured: sd:744's
+        # it, and the snapshot copies orphans faithfully. Measured: sd:744's
         # six orphan rows survived the nightly backups of 2026-09-11, -12 and
         # -13, each of which reported "restored and compared". The check the
         # outbound path was missing already existed in this file, at
@@ -1360,7 +1383,7 @@ def restore(directory: Path | str, *, home: Path | str) -> Path:
     snapshot = directory / "sd.db"
     if not snapshot.exists():
         raise BackupError(f"{directory} holds no sd.db")
-    # Backups produced by run() are closed single-file VACUUM snapshots. A
+    # Backups produced by run() are closed single-file snapshots. A
     # nonempty WAL means somebody handed us a live/copy-in-progress database,
     # whose main file alone is not the snapshot they asked to restore.
     wal = snapshot.with_name(snapshot.name + "-wal")

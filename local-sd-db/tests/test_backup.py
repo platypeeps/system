@@ -117,6 +117,73 @@ class TheSnapshot(BackupCase):
         self.assertEqual(sorted(backup_root(self.home).iterdir()), [earlier.directory])
 
 
+@hub_only
+class TheConcurrentWriter(BackupCase):
+    """The source counts and the copy are one moment, whoever writes (sd:3121).
+
+    On 2026-10-09 the nightly run failed `state: source 34476, snapshot
+    34478`: two rows landed between the count and the copy.
+    """
+
+    def writer_after_the_count(self):
+        """Patch `_counts` so another connection commits right after the source count."""
+        original = backup_module._counts
+        landed = []
+
+        def counted(connection):
+            found = original(connection)
+            if not landed:
+                writer = connect(home=self.home)
+                try:
+                    landed.append(record_state(writer, "watermark", key="concurrent"))
+                finally:
+                    writer.close()
+            return found
+
+        self.enterContext(mock.patch.object(backup_module, "_counts", counted))
+        return landed
+
+    def test_a_write_between_the_count_and_the_copy_does_not_fail_the_comparison(self):
+        landed = self.writer_after_the_count()
+        snapshot = run(home=self.home)
+        self.assertTrue(landed)
+        copy = sqlite3.connect(f"file:{snapshot.directory / 'sd.db'}?mode=ro", uri=True)
+        self.addCleanup(copy.close)
+        self.assertEqual(copy.execute("SELECT count(*) FROM state").fetchone()[0], snapshot.counts["state"])
+        self.assertEqual(copy.execute("SELECT count(*) FROM state WHERE id = ?", landed).fetchone()[0], 0)
+        source = self.open()
+        self.assertEqual(source.execute("SELECT count(*) FROM state").fetchone()[0], snapshot.counts["state"] + 1)
+
+    def test_the_copy_is_a_closed_single_file(self):
+        snapshot = run(home=self.home)
+        copy = snapshot.directory / "sd.db"
+        # Header bytes 18 and 19 are 1 for a rollback journal and 2 for WAL.
+        self.assertEqual(copy.read_bytes()[18:20], b"\x01\x01")
+        self.assertEqual(sorted(path.name for path in snapshot.directory.glob("sd.db*")), ["sd.db"])
+
+    def test_a_run_killed_before_the_journal_switch_leaves_an_unowned_directory_the_next_run_keeps(self):
+        script = (
+            "import os, sqlite3, sys\n"
+            "from sd_db.backup import run\n"
+            "real = sqlite3.connect\n"
+            "class Killed(sqlite3.Connection):\n"
+            "    def execute(self, sql, *args):\n"
+            "        if sql == 'PRAGMA journal_mode = DELETE':\n"
+            "            os._exit(9)\n"
+            "        return super().execute(sql, *args)\n"
+            "sqlite3.connect = lambda *a, **k: real(*a, factory=Killed, **k)\n"
+            "run(home=sys.argv[1])\n"
+        )
+        self.assertEqual(self.killed(script, self.home).returncode, 9)
+        [left] = backup_root(self.home).iterdir()
+        self.assertEqual((left / "sd.db").read_bytes()[18:20], b"\x02\x02")
+        self.assertFalse((left / BACKUP_MANIFEST).exists())
+
+        snapshot = run(home=self.home, keep=1)
+        self.assertEqual(snapshot.removed, [])
+        self.assertEqual(sorted(backup_root(self.home).iterdir()), sorted([left, snapshot.directory]))
+
+
 class TheDestinationProbe(BackupCase):
     """A destination that does not answer fails the run in seconds (sd:2660).
 
@@ -1118,7 +1185,7 @@ class TheCheckpointOrder(BackupCase):
     def test_a_checkpoint_written_after_the_snapshot_would_prove_nothing(self):
         """The reason step 1 comes before step 2, stated as a test.
 
-        A row written after the `VACUUM INTO` is in the source and not in the
+        A row written after the snapshot is in the source and not in the
         copy, so `verify` cannot find it -- which is exactly the failure a
         stale copy produces, and the two would be indistinguishable.
         """
@@ -1137,7 +1204,7 @@ class TheReferentialCheckOnTheSnapshot(BackupCase):
 
     `verify` runs `integrity_check` on the copy: it asks whether the b-tree
     pages are well formed. A database of nothing but orphans answers `ok`.
-    `VACUUM INTO` copies orphans faithfully and the counts match, because the
+    The snapshot copies orphans faithfully and the counts match, because the
     rows are all present -- they just point at nothing. So six orphan rows
     survived three nightly backups, each of which reported success.
     """
@@ -1248,17 +1315,14 @@ class TheReferentialCheckOnTheSnapshot(BackupCase):
         self.assertIn("the referential check did not run", str(raised.exception))
 
     def test_the_check_reads_the_copy_so_a_late_writer_cannot_slip_past(self):
-        """The pragma runs after `VACUUM INTO`, on the copy, and that is load-bearing.
+        """The pragma runs after the snapshot, on the copy, and that is load-bearing.
 
-        `connect` opens with `isolation_level=None`, so no read transaction
-        spans the source connection and the snapshot. A check on the source
-        answers for an image that is not the one written to disk. This test
-        makes the row an orphan in exactly that window -- after the source has
-        been read for `expected`, before the copy is taken -- and by
+        The source's read transaction ends with the copy (`_snapshot`), so a
+        check on the source answers for a later image than the one written to
+        disk. This test makes the row an orphan before the copy is taken, by
         re-pointing an existing row rather than adding one, so every table
         count stays equal and `verify` cannot notice either. The orphan
-        reaches the copy. A source-side check reports a clean night over a
-        snapshot that carries a violation.
+        reaches the copy, and the check on the copy reports it.
         """
         connection = self.open()
         item = create_item(connection, kind="work", title="Has a note")
