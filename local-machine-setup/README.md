@@ -282,8 +282,8 @@ DIFFERS and `--force` signed the machine out of every profile.
 ### Launch agents
 
 `capture` copies this machine's own LaunchAgent plists (`<prefix>.*`, plus any
-label glob in `MACHINE_SETUP_AGENT_GLOBS`, excluding `<prefix>.cron.*` which
-`local-cron-jobs` owns) into `launchagents/` and lists their labels in
+label glob in `MACHINE_SETUP_AGENT_GLOBS` and any installed label `<profile>.agent`
+already names, excluding `<prefix>.cron.*` which `local-cron-jobs` owns) into `launchagents/` and lists their labels in
 `<profile>.agent`; the `agents` stage installs and `launchctl bootstrap`s them
 on a new machine. `<prefix>` is `$SYSTEM_TOOLS_LABEL_PREFIX`, default
 `local.system-tools`. Each plist passes the same credential scan as dotfiles

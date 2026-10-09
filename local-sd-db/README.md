@@ -583,7 +583,8 @@ prices the tokens at the `price` (`in` and `out`, dollars per million) that
 `providers.yaml` beside the database gives the row's provider. An entry that
 names a `model` prices that model only. With no usable price, `usd` stays NULL
 and the token counts are the record; the report names those rows per arm as
-`unpriced`, with their providers. A judgment model needs its own entry to be
+`unpriced`, with their providers, and `judgments compare` counts them per
+arm beside its cost total. A judgment model needs its own entry to be
 priced: `local-jev` rows name provider `typesafe`, and its price is the
 operator's to enter. An entry with `roles: []` is never chosen for a role.
 
