@@ -26,7 +26,8 @@
 # Usage:
 #   cron-jobs.sh list                     jobs, schedules, installed/loaded state, folder
 #   cron-jobs.sh install <job>|--all      generate plist, load into launchd
-#                                        (--all = every defined job)
+#                                        (--all = every defined job; refused
+#                                        where machine-setup records a profile)
 #   cron-jobs.sh verify [job]|--all       installed plist vs the generator
 #   cron-jobs.sh uninstall <job>|--all    unload and remove plist
 #   cron-jobs.sh run <job>                run once now, foreground (logs too)
@@ -1499,12 +1500,31 @@ cmd_watchdog() {
   fi
 }
 
+# Has machine-setup recorded a profile here? Its cron stage then owns the set
+# of jobs this machine runs: <profile>.cron, common.cron and the host folder,
+# minus retired-jobs.txt. --all reads every shared job instead, so a satellite
+# loaded every hub job (sd:3186). The state folder is machine-setup's
+# STATE_DIR. One this run cannot search may hold a profile, so it counts as one.
+profile_recorded() {
+  local state="${MACHINE_SETUP_STATE:-$HOME/.config/machine-setup}"
+  [ -z "${MACHINE_SETUP_PROFILE:-}" ] || return 0
+  [ ! -e "$state/profile" ] || return 0
+  [ -d "$state" ] && [ ! -x "$state" ]
+}
+
 each_or_one() { # cmd, target
   local cmd="$1" target="$2" j
   if [ "$target" = "--all" ] || [ "$target" = "--every" ]; then
-    # --all is every job this machine should run: the shared jobs folder plus
-    # this host's folder (and any extra directory); other hosts' folders are
-    # never read. --every is its older spelling, kept working.
+    # --all is every job in the job folders: the shared jobs folder plus this
+    # host's folder (and any extra directory); other hosts' folders are never
+    # read. --every is its older spelling, kept working. install and verify
+    # refuse it where a profile names the set; uninstall still clears all.
+    if [ "$cmd" != cmd_uninstall ] && profile_recorded; then
+      echo "cron-jobs.sh: ${cmd#cmd_} --all ignores this machine's profile, so it is refused here (sd:3186)" >&2
+      echo "  run: local-machine-setup/machine-setup.sh update cron   (a dry run; add --apply to change)" >&2
+      echo "  or name one job: cron-jobs.sh ${cmd#cmd_} <job>" >&2
+      return 1
+    fi
     local rc=0 failed=""
     for j in $(all_jobs); do "$cmd" "$j" || { rc=1; failed="$failed $j"; }; done
     [ -z "$failed" ] || echo "${cmd#cmd_} failed for:$failed" >&2
@@ -1539,6 +1559,10 @@ usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|
   verify       compare each installed plist against what the generator
                produces now (<job> or --all); exits 1 on any STALE. Read
                only — never touches launchd.
+               install --all and verify --all ignore the machine-setup
+               profile, so they refuse and exit 1 where one is recorded
+               (MACHINE_SETUP_STATE/profile or MACHINE_SETUP_PROFILE);
+               there `machine-setup.sh update cron` owns the job set.
   uninstall    unload + remove plist (<job> or --all)
   run          run a job once now, foreground — output goes to the terminal
                and to the job's log, so a hand-run clears an outstanding
