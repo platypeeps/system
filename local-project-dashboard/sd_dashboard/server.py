@@ -166,7 +166,7 @@ def capture_followup(connection, *, followup_of=None, who, **values):
         return workflow.item_state(connection, item)
 
 
-def action_route(path, payload, *, principal, operations_backend=None, services_backend=None, runner_backend=None):
+def action_route(path, payload, *, principal, operations_backend=None, services_backend=None):
     """Parse one finite action vocabulary before opening a writable connection.
 
     `principal` is what the listener authenticated for this request
@@ -208,7 +208,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if values or int(match[1]) > 9223372036854775807:
             raise ValueError("Execute the recorded command without additional arguments.")
         operation = runner_exec.execute_immediate if match[2] == "execute" else runner_exec.reconcile
-        return lambda connection: operation(connection, int(match[1]), backend=runner_backend)
+        return lambda connection: operation(connection, int(match[1]))
     if path == "/api/providers/configure":
         from sd_db import provider_controls
 
@@ -406,7 +406,6 @@ class Dashboard(BaseHTTPRequestHandler):
     operations_backend = None
     services_backend = None
     ports_backend = None
-    runner_backend = None
     #: `now_screen.document`'s fleet seam, `area -> document`; None runs the child.
     fleet_backend = None
     #: `now_screen.document`'s Jev command for the failed-job shadow; None asks nothing.
@@ -748,7 +747,7 @@ class Dashboard(BaseHTTPRequestHandler):
                 raise ValueError("Action URLs do not accept query parameters.")
             action = action_route(path.path, payload, principal=context.principal,
                                  operations_backend=self.operations_backend,
-                                 services_backend=self.services_backend, runner_backend=self.runner_backend)
+                                 services_backend=self.services_backend)
         except (ValueError, UnicodeDecodeError) as problem:
             return self._json(400, {"error": str(problem)})
         except NotFound:
@@ -960,7 +959,7 @@ class DashboardServer(Listener):
 def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
           host: str = "127.0.0.1", operations_backend=None,
           frontdoor: auth.FrontDoor | None = None, frontdoor_check=None,
-          services_backend=None, ports_backend=None, runner_backend=None,
+          services_backend=None, ports_backend=None,
           peer_lookup=None, fleet_backend=None, jev=None, bind=True) -> ThreadingHTTPServer:
     """Build the loopback server and optional, separately authenticated IP socket.
 
@@ -980,7 +979,6 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         "operations_backend": operations_backend,
         "services_backend": services_backend,
         "ports_backend": ports_backend,
-        "runner_backend": staticmethod(runner_backend) if runner_backend else None,
         "fleet_backend": staticmethod(fleet_backend) if fleet_backend else None,
         "jev_command": list(jev) if jev else None,
         "frontdoor": frontdoor,

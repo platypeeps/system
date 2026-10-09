@@ -303,7 +303,7 @@ addEventListener('DOMContentLoaded', () => {
       <dl>${Object.entries(facts(e)).map(([a, b]) => html`<dt>${a}</dt><dd>${b}</dd>`)}</dl>
       <h3>Act</h3>${C.bar(id)}
       ${out ? html`<h3>Output</h3>${out.error ? html`<p class="why">${out.error}</p>` : html`<p class="why">${out.state}${out.expired ? ' · the prune removed the output file' : ''}</p><pre class="cli"><code>${out.output || '(no output)'}</code></pre>`}` : ''}
-      ${e.k === 'run' && e.status === 'blocked' ? html`<p class="why">Blocked means the runner stopped and wants a decision. The reason is in the assignment log: <code>sd runner get ${String(e.n)}</code>.</p>` : ''}`);
+      ${e.k === 'run' && e.status === 'blocked' ? html`<p class="why">Blocked means the runner stopped and wants a decision. The reason is in the assignment log: <code>sd assignments get ${String(e.n)}</code>.</p>` : ''}`);
     C.select(id);
     suggest([`Why did this ${e.k} happen?`, 'What else changed in this hour?', e.repo ? `Show all activity in ${e.repo}` : 'Rank what I should look at first']);
     swap();
@@ -367,7 +367,7 @@ addEventListener('DOMContentLoaded', () => {
     { id: 'command.output', on: 'command', label: 'Show output', key: 'o', risk: 'safe', primary: () => true,
       when: o => ev(o).source === 'runner' ? 'a runner record keeps its log in the retained clone, not in the execution log directory'
         : ev(o).expired ? `the output expired ${ev(o).expired}` : true,
-      cli: o => `sd runner commands output ${o.note}`, run: o => landing(readOutput(o), () => `Output of note ${o.note} shown in Details`) },
+      run: o => landing(readOutput(o), () => `Output of note ${o.note} shown in Details`) },
     { id: 'command.item', on: 'command', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
   );
   // read_execution answers at most 64 KiB a read (sd:2416): a full page means more follows at next_offset, up to the

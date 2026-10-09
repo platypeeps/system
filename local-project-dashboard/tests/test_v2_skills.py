@@ -44,7 +44,6 @@ NOW = "2026-09-23T12:00:00+00:00"
 #: Try, Review and Demote are `confirm` here, not the design's `undo`: no verb withdraws a trial or a queued request.
 COMMANDS = [
     ["skill.try", "skill", "Try", "t", "confirm"],
-    ["skill.run", "skill", "Run", "r", "safe"],
     ["skill.review", "skill", "Review", "v", "confirm"],
     ["skill.promote", "skill", "Promote", "p", "safe"],
     ["skill.demote", "skill", "Demote", "d", "confirm"],
@@ -269,14 +268,14 @@ class TheScript(Pack, ScreenCase):
 
     def test_off_commands_name_their_reason(self):
         out = self.run_page("""const w = (id, key) => cmd(id).when(C.get(key));
-R.off = [w('skill.try', 'sd-used'), w('skill.run', 'sd-extra'), w('skill.promote', 'sd-used'), w('skill.demote', 'sd-extra'), w('skill.apply', 'sd-used'), w('skill.try', 'sd-extra')];""")
-        self.assertEqual(out["R"]["off"], ["already installed · path", "not installed · try it first", "on build already", "not on a path",
+R.off = [w('skill.try', 'sd-used'), w('skill.promote', 'sd-used'), w('skill.demote', 'sd-extra'), w('skill.apply', 'sd-used'), w('skill.try', 'sd-extra')];""")
+        self.assertEqual(out["R"]["off"], ["already installed · path", "on build already", "not on a path",
                                            "apply review notes from the review item", True])
 
     def test_the_copy_only_commands_post_nothing(self):
-        out = self.run_page("""R.exec = ['skill.run', 'skill.schedule', 'skill.scan'].map(id => cmd(id).executes);
-shellRun(cmd('skill.run'), C.get('sd-used')); shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C.get('surfaces')); await flush();""")
-        self.assertEqual(out["R"]["exec"], [False, False, False])
+        out = self.run_page("""R.exec = ['skill.schedule', 'skill.scan'].map(id => cmd(id).executes);
+shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C.get('surfaces')); await flush();""")
+        self.assertEqual(out["R"]["exec"], [False, False])
         self.assertEqual((out["posts"], out["confirms"]), ([], []))
 
     def test_the_page_draws_lamps_rows_and_the_rail_badge_from_the_document(self):

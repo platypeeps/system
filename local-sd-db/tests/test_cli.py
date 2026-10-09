@@ -1162,14 +1162,14 @@ class TheRemoveVerbs(RemoveCase):
         self.assertEqual(self.counts(), before)
         self.assertEqual(self.snapshots(), [])
 
-    def test_a_retained_clone_is_refused_with_the_retained_remove_command_printed(self):
-        """sd:1793: the printed line is the runner's verb, not a raw `chflags` and `rm -rf`."""
+    def test_a_retained_clone_is_refused_and_no_command_is_printed(self):
+        """sd:3041: the runner's retained-remove is gone, so the refusal names the clone and prints no verb."""
         clone = self.retained / str(self.works[0]) / "1" / "clone"
         clone.mkdir(parents=True)
         completed = self.sd_db("repo", "remove", self.source, "--with-items", "--who", "alex", "--reason", "r",
                                expect=3)
-        lines = completed.stdout.split("\n")
-        self.assertIn(f"runner.sh retained-remove --clone-only --assignment {self.works[0]} --who NAME", lines)
+        self.assertNotIn("runner.sh", completed.stdout)
+        self.assertIn("remove it yourself", completed.stdout)
         self.assertNotIn("chflags", completed.stdout)
         self.assertNotIn("rm -rf", completed.stdout)
         self.assertIn(str(clone), completed.stdout)

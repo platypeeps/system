@@ -504,30 +504,21 @@
   function updateCommand() {
     var display = dialog.querySelector("[data-palette-cli]");
     if (!selected || !inventory.item) {
-      form.dataset.cli = "sd runner commands prepare --help";
-      display.textContent = "Choose an item and command to see its CLI request.";
+      display.textContent = "Choose an item and command to see what it runs.";
       return;
     }
-    var argv = ["sd", "runner", "commands", "prepare", "--item", inventory.item,
-      "--command", selected.name, "--if-revision", inventory.revision,
-      "--catalog", inventory.sha256, "--screen", dialog.dataset.screen];
     var values = {}, held = null, complete = true;
     Object.entries(selected.placeholders).forEach(function (pair) {
       var input = form.elements.namedItem("value-" + pair[0]);
       var value = pair[1] === "item" ? inventory.item : input && input.value;
       if (value === null || value === undefined || value === "") { complete = false; return; }
       values[pair[0]] = value;
-      argv.push("--value", pair[0] + "=" + value);
       if (pair[1] === "assignment") { held = inventory.assignments.find(function (row) { return String(row.id) === String(value); }); }
     });
-    if (selected.scope !== "worktree") {
-      if (!held) { complete = false; }
-      else { argv.push("--target-revision", held.revision, "--target-run", held.run ? held.run.id : "none"); }
-    }
-    form.dataset.cli = argv.map(quote).join(" ");
-    display.textContent = complete ? "CLI: " + form.dataset.cli + "\nRegistered command: " +
+    if (selected.scope !== "worktree" && !held) { complete = false; }
+    display.textContent = complete ? "Registered command: " +
       selected.argv.map(function (part) { return quote(part[0] === "{" ? values[part.slice(1, -1)] : part); }).join(" ") :
-      "Complete the typed fields to see the exact CLI request.";
+      "Complete the typed fields to see the exact command.";
     form.querySelector("button[type=submit]").disabled = busy || !complete;
   }
   function selectCommand() {
@@ -543,7 +534,7 @@
     Object.entries(selected.placeholders).forEach(function (pair) {
       var name = pair[0], kind = pair[1];
       if (kind === "item") { return; }
-      var label = node("label", kind === "destination" ? "Restore to a new absolute path" : kind === "assignment" ? "Attempt" : "Provider");
+      var label = node("label", kind === "destination" ? "New absolute path" : kind === "assignment" ? "Attempt" : "Provider");
       var input = node(kind === "destination" ? "input" : "select"); input.name = "value-" + name; input.required = true;
       if (kind === "destination") { input.type = "text"; input.placeholder = "/absolute/new-directory"; }
       if (kind === "provider") { options(input, inventory.providers.map(function (provider) { return {value: provider, label: provider}; })); }
@@ -650,9 +641,6 @@
         revision: inventory.revision, catalog: inventory.sha256, screen: dialog.dataset.screen, target: target});
       var note = prepared.execution.note;
       output.textContent = "Execution #" + note + " recorded before dispatch.";
-      dialog.querySelector("[data-palette-cli]").textContent += "\n" +
-        (prepared.assignments.length ? "" : "sd runner commands execute " + note + "\n") +
-        "sd runner commands output " + note;
       if (prepared.assignments.length) {
         message.textContent = "Queued assignment #" + prepared.assignments[0].id + ". Follow it on the item or in execution history.";
       } else {

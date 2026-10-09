@@ -35,7 +35,7 @@ USER_FIELDS = frozenset({"title", "body", "priority", "due", "repo", "kind"})
 RECURRENCE_FIELDS = frozenset({"recurrence", "recurrence_anchor"})
 
 #: `branch`, which `edit_item` only clears (sd:2818): a stale name has no
-#: other way out. Setting one stays with `runner_controls.configure_item`,
+#: other way out. Setting one stays with `sd work register`,
 #: which checks it against git. Outside `USER_FIELDS` for the same reason as
 #: `RECURRENCE_FIELDS`.
 BRANCH_FIELDS = frozenset({"branch"})
@@ -220,7 +220,7 @@ def _fields(connection: sqlite3.Connection, changes: dict) -> dict:
         raise WorkflowError(f"fields cannot be edited here: {', '.join(sorted(unknown))}")
     result = dict(changes)
     if result.get("branch") is not None:
-        raise WorkflowError("branch can only be cleared here; `sd runner prepare --branch` sets one")
+        raise WorkflowError("branch can only be cleared here; `sd work register` sets one")
     if "title" in result:
         result["title"] = _text(result["title"], "title")
     if "body" in result:
@@ -329,8 +329,8 @@ def _branch_clear(connection: sqlite3.Connection, item: int) -> None:
     """Refuse a branch clear while the runner owns the row (sd:2818).
 
     The runner reads the branch to claim a queued assignment and to restore a
-    run, so the guards are `runner_controls.configure_item`'s: no active
-    assignment and no unreleased runner run.
+    run, so the guards are: no active assignment and no unreleased runner
+    run.
     """
     _refuse_active_assignment(connection, item)
     leased = connection.execute(
@@ -434,11 +434,11 @@ def register_work_item(
     started is what a new folder is.
 
     `branch` is the branch the work is done on -- the one meaning every reader
-    of the column has (`runner.py:_item`, `configure_item`, `sd_plan.py`) --
+    of the column has (`runner.py:_item`, `sd work register`, `sd_plan.py`) --
     and it is None unless the caller can name a local head. It is never the
     remote default: `origin/main` passes the runner's shape check and names no
     branch, which is how 65 rows came to read as runnable and fail only inside
-    the clone (sd:462). NULL is the honest state, and `configure_item` is what
+    the clone (sd:462). NULL is the honest state, and `sd work register` is what
     fills it.
 
     Registering twice is not an error. The caller that wants to know writes
@@ -603,7 +603,7 @@ DELIVERED_AT = re.compile(r"delivered at ([0-9a-f]{40,64})\b")
 def _refuse_unlanded_branch(state: dict, item: int) -> None:
     """Refuse a reasonless close of a row worked on its own branch (sd:1990, sd:2570).
 
-    `sd runner prepare --branch` records the branch an item is worked on.
+    `sd work register` records the branch an item is worked on.
     Three such items were closed while their branches had no pull request,
     and the pack's `sd task status` now refuses that; the rule lives here so
     the dashboard's status write keeps it too. A recorded merge (the `Code
@@ -653,29 +653,13 @@ def change_status(
         ).fetchone()
         if active:
             # The refusal names the row and the way out. A queued row has no
-            # process, so its cancel is the library's own, `sd runner cancel`
-            # (the pack's `sd assignments cancel` is the same cancel). A
-            # running row with an owned `runner_run` is stopped from the
-            # runner's control entry, the same verb. A running row with no
-            # run -- a row written by hand, or from before the runner
-            # recorded attempts -- has no process to stop, and the same verb
-            # ends it `cancelled` (sd:991, owner note 2706); the item screen
-            # renders no control for it, so the refusal names the verb.
-            #
-            # Owned is `released_at IS NULL`, which is what every active-run
-            # query filters on (`runner_controls.control`, `runner_exec`,
-            # `runner.queue_state`). `runner_run` is durable attempt history
-            # and a released attempt stays in it, so the bare existence test
-            # sent an assignment whose only attempt was released to a control
-            # entry that refuses it -- the third arm's case, answered with
-            # the second arm's sentence.
+            # process, so its cancel is the library's own, `sd assignments
+            # cancel`. A running row has no cancel: the runner's stop went with
+            # the runner (sd:3041), and `operations.assignment_state` refuses it.
             if active["status"] == "queued":
-                way_out = f"cancel it with `sd runner cancel {active['id']}`"
-            elif connection.execute("SELECT 1 FROM runner_run WHERE assignment = ? AND released_at IS NULL LIMIT 1",
-                                    (active["id"],)).fetchone():
-                way_out = f"stop it from the runner's control entry, `sd runner cancel {active['id']}`"
+                way_out = f"cancel it with `sd assignments cancel {active['id']}`"
             else:
-                way_out = f"it is a running assignment without a runner run; end it with `sd runner cancel {active['id']}`"
+                way_out = "it is running, and no verb cancels a running assignment now that the runner is gone"
             raise TransitionRefused(f"item {item} has queued or running assignment {active['id']}; {way_out}")
         if row["status"] == target:
             return state

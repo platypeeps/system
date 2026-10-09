@@ -46,12 +46,10 @@ class DirectRemoteAccess(test_remote_access.RemoteAccess):
         self.lookup_unavailable = False
         self.lookup_login = self.operator
         self.peer_calls = []
-        self.runner_backend = Mock(return_value={"control": {"signalled_owned_group": True}})
         with patch.object(server, "Listener", side_effect=self.child_server):
             self.listening = server.build(self.path, port=0, frontdoor=self.frontdoor,
                                           frontdoor_check=self.check_frontdoor,
-                                          peer_lookup=self.peer_lookup,
-                                          runner_backend=self.runner_backend)
+                                          peer_lookup=self.peer_lookup)
         self.port = self.listening.server_address[1]
         self.local = f"http://127.0.0.1:{self.port}"
         self.config["port"] = self.port

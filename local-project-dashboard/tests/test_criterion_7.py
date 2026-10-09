@@ -155,12 +155,12 @@ class Criterion7(BrowserSession):
         self.connection.execute("UPDATE assignment SET status = 'failed' WHERE id = ?", (assignment,))
         self.connection.commit()
 
-    def test_7_19_the_refusal_names_cancel_for_queued_and_the_control_entry_for_running(self):
+    def test_7_19_the_refusal_names_cancel_for_queued_and_no_verb_for_running(self):
         queued = runner.enqueue(self.connection, [self.work], who="operator")[0]["id"]
         message = self.refused("ready")
         self.assertRegex(message, rf"assignment {queued}\b")
-        self.assertIn(f"cancel it with `sd runner cancel {queued}`", message)
-        self.assertNotIn("control entry", message)
+        self.assertIn(f"cancel it with `sd assignments cancel {queued}`", message)
+        self.assertNotIn("sd runner", message)
         self.assertIn(f'action="/api/assignments/{queued}/cancel"', self.page(), "and the item screen offers it")
         self.end(queued)
 
@@ -169,19 +169,19 @@ class Criterion7(BrowserSession):
         runner.claim(self.connection, owned, owner="fixture", work_root=root / "work", retention_root=root / "retained")
         message = self.refused("ready")
         self.assertRegex(message, rf"assignment {owned}\b")
-        self.assertIn(f"stop it from the runner's control entry, `sd runner cancel {owned}`", message)
+        self.assertIn("no verb cancels a running assignment now that the runner is gone", message)
         # sd:3041: the runner's stop went with the runner; `operations.cancel_assignment` refuses a running row.
         self.assertNotIn(f'/{owned}/cancel"', self.page())
         self.end(owned)
 
         # A running row with no `runner_run`: the item screen renders no
-        # control, and the refusal names the verb that ends it (sd:991, owner note 2706).
+        # control, and the refusal says no verb cancels it (sd:3041).
         by_hand = create_assignment(self.connection, item=self.work, role="author", status="running")
         self.assertNotIn(f'/{by_hand}/cancel"', self.page())
         message = self.refused("ready")
         self.assertRegex(message, rf"assignment {by_hand}\b")
-        self.assertIn(f"running assignment without a runner run; end it with `sd runner cancel {by_hand}`", message)
-        self.assertNotIn("control entry", message)
+        self.assertIn("no verb cancels a running assignment now that the runner is gone", message)
+        self.assertNotIn("sd runner", message)
 
     # -- 7.20 ---------------------------------------------------------------
 

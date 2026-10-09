@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sd_db import runner, runner_controls, runner_exec, workflow
+from sd_db import runner, runner_exec, workflow
 from sd_db.database import connect
 from sd_db.errors import SdDbError
 from sd_db.migrate import initialise
@@ -151,20 +151,20 @@ class Palette(PaletteFixture):
 
     @hub_only
     def test_foreign_target_and_uncertain_control_are_held(self):
-        self.entries["cancel"] = {"argv": ["sd", "runner", "cancel", "{assignment}"], "screens": ["item"],
-                                  "mutates": True, "scope": "control", "operation": "cancel", "placeholders": {"assignment": "assignment"}}
+        self.entries["requeue"] = {"argv": ["sd", "runner", "requeue", "{assignment}"], "screens": ["item"],
+                                  "mutates": True, "scope": "supervisor", "operation": "requeue", "placeholders": {"assignment": "assignment"}}
         self.write()
         foreign = create_item(self.db, kind="task", title="Other", repo=str(self.repo))
         assignment = create_assignment(self.db, item=foreign, role="author", status="queued")
         with self.assertRaisesRegex(workflow.WorkflowError, "belong"):
-            self.prepare(command="cancel", values={"assignment": assignment})
+            self.prepare(command="requeue", values={"assignment": assignment})
         assignment = create_assignment(self.db, item=self.item, role="author", status="queued")
         state = runner.queue_state(self.db, assignment)
         target = {"assignment": assignment, "revision": state["revision"], "run": None}
-        self.prepare(command="cancel", values={"assignment": assignment}, target=target)
+        self.prepare(command="requeue", values={"assignment": assignment}, target=target)
         before = self.snapshot()
         with self.assertRaisesRegex(workflow.WorkflowError, "unfinished"):
-            self.prepare(command="cancel", values={"assignment": assignment}, target=target)
+            self.prepare(command="requeue", values={"assignment": assignment}, target=target)
         self.assertEqual(before, self.snapshot())
 
     @hub_only
@@ -224,21 +224,21 @@ class Palette(PaletteFixture):
 
     @hub_only
     def test_lost_control_response_reconciles_exact_target_without_replay(self):
-        self.entries["cancel"] = {"argv": ["sd", "runner", "cancel", "{assignment}"], "screens": ["item"],
-                                  "mutates": True, "scope": "control", "operation": "cancel", "placeholders": {"assignment": "assignment"}}
+        self.entries["requeue"] = {"argv": ["sd", "runner", "requeue", "{assignment}"], "screens": ["item"],
+                                  "mutates": True, "scope": "supervisor", "operation": "requeue", "placeholders": {"assignment": "assignment"}}
         self.write()
-        assignment = create_assignment(self.db, item=self.item, role="author", status="queued")
+        assignment = create_assignment(self.db, item=self.item, role="author", status="cancelled")
         state = runner.queue_state(self.db, assignment)
-        value = self.prepare(command="cancel", values={"assignment": assignment},
+        value = self.prepare(command="requeue", values={"assignment": assignment},
             target={"assignment": assignment, "revision": state["revision"], "run": None})["execution"]
-        control = runner_controls.control
+        requeue = runner.requeue
         def lost(*args, **kwargs):
-            control(*args, **kwargs)
+            requeue(*args, **kwargs)
             raise workflow.WorkflowError("lost response")
-        with patch.object(runner_controls, "control", side_effect=lost), self.assertRaisesRegex(workflow.WorkflowError, "lost response"):
+        with patch.object(runner, "requeue", side_effect=lost), self.assertRaisesRegex(workflow.WorkflowError, "lost response"):
             runner_exec.execute_immediate(self.db, value["note"])
         self.assertIsNone(runner_exec.read_execution(self.db, value["note"])["ended"])
-        with patch.object(runner_controls, "control", side_effect=AssertionError("replayed mutation")):
+        with patch.object(runner, "requeue", side_effect=AssertionError("replayed mutation")):
             result = runner_exec.reconcile(self.db, value["note"])
         self.assertEqual(result["exit_code"], 0)
 
@@ -249,54 +249,6 @@ class Palette(PaletteFixture):
         with patch("subprocess.Popen", side_effect=AssertionError("launched")), self.assertRaisesRegex(workflow.WorkflowError, "reconcile"):
             runner_exec.run_process(value, cwd=self.repo)
         self.assertEqual(Path(value["output_path"]).read_text(), "prior evidence")
-
-    @hub_only
-    def test_lost_restore_response_needs_exact_runner_receipt_and_never_replays(self):
-        self.entries["restore"] = {"argv": ["sd", "worktree", "restore", "{assignment}", "--destination", "{destination}"],
-            "screens": ["item"], "mutates": True, "scope": "supervisor", "operation": "restore",
-            "placeholders": {"assignment": "assignment", "destination": "destination"}}
-        self.write()
-        assignment = runner.enqueue(self.db, [self.item], who="operator")[0]["id"]
-        held = runner.claim(self.db, assignment, owner="fixture", work_root=self.root / "work", retention_root=self.root / "retained")
-        run = held["run"]["id"]
-        runner.begin_ending(self.db, run, outcome="blocked", detail="retained fixture")
-        runner.update_run(self.db, run, end_step="retained")
-        runner.release(self.db, run)
-        current = runner.queue_state(self.db, assignment)
-        destination = str(self.root / "restore-result")
-        value = self.prepare(command="restore", values={"assignment": assignment, "destination": destination},
-            target={"assignment": assignment, "revision": current["revision"], "run": run})["execution"]
-        calls = []
-        def lost(installation, verb, identity, **guards):
-            self.assertEqual(verb, "restore")
-            self.assertEqual(guards["run"], run)
-            calls.append(verb)
-            Path(destination).mkdir()
-            (Path(destination) / "retained.txt").write_text("fixture restore evidence")
-            raise workflow.WorkflowError("lost restore response")
-        with patch.object(runner_controls, "service_installation", return_value={}), self.assertRaisesRegex(workflow.WorkflowError, "lost restore"):
-            runner_exec.execute_immediate(self.db, value["note"], backend=lost)
-        def status(installation, verb, identity, **guards):
-            self.assertEqual(verb, "restore-status")
-            self.assertEqual(identity, assignment)
-            self.assertEqual(guards["run"], run)
-            self.assertEqual(guards["historical_run"], 1)
-            self.assertEqual(guards["destination"], destination)
-            calls.append(verb)
-            return response
-        with patch.object(runner_controls, "service_installation", return_value={}):
-            for response in ({"state": "pending", "run": run, "destination": destination},
-                             {"state": "complete", "run": "b" * 32, "destination": destination},
-                             {"state": "complete", "run": run, "destination": destination + "-other"}):
-                with self.assertRaisesRegex(workflow.WorkflowError, "remains uncertain"):
-                    runner_exec.reconcile(self.db, value["note"], backend=status)
-                self.assertIsNone(runner_exec.read_execution(self.db, value["note"])["ended"])
-            response = {"state": "complete", "run": run, "destination": destination}
-            result = runner_exec.reconcile(self.db, value["note"], backend=status)
-        self.assertEqual(result["exit_code"], 0)
-        self.assertEqual(calls.count("restore"), 1)
-        self.assertEqual(calls.count("restore-status"), 4)
-        self.assertEqual((Path(destination) / "retained.txt").read_text(), "fixture restore evidence")
 
     @hub_only
     def test_cancelled_queued_request_closes_without_process_or_replay(self):
@@ -517,11 +469,11 @@ class Palette(PaletteFixture):
                 runner_exec.validate_enqueue(self.db, [self.item], "palette:" + json.dumps(changed, sort_keys=True))
 
     def test_catalog_unhashable_operation_rejects_the_entry(self):
-        self.entries["inspect"].update(scope="control", operation=[]); self.write()
+        self.entries["inspect"].update(scope="supervisor", operation=[]); self.write()
         current = runner_exec.catalog(path=self.file)
         self.assertEqual(current["entries"], {})
         self.assertEqual([row["name"] for row in current["rejected"]], ["inspect"])
-        self.assertIn("native supervisor/control operation", current["rejected"][0]["reason"])
+        self.assertIn("unsupported native supervisor operation", current["rejected"][0]["reason"])
 
 
 class TheStandingRefusal(PaletteFixture):

@@ -13,7 +13,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import paths, registry, runner, runner_controls, workflow
+from . import paths, registry, runner, workflow
 from .database import refuse_hub_only, transaction
 from .errors import SdDbError
 from .writes import add_note, now
@@ -22,10 +22,8 @@ from .yaml_lite import load
 MAX_CATALOG = 65536
 MAX_OUTPUT = 2 * 1024 * 1024
 SCREENS = {"today", "backlog", "item", "writing", "skills", "operations"}
-OPERATIONS = {"cancel": ("control", ["sd", "runner", "cancel", "{assignment}"]),
-              "resume": ("supervisor", ["sd", "worktree", "resume", "{assignment}"]),
-              "requeue": ("supervisor", ["sd", "runner", "requeue", "{assignment}"]),
-              "restore": ("supervisor", ["sd", "worktree", "restore", "{assignment}", "--destination", "{destination}"])}
+#: The one native operation left. Cancel, resume and restore went with the runner service they drove (sd:3041).
+OPERATIONS = {"requeue": ("supervisor", ["sd", "runner", "requeue", "{assignment}"])}
 
 
 def digest(value):
@@ -82,7 +80,7 @@ def _entry(name, entry):
         raise workflow.WorkflowError("command entries need stable names and objects")
     if set(entry) - {"label", "argv", "screens", "mutates", "scope", "placeholders", "operation"} or not {"argv", "screens", "mutates", "scope"} <= set(entry):
         raise workflow.WorkflowError("argv, screens, mutates and scope are required")
-    if type(entry["mutates"]) is not bool or not isinstance(entry["scope"], str) or entry["scope"] not in {"worktree", "supervisor", "control"}:
+    if type(entry["mutates"]) is not bool or not isinstance(entry["scope"], str) or entry["scope"] not in {"worktree", "supervisor"}:
         raise workflow.WorkflowError("invalid mutation or scope declaration")
     screens = entry["screens"]
     if not isinstance(screens, list) or not screens or any(not isinstance(value, str) or value not in SCREENS for value in screens):
@@ -119,9 +117,7 @@ def _entry(name, entry):
     else:
         operation = entry.get("operation")
         if not isinstance(operation, str) or operation not in OPERATIONS or OPERATIONS[operation] != (entry["scope"], argv) or entry["mutates"] is not True or placeholders.get("assignment") != "assignment":
-            raise workflow.WorkflowError("unsupported native supervisor/control operation")
-        if operation == "restore" and placeholders.get("destination") != "destination":
-            raise workflow.WorkflowError("restore needs a typed destination")
+            raise workflow.WorkflowError("unsupported native supervisor operation")
     selected["entry_sha256"] = digest(selected)
     return selected
 
@@ -336,7 +332,7 @@ def standing_refusal(connection, command, values, *, expected_catalog, screen="i
     """The refusal `prepare` will make for every row alike, or None.
 
     A batch that sets a row up before it asks -- `sd_plan.py` gives the row a
-    branch with `configure_item`, which writes a decision note and bumps the
+    branch with `sd work register`, which writes a decision note and bumps the
     item's revision -- asks this once and skips the setup when it answers.
     Without it a refusal that stands for a hundred nights costs a hundred
     notes and a hundred revisions on a row that was never queued: first a
@@ -621,7 +617,7 @@ def assignment_result(connection, assignment, run):
     return result
 
 
-def execute_immediate(connection, note, *, home=None, backend=None):
+def execute_immediate(connection, note, *, home=None):
     if runner.restoration_pending(connection):
         raise workflow.WorkflowError("restore recovery must finish before command dispatch")
     row, value = _record(connection, note)
@@ -647,12 +643,7 @@ def execute_immediate(connection, note, *, home=None, backend=None):
             output.write((json.dumps({"event": "dispatch", "target": target, "operation": value["operation"]}) + "\n").encode())
             os.fsync(output.fileno())
             # The note and durable dispatch marker precede the native operation.
-            if value["operation"] == "requeue":
-                response = runner.requeue(connection, target["assignment"], expected_revision=target["revision"], who=f"palette:{note}")
-            else:
-                response = runner_controls.control(connection, target["assignment"], value["operation"],
-                    expected_revision=target["revision"], destination=value["values"].get("destination"),
-                    who=f"palette:{note}", backend=backend, home=home)
+            response = runner.requeue(connection, target["assignment"], expected_revision=target["revision"], who=f"palette:{note}")
             output.write((json.dumps({"event": "response", "exit_code": 0, "response": response}, sort_keys=True) + "\n").encode())
             os.fsync(output.fileno())
         result = {"exit_code": 0, "output_path": value["output_path"]}
@@ -660,7 +651,7 @@ def execute_immediate(connection, note, *, home=None, backend=None):
     return read_execution(connection, note)
 
 
-def reconcile(connection, note, *, home=None, backend=None):
+def reconcile(connection, note, *, home=None):
     """Observe the original target, never replay a command with an unknown outcome."""
     refuse_hub_only(connection, "runner controls")
     row, value = _record(connection, note)
@@ -701,19 +692,8 @@ def reconcile(connection, note, *, home=None, backend=None):
         held = runner.queue_state(connection, target["assignment"])
         if held["item"] != value["item"]:
             raise workflow.WorkflowError("control target identity changed")
-        original = connection.execute("SELECT * FROM runner_run WHERE id=? AND assignment=?", (target["run"], target["assignment"])).fetchone() if target["run"] else None
         marker = f"palette:{note}"
-        proven = ((value["operation"] == "cancel" and
-                   ((original and original["cancel_requested"]) or (target["run"] is None and held["status"] == "cancelled" and marker in (held["result"] or ""))))
-                  or (value["operation"] == "requeue" and marker in (held["result"] or ""))
-                  or (value["operation"] == "resume" and original and original["end_action"] == "resume" and original["released_at"]))
-        if value["operation"] == "restore" and original:
-            database = connection.execute("PRAGMA database_list").fetchone()[2]
-            installation = runner_controls.service_installation(database=database, home=home)
-            response = (backend or runner_controls.invoke_service)(installation, "restore-status", target["assignment"],
-                revision=held["revision"], run=original["id"], historical_run=original["run"], who=marker,
-                destination=value["values"]["destination"])
-            proven = response.get("state") == "complete" and response.get("run") == original["id"] and response.get("destination") == value["values"]["destination"]
+        proven = value["operation"] == "requeue" and marker in (held["result"] or "")
     if not proven:
         raise workflow.WorkflowError("the target has not proved this operation's outcome; it remains uncertain and will not be replayed")
     complete(connection, note, exit_code=0, output_path=path)

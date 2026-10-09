@@ -319,10 +319,6 @@ addEventListener('DOMContentLoaded', () => {
         when: o => sk(o).status !== 'contrib' ? `already installed · ${sk(o).status}` : queued(o, 'trial queued'),
         consequence: o => `This starts a 30-day trial of ${o.id}; it installs at the next sd install. No verb ends a trial early.`,
         cli: o => `sd skill try ${o.id}`, run: o => write(o, 'try', 'trial queued', () => `Trial of ${o.id} starts at the next install`) },
-      // Copy only: the dashboard has no route that creates the item a run carries (the reference's form built a proposal).
-      { id: 'skill.run', on: 'skill', label: 'Run', key: 'r', risk: 'safe', executes: false, primary: o => sk(o).status !== 'contrib' && !(sk(o).status === 'path' && !total(sk(o))),
-        when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
-        cli: () => 'sd run --sequential --role author --scope SCOPE --budget-minutes N ITEM', run: () => 'Copy the line: the dashboard has no route that creates the item a run carries' },
       { id: 'skill.review', on: 'skill', label: 'Review', key: 'v', risk: 'confirm', bulk: true, when: o => queued(o, 'review queued'),
         consequence: o => `This queues a review of ${o.id} by a reviewer independent of its latest author. No verb withdraws it.`,
         cli: o => `sd skill review ${o.id}`, run: o => write(o, 'review', 'review queued', out => `Review of ${o.id} queued${itemOf(out)}`) },

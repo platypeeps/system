@@ -800,11 +800,10 @@ them.
 
 `workflow.edit_item` also clears a row's `branch` (sd:2818), with a `comment`
 note reading `Updated branch by <who>`. It refuses any other value: setting a
-branch stays with `runner_controls.configure_item`, which checks it against
-git. A clear is how a stale branch name leaves a row, since nothing else
+branch stays with `sd work register`. A clear is how a stale branch name leaves a row, since nothing else
 writes the column back to empty. A row the runner owns keeps its branch: a
 clear is refused while it has an active assignment or an unreleased runner
-run, the same guards `configure_item` applies.
+run.
 
 **That is filing behaviour and not a constraint**, which matters if you are
 reasoning about what the store can hold rather than what it does hold.
@@ -1032,7 +1031,7 @@ is one `ingest` opened with `attention` false: no followup was ever opened
 for it, so `acknowledge` was the only thing that moved one and the operator
 had nothing to review on it -- 127 sat in `planning` on 2026-09-12 with
 nothing to move them. An expired execution still reads through
-`sd runner commands output` and the dashboard's history: the entry, the
+the dashboard's history: the entry, the
 arguments and the exit code are there, and the output says it expired
 instead of reading as empty. The next backup knows the mark too -- a
 completed execution without its log is otherwise an incomplete backup.
@@ -1137,11 +1136,11 @@ out of what the folder and git already say, and decides nothing:
   uncommitted; the verb says so and leaves the column null;
 * the **branch** is the branch the work is done on -- the one meaning every
   reader of `item.branch` has: `runner.py:_item` refuses a row without one,
-  `configure_item` refuses the remote default for it, `sd_plan.py` checks it
+  `sd work register` refuses the remote default for it, `sd_plan.py` checks it
   out. It is the checkout's own branch when that is a local branch other than
   the default, which is what a runner clone on `plan/<slug>` is when `sd-plan`
   registers the folder it just wrote; on the default, or detached, it is left
-  NULL for `sd runner prepare --branch` to fill. Until sd:462 it was
+  NULL for `sd work register` to fill. Until sd:462 it was
   `docs_work.default_branch`, `origin/main` -- a remote-tracking name that
   passes the runner's shape check and names no head, so 65 rows read as
   runnable and would have failed only inside the clone. `default_branch`
@@ -1536,16 +1535,8 @@ command's own error first, since `mv` also fails on a missing source or a
 permission it lacks.
 
 **A retained clone.** A run whose retained clone directory still exists is
-refused (I6 for an item, P4 for a repo). So is a `.pruning-clone` that a
-stopped prune left beside it. The preview prints one line for the run:
-`runner.sh retained-remove --clone-only --assignment N --who NAME`
-(sd:1793). The operator puts their own name for `NAME`: the plan takes no
-actor values. That verb (sd:1780) checks the assignment's runs and locks,
-finishes a stopped prune, and files a record naming the operator. With
-`--clone-only` it has the old `chflags -R nouchg` and `rm -rf` pair's scope:
-it removes each released attempt's `clone` and `.pruning-clone` only, and
-keeps `kept.tar`, `archives/`, `ignored/` and the directories. The refusal
-says what stays. The alternative is to wait until the run is 30 days old, run
-`runner.sh prune` for the plan, then `runner.sh prune-apply --fingerprint FP
---who NAME` with its fingerprint. An unmounted volume refuses without the
-line.
+refused (I6 for an item, P4 for a repo). The runner that removed retained
+clones is gone, so the preview prints no command: it names the clone, and the
+operator removes it by hand and plans again. `kept.tar`, `archives/` and
+`ignored/` may stay; the refusal says so. An unmounted volume refuses too, and
+names the volume.

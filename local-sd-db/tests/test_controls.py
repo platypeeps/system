@@ -5,9 +5,7 @@ import hashlib
 import inspect
 import json
 import os
-import plistlib
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,8 +18,6 @@ from sd_db import (
     registry,
     reporting,
     retention,
-    runner,
-    runner_controls,
     skills_catalog,
     workflow,
     writes,
@@ -29,14 +25,12 @@ from sd_db import (
 from sd_db.database import connect
 from sd_db.errors import RegistryError, SdDbError
 from sd_db.migrate import initialise
-from sd_db.operations import LABEL_PREFIX
 from sd_db.testing.wire import hub_only
 from sd_db.writes import (
     add_note,
     create_item,
     record_skill_use,
     resolve_note,
-    set_item_fields,
     transition,
     upsert_repo,
 )
@@ -405,60 +399,6 @@ class Controls(unittest.TestCase):
         with self.assertRaisesRegex(workflow.WorkflowError, "Authored-with"):
             skills_catalog.request(self.db, "sd-test", "review", root=self.repo, home=self.root, who="operator")
         self.assertEqual(before, self.snapshot())
-
-    def test_setup_owned_work_and_atomic_stale_batch(self):
-        items = [create_item(self.db, kind="task", title=str(n)) for n in range(2)]
-        for item in items:
-            runner_controls.configure_item(self.db, item, repo=str(self.repo), branch="work/new", expected_revision=workflow.item_state(self.db, item)["revision"], who="operator")
-        fields = json.loads(workflow.item_state(self.db, items[0])["item"]["fields"])
-        self.assertEqual(fields["runner_branch"], {"source_commit": self.git("rev-parse", "HEAD"), "source_branch": "main", "remote_absent": True})
-        self.assertEqual(self.git("branch", "--format=%(refname:short)"), "main")
-        revisions = {str(item): workflow.item_state(self.db, item)["revision"] for item in items}
-        set_item_fields(self.db, items[1], title="Changed")
-        before = self.snapshot()
-        with self.assertRaises(SdDbError):
-            runner_controls.enqueue(self.db, items, revisions=revisions, who="operator")
-        self.assertEqual(before, self.snapshot())
-        upsert_repo(self.db, str(self.repo), status_source="file")
-        work = create_item(self.db, kind="work", title="Owned", repo=str(self.repo))
-        with self.assertRaisesRegex(workflow.WorkflowError, "file owner"):
-            runner_controls.configure_item(self.db, work, repo=str(self.repo), branch="main", expected_revision=workflow.item_state(self.db, work)["revision"], who="operator")
-
-    def install_runner(self, *, database=None):
-        launcher = self.root / "service/local-sd-runner/runner.sh"
-        launcher.parent.mkdir(parents=True)
-        launcher.write_text("#!/bin/sh\nexit 0\n"); launcher.chmod(0o755)
-        (launcher.parent / "sd_runner").mkdir()
-        (launcher.parent / "sd_runner/bootstrap.py").write_text("# installed fixture\n")
-        config = self.root / "runner.json"; config.write_text(json.dumps({"database": str(database or self.path)}))
-        plist = self.root / f"Library/LaunchAgents/{LABEL_PREFIX}.sd-runner.plist"; plist.parent.mkdir(parents=True)
-        plist.write_bytes(plistlib.dumps({"Label": LABEL_PREFIX + ".sd-runner", "ProgramArguments": [str(launcher), "serve", "--config", str(config)],
-                                         "EnvironmentVariables": {"SD_RUNNER_PYTHON": sys.executable}}))
-        return plist
-
-    @hub_only
-    def test_installed_control_binds_database_revision_and_attempt(self):
-        item = create_item(self.db, kind="task", title="Owned", repo=str(self.repo), branch="main", status="ready")
-        assignment = runner.enqueue(self.db, [item], who="operator")[0]["id"]
-        runner.claim(self.db, assignment, owner="fixture", work_root=self.root / "work", retention_root=self.root / "retained")
-        state = runner.queue_state(self.db, assignment)
-        plist = self.install_runner()
-        calls = []
-        def backend(installation, verb, assignment, **options):
-            calls.append((installation, verb, assignment, options)); return {"accepted": True}
-        before = self.snapshot()
-        with self.assertRaises(workflow.StaleItem):
-            runner_controls.control(self.db, assignment, "cancel", expected_revision="0" * 64, backend=backend, home=self.root, who="operator")
-        self.assertEqual(calls, [])
-        runner_controls.control(self.db, assignment, "cancel", expected_revision=state["revision"], backend=backend, home=self.root, who="operator")
-        self.assertEqual(calls[0][3]["run"], state["run"]["id"])
-        self.assertEqual(calls[0][0]["database"], str(self.path))
-        self.assertEqual(before, self.snapshot())
-        record = plistlib.loads(plist.read_bytes()); record["ProgramArguments"] += ["--arbitrary", "shell"]
-        plist.write_bytes(plistlib.dumps(record))
-        with self.assertRaisesRegex(workflow.WorkflowError, "unsupported"):
-            runner_controls.control(self.db, assignment, "cancel", expected_revision=state["revision"], backend=backend, home=self.root, who="operator")
-        self.assertEqual(len(calls), 1)
 
     def test_multi_author_review_excludes_every_vendor(self):
         self.skill.write_text(self.skill.read_text() + "Example\n")
