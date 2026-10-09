@@ -1,6 +1,6 @@
 #!/bin/sh
 # Clone-or-pull the repo fleet listed in repos.<profile>.conf.
-# Usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|test
+# Usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|test
 set -e
 
 # The repo convention is DIR="$(cd "$(dirname "$0")" && pwd)", but this script
@@ -373,6 +373,43 @@ ssh_preflight() {
   return 1
 }
 
+# --- pinned checkouts (sd:3097) ---------------------------------------------
+# A checkout on a detached HEAD is pinned. The hub runs system and the command
+# pack from pinned checkouts, so they change only when the operator says so.
+# `sync` fetches a pinned checkout but never moves it; `refresh` moves it to
+# origin's default branch. `git switch main` unpins one.
+
+# Returns 0 when checkout $1 is pinned: HEAD names a commit, not a branch.
+is_pinned() {
+  ! git -C "$1" symbolic-ref -q HEAD > /dev/null 2>&1 \
+    && git -C "$1" rev-parse -q --verify HEAD > /dev/null 2>&1
+}
+
+# Prints origin's default branch for checkout $1 from its remote-tracking
+# refs: origin/HEAD, else main, else master. Returns 1 when none exists.
+pin_default() {
+  p_ref=$(git -C "$1" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$p_ref" ]; then
+    echo "${p_ref#origin/}"; return 0
+  fi
+  for p_name in main master; do
+    if git -C "$1" show-ref -q --verify "refs/remotes/origin/$p_name"; then
+      echo "$p_name"; return 0
+    fi
+  done
+  return 1
+}
+
+# Prints "pinned at <sha>", plus ", N behind origin/<default>" when it is.
+pin_state() {
+  p_line="pinned at $(git -C "$1" rev-parse --short HEAD)"
+  if p_def=$(pin_default "$1"); then
+    p_n=$(git -C "$1" rev-list --count "HEAD..refs/remotes/origin/$p_def" 2>/dev/null || echo 0)
+    if [ "$p_n" -gt 0 ]; then p_line="$p_line, $p_n behind origin/$p_def"; fi
+  fi
+  echo "$p_line"
+}
+
 sync() {
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
@@ -384,7 +421,19 @@ sync() {
     repo=$(echo "$full_repo" | awk -F/ '{ print $2 }')
     target="$ROOT/$subdir/$repo"
 
-    if [ -d "$target/.git" ]; then
+    if [ -d "$target/.git" ] && is_pinned "$target"; then
+      # A pinned checkout is fetched, so its behind count is fresh, and never
+      # pulled; `git pull` would refuse a detached HEAD anyway.
+      echo "=== pinned $full_repo"
+      if git -C "$target" fetch -q origin; then
+        state=$(pin_state "$target")
+        echo "$state; not pulled (repo-sync.sh refresh moves it)"
+        echo "$full_repo $state" >> "$PINLOG"
+      else
+        echo "!!! failed: $full_repo (fetch; $(pin_state "$target"))" >&2
+        echo "$full_repo" >> "$FAILLOG"
+      fi
+    elif [ -d "$target/.git" ]; then
       echo "=== refreshing $full_repo"
       if ! (cd "$target" && git pull --ff-only && git submodule update --init --recursive); then
         echo "!!! failed: $full_repo" >&2
@@ -402,12 +451,127 @@ sync() {
   done
 
   echo "----------------------------------------"
+  if [ -s "$PINLOG" ]; then
+    echo "pinned: $(wc -l < "$PINLOG" | tr -d ' ') checkout(s), not pulled"
+    sed 's/^/  /' "$PINLOG"
+  fi
   if [ -s "$FAILLOG" ]; then
     echo "failed: $(wc -l < "$FAILLOG" | tr -d ' ') repo(s)"
     sed 's/^/  /' "$FAILLOG"
     return 1
   fi
   echo "all repos synced"
+}
+
+# The SCHEMA_VERSION that local-sd-db holds at commit $2 of checkout $1, or
+# nothing when that commit has no local-sd-db.
+pin_schema() {
+  git -C "$1" show "$2:local-sd-db/sd_db/schema.py" 2>/dev/null \
+    | sed -n 's/^SCHEMA_VERSION = \([0-9][0-9]*\).*/\1/p' | head -1
+}
+
+# Moves pinned checkout $1 to origin's default branch, still detached.
+# Prints the old and new sha; returns 1 when any step failed. Refreshing the
+# checkout this script runs from is safe: git replaces each file rather than
+# rewriting it, and the shell keeps reading the old one.
+refresh_one() {
+  if ! r_dir=$(cd "$1" 2>/dev/null && pwd) \
+     || ! git -C "$r_dir" rev-parse -q --git-dir > /dev/null 2>&1; then
+    echo "!!! failed: $1 is not a git checkout"
+    return 1
+  fi
+  if ! is_pinned "$r_dir"; then
+    r_br=$(git -C "$r_dir" symbolic-ref -q --short HEAD 2>/dev/null || echo "an unborn HEAD")
+    echo "=== $r_dir is on $r_br, not pinned; left alone"
+    return 0
+  fi
+  r_old=$(git -C "$r_dir" rev-parse HEAD)
+  r_short=$(git -C "$r_dir" rev-parse --short HEAD)
+  echo "=== refresh $r_dir (pinned at $r_short)"
+  # A tracked change would ride along to the new commit, or block the switch
+  # halfway. Untracked files stay where they are, so they do not count.
+  if [ -n "$(git -C "$r_dir" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
+    echo "!!! refused: $r_dir has uncommitted changes; commit or stash them, then refresh again"
+    return 1
+  fi
+  if ! git -C "$r_dir" fetch -q origin; then
+    echo "!!! failed: fetch in $r_dir; still at $r_short"
+    return 1
+  fi
+  if ! r_def=$(pin_default "$r_dir"); then
+    echo "!!! failed: $r_dir has no origin/HEAD, origin/main or origin/master; still at $r_short"
+    return 1
+  fi
+  # `git submodule update` would overwrite an ignored file in a submodule and
+  # has no switch to stop it, so a checkout with submodules is moved by hand.
+  for r_rev in HEAD "origin/$r_def"; do
+    if git -C "$r_dir" ls-tree -r "$r_rev" | awk '$2 == "commit" { f = 1 } END { exit !f }'; then
+      echo "!!! refused: $r_rev in $r_dir holds a submodule; refresh does not move one; still at $r_short"
+      return 1
+    fi
+  done
+  # An ignored file is often local config or data; git overwrites one that
+  # origin now tracks unless told not to, and then refuses the whole switch.
+  if ! git -C "$r_dir" switch -q --detach --no-overwrite-ignore "origin/$r_def"; then
+    echo "!!! failed: switch to origin/$r_def in $r_dir; HEAD is now $(git -C "$r_dir" rev-parse --short HEAD)"
+    return 1
+  fi
+  r_new=$(git -C "$r_dir" rev-parse --short HEAD)
+  if [ "$(git -C "$r_dir" rev-parse HEAD)" = "$r_old" ]; then
+    echo "already at origin/$r_def ($r_new)"
+  else
+    echo "refreshed: $r_short -> $r_new (origin/$r_def)"
+  fi
+  r_rc=0
+  # The command pack installs its commands from the checkout.
+  if [ -f "$r_dir/bin/sd_install.py" ]; then
+    echo "--- make setup"
+    if ! make -C "$r_dir" setup; then
+      echo "!!! failed: make setup; the checkout is at $r_new, rerun: make -C $r_dir setup"
+      r_rc=1
+    fi
+  fi
+  r_s_old=$(pin_schema "$r_dir" "$r_old")
+  r_s_new=$(pin_schema "$r_dir" HEAD)
+  if [ -n "$r_s_new" ] && [ "$r_s_old" != "$r_s_new" ]; then
+    echo "note: local-sd-db SCHEMA_VERSION ${r_s_old:-none} -> $r_s_new; the database needs a migrate."
+    echo "  Stop the dashboard, the runner and sd-serve, then run:"
+    echo "    $r_dir/local-sd-db/sd-db.sh backup"
+    echo "    $r_dir/local-sd-db/sd-db.sh migrate"
+    echo "  and start them again. refresh migrates nothing."
+  fi
+  return "$r_rc"
+}
+
+# Refreshes each path given, or with none every pinned checkout in the conf.
+refresh() {
+  : > "$TMPD/targets"
+  if [ "$#" -gt 0 ]; then
+    for r_arg in "$@"; do printf '%s\n' "$r_arg" >> "$TMPD/targets"; done
+  else
+    repo_list | while read -r subdir full_repo; do
+      target="$ROOT/$subdir/${full_repo##*/}"
+      if [ -d "$target/.git" ] && is_pinned "$target"; then
+        echo "$target" >> "$TMPD/targets"
+      fi
+    done
+    if [ ! -s "$TMPD/targets" ]; then
+      echo "no pinned checkouts in the conf; nothing to refresh"
+      return 0
+    fi
+  fi
+  r_failed=0
+  # The list is on fd 3, so a git or make that reads stdin cannot eat it.
+  while IFS= read -r r_target <&3; do
+    refresh_one "$r_target" || r_failed=$((r_failed + 1))
+    echo
+  done 3< "$TMPD/targets"
+  echo "----------------------------------------"
+  if [ "$r_failed" -gt 0 ]; then
+    echo "refresh : $r_failed checkout(s) failed"
+    return 1
+  fi
+  echo "refresh : done"
 }
 
 # --- hygiene (sd:1987) ------------------------------------------------------
@@ -1039,8 +1203,15 @@ case "$1" in
     # The `while read` loop runs in a subshell, so failures are collected in a
     # temp file rather than a variable, which would not survive the pipeline.
     FAILLOG=$(mktemp)
-    trap 'rm -f "$FAILLOG"' EXIT INT TERM
+    PINLOG=$(mktemp)
+    trap 'rm -f "$FAILLOG" "$PINLOG"' EXIT INT TERM
     sync
+    ;;
+  refresh)
+    shift
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    refresh "$@"
     ;;
   check)
     FINDINGS=$(mktemp)
@@ -1061,6 +1232,7 @@ case "$1" in
     # failure push covers a lost report or an outage, not mere findings.
     TMPD=$(mktemp -d)
     FAILLOG="$TMPD/faillog"; : > "$FAILLOG"
+    PINLOG="$TMPD/pinlog"; : > "$PINLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     EMAIL_FAILED=0
     SYNC_FAILED=0
@@ -1176,10 +1348,13 @@ case "$1" in
     ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|test
+usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|test
 
   sync       clone missing repos and fast-forward existing ones, then print a
-             summary; exits 1 if any repo failed, having tried all the others
+             summary; exits 1 if any repo failed, having tried all the others.
+             A checkout on a detached HEAD is pinned: sync fetches it, never
+             pulls it, and lists it as "pinned at <sha>", with ", N behind
+             origin/<default>" when it is. A pinned checkout is not a failure
   check      read-only: report which configured repos have no checkout
              (MISSING) and which sit on a different origin than the conf
              names (DIFFERS). Touches no network, so a repo that is merely
@@ -1219,6 +1394,15 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|test
              runs. The confs keep no git history: nightly rewrites them
              and commits nothing. Exits 1 when an email could not be
              delivered or when half or more of the fleet failed.
+  refresh [path ...]
+             move each pinned checkout named, or with no path every pinned
+             conf checkout, to origin's default branch, still detached. It
+             refuses a checkout with uncommitted changes or a submodule,
+             never overwrites an ignored file, and leaves a checkout on a
+             branch alone. In the command pack (bin/sd_install.py) it then
+             runs `make setup`. When local-sd-db's SCHEMA_VERSION changed it
+             prints the backup and migrate steps and runs neither. Prints the
+             old and new sha; exits 1 if any checkout failed.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
              against fixture trees; sync's clone path is not covered,
@@ -1267,7 +1451,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") sync|check|list|reconcile|hygiene|nightly|test" >&2
+    echo "usage: $(basename "$0") sync|check|list|reconcile|hygiene|nightly|refresh|test" >&2
     exit 1
     ;;
 esac
