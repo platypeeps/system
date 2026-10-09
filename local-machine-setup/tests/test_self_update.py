@@ -179,5 +179,40 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.assertFalse([w for w in writes if "Maccy" in w], writes)
 
 
+    def test_an_app_data_folder_this_process_cannot_read_is_deferred_not_drift(self):
+        # sd:3145: under launchd, macOS refuses reads of Maccy's container and
+        # Docker's group container. The unread keys counted as drift, so the
+        # nightly drift job failed every night on rows no run could clear.
+        (self.apps / "Maccy.app/Contents/Frameworks/Sparkle.framework").mkdir(parents=True)
+        prefs = self.home / "Library/Containers/org.p0deje.Maccy/Data/Library/Preferences"
+        prefs.mkdir(parents=True)
+        prefs.chmod(0)
+        self.docker.chmod(0)
+        self.addCleanup(prefs.chmod, 0o755)
+        self.addCleanup(self.docker.chmod, 0o644)
+
+        status = self.run_verb("status")
+        result = self.run_verb("update", "macos", "--apply")
+
+        for out in (status.stdout, result.stdout):
+            self.assertIn("DEFER   org.p0deje.Maccy self-update not checked", out)
+            self.assertIn(f"DEFER   {self.docker} AutoDownloadUpdates not checked", out)
+            self.assertNotIn("defaults write org.p0deje.Maccy", out)
+            self.assertNotIn("does not parse", out)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse([w for w in self.defaults_db.read_text().splitlines() if "Maccy" in w])
+        self.run_verb("update", "macos", "--apply")
+        converged = self.run_verb("status")
+        drift = int(converged.stdout.split("drift   : ")[1].split()[0])
+        self.assertEqual(drift, self.baseline_drift_without_blocked_apps(), converged.stdout)
+
+    def baseline_drift_without_blocked_apps(self):
+        # The same machine with neither app installed, converged the same way.
+        shutil.rmtree(self.apps / "Maccy.app")
+        shutil.rmtree(self.apps / "Docker.app")
+        self.run_verb("update", "macos", "--apply")
+        out = self.run_verb("status").stdout
+        return int(out.split("drift   : ")[1].split()[0])
+
 if __name__ == "__main__":
     unittest.main()

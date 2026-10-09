@@ -1915,6 +1915,25 @@ self_update_rows() {
     "docker-desktop|Docker.app|json|$HOME/Library/Group Containers/group.com.docker/settings-store.json|AutoDownloadUpdates|false"
 }
 
+# Can this process read an app's data? macOS refuses another app's container
+# to a process without Full Disk Access, and launchd's /bin/bash has none
+# (sd:3145): Maccy's prefs read as unset and Docker's settings file as
+# unparseable, so the nightly drift job failed on rows no run could clear.
+# A path that does not exist is not blocked; the caller handles absence.
+app_data_blocked() { # path
+  if [ -d "$1" ]; then
+    ! ls "$1" >/dev/null 2>&1
+  elif [ -e "$1" ]; then
+    ! head -c 1 "$1" >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+app_data_defer() { # what
+  echo "  DEFER   $1 not checked: macOS blocks this process from the app's data; run from a terminal with Full Disk Access"
+}
+
 # One boolean in a defaults domain: ok, or the write that converges it.
 self_update_default() { # domain key true|false
   cur=$(defaults read "$1" "$2" 2>/dev/null || echo "(unset)")
@@ -1936,6 +1955,10 @@ defaults_write() { # domain key type value
 
 # One key in a JSON settings file: ok, or MISSING/DIFFERS and the merge.
 self_update_json() { # file key json-value
+  if app_data_blocked "$1"; then
+    app_data_defer "$1 $2"
+    return 0
+  fi
   if ! gap=$(python3 "$DIR/claude_settings.py" pref-missing "$1" "$2" "$3" 2>/dev/null </dev/null); then
     echo "  DIFFERS $1 does not parse; $2 not checked"
     return 0
@@ -1961,6 +1984,10 @@ stage_self_update() {
         # work machine's Maccy, sd:3103): no key to turn off, so no drift.
         if [ ! -d "$APPLICATIONS_DIR/$app/Contents/Frameworks/Sparkle.framework" ]; then
           echo "  --      $app has no Sparkle.framework; no self-update to turn off"
+          continue
+        fi
+        if app_data_blocked "$HOME/Library/Containers/$target/Data/Library/Preferences"; then
+          app_data_defer "$target self-update"
           continue
         fi
         self_update_default "$target" SUEnableAutomaticChecks false
