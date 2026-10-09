@@ -1801,14 +1801,14 @@ stage_iterm2() {
   if [ "$cur" = "$dir" ]; then
     echo "  ok      PrefsCustomFolder = $cur"
   else
-    run defaults write com.googlecode.iterm2 PrefsCustomFolder -string "$dir"
+    defaults_write com.googlecode.iterm2 PrefsCustomFolder string "$dir"
     changed=1
   fi
   cur=$(defaults read com.googlecode.iterm2 LoadPrefsFromCustomFolder 2>/dev/null || echo "(unset)")
   if [ "$cur" = "1" ]; then
     echo "  ok      LoadPrefsFromCustomFolder = 1"
   else
-    run defaults write com.googlecode.iterm2 LoadPrefsFromCustomFolder -bool true
+    defaults_write com.googlecode.iterm2 LoadPrefsFromCustomFolder bool true
     changed=1
   fi
 
@@ -1858,8 +1858,8 @@ report_deferred() {
 # - sparkle: target is the defaults domain. Sparkle keeps the user's choice
 #   there under its Info.plist key names, SUEnableAutomaticChecks (scheduled
 #   checks) and SUAutomaticallyUpdate (silent installs); both go false. Each
-#   app ships Sparkle.framework. ChatGPT.app's domain is com.openai.codex,
-#   read from its bundle.
+#   app ships Sparkle.framework; a build without it is skipped.
+#   ChatGPT.app's domain is com.openai.codex, read from its bundle.
 # - defaults: a documented boolean in the app's domain. Claude desktop reads
 #   disableAutoUpdates from com.anthropic.claudefordesktop.
 # - json: one top-level key in the app's settings file, through
@@ -1903,8 +1903,17 @@ self_update_default() { # domain key true|false
   if norm_eq bool "$cur" "$3"; then
     echo "  ok      $1 $2 = $cur"
   else
-    run defaults write "$1" "$2" -bool "$3"
+    defaults_write "$1" "$2" bool "$3"
   fi
+}
+
+# A sandboxed app keeps its domain in its container, and macOS refuses a
+# write there from a terminal without Full Disk Access (Maccy, sd:3103).
+# Under set -e that one refusal ended the run, so the key is reported and the
+# stage goes on.
+defaults_write() { # domain key type value
+  run defaults write "$1" "$2" "-$3" "$4" \
+    || echo "  DIFFERS $1 $2 not written; set it by hand to $4, or grant the terminal Full Disk Access and re-run"
 }
 
 # One key in a JSON settings file: ok, or MISSING/DIFFERS and the merge.
@@ -1930,6 +1939,12 @@ stage_self_update() {
     [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] || continue
     case "$how" in
       sparkle)
+        # An App Store build ships no Sparkle and no updater of its own (the
+        # work machine's Maccy, sd:3103): no key to turn off, so no drift.
+        if [ ! -d "$APPLICATIONS_DIR/$app/Contents/Frameworks/Sparkle.framework" ]; then
+          echo "  --      $app has no Sparkle.framework; no self-update to turn off"
+          continue
+        fi
         self_update_default "$target" SUEnableAutomaticChecks false
         self_update_default "$target" SUAutomaticallyUpdate false ;;
       defaults) self_update_default "$target" "$key" "$val" ;;
@@ -1963,7 +1978,7 @@ stage_macos() {
     if norm_eq "$typ" "$cur" "$val"; then
       echo "  ok      $dom $key = $cur"
     else
-      run defaults write "$dom" "$key" "-$typ" "$val"
+      defaults_write "$dom" "$key" "$typ" "$val"
       changed=1
     fi
   done <<EOF_MACOS
@@ -2367,12 +2382,16 @@ capture_dotfiles() {
 # for agents some other installer writes under its own prefix. A label that
 # once carried the account name needed a glob wider than one prefix, and the
 # narrower one reported 0 on a machine with two such agents running.
+# A label the profile's .agent already names is owned too, while its plist
+# is installed: a capture run without the glob wrote the work roster empty
+# (sd:3106).
 # <prefix>.cron.* is excluded throughout: local-cron-jobs owns those and they
 # are reported under `cron`.
 owned_agent_plists() {
   # shellcheck disable=SC2086 # the globs expand here, on purpose
   for oap in "$HOME/Library/LaunchAgents/$LABEL_PREFIX".*.plist \
-             $(for oag in ${MACHINE_SETUP_AGENT_GLOBS:-}; do printf '%s ' "$HOME/Library/LaunchAgents/$oag.plist"; done); do
+             $(for oag in ${MACHINE_SETUP_AGENT_GLOBS:-}; do printf '%s ' "$HOME/Library/LaunchAgents/$oag.plist"; done) \
+             $(manifest agent | while read -r oal; do printf '%s ' "$HOME/Library/LaunchAgents/$oal.plist"; done); do
     [ -e "$oap" ] || continue
     case "$(basename "$oap" .plist)" in "$LABEL_PREFIX.cron."*) continue ;; esac
     echo "$oap"

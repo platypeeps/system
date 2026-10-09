@@ -42,6 +42,12 @@ esac
 
 EXIT_1_STUB = "#!/bin/sh\nexit 1\n"
 
+# A sandboxed app's container refuses a write from a terminal without Full
+# Disk Access: `defaults write` to $REFUSED_DOMAIN exits 1 and writes nothing.
+REFUSING_DEFAULTS_STUB = DEFAULTS_STUB.replace(
+    "  write)\n",
+    "  write)\n    [ \"$2\" != \"$REFUSED_DOMAIN\" ] || { echo \"Could not write domain $2\" >&2; exit 1; }\n")
+
 ZED_JSONC = """// Zed settings
 {
   "theme": "One Dark", // a comment the merge must keep
@@ -72,6 +78,7 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.apps = base / "Applications"
         for app in ("iTerm.app", "Zed.app", "Visual Studio Code.app", "Docker.app", "Claude.app"):
             (self.apps / app).mkdir(parents=True)
+        (self.apps / "iTerm.app/Contents/Frameworks/Sparkle.framework").mkdir(parents=True)
         self.defaults_db = base / "defaults.db"
         self.zed = self.home / ".config/zed/settings.json"
         self.zed.parent.mkdir(parents=True)
@@ -85,6 +92,7 @@ class SelfUpdateOffTest(unittest.TestCase):
         for name in ("sudo", "launchctl", "mas"):
             write_exec(self.stubs / name, EXIT_1_STUB)
         fixture_config.seal(self, self.stubs)
+        self.refused_domain = ""
 
     def run_verb(self, *args):
         env = {
@@ -95,6 +103,7 @@ class SelfUpdateOffTest(unittest.TestCase):
             **fixture_config.env(self.config_root),
             "MACHINE_SETUP_APPLICATIONS_DIR": str(self.apps),
             "DEFAULTS_DB": str(self.defaults_db),
+            "REFUSED_DOMAIN": self.refused_domain,
         }
         return subprocess.run([str(self.folder / "machine-setup.sh"), *args], env=env,
                               capture_output=True, text=True, cwd=self.tmp.name,
@@ -136,6 +145,38 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.assertIn("[dry-run] defaults write com.googlecode.iterm2 SUEnableAutomaticChecks -bool false",
                       clean.stdout)
         self.assertIn("MISSING", clean.stdout)
+
+    def test_an_app_without_sparkle_has_no_sparkle_row(self):
+        # sd:3103: the App Store build of Maccy ships no Sparkle.framework and
+        # no updater, so its two keys were drift that no write could clear.
+        (self.apps / "Maccy.app/Contents").mkdir(parents=True)
+
+        result = self.run_verb("update", "macos")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("org.p0deje.Maccy", result.stdout)
+        self.assertIn("Maccy.app has no Sparkle.framework", result.stdout)
+
+    def test_a_refused_write_is_reported_and_the_stage_goes_on(self):
+        # sd:3103: Maccy's container refused the write, set -e ended the run,
+        # and no later app or manifest key was converged.
+        write_exec(self.stubs / "defaults", REFUSING_DEFAULTS_STUB)
+        self.refused_domain = "org.p0deje.Maccy"
+        (self.apps / "Maccy.app/Contents/Frameworks/Sparkle.framework").mkdir(parents=True)
+        macos = self.config_root / "machine-setup/profiles/personal.macos"
+        macos.write_text("org.p0deje.Maccy pasteByDefault bool true\n"
+                         "com.apple.dock autohide bool true\n")
+
+        result = self.run_verb("update", "macos", "--apply")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for key in ("SUEnableAutomaticChecks", "SUAutomaticallyUpdate", "pasteByDefault"):
+            self.assertIn(f"DIFFERS org.p0deje.Maccy {key} not written; set it by hand", result.stdout)
+        self.assertIn("Full Disk Access", result.stdout)
+        writes = self.defaults_db.read_text().splitlines()
+        self.assertIn("com.googlecode.iterm2 SUAutomaticallyUpdate 0", writes)
+        self.assertIn("com.apple.dock autohide 1", writes)
+        self.assertFalse([w for w in writes if "Maccy" in w], writes)
 
 
 if __name__ == "__main__":

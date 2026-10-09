@@ -247,6 +247,25 @@ class TheComparison(CompareCase):
         self.assertEqual(kev["usd"], 0.0)
         self.assertEqual(kev["server_p50_ms"], 50)
 
+    def test_a_partial_cost_total_names_its_unpriced_calls(self):
+        # sd:2980: one haiku call carries no cost, so $0.0020 is a floor, not
+        # a total; `judgments` already says so per arm, and now compare does.
+        self.decision("a", "0.9", "0.8", "0.3")
+        self.decision("b", "0.9", "0.8", "0.3")
+        self.write(arm="haiku", provider="anthropic", pair="c", answer="0.3",
+                   tokens_in=10, tokens_out=2)
+        self.write(arm="haiku", provider="anthropic", outcome="fallback",
+                   cause="timeout", duration_ms=60000)
+        report = compare(self.connection)
+        haiku, kev = self.arm(report, "haiku"), self.arm(report, "kev")
+        self.assertEqual((haiku["calls"], haiku["unpriced"]), (4, 1))
+        self.assertAlmostEqual(haiku["usd"], 0.002)
+        self.assertEqual(kev["unpriced"], 0)
+        printed = compare_text(report)
+        self.assertIn("cost $0.0020 (1 unpriced)", printed)
+        self.assertIn("cost $0.0000,", printed)
+        self.assertEqual(json.loads(compare_json(report))["stages"][0]["arms"][2]["unpriced"], 1)
+
     def test_a_batch_compares_question_by_question_and_counts_one_call(self):
         # sd:2966: one batched call per arm, two questions, the same pair.
         for arm, provider, risky, tier in (("jev", "typesafe", "0.9", "2"),
