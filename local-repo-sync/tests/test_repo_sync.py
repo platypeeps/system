@@ -54,6 +54,18 @@ exit 0
 """
 
 
+SD_STUB = """#!/bin/sh
+# Test stub for sd: hygiene reads the bulk storage root from SD_BULK_STORAGE_ROOT,
+# so no case reads the machine's own config or sweeps its lane storage.
+case "$*" in
+  "config get sd.bulk_storage_root")
+    [ -n "${SD_BULK_STORAGE_ROOT:-}" ] || { echo "sd: sd.bulk_storage_root is not set" >&2; exit 1; }
+    echo "$SD_BULK_STORAGE_ROOT" ;;
+  *) echo "sd stub: unexpected $*" >&2; exit 2 ;;
+esac
+"""
+
+
 GIT_WRAPPER = """#!/bin/sh
 # Test wrapper for git: record the call, then run the real git, so the script
 # still scans and pulls while the test sees every verb it used.
@@ -89,6 +101,8 @@ class Fixture:
         self.bin.mkdir()
         (self.bin / "git").write_text(GIT_WRAPPER)
         (self.bin / "git").chmod(0o755)
+        (self.bin / "sd").write_text(SD_STUB)
+        (self.bin / "sd").chmod(0o755)
         self.git_log = self.tmp / "git.log"
         self.root = self.tmp / "root"
         self.root.mkdir()

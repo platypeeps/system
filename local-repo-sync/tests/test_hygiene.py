@@ -427,6 +427,103 @@ class HygieneTest(unittest.TestCase):
         self.assertNotEqual("", f.branch_sha(repo, "ignored-merged"))
         self.assertIn("KEEP     branch ignored-merged", result.stdout)
 
+    def ignore_build_output(self, f, repo, extra=""):
+        (repo / ".gitignore").write_text(f"target/\nnode_modules/\n__pycache__/\n{extra}")
+        f.git(repo, "add", ".gitignore")
+        f.git(repo, "commit", "-q", "-m", "ignore build output")
+        f.git(repo, "push", "-q", "origin", "main")
+
+    def test_a_merged_worktree_holding_only_build_output_goes_with_it(self):
+        """NEW (sd:1677). Build output rebuilds, so it does not keep a merged
+        worktree; it goes with the directory."""
+        f = self.fixture()
+        repo = f.repo()
+        self.ignore_build_output(f, repo)
+        wt = f.merged_worktree(repo, "built-merged")
+        (wt / "target" / "debug").mkdir(parents=True)
+        (wt / "target" / "debug" / "app").write_text("binary\n")
+        (wt / "web" / "node_modules" / "x").mkdir(parents=True)
+        (wt / "web" / "node_modules" / "x" / "index.js").write_text("\n")
+        (wt / "pkg" / "__pycache__").mkdir(parents=True)
+        (wt / "pkg" / "__pycache__" / "m.cpython-314.pyc").write_text("\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertFalse(wt.exists(), result.stdout)
+        self.assertEqual("", f.branch_sha(repo, "built-merged"))
+        self.assertIn("removed worktree", result.stdout)
+
+    def test_build_output_does_not_excuse_an_env_file(self):
+        """PIN (sd:1677). An ignored file that is not build output still keeps
+        the worktree when build output sits beside it."""
+        f = self.fixture()
+        repo = f.repo()
+        self.ignore_build_output(f, repo, ".env\n")
+        wt = f.merged_worktree(repo, "env-and-build")
+        (wt / "target").mkdir()
+        (wt / "target" / "app").write_text("binary\n")
+        (wt / ".env").write_text("TOKEN=change-me\n")
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue((wt / ".env").exists())
+        self.assertNotEqual("", f.branch_sha(repo, "env-and-build"))
+        self.assertIn("KEEP     branch env-and-build", result.stdout)
+
+    def test_a_regular_file_named_like_build_output_keeps_the_worktree(self):
+        """NEW (sd:1677 review round 1). Only a directory with a build
+        output name is build output; an ignored regular file named target,
+        dist, node_modules or .coverage may be the operator's data."""
+        for rel in ("target", "pkg/dist", "web/node_modules", ".coverage"):
+            with self.subTest(rel=rel):
+                f = self.fixture()
+                repo = f.repo()
+                (repo / ".gitignore").write_text(f"{rel.rsplit('/', 1)[-1]}\n")
+                f.git(repo, "add", ".gitignore")
+                f.git(repo, "commit", "-q", "-m", "ignore a file")
+                f.git(repo, "push", "-q", "origin", "main")
+                wt = f.merged_worktree(repo, "named-file")
+                (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+                (wt / rel).write_text("operator data\n")
+
+                result = f.run("hygiene", "--apply", expect=0)
+
+                self.assertTrue((wt / rel).exists(), result.stdout)
+                self.assertNotEqual("", f.branch_sha(repo, "named-file"))
+                self.assertIn("KEEP     branch named-file", result.stdout)
+
+    def test_a_merged_worktree_with_a_file_held_open_is_kept(self):
+        """NEW (sd:1677). A process with its cwd elsewhere that holds a file
+        open inside the worktree keeps it: removal would pull the file away
+        from a live process."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.merged_worktree(repo, "open-merged")
+        proc = subprocess.Popen(["sh", "-c", 'exec 3<"$0"; exec sleep 300', str(wt / "README")],
+                                cwd=str(f.tmp))
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        time.sleep(0.3)
+
+        f.run("hygiene", "--apply", expect=0)
+
+        self.assertTrue(wt.exists())
+        self.assertNotEqual("", f.branch_sha(repo, "open-merged"))
+
+    def test_a_landed_branch_whose_worktree_is_already_removed_is_deleted(self):
+        """PIN (sd:1677). A run stopped between `worktree remove` and the
+        branch delete leaves the branch with no holder; the next run deletes
+        it."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.merged_worktree(repo, "half-done")
+        f.git(repo, "worktree", "remove", str(wt))
+
+        result = f.run("hygiene", "--apply", expect=0)
+
+        self.assertEqual("", f.branch_sha(repo, "half-done"))
+        self.assertIn("deleted branch half-done ", result.stdout)
+
     def test_a_fresh_landed_branch_is_kept_by_default(self):
         """NEW. Requirement 3.4: a branch made a moment ago sits at the
         default tip and counts as landed; the default age guard keeps it."""
@@ -925,6 +1022,166 @@ class HygieneTest(unittest.TestCase):
 
         self.assertFalse(wt.exists())
         self.assertEqual("", f.branch_sha(repo, "proc-vanish"))
+
+
+def age(path, days):
+    """Set the mtime of `path` `days` days back."""
+    then = time.time() - days * 86400
+    os.utime(path, (then, then))
+
+
+class LaneStorageTest(unittest.TestCase):
+    """Lane logs and scratch under `<bulk root>/<repo>/lane/` (sd:1677)."""
+
+    def setUp(self):
+        self.f = HygieneFixture()
+        self.addCleanup(self.f.destroy)
+        self.bulk = self.f.tmp / "bulk"
+        self.lane = self.bulk / "proj" / "lane"
+        self.lane.mkdir(parents=True)
+        self.env = {"SD_BULK_STORAGE_ROOT": str(self.bulk)}
+
+    def file(self, rel, days):
+        path = self.lane / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("log\n")
+        age(path, days)
+        return path
+
+    def test_old_lane_files_and_old_empty_folders_go_new_ones_stay(self):
+        """NEW. A file unmodified for 14 days goes, and so does a folder that
+        is empty after it and saw no change in 14 days; newer ones stay."""
+        old = self.file("prep2111.log", 20)
+        new = self.file("prep3106.log", 2)
+        scratch = self.file("evidence-x/a.json", 20).parent
+        age(scratch, 20)
+        mixed_old = self.file("bin/merge2111.log", 20)
+        mixed_new = self.file("bin/ship-one.sh", 1)
+        age(mixed_old.parent, 20)
+        empty_old = self.lane / "stale"
+        empty_old.mkdir()
+        age(empty_old, 20)
+        empty_new = self.lane / "fresh"
+        empty_new.mkdir()
+
+        result = self.f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertFalse(old.exists())
+        self.assertFalse(scratch.exists())
+        self.assertFalse(mixed_old.exists())
+        self.assertFalse(empty_old.exists())
+        self.assertTrue(new.exists())
+        self.assertTrue(mixed_new.exists())
+        self.assertTrue(empty_new.exists())
+        self.assertIn(f"deleted 3 lane file(s) unmodified for 14 days under {real(self.lane)}",
+                      result.stdout)
+
+    def test_report_mode_deletes_no_lane_file(self):
+        """NEW. Without --apply the sweep names the count and deletes nothing."""
+        old = self.file("prep2111.log", 20)
+
+        result = self.f.run("hygiene", expect=1, extra_env=self.env)
+
+        self.assertTrue(old.exists())
+        self.assertIn("would delete 1 lane file(s)", result.stdout)
+
+    def test_no_bulk_root_or_an_unmounted_one_sweeps_nothing(self):
+        """PIN. Unset, or set to a folder that is not there (an ejected
+        volume), the sweep is silent and deletes nothing."""
+        old = self.file("prep2111.log", 20)
+
+        for env in ({}, {"SD_BULK_STORAGE_ROOT": str(self.f.tmp / "ejected" / "repo-storage")}):
+            result = self.f.run("hygiene", "--apply", expect=0, extra_env=env)
+            self.assertTrue(old.exists())
+            self.assertNotIn("lane", result.stdout)
+
+    def test_the_lane_queue_is_never_swept(self):
+        """PIN. `<root>/<repo>/lane/queue/` is where `sd-ship lane` keeps its
+        queue when sd.lane_root names the same root; it is not scratch."""
+        entry = self.file("queue/pending/0001.json", 20)
+        age(entry.parent, 20)
+
+        self.f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertTrue(entry.exists())
+
+    def test_a_lane_file_a_process_holds_open_stays(self):
+        """NEW. Deleting a file a live process holds open would pull it away
+        from that process."""
+        held = self.file("lane-run.log", 20)
+        proc = subprocess.Popen(["sh", "-c", 'exec 3<"$0"; exec sleep 300', str(held)],
+                                cwd=str(self.f.tmp))
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        time.sleep(0.3)
+
+        result = self.f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertTrue(held.exists())
+        self.assertIn("kept 1 lane file(s)", result.stdout)
+
+    def test_a_failing_process_scan_deletes_no_lane_file(self):
+        """NEW. When nothing is known about which files processes hold,
+        nothing in the lane is deleted."""
+        old = self.file("prep2111.log", 20)
+        (self.f.bin / "lsof").write_text("#!/bin/sh\necho p1\necho n/nowhere\nexit 1\n")
+        (self.f.bin / "lsof").chmod(0o755)
+
+        result = self.f.run("hygiene", "--apply", expect=0, extra_env={
+            **self.env, "REPO_SYNC_PROC": str(self.f.tmp / "no-proc")})
+
+        self.assertTrue(old.exists())
+        self.assertIn("not swept", result.stdout)
+
+    def find_stub(self, action):
+        """A `find` that runs the real one, then the shell `action` after the
+        file listing."""
+        real_find = shutil.which("find")
+        (self.f.bin / "find").write_text(
+            "#!/bin/sh\n"
+            f'"{real_find}" "$@"; rc=$?\n'
+            f'case "$*" in *"-type f -mtime +13 -print") {action} ;; esac\n'
+            "exit $rc\n")
+        (self.f.bin / "find").chmod(0o755)
+
+    def test_a_lane_file_rewritten_after_the_listing_stays(self):
+        """NEW. The age is read again right before each delete, so a file
+        written between the listing and the delete stays."""
+        old = self.file("prep2111.log", 20)
+        self.find_stub(f'touch "{old}"')
+
+        self.f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertTrue(old.exists())
+
+    def test_a_failing_listing_deletes_nothing_in_that_lane(self):
+        """NEW. A listing that fails part-way is not a complete answer: that
+        lane is reported as failed and nothing in it is deleted."""
+        old = self.file("prep2111.log", 20)
+        self.find_stub("rc=1")
+
+        result = self.f.run("hygiene", "--apply", expect=1, extra_env=self.env)
+
+        self.assertTrue(old.exists())
+        self.assertIn("FAILED list lane files", result.stdout)
+
+    def test_a_run_stopped_after_its_deletes_is_finished_later(self):
+        """NEW. A run stopped after deleting some files leaves the rest old,
+        and their folder fresh: the next run deletes the rest, and the
+        folder goes once it has sat 14 days."""
+        rest = self.file("evidence-x/b.json", 20)
+        folder = rest.parent
+        # The stopped run deleted a.json, which touched the folder.
+        (folder / "a.json").write_text("x\n")
+        (folder / "a.json").unlink()
+
+        self.f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+
+        self.assertFalse(rest.exists())
+        self.assertTrue(folder.exists())
+        age(folder, 20)
+        self.f.run("hygiene", "--apply", expect=0, extra_env=self.env)
+        self.assertFalse(folder.exists())
 
 
 class ReconcileWorktreeTest(unittest.TestCase):

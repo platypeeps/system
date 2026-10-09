@@ -774,7 +774,7 @@ R.sched = ELS['view-schedules'].html;""")
 await flush(); R.group = OUT.toasts.map(t => t.msg); await lastUndo().undo(); await flush(); R.after = OUT.toasts.map(t => t.msg);""",
                             answer=f"(p, b) => b.path === {json.dumps(b)} ? [409, {{error: 'runner_merge is auto now'}}] : [200, {{}}]")
         self.assertEqual(out["R"]["early"], 0, "the group toast came before the writes landed")
-        self.assertEqual(out["R"]["group"], ["Switch runner-merge · 1 repo · 1 of 2 not changed: runner_merge is auto now"])
+        self.assertEqual(out["R"]["group"], ["Switch runner-merge · 1 repo · 1 of 2 refused stale, read again: /repos/system"])
         self.assertEqual([(p, body) for p, body, _ in out["posts"]], [
             ("/api/repos/runner-merge", {"path": a, "value": "auto", "before": "manual"}),
             ("/api/repos/runner-merge", {"path": b, "value": "auto", "before": "manual"}),

@@ -27,8 +27,8 @@ query of the store:
 
 Every write the page makes goes through a route `server.action_route`
 already answered for v1: status, edit (priority, due, recurrence), note
-resolve, work relink and cancel. Nothing here
-writes.
+resolve, work relink and cancel, and task cancel (`/cancel-task`, the bulk
+Close of sd:3012). Nothing here writes.
 """
 
 from __future__ import annotations
