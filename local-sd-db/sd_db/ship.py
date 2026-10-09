@@ -454,7 +454,7 @@ def lock_files(database: Path) -> list[dict]:
 
 
 def held_locks(database: Path) -> list[dict]:
-    """The ship locks a live process holds, for `sd runner status`."""
+    """The ship locks a live process holds, for the status readers."""
     return [{key: value for key, value in entry.items() if key not in ("state", "alive")}
             for entry in lock_files(database) if entry["state"] == "held"]
 

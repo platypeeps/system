@@ -31,11 +31,11 @@ def dialog(screen):
         tag("p", "Loading registered commands…", data_palette_message=True, role="status"),
         tag("form", tag("label", "Item", tag("select", name="item", required=True)),
             tag("label", "Command", tag("select", name="command", required=True)),
-            tag("p", "Choose a registered command to see its CLI request.", data_palette_cli=True, class_="command"),
+            tag("p", "Choose a registered command to see what it runs.", data_palette_cli=True, class_="command"),
             tag("p", data_palette_scope=True, class_="hint"),
             tag("div", data_palette_values=True),
             tag("button", "Run command", type="submit"), method="post", action="/api/palette/prepare",
-            data_workflow_form=True, data_cli="sd runner commands prepare --help", data_palette_form=True),
+            data_workflow_form=True, data_palette_form=True),
         tag("pre", data_palette_output=True, aria_live="polite", tabindex="0"),
         tag("a", "Execution history", href="/operations?area=commands"),
         id="command-palette", data_screen=screen, aria_labelledby="palette-title")

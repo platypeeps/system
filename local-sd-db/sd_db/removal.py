@@ -47,7 +47,6 @@ from .contribution_sync import QUEUE
 from .database import refuse_hub_only, transaction
 from .errors import SdDbError
 from .reporting import MAX_REPORT
-from .runner_retention import PRUNING
 from .sources import docs_work, index_cache, issues, register, vault
 from .writes import add_note, now, transition
 
@@ -250,48 +249,20 @@ def _retained(run) -> tuple[str | None, Path]:
     return None, path
 
 
-#: The remedy a retained clone's refusal prints, one line per run: the
-#: runner's verb in its clone-only scope, which removes one released
-#: assignment's retained clones early and keeps everything beside them.
-RETAINED_REMOVE = "runner.sh retained-remove --clone-only --assignment {assignment} --who NAME"
-
-
 def _clone(run) -> tuple[str, list[str]] | None:
     """What stands in the way of a released run's retained clone, if anything.
 
-    A `.pruning-clone` beside the clone is a `runner.sh prune-apply` that
-    stopped part way (sd:770). It refuses as the clone does, because once the
-    run row is gone no prune plan can find it again: the next prune finishes
-    it, or the operator removes it now.
-
-    Both have one remedy, `RETAINED_REMOVE` (sd:1793). `runner.sh
-    retained-remove` (sd:1780) checks the assignment's runs and locks,
-    finishes a stopped prune's leftover, and files a record with the
-    operator's name. The raw `chflags -R nouchg` and `rm -rf` printed here
-    before checked nothing and recorded nobody. `NAME` stays a placeholder:
-    the plans take no actor values (C-61).
-
-    `--clone-only` (sd:1793, #648) keeps the old pair's scope: it removes
-    only each attempt's `clone` and `.pruning-clone`, and keeps `kept.tar`,
-    `archives/`, `ignored/` and the directories. Without the flag the verb
-    removes each released attempt directory whole, which would take the
-    preserved outputs the old pair kept. The message says what stays.
+    The runner that removed retained clones is gone (sd:3041), so no command
+    is printed: the operator removes the clone by hand. The message says what
+    may stay: `kept.tar`, `archives/` and `ignored/` are not the clone.
     """
     problem, path = _retained(run)
     if problem:
         return problem, []
-    leftover = path.parent / PRUNING
-    if leftover.is_symlink():
-        return f"{SHAPE}: {_quoted(leftover)}", []
-    messages = [f"{what}: {_quoted(found)}"
-                for found, what in ((path, "retained clone still on disk"),
-                                    (leftover, "an interrupted runner prune left part of a retained clone"))
-                if os.path.lexists(found)]
-    if not messages:
+    if not os.path.lexists(path):
         return None
-    command = RETAINED_REMOVE.format(assignment=int(run["assignment"]))
-    return (f"{'; '.join(messages)}; run `{command}`, with your name for NAME; it removes only the retained"
-            f" clones of assignment {int(run['assignment'])} and keeps kept.tar, archives and ignored outputs"), [command]
+    return (f"retained clone still on disk: {_quoted(path)}; remove it yourself, then plan again;"
+            f" kept.tar, archives and ignored outputs of assignment {int(run['assignment'])} may stay"), []
 
 
 def _journal_others(store, run) -> list[str]:

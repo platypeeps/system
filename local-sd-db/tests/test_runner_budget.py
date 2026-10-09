@@ -11,12 +11,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sd_db import runner, runner_controls, seed, workflow
+from sd_db import runner, seed
 from sd_db.database import connect, transaction
 from sd_db.ledger import LedgerRefused
 from sd_db.migrate import initialise
 from sd_db.registry import parse
-from sd_db.workflow import item_state
 from sd_db.writes import create_item, upsert_repo
 
 from .test_ledger import REGISTRY
@@ -104,18 +103,13 @@ class BudgetAtCreation(unittest.TestCase):
         self.assertEqual(accepted[0]["budget_usd"], 7.5)
         note = self.db.execute("SELECT body FROM note WHERE kind = 'decision' AND item = ?", (self.items[1],)).fetchone()
         self.assertIn("budget 7.50 USD", note["body"])
-        # The dashboard's path carries it through, and an empty field is None.
+        # An integer bound is stored as a float, and an empty field is None.
         third = create_item(self.db, kind="task", title="Task 3", repo="/fixture/repo", branch="work/3", status="ready")
         fourth = create_item(self.db, kind="task", title="Task 4", repo="/fixture/repo", branch="work/4", status="ready")
-        revisions = {item: item_state(self.db, item)["revision"] for item in (third, fourth)}
-        result = runner_controls.enqueue(self.db, [third], revisions={third: revisions[third]}, budget_usd=2, who="operator")
-        self.assertEqual(result["assignments"][0]["budget_usd"], 2.0)
-        result = runner_controls.enqueue(self.db, [fourth], revisions={fourth: revisions[fourth]}, budget_usd=None, who="operator")
-        self.assertIsNone(result["assignments"][0]["budget_usd"])
-        for bad in ("2", 10 ** 400):
-            with self.subTest(bad=bad):
-                with self.assertRaisesRegex(workflow.WorkflowError, "choose a budget in US dollars"):
-                    runner_controls.enqueue(self.db, [fourth], revisions={fourth: revisions[fourth]}, budget_usd=bad, who="operator")
+        result = runner.enqueue(self.db, [third], budget_usd=2, who="operator")
+        self.assertEqual(result[0]["budget_usd"], 2.0)
+        result = runner.enqueue(self.db, [fourth], budget_usd=None, who="operator")
+        self.assertIsNone(result[0]["budget_usd"])
 
 
 if __name__ == "__main__":

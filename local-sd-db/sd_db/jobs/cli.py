@@ -538,7 +538,7 @@ def _working_branch(root: Path) -> str | None:
     """The branch the row is to be worked on, or None when this checkout cannot name one.
 
     `item.branch` is read one way everywhere: as the branch to do the work
-    on. `runner.py:_item` refuses a row without one, `configure_item` refuses
+    on. `runner.py:_item` refuses a row without one, `sd work register` refuses
     the remote default for it, `sd_plan.py` checks it out and pushes to it.
     So what goes here is a local head, or nothing.
 
@@ -554,7 +554,7 @@ def _working_branch(root: Path) -> str | None:
     branch that is not the default, as a runner clone on `plan/<slug>` is when
     `sd-plan` registers the folder it just wrote. On the default, or detached,
     the answer is NULL -- the state a task row starts in, and the one
-    `sd runner prepare --branch` exists to fill.
+    `sd work register` exists to fill.
     """
     code, out, _ = docs_work._git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
     current = out.strip() if code == 0 else ""

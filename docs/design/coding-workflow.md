@@ -42,7 +42,7 @@ running it twice reports the row that already exists.
 
 It records `branch:` only when the checkout is on a branch that is not the
 default and not detached. Otherwise `branch` stays NULL until
-`sd runner prepare --branch` sets it. It never writes `origin/main`; that was
+`sd work register` sets it. It never writes `origin/main`; that was
 a real bug, and repairing it meant fixing 65 rows.
 
 A work item moves through six statuses:

@@ -24,7 +24,7 @@ from pathlib import Path
 from unittest import mock
 
 from sd_db import (create_item, database, initialise, ledger, publication_journal, removal, remote, repos,
-                   retention, runner_controls, runner_exec, seed, ship, writing)
+                   retention, runner_exec, seed, ship, writing)
 from sd_db.backup import restore, run as take_backup
 from sd_db.database import default_path
 from sd_db.operations import control_gate
@@ -93,7 +93,6 @@ VERBS = [
     ("the executions prune",
      lambda c, t: retention._output_files(c, {"id": 1, "output_path": str(t.root / "executions" / LOG)})),
     ("the runner's executions directory", lambda c, t: runner_exec.read_execution(c, t.note)),
-    ("runner controls", lambda c, t: runner_controls.control(c, 1, "cancel", expected_revision=0, who="test")),
     ("runner controls", lambda c, t: runner_exec.reconcile(c, t.note)),
     ("the runner's executions directory", lambda c, t: runner_exec.prepare(
         c, 1, "command", {}, expected_revision=0, expected_catalog="", who="test")),

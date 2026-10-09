@@ -199,7 +199,7 @@ tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; 
 // build: Render and Review are copy only (executes: false): the dashboard runs no command in a research checkout.
 const COPY = 'Copy it into a terminal: the dashboard does not run sd-research-kit';
 // build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
-const START_OFF = 'the dashboard does not create items or queue runs yet: copy the two lines into a terminal';
+const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
 const DRAFT = { id: 'draft:research', type: 'research request', label: 'new research', q: '', cmd: '' };
 const START = { id: 'research.start', on: 'research request', label: 'Run', key: 'r', icon: 'flask-conical', risk: 'confirm', executes: false, primary: () => true,
   when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : START_OFF), cli: o => o.cmd, run: () => START_OFF };
@@ -276,11 +276,10 @@ function renderShift() {
   put(chipsEl, html`${[`repo:${scope}`, `depth:${o.depth}`, 'stage:draft', 'skill:sd-research-repo', `budget:${o.budget}m`, o.due ? `due:${o.due}` : ''].filter(Boolean).map(c => html`<span class="chip" aria-pressed="true">${c}</span>`)}`);
   reqEl.hidden = false;
   Object.assign(DRAFT, { q: o.q, repo, depth: o.depth, budget: o.budget, due: o.due,
-    // build: the run takes the id the add prints (its --json is {"item": {"id": …}}), so the two lines are one runnable copy.
-    cmd: `ITEM=$(sd task add ${shq('Research: ' + o.q)} --body ${shq(`repo=${scope} depth=${o.depth} skill=sd-research-repo stage=draft`)}${o.due ? ` --due ${shq(o.due)}` : ''} --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["item"]["id"])') &&\nsd run --sequential --role author --scope ${shq(scope)} --budget-minutes ${o.budget} "$ITEM"` });
-  // build: Start is off, so the preview shows the two lines with Copy in place of the Run button.
+    cmd: `sd task add ${shq('Research: ' + o.q)} --body ${shq(`repo=${scope} depth=${o.depth} skill=sd-research-repo stage=draft`)}${o.due ? ` --due ${shq(o.due)}` : ''}` });
+  // build: Start is off, so the preview shows the line with Copy in place of the Run button.
   const why = START.when(DRAFT);
-  put(reqEl, html`<p class="why">Creates an item and queues one author assignment in ${scope}${repo.startsWith('new:') ? ' (a new checkout: the runner lays the numbered layout first)' : ''}. Review rounds start at 0 of ${CAP}.</p>
+  put(reqEl, html`<p class="why">Creates an item in ${scope}. Review rounds start at 0 of ${CAP}.</p>
     ${o.q ? html`<div class="cli"><code>${DRAFT.cmd}</code><button class="icon-btn" type="button" data-copy="${DRAFT.cmd}" aria-label="Copy command">${I('copy')}</button></div>` : ''}
     <p class="why">Not started here: ${why}.</p>`);
 }

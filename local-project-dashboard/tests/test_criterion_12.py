@@ -115,7 +115,9 @@ class DeliberateWriteControls(ScreenCase):
                 self.assertIn('method="post"', form, path)
                 self.assertIn('action="/api/', form, path)
                 self.assertIn('data-workflow-form', form, path)
-                self.assertRegex(form, r'data-cli="sd (task|note|work|writing|assignments|runner) ', path)
+                # The palette form shows the registered command it runs; the CLI that mirrored it went with the runner (sd:3041).
+                if "data-palette-form" not in form:
+                    self.assertRegex(form, r'data-cli="sd (task|note|work|writing|assignments) ', path)
                 self.assertNotIn('<code class="command">', form)
             if path.startswith("/item/"):
                 self.assertIn('<summary>CLI equivalents</summary>', page)
