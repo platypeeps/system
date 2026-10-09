@@ -161,11 +161,28 @@ sweep_retired() {
   done
 }
 
-# The pack's installer owns its commands, so a link into the pack checkout is
-# one this script made before that, and it shadows the installed command (or
-# dangles, when the pack dropped the command). Only a symlink is touched, never
-# a regular file; STALE is in machine-setup's drift vocabulary.
+# The pack's installer owns its commands (it links them into ~/.local/bin), so a
+# link into the pack checkout is one this script made before that, and it shadows
+# the installed command. It goes only once the installer's copy of the same name
+# is executable and its directory is on PATH, or when it dangles (the pack
+# dropped the command): until then the old link is the only working copy. Only a
+# symlink is touched, never a regular file. `all` (the remove verb) skips the
+# check. MISSING and STALE are in machine-setup's drift vocabulary.
+PACK_BIN="$HOME/.local/bin"
+
+# Prints why a pack link must stay; prints nothing when it may go.
+pack_keep_reason() {
+  pk="$PACK_BIN/$1"
+  [ -x "$pk" ] || { echo "no installed replacement (run make setup in the pack)"; return; }
+  case ":$PATH:" in
+    *":$PACK_BIN:"*) ;;
+    *) echo "installed replacement not on PATH ($PACK_BIN)" ;;
+  esac
+}
+
 sweep_pack() {
+  # The installer's own directory holds its links; never sweep those.
+  [ -d "$BIN_DIR" ] && [ "$(real_path "$BIN_DIR")" = "$(real_path "$PACK_BIN")" ] && return 0
   for sl in "$BIN_DIR"/*; do
     [ -L "$sl" ] || continue
     st=$(readlink "$sl")
@@ -173,11 +190,20 @@ sweep_pack() {
       "$SD_PACK_ROOT/"*) ;;
       *) continue ;;
     esac
-    if [ "$1" = "remove" ]; then
-      rm -f "$sl"
-      printf '%-16s removed pack link -> %s\n' "$(basename "$sl")" "$st"
+    sn=$(basename "$sl")
+    why=""
+    if [ "$1" != all ] && [ -e "$sl" ]; then
+      why=$(pack_keep_reason "$sn")
+    fi
+    if [ -n "$why" ] && [ "$1" = remove ]; then
+      printf '%-16s kept pack link %s: %s\n' "$sn" "$sn" "$why"
+    elif [ -n "$why" ]; then
+      printf '%-16s MISSING pack link kept: %s\n' "$sn" "$why"
+    elif [ "$1" = report ]; then
+      printf '%-16s %-22s %s\n' "$sn" "STALE (pack installs it)" "$st"
     else
-      printf '%-16s %-22s %s\n' "$(basename "$sl")" "STALE (pack installs it)" "$st"
+      rm -f "$sl"
+      printf '%-16s removed pack link -> %s\n' "$sn" "$st"
     fi
   done
 }
@@ -198,7 +224,7 @@ remove_links() {
   done
 
   sweep_retired remove
-  sweep_pack remove
+  sweep_pack all
 }
 
 case "$1" in
@@ -232,7 +258,8 @@ usage: bin-links.sh install|status|remove|test
 Linked tools: repo-sync, gito, prism, mac-utils, notify, agent-prompt,
 adversarial-gate, ha-mcp, llama-cpp, jev. The sd-ai-command-pack's commands
 (sd, sd-status, ...) are not linked: its installer links them into
-~/.local/bin. An older link into the pack checkout is STALE and swept.
+~/.local/bin. An older link into the pack checkout is swept once that
+installed copy exists and ~/.local/bin is on PATH; until then it is kept.
 
 environment:
   BIN_LINKS_DIR   directory to link into (default ~/bin/common)

@@ -29,11 +29,17 @@ Linked tools:
 installer (`python3 bin/sd_install.py --user`) links `sd`, `sd-status` and the
 rest into `~/.local/bin`. A link this script made earlier into the pack checkout
 shadows that install (`sd_install.py --verify` reports `command_shadowed`), or
-dangles once the pack drops the command. `status` reports such a link `STALE`
-— a word machine-setup's drift count reads — and `install` and `remove` delete
-it and print each removal. Only a symlink whose target is inside the checkout
-(`SD_PACK_ROOT`, default `~/repos/platypeeps/sd-ai-command-pack`) is touched; a
-regular file is never removed.
+dangles once the pack drops the command. `install` deletes such a link and
+prints each removal, but only when the installer's copy of the same name is
+executable in `~/.local/bin` and that directory is on `PATH`, or when the link
+dangles. Otherwise it keeps the link, because it is then the only working copy,
+and says `kept pack link <name>: ...`; run `make setup` in the pack. `status`
+reports a removable link `STALE` and a kept one `MISSING` (both words
+machine-setup's drift count reads). `remove` deletes every such link on request.
+Only a symlink whose target is inside the checkout (`SD_PACK_ROOT`, default
+`~/repos/platypeeps/sd-ai-command-pack`) is touched; a regular file never is.
+The installer's directory is read as `~/.local/bin`; a machine that installs the
+pack with `--bin-dir` keeps its old links until `remove`.
 
 `./bin-links.sh test` runs `tests/`, against a fake pack and bin dir.
 
