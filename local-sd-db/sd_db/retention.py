@@ -51,7 +51,8 @@ its snapshot restored and compared, and never before. What the table says:
                      age gets `parked_at` and a `decision` note by
                      `retention`. Parked items leave Today and the backlog and
                      stay readable by id and in the capture list. Writing
-                     pieces keep their own park; P1-P3 are never touched.
+                     pieces keep their own park; an item with a due date
+                     waits on it; P1-P3 are never touched.
 
 There is no request-log rule, and the prd's table no longer names one (it
 said "the request log thirty days" until the 2026-09-12 amendment, sd:541).
@@ -259,7 +260,7 @@ def settle_clean_reports(connection, *, now: datetime) -> int:
 #: An item's last touch: its own `updated_at` or its newest note, whichever is later.
 _UNTOUCHED_P4 = """
 SELECT id FROM item
- WHERE priority = 4 AND status != 'done' AND parked_at IS NULL AND piece IS NULL
+ WHERE priority = 4 AND status != 'done' AND parked_at IS NULL AND piece IS NULL AND due IS NULL
    AND max(updated_at, coalesce((SELECT max(timestamp) FROM note WHERE note.item = item.id), '')) < ?
  ORDER BY id
 """
@@ -269,6 +270,8 @@ def park_untouched_p4(connection, *, now: datetime) -> list[int]:
     """Park every open P4 item nobody touched for `P4_PARK_AGE`; return their ids.
 
     Touched means the item row changed (`updated_at`) or a note landed on it.
+    An item with a due date (every recurring one has one) is waiting on its
+    date, not stale, so it is never parked: parking would hide it from Today.
     The read sits inside the `BEGIN IMMEDIATE` transaction, as in
     `settle_clean_reports`, so a note landing mid-sweep is seen or waits.
     """

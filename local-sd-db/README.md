@@ -1052,8 +1052,9 @@ An open P4 item nobody touched for thirty days is parked (sd:3007).
 Touched means its `updated_at` or its newest note; the later one counts.
 The item keeps its status and gets `parked_at` and a `decision` note by
 `retention`. It leaves Today and the backlog; `sd task show N` and the
-capture list still find it. Writing pieces keep their own park, and P1-P3
-are never parked. A lead triages P3 by hand once a month.
+capture list still find it. Writing pieces keep their own park, an item
+with a due date (every recurring one) waits on it, and P1-P3 are never
+parked. A lead triages P3 by hand once a month.
 
 ## What the harness will not do
 

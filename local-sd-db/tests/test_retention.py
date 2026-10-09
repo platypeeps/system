@@ -621,9 +621,9 @@ class TheCostRow(PruneCase):
 class TheUntouchedP4(PruneCase):
     """sd:3007: a P4 item untouched for thirty days is parked, and stays readable."""
 
-    def seed(self, *, days, priority=4, status="planning", note_days=None, piece=None):
+    def seed(self, *, days, priority=4, status="planning", note_days=None, piece=None, due=None):
         item = create_item(self.db, kind="task", title=f"P{priority} {status} {days}d", repo=str(self.repo),
-                           status=status, priority=priority)
+                           status=status, priority=priority, due=due)
         self.db.execute("UPDATE item SET created_at=?, updated_at=?, piece=? WHERE id=?",
                         (ago(days=days), ago(days=days), piece, item))
         self.db.execute("UPDATE note SET timestamp=? WHERE item=?", (ago(days=days), item))
@@ -645,12 +645,13 @@ class TheUntouchedP4(PruneCase):
         p3 = self.seed(days=31, priority=3)
         done = self.seed(days=31, status="done")
         piece = self.seed(days=31, piece="essay-one")
+        dated = self.seed(days=31, due="2027-01-01")
 
         self.assertEqual(retention.park_untouched_p4(self.db, now=NOW), [stale, blocked])
 
         stamp = NOW.isoformat(timespec="seconds")
         self.assertEqual([self.parked_at(item) for item in (stale, blocked)], [stamp, stamp])
-        for item in (young, noted, p3, done, piece):
+        for item in (young, noted, p3, done, piece, dated):
             self.assertIsNone(self.parked_at(item), item)
         # The status stays; only the park moves, with a note saying who and why.
         self.assertEqual(self.status_of(blocked), "blocked")
