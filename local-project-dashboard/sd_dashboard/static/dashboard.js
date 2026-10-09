@@ -326,7 +326,7 @@
       values[key] = value;
     });
     if (submission) { values = submission.values; }
-    ["priority", "due", "repo"].forEach(function (key) {
+    ["priority", "due", "repo", "parked_at"].forEach(function (key) {
       if (Object.prototype.hasOwnProperty.call(values, key) && values[key] === "") {
         values[key] = null;
       }

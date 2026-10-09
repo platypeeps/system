@@ -927,11 +927,34 @@ stage_cron() {
   # wanted list is incomplete, so the sweep is skipped rather than guessed.
   sweep=1
   if ! host_jobs=$(host_cron_jobs); then
-    echo "  MISSING host job list — could not read this host's cron-jobs folder; nothing is uninstalled this run"
+    echo "  MISSING host job list — could not read this host's cron-jobs folder; only retired jobs are uninstalled this run"
     host_jobs=
     sweep=0
   fi
   jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; } | awk 'NF && !seen[$0]++')
+  # A retired job stays out of every machine's wanted list, even where a
+  # profile or a host folder written before the retirement still names it:
+  # the sweep below left those running, and verify read them ok (sd:3155).
+  # This runs with the sweep off too. The config folder is not edited.
+  retired_list="$ROOT/local-cron-jobs/retired-jobs.txt"
+  retired=$([ ! -f "$retired_list" ] || sed 's/#.*//' "$retired_list" | awk 'NF {print $1}')
+  for r in $retired; do
+    if printf '%s\n' "$jobs" | grep -qxF "$r"; then
+      echo "  note    $r is retired, yet this profile or this host's jobs folder names it; remove it there"
+    fi
+    rp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$r.plist"
+    [ -f "$rp" ] || continue
+    owner=0
+    cron_plist_ours "$rp" "$r" 2>/dev/null || owner=$?
+    case "$owner" in
+      0) echo "  EXTRA   $r — retired in local-cron-jobs/retired-jobs.txt, still installed"
+         run "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$r" ;;
+      1) echo "  FOREIGN $r — retired, but not installed by local-cron-jobs; left in place" ;;
+      *) echo "  UNKNOWN $r — retired, but cannot tell who installed it; left in place" ;;
+    esac
+  done
+  # grep exits 1 when every wanted job is retired; the check below reports that.
+  jobs=$(printf '%s\n' "$jobs" | grep -vxF "$retired" || :)
   if [ -z "$jobs" ]; then
     echo "  no jobs in this profile"
     return 0
@@ -984,7 +1007,8 @@ stage_cron() {
     [ -e "$xp" ] || continue
     xj=$(basename "$xp" .plist)
     xj=${xj#"$LABEL_PREFIX.cron."}
-    if ! echo "$jobs" | grep -qx "$xj"; then
+    # A retired name was handled above; a second pass would count it twice.
+    if ! printf '%s\n%s\n' "$jobs" "$retired" | grep -qx "$xj"; then
       owner=0
       cron_plist_ours "$xp" "$xj" || owner=$?
       case "$owner" in

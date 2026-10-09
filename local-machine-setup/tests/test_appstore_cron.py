@@ -387,6 +387,90 @@ exit 0
         self.assertIn("uninstall dropped-job", self.cron_log.read_text())
 
 
+class CronRetiredTest(StageTest):
+    """A job in local-cron-jobs/retired-jobs.txt is uninstalled, never reinstalled (sd:3155).
+
+    A profile or a host folder written before the retirement still names the
+    job; the sweep left it running because it was wanted, and verify read it ok.
+    """
+
+    def setUp(self):
+        super().setUp()
+        (self.folder.parent / "local-cron-jobs/retired-jobs.txt").write_text(
+            "# a comment line\nretired-job   # sd:1 2026-10-01\n\nother-retired\n")
+        (self.profiles / "personal.cron").write_text("shared-job\nretired-job\n")
+        for job in ("shared-job", "retired-job"):
+            (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 1 * * *"\n')
+        self.install_plist("shared-job")
+
+    def test_a_retired_job_the_profile_names_is_uninstalled_and_reported(self):
+        self.install_plist("retired-job")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("EXTRA   retired-job — retired in local-cron-jobs/retired-jobs.txt, still installed",
+                      result.stdout)
+        self.assertIn("retired-job is retired, yet this profile or this host's jobs folder names it",
+                      result.stdout)
+        log = self.cron_log.read_text().splitlines()
+        self.assertEqual(log.count("uninstall retired-job"), 1, log)
+        self.assertNotIn("install retired-job", log)
+        self.assertNotIn("verify retired-job", log)
+        self.assertNotIn("ok      retired-job", result.stdout)
+
+    def test_a_retired_job_is_not_installed_when_its_plist_is_gone(self):
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("MISSING retired-job", result.stdout)
+        self.assertNotIn("retired-job", self.cron_log.read_text())
+        self.assertNotIn("EXTRA", result.stdout)
+
+    def test_a_retired_job_in_the_host_folder_is_uninstalled(self):
+        (self.profiles / "personal.cron").write_text("shared-job\n")
+        (self.jobs / HOST / "other-retired.job").write_text('JOB_SCHEDULE="0 2 * * *"\n')
+        self.install_plist("other-retired")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("EXTRA   other-retired — retired", result.stdout)
+        self.assertEqual(self.cron_log.read_text().splitlines().count("uninstall other-retired"), 1)
+
+    def test_a_retired_job_is_uninstalled_when_the_sweep_cannot_run(self):
+        # The host job list fails, so the sweep is off; the retired list still applies.
+        self.install_plist("retired-job")
+        self.break_discovery()
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MISSING host job list", result.stdout)
+        self.assertIn("uninstall retired-job", self.cron_log.read_text().splitlines())
+
+    def test_a_foreign_agent_under_a_retired_name_is_left_in_place(self):
+        self.install_foreign_plist("retired-job")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FOREIGN retired-job — retired, but not installed by local-cron-jobs; left in place",
+                      result.stdout)
+        self.assertNotIn("retired-job", self.cron_log.read_text())
+        self.assertTrue(self.plist_path("retired-job").exists())
+
+    def test_a_dry_run_names_the_retired_job_as_drift_once(self):
+        self.install_plist("retired-job")
+        result = self.run_stage("cron")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        extra = [line for line in result.stdout.splitlines() if "EXTRA" in line]
+        self.assertEqual(len(extra), 1, result.stdout)
+        self.assertIn("retired-job", extra[0])
+        self.assertIn("[dry-run]", result.stdout)
+        self.assertNotIn("uninstall", self.cron_log.read_text())
+
+
+class RetiredListTest(unittest.TestCase):
+    def test_each_retired_job_names_its_item_and_date(self):
+        path = FOLDER.parent / "local-cron-jobs/retired-jobs.txt"
+        lines = [line for line in path.read_text().splitlines() if line and not line.startswith("#")]
+        self.assertIn("ai-apps-nightly", [line.split()[0] for line in lines])
+        for line in lines:
+            self.assertRegex(line, r"^[A-Za-z0-9._-]+ +# sd:[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+
 class CaptureTest(StageTest):
     """capture must not write a host job or a beta's id 0 into a shared profile."""
 

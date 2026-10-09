@@ -371,6 +371,46 @@ class BranchClearing(WorkflowCase):
         self.assertEqual(item_state(self.db, state["item"]["id"]), state)
 
 
+class Unparking(WorkflowCase):
+    """sd:3007: `edit_item` clears `parked_at`, which the nightly prune sets, and sets none."""
+
+    def parked(self, piece=None, **columns):
+        item = create_item(self.db, title="Old idea", priority=4, **{"kind": "task", **columns})
+        set_item_fields(self.db, item, parked_at="2026-10-09T08:10:00+00:00", piece=piece)
+        self.db.commit()
+        return item_state(self.db, item)
+
+    def test_an_unpark_is_written_noted_and_revision_checked(self):
+        state = self.parked()
+        item = state["item"]["id"]
+        with self.assertRaises(StaleItem):
+            edit_item(self.db, item, {"parked_at": None}, who="operator", expected_revision="0" * 64)
+        self.assertEqual(item_state(self.db, item), state)
+        unparked = edit_item(self.db, item, {"parked_at": None}, who="operator",
+                             expected_revision=state["revision"])
+        self.assertIsNone(unparked["item"]["parked_at"])
+        self.assertEqual(unparked["notes"][-1]["body"], "Unparked by operator")
+
+    def test_any_kind_but_a_writing_piece_unparks(self):
+        upsert_repo(self.db, "/repos/work", status_source="file")
+        for kind, columns in (("personal", {}), ("work", {"repo": "/repos/work"})):
+            with self.subTest(kind=kind):
+                state = self.parked(kind=kind, **columns)
+                self.assertIsNone(edit_item(self.db, state["item"]["id"], {"parked_at": None},
+                                            who="operator")["item"]["parked_at"])
+        state = self.parked(kind="idea", piece="drafts/old-idea.md")
+        with self.assertRaisesRegex(WorkflowError, "sd writing park"):
+            edit_item(self.db, state["item"]["id"], {"parked_at": None}, who="operator")
+        self.assertEqual(item_state(self.db, state["item"]["id"]), state)
+
+    def test_a_park_value_is_refused_and_an_unparked_item_is_left_alone(self):
+        state = self.parked()
+        with self.assertRaisesRegex(WorkflowError, "parked_at can only be cleared here"):
+            edit_item(self.db, state["item"]["id"], {"parked_at": "2026-10-10"}, who="operator")
+        self.assertEqual(item_state(self.db, state["item"]["id"]), state)
+        open_item = item_state(self.db, create_item(self.db, kind="task", title="Open"))
+        self.assertEqual(edit_item(self.db, open_item["item"]["id"], {"parked_at": None}, who="operator"), open_item)
+
 class KindEditing(WorkflowCase):
     """sd:743 -- a row's kind changes through `edit_item`, attributed and noted."""
 
