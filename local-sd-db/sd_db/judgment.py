@@ -1221,7 +1221,7 @@ def compare(
         entry = groups.setdefault((row["arm"], row["provider"]), {
             "arm": row["arm"], "provider": row["provider"], "calls": 0, "ok": 0,
             "declines": {}, "tokens_in": 0, "tokens_out": 0, "usd": None,
-            "_ms": [], "_server": [], "paired": 0, "agree": None, "_dp": [],
+            "unpriced": 0, "_ms": [], "_server": [], "paired": 0, "agree": None, "_dp": [],
             "labelled": 0, "right": 0, "_brier": [],
             "old_pairs": 0, "old_compared": 0, "old_agree": 0, "_split": {}})
         # A batch's child is a decision, not a call: its batch row holds the
@@ -1235,6 +1235,10 @@ def compare(
             entry["tokens_out"] += row["tokens_out"] or 0
             if row["usd"] is not None:
                 entry["usd"] = (entry["usd"] or 0.0) + row["usd"]
+            elif (row["tokens_in"] or 0) + (row["tokens_out"] or 0) > 0:
+                # Used tokens and has no price, as UNPRICED counts for the
+                # report: the arm's usd is then a floor (sd:2980).
+                entry["unpriced"] += 1
             if row["duration_ms"] is not None:
                 entry["_ms"].append(row["duration_ms"])
             if row["server_ms"] is not None:
@@ -1309,7 +1313,8 @@ def _compare_line(entry: dict) -> str:
         + (f", server p50 {_ms(entry['server_p50_ms'])}"
            if entry["server_p50_ms"] is not None else ""),
         f"tokens {entry['tokens_in']} in / {entry['tokens_out']} out",
-        f"cost {_money(entry['usd'])}",
+        f"cost {_money(entry['usd'])}"
+        + (f" ({entry['unpriced']} unpriced)" if entry["unpriced"] else ""),
     ]
     if entry["arm"] != "jev":
         agreement = (f"agree with jev {entry['agree'] or 0}/{entry['paired']}"
