@@ -123,13 +123,7 @@ it names from the pack origin; that sha is on the pack's main, and a fetch
 by a reachable sha works. Where a sha differs from HEAD, it drains the lanes
 as `refresh` does, then switches the checkout, detached and with
 `--no-overwrite-ignore`, to exactly that sha, and runs `make setup` in the
-pack. Then, with the lanes still held, it runs
-`local-machine-setup/machine-setup.sh update --apply` from the system
-checkout, bounded at 15 minutes (sd:3168). Its satellite stage installs the
-hub's `sd_db` into the pack's venv and its bin stage relinks commands, so
-neither may run under a lane run. A failed update exits 1 and names the
-command to run by hand; the move stays. A no-op or a rolled-back follow runs
-no update. It never moves to origin's default branch. It checks every checkout
+pack. It never moves to origin's default branch. It checks every checkout
 first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
 a drain timeout refuses with nothing moved. It moves system, then pack; when
 a move fails, it switches each checkout it moved back to its old sha, so the
@@ -143,10 +137,10 @@ A follow killed during the pack's `make setup` leaves HEAD at the pin, so
 HEAD alone does not show it. By operator ruling on sd:3100, `follow` keeps an
 intent marker, `${XDG_STATE_HOME:-~/.local/state}/repo-sync/follow-intent`.
 It writes the target system and pack shas there, atomically, before it moves
-any checkout. It deletes the marker once `make setup` and the update succeed
-at the pin, or once a rollback puts every checkout back. While the marker is
-left, the next run drains, finishes the move and runs `make setup` and the
-update again, even with HEAD at the pin. With no `hub-pin` tag yet, or with every checkout already there, it
+any checkout. It deletes the marker once `make setup` succeeds at the pin, or
+once a rollback puts every checkout back. While the marker is left, the next
+run drains, finishes the move and runs `make setup` again, even with HEAD at
+the pin. With no `hub-pin` tag yet, or with every checkout already there, it
 does nothing and drains nothing. On the hub it says so and does nothing. If
 the move changed `SCHEMA_VERSION`,
 `follow` prints the hub's migrate note; the hub's own refresh printed it
@@ -161,9 +155,7 @@ cp local-cron-jobs/examples/repo-sync-follow.job \
 ```
 
 The job runs `follow` every five minutes. Its timeout is above the
-45-minute drain bound plus the 15-minute update bound. Do not chain
-`machine-setup.sh update --apply` after `follow` in the job: follow runs it
-itself, inside the drain.
+45-minute drain bound.
 
 ## Hygiene
 

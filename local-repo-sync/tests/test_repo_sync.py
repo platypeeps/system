@@ -93,7 +93,6 @@ class Fixture:
         shutil.copy(script, self.folder / "repo-sync.sh")
         (self.tmp / "lib").mkdir()
         shutil.copy(LIB / "config.sh", self.tmp / "lib" / "config.sh")
-        shutil.copy(LIB / "bounded.sh", self.tmp / "lib" / "bounded.sh")
         # Every profile but terra layers the profile conf on the common one.
         # Written for every profile so a fixture switched to `personal` needs
         # nothing else.
