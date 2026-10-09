@@ -13,6 +13,7 @@ Clone-or-pull the whole repo fleet in one sweep. Symlinked as `repo-sync` in `~/
 ./repo-sync.sh hygiene --apply  # act on the safe classes, list the rest
 ./repo-sync.sh nightly    # reconcile + sync + hygiene --apply, emailing (cron)
 ./repo-sync.sh refresh    # move every pinned checkout to origin's default branch
+./repo-sync.sh follow     # satellite: move system and pack to the hub's pins
 ./repo-sync.sh test       # regression suite (tests/), run by make check
 repo-sync                 # symlink in ~/bin/common, works from anywhere
 ```
@@ -102,6 +103,41 @@ refuses with nothing moved and names the busy lane or the gate. When `sd`
 itself fails, as a broken pack would make it, the refusal prints the manual
 move: `git -C <checkout> switch --detach origin/main`, then `make setup` in
 the pack.
+
+### Satellites follow the hub
+
+A satellite never moves its system and pack checkouts on its own (sd:3100).
+After a refresh with no failure, the hub pushes each pinned system and pack
+sha to a branch named `hub-pin` on that checkout's origin, as
+`+<sha>:refs/heads/hub-pin`. That one ref may move backwards; nothing else
+is forced. A failed push exits 1: satellites keep the old pin until refresh
+runs again. The workflow database is not involved, so a satellite whose
+`sd_db` lags the hub's build still follows. A machine with
+`~/.config/sd/hub.json` is a satellite. There, `sync` and `nightly` never pull
+system or pack, pinned or on a branch, and `refresh` refuses and names
+`follow`.
+
+`follow` fetches `hub-pin` in each checkout. Where the sha differs from
+HEAD, it drains the lanes as `refresh` does, then switches the checkout,
+detached and with `--no-overwrite-ignore`, to exactly that sha, and runs
+`make setup` in the pack. It never moves to origin's default branch. It
+checks every checkout first, so a failed fetch, uncommitted changes or a
+drain timeout refuses with nothing moved. With no `hub-pin` branch yet, or
+with every checkout already there, it does nothing and drains nothing. On
+the hub it says so and does nothing. If the move changed `SCHEMA_VERSION`,
+`follow` prints the hub's migrate note; the hub's own refresh printed it
+too.
+
+One-time setup per satellite; `follow` itself detaches a checkout that is on
+a branch:
+
+```sh
+cp local-cron-jobs/examples/repo-sync-follow.job \
+  ~/.config/system/cron-jobs/jobs/<satellite host>/
+```
+
+The job runs `follow` every five minutes. Its timeout is above the
+45-minute drain bound.
 
 ## Hygiene
 
@@ -256,6 +292,8 @@ offline.
 `refresh` with the same fixtures and a `make` stub; its cases are `NEW` too.
 `tests/test_refresh_drain.py` covers the drain with a fixture lane root of
 real lock files, held from another process, and an `sd` stub.
+`tests/test_follow.py` covers the `hub-pin` push and `follow` with the same
+bare-origin fixtures, one origin shared by a hub and a satellite checkout.
 
 One case reads the conf files in this folder instead of building a tree:
 `ShippedConfTest` enumerates the shipped `repos.*.conf.example` files, plus

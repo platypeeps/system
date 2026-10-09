@@ -1,6 +1,6 @@
 #!/bin/sh
 # Clone-or-pull the repo fleet listed in repos.<profile>.conf.
-# Usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|test
+# Usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|test
 set -e
 
 # The repo convention is DIR="$(cd "$(dirname "$0")" && pwd)", but this script
@@ -400,9 +400,29 @@ pin_default() {
   return 1
 }
 
-# Prints "pinned at <sha>", plus ", N behind origin/<default>" when it is.
+# A satellite follows the hub (sd:3100): `$HOME/.config/sd/hub.json`, the
+# file local-sd-db's hub.py reads, makes this machine one.
+is_satellite() {
+  [ -e "$HOME/.config/sd/hub.json" ]
+}
+
+# Prints which hub checkout $1 is, `system` or `pack`, or returns 1. Only
+# `follow` moves these on a satellite.
+hub_checkout() {
+  if [ -f "$1/bin/sd_install.py" ]; then echo pack
+  elif [ -f "$1/local-sd-db/sd_db/schema.py" ] && [ -f "$1/local-repo-sync/repo-sync.sh" ]; then echo system
+  else return 1
+  fi
+}
+
+# Prints "pinned at <sha>" (or "on <branch> at <sha>"), plus ", N behind
+# origin/<default>" when it is.
 pin_state() {
-  p_line="pinned at $(git -C "$1" rev-parse --short HEAD)"
+  if p_br=$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null); then
+    p_line="on $p_br at $(git -C "$1" rev-parse --short HEAD)"
+  else
+    p_line="pinned at $(git -C "$1" rev-parse --short HEAD)"
+  fi
   if p_def=$(pin_default "$1"); then
     p_n=$(git -C "$1" rev-list --count "HEAD..refs/remotes/origin/$p_def" 2>/dev/null || echo 0)
     if [ "$p_n" -gt 0 ]; then p_line="$p_line, $p_n behind origin/$p_def"; fi
@@ -421,13 +441,19 @@ sync() {
     repo=$(echo "$full_repo" | awk -F/ '{ print $2 }')
     target="$ROOT/$subdir/$repo"
 
-    if [ -d "$target/.git" ] && is_pinned "$target"; then
+    if [ -d "$target/.git" ] && is_satellite && hub_checkout "$target" > /dev/null; then
+      mover=follow
+    else
+      mover=refresh
+    fi
+    if [ -d "$target/.git" ] && { is_pinned "$target" || [ "$mover" = follow ]; }; then
       # A pinned checkout is fetched, so its behind count is fresh, and never
-      # pulled; `git pull` would refuse a detached HEAD anyway.
+      # pulled; `git pull` would refuse a detached HEAD anyway. On a
+      # satellite, system and pack are never pulled, pinned or not.
       echo "=== pinned $full_repo"
       if git -C "$target" fetch -q origin; then
         state=$(pin_state "$target")
-        echo "$state; not pulled (repo-sync.sh refresh moves it)"
+        echo "$state; not pulled (repo-sync.sh $mover moves it)"
         echo "$full_repo $state" >> "$PINLOG"
       else
         echo "!!! failed: $full_repo (fetch; $(pin_state "$target"))" >&2
@@ -502,45 +528,56 @@ refresh_one() {
     echo "!!! failed: $r_dir has no origin/HEAD, origin/main or origin/master; still at $r_short"
     return 1
   fi
+  pin_move "$r_dir" "origin/$r_def" refresh refreshed
+}
+
+# Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),
+# which reports "$4: <old> -> <new>". Then `make setup` in the pack, and the
+# migrate steps when local-sd-db's SCHEMA_VERSION changed. Returns 1 when a
+# step failed.
+pin_move() {
+  m_dir=$1; m_rev=$2
+  m_old=$(git -C "$m_dir" rev-parse HEAD)
+  m_short=$(git -C "$m_dir" rev-parse --short HEAD)
   # `git submodule update` would overwrite an ignored file in a submodule and
   # has no switch to stop it, so a checkout with submodules is moved by hand.
-  for r_rev in HEAD "origin/$r_def"; do
-    if git -C "$r_dir" ls-tree -r "$r_rev" | awk '$2 == "commit" { f = 1 } END { exit !f }'; then
-      echo "!!! refused: $r_rev in $r_dir holds a submodule; refresh does not move one; still at $r_short"
+  for m_at in HEAD "$m_rev"; do
+    if git -C "$m_dir" ls-tree -r "$m_at" | awk '$2 == "commit" { f = 1 } END { exit !f }'; then
+      echo "!!! refused: $m_at in $m_dir holds a submodule; $3 does not move one; still at $m_short"
       return 1
     fi
   done
   # An ignored file is often local config or data; git overwrites one that
-  # origin now tracks unless told not to, and then refuses the whole switch.
-  if ! git -C "$r_dir" switch -q --detach --no-overwrite-ignore "origin/$r_def"; then
-    echo "!!! failed: switch to origin/$r_def in $r_dir; HEAD is now $(git -C "$r_dir" rev-parse --short HEAD)"
+  # the target commit tracks unless told not to, and then refuses the switch.
+  if ! git -C "$m_dir" switch -q --detach --no-overwrite-ignore "$m_rev"; then
+    echo "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)"
     return 1
   fi
-  r_new=$(git -C "$r_dir" rev-parse --short HEAD)
-  if [ "$(git -C "$r_dir" rev-parse HEAD)" = "$r_old" ]; then
-    echo "already at origin/$r_def ($r_new)"
+  m_new=$(git -C "$m_dir" rev-parse --short HEAD)
+  if [ "$(git -C "$m_dir" rev-parse HEAD)" = "$m_old" ]; then
+    echo "already at $m_rev ($m_new)"
   else
-    echo "refreshed: $r_short -> $r_new (origin/$r_def)"
+    echo "$4: $m_short -> $m_new ($m_rev)"
   fi
-  r_rc=0
+  m_rc=0
   # The command pack installs its commands from the checkout.
-  if [ -f "$r_dir/bin/sd_install.py" ]; then
+  if [ -f "$m_dir/bin/sd_install.py" ]; then
     echo "--- make setup"
-    if ! make -C "$r_dir" setup; then
-      echo "!!! failed: make setup; the checkout is at $r_new, rerun: make -C $r_dir setup"
-      r_rc=1
+    if ! make -C "$m_dir" setup; then
+      echo "!!! failed: make setup; the checkout is at $m_new, rerun: make -C $m_dir setup"
+      m_rc=1
     fi
   fi
-  r_s_old=$(pin_schema "$r_dir" "$r_old")
-  r_s_new=$(pin_schema "$r_dir" HEAD)
-  if [ -n "$r_s_new" ] && [ "$r_s_old" != "$r_s_new" ]; then
-    echo "note: local-sd-db SCHEMA_VERSION ${r_s_old:-none} -> $r_s_new; the database needs a migrate."
+  m_s_old=$(pin_schema "$m_dir" "$m_old")
+  m_s_new=$(pin_schema "$m_dir" HEAD)
+  if [ -n "$m_s_new" ] && [ "$m_s_old" != "$m_s_new" ]; then
+    echo "note: local-sd-db SCHEMA_VERSION ${m_s_old:-none} -> $m_s_new; the database needs a migrate."
     echo "  Stop the dashboard, the runner and sd-serve, then run:"
-    echo "    $r_dir/local-sd-db/sd-db.sh backup"
-    echo "    $r_dir/local-sd-db/sd-db.sh migrate"
-    echo "  and start them again. refresh migrates nothing."
+    echo "    $m_dir/local-sd-db/sd-db.sh backup"
+    echo "    $m_dir/local-sd-db/sd-db.sh migrate"
+    echo "  and start them again. $3 migrates nothing."
   fi
-  return "$r_rc"
+  return "$m_rc"
 }
 
 # Refreshes each path given, or with none every pinned checkout in the conf.
@@ -566,12 +603,116 @@ refresh() {
     refresh_one "$r_target" || r_failed=$((r_failed + 1))
     echo
   done 3< "$TMPD/targets"
+  if [ "$r_failed" -eq 0 ] && ! push_pins; then
+    r_failed=$((r_failed + 1))
+  fi
   echo "----------------------------------------"
   if [ "$r_failed" -gt 0 ]; then
-    echo "refresh : $r_failed checkout(s) failed"
+    echo "refresh : $r_failed step(s) failed"
     return 1
   fi
   echo "refresh : done"
+}
+
+# Prints "<dir>" for the conf checkout that is hub checkout $1 (system or
+# pack), or nothing.
+hub_dir() {
+  repo_list | while read -r subdir full_repo; do
+    target="$ROOT/$subdir/${full_repo##*/}"
+    if [ -d "$target/.git" ] && [ "$(hub_checkout "$target" || true)" = "$1" ]; then
+      echo "$target"; break
+    fi
+  done
+}
+
+# After a hub refresh with no failure, pushes each pinned system and pack
+# sha to the branch hub-pin on its origin, which each satellite's `follow`
+# fetches (sd:3100). The `+` lets that one ref move backwards, as a refresh
+# to an older origin/main would; nothing else is forced.
+push_pins() {
+  p_rc=0
+  for p_name in system pack; do
+    p_dir=$(hub_dir "$p_name")
+    if [ -z "$p_dir" ] || ! is_pinned "$p_dir"; then continue; fi
+    p_sha=$(git -C "$p_dir" rev-parse HEAD)
+    if git -C "$p_dir" push -q origin "+$p_sha:refs/heads/hub-pin"; then
+      echo "hub-pin : $p_name at $(git -C "$p_dir" rev-parse --short HEAD), for satellites"
+    else
+      echo "!!! failed: push of hub-pin in $p_dir; satellites keep the old $p_name pin; run refresh again"
+      p_rc=1
+    fi
+  done
+  return "$p_rc"
+}
+
+# Holds the lanes through refresh_drain.py, which runs verb $1 of this
+# script again as its child, with REPO_SYNC_LANES_HELD=1 (sd:3099).
+drain_exec() {
+  # A lane folder is named after its checkout: the drain holds these
+  # lanes too, before a first runner makes their folder.
+  REPO_SYNC_LANE_NAMES=$(repo_list | while read -r subdir full_repo; do printf '%s ' "${full_repo##*/}"; done)
+  export REPO_SYNC_LANE_NAMES
+  exec python3 "$DIR/refresh_drain.py" "$DIR/repo-sync.sh" "$@"
+}
+
+# On a satellite, moves system and pack to the sha of the hub-pin branch on
+# their origin, never to its default branch (sd:3100). Every check runs
+# before any move, so a refusal moves nothing.
+follow() {
+  if ! is_satellite; then
+    echo "follow: this machine is the hub (no $HOME/.config/sd/hub.json); nothing to do, refresh moves its checkouts"
+    return 0
+  fi
+  : > "$TMPD/moves"
+  f_failed=0
+  for f_name in system pack; do
+    f_dir=$(hub_dir "$f_name")
+    if [ -z "$f_dir" ]; then
+      echo "follow: no $f_name checkout in the conf; skipped"
+      continue
+    fi
+    if ! git -C "$f_dir" fetch -q origin refs/heads/hub-pin 2> "$TMPD/err"; then
+      f_rc=0
+      git -C "$f_dir" ls-remote --exit-code origin refs/heads/hub-pin > /dev/null 2>&1 || f_rc=$?
+      if [ "$f_rc" -eq 2 ]; then
+        echo "follow: $f_name's origin has no hub-pin branch yet; nothing to follow"
+      else
+        echo "!!! refused: cannot fetch hub-pin in $f_dir: $(tail -1 "$TMPD/err")"
+        f_failed=$((f_failed + 1))
+      fi
+      continue
+    fi
+    f_sha=$(git -C "$f_dir" rev-parse FETCH_HEAD)
+    if is_pinned "$f_dir" && [ "$(git -C "$f_dir" rev-parse HEAD)" = "$f_sha" ]; then
+      echo "follow: $f_name already at the hub's pin $(git -C "$f_dir" rev-parse --short HEAD)"
+    elif [ -n "$(git -C "$f_dir" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
+      echo "!!! refused: $f_dir has uncommitted changes; commit or stash them"
+      f_failed=$((f_failed + 1))
+    else
+      printf '%s %s %s\n' "$f_name" "$f_sha" "$f_dir" >> "$TMPD/moves"
+    fi
+  done
+  if [ "$f_failed" -gt 0 ]; then
+    echo "follow  : refused, nothing moved"
+    return 1
+  fi
+  if [ ! -s "$TMPD/moves" ]; then
+    return 0
+  fi
+  if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
+    rm -rf "$TMPD"
+    drain_exec follow
+  fi
+  while read -r f_name f_sha f_dir <&3; do
+    echo "=== follow $f_name $f_dir"
+    pin_move "$f_dir" "$f_sha" follow followed || f_failed=$((f_failed + 1))
+  done 3< "$TMPD/moves"
+  echo "----------------------------------------"
+  if [ "$f_failed" -gt 0 ]; then
+    echo "follow  : $f_failed checkout(s) failed"
+    return 1
+  fi
+  echo "follow  : done"
 }
 
 # --- hygiene (sd:1987) ------------------------------------------------------
@@ -1211,16 +1352,26 @@ case "$1" in
     shift
     # The helper holds every lane's runner lock and waits for an idle gate,
     # then runs this again as its child with REPO_SYNC_LANES_HELD=1 (sd:3099).
+    if is_satellite; then
+      echo "repo-sync.sh refresh: this machine is a satellite ($HOME/.config/sd/hub.json); only follow moves its system and pack checkouts, to the hub's pins" >&2
+      exit 1
+    fi
     if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
-      # A lane folder is named after its checkout: the drain holds these
-      # lanes too, before a first runner makes their folder.
-      REPO_SYNC_LANE_NAMES=$(repo_list | while read -r subdir full_repo; do printf '%s ' "${full_repo##*/}"; done)
-      export REPO_SYNC_LANE_NAMES
-      exec python3 "$DIR/refresh_drain.py" "$DIR/repo-sync.sh" "$@"
+      drain_exec refresh "$@"
     fi
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     refresh "$@"
+    ;;
+  follow)
+    shift
+    if [ "$#" -ne 0 ]; then
+      echo "repo-sync.sh follow: takes no arguments" >&2
+      exit 2
+    fi
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    follow
     ;;
   check)
     FINDINGS=$(mktemp)
@@ -1357,7 +1508,7 @@ case "$1" in
     ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|test
+usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|test
 
   sync       clone missing repos and fast-forward existing ones, then print a
              summary; exits 1 if any repo failed, having tried all the others.
@@ -1424,7 +1575,21 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|test
              branch alone. In the command pack (bin/sd_install.py) it then
              runs `make setup`. When local-sd-db's SCHEMA_VERSION changed it
              prints the backup and migrate steps and runs neither. Prints the
-             old and new sha; exits 1 if any checkout failed.
+             old and new sha; exits 1 if any checkout failed. After a
+             refresh with no failure, the hub pushes each pinned system and
+             pack sha to the branch hub-pin on its origin for `follow`
+             (that one ref may move backwards); a failed push exits 1. On
+             a satellite refresh refuses and names follow.
+  follow     on a satellite (one with ~/.config/sd/hub.json), fetch the
+             hub-pin branch of the system and pack checkouts' origin and,
+             where a checkout differs, drain the lanes as refresh does, then
+             move it, detached, to exactly that sha, never to origin's
+             default branch, and run `make setup` in the pack. Every check
+             runs first: a failed fetch, uncommitted changes or a drain
+             timeout refuses with nothing moved. Already there, or no
+             hub-pin branch, is a no-op. On the hub it says so and does
+             nothing. On a satellite, sync and nightly never pull system or
+             pack; only follow moves them.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
              against fixture trees; sync's clone path is not covered,
@@ -1473,17 +1638,19 @@ environment:
                       45 minutes)
   REPO_SYNC_LANES_HELD
                       set to 1 only by refresh_drain.py for its child: the
-                      lanes are already held, so refresh moves checkouts
+                      lanes are already held, so refresh or follow moves
+                      checkouts
   REPO_SYNC_LANE_NAMES
-                      set only by refresh for refresh_drain.py: the conf's
-                      checkout names, whose lane locks it makes and holds
+                      set only by refresh and follow for refresh_drain.py:
+                      the conf's checkout names, whose lane locks it makes
+                      and holds
   REPO_SYNC_JEV       local-jev's entrypoint (default: the local-jev
                       folder of this checkout)
 HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") sync|check|list|reconcile|hygiene|nightly|refresh|test" >&2
+    echo "usage: $(basename "$0") sync|check|list|reconcile|hygiene|nightly|refresh|follow|test" >&2
     exit 1
     ;;
 esac

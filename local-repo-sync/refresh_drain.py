@@ -1,7 +1,7 @@
-"""Drain the lanes, then run `repo-sync.sh refresh` as a child (sd:3099).
+"""Drain the lanes, then run `repo-sync.sh refresh` or `follow` as a child (sd:3099).
 
-`repo-sync.sh refresh` calls this first, because POSIX sh cannot hold a
-flock. It takes every lane's runner lock under the lane root: while one is
+`repo-sync.sh refresh` and `follow` (sd:3100) call this first, because
+POSIX sh cannot hold a flock. It takes every lane's runner lock under the lane root: while one is
 held, that lane's `lane run` exits at once and its queued entries stay
 pending. A running lane keeps its lock until its run ends. With every lock
 held it waits until `sd gate status --json` shows no holders and no waiters,
@@ -16,16 +16,16 @@ this process before the child; it waits for it.
 
 A lane whose runner never ran has no lock file yet: every folder under the
 lane root, every repository in the registry (`sd-db.sh repo list`, which
-`lane run --hosted` reads) and every name in REPO_SYNC_LANE_NAMES (the
-conf's checkouts) gets one, made and held here; a lane is named after its
-checkout's folder. The gate is checked again after the last pass over the
+`lane run --hosted` reads; for `refresh` only) and every name in
+REPO_SYNC_LANE_NAMES (the conf's checkouts) gets one, made and held here; a
+lane is named after its checkout's folder. The gate is checked again after the last pass over the
 locks, just before the child.
 
 The wait is bounded: 45 minutes in total for the locks and the gate
 together (operator ruling), or REPO_SYNC_DRAIN_WAIT seconds. Past it, refresh refuses with nothing moved and
 names what was busy.
 
-Usage: refresh_drain.py <repo-sync.sh> [path ...]
+Usage: refresh_drain.py <repo-sync.sh> refresh|follow [path ...]
 """
 
 import fcntl
@@ -181,22 +181,27 @@ def drain(env, names=()):
 
 
 def main(argv):
-    if len(argv) < 2:
+    if len(argv) < 3 or argv[2] not in ("refresh", "follow"):
         print(__doc__.strip().splitlines()[-1], file=sys.stderr)
         return 2
-    script, args = argv[1], argv[2:]
+    script, verb, args = argv[1], argv[2], argv[3:]
     env = dict(os.environ)
     try:
-        held = drain(env, env.get("REPO_SYNC_LANE_NAMES", "").split() + registry_names(script, env))
+        names = env.get("REPO_SYNC_LANE_NAMES", "").split()
+        # Not on a satellite: `lane run` refuses there, and its sd_db may be
+        # a build the hub refuses until follow moves it.
+        if verb == "refresh":
+            names += registry_names(script, env)
+        held = drain(env, names)
     except Refused as refusal:
-        print(f"repo-sync.sh refresh: refused, nothing moved: {refusal}", file=sys.stderr)
+        print(f"repo-sync.sh {verb}: refused, nothing moved: {refusal}", file=sys.stderr)
         if refusal.manual:
             print(MANUAL, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("repo-sync.sh refresh: interrupted, nothing moved", file=sys.stderr)
+        print(f"repo-sync.sh {verb}: interrupted, nothing moved", file=sys.stderr)
         return 130
-    code = run_child(["sh", script, "refresh", *args], {**env, "REPO_SYNC_LANES_HELD": "1"}, held)
+    code = run_child(["sh", script, verb, *args], {**env, "REPO_SYNC_LANES_HELD": "1"}, held)
     for handle in held.values():
         handle.close()
     return code
