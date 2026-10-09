@@ -134,19 +134,15 @@ hub's pin added stays in the venv, unused. If that fails too, it prints the
 one command to run by hand.
 
 A follow killed during the pack's `make setup` leaves HEAD at the pin, so
-HEAD alone does not show it. With the pack at the pin, `follow` drains and
-runs `make setup` again when `.venv/sd-provisioning` is left, which the pack's
-Makefile keeps while it builds the venv, or when the serving tree's
-`sd_install.py --verify` reports `source_commit_changed`. A pack that serves
-its own HEAD (pack sd:3111) leaves the serving tree at that HEAD after a
-completed setup, so `follow` also sets up again when the tree is elsewhere;
-that covers a kill after the venv build and before the serving step. Its
-`--serve` help names that HEAD, which is how `follow` tells it from an older
-pack. An older pack serves origin/main, so `follow` does not compare there:
-after a follow on an older pack was killed, run `make -C <pack> setup` by hand. With no `hub-pin`
-tag yet, or with every checkout already there, it does nothing and drains
-nothing. On
-the hub it says so and does nothing. If the move changed `SCHEMA_VERSION`,
+HEAD alone does not show it. By operator ruling on sd:3100, `follow` keeps an
+intent marker, `${XDG_STATE_HOME:-~/.local/state}/repo-sync/follow-intent`.
+It writes the target system and pack shas there, atomically, before it moves
+any checkout. It deletes the marker once `make setup` succeeds at the pin, or
+once a rollback puts every checkout back. While the marker is left, the next
+run drains, finishes the move and runs `make setup` again, even with HEAD at
+the pin. With no `hub-pin` tag yet, or with every checkout already there, it
+does nothing and drains nothing. On the hub it says so and does nothing. If
+the move changed `SCHEMA_VERSION`,
 `follow` prints the hub's migrate note; the hub's own refresh printed it
 too.
 

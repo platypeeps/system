@@ -660,41 +660,19 @@ drain_exec() {
   exec python3 "$DIR/refresh_drain.py" "$DIR/repo-sync.sh" "$@"
 }
 
-# Prints why the last `make setup` in pack checkout $1 did not finish, or
-# returns 1. A follow killed during setup leaves HEAD at the pin, so HEAD
-# alone cannot tell (sd:3100). The pack's Makefile keeps .venv/sd-provisioning
-# while it builds the venv; `sd_install.py --verify` reports
-# source_commit_changed while the serving tree has moved past its receipt.
-# A pack that serves its own HEAD (pack sd:3111, which its --serve help says)
-# leaves the serving tree at that HEAD after a completed setup, so a tree
-# elsewhere means the setup stopped before it moved; an older pack serves
-# origin/main, where that test would set up again on every run.
-# The serving tree is the pack's serving_tree(): <data home>/sd-ai-command-pack/serving.
-setup_cut() {
-  if [ -e "$1/.venv/sd-provisioning" ]; then
-    echo "$1/.venv/sd-provisioning is left"; return 0
-  fi
-  s_serving="${XDG_DATA_HOME:-$HOME/.local/share}/sd-ai-command-pack/serving"
-  s_installer="$s_serving/bin/sd_install.py"
-  [ -f "$s_installer" ] || s_installer="$1/bin/sd_install.py"
-  if python3 "$s_installer" --verify --json 2>/dev/null | grep -q '"source_commit_changed"'; then
-    echo "sd_install.py --verify reports source_commit_changed"; return 0
-  fi
-  if [ -d "$s_serving/.git" ] && grep -q "detach it at this checkout's HEAD" "$1/bin/sd_install.py" \
-      && [ "$(git -C "$s_serving" rev-parse HEAD 2>/dev/null)" != "$(git -C "$1" rev-parse HEAD)" ]; then
-    echo "the serving tree is not at the pack's HEAD"; return 0
-  fi
-  return 1
-}
+# The intent marker (sd:3100, operator ruling): written before any move and
+# deleted once make setup succeeds at the pin or a rollback puts all back. A
+# killed follow leaves it, so the next run finishes and sets up again.
+FOLLOW_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/follow-intent"
 
 # Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
-# already there and is clean, or a pack at $2 for `make setup` when its last
-# one did not finish; counts a dirty one in f_failed. Fields split on $US,
-# so a path with spaces stays whole.
+# already there and is clean, or a pack at $2 for `make setup` while the
+# intent marker is left; counts a dirty one in f_failed. Fields split on
+# $US, so a path with spaces stays whole.
 follow_want() {
   if is_pinned "$3" && [ "$(git -C "$3" rev-parse HEAD)" = "$2" ]; then
-    if [ "$1" = pack ] && f_why=$(setup_cut "$3"); then
-      echo "follow: pack at the hub's pin, but its last make setup did not finish ($f_why); setting up again"
+    if [ "$1" = pack ] && [ -e "$FOLLOW_INTENT" ]; then
+      echo "follow: pack at the hub's pin, but a follow stopped before its make setup finished ($FOLLOW_INTENT); setting up again"
       printf '%s\n' "setup$US$2$US$3" >> "$TMPD/moves"
     else
       echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
@@ -758,20 +736,26 @@ follow() {
     return 1
   fi
   if [ ! -s "$TMPD/moves" ]; then
+    rm -f "$FOLLOW_INTENT"
     return 0
   fi
   if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
     rm -rf "$TMPD"
     drain_exec follow
   fi
+  mkdir -p "${FOLLOW_INTENT%/*}" && printf 'system=%s\npack=%s\n' "$f_sys_sha" "$f_pack_sha" \
+    > "$FOLLOW_INTENT.tmp" && mv -f "$FOLLOW_INTENT.tmp" "$FOLLOW_INTENT" \
+    || { echo "!!! refused: cannot write $FOLLOW_INTENT; nothing moved"; return 1; }
   : > "$TMPD/moved"
+  f_back=1
   while IFS=$US read -r f_name f_sha f_dir <&3; do
     echo "=== follow $f_name $f_dir"
     if [ "$f_name" = setup ]; then
       echo "--- make setup"
       if make -C "$f_dir" setup; then continue; fi
-      echo "!!! failed: make setup; the next run tries again; by hand: make -C '$f_dir' setup"
+      echo "!!! failed: make setup; by hand: make -C '$f_dir' setup"
       f_failed=1
+      f_back=0
       break
     fi
     printf '%s\n' "$(git -C "$f_dir" rev-parse HEAD)$US$f_dir" >> "$TMPD/moved"
@@ -782,6 +766,7 @@ follow() {
   done 3< "$TMPD/moves"
   echo "----------------------------------------"
   if [ "$f_failed" -eq 0 ]; then
+    rm -f "$FOLLOW_INTENT"
     echo "follow  : done"
     return 0
   fi
@@ -794,6 +779,7 @@ follow() {
     if [ -f "$f_dir/bin/sd_install.py" ]; then f_setup=" && make -C '$f_dir' setup"; fi
     if ! git -C "$f_dir" switch -q --detach --no-overwrite-ignore "$f_old"; then
       echo "!!! failed: cannot put $f_dir back; by hand: git -C '$f_dir' switch --detach $f_old$f_setup"
+      f_back=0
       continue
     fi
     echo "follow: put $f_dir back at $(git -C "$f_dir" rev-parse --short HEAD)"
@@ -801,10 +787,16 @@ follow() {
       echo "--- make setup at the old sha"
       if ! make -C "$f_dir" setup; then
         echo "!!! failed: make setup at the old sha; the pack's commands may be from the hub's pin; by hand: make -C '$f_dir' setup"
+        f_back=0
       fi
     fi
   done 3< "$TMPD/moved"
-  echo "follow  : failed; each checkout it moved is back at its old sha, so a migrate note above does not apply; the next run retries"
+  if [ "$f_back" = 1 ]; then
+    rm -f "$FOLLOW_INTENT"
+    echo "follow  : failed; each checkout it moved is back at its old sha, so a migrate note above does not apply; the next run retries"
+  else
+    echo "follow  : failed; $FOLLOW_INTENT stays, so the next run finishes the move and sets up again"
+  fi
   return 1
 }
 
@@ -1684,11 +1676,10 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              pack= line, uncommitted changes or a drain timeout refuses with
              nothing moved. When a move fails, each checkout it moved goes
              back to its old sha and the pack runs `make setup` again there,
-             so the next run retries the pair. A pack at the pin whose last
-             make setup did not finish (.venv/sd-provisioning left,
-             sd_install.py --verify reports source_commit_changed, or, for a
-             pack that serves its own HEAD, the serving tree elsewhere) is
-             set up again. Already there, or no hub-pin tag, is a no-op. On the hub it says so and
+             so the next run retries the pair. A run killed after it wrote
+             $XDG_STATE_HOME/repo-sync/follow-intent leaves it, and the next
+             run finishes and sets the pack up again, even at the pin.
+             Already there, or no hub-pin tag, is a no-op. On the hub it says so and
              does nothing. On a satellite, sync and nightly never pull system or
              pack; only follow moves them.
   test       run the regression suite in tests/ (unittest; override the

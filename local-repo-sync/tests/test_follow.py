@@ -29,11 +29,6 @@ FAIL_FIRST_SETUP = ('git -C "$2" rev-parse HEAD >> "$MAKE_LOG.heads"; '
                     'else : > "$MAKE_LOG.failed"; MAKE_RC=1; fi')
 
 
-# The --serve help line of a pack that serves its own HEAD (pack sd:3111).
-SERVES_HEAD = ("#  --serve          in the serving tree, render it; elsewhere, clone the tree if it is\n"
-               "#                   missing, detach it at this checkout's HEAD and run its\n")
-
-
 class FollowFixture(DrainFixture):
     def satellite(self):
         config = self.tmp / "home" / ".config" / "sd"
@@ -61,10 +56,10 @@ class FollowFixture(DrainFixture):
 
     def run(self, *args, expect=0, extra_env=None):
         # The hub's refresh makes an annotated tag, which needs a committer.
-        # The data home holds the serving tree follow asks --verify of; it is
-        # the fixture's, never the machine's.
+        # The state home holds follow's intent marker; it is the fixture's,
+        # never the machine's.
         env = {"GIT_COMMITTER_NAME": "Hub", "GIT_COMMITTER_EMAIL": "hub@example.test",
-               "XDG_DATA_HOME": str(self.tmp / "data"), **(extra_env or {})}
+               "XDG_STATE_HOME": str(self.tmp / "state"), **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 
     def set_hub_pin(self, system, sha, pack=None, body=None):
@@ -85,23 +80,14 @@ class FollowFixture(DrainFixture):
     def refs(self, repo, pattern="*hub-pin*"):
         return self.git(self.bare(repo), "for-each-ref", "--format=%(refname)", f"refs/**/{pattern}")
 
-    def serving_verify(self, code):
-        """A serving tree whose installer's --verify --json reports `code`
-        for the source check, as the pack's sd_install.py does."""
-        installer = self.tmp / "data" / "sd-ai-command-pack" / "serving" / "bin" / "sd_install.py"
-        installer.parent.mkdir(parents=True, exist_ok=True)
-        check = {"component": "source", "status": "passed" if code == "ok" else "failed", "code": code}
-        installer.write_text("import json, sys\n"
-                             "assert sys.argv[1:] == ['--verify', '--json'], sys.argv\n"
-                             f"print(json.dumps({{'checks': [{check!r}], 'status': 'failed'}}))\n")
+    @property
+    def intent(self):
+        return self.tmp / "state" / "repo-sync" / "follow-intent"
 
-    def serving_clone(self, pack, rev):
-        """The serving tree, a clone of pack's origin detached at `rev`."""
-        tree = self.tmp / "data" / "sd-ai-command-pack" / "serving"
-        tree.parent.mkdir(parents=True, exist_ok=True)
-        self.git(self.tmp, "clone", "-q", self.bare(pack), str(tree))
-        self.git(tree, "checkout", "-q", "--detach", rev)
-        return tree
+    def leave_intent(self, system_sha, pack_sha):
+        """The marker a follow killed after it wrote it leaves behind."""
+        self.intent.parent.mkdir(parents=True, exist_ok=True)
+        self.intent.write_text(f"system={system_sha}\npack={pack_sha}\n")
 
     def setup_heads(self):
         """The pack HEAD at each make setup FAIL_FIRST_SETUP saw."""
@@ -315,6 +301,7 @@ class FollowTest(unittest.TestCase):
         self.assertIn("back at its old sha, so a migrate note above does not apply; the next run retries",
                       result.stdout)
         self.assertEqual(old, (f.head(system), f.head(pack)))
+        self.assertFalse(f.intent.exists())
 
         f.run("follow", expect=0)
 
@@ -368,122 +355,151 @@ class FollowTest(unittest.TestCase):
 
         self.assertEqual(pinned, (f.head(system), f.head(pack)))
 
-    def test_a_setup_cut_during_the_venv_build_runs_again_at_the_pin(self):
-        """NEW (round 3, kill point 5). A follow killed while the pack's make
-        setup built the venv leaves HEAD at the pin and .venv/sd-provisioning
-        behind: the next run drains and runs make setup again, and once the
-        marker is gone it is a no-op."""
+    def test_the_intent_marker_holds_the_pair_while_it_moves(self):
+        """NEW (round 6). The marker names the target pair before any move,
+        is there while make setup runs, and is gone once setup succeeded."""
+        f = self.fixture()
+        system, pack, _ = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+        seen = f.tmp / "seen"
+
+        f.run("follow", expect=0, extra_env={"MAKE_HOOK": f'cat "$XDG_STATE_HOME/repo-sync/follow-intent" > "{seen}"'})
+
+        self.assertEqual(f"system={pinned[0]}\npack={pinned[1]}\n", seen.read_text())
+        self.assertFalse(f.intent.exists())
+
+    def test_kill_in_a_fetch_keeps_the_marker_for_the_next_run(self):
+        """NEW (round 6, kill point 1). A run that cannot fetch the tag
+        refuses and leaves an earlier marker; the next run sets up again."""
         f = self.fixture()
         system, pack, old = self.pair(f)
         f.set_hub_pin(system, old[0], pack=old[1])
-        (pack / ".venv").mkdir()
-        (pack / ".venv" / "sd-provisioning").write_text("make setup is building this environment\n")
+        f.leave_intent(*old)
+        f.wrap_git("before", "*'/a/system fetch'*hub-pin*", 'echo "fatal: unreachable" >&2; exit 128')
 
-        result = f.run("follow", expect=0, extra_env={"MAKE_HOOK": 'rm -f "$2/.venv/sd-provisioning"'})
+        f.run("follow", expect=1)
 
-        self.assertIn("its last make setup did not finish", result.stdout)
+        self.assertTrue(f.intent.exists())
+        f.wrap_git("before", "*no-such-call*", ":")
+        f.run("follow", expect=0)
         self.assertEqual([f"-C {pack} setup"], f.make_calls())
-        self.assertTrue(f.gate_calls())
-        self.assertEqual(old, (f.head(system), f.head(pack)))
+        self.assertFalse(f.intent.exists())
+
+    def test_kill_in_the_drain_keeps_the_marker_for_the_next_run(self):
+        """NEW (round 6, kill point 2). A drain that refuses moves nothing and
+        leaves the marker; the next run drains, sets up and deletes it."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.leave_intent(*old)
+        proc = f.hold(f.lane("busy-repo"), 30)
+
+        f.run("follow", expect=1, extra_env={"REPO_SYNC_DRAIN_WAIT": "1"})
+
+        proc.kill(), proc.wait(), proc.stdout.close()
+        self.assertTrue(f.intent.exists())
+        self.assertEqual([], f.make_calls())
+        f.run("follow", expect=0)
+        self.assertEqual([f"-C {pack} setup"], f.make_calls())
+        self.assertFalse(f.intent.exists())
+
+    def test_kill_before_the_system_move_finishes_on_the_next_run(self):
+        """NEW (round 6, kill point 3). Marker left, both checkouts still at
+        the old pair: the next run moves both and deletes the marker."""
+        f = self.fixture()
+        system, pack, _ = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+        f.leave_intent(*pinned)
 
         f.run("follow", expect=0)
 
-        self.assertEqual(1, len(f.make_calls()))
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertFalse(f.intent.exists())
 
-    def test_a_setup_cut_during_the_serving_step_runs_again_at_the_pin(self):
-        """NEW (round 3, kill point 6). A follow killed while --serve moved the
-        serving tree leaves its receipt behind it: --verify says
-        source_commit_changed, and the next run drains and sets up again."""
-        f = self.fixture()
-        system, pack, old = self.pair(f)
-        f.set_hub_pin(system, old[0], pack=old[1])
-        f.serving_verify("source_commit_changed")
-
-        result = f.run("follow", expect=0)
-
-        self.assertIn("sd_install.py --verify reports source_commit_changed", result.stdout)
-        self.assertEqual([f"-C {pack} setup"], f.make_calls())
-        self.assertTrue(f.gate_calls())
-
-    def test_a_setup_cut_before_the_serving_tree_moved_runs_again_at_the_pin(self):
-        """NEW (round 5, kill point 7). A pack that serves its own HEAD leaves
-        the serving tree there after a completed setup: a tree elsewhere means
-        a follow killed after the venv build, and the next run sets up again
-        until the tree is at the pack's HEAD."""
-        f = self.fixture()
-        system, pack, old = self.pair(f)
-        pinned = f.commit(pack, "bin/sd_install.py", SERVES_HEAD, "serve the checkout's HEAD")
-        f.git(pack, "push", "-q", "origin", "HEAD:main")
-        f.set_hub_pin(system, old[0], pack=pinned)
-        tree = f.serving_clone(pack, old[1])
-        serve = f'git -C "{tree}" fetch -q "$2" HEAD && git -C "{tree}" checkout -q --detach FETCH_HEAD'
-
-        result = f.run("follow", expect=0, extra_env={"MAKE_HOOK": serve})
-
-        self.assertIn("the serving tree is not at the pack's HEAD", result.stdout)
-        self.assertEqual([f"-C {pack} setup"], f.make_calls())
-        self.assertTrue(f.gate_calls())
-        self.assertEqual(pinned, f.head(tree))
-
-        f.run("follow", expect=0)
-
-        self.assertEqual(1, len(f.make_calls()))
-
-    def test_a_pack_that_serves_origin_main_is_not_set_up_on_every_run(self):
-        """PIN (round 5). A pack from before sd:3111 serves origin/main, so its
-        serving tree is rarely at the pack's HEAD: follow does not compare
-        them there, and two runs set up nothing."""
-        f = self.fixture()
-        system, pack, old = self.pair(f)
-        f.set_hub_pin(system, old[0], pack=old[1])
-        f.serving_clone(pack, f.git(pack, "rev-parse", "HEAD~1"))
-
-        for _ in range(2):
-            result = f.run("follow", expect=0)
-            self.assertIn("pack already at the hub's pin", result.stdout)
-        self.assertEqual([], f.make_calls())
-        self.assertEqual([], f.gate_calls())
-
-    def test_a_verified_serving_tree_at_the_pin_is_a_no_op(self):
-        """PIN (round 3). A --verify that names no source mismatch, even a
-        failed one, does not set up again."""
-        f = self.fixture()
-        system, pack, old = self.pair(f)
-        f.set_hub_pin(system, old[0], pack=old[1])
-        f.serving_verify("receipt_malformed")
-
-        result = f.run("follow", expect=0)
-
-        self.assertIn("pack already at the hub's pin", result.stdout)
-        self.assertEqual([], f.make_calls())
-
-    def test_a_failed_setup_at_the_pin_exits_1_and_names_the_command(self):
-        """NEW (round 3). make setup at the pin that fails again exits 1 and
-        names the command; the marker it leaves makes the next run retry."""
-        f = self.fixture()
-        system, pack, old = self.pair(f)
-        f.set_hub_pin(system, old[0], pack=old[1])
-        (pack / ".venv").mkdir()
-        (pack / ".venv" / "sd-provisioning").write_text("building\n")
-
-        result = f.run("follow", expect=1, extra_env={"MAKE_RC": "1"})
-
-        self.assertIn(f"by hand: make -C '{pack}' setup", result.stdout)
-        self.assertEqual(old, (f.head(system), f.head(pack)))
-
-    def test_system_at_the_pin_and_pack_behind_moves_the_pack(self):
-        """PIN (round 3, kill point 4). A follow killed between the two moves
-        leaves system at the pin: the next run moves the pack alone."""
+    def test_kill_between_the_moves_finishes_on_the_next_run(self):
+        """NEW (round 6, kill point 4). Marker left, system at the pin, pack
+        behind: the next run moves the pack alone and deletes the marker."""
         f = self.fixture()
         system, pack, old = self.pair(f)
         pinned = f.advance_origin(pack)
         f.set_hub_pin(system, old[0], pack=pinned)
+        f.leave_intent(old[0], pinned)
 
         result = f.run("follow", expect=0)
 
         self.assertIn("system already at the hub's pin", result.stdout)
         self.assertEqual((old[0], pinned), (f.head(system), f.head(pack)))
         self.assertEqual([f"-C {pack} setup"], f.make_calls())
+        self.assertFalse(f.intent.exists())
+
+    def test_kill_in_the_pack_setup_sets_up_again_at_the_pin(self):
+        """NEW (round 6, kill points 5 to 7). Marker left with both HEADs at
+        the pin, wherever make setup stopped: the next run drains, sets up
+        again and deletes the marker; the run after does nothing."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.leave_intent(*old)
+
+        result = f.run("follow", expect=0)
+
+        self.assertIn("a follow stopped before its make setup finished", result.stdout)
+        self.assertEqual([f"-C {pack} setup"], f.make_calls())
+        self.assertTrue(f.gate_calls())
+        self.assertFalse(f.intent.exists())
+
+        f.run("follow", expect=0)
+
+        self.assertEqual(1, len(f.make_calls()))
+
+    def test_a_failed_setup_at_the_pin_keeps_the_marker(self):
+        """NEW (round 6). make setup at the pin that fails again exits 1, names
+        the command and keeps the marker, so the next run tries again."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.leave_intent(*old)
+
+        result = f.run("follow", expect=1, extra_env={"MAKE_RC": "1"})
+
+        self.assertIn(f"by hand: make -C '{pack}' setup", result.stdout)
+        self.assertTrue(f.intent.exists())
+        f.run("follow", expect=0)
+        self.assertFalse(f.intent.exists())
+
+    def test_kill_in_the_rollback_finishes_on_the_next_run(self):
+        """NEW (round 6, kill point 8). A rollback killed after it put system
+        back leaves the marker with the pack at the pin: the next run moves
+        system and sets the pack up again."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        pinned = f.advance_origin(system)
+        f.set_hub_pin(system, pinned, pack=old[1])
+        f.leave_intent(pinned, old[1])
+
+        f.run("follow", expect=0)
+
+        self.assertEqual((pinned, old[1]), (f.head(system), f.head(pack)))
+        self.assertEqual([f"-C {pack} setup"], f.make_calls())
+        self.assertFalse(f.intent.exists())
+
+    def test_a_failed_rollback_keeps_the_marker(self):
+        """NEW (round 6). When make setup fails at the pin and again at the
+        old sha, the marker stays, and the next run finishes the move."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+
+        result = f.run("follow", expect=1, extra_env={"MAKE_RC": "1"})
+
+        self.assertIn("follow-intent stays, so the next run finishes the move", result.stdout)
+        self.assertEqual(f"system={pinned[0]}\npack={pinned[1]}\n", f.intent.read_text())
+        f.run("follow", expect=0)
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertFalse(f.intent.exists())
 
     def test_a_dirty_tree_refuses_and_moves_nothing(self):
         """NEW. Uncommitted changes in one checkout stop the whole follow,
