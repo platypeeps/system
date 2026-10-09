@@ -872,6 +872,24 @@ for name in sorted(names):
         print(name[:-4])'
 }
 
+# Every job a job file defines, in any folder cron-jobs.sh reads: the extra
+# dirs, this host's folder and the shared one. capture adopts only these
+# (sd:3106): a retired or deleted job leaves its plist installed, and a profile
+# naming it reads STALE in the cron stage every night, since verify cannot
+# render a job with no file. Exits non-zero when a folder cannot be read.
+defined_cron_jobs() {
+  PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+names = set()
+for d in stc.cron_job_dirs():
+    try:
+        listed = os.listdir(d)
+    except FileNotFoundError:
+        continue
+    names.update(n[:-4] for n in listed if n.endswith(".job"))
+for name in sorted(names):
+    print(name)'
+}
+
 # Did local-cron-jobs write this plist? The <prefix>.cron.<name> label does not
 # say: another repository's installer used the same label shape, and the sweep
 # below uninstalled its agent as an orphan (sd:2321). write_plist in
@@ -2149,6 +2167,14 @@ write_manifest() { # target, body-file, header-line...
     rm -f "$wm_old" "$wm_new_e" "$wm_gone"
   fi
 
+  # A roster that had entries is never written empty (sd:3106): capture read
+  # "manifest: 0 label(s)" on a machine whose agents were all installed, and
+  # the next update would have removed every one. An empty roster is a hand edit.
+  if [ ! -s "$wm_body" ] && [ -n "$(manifest_entries "$wm_target")" ]; then
+    echo "    REFUSED $(basename "$wm_target") — capture found no entries where it lists $(manifest_entries "$wm_target" | grep -c .); not written"
+    ADDITIVE_HELD=$((ADDITIVE_HELD + 1))
+    return 0
+  fi
   wm_hdr="$wm_target.hdr.$$"; wm_new="$wm_target.new.$$"
   for wm_line in "$@"; do printf '%s\n' "$wm_line"; done > "$wm_hdr"
   {
@@ -2207,6 +2233,17 @@ cmd_capture() {
     echo "capture: cannot list the host cron jobs in cron-jobs/jobs/<host>/; nothing captured" >&2
     exit 1
   fi
+  # Not piped: a pipeline's status is sort's, which would read a failure as none.
+  if ! defined_cron_jobs > "$tmp/defined.raw"; then
+    echo "capture: cannot list the cron-jobs job files; nothing captured" >&2
+    exit 1
+  fi
+  sort "$tmp/defined.raw" > "$tmp/defined.cron"
+  comm -23 "$tmp/have.cron" "$tmp/defined.cron" | while read -r n; do
+    echo "  SKIPPED $n — installed, but no job file defines it; not adopted (cron-jobs.sh uninstall $n removes it)"
+  done
+  comm -12 "$tmp/have.cron" "$tmp/defined.cron" > "$tmp/have.cron.defined"
+  mv "$tmp/have.cron.defined" "$tmp/have.cron"
   { common_manifest cron; cat "$tmp/host.cron"; } | sort -u > "$tmp/common.cron"
   comm -23 "$tmp/have.cron" "$tmp/common.cron" > "$tmp/out.cron"
 
@@ -2394,8 +2431,26 @@ owned_agent_plists() {
              $(manifest agent | while read -r oal; do printf '%s ' "$HOME/Library/LaunchAgents/$oal.plist"; done); do
     [ -e "$oap" ] || continue
     case "$(basename "$oap" .plist)" in "$LABEL_PREFIX.cron."*) continue ;; esac
+    cron_jobs_plist "$oap" 2>/dev/null && continue
     echo "$oap"
   done | sort -u
+}
+
+# Does this plist run a local-cron-jobs job, whatever its label? A glob wider
+# than the prefix can reach one, and it belongs under `cron`, not the agent
+# roster (sd:3106). The ProgramArguments shape is cron_plist_ours' mark.
+cron_jobs_plist() { # plist path
+  python3 - "$1" <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as f:
+        args = plistlib.load(f).get("ProgramArguments")
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(args, list) and len(args) == 4 and args[0] == "/bin/bash"
+         and isinstance(args[1], str) and args[1].endswith("/local-cron-jobs/cron-jobs.sh")
+         and args[2] == "exec" else 1)
+PY
 }
 
 # Personal daemons captured into launchagents/. Same credential scan idea as

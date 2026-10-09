@@ -803,12 +803,13 @@ follow() {
 # --- hygiene (sd:1987) ------------------------------------------------------
 # Sweeps what agents leave behind in each conf checkout: worktree
 # registrations whose directory is gone, locks held by a dead process,
-# remote-tracking refs for deleted remote branches, and local branches whose
-# content is already on the default branch. It acts only with --apply, and
-# only on those classes; everything else it lists. It reads the same fleet as
-# sync and uses git plumbing only, so it runs offline except for the remote
-# prune. It never touches a stash, a remote branch, the default branch, a
-# dirty worktree, or a worktree some process has its cwd in.
+# remote-tracking refs for deleted remote branches, local branches whose
+# content is already on the default branch, and old lane files under the bulk
+# storage root. It acts only with --apply, and only on those classes;
+# everything else it lists. It reads the same fleet as sync and uses git
+# plumbing only, so it runs offline except for the remote prune. It never
+# touches a stash, a remote branch, the default branch, a dirty worktree, or
+# a worktree some process has its cwd or an open file in.
 #
 # Loops run in pipelines (subshells), so findings are counted through files
 # in $HYG_TMP: acted, found (would act with --apply), listed, failed.
@@ -966,41 +967,126 @@ hyg_lock_dead() {
   return 1
 }
 
-# Lists every process cwd into $HYG_TMP/cwds: /proc on Linux, lsof
-# elsewhere. Returns 1 when neither can answer, or lsof fails; the caller
-# then counts the worktree as in use. It runs afresh for each candidate,
+# Lists every process cwd and open file into $HYG_TMP/inuse: /proc on Linux,
+# lsof elsewhere. Returns 1 when neither can answer, or lsof fails; the
+# caller then counts the path as in use. It runs afresh for each candidate,
 # right before its removal, so a process that moved in after an earlier
 # candidate's scan is still seen.
 #
 # A /proc entry whose cwd cannot be read is skipped only when the process
 # has exited since the listing. One of this user's processes that stays
 # unreadable fails the scan. Another user's cwd is unreadable without root;
-# lsof does not show it either, so both paths leave it out alike.
-hyg_cwds() {
-  : > "$HYG_TMP/cwds"
+# lsof does not show it either, so both paths leave it out alike. An open
+# file that closes during the scan is not read, which is what it would be.
+hyg_inuse() {
+  : > "$HYG_TMP/inuse"
   # REPO_SYNC_PROC exists for the tests, to reach the lsof path on Linux.
   h_proc="${REPO_SYNC_PROC:-/proc}"
   if [ -d "$h_proc/self" ] && [ -e "$h_proc/self/cwd" ]; then
     for h_p in "$h_proc"/[0-9]*; do
-      readlink "$h_p/cwd" 2>/dev/null >> "$HYG_TMP/cwds" && continue
+      if readlink "$h_p/cwd" 2>/dev/null >> "$HYG_TMP/inuse"; then
+        for h_fd in "$h_p"/fd/*; do
+          readlink "$h_fd" 2>/dev/null >> "$HYG_TMP/inuse" || true
+        done
+        continue
+      fi
       [ -d "$h_p" ] && [ -O "$h_p" ] && return 1
     done
   elif command -v lsof >/dev/null 2>&1; then
-    lsof -nP -d cwd -Fn > "$HYG_TMP/lsof" 2>/dev/null || return 1
-    sed -n 's/^n//p' "$HYG_TMP/lsof" >> "$HYG_TMP/cwds"
+    lsof -nP -Fn > "$HYG_TMP/lsof" 2>/dev/null || return 1
+    sed -n 's/^n//p' "$HYG_TMP/lsof" >> "$HYG_TMP/inuse"
   else
     return 1
   fi
-  [ -s "$HYG_TMP/cwds" ]
+  [ -s "$HYG_TMP/inuse" ]
 }
 
-# Returns 0 when some process has its cwd at or under $1, or when that cannot
-# be known.
+# Returns 0 when some process has its cwd or an open file at or under $1, or
+# when that cannot be known.
 hyg_busy() {
-  hyg_cwds || return 0
+  hyg_inuse || return 0
   h_real=$(cd "$1" 2>/dev/null && pwd -P) || return 0
   awk -v d="$h_real" '$0 == d || index($0, d "/") == 1 { found = 1 } END { exit !found }' \
-    "$HYG_TMP/cwds"
+    "$HYG_TMP/inuse"
+}
+
+# Drops the ignored entries of `git status --porcelain --ignored=matching`
+# (each ignored path itself, not a folder holding only ignored files) that are
+# build output: it rebuilds, and `worktree remove` takes it with the tree.
+# Only a directory counts, which git prints with a trailing slash; a regular
+# file of the same name may be anyone's data. Any other line stays, so an
+# .env or a local database still keeps a worktree; so does a quoted path,
+# which this cannot read.
+hyg_not_build() {
+  awk '!/^!! .*\/$/ { print; next }
+    { p = substr($0, 4); sub(/\/$/, "", p); n = split(p, s, "/")
+      if (s[n] ~ /^(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|node_modules|target|dist)$/) next
+      print }'
+}
+
+# Lane logs and scratch under the bulk storage root (sd:1677): in each
+# <root>/<repo>/lane/, a file unmodified for 14 days is deleted, then a
+# folder that saw no change in 14 days and is empty after that. lane/queue/
+# is left alone: it is the sd-ship lane queue when sd.lane_root names this
+# root. The root is `sd config get sd.bulk_storage_root`; unset, unreadable,
+# or not mounted, nothing is swept and nothing is said. A file a process
+# holds open, or a folder that is some process's cwd, stays.
+hyg_lane() {
+  command -v sd >/dev/null 2>&1 || return 0
+  h_bulk=$(sd config get sd.bulk_storage_root 2>/dev/null) || return 0
+  case "$h_bulk" in "~"|"~/"*) h_bulk="$HOME${h_bulk#"~"}" ;; esac
+  [ -n "$h_bulk" ] && [ -d "$h_bulk" ] || return 0
+  echo "=== lane storage ($h_bulk)"
+  for h_lane in "$h_bulk"/*/lane; do
+    h_lane=$(cd "$h_lane" 2>/dev/null && pwd -P) || continue
+    # Both lists are taken before anything is deleted: a delete refreshes
+    # its folder's mtime.
+    if ! find "$h_lane" -mindepth 1 -path "$h_lane/queue" -prune -o -type d -mtime +13 -print \
+         > "$HYG_TMP/lane.dirs" 2>/dev/null \
+       || ! find "$h_lane" -path "$h_lane/queue" -prune -o -type f -mtime +13 -print \
+         > "$HYG_TMP/lane.files" 2>/dev/null; then
+      hyg_fail "list lane files under $h_lane"; continue
+    fi
+    [ -s "$HYG_TMP/lane.files" ] || [ -s "$HYG_TMP/lane.dirs" ] || continue
+    if ! hyg_inuse; then
+      hyg_note "lane files under $h_lane not swept: cannot tell which a process uses"; continue
+    fi
+    awk -v d="$h_lane" 'index($0, d "/") == 1' "$HYG_TMP/inuse" > "$HYG_TMP/lane.inuse"
+    h_del=0; h_kept=0; h_bad=0
+    while IFS= read -r h_f; do
+      if grep -qxF "$h_f" "$HYG_TMP/lane.inuse"; then
+        h_kept=$((h_kept + 1)); continue
+      fi
+      # Read the age again: the file may have been written since the listing.
+      [ -n "$(find "$h_f" -prune -type f -mtime +13 2>/dev/null)" ] || continue
+      if [ "$APPLY" != 1 ]; then
+        h_del=$((h_del + 1))
+      elif rm -f "$h_f"; then
+        h_del=$((h_del + 1))
+      else
+        h_bad=$((h_bad + 1))
+      fi
+    done < "$HYG_TMP/lane.files"
+    h_rmd=0
+    if [ "$APPLY" = 1 ]; then
+      # Deepest first; a folder that is not empty, or no longer there, stays
+      # as it is.
+      sort -r "$HYG_TMP/lane.dirs" | while IFS= read -r h_dir; do
+        grep -qxF "$h_dir" "$HYG_TMP/lane.inuse" && continue
+        rmdir "$h_dir" 2>/dev/null && echo x >> "$HYG_TMP/lane.rmd"
+      done
+      [ -f "$HYG_TMP/lane.rmd" ] && h_rmd=$(wc -l < "$HYG_TMP/lane.rmd" | tr -d ' ')
+      rm -f "$HYG_TMP/lane.rmd"
+    fi
+    [ "$h_kept" -eq 0 ] || hyg_note "kept $h_kept lane file(s) under $h_lane a process holds open"
+    [ "$h_bad" -eq 0 ] || hyg_fail "delete $h_bad lane file(s) under $h_lane"
+    if [ "$APPLY" = 1 ]; then
+      [ "$h_del" -eq 0 ] && [ "$h_rmd" -eq 0 ] || \
+        hyg_act "deleted $h_del lane file(s) unmodified for 14 days under $h_lane, and $h_rmd empty folder(s)"
+    elif [ "$h_del" -gt 0 ]; then
+      hyg_found "delete $h_del lane file(s) unmodified for 14 days under $h_lane"
+    fi
+  done
 }
 
 # The workflow item state for number $1, or nothing. Reads the sd database
@@ -1195,9 +1281,10 @@ hyg_repo() {
           h_why="worktree $w_path is locked: $w_reason"
         elif [ ! -d "$w_path" ]; then
           h_why="worktree $w_path is registered but missing"
-        elif [ -n "$(git -C "$w_path" status --porcelain --ignored 2>/dev/null || echo unreadable)" ]; then
-          # Ignored files count: an .env or a local database is not
-          # rebuildable, and `worktree remove` would take it with the tree.
+        elif [ -n "$({ git -C "$w_path" status --porcelain --ignored=matching 2>/dev/null || echo unreadable; } | hyg_not_build)" ]; then
+          # Ignored files count, build output aside: an .env or a local
+          # database is not rebuildable, and `worktree remove` would take it
+          # with the tree.
           h_why="worktree $w_path holds uncommitted, untracked or ignored files"
         elif hyg_busy "$w_path"; then
           h_why="worktree $w_path is in use by a process"; h_live=1
@@ -1281,6 +1368,18 @@ hyg_repo() {
   fi
 }
 
+# Runs one part of the sweep and prints its output. A part with nothing to
+# say stays out of the report; a note alone still prints, though it counts
+# nowhere.
+hyg_section() {
+  h_before=$(cat "$HYG_TMP/acted" "$HYG_TMP/found" "$HYG_TMP/listed" "$HYG_TMP/failed" | wc -l)
+  "$@" > "$HYG_TMP/repo.out" 2>&1 || true
+  h_after=$(cat "$HYG_TMP/acted" "$HYG_TMP/found" "$HYG_TMP/listed" "$HYG_TMP/failed" | wc -l)
+  if [ "$h_after" -ne "$h_before" ] || grep -q '^  note: ' "$HYG_TMP/repo.out"; then
+    cat "$HYG_TMP/repo.out"; echo
+  fi
+}
+
 hygiene() {
   APPLY=0
   for h_arg in "$@"; do
@@ -1312,15 +1411,9 @@ hygiene() {
   repo_list | while read -r subdir full_repo; do
     target="$ROOT/$subdir/${full_repo##*/}"
     [ -d "$target/.git" ] || continue
-    h_before=$(cat "$HYG_TMP/acted" "$HYG_TMP/found" "$HYG_TMP/listed" "$HYG_TMP/failed" | wc -l)
-    hyg_repo "$target" "$full_repo" > "$HYG_TMP/repo.out" 2>&1 || true
-    h_after=$(cat "$HYG_TMP/acted" "$HYG_TMP/found" "$HYG_TMP/listed" "$HYG_TMP/failed" | wc -l)
-    # A repo with nothing to say stays out of the report; a note alone
-    # still prints, though it counts nowhere.
-    if [ "$h_after" -ne "$h_before" ] || grep -q '^  note: ' "$HYG_TMP/repo.out"; then
-      cat "$HYG_TMP/repo.out"; echo
-    fi
+    hyg_section hyg_repo "$target" "$full_repo"
   done
+  hyg_section hyg_lane
 
   h_acted=$(wc -l < "$HYG_TMP/acted" | tr -d ' ')
   h_found=$(wc -l < "$HYG_TMP/found" | tr -d ' ')
@@ -1623,7 +1716,11 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              remote-tracking refs for deleted remote branches, and deletes
              local branches whose content is on the default branch
              (ancestor, tree equal to the merge base, or a patch-equivalent
-             squash), removing a clean, unused worktree that holds one.
+             squash), removing a clean, unused worktree that holds one
+             (build output does not count against clean; it goes with the
+             worktree). It deletes lane files under the bulk storage root
+             (sd.bulk_storage_root, <root>/<repo>/lane/, queue/ aside)
+             unmodified for 14 days, unless a process holds them open.
              Every deletion prints the branch and its tip sha. It lists,
              never deletes: branches whose upstream is gone, branches
              with commits on no remote, branches named for a done sd item,
