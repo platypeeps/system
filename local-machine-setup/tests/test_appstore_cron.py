@@ -397,6 +397,9 @@ class CaptureTest(StageTest):
         # Mac whatever HOME says (sd:2331), so: every key unset, no ticket.
         write_exec(self.stubs / "defaults", "#!/bin/sh\nexit 1\n")
         write_exec(self.stubs / "sudo", "#!/bin/sh\nexit 1\n")
+        # The shared job most cases install; a job no file defines is not adopted.
+        (self.jobs / "own-job.job").write_text('JOB_SCHEDULE="0 4 * * *"\n')
+        (self.profiles / "personal.agent").write_text("# no agents in a capture case\n")  # as copy_capture_config
 
     def capture(self, **extra):
         env = {
@@ -474,6 +477,56 @@ class CaptureTest(StageTest):
         result = self.capture(CRON_JOBS_EXTRA_DIRS=str(extra))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("picked", (self.profiles / "personal.cron").read_text())
+
+    def test_capture_does_not_adopt_a_job_no_job_file_defines(self):
+        # sd:3106. A retired or deleted job leaves its plist installed. Adopted
+        # into the profile, `cron-jobs.sh verify` cannot render it, so the cron
+        # stage reads it STALE every night and its install fails.
+        (self.jobs / "retired-job.job.retired-2026-10-01").write_text('JOB_SCHEDULE="0 5 * * *"\n')
+        for job in ("own-job", "retired-job"):
+            self.install_plist(job)
+        result = self.capture()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SKIPPED retired-job", result.stdout)
+        self.assertIn("cron: 1 entries", result.stdout)
+        cron = (self.profiles / "personal.cron").read_text()
+        self.assertIn("own-job", cron)
+        self.assertNotIn("retired-job", cron)
+
+    def test_capture_stops_when_the_job_files_cannot_be_listed(self):
+        self.install_plist("own-job")
+        self.jobs.chmod(0o300)
+        self.addCleanup(self.jobs.chmod, 0o755)
+        result = self.capture()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse((self.profiles / "personal.cron").exists())
+
+    def test_capture_refuses_to_write_a_roster_empty(self):
+        # sd:3106. capture wrote the work roster with "manifest: 0 label(s)",
+        # and the next update would have removed every agent it named.
+        (self.profiles / "personal.agent").write_text("org.example.helper\n")
+        (self.profiles / "personal.cron").write_text("own-job\n")
+        result = self.capture()
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("REFUSED personal.agent", result.stdout)
+        self.assertIn("REFUSED personal.cron", result.stdout)
+        self.assertEqual((self.profiles / "personal.agent").read_text(), "org.example.helper\n")
+        self.assertEqual((self.profiles / "personal.cron").read_text(), "own-job\n")
+
+    def test_capture_leaves_a_cron_jobs_plist_out_of_the_agent_roster(self):
+        # A label glob wider than the prefix can reach a plist local-cron-jobs
+        # rendered; it is a cron job, so the agent roster must not adopt it.
+        (self.agents / "org.example.cron.nightly.plist").write_bytes(plistlib.dumps({
+            "Label": "org.example.cron.nightly",
+            "ProgramArguments": ["/bin/bash", "/opt/example/local-cron-jobs/cron-jobs.sh", "exec", "nightly"],
+        }))
+        (self.agents / "org.example.helper.plist").write_bytes(plistlib.dumps({
+            "Label": "org.example.helper", "ProgramArguments": ["/opt/example/helper"]}))
+        result = self.capture(MACHINE_SETUP_AGENT_GLOBS="org.example.*")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        agents = (self.profiles / "personal.agent").read_text()
+        self.assertIn("org.example.helper", agents)
+        self.assertNotIn("org.example.cron.nightly", agents)
 
     def test_capture_lists_apps_from_the_applications_override(self):
         # REGRESSION (sd:2331). The scan read /Applications, so a test capture
