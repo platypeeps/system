@@ -171,6 +171,60 @@ class PinnedSyncTest(unittest.TestCase):
                          f.notify_log.read_text() if f.notify_log.exists() else "")
 
 
+class DivergedBranchSyncTest(unittest.TestCase):
+    """A branch other than the default, with its own commits, that its
+    upstream moved past cannot fast-forward: that is work in progress, not a
+    failed sync (sd:3125). Every night `!!! failed` named such a checkout."""
+
+    def fixture(self):
+        f = PinFixture()
+        self.addCleanup(f.destroy)
+        return f
+
+    def diverged(self, f):
+        """A checkout on branch `pr` tracking origin/main, one commit ahead
+        and one behind."""
+        repo = f.repo()
+        f.git(repo, "switch", "-q", "-c", "pr", "--track", "origin/main")
+        mine = f.commit(repo, "mine", "mine\n", "local work")
+        f.advance_origin(repo)
+        return repo, mine
+
+    def test_a_diverged_feature_branch_is_listed_not_failed(self):
+        """NEW. Listed with its counts, left where it is, and sync exits 0."""
+        f = self.fixture()
+        repo, mine = self.diverged(f)
+
+        result = f.run("sync", expect=0)
+
+        self.assertIn("diverged: 1 checkout(s), left alone; rebase or merge by hand", result.stdout)
+        self.assertIn("owner/proj on pr, 1 ahead, 1 behind origin/main", result.stdout)
+        self.assertNotIn("failed", result.stdout + result.stderr)
+        self.assertEqual((mine, "pr"), (f.head(repo), f.branch(repo)))
+
+    def test_a_diverged_default_branch_still_fails(self):
+        """PIN. Commits on the default branch itself are not a side branch."""
+        f = self.fixture()
+        repo = f.repo()
+        f.commit(repo, "mine", "mine\n", "local work on main")
+        f.advance_origin(repo)
+
+        result = f.run("sync", expect=1)
+
+        self.assertIn("failed: 1 repo(s)", result.stdout)
+
+    def test_a_feature_branch_whose_fetch_fails_still_fails(self):
+        """PIN. An unreachable upstream is not a diverged branch."""
+        f = self.fixture()
+        repo, _ = self.diverged(f)
+        f.git(repo, "remote", "set-url", "origin", str(f.tmp / "no-such-origin"))
+
+        result = f.run("sync", expect=1)
+
+        self.assertIn("failed: 1 repo(s)", result.stdout)
+        self.assertNotIn("diverged:", result.stdout)
+
+
 class RefreshTest(unittest.TestCase):
     def fixture(self):
         f = PinFixture()

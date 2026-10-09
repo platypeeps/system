@@ -401,6 +401,24 @@ pin_default() {
   return 1
 }
 
+# Prints "on <branch>, N ahead, M behind <upstream>" when checkout $1 is on
+# a branch other than origin's default, and its upstream, just fetched, moved
+# past the branch's own commits (sd:3125). That is work in progress, often a
+# pull request branch; `pull --ff-only` can never move it. Returns 1
+# otherwise, and when any read or the fetch fails, so the pull still runs
+# and reports that failure.
+side_branch_diverged() {
+  d_branch=$(git -C "$1" symbolic-ref -q --short HEAD) || return 1
+  d_default=$(pin_default "$1") || return 1
+  [ "$d_branch" != "$d_default" ] || return 1
+  d_up=$(git -C "$1" rev-parse -q --abbrev-ref '@{u}' 2>/dev/null) || return 1
+  git -C "$1" fetch -q 2>/dev/null || return 1
+  d_counts=$(git -C "$1" rev-list --left-right --count 'HEAD...@{u}') || return 1
+  set -- $d_counts
+  [ "$1" -gt 0 ] && [ "$2" -gt 0 ] || return 1
+  echo "on $d_branch, $1 ahead, $2 behind $d_up"
+}
+
 # A satellite follows the hub (sd:3100): `$HOME/.config/sd/hub.json`, the
 # file local-sd-db's hub.py reads, makes this machine one.
 is_satellite() {
@@ -462,7 +480,10 @@ sync() {
       fi
     elif [ -d "$target/.git" ]; then
       echo "=== refreshing $full_repo"
-      if ! (cd "$target" && git pull --ff-only && git submodule update --init --recursive); then
+      if state=$(side_branch_diverged "$target"); then
+        echo "$state; left alone"
+        echo "$full_repo $state" >> "$DIVLOG"
+      elif ! (cd "$target" && git pull --ff-only && git submodule update --init --recursive); then
         echo "!!! failed: $full_repo" >&2
         echo "$full_repo" >> "$FAILLOG"
       fi
@@ -481,6 +502,10 @@ sync() {
   if [ -s "$PINLOG" ]; then
     echo "pinned: $(wc -l < "$PINLOG" | tr -d ' ') checkout(s), not pulled"
     sed 's/^/  /' "$PINLOG"
+  fi
+  if [ -s "$DIVLOG" ]; then
+    echo "diverged: $(wc -l < "$DIVLOG" | tr -d ' ') checkout(s), left alone; rebase or merge by hand"
+    sed 's/^/  /' "$DIVLOG"
   fi
   if [ -s "$FAILLOG" ]; then
     echo "failed: $(wc -l < "$FAILLOG" | tr -d ' ') repo(s)"
@@ -1577,7 +1602,8 @@ case "$1" in
     # temp file rather than a variable, which would not survive the pipeline.
     FAILLOG=$(mktemp)
     PINLOG=$(mktemp)
-    trap 'rm -f "$FAILLOG" "$PINLOG"' EXIT INT TERM
+    DIVLOG=$(mktemp)
+    trap 'rm -f "$FAILLOG" "$PINLOG" "$DIVLOG"' EXIT INT TERM
     sync
     ;;
   refresh)
@@ -1625,6 +1651,7 @@ case "$1" in
     TMPD=$(mktemp -d)
     FAILLOG="$TMPD/faillog"; : > "$FAILLOG"
     PINLOG="$TMPD/pinlog"; : > "$PINLOG"
+    DIVLOG="$TMPD/divlog"; : > "$DIVLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     EMAIL_FAILED=0
     SYNC_FAILED=0
@@ -1746,7 +1773,10 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              summary; exits 1 if any repo failed, having tried all the others.
              A checkout on a detached HEAD is pinned: sync fetches it, never
              pulls it, and lists it as "pinned at <sha>", with ", N behind
-             origin/<default>" when it is. A pinned checkout is not a failure
+             origin/<default>" when it is. A branch other than the default,
+             with its own commits, that its upstream moved past is listed
+             under "diverged:" and left alone, not failed (sd:3125).
+             A pinned checkout is not a failure
   check      read-only: report which configured repos have no checkout
              (MISSING) and which sit on a different origin than the conf
              names (DIFFERS). Touches no network, so a repo that is merely
