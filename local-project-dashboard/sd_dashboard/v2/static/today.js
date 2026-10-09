@@ -93,12 +93,22 @@
     put($('tally'), html`<span class="g-warning">■ ${count('warning')} warning</span><span class="g-caution">▲ ${count('caution')} caution</span><span class="g-queued">◌ ${count('queued')} queued</span>`);
     const d = new Date(DOC.now);
     put($('subhead'), html`${d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })} · <b>${ROWS.length}</b> thing${ROWS.length === 1 ? '' : 's'} want${ROWS.length === 1 ? 's' : ''} you, loudest first · read <time class="rel" datetime="${DOC.now}"></time>`);
-    const w = count('warning'), c = count('caution');
-    window.PAGE_ATTENTION = { state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: w ? 'warning rows' : 'caution rows' };
-    shell.attention();
+    attend();
     lamps();
     hideRows();
   }
+
+  // The badge counts the loudest state: warning rows, else caution rows and the decisions decisions.js says wait (sd:3012),
+  // which are caution (▲) there too. An unread Now is unknown unless a decision waits; the title counts warnings only.
+  let waiting = 0;
+  function attend() {
+    const count = s => ROWS.filter(r => STATE[r.band] === s).length;
+    const w = count('warning'), rows = count('caution'), c = rows + waiting;
+    const what = [rows && 'caution rows', waiting && 'decisions waiting'].filter(Boolean).join(' and ');
+    shell.attention(w ? { state: 'warning', n: w, what: 'warning rows' } : c ? { state: 'caution', n: c, what }
+      : { state: DOC ? 'ok' : 'unknown', n: 0, what: 'rows' });
+  }
+  document.addEventListener('today:decisions', e => { waiting = e.detail; attend(); });
 
   // The filter hides rows; it moves no selection. applyFilter() also moves the selection off a row the filter hid.
   function hideRows() {
@@ -139,7 +149,7 @@
     put($('observed'), html`<span class="ph">not read</span>`);
     put($('tally'), html``);
     put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${failed}</td></tr>`);
-    shell.attention({ state: 'unknown', n: 0, what: 'rows' });
+    attend();
     hideRows();
   }
   const shown = id => [...$('rows').querySelectorAll('tr[data-id]')].some(tr => tr.dataset.id === id && !tr.hidden);

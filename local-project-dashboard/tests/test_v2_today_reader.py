@@ -132,3 +132,64 @@ R.sel = selected(); R.details = ELS.details.html;""", search="?row=job%3Anightly
     def test_the_page_reads_through_the_shared_reader(self):
         self.assertIn("shell.read(", TODAY_JS)
         self.assertNotIn("fetch('/api/now'", TODAY_JS)
+
+
+DECISIONS_JS = (V2 / "static" / "decisions.js").read_text(encoding="utf-8")
+
+
+class TheBadge(TheReader):
+    """Today's badge (shell.attention) counts the decisions waiting beside the Now rows (sd:3012).
+
+    today.js and decisions.js run together, as today.html loads them; /api/decisions answers with one decision, and the
+    Now document keeps only its caution row, so the badge is caution and its count is the row plus the decision."""
+
+    DECISION = {"note": 7, "item": 3012, "title": "Dashboard v2", "repo": "/repos/system", "asked": "2026-10-08T21:00:00Z",
+                "question": "Which shape?", "options": ["Option lines", "Free text"], "revision": "a" * 64}
+
+    def run_badge(self, body, decisions, keep_job=False):
+        self.doc["rows"] = [row for row in self.doc["rows"] if keep_job or row["kind"] != "job"]
+        self.assertEqual([row["band"] for row in self.doc["rows"]], ["broken", "look"] if keep_job else ["look"])
+        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
+                  # As shell.js does: a page passes its badge, or sets window.PAGE_ATTENTION and passes nothing.
+                  + "\nwindow.shell.attention = a => { if (a) window.PAGE_ATTENTION = a; OUT.attention.push(window.PAGE_ATTENTION); };"
+                  + f"\nconst DOC0 = {json.dumps(self.doc)}, DECISIONS = {json.dumps({'decisions': decisions})};\n"
+                  + "ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : path === '/api/decisions' ? [200, DECISIONS]"
+                    " : [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }];\n"
+                  + TODAY_JS + "\n" + DECISIONS_JS
+                  + "\nvar R = {};\nconst click = (note, i) => ELS.decisions.listeners.click[0]({ target: { closest: s => s === 'button[data-option]'"
+                    " ? { dataset: { note: String(note), option: String(i) }, closest: () => null } : null } });\n"
+                  + "(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+                  + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
+                  + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
+                                capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out
+
+    def test_a_waiting_decision_counts_in_the_badge(self):
+        out = self.run_badge("", [self.DECISION])
+        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 2, "what": "caution rows and decisions waiting"})
+
+    def test_an_answered_decision_stops_counting(self):
+        out = self.run_badge("R.before = OUT.attention[OUT.attention.length - 1]; click(7, 0); await flush();", [self.DECISION])
+        self.assertEqual(out["posts"][0][0], "/api/decisions/answer")
+        self.assertEqual(out["R"]["before"]["n"], 2)
+        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "caution rows"})
+
+    def test_a_resolved_decision_the_read_no_longer_lists_counts_nothing(self):
+        out = self.run_badge("R.before = OUT.attention[OUT.attention.length - 1]; DECISIONS.decisions = [];"
+                             " ELS.refresh.listeners.click[0](); await flush();", [self.DECISION])
+        self.assertEqual(out["R"]["before"]["n"], 2)
+        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "caution rows"})
+
+    def test_a_decision_waiting_while_now_is_unread_still_lights_the_badge(self):
+        out = self.run_badge("ANSWER0 = ANSWER; ANSWER = (p, b) => p === '/api/now' ? [500, { error: 'stopped' }] : ANSWER0(p, b);"
+                             " refresh(); await flush();", [self.DECISION])
+        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "decisions waiting"})
+
+    def test_a_warning_row_outranks_a_waiting_decision(self):
+        """A guard: the badge counts its loudest state, and a decision is caution, as its ▲ in the section says."""
+        out = self.run_badge("", [self.DECISION], keep_job=True)
+        self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "warning rows"})
