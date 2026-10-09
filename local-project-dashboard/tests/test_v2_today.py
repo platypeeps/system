@@ -117,7 +117,7 @@ class ThePage(BrowserSession):
     def test_every_file_the_page_names_is_served(self):
         _, _, body = self.request("/today")
         named = re.findall(r'(?:src|href)="(/ui/[^"]+)"', body)
-        self.assertEqual(len(named), 11)  # four stylesheets, seven scripts
+        self.assertEqual(len(named), 12)  # four stylesheets, eight scripts
         for path in named:
             status, headers, _ = self.request(path)
             self.assertEqual(status, 200, path)
@@ -126,7 +126,7 @@ class ThePage(BrowserSession):
     def test_data_and_page_script_load_before_the_shell_and_the_shell_loads_last(self):
         _, _, body = self.request("/today")
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "today.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "today.js", "decisions.js", "shell.js"])
         self.assertLess(body.index('src="/ui/markup.js?v='), body.index("</head>"))
         self.assertGreater(body.index('src="/ui/icons.js?v='), body.index("<body"))
 
@@ -333,4 +333,4 @@ JSON.stringify({
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "today", "Today", "/today", ()
+    page, section, route, api = "today", "Today", "/today", ("/api/decisions", "/api/decisions/answer")
