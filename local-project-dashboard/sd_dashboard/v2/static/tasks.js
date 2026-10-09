@@ -348,11 +348,13 @@ addEventListener('DOMContentLoaded', () => {
       when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; const L = STATUSES.map(([s]) => legal(t, s)); return L.some(x => x.ok) || L.find(x => x.reason !== 'Already here.').reason; },
       cli: o => idOr(o, t => `sd task status ${t.id} <status>`),
       run: o => { askMove(T(o)); return null; } },
-    // Priorities 1–4, workflow.edit_item's range, each a bulk edit with Undo (sd:3012 triage re-prioritizes in bulk).
+    // Priorities 1–4, workflow.edit_item's range, each a bulk edit with Undo (sd:3012 triage re-prioritizes in bulk). A row
+    // already at the priority is refused as its write leaves, not by `when`: the bar offers only what every picked row is
+    // on for, so a pick that mixes priorities would otherwise offer none.
     ...[1, 2, 3, 4].map(n => ({ id: `item.p${n}`, on: 'item', label: `Edit → P${n}`, risk: 'undo', bulk: true, icon: 'flag-triangle-right',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : !EDITABLE(t) ? noEdit(t) : t.p === n ? `it is already P${n}` : true; },
+      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : EDITABLE(t) || noEdit(t); },
       cli: o => idOr(o, t => `sd task edit ${t.id} --priority ${n}`),
-      run: o => { const t = must(o), was = t.p; return editRun(t, { p: n }, () => `${label(t)} P${was || '–'} → P${n}`); },
+      run: o => { const t = must(o), was = t.p; return editRun(t, { p: n }, () => `${label(t)} P${was || '–'} → P${n}`, { check: r => r.p !== n || `it is already P${n}` }); },
       undo: undoOf })),
     // Close is sd task cancel (sd:3012): done, with a cancelled receipt and the reason, through progress.task_guard. A bulk
     // close asks once for one reason and runs every picked row with its own revision. No Undo: no sd verb takes it back.
@@ -363,7 +365,7 @@ addEventListener('DOMContentLoaded', () => {
       fields: () => [{ name: 'reason', label: 'Reason', required: true, placeholder: 'why nobody will do it', help: 'Recorded on each closed task. A close without a reason is refused.' }],
       cli: (o, v = {}) => idOr(o, t => `sd task cancel ${t.id} --reason ${v.reason ? window.shell.shq(v.reason) : "'<why>'"}`),
       sends: o => `POST /api/items/${T(o).id}/cancel-task {reason}`,
-      consequence: () => 'Closes it as done with a cancelled receipt and your reason. No sd verb takes it back.',
+      consequence: () => 'Each task closes as done, with a cancelled receipt and your reason. No sd verb takes it back.',
       run: (o, v) => { const t = must(o);
         return landing(write(t.key, x => `/api/items/${x.id}/cancel-task`, { reason: v.reason }), () => `${label(t)} closed · sd task cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
     { id: 'item.note', on: 'item', label: 'Note', key: 'n', risk: 'safe', icon: 'notebook-pen',

@@ -457,6 +457,15 @@ function run() { return JSON.stringify(OUT); }
   ok: 'Cancel item', fields: [{ name: 'reason', label: 'Reason', required: true }] });
 """
 
+    def test_a_field_with_help_opens_and_names_its_help(self):
+        # Close, Relink and Cancel give their field a help line. The confirm built that attribute so markup.js refused it
+        # inside the tag, and the dialog never opened in a browser (found by the sd:3012 browser check).
+        out = self.confirm("""const p = confirmAction({ title: 'Close: 2 items?', ok: 'Close',
+  fields: [{ name: 'reason', label: 'Reason', required: true, help: 'Recorded on each closed task.' }] });
+OUT.form = confirmDlg.html; close('no'); await p;""")
+        self.assertIn('aria-describedby="cf-reason-help"', out["form"])
+        self.assertIn('<p id="cf-reason-help">Recorded on each closed task.</p>', out["form"])
+
     def test_ok_stays_off_until_a_required_field_is_typed(self):
         out = self.confirm(self.FIELDS + """OUT.steps = [[yes.disabled, line.textContent]];
 type('   '); OUT.steps.push([yes.disabled, line.textContent]);
@@ -832,12 +841,17 @@ C.runBulk(cmd('item.close'), [C.get('{plan}'), C.get('{ask}')]); await flush();"
     def test_a_priority_runs_on_every_picked_row_with_its_own_revision(self):
         plan, ask = self.ids["plan"], self.ids["ask"]
         answer = """(path, body) => { const id = +path.split('/').pop(); return [200, { item: { id, status: 'ready', priority: body.priority, due: null, recurrence: null }, notes: [], revision: String(id).repeat(64).slice(0, 64) }]; }"""
-        out = self.run_page(f"""C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush(); R.p4 = cmd('item.p4').when(C.get('{ask}'));""", answer)
-        self.assertEqual(out["posts"], [[f"/api/items/{plan}", {"priority": 1, "revision": self.row("plan")["revision"]}, 64],
+        # A pick that mixes priorities keeps P3 on the bar: the row already at P3 is named, and the other row still runs.
+        out = self.run_page(f"""R.p3 = [cmd('item.p3').when(C.get('{plan}')), cmd('item.p3').when(C.get('{ask}'))];
+C.runBulk(cmd('item.p3'), [C.get('{plan}'), C.get('{ask}')]); await flush();
+C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush();""", answer)
+        self.assertEqual(out["R"]["p3"], [True, True])
+        self.assertEqual(out["posts"], [[f"/api/items/{plan}", {"priority": 3, "revision": self.row("plan")["revision"]}, 64],
+                                        [f"/api/items/{plan}", {"priority": 1, "revision": (str(plan) * 64)[:64]}, 64],
                                         [f"/api/items/{ask}", {"priority": 1, "revision": self.row("ask")["revision"]}, 64]])
         self.assertEqual(out["bulkCli"], f"sd task edit {plan} --priority 1 && sd task edit {ask} --priority 1")
-        self.assertEqual(out["toasts"], [["Edit → P1 · 2 items", True]])
-        self.assertIs(out["R"]["p4"], True)
+        self.assertEqual(out["toasts"], [[f"Edit → P3 · 1 item · 1 of 2 not changed: #{ask} Answer the question (it is already P3)", True],
+                                         ["Edit → P1 · 2 items", True]])
 
     def test_commands_are_off_where_the_library_would_refuse_them(self):
         plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
@@ -847,7 +861,7 @@ R.p2 = cmd('item.p2').when(C.get('{plan}'));
 R.recur = cmd('item.recur').when(C.get('{port}'));
 R.cancel = cmd('asg.cancel').when(C.get('asg:{asg["id"]}'));""")
         self.assertEqual(out["R"], {
-            "p2": "it is already P2",
+            "p2": True,
             "recur": "a work item cannot recur",
             "cancel": asg["cancel"]["reason"]})
         self.assertTrue(out["R"]["cancel"])
@@ -1071,11 +1085,13 @@ R.toasts = OUT.toasts.map(t => t.msg); OUT.toasts[1].undo(); await flush(); HOLD
         ask = self.ids["ask"]
         answer = f"""(path, body) => new Promise(r => HOLD.push(() => r([200, {{ item: {{ id: {ask}, status: 'planning', priority: body.priority,
   due: null, recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}])))"""
-        # Two P2 edits sent before either answered: the second one found P2, so its Undo sets P2, not the P3 before the first.
+        # Two P2 edits sent before either answered: the second finds P2 as it leaves and sends nothing (sd:3012), so the
+        # first one's Undo sets back the P3 it changed.
         out = self.run_page(f"""shellRun(cmd('item.p2'), C.get('{ask}')); shellRun(cmd('item.p2'), C.get('{ask}'));
 await flush(); HOLD.splice(0).forEach(f => f()); await flush(); HOLD.splice(0).forEach(f => f()); await flush();
-OUT.toasts[1].undo(); await flush(); HOLD.splice(0).forEach(f => f()); await flush();""", answer, prelude="var HOLD = [];\n")
-        self.assertEqual([p[1]["priority"] for p in out["posts"]], [2, 2, 2])
+OUT.toasts[0].undo(); await flush(); HOLD.splice(0).forEach(f => f()); await flush();""", answer, prelude="var HOLD = [];\n")
+        self.assertEqual([p[1]["priority"] for p in out["posts"]], [2, 3])
+        self.assertIn([f"#{ask} Answer the question not changed: it is already P2", False], out["toasts"])
         self.assertEqual(out["toasts"][-1], [f"Edit → P2 undone · #{ask} Answer the question", False])
 
     def test_completing_a_repeating_task_is_confirmed_shows_the_next_occurrence_and_has_no_undo(self):

@@ -345,9 +345,10 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .seg .off span { color: var(--color-muted); cursor: not-allowed; }
 .bulkbar {
   position: fixed; z-index: 25; left: 50%; bottom: calc(var(--space-lg) + env(safe-area-inset-bottom)); transform: translateX(-50%);
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); max-width: calc(100vw - 1rem); padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); width: max-content; max-width: calc(100vw - 1rem); padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
   border: var(--rule-hair) solid var(--color-accent); border-radius: var(--radius-md); background: var(--color-panel); box-shadow: var(--shadow-overlay); font-size: var(--text-sm);
 }
+/* build (sd:3012): width: max-content, or left: 50% caps the bar at half the viewport and a phone stacks every button. */
 .bulkbar[hidden] { display: none; }
 .bulkbar:not([hidden]) ~ .toast, .toast:has(~ .bulkbar:not([hidden])) { bottom: calc(var(--space-lg) + 3.5rem + env(safe-area-inset-bottom)); }
 /* The third layer: with the bar up, a plain message stacks above a live Undo that already sits above the bar (review, PR #46). */
