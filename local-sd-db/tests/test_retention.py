@@ -656,7 +656,7 @@ class TheUntouchedP4(PruneCase):
         self.assertEqual(self.status_of(blocked), "blocked")
         note = self.db.execute("SELECT kind, session, body FROM note WHERE item=? ORDER BY id DESC LIMIT 1",
                                (stale,)).fetchone()
-        self.assertEqual((note["kind"], note["session"]), ("decision", RETENTION))
+        self.assertEqual((note["kind"], note["session"]), ("comment", RETENTION))
         self.assertIn("untouched for 30 days", note["body"])
         # A second night finds nothing more.
         self.assertEqual(retention.park_untouched_p4(self.db, now=NOW + timedelta(days=1)), [])

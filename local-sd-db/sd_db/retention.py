@@ -48,7 +48,7 @@ its snapshot restored and compared, and never before. What the table says:
                      touch it.
     untouched P4     thirty days, then parked (sd:3007).  An open priority-4
                      item whose newest `updated_at` or note is older than the
-                     age gets `parked_at` and a `decision` note by
+                     age gets `parked_at` and a `comment` note by
                      `retention`. Parked items leave Today and the backlog and
                      stay readable by id and in the capture list. Writing
                      pieces keep their own park; an item with a due date
@@ -283,7 +283,7 @@ def park_untouched_p4(connection, *, now: datetime) -> list[int]:
         ids = [row[0] for row in connection.execute(_UNTOUCHED_P4, (cutoff,))]
         for item in ids:
             set_item_fields(connection, item, parked_at=stamp)
-            add_note(connection, item, "decision", f"Parked: P4 untouched for {days} days", session=RETENTION)
+            add_note(connection, item, "comment", f"Parked: P4 untouched for {days} days", session=RETENTION)
     return ids
 
 
