@@ -78,6 +78,7 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.apps = base / "Applications"
         for app in ("iTerm.app", "Zed.app", "Visual Studio Code.app", "Docker.app", "Claude.app"):
             (self.apps / app).mkdir(parents=True)
+        (self.apps / "iTerm.app/Contents/Frameworks/Sparkle.framework").mkdir(parents=True)
         self.defaults_db = base / "defaults.db"
         self.zed = self.home / ".config/zed/settings.json"
         self.zed.parent.mkdir(parents=True)
@@ -145,12 +146,23 @@ class SelfUpdateOffTest(unittest.TestCase):
                       clean.stdout)
         self.assertIn("MISSING", clean.stdout)
 
+    def test_an_app_without_sparkle_has_no_sparkle_row(self):
+        # sd:3103: the App Store build of Maccy ships no Sparkle.framework and
+        # no updater, so its two keys were drift that no write could clear.
+        (self.apps / "Maccy.app/Contents").mkdir(parents=True)
+
+        result = self.run_verb("update", "macos")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("org.p0deje.Maccy", result.stdout)
+        self.assertIn("Maccy.app has no Sparkle.framework", result.stdout)
+
     def test_a_refused_write_is_reported_and_the_stage_goes_on(self):
         # sd:3103: Maccy's container refused the write, set -e ended the run,
         # and no later app or manifest key was converged.
         write_exec(self.stubs / "defaults", REFUSING_DEFAULTS_STUB)
         self.refused_domain = "org.p0deje.Maccy"
-        (self.apps / "Maccy.app").mkdir()
+        (self.apps / "Maccy.app/Contents/Frameworks/Sparkle.framework").mkdir(parents=True)
         macos = self.config_root / "machine-setup/profiles/personal.macos"
         macos.write_text("org.p0deje.Maccy pasteByDefault bool true\n"
                          "com.apple.dock autohide bool true\n")

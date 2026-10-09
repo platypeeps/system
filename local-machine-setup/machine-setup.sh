@@ -1858,8 +1858,8 @@ report_deferred() {
 # - sparkle: target is the defaults domain. Sparkle keeps the user's choice
 #   there under its Info.plist key names, SUEnableAutomaticChecks (scheduled
 #   checks) and SUAutomaticallyUpdate (silent installs); both go false. Each
-#   app ships Sparkle.framework. ChatGPT.app's domain is com.openai.codex,
-#   read from its bundle.
+#   app ships Sparkle.framework; a build without it is skipped.
+#   ChatGPT.app's domain is com.openai.codex, read from its bundle.
 # - defaults: a documented boolean in the app's domain. Claude desktop reads
 #   disableAutoUpdates from com.anthropic.claudefordesktop.
 # - json: one top-level key in the app's settings file, through
@@ -1939,6 +1939,12 @@ stage_self_update() {
     [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] || continue
     case "$how" in
       sparkle)
+        # An App Store build ships no Sparkle and no updater of its own (the
+        # work machine's Maccy, sd:3103): no key to turn off, so no drift.
+        if [ ! -d "$APPLICATIONS_DIR/$app/Contents/Frameworks/Sparkle.framework" ]; then
+          echo "  --      $app has no Sparkle.framework; no self-update to turn off"
+          continue
+        fi
         self_update_default "$target" SUEnableAutomaticChecks false
         self_update_default "$target" SUAutomaticallyUpdate false ;;
       defaults) self_update_default "$target" "$key" "$val" ;;
