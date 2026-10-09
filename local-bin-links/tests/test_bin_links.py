@@ -4,8 +4,8 @@ The pack's own installer links its commands into ~/.local/bin. A link in the
 bin dir that this script made earlier shadows that install, and a link whose
 command the pack dropped dangles. So any symlink whose target is inside the
 pack checkout is swept, but only when the pack's installer has put the same
-command, executable, in `$HOME/.local/bin` and that directory is on PATH, or
-when the link dangles. Otherwise the link is the only copy of a working
+command in `$HOME/.local/bin` as an executable regular file whose symlink chain
+avoids the bin dir, and that directory is on PATH, or when the link dangles. Otherwise the link is the only copy of a working
 command and stays, with a message. `remove` deletes them all on request.
 A regular file, or a link that points elsewhere, is never touched.
 
@@ -118,6 +118,92 @@ class BinLinksTest(unittest.TestCase):
         (self.installed / "sd-notes").write_text("#!/bin/sh\n")
         self.run_script("install")
         self.assertTrue(os.path.islink(self.bin / "sd-notes"))
+
+    # A replacement counts only when it runs on its own: an executable regular
+    # file whose symlink chain never passes through the bin dir being swept.
+
+    def test_a_pack_link_is_kept_when_the_replacement_is_a_directory(self):
+        self.old_links("sd")
+        (self.installed / "sd").mkdir(parents=True, mode=0o755)
+        out = self.run_script("install")
+        self.assertTrue(os.path.islink(self.bin / "sd"))
+        self.assertIn("kept pack link sd: installed replacement is not an executable file", out)
+
+    def test_a_pack_link_is_kept_when_the_replacement_is_a_fifo(self):
+        self.old_links("sd")
+        self.installed.mkdir(parents=True)
+        os.mkfifo(self.installed / "sd", 0o755)
+        self.run_script("install")
+        self.assertTrue(os.path.islink(self.bin / "sd"))
+
+    def test_a_pack_link_is_kept_when_the_replacement_dangles(self):
+        self.old_links("sd")
+        self.installed.mkdir(parents=True)
+        (self.installed / "sd").symlink_to(self.pack / "bin/gone")
+        self.run_script("install")
+        self.assertTrue(os.path.islink(self.bin / "sd"))
+
+    def test_a_pack_link_is_kept_when_the_replacement_loops(self):
+        self.old_links("sd")
+        self.installed.mkdir(parents=True)
+        (self.installed / "sd").symlink_to("sd")
+        self.run_script("install")
+        self.assertTrue(os.path.islink(self.bin / "sd"))
+
+    def test_a_pack_link_is_kept_when_the_replacement_links_to_it(self):
+        self.old_links("sd")
+        self.installed.mkdir(parents=True)
+        (self.installed / "sd").symlink_to(self.bin / "sd")
+        out = self.run_script("install")
+        self.assertTrue(os.path.islink(self.bin / "sd"))
+        self.assertIn("kept pack link sd: installed replacement resolves through", out)
+
+    def test_a_pack_link_is_kept_when_the_replacement_links_to_it_relatively(self):
+        self.old_links("sd")
+        self.installed.mkdir(parents=True)
+        (self.installed / "sd").symlink_to("../../../bin-common/sd")
+        self.run_script("install")
+        self.assertTrue(os.path.islink(self.bin / "sd"))
+
+    def test_a_pack_link_is_kept_when_the_replacement_reaches_the_bin_dir_by_a_dir_link(self):
+        self.old_links("sd")
+        alias = pathlib.Path(self.tmp.name) / "alias"
+        alias.symlink_to(self.bin)
+        self.installed.mkdir(parents=True)
+        (self.installed / "sd").symlink_to(alias / "sd")
+        self.run_script("install")
+        self.assertTrue(os.path.islink(self.bin / "sd"))
+
+    def test_a_pack_link_is_kept_when_the_replacement_links_to_another_swept_link(self):
+        self.old_links("sd", "sd-status")
+        self.install_replacement("sd-status")
+        (self.installed / "sd").symlink_to(self.bin / "sd-status")
+        self.run_script("install")
+        self.assertFalse(os.path.lexists(self.bin / "sd-status"))
+        self.assertTrue(os.path.islink(self.bin / "sd"))
+
+    def test_a_pack_link_is_removed_when_the_replacement_links_relatively_into_the_pack(self):
+        self.old_links("sd")
+        self.installed.mkdir(parents=True)
+        (self.installed / "sd").symlink_to("../../../pack/bin/sd")
+        self.run_script("install")
+        self.assertFalse(os.path.lexists(self.bin / "sd"))
+
+    def test_a_pack_link_to_a_directory_is_not_ours(self):
+        self.old_links("sd-dir")
+        self.installed.mkdir(parents=True)
+        (self.installed / "sd-dir").write_text("#!/bin/sh\n")
+        (self.installed / "sd-dir").chmod(0o755)
+        self.run_script("install")
+        self.assertTrue(os.path.islink(self.bin / "sd-dir"))
+        self.assertNotIn("sd-dir", self.run_script("status").split())
+
+    def test_status_does_not_call_a_link_stale_when_the_replacement_is_a_directory(self):
+        self.old_links("sd")
+        (self.installed / "sd").mkdir(parents=True, mode=0o755)
+        row = self.line(self.run_script("status"), "sd")
+        self.assertIn("MISSING", row)
+        self.assertNotIn("STALE", row)
 
     def test_a_pack_link_is_removed_when_the_replacement_is_on_path(self):
         self.old_links("sd")

@@ -164,16 +164,40 @@ sweep_retired() {
 # The pack's installer owns its commands (it links them into ~/.local/bin), so a
 # link into the pack checkout is one this script made before that, and it shadows
 # the installed command. It goes only once the installer's copy of the same name
-# is executable and its directory is on PATH, or when it dangles (the pack
+# runs on its own and its directory is on PATH, or when it dangles (the pack
 # dropped the command): until then the old link is the only working copy. Only a
-# symlink is touched, never a regular file. `all` (the remove verb) skips the
-# check. MISSING and STALE are in machine-setup's drift vocabulary.
+# symlink to a regular file is touched; a link to a directory is not one this
+# script made, and a path through it could break. `all` (the remove verb) skips
+# the check. MISSING and STALE are in machine-setup's drift vocabulary.
 PACK_BIN="$HOME/.local/bin"
 
-# Prints why a pack link must stay; prints nothing when it may go.
+# Prints why a pack link must stay; prints nothing when it may go. The
+# replacement must be an executable regular file reached by a symlink chain that
+# never stops in the bin dir: a hop there may be the link about to be removed.
+# Each hop's directory is resolved with `cd -P`, so a relative target or a
+# directory link into the bin dir counts too. Any failed probe keeps the link.
 pack_keep_reason() {
   pk="$PACK_BIN/$1"
-  [ -x "$pk" ] || { echo "no installed replacement (run make setup in the pack)"; return; }
+  if [ ! -e "$pk" ] && [ ! -L "$pk" ]; then
+    echo "no installed replacement (run make setup in the pack)"; return
+  fi
+  not_file="installed replacement is not an executable file ($PACK_BIN/$1)"
+  bin_real=$(cd -P "$BIN_DIR" 2>/dev/null && pwd -P) || { echo "cannot resolve $BIN_DIR"; return; }
+  hops=0
+  while :; do
+    hd=$(cd -P "$(dirname "$pk")" 2>/dev/null && pwd -P) || { echo "$not_file"; return; }
+    [ "$hd" = "$bin_real" ] && { echo "installed replacement resolves through $BIN_DIR"; return; }
+    [ -L "$pk" ] || break
+    # A loop never ends; 40 hops is the kernel's own limit.
+    hops=$((hops + 1))
+    [ "$hops" -le 40 ] || { echo "$not_file"; return; }
+    t=$(readlink "$pk") || { echo "cannot read link $pk"; return; }
+    case "$t" in
+      /*) pk="$t" ;;
+      *)  pk="$hd/$t" ;;
+    esac
+  done
+  [ -f "$pk" ] && [ -x "$pk" ] || { echo "$not_file"; return; }
   case ":$PATH:" in
     *":$PACK_BIN:"*) ;;
     *) echo "installed replacement not on PATH ($PACK_BIN)" ;;
@@ -190,6 +214,7 @@ sweep_pack() {
       "$SD_PACK_ROOT/"*) ;;
       *) continue ;;
     esac
+    [ -e "$sl" ] && [ ! -f "$sl" ] && continue
     sn=$(basename "$sl")
     why=""
     if [ "$1" != all ] && [ -e "$sl" ]; then
@@ -259,7 +284,8 @@ Linked tools: repo-sync, gito, prism, mac-utils, notify, agent-prompt,
 adversarial-gate, ha-mcp, llama-cpp, jev. The sd-ai-command-pack's commands
 (sd, sd-status, ...) are not linked: its installer links them into
 ~/.local/bin. An older link into the pack checkout is swept once that
-installed copy exists and ~/.local/bin is on PATH; until then it is kept.
+installed copy runs without it and ~/.local/bin is on PATH; until then it is
+kept.
 
 environment:
   BIN_LINKS_DIR   directory to link into (default ~/bin/common)
