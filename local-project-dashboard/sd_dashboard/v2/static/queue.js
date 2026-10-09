@@ -1,6 +1,7 @@
 // Queue (sd:2585): /api/queue (queue_screen.py), one section per repository lane, one row per item in its state:
-// merging, next, building, blocked, landed. Up, down, top, hold and release post /api/queue/move with the lane's
-// revision; the server runs sd-ship lane move|hold|release, refuses a stale revision, and the page reads again.
+// merging, next, building, blocked, landed. Up, down, top, hold, release and cancel post /api/queue/move with the lane's
+// revision; the server runs sd-ship lane move|hold|release|cancel, refuses a stale revision, and the page reads again.
+// Cancel asks first (sd:3012): no verb takes it back, so the entry must be enqueued again from its worktree.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -15,7 +16,7 @@
 
   const btn = (lane, r, act, label, icon, off) => html`<button class="btn quiet sm" type="button" data-act="${act}" data-item="${String(r.item)}" data-repo="${lane.path}" aria-label="${label} sd:${String(r.item)}" title="${label}"${off || busy ? html` disabled` : ''}>${ICON(icon)}</button>`;
   function controls(lane, r, last) {
-    return html`<div class="ctl" role="group" aria-label="Order of sd:${String(r.item)}">${btn(lane, r, 'up', 'Move up', 'arrow-up', r.position === 1)}${btn(lane, r, 'down', 'Move down', 'arrow-down', r.position === last)}<button class="btn quiet sm" type="button" data-act="top" data-item="${String(r.item)}" data-repo="${lane.path}" aria-label="Move sd:${String(r.item)} to the top"${r.position === 1 || busy ? html` disabled` : ''}>Top</button><button class="btn quiet sm" type="button" data-act="${r.held ? 'release' : 'hold'}" data-item="${String(r.item)}" data-repo="${lane.path}"${busy ? html` disabled` : ''}>${r.held ? 'Release' : 'Hold'}</button></div>`;
+    return html`<div class="ctl" role="group" aria-label="Order of sd:${String(r.item)}">${btn(lane, r, 'up', 'Move up', 'arrow-up', r.position === 1)}${btn(lane, r, 'down', 'Move down', 'arrow-down', r.position === last)}<button class="btn quiet sm" type="button" data-act="top" data-item="${String(r.item)}" data-repo="${lane.path}" aria-label="Move sd:${String(r.item)} to the top"${r.position === 1 || busy ? html` disabled` : ''}>Top</button><button class="btn quiet sm" type="button" data-act="${r.held ? 'release' : 'hold'}" data-item="${String(r.item)}" data-repo="${lane.path}"${busy ? html` disabled` : ''}>${r.held ? 'Release' : 'Hold'}</button><button class="btn quiet sm" type="button" data-act="cancel" data-item="${String(r.item)}" data-repo="${lane.path}" aria-label="Cancel sd:${String(r.item)} in this lane"${busy ? html` disabled` : ''}>Cancel…</button></div>`;
   }
   // Each state's glyph, label and fact line. A state's glyph carries it; colour only repeats it.
   const VIEW = {
@@ -65,12 +66,20 @@
     draw();
   }
 
-  const DONE = { up: 'moved up', down: 'moved down', top: 'moved to the top', hold: 'held', release: 'released' };
+  const DONE = { up: 'moved up', down: 'moved down', top: 'moved to the top', hold: 'held', release: 'released', cancel: 'cancelled' };
+  // Cancel is the one write no verb undoes; the dialog names the entry and the command it runs.
+  function sure(l, item) {
+    const r = l.rows.find(x => x.state === 'next' && x.item === item), S = window.shell;
+    return S.confirm({ title: `Cancel sd:${item}${r && r.title ? ` · ${r.title}` : ''} in ${l.repo}?`,
+      body: 'The entry leaves the queue and the runner never ships it. To ship it later, enqueue it again from its worktree.',
+      cli: `sd-ship -C ${S.shq(l.path)} lane cancel ${item}`, ok: 'Cancel entry', keep: 'Keep it queued' });
+  }
   async function act(b) {
     const l = DOC && DOC.lanes.find(x => x.path === b.dataset.repo);
     if (!l || busy) return;
-    busy = true; draw();
     const item = Number(b.dataset.item), action = b.dataset.act;
+    if (action === 'cancel' && !(await sure(l, item))) return;
+    busy = true; draw();
     try {
       const out = await window.shell.post('/api/queue/move', { repo: l.path, item, action, revision: l.revision });
       const order = out.pending ? ` Order now: ${out.pending.map(n => `sd:${n}`).join(', ')}.` : '';

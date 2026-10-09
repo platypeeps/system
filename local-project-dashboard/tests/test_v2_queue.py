@@ -2,7 +2,7 @@
 
 What this slice promises: `/api/queue` draws each registered repository's lane from `sd-ship lane list`, one row per
 item in one of five states (merging, next, building, blocked, landed), with load5 and the gate slots in the header.
-The only write is `/api/queue/move`: it runs `sd-ship lane move|hold|release` with exactly the page's item and place,
+The only write is `/api/queue/move`: it runs `sd-ship lane move|hold|release|cancel` with exactly the page's item and place,
 under the session cookie, CSRF and Origin checks, and refuses a revision the queue has moved past.
 
 `sd-ship` and `sd` are stubs on PATH that answer from a fixture and log their arguments; no test reaches a real lane.
@@ -162,6 +162,19 @@ class TheRows(Lane, ScreenCase):
         self.assertEqual(set(doc["load"]), {"load1", "load5", "load15", "trend"})
         self.assertIn("next item boundary", doc["edits"])
 
+    def test_a_failed_entry_shows_its_status_step_and_the_first_line_of_its_reason(self):
+        # sd:3012: older failed history drops off after `BLOCKED_DAYS`; a reason shows its first line only.
+        self.list(self.entries() + [
+            {"item": 14, "title": "Failed this morning", "status": "failed", "step": "merge",
+             "reason": "merge refused: required check pending\n  sd/local-gate: queued", "finished_at": "2026-09-06T06:00:00Z"},
+            {"item": 15, "title": "Failed four days ago", "status": "failed", "step": "prepare", "reason": "gate failed",
+             "finished_at": "2026-09-02T11:00:00Z"}])
+        blocked = [row for row in self.doc()["lanes"][0]["rows"] if row["state"] == "blocked"]
+        self.assertEqual([row["item"] for row in blocked], [5, 4, 14])
+        failed = blocked[2]
+        self.assertEqual((failed["status"], failed["step"], failed["reason"]),
+                         ("failed", "merge", "merge refused: required check pending"))
+
     def test_a_lane_that_cannot_be_listed_is_named_not_dropped(self):
         self.fixture.write_text("not json")
         doc = self.doc()
@@ -188,6 +201,17 @@ class TheMove(Lane, BrowserSession):
             status, _, _ = self.move(action)
             self.assertEqual((status, self.calls()[-1]), (200, ["-C", str(self.checkout), "lane", *verb]))
 
+    def test_cancel_calls_exactly_lane_cancel_with_the_item(self):
+        status, _, answer = self.move("cancel", item=9)
+        self.assertEqual((status, answer["ok"], answer["action"]), (200, True, "cancel"))
+        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"],
+                                        ["-C", str(self.checkout), "lane", "cancel", "9"]])
+
+    def test_a_refused_cancel_is_the_answer(self):
+        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:9 has no pending entry in this lane"}):
+            status, _, answer = self.move("cancel", item=9)
+        self.assertEqual((status, answer["error"]), (400, "sd:9 has no pending entry in this lane"))
+
     def test_a_post_without_the_csrf_token_runs_nothing(self):
         status, _, _ = self.move(**{"X-SD-CSRF": "0" * 64})
         self.assertEqual((status, self.calls()), (403, []))
@@ -206,7 +230,7 @@ class TheMove(Lane, BrowserSession):
     def test_an_unregistered_repository_or_unknown_action_runs_nothing(self):
         status, _, _ = self.post("/api/queue/move", {"repo": self.tmp.name, "item": 12, "action": "up", "revision": "x"})
         self.assertEqual((status, self.calls()), (400, []))
-        status, _, _ = self.move("cancel")
+        status, _, _ = self.move("delete")
         self.assertEqual((status, self.calls()), (400, []))
 
     def test_a_lane_refusal_is_the_answer(self):
@@ -328,6 +352,34 @@ class TheScript(Lane, ScreenCase):
         out = self.run_page(f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'up' }} }}); R.lanes = ELS.lanes.html;",
                             move=(409, {"error": "The queue changed since the page read it.", "reload": True}))
         self.assertIn('<p class="fail" role="alert">sd:9 not moved up: The queue changed since the page read it.</p>', out["R"]["lanes"])
+
+
+    def cancel(self, answer, move=(200, {"ok": True, "action": "cancel", "item": 9, "edits": "Edits take effect at the next item boundary."})):
+        """Click Cancel on sd:9; the confirm answers `answer` and records what it asked."""
+        return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
+                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '9', act: 'cancel' }} }}); R.lanes = ELS.lanes.html;", move)
+
+    def test_each_next_row_offers_cancel(self):
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertEqual(re.findall(r'data-act="cancel" data-item="(\d+)"', lanes), ["9", "12"])
+
+    def test_cancel_asks_first_and_names_the_entry_and_command(self):
+        out = self.cancel(True)
+        asked = out["asked"]
+        self.assertIn("sd:9", asked["title"])
+        self.assertIn("Old failure, since retried", asked["title"])
+        self.assertEqual(asked["cli"], f"sd-ship -C '{self.checkout}' lane cancel 9")
+        self.assertEqual(out["posts"][0][1]["action"], "cancel")
+        self.assertIn("sd:9 cancelled.", out["R"]["lanes"])
+
+    def test_cancel_kept_at_the_confirm_posts_nothing(self):
+        out = self.cancel(False)
+        self.assertEqual((out["posts"], out["gets"]), ([], ["/api/queue"]))
+
+    def test_a_refused_cancel_says_why_in_its_lane(self):
+        out = self.cancel(True, move=(400, {"error": "sd:9 has no pending entry in this lane"}))
+        self.assertIn('<p class="fail" role="alert">sd:9 not cancelled: sd:9 has no pending entry in this lane The queue is unchanged.</p>',
+                      out["R"]["lanes"])
 
 
 class TheRegistration(Registers, unittest.TestCase):
