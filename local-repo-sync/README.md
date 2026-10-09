@@ -12,6 +12,7 @@ Clone-or-pull the whole repo fleet in one sweep. Symlinked as `repo-sync` in `~/
 ./repo-sync.sh hygiene    # report stale worktrees, dead locks, landed branches
 ./repo-sync.sh hygiene --apply  # act on the safe classes, list the rest
 ./repo-sync.sh nightly    # reconcile + sync + hygiene --apply, emailing (cron)
+./repo-sync.sh refresh    # move every pinned checkout to origin's default branch
 ./repo-sync.sh test       # regression suite (tests/), run by make check
 repo-sync                 # symlink in ~/bin/common, works from anywhere
 ```
@@ -38,6 +39,31 @@ bring it under management.
 A linked worktree placed under the root is not a checkout. `reconcile` lists
 it as `WORKTREE <dir> (of <parent>)` and leaves the conf alone; `hygiene`
 reaches it through its parent's worktree registrations.
+
+## Pinned checkouts
+
+A checkout on a detached HEAD is pinned (sd:3097). The hub runs system and
+the command pack from pinned checkouts, so they change only when the
+operator refreshes them, not under work in other repositories.
+
+```sh
+git -C ~/repos/system switch --detach        # pin at the current commit
+./repo-sync.sh refresh                       # move every pinned conf checkout
+./repo-sync.sh refresh ~/repos/system        # move one checkout
+git -C ~/repos/system switch main            # unpin; sync pulls it again
+```
+
+`sync` and `nightly` fetch a pinned checkout and never pull it. They list it
+as `pinned at <sha>`, with `, N behind origin/<default>` when origin moved
+on. A pinned checkout is not a failure, and nightly mails nothing about it.
+
+`refresh` moves each pinned checkout to `origin/<default>`, still detached,
+and prints the old and new sha. It refuses a checkout with uncommitted
+changes and leaves one on a branch alone. In the command pack (it has
+`bin/sd_install.py`) it then runs `make setup`. When local-sd-db's
+`SCHEMA_VERSION` changed, it prints the steps: stop the dashboard, the runner
+and `sd-serve`, run `sd-db.sh backup`, then `sd-db.sh migrate`. It runs
+neither. It exits 1 when any checkout failed.
 
 ## Hygiene
 
@@ -187,6 +213,9 @@ third kind, `NEW`: each case was written before the feature and seen to
 fail against the script without it. Its fixtures have history: a bare
 origin beside the root and a clone under it, so the remote prune runs
 offline.
+
+`tests/test_pinned.py` covers pinned checkouts in `sync`, `nightly` and
+`refresh` with the same fixtures and a `make` stub; its cases are `NEW` too.
 
 One case reads the conf files in this folder instead of building a tree:
 `ShippedConfTest` enumerates the shipped `repos.*.conf.example` files, plus
