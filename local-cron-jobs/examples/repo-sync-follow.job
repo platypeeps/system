@@ -5,10 +5,12 @@
 #
 # At the hub's pin, `follow` does nothing and drains nothing, so most runs
 # cost one tag fetch. When they differ, it drains this machine's
-# lanes first, waiting up to 45 minutes; JOB_TIMEOUT sits above that so the
-# drain, not the job limit, decides. A slot that finds this job's own run
+# lanes first, waiting up to 45 minutes, moves, then runs the machine-setup
+# bin and satellite stages with the lanes held, each bounded at 450 s
+# (sd:3168). JOB_TIMEOUT sits above both, so the bounds, not the job limit,
+# decide. A slot that finds this job's own run
 # still active logs `skipped` and exits 0. On the hub, `follow` says so and
 # exits 0.
 JOB_SCHEDULE="*/5 * * * *"
-JOB_TIMEOUT="55m"
+JOB_TIMEOUT="65m"
 JOB_COMMAND="sh \"$ROOT/../local-repo-sync/repo-sync.sh\" follow"

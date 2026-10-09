@@ -16,6 +16,7 @@ while [ -L "$SELF" ]; do
 done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
 . "$DIR/../lib/config.sh"
+. "$DIR/../lib/bounded.sh"
 
 # The work checkout root. REPO_SYNC_WORK_ROOT and local-ai-apps'
 # AI_APPS_WORK_ROOT mean the same thing; SYSTEM_TOOLS_WORK_ROOT sets both.
@@ -661,8 +662,9 @@ drain_exec() {
 }
 
 # The intent marker (sd:3100, operator ruling): written before any move and
-# deleted once make setup succeeds at the pin or a rollback puts all back. A
-# killed follow leaves it, so the next run finishes and sets up again.
+# deleted once make setup and the machine-setup update succeed at the pin, or
+# a rollback puts all back. A killed follow leaves it, so the next run
+# finishes, sets up and updates again.
 FOLLOW_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/follow-intent"
 
 # Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
@@ -672,7 +674,7 @@ FOLLOW_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/follow-intent"
 follow_want() {
   if is_pinned "$3" && [ "$(git -C "$3" rev-parse HEAD)" = "$2" ]; then
     if [ "$1" = pack ] && [ -e "$FOLLOW_INTENT" ]; then
-      echo "follow: pack at the hub's pin, but a follow stopped before its make setup finished ($FOLLOW_INTENT); setting up again"
+      echo "follow: pack at the hub's pin, but a follow stopped before its make setup finished, or its machine-setup update failed ($FOLLOW_INTENT); setting up again"
       printf '%s\n' "setup$US$2$US$3" >> "$TMPD/moves"
     else
       echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
@@ -765,7 +767,24 @@ follow() {
     fi
   done 3< "$TMPD/moves"
   echo "----------------------------------------"
+  # The two update stages that need the locks run here, with the lanes still
+  # held, so they never run under a lane run (sd:3168): satellite installs the
+  # hub's sd_db into the pack's venv, and bin relinks the commands. Neither
+  # loads or unloads a LaunchAgent. A full update would not do: its cron and agents stages
+  # reinstall this job's own LaunchAgent, and launchd then boots out the
+  # running follow mid-update. Those stages run in the job's chained update,
+  # after this. A failure leaves the move and the marker: the next run sets
+  # up and updates again. Each stage is bounded at 450 s, so both stay inside
+  # the job's limit after the drain's 45 minutes.
   if [ "$f_failed" -eq 0 ]; then
+    for f_stage in bin satellite; do
+      echo "--- machine-setup update $f_stage --apply"
+      if ! st_bounded 450 sh "$f_sys/local-machine-setup/machine-setup.sh" update "$f_stage" --apply < /dev/null; then
+        echo "!!! failed: machine-setup update $f_stage; the checkouts stay at the hub's pin; by hand: sh '$f_sys/local-machine-setup/machine-setup.sh' update $f_stage --apply"
+        echo "follow  : moved, update failed; $FOLLOW_INTENT stays, so the next run sets up and updates again"
+        return 1
+      fi
+    done
     rm -f "$FOLLOW_INTENT"
     echo "follow  : done"
     return 0
@@ -1769,13 +1788,17 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              from the pack origin and, where a checkout differs, drain the
              lanes as refresh does, then move it, detached, to exactly that
              sha, never to origin's default branch, and run `make setup` in
-             the pack. Every check runs first: a failed fetch, a tag with no
+             the pack. Then, lanes still held, it runs this system
+             checkout's `machine-setup.sh update bin --apply` and
+             `update satellite --apply`, each bounded at 450 s; a failure
+             exits 1, keeps the move and names the command. Every check
+             runs first: a failed fetch, a tag with no
              pack= line, uncommitted changes or a drain timeout refuses with
              nothing moved. When a move fails, each checkout it moved goes
              back to its old sha and the pack runs `make setup` again there,
              so the next run retries the pair. A run killed after it wrote
              $XDG_STATE_HOME/repo-sync/follow-intent leaves it, and the next
-             run finishes and sets the pack up again, even at the pin.
+             run finishes, sets the pack up and updates again, even at the pin.
              Already there, or no hub-pin tag, is a no-op. On the hub it says so and
              does nothing. On a satellite, sync and nightly never pull system or
              pack; only follow moves them.
