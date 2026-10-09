@@ -10,7 +10,7 @@
       "pattern": "^[A-Za-z0-9_-]{10,}$"
     },
     "drive_writing_folder": {
-      "description": "Drive folder for drafts and review copies. Private, implies no gates",
+      "description": "Drive folder for drafts and review copies; `sd-draft-review` pushes here. Private, implies no gates",
       "pattern": "^[A-Za-z0-9_-]{10,}$"
     }
   },
@@ -20,7 +20,8 @@
     "bases": {
       "tip": "System/Databases/Tips and Tricks",
       "blog-idea": "System/Databases/Blog Ideas",
-      "topic": "System/Databases/Topics"
+      "topic": "System/Databases/Topics",
+      "quick-note": "System/Databases/Quick Notes"
     }
   },
   "kinds": {
@@ -177,6 +178,37 @@
           "Provenance"
         ],
         "template": "templates/topic.md"
+      }
+    },
+    "quick-note": {
+      "fields": [
+        "text"
+      ],
+      "initial-status": "new",
+      "sections": {
+        "order": [
+          "Note"
+        ],
+        "template": "templates/quick-note.md"
+      }
+    }
+  },
+  "workflow": {
+    "blog-idea": {
+      "status": {
+        "inbox": "planning",
+        "accepted": "ready",
+        "drafting": "in_progress",
+        "published": "done",
+        "declined": "done"
+      }
+    },
+    "topic": {
+      "status": {
+        "candidate": "planning",
+        "active": "in_progress",
+        "parked": "blocked",
+        "retired": "done"
       }
     }
   }
