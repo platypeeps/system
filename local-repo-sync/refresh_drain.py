@@ -6,9 +6,16 @@ held, that lane's `lane run` exits at once and its queued entries stay
 pending. A running lane keeps its lock until its run ends. With every lock
 held it waits until `sd gate status --json` shows no holders and no waiters,
 then runs the refresh steps with REPO_SYNC_LANES_HELD=1 and exits with their
-status. The locks drop when this process exits, however it exits: the kernel
-releases a flock with its holder, and the child never inherits the
-descriptors (Python opens files non-inheritable).
+status. The locks drop when this process exits: the kernel releases a flock
+with its holder, and the child never inherits the descriptors (Python opens
+files non-inheritable), so a step that leaves a process behind cannot keep a
+lane stopped. TERM, INT and HUP do not end this process before the child:
+they are passed to the child, and this process waits for it.
+
+A lane whose runner never ran has no lock file yet: every folder under the
+lane root, and every name in REPO_SYNC_LANE_NAMES (the conf's checkouts, a
+lane being named after its checkout), gets one, made and held here. The gate
+is checked again after the last pass over the locks, just before the child.
 
 The wait is bounded: 45 minutes in total for the locks and the gate
 together (operator ruling), or REPO_SYNC_DRAIN_WAIT seconds. Past it, refresh refuses with nothing moved and
@@ -22,6 +29,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -81,11 +89,15 @@ def wait(busy, deadline, limit):
         time.sleep(1)
 
 
-def take_locks(root, held, deadline, limit):
-    """Take each runner lock under root not yet held; returns how many were new."""
-    new = [lock for lock in sorted(root.glob("*/lane/queue/runner.lock")) if lock not in held]
+def take_locks(root, held, deadline, limit, names=()):
+    """Take each runner lock under root not yet held, making the missing ones
+    of lane folders and named lanes; returns how many were new."""
+    lanes = {folder.parent.name for folder in root.glob("*/lane")} | set(names)
+    locks = {root / name / "lane" / "queue" / "runner.lock" for name in lanes}
+    new = [lock for lock in sorted(locks | set(root.glob("*/lane/queue/runner.lock"))) if lock not in held]
     for lock in new:
         try:
+            lock.parent.mkdir(parents=True, exist_ok=True)
             handle = open(lock, "a", encoding="utf-8")
         except OSError as error:
             raise Refused(f"cannot open {lock}: {error.strerror}") from None
@@ -135,13 +147,15 @@ def drain(env):
     has_sd = shutil.which("sd", path=env.get("PATH")) is not None
     if not has_sd:
         print("sd is not on PATH: no gate to wait on", flush=True)
+    names = env.get("REPO_SYNC_LANE_NAMES", "").split()
     held = {}
-    # A lane folder made during the gate wait is taken on the next pass.
+    # A lane folder made during the gate wait is taken on the next pass, and
+    # a gate a runner left behind is seen: the last step is a gate check.
     while True:
-        take_locks(root, held, deadline, limit)
+        new = take_locks(root, held, deadline, limit, names)
         if has_sd:
             wait(lambda: gate_busy(env), deadline, limit)
-        if not take_locks(root, held, deadline, limit):
+        if not new:
             break
     print(f"lanes held: {len(held)} runner lock(s) under {root}; gate idle", flush=True)
     return held
@@ -163,10 +177,28 @@ def main(argv):
     except KeyboardInterrupt:
         print("repo-sync.sh refresh: interrupted, nothing moved", file=sys.stderr)
         return 130
-    child = subprocess.run(["sh", script, "refresh", *args], env={**env, "REPO_SYNC_LANES_HELD": "1"})
+    code = run_child(["sh", script, "refresh", *args], {**env, "REPO_SYNC_LANES_HELD": "1"})
     for handle in held.values():
         handle.close()
-    return child.returncode
+    return code
+
+
+def run_child(command, env):
+    """Run the child in this process group and wait for it, through TERM, INT
+    and HUP. One group, so a terminal's signal or a group kill reaches the
+    child and its steps too, and the child keeps the terminal for a git
+    prompt. A signal to this process alone is not passed on: a child shell
+    it ends would leave its running step without the locks."""
+    child = subprocess.Popen(command, env=env)
+
+    def hold(signum, _frame):
+        print(f"refresh: got signal {signum}; the lanes stay held until the refresh steps end",
+              file=sys.stderr, flush=True)
+
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, hold)
+    code = child.wait()
+    return code if code >= 0 else 128 - code
 
 
 if __name__ == "__main__":

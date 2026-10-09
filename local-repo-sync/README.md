@@ -74,10 +74,21 @@ script, holds every lane's `runner.lock` under the lane root. The root is
 `$XDG_STATE_HOME/sd/lanes` (default `~/.local/state/sd/lanes`), as the
 pack's lanes read it. While a lock is held, that lane's `lane run` exits at
 once and its queued entries stay pending. A running lane keeps its lock until
-its run ends, so refresh waits for it. With every lock held, the helper waits
-until `sd gate status --json` shows no holders and no waiters. Then it runs
-the refresh steps as its child and releases the locks when it exits. The
-kernel releases them too if it dies.
+its run ends, so refresh waits for it. A lane whose runner never ran has no
+lock yet. The helper makes and holds one for every folder under the lane
+root and for every checkout in the conf, since a lane is named after its
+checkout. With every lock held, the helper waits until `sd gate status
+--json` shows no holders and no waiters, and checks again after its last
+pass over the locks. Then it runs the refresh steps as its child and
+releases the locks when it exits. TERM, INT or HUP sent to the helper alone
+does not end it early: it waits for the child, which is in its process
+group. Ctrl-C reaches both. The kernel releases the locks if the helper is
+killed with `kill -9`; the child does not hold them, so a step that leaves a
+process behind cannot keep a lane stopped.
+
+A gate started by hand (`sd-ship prepare`, `sd-check`) while the refresh
+steps run is not excluded: no `sd gate` verb holds every slot. Run no gate
+by hand during a refresh.
 
 The wait is bounded at 45 minutes in total, for the locks and the gate
 together, not 45 minutes each. `REPO_SYNC_DRAIN_WAIT` overrides it in

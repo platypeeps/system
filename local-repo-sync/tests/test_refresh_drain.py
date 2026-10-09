@@ -200,7 +200,8 @@ class DrainTest(unittest.TestCase):
             "SD_GATE_SCRIPT": str(script), "GATE_COUNT": str(f.tmp / "gate.count")})
 
         self.assertIn("waiting for the gate: 1 holder(s), 0 waiter(s)", result.stdout)
-        self.assertEqual("3", (f.tmp / "gate.count").read_text().strip())
+        # Two busy, one idle, and one more after the last lock pass.
+        self.assertEqual("4", (f.tmp / "gate.count").read_text().strip())
         self.assertEqual(new, f.head(repo))
 
     def test_a_busy_gate_past_the_bound_refuses(self):
@@ -320,6 +321,85 @@ class DrainTest(unittest.TestCase):
         self.assertIn("lanes held", result.stdout)
         self.assertEqual("free", f.state(lock))
         self.assertEqual(before, f.head(repo))
+
+
+class ExclusionTest(unittest.TestCase):
+    """Review round 3: the drain excludes every lane run and gate for the
+    whole time the checkouts move. One case per row of the PR's table."""
+
+    def fixture(self):
+        f = DrainFixture()
+        self.addCleanup(f.destroy)
+        return f
+
+    def test_a_signal_to_the_helper_keeps_the_locks_until_the_child_ends(self):
+        """NEW. TERM or INT to the helper alone reaches the refresh child,
+        and the helper holds every lock until that child has exited."""
+        for name in ("TERM", "INT", "HUP"):
+            with self.subTest(signal=name):
+                f = self.fixture()
+                f.pinned_pack()
+                lock = f.lane("some-repo")
+                during = f.tmp / "during"
+                hook = (f'helper=$(ps -o ppid= -p $PPID | tr -d " "); '
+                        f'case "$(ps -o command= -p "$helper")" in */local-repo-sync/refresh_drain.py*) ;; '
+                        f'*) echo nohelper >> {during}; exit 0 ;; esac; '
+                        f'kill -{name} "$helper"; sleep 0.5; '
+                        f'{sys.executable} {f.probe} {lock} >> {during}')
+
+                f.run("refresh", expect=None, extra_env={"MAKE_HOOK": hook})
+
+                self.assertEqual("held\n", during.read_text())
+                self.assertEqual("free", f.state(lock))
+
+    def test_a_lane_folder_without_a_lock_file_is_held(self):
+        """NEW. A lane folder whose runner never ran has no runner.lock yet;
+        the drain makes it and holds it, so a first `lane run` exits."""
+        f = self.fixture()
+        f.pinned_pack()
+        (f.lanes / "bare-repo" / "lane").mkdir(parents=True)
+        lock = f.lanes / "bare-repo" / "lane" / "queue" / "runner.lock"
+        hook = f'mkdir -p {lock.parent}; {sys.executable} {f.probe} {lock} >> {f.tmp / "during"}'
+
+        f.run("refresh", expect=0, extra_env={"MAKE_HOOK": hook})
+
+        self.assertEqual("held\n", (f.tmp / "during").read_text())
+
+    def test_a_conf_repo_with_no_lane_folder_is_held(self):
+        """NEW. A repository in the conf whose lane never ran has no folder;
+        a lane folder is named after the checkout, so the drain makes and
+        holds that lock too."""
+        f = self.fixture()
+        f.pinned_pack()
+        lock = f.lanes / "pack" / "lane" / "queue" / "runner.lock"
+        hook = f'mkdir -p {lock.parent}; {sys.executable} {f.probe} {lock} >> {f.tmp / "during"}'
+
+        f.run("refresh", expect=0, extra_env={"MAKE_HOOK": hook})
+
+        self.assertEqual("held\n", (f.tmp / "during").read_text())
+
+    def test_the_gate_is_checked_again_after_the_last_lock_pass(self):
+        """NEW. A gate that starts after the first idle check and before the
+        refresh is seen: the last step before the child is a gate check."""
+        f = self.fixture()
+        repo, _, new = f.pinned_behind()
+        f.lane("some-repo")
+        script = f.tmp / "gate.sh"
+        script.write_text('''
+n=$(cat "$GATE_COUNT" 2>/dev/null || echo 0)
+echo $((n + 1)) > "$GATE_COUNT"
+if [ "$n" -eq 1 ]; then
+  echo '{"holders": [{"pid": 1}], "waiters": []}'
+else
+  echo '{"holders": [], "waiters": []}'
+fi
+''')
+
+        result = f.run("refresh", expect=0, extra_env={
+            "SD_GATE_SCRIPT": str(script), "GATE_COUNT": str(f.tmp / "gate.count")})
+
+        self.assertIn("waiting for the gate: 1 holder(s)", result.stdout)
+        self.assertEqual(new, f.head(repo))
 
 
 if __name__ == "__main__":
