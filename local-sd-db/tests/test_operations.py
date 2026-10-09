@@ -468,7 +468,7 @@ class Operations(unittest.TestCase):
         self.assertEqual(result["status"], "cancelled")
         self.assertTrue(result["ended"])
         self.assertEqual(self.db.execute("SELECT status FROM item WHERE id=?", (item,)).fetchone()[0], "planning")
-        self.assertEqual(self.db.execute("SELECT count(*) FROM note WHERE item=? AND kind='decision'", (item,)).fetchone()[0], 1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM note WHERE item=? AND kind='comment'", (item,)).fetchone()[0], 1)
         with self.assertRaises(StaleItem):
             cancel_assignment(self.db, aid, expected_revision=before["revision"], who="operator")
 
@@ -523,7 +523,7 @@ class Operations(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT status FROM item WHERE id=?", (item,)).fetchone()[0], "done")
         audit = json.loads(self.db.execute("SELECT body FROM state WHERE key=?", (f"operations:assignment:{aid}",)).fetchone()[0])
         self.assertEqual(audit["old_status"], "blocked")
-        notes = [row[0] for row in self.db.execute("SELECT body FROM note WHERE item=? AND kind='decision'", (item,))]
+        notes = [row[0] for row in self.db.execute("SELECT body FROM note WHERE item=? AND kind='comment'", (item,))]
         self.assertEqual(notes, [f"Blocked assignment {aid} cancelled by operator; item status unchanged"])
 
     def test_cancelled_assignment_cannot_be_claimed_or_requeued_by_stale_worker(self):

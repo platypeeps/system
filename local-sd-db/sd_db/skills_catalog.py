@@ -309,7 +309,7 @@ def record_review_proposals(connection, item, assignment, provider, document):
             session="reviewer") for proposal in proposals]
         source["review_result"] = _hash(document)
         set_item_fields(connection, item, fields={"skill_review": source})
-        add_note(connection, item, "decision", f"Reviewer {provider} recorded {len(proposals)} proposals against the checked skill source.", session="runner")
+        add_note(connection, item, "comment", f"Reviewer {provider} recorded {len(proposals)} proposals against the checked skill source.", session="runner")
         return workflow.item_state(connection, item)
 
 
@@ -339,7 +339,7 @@ def apply_proposals(connection, item, notes, *, expected_revision, who):
         queued = runner.enqueue(connection, [application], role="author", scope="skill-apply", who=who)
         for note in notes:
             resolve_note(connection, note)
-        add_note(connection, item, "decision", f"Accepted proposals {notes}; one isolated apply assignment {queued[0]['id']} on item {application}.", session=who)
+        add_note(connection, item, "comment", f"Accepted proposals {notes}; one isolated apply assignment {queued[0]['id']} on item {application}.", session=who)
         result = workflow.item_state(connection, application)
         result["assignments"] = queued
         return result

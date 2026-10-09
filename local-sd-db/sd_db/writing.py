@@ -615,7 +615,7 @@ def promote(connection: sqlite3.Connection, item: int, *, slug: str | None = Non
                             source=SOURCE, external_id=f"{target}::{piece}", fields=fields,
                             body={"source": text}, source_commit=None)
             _transition(connection, item, STAGE_STATUS["accepted"], who=who, reason=f"promoted to piece {piece}")
-            add_note(connection, item, "decision", f"Promoted to piece {piece} in {target} by {who}", session=who)
+            add_note(connection, item, "comment", f"Promoted to piece {piece} in {target} by {who}", session=who)
             if orphan is None:
                 folder.mkdir(parents=True)
                 created = folder / "index.md"
@@ -692,7 +692,7 @@ def record_gate(connection: sqlite3.Connection, item: int, artifact: str, *, ver
             return piece_state(connection, item)
         gates[artifact] = {**record, "at": now()}
         set_item_fields(connection, item, fields=fields)
-        add_note(connection, item, "decision", f"{artifact} gate {verdict}: {reason}", session=who)
+        add_note(connection, item, "comment", f"{artifact} gate {verdict}: {reason}", session=who)
         return piece_state(connection, item)
 
 
@@ -806,7 +806,7 @@ def park_piece(connection: sqlite3.Connection, item: int, *, parked: bool = True
         if bool(state["item"]["parked_at"]) == parked:
             return piece_state(connection, item)
         set_item_fields(connection, item, parked_at=now() if parked else None)
-        add_note(connection, item, "decision", "Piece parked" if parked else "Piece revived", session=who)
+        add_note(connection, item, "comment", "Piece parked" if parked else "Piece revived", session=who)
         return piece_state(connection, item)
 
 

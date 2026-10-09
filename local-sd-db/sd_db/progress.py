@@ -208,7 +208,7 @@ def relink_artifact(
         fields = _fields(row["fields"])
         fields["artifact_link"] = {"path": relative, "at": current_time(), "who": who}
         set_item_fields(connection, item, path=relative, fields=fields)
-        add_note(connection, item, "decision",
+        add_note(connection, item, "comment",
                  f"Relinked artifact from {row['path'] or '(none)'} to {relative} by {who}", session=who)
         return item_state(connection, item)
 
