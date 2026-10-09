@@ -12,16 +12,37 @@ without it.
 """
 
 import pathlib
+import shutil
 import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from test_hygiene import HygieneFixture  # noqa: E402
+from test_repo_sync import FOLDER  # noqa: E402
 
 MAKE_STUB = """#!/bin/sh
 # Test stub for make: record the call, exit with MAKE_RC.
 printf '%s\\n' "$*" >> "$MAKE_LOG"
+eval "${MAKE_HOOK:-}"
 exit "${MAKE_RC:-0}"
+"""
+
+# Refresh drains the lanes through `sd` (sd:3099). The stub answers the two
+# calls it makes: an idle gate, unless SD_GATE_SCRIPT prints another answer,
+# and an unset sd.lane_root, unless SD_LANE_ROOT_SETTING names one.
+SD_STUB = """#!/bin/sh
+printf '%s\\n' "$*" >> "$SD_LOG"
+case "$*" in
+  "gate status --json")
+    if [ -n "${SD_GATE_SCRIPT:-}" ]; then exec sh "$SD_GATE_SCRIPT"; fi
+    echo '{"holders": [], "waiters": []}' ;;
+  "config get sd.lane_root")
+    if [ -n "${SD_CONFIG_BROKEN:-}" ]; then echo "sd: invalid sd.lane_root policy" >&2; exit 1; fi
+    if [ -n "${SD_LANE_ROOT_SETTING:-}" ]; then echo "$SD_LANE_ROOT_SETTING"; exit 0; fi
+    echo "sd: sd.lane_root is not set (the lane folder). Run:" >&2
+    exit 1 ;;
+  *) echo "sd stub: unexpected $*" >&2; exit 2 ;;
+esac
 """
 
 
@@ -32,9 +53,18 @@ class PinFixture(HygieneFixture):
         (self.bin / "make").chmod(0o755)
         self.make_log = self.tmp / "make.log"
         self.others = 0
+        (self.bin / "sd").write_text(SD_STUB)
+        (self.bin / "sd").chmod(0o755)
+        self.sd_log = self.tmp / "sd.log"
+        self.lanes = self.tmp / "lanes"
+        self.lanes.mkdir()
+        helper = FOLDER / "refresh_drain.py"
+        if helper.exists():
+            shutil.copy(helper, self.folder / "refresh_drain.py")
 
     def run(self, *args, expect=0, extra_env=None):
-        env = {"MAKE_LOG": str(self.make_log), **(extra_env or {})}
+        env = {"MAKE_LOG": str(self.make_log), "SD_LOG": str(self.sd_log),
+               "SD_LANE_ROOT": str(self.lanes), **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 
     def head(self, repo):
