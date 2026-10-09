@@ -625,24 +625,29 @@ hub_dir() {
   done
 }
 
-# After a hub refresh with no failure, pushes each pinned system and pack
-# sha to the branch hub-pin on its origin, which each satellite's `follow`
-# fetches (sd:3100). The `+` lets that one ref move backwards, as a refresh
-# to an older origin/main would; nothing else is forced.
+# After a hub refresh with no failure, publishes the pinned system and pack
+# shas as one annotated tag, hub-pin, on the system origin: the tag names the
+# system sha, and its message carries `pack=<sha>`. One push publishes both,
+# so a satellite never sees one without the other (sd:3100). The `+` lets
+# that one tag move backwards; nothing else is forced.
 push_pins() {
-  p_rc=0
-  for p_name in system pack; do
-    p_dir=$(hub_dir "$p_name")
-    if [ -z "$p_dir" ] || ! is_pinned "$p_dir"; then continue; fi
-    p_sha=$(git -C "$p_dir" rev-parse HEAD)
-    if git -C "$p_dir" push -q origin "+$p_sha:refs/heads/hub-pin"; then
-      echo "hub-pin : $p_name at $(git -C "$p_dir" rev-parse --short HEAD), for satellites"
-    else
-      echo "!!! failed: push of hub-pin in $p_dir; satellites keep the old $p_name pin; run refresh again"
-      p_rc=1
-    fi
-  done
-  return "$p_rc"
+  p_sys=$(hub_dir system)
+  if [ -z "$p_sys" ] || ! is_pinned "$p_sys"; then return 0; fi
+  p_pack=$(hub_dir pack)
+  if [ -z "$p_pack" ] || ! is_pinned "$p_pack"; then
+    echo "!!! failed: hub-pin not published: system is pinned and no pinned pack is in the conf; satellites keep the old pins; pin the pack, then run refresh again"
+    return 1
+  fi
+  p_sha=$(git -C "$p_sys" rev-parse HEAD)
+  p_pack_sha=$(git -C "$p_pack" rev-parse HEAD)
+  if git -C "$p_sys" tag -f -a -m "hub-pin: the system and pack a hub refresh moved to (sd:3100)" \
+      -m "pack=$p_pack_sha" hub-pin "$p_sha" > /dev/null \
+      && git -C "$p_sys" push -q origin +refs/tags/hub-pin; then
+    echo "hub-pin : system $(git -C "$p_sys" rev-parse --short HEAD), pack $(git -C "$p_pack" rev-parse --short HEAD), for satellites"
+  else
+    echo "!!! failed: push of the hub-pin tag in $p_sys; satellites keep the old pins; run refresh again"
+    return 1
+  fi
 }
 
 # Holds the lanes through refresh_drain.py, which runs verb $1 of this
@@ -655,43 +660,65 @@ drain_exec() {
   exec python3 "$DIR/refresh_drain.py" "$DIR/repo-sync.sh" "$@"
 }
 
-# On a satellite, moves system and pack to the sha of the hub-pin branch on
-# their origin, never to its default branch (sd:3100). Every check runs
-# before any move, so a refusal moves nothing.
+# Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
+# already there and is clean; counts a dirty one in f_failed.
+follow_want() {
+  if is_pinned "$3" && [ "$(git -C "$3" rev-parse HEAD)" = "$2" ]; then
+    echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
+  elif [ -n "$(git -C "$3" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
+    echo "!!! refused: $3 has uncommitted changes; commit or stash them"
+    f_failed=$((f_failed + 1))
+  else
+    printf '%s %s %s\n' "$1" "$2" "$3" >> "$TMPD/moves"
+  fi
+}
+
+# On a satellite, moves system and pack to the shas of the hub-pin tag on the
+# system origin, never to origin's default branch (sd:3100). Every check runs
+# before any move, so a refusal moves nothing; a failed move puts back every
+# checkout this run moved, so the two never stay out of step.
 follow() {
   if ! is_satellite; then
     echo "follow: this machine is the hub (no $HOME/.config/sd/hub.json); nothing to do, refresh moves its checkouts"
     return 0
   fi
+  f_sys=$(hub_dir system)
+  if [ -z "$f_sys" ]; then
+    echo "follow: no system checkout in the conf, and the hub-pin tag lives there; nothing to follow"
+    return 0
+  fi
+  if ! git -C "$f_sys" fetch -q origin refs/tags/hub-pin 2> "$TMPD/err"; then
+    f_rc=0
+    git -C "$f_sys" ls-remote --exit-code origin refs/tags/hub-pin > /dev/null 2>&1 || f_rc=$?
+    if [ "$f_rc" -eq 2 ]; then
+      echo "follow: the system origin has no hub-pin tag yet; nothing to follow"
+      return 0
+    fi
+    echo "!!! refused: cannot fetch the hub-pin tag in $f_sys: $(tail -1 "$TMPD/err")"
+    echo "follow  : refused, nothing moved"
+    return 1
+  fi
+  f_tag=$(git -C "$f_sys" rev-parse FETCH_HEAD)
+  f_sys_sha=$(git -C "$f_sys" rev-parse "$f_tag^{commit}")
+  f_pack_sha=$(git -C "$f_sys" cat-file tag "$f_tag" 2>/dev/null | sed -n 's/^pack=//p' | head -1)
+  if ! printf '%s\n' "$f_pack_sha" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+    echo "!!! refused: the hub-pin tag carries no pack=<sha> line, so the pair is unknown"
+    echo "follow  : refused, nothing moved"
+    return 1
+  fi
   : > "$TMPD/moves"
   f_failed=0
-  for f_name in system pack; do
-    f_dir=$(hub_dir "$f_name")
-    if [ -z "$f_dir" ]; then
-      echo "follow: no $f_name checkout in the conf; skipped"
-      continue
-    fi
-    if ! git -C "$f_dir" fetch -q origin refs/heads/hub-pin 2> "$TMPD/err"; then
-      f_rc=0
-      git -C "$f_dir" ls-remote --exit-code origin refs/heads/hub-pin > /dev/null 2>&1 || f_rc=$?
-      if [ "$f_rc" -eq 2 ]; then
-        echo "follow: $f_name's origin has no hub-pin branch yet; nothing to follow"
-      else
-        echo "!!! refused: cannot fetch hub-pin in $f_dir: $(tail -1 "$TMPD/err")"
-        f_failed=$((f_failed + 1))
-      fi
-      continue
-    fi
-    f_sha=$(git -C "$f_dir" rev-parse FETCH_HEAD)
-    if is_pinned "$f_dir" && [ "$(git -C "$f_dir" rev-parse HEAD)" = "$f_sha" ]; then
-      echo "follow: $f_name already at the hub's pin $(git -C "$f_dir" rev-parse --short HEAD)"
-    elif [ -n "$(git -C "$f_dir" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
-      echo "!!! refused: $f_dir has uncommitted changes; commit or stash them"
-      f_failed=$((f_failed + 1))
-    else
-      printf '%s %s %s\n' "$f_name" "$f_sha" "$f_dir" >> "$TMPD/moves"
-    fi
-  done
+  follow_want system "$f_sys_sha" "$f_sys"
+  f_pack=$(hub_dir pack)
+  if [ -z "$f_pack" ]; then
+    echo "follow: no pack checkout in the conf; skipped"
+  elif ! git -C "$f_pack" cat-file -e "$f_pack_sha^{commit}" 2>/dev/null \
+      && ! git -C "$f_pack" fetch -q origin "$f_pack_sha" 2> "$TMPD/err"; then
+    echo "!!! refused: cannot fetch the hub's pack pin $f_pack_sha in $f_pack: $(tail -1 "$TMPD/err")"
+    f_failed=$((f_failed + 1))
+  else
+    follow_want pack "$f_pack_sha" "$f_pack"
+  fi
   if [ "$f_failed" -gt 0 ]; then
     echo "follow  : refused, nothing moved"
     return 1
@@ -703,16 +730,31 @@ follow() {
     rm -rf "$TMPD"
     drain_exec follow
   fi
+  : > "$TMPD/moved"
   while read -r f_name f_sha f_dir <&3; do
     echo "=== follow $f_name $f_dir"
-    pin_move "$f_dir" "$f_sha" follow followed || f_failed=$((f_failed + 1))
+    echo "$f_dir $(git -C "$f_dir" rev-parse HEAD)" >> "$TMPD/moved"
+    if ! pin_move "$f_dir" "$f_sha" follow followed; then
+      f_failed=1
+      break
+    fi
   done 3< "$TMPD/moves"
   echo "----------------------------------------"
-  if [ "$f_failed" -gt 0 ]; then
-    echo "follow  : $f_failed checkout(s) failed"
-    return 1
+  if [ "$f_failed" -eq 0 ]; then
+    echo "follow  : done"
+    return 0
   fi
-  echo "follow  : done"
+  # Back to the old pair: the next run sees both off their pins and retries.
+  while read -r f_dir f_old <&3; do
+    if [ "$(git -C "$f_dir" rev-parse HEAD)" = "$f_old" ]; then continue; fi
+    if git -C "$f_dir" switch -q --detach --no-overwrite-ignore "$f_old"; then
+      echo "follow: put $f_dir back at $(git -C "$f_dir" rev-parse --short HEAD)"
+    else
+      echo "!!! failed: cannot put $f_dir back; by hand: git -C $f_dir switch --detach $f_old"
+    fi
+  done 3< "$TMPD/moved"
+  echo "follow  : failed; each checkout it moved is back at its old sha, and the next run retries"
+  return 1
 }
 
 # --- hygiene (sd:1987) ------------------------------------------------------
@@ -1576,19 +1618,23 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              runs `make setup`. When local-sd-db's SCHEMA_VERSION changed it
              prints the backup and migrate steps and runs neither. Prints the
              old and new sha; exits 1 if any checkout failed. After a
-             refresh with no failure, the hub pushes each pinned system and
-             pack sha to the branch hub-pin on its origin for `follow`
-             (that one ref may move backwards); a failed push exits 1. On
-             a satellite refresh refuses and names follow.
+             refresh with no failure, the hub pushes one annotated tag,
+             hub-pin, to the system origin for `follow`: it names the
+             pinned system sha and its message carries pack=<sha> (that one
+             tag may move backwards). A failed push, or a pinned system
+             without a pinned pack, exits 1. On a satellite refresh refuses
+             and names follow.
   follow     on a satellite (one with ~/.config/sd/hub.json), fetch the
-             hub-pin branch of the system and pack checkouts' origin and,
-             where a checkout differs, drain the lanes as refresh does, then
-             move it, detached, to exactly that sha, never to origin's
-             default branch, and run `make setup` in the pack. Every check
-             runs first: a failed fetch, uncommitted changes or a drain
-             timeout refuses with nothing moved. Already there, or no
-             hub-pin branch, is a no-op. On the hub it says so and does
-             nothing. On a satellite, sync and nightly never pull system or
+             hub-pin tag from the system origin and the pack sha it names
+             from the pack origin and, where a checkout differs, drain the
+             lanes as refresh does, then move it, detached, to exactly that
+             sha, never to origin's default branch, and run `make setup` in
+             the pack. Every check runs first: a failed fetch, a tag with no
+             pack= line, uncommitted changes or a drain timeout refuses with
+             nothing moved. When a move fails, each checkout it moved goes
+             back to its old sha, so the next run retries the pair. Already
+             there, or no hub-pin tag, is a no-op. On the hub it says so and
+             does nothing. On a satellite, sync and nightly never pull system or
              pack; only follow moves them.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly

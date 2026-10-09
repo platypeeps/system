@@ -107,23 +107,30 @@ the pack.
 ### Satellites follow the hub
 
 A satellite never moves its system and pack checkouts on its own (sd:3100).
-After a refresh with no failure, the hub pushes each pinned system and pack
-sha to a branch named `hub-pin` on that checkout's origin, as
-`+<sha>:refs/heads/hub-pin`. That one ref may move backwards; nothing else
-is forced. A failed push exits 1: satellites keep the old pin until refresh
-runs again. The workflow database is not involved, so a satellite whose
+After a refresh with no failure, the hub pushes one annotated tag, `hub-pin`,
+to the system origin, as `+refs/tags/hub-pin`. The tag names the pinned
+system sha, and its message carries `pack=<sha>`, so one push publishes the
+pair. That one tag may move backwards; nothing else is forced. A failed
+push, or a pinned system without a pinned pack, exits 1: satellites keep the
+old pair until refresh runs again. The workflow database is not involved, so a satellite whose
 `sd_db` lags the hub's build still follows. A machine with
 `~/.config/sd/hub.json` is a satellite. There, `sync` and `nightly` never pull
 system or pack, pinned or on a branch, and `refresh` refuses and names
 `follow`.
 
-`follow` fetches `hub-pin` in each checkout. Where the sha differs from
-HEAD, it drains the lanes as `refresh` does, then switches the checkout,
-detached and with `--no-overwrite-ignore`, to exactly that sha, and runs
-`make setup` in the pack. It never moves to origin's default branch. It
-checks every checkout first, so a failed fetch, uncommitted changes or a
-drain timeout refuses with nothing moved. With no `hub-pin` branch yet, or
-with every checkout already there, it does nothing and drains nothing. On
+`follow` fetches the `hub-pin` tag from the system origin, then the pack sha
+it names from the pack origin; that sha is on the pack's main, and a fetch
+by a reachable sha works. Where a sha differs from HEAD, it drains the lanes
+as `refresh` does, then switches the checkout, detached and with
+`--no-overwrite-ignore`, to exactly that sha, and runs `make setup` in the
+pack. It never moves to origin's default branch. It checks every checkout
+first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
+a drain timeout refuses with nothing moved. It moves system, then pack; when
+a move fails, it switches each checkout it moved back to its old sha, so the
+pair is never left split and the next run retries both. A pack venv that a
+failed `make setup` left behind stays as `make` left it. With no `hub-pin`
+tag yet, or with every checkout already there, it does nothing and drains
+nothing. On
 the hub it says so and does nothing. If the move changed `SCHEMA_VERSION`,
 `follow` prints the hub's migrate note; the hub's own refresh printed it
 too.
@@ -292,7 +299,7 @@ offline.
 `refresh` with the same fixtures and a `make` stub; its cases are `NEW` too.
 `tests/test_refresh_drain.py` covers the drain with a fixture lane root of
 real lock files, held from another process, and an `sd` stub.
-`tests/test_follow.py` covers the `hub-pin` push and `follow` with the same
+`tests/test_follow.py` covers the `hub-pin` tag push and `follow` with the same
 bare-origin fixtures, one origin shared by a hub and a satellite checkout.
 
 One case reads the conf files in this folder instead of building a tree:
