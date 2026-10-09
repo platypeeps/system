@@ -10,10 +10,11 @@ The five states, from each entry's `status`:
   merging   `running`: the runner holds it; phase is `merge` once its prepare log exists, else `prepare`.
   next      `pending`, in queue order; a `held` one keeps its place and the runner skips it.
   building  a builder gate log in the lane folder, changed in the last `BUILDING_HOURS`: empty while its gate runs.
-  blocked   the newest entry of an item that `failed`, was `skipped` or stopped `prepared`, in the last `BLOCKED_DAYS`.
+  blocked   the newest entry of an item that `failed`, was `skipped` or stopped `prepared`, in the last `BLOCKED_DAYS`,
+            with the first line of its reason.
   landed    `merged` today, in this machine's zone, with the merge commit and the pull request its subject names.
 
-Writes: `move` runs `sd-ship -C <repo> lane move|hold|release`, the queue's only writers. The verbs take no
+Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel`, the queue's only writers. The verbs take no
 revision, so this compares the page's revision (a digest of the pending order and holds) with a fresh `lane list`
 first and refuses a stale one. That check is best effort: each verb holds the queue lock only inside itself, so a
 write that lands between the check and the verb is not caught. The answer names the order the verb left instead.
@@ -37,8 +38,8 @@ WRITE_SECONDS = 30
 GIT_SECONDS = 5
 BUILDING_HOURS = 6
 BLOCKED_DAYS = 3
-#: What the page sends as `action`: `move`'s relative places, and the two hold verbs.
-ACTIONS = ("up", "down", "top", "hold", "release")
+#: What the page sends as `action`: `move`'s relative places, the two hold verbs, and cancel.
+ACTIONS = ("up", "down", "top", "hold", "release", "cancel")
 #: Who acts on a blocked entry, by its status and failed step.
 WHO = {("prepared", None): "operator", ("skipped", None): "builder", ("failed", "prepare"): "builder",
        ("failed", "merge"): "lane", ("failed", None): "lane"}
@@ -159,8 +160,9 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
             finished = _when(entry.get("finished_at"))
             if finished and now - finished <= BLOCKED_DAYS * 86400:
                 who = WHO.get((status, entry.get("step"))) or WHO.get((status, None), "lane")
+                reason = (str(entry.get("reason") or "").strip().splitlines() or [status])[0]
                 blocked.append({**base, "state": "blocked", "status": status, "step": entry.get("step"),
-                                "reason": entry.get("reason") or status, "who": who, "finished": entry.get("finished_at")})
+                                "reason": reason, "who": who, "finished": entry.get("finished_at")})
         elif status == "merged":
             finished = _when(entry.get("finished_at"))
             if finished and time.strftime("%Y-%m-%d", time.localtime(finished)) == today:
@@ -217,7 +219,7 @@ def move(payload: dict):
     if (set(values) != {"repo", "item", "action", "revision"} or not isinstance(values["repo"], str)
             or type(values["item"]) is not int or not 1 <= values["item"] <= 9223372036854775807
             or values["action"] not in ACTIONS or not isinstance(values["revision"], str)):
-        raise ValueError("Name the repository, the item, one of up, down, top, hold or release, and the lane's revision.")
+        raise ValueError("Name the repository, the item, one of up, down, top, hold, release or cancel, and the lane's revision.")
 
     def write(connection):
         from sd_db import repos, workflow

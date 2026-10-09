@@ -4,7 +4,8 @@
   MERGING/NEXT/BUILDING/BLOCKED/LANDED rows) and ui-design foundation/.
   Data: /api/queue (queue_screen.document: sd-ship lane list per repository lane, its builder gate logs, sd gate status,
   the load average), read when the page opens, on Read again and every 30 s while the page is visible.
-  Writes: /api/queue/move, which runs sd-ship lane move|hold|release and nothing else. Nothing here is sample data.
+  Writes: /api/queue/move, which runs sd-ship lane move|hold|release|cancel and nothing else; cancel asks first.
+  Nothing here is sample data.
 -->
 <html lang="en">
 <head>
@@ -34,7 +35,7 @@
   <p class="edits" id="edits">Edits take effect at the next item boundary.</p>
   <div id="lanes"></div>
 </main>
-<div class="details" id="details"><p class="note">Up, down, top, hold and release run sd-ship lane on the lane you pick. Nothing else writes here.</p></div>
+<div class="details" id="details"><p class="note">Up, down, top, hold, release and cancel run sd-ship lane on the lane you pick. Cancel asks first. Nothing else writes here.</p></div>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
