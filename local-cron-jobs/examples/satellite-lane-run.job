@@ -1,3 +1,7 @@
+# Superseded by lane-run.job (sd:3003): one `lane run --hosted` job on every
+# machine, with no per-repository file. This one stays until the pack retires
+# `--satellite-only`.
+#
 # Hub-side merge lane for satellite requests (sd:2704). A satellite gates and
 # prepares an item, then writes a request with `sd-ship lane request`. This
 # job takes those requests in and merges them with no gate run on the hub.
