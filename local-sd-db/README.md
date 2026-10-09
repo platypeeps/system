@@ -1055,6 +1055,8 @@ The item keeps its status and gets `parked_at` and a `decision` note by
 capture list still find it. Writing pieces keep their own park, an item
 with a due date (every recurring one) waits on it, and P1-P3 are never
 parked. A lead triages P3 by hand once a month.
+To bring one back, use the item page's Unpark control or `sd task edit N --unpark`;
+both clear `parked_at` through `workflow.edit_item` under the item's revision.
 
 ## What the harness will not do
 

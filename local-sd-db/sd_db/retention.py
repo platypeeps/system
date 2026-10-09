@@ -53,6 +53,7 @@ its snapshot restored and compared, and never before. What the table says:
                      stay readable by id and in the capture list. Writing
                      pieces keep their own park; an item with a due date
                      waits on it; P1-P3 are never touched.
+                     `workflow.edit_item` clears `parked_at` to unpark one.
 
 There is no request-log rule, and the prd's table no longer names one (it
 said "the request log thirty days" until the 2026-09-12 amendment, sd:541).
