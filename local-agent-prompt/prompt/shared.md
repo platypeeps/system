@@ -147,6 +147,11 @@ A repo without that folder gets one plus a `.gitignore` line.
 Invoke the `hallmark` skill (`~/.agents/skills/hallmark`) before designing or changing a UI, a dashboard page or an HTML report.
 Make every personal web design look made for its content, not generated from a template.
 
+# Other machines
+
+Reach another machine through its remote Claude session (`ListAgents`, then `SendMessage`), never SSH: the tailnet policy refuses it.
+Session names loosely follow the repo: `<repo>` on the hub, `work-<repo>` on the work satellite, `terra-<repo>` on the third machine.
+
 # Time
 
 Report every time in the machine's local zone with its label, for example `09:36 MDT`; convert UTC (`Z`) first.
