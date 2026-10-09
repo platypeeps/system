@@ -215,7 +215,7 @@ def create_claim(connection, item, payload, context, *, expected_revision=None, 
         journal.create(connection, claim, item, payload, state)
         connection.execute("INSERT INTO publication_claim VALUES (?,?,?,?,?,?,?)",
                            (claim, item, item, _json(payload), _json(state), timestamp, timestamp))
-        add_note(connection, item, "decision", f"Publication claim {claim} prepared for {destination['account']} / Published", session=who)
+        add_note(connection, item, "comment", f"Publication claim {claim} prepared for {destination['account']} / Published", session=who)
         return claim_state(connection, item, claim)
 
 
@@ -265,7 +265,7 @@ def recover_journal(connection, item, *, repair_incomplete=False, who):
             journal.append(connection, claim, state)
             recovered.append(claim)
         if recovered or repair["archived"]:
-            add_note(connection, item, "decision", "Recovered publication journal: " + _json({"claims": recovered, **repair}), session=who)
+            add_note(connection, item, "comment", "Recovered publication journal: " + _json({"claims": recovered, **repair}), session=who)
         return {"recovered": recovered, **repair, "claims": [claim_state(connection, item, claim) for claim in recovered]}
 
 
@@ -513,7 +513,7 @@ def reconcile(connection, item, claim, context, evidence, *, who):
                 metadata_fields.update({"status": "review", "updated": timestamp[:10]})
                 set_item_fields(connection, item, stage="review", ready_digest=None, fields=fields)
                 _transition(connection, item, "in_progress", who=who, reason=f"Earlier version published by claim {claim}; current source needs review")
-            add_note(connection, item, "decision", f"Published {url}; text, {inventory['images']} images, links and Published folder read back", session=who)
+            add_note(connection, item, "comment", f"Published {url}; text, {inventory['images']} images, links and Published folder read back", session=who)
         else:
             if destination["published"] in parents or metadata.get("title") != payload["staging_title"]:
                 raise WorkflowError("claim staging identity or folder changed outside this publication")
@@ -539,5 +539,5 @@ def abandon(connection, item, claim, *, reason, leave=False, who):
         state.update({"abandoned_phase": state["phase"], "phase": "abandoned", "pending": None, "reason": reason,
                       "reconcile_required": uncertain, "abandoned_at": now()})
         _save(connection, claim, state, terminal=True)
-        add_note(connection, item, "decision", f"Abandoned publication claim {claim}; external documents left untouched: {reason}", session=who)
+        add_note(connection, item, "comment", f"Abandoned publication claim {claim}; external documents left untouched: {reason}", session=who)
         return claim_state(connection, item, claim)

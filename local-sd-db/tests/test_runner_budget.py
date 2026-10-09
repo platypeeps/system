@@ -62,7 +62,7 @@ class BudgetAtCreation(unittest.TestCase):
         self.assertIn(f"the selection of items {self.items[0]}, {self.items[1]}", message)
         # The whole selection is refused, nothing written: no row and no note.
         self.assertEqual(self.budgets(), [])
-        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM note WHERE kind = 'decision'").fetchone()[0], 0)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM note WHERE kind = 'comment'").fetchone()[0], 0)
         # A `start` entry behind two `url` entries is the one the runner
         # would run, since it skips what it cannot execute (#415's review).
         self.registry(REGISTRY)
@@ -101,7 +101,7 @@ class BudgetAtCreation(unittest.TestCase):
         accepted = runner.enqueue(self.db, self.items[1:], budget_usd=7.5, who="operator")
         self.assertEqual(self.budgets(), [None, 7.5])
         self.assertEqual(accepted[0]["budget_usd"], 7.5)
-        note = self.db.execute("SELECT body FROM note WHERE kind = 'decision' AND item = ?", (self.items[1],)).fetchone()
+        note = self.db.execute("SELECT body FROM note WHERE kind = 'comment' AND item = ?", (self.items[1],)).fetchone()
         self.assertIn("budget 7.50 USD", note["body"])
         # An integer bound is stored as a float, and an empty field is None.
         third = create_item(self.db, kind="task", title="Task 3", repo="/fixture/repo", branch="work/3", status="ready")

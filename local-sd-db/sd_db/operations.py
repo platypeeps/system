@@ -521,6 +521,6 @@ def cancel_assignment(connection: sqlite3.Connection, assignment: int, *, expect
         row = record_state(connection, "checkpoint", key=f"operations:assignment:{assignment}", body=audit)
         resolve_state(connection, row)
         if current["item"] is not None:
-            add_note(connection, current["item"], "decision",
+            add_note(connection, current["item"], "comment",
                      f"{current['status'].capitalize()} assignment {assignment} cancelled by {who}; item status unchanged", session=who)
         return assignment_state(connection, assignment)
