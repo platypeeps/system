@@ -52,6 +52,14 @@ non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming 
 and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
+**Decisions**, below Now, list the questions that wait on the operator, one button per option (sd:3012).
+Ask one with a `question` note that carries one `Option: <text>` line per choice, at least two:
+`sd task note N --kind question --body $'Which store?\nOption: Pack store kind\nOption: Database rows'`.
+Keep each option short; the rest of the body is the question. A button writes the ruling as a `decision` note,
+`Ruling on note #<id>: <option>`, and resolves the question, in one transaction under the item's revision, so a
+stale page writes nothing and reads the list again. `sd task show N` prints both. A prose "Decision needed"
+comment gets no buttons (`sd_dashboard/decisions.py`).
+
 **The new design is the default** (sd:2163). It is the redesign from ui-design
 `products/system/` (`design.md`, `designs/pages/`), built one page at a time.
 `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted IBM Plex

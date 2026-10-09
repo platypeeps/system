@@ -2,6 +2,7 @@
 <!--
   Today, v2 (sd:2110), the default page at / and /today since sd:2163. Built from ui-design products/system/designs/v2/today.html at a3861c9 and design.md.
   Data: /api/now, the document now_screen.document builds for v1 Today's Now section, read when the page opens and on Refresh.
+  Decisions (sd:3012): /api/decisions, read by decisions.js when the page opens and on Refresh; a choice posts /api/decisions/answer.
   Sources: repos and sessions (fleet child), prs (shadow table), jobs (launchd through sd_db.operations.inventory).
   Left out until a collector exists: status mail, backups, HOA water, the Runner lamp, Wants you and Briefs.
 -->
@@ -67,6 +68,19 @@
       </table>
       <p class="filtered" id="filtered" hidden></p>
     </section>
+
+    <section aria-labelledby="decisions-h">
+      <div class="sec-head">
+        <h2 id="decisions-h">Decisions <button class="help" type="button" aria-label="Help: Decisions" data-help="&lt;b&gt;Questions that wait on you.&lt;/b&gt; Each is a &lt;code&gt;question&lt;/code&gt; note with one &lt;code&gt;Option:&lt;/code&gt; line per choice. A button records that choice as a &lt;code&gt;decision&lt;/code&gt; note and resolves the question; &lt;code&gt;sd task show&lt;/code&gt; prints both. Prose &quot;Decision needed&quot; notes stay on their item.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="decisions-tally"></p>
+      </div>
+      <table class="ledger decisions" aria-labelledby="decisions-h">
+        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Question</th><th scope="col" class="act">Choose</th></tr></thead>
+        <tbody id="decisions"><tr class="empty"><td colspan="4">Reading decisions…</td></tr></tbody>
+      </table>
+      <p class="filtered" id="decisions-note" role="status" hidden></p>
+    </section>
   </main>
 
   <div class="details" id="details"><p class="why">Reading the fleet…</p></div>
@@ -74,6 +88,7 @@
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
 <script src="/ui/today.js"></script>
+<script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
 </html>
