@@ -1,0 +1,14 @@
+# Satellite only (sd:3100): move the system and pack checkouts to the pair
+# the hub-pin tag names, which the hub's last `repo-sync.sh refresh` pushed.
+# Install it in `<config>/cron-jobs/jobs/<satellite host>/`;
+# local-repo-sync/README.md, "Satellites follow the hub", has the steps.
+#
+# At the hub's pin, `follow` does nothing and drains nothing, so most runs
+# cost one tag fetch. When they differ, it drains this machine's
+# lanes first, waiting up to 45 minutes; JOB_TIMEOUT sits above that so the
+# drain, not the job limit, decides. A slot that finds this job's own run
+# still active logs `skipped` and exits 0. On the hub, `follow` says so and
+# exits 0.
+JOB_SCHEDULE="*/5 * * * *"
+JOB_TIMEOUT="55m"
+JOB_COMMAND="sh \"$ROOT/../local-repo-sync/repo-sync.sh\" follow"
