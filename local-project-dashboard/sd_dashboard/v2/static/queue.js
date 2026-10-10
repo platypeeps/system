@@ -3,8 +3,9 @@
 // revision; the server runs sd-ship lane move|hold|release|cancel|retry, refuses a stale revision, and the page reads again.
 // Cancel asks first (sd:3012): no verb takes it back, so the entry must be enqueued again from its worktree.
 // A blocked row offers Retry (lane retry) and, on a runner_merge=manual repo, Approve (lane retry --manual), only when the
-// installed pack has the verb (DOC.retry). Retry runs at once: Cancel takes the new entry back. Approve asks first: it
-// grants the runner the merge to the default branch, which nothing takes back once it lands.
+// installed pack's retry takes --expected-head (DOC.retry). Each button carries the head its row showed, and the server
+// passes it on, so neither acts on an entry that ended at another head since the read. Retry runs at once: Cancel takes
+// the new entry back. Approve asks first: it grants the runner the merge to the default branch, which nothing takes back.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -23,7 +24,7 @@
   }
   function again(lane, r) {
     if (!DOC.retry) return html`<span></span>`;
-    const one = (act, label, aria) => html`<button class="btn quiet sm" type="button" data-act="${act}" data-item="${String(r.item)}" data-repo="${lane.path}" aria-label="${aria}"${busy ? html` disabled` : ''}>${label}</button>`;
+    const one = (act, label, aria) => html`<button class="btn quiet sm" type="button" data-act="${act}" data-item="${String(r.item)}" data-head="${r.expected_head}" data-repo="${lane.path}" aria-label="${aria}"${busy ? html` disabled` : ''}>${label}</button>`;
     return html`<div class="ctl" role="group" aria-label="Unblock sd:${String(r.item)}">${one('retry', 'Retry', `Retry sd:${r.item}: queue it again at the same head`)}${lane.runner_merge === 'manual' ? one('approve', 'Approve…', `Approve sd:${r.item}: queue it again with the merge granted`) : ''}</div>`;
   }
   // Each state's glyph, label and fact line. A state's glyph carries it; colour only repeats it.
@@ -31,7 +32,7 @@
     merging: r => [G.live, 'MERGING', html`<b>${r.phase}</b> · ${dur(r.elapsed)} · head ${r.head || 'not recorded'}`],
     next: r => [r.held ? G.caution : G.queued, `${r.held ? 'HELD' : 'NEXT'} ${r.position}`, html`gate <b>${r.gate}</b>${r.gate_summary ? ` (${r.gate_summary})` : ''} · head ${r.head || 'not recorded'}${r.held ? ' · skipped until released' : ''}`],
     building: r => [{ running: G.live, pass: G.ok, fail: G.warning }[r.gate] || G.unknown, 'BUILDING', html`gate <b>${r.gate}</b>${r.summary ? ` · ${r.summary}` : ''}${r.head ? ` · head ${r.head}` : ''} · log changed ${at(new Date(r.changed * 1000).toISOString())}`],
-    blocked: r => [G.caution, 'BLOCKED', html`<b>${r.who} acts</b> · ${r.status}${r.step ? ` at ${r.step}` : ''} · ${r.reason}`],
+    blocked: r => [G.caution, 'BLOCKED', html`<b>${r.who} acts</b> · ${r.status}${r.step ? ` at ${r.step}` : ''} · ${r.reason} · head ${r.head || 'not recorded'}`],
     landed: r => [G.ok, 'LANDED', html`${r.pr ? `PR #${r.pr}` : 'PR not named'} · merge ${r.commit || 'not recorded'} · ${at(r.finished)}`],
   };
   function row(lane, r, last) {
@@ -77,11 +78,11 @@
   const DONE = { up: 'moved up', down: 'moved down', top: 'moved to the top', hold: 'held', release: 'released', cancel: 'cancelled',
     retry: 'queued again', approve: 'approved and queued again' };
   // Cancel and Approve are the writes no verb undoes; each dialog names the entry and the command it runs.
-  function grant(l, item) {
+  function grant(l, item, head) {
     const r = l.rows.find(x => x.state === 'blocked' && x.item === item), S = window.shell;
     return S.confirm({ title: `Approve sd:${item}${r && r.title ? ` · ${r.title}` : ''} in ${l.repo}?`,
-      body: 'The entry is queued again at the same head, and the runner may merge it to the default branch. A merge is not taken back.',
-      cli: `sd-ship -C ${S.shq(l.path)} lane retry ${item} --manual`, ok: 'Approve merge', keep: 'Leave it blocked' });
+      body: `The entry is queued again at head ${head.slice(0, 12)}, and the runner may merge it to the default branch. A merge is not taken back.`,
+      cli: `sd-ship -C ${S.shq(l.path)} lane retry ${item} --expected-head ${head} --manual`, ok: 'Approve merge', keep: 'Leave it blocked' });
   }
   function sure(l, item) {
     const r = l.rows.find(x => x.state === 'next' && x.item === item), S = window.shell;
@@ -92,12 +93,14 @@
   async function act(b) {
     const l = DOC && DOC.lanes.find(x => x.path === b.dataset.repo);
     if (!l || busy) return;
-    const item = Number(b.dataset.item), action = b.dataset.act;
+    const item = Number(b.dataset.item), action = b.dataset.act, head = b.dataset.head || '';
     if (action === 'cancel' && !(await sure(l, item))) return;
-    if (action === 'approve' && !(await grant(l, item))) return;
+    if (action === 'approve' && !(await grant(l, item, head))) return;
     busy = true; draw();
     try {
-      const out = await window.shell.post('/api/queue/move', { repo: l.path, item, action, revision: l.revision });
+      const body = { repo: l.path, item, action, revision: l.revision };
+      if (action === 'retry' || action === 'approve') body.head = head;
+      const out = await window.shell.post('/api/queue/move', body);
       const order = out.pending ? ` Order now: ${out.pending.map(n => `sd:${n}`).join(', ')}.` : '';
       said[l.path] = { ok: true, text: `sd:${item} ${DONE[action]}.${order} ${out.edits || ''}` };
     } catch (err) {

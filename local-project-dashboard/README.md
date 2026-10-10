@@ -152,9 +152,10 @@ Up, down, top, hold, release and cancel run `sd-ship lane move|hold|release|canc
 Cancel asks first: no verb takes it back, so the entry must be enqueued again from its worktree.
 A blocked row offers Retry, `sd-ship lane retry <item>`: its last entry is queued again at the same head with the body the lane kept.
 On a repository whose `runner_merge` is manual it also offers Approve, `lane retry <item> --manual`, which asks first: it grants the merge.
-Both stay hidden until `sd-ship lane retry --help` answers, so a pack without the verb (before sd:3254) shows neither.
-The page sends the lane's revision; a queue that changed since the read is refused, and the page reads it again.
-Move, hold and release pass it as `--expected-revision`, so the verb checks it again under the queue's lock; cancel and retry take no revision, so their check is best effort.
+Both pass the head the row showed as `--expected-head`; the verb refuses under the queue's lock an entry that ended at another head since the read.
+Both stay hidden until `sd-ship lane retry --help` names `--expected-head`, so a pack before sd:3268 shows neither.
+The page sends its revision, which covers the pending order, the holds and each blocked entry's head; a queue that changed since the read is refused, and the page reads it again.
+Move, hold and release pass the lane revision `lane list` prints as `--expected-revision`, so the verb checks it again under the queue's lock; cancel takes no revision, so its check is best effort.
 The runner reads the queue at each item boundary, so an edit never changes a merge in progress.
 
 **Protection** at `/protection` is one table, one row per registered repository:

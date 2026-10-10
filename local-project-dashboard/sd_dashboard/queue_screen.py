@@ -15,15 +15,17 @@ The five states, from each entry's `status`:
   landed    `merged` today, in this machine's zone, with the merge commit and the pull request its subject names.
 
 Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel|retry`, the queue's only writers. It compares the
-page's revision (a digest of the pending order and holds, the one `lane list` prints) with a fresh `lane list` first
-and refuses a stale one. `move`, `hold` and `release` also take it as `--expected-revision` and check it again under
-the queue's lock, so a write that lands between the two checks is refused too. `cancel` and `retry` take no revision,
-so their check stays best effort. The runner reads the queue again at each item boundary, so an edit takes effect there.
+page's revision (a digest of the pending order, the holds and each blocked entry's head) with a fresh `lane list` first
+and refuses a stale one. `move`, `hold` and `release` then pass the fresh list's lane revision (the pending order and
+holds, the one `lane list` prints) as `--expected-revision`, and the verb checks it again under the queue's lock, so a
+write that lands between the two checks is refused too. `cancel` takes no revision, so its check stays best effort.
+The runner reads the queue again at each item boundary, so an edit takes effect there.
 
 Retry and Approve act on a blocked row (sd:3012): `lane retry <item>` queues its last entry again at the same head with
 the body copy the lane kept (pack sd:3254); Approve adds `--manual`, the merge grant, so only a repo whose
-`runner_merge` is manual takes it. The page offers both only when `sd-ship lane retry --help` exits 0: an older pack
-has no such verb.
+`runner_merge` is manual takes it. Both carry the head the row showed as `--expected-head`, which the verb checks under
+the queue's lock (pack sd:3268), so neither acts on an entry that ended at another head after the page read it. The
+page offers both only when `sd-ship lane retry --help` names `--expected-head`: an older pack cannot check the head.
 """
 
 from __future__ import annotations
@@ -46,6 +48,8 @@ BLOCKED_DAYS = 3
 #: What the page sends as `action`: `move`'s relative places, the two hold verbs, cancel, and a blocked row's retry and
 #: approve (`retry --manual`).
 ACTIONS = ("up", "down", "top", "hold", "release", "cancel", "retry", "approve")
+#: The ends short of a merge that the page shows as blocked and `lane retry` takes.
+BLOCKED = ("failed", "skipped", "prepared")
 #: Who acts on a blocked entry, by its status and failed step.
 WHO = {("prepared", None): "operator", ("skipped", None): "builder", ("failed", "prepare"): "builder",
        ("failed", "merge"): "lane", ("failed", None): "lane"}
@@ -86,19 +90,29 @@ def lane_list(path: str) -> dict:
 
 
 def has_retry() -> bool:
-    """Whether the installed pack has `lane retry` (sd:3254); a probe that fails to run counts as no."""
+    """Whether the installed pack's `lane retry` takes `--expected-head` (sd:3254, sd:3268); a failed probe counts as no."""
     try:
         done = subprocess.run([command("sd-ship"), "lane", "retry", "--help"], capture_output=True, text=True,
                               timeout=LIST_SECONDS, check=False)
     except (OSError, subprocess.SubprocessError):
         return False
-    return done.returncode == 0
+    return done.returncode == 0 and "--expected-head" in done.stdout
+
+
+def lane_revision(entries: list[dict]) -> str:
+    """The pending order and holds, which is everything a reorder reads: the digest `lane list` prints."""
+    pending = [[row.get("item"), bool(row.get("held"))] for row in entries if row.get("status") == "pending"]
+    return hashlib.sha256(json.dumps(pending).encode()).hexdigest()[:16]
 
 
 def revision(entries: list[dict]) -> str:
-    """The pending order and holds, which is everything a reorder reads."""
-    pending = [[row.get("item"), bool(row.get("held"))] for row in entries if row.get("status") == "pending"]
-    return hashlib.sha256(json.dumps(pending).encode()).hexdigest()[:16]
+    """The page's revision: the lane revision and the head of each item's newest entry when it is blocked.
+
+    A run that ends blocked at another head leaves the pending order alone; this still changes (sd:3012 review).
+    """
+    newest = {row.get("item"): row for row in entries}
+    heads = [[item, row.get("expected_head")] for item, row in newest.items() if row.get("status") in BLOCKED]
+    return hashlib.sha256(json.dumps([lane_revision(entries), heads]).encode()).hexdigest()[:16]
 
 
 def _when(stamp: str | None) -> float | None:
@@ -172,13 +186,15 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
             following.append({**base, "state": "next", "position": len(following) + 1, "held": bool(entry.get("held")),
                               "head": str(entry.get("expected_head") or "")[:12],
                               "gate": gate.get("status") or "not gated", "gate_summary": gate.get("summary") or gate.get("reason")})
-        elif status in ("failed", "skipped", "prepared") and newest.get(item) is entry:
+        elif status in BLOCKED and newest.get(item) is entry:
             finished = _when(entry.get("finished_at"))
             if finished and now - finished <= BLOCKED_DAYS * 86400:
                 who = WHO.get((status, entry.get("step"))) or WHO.get((status, None), "lane")
                 reason = (str(entry.get("reason") or "").strip().splitlines() or [status])[0]
+                head = str(entry.get("expected_head") or "")
                 blocked.append({**base, "state": "blocked", "status": status, "step": entry.get("step"),
-                                "reason": reason, "who": who, "finished": entry.get("finished_at")})
+                                "reason": reason, "who": who, "finished": entry.get("finished_at"),
+                                "head": head[:12], "expected_head": head})
         elif status == "merged":
             finished = _when(entry.get("finished_at"))
             if finished and time.strftime("%Y-%m-%d", time.localtime(finished)) == today:
@@ -233,11 +249,14 @@ def document(connection, *, now: str = "") -> dict:
 def move(payload: dict):
     """Check the page's request, then return the write: a best-effort revision check, then one lane verb."""
     values = dict(payload)
-    if (set(values) != {"repo", "item", "action", "revision"} or not isinstance(values["repo"], str)
+    again = values.get("action") in ("retry", "approve")
+    if (set(values) != {"repo", "item", "action", "revision", *(("head",) if again else ())}
+            or not isinstance(values["repo"], str)
             or type(values["item"]) is not int or not 1 <= values["item"] <= 9223372036854775807
-            or values["action"] not in ACTIONS or not isinstance(values["revision"], str)):
+            or values["action"] not in ACTIONS or not isinstance(values["revision"], str)
+            or (again and not (isinstance(values["head"], str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", values["head"])))):
         raise ValueError("Name the repository, the item, one of up, down, top, hold, release, cancel, retry or approve, "
-                         "and the lane's revision.")
+                         "the lane's revision, and for retry or approve the full head the row showed.")
 
     def write(connection):
         from sd_db import repos, workflow
@@ -251,15 +270,19 @@ def move(payload: dict):
         listed = lane_list(path)
         if not listed.get("ok"):
             raise ValueError(f"The lane was not read: {listed.get('error')}")
-        if revision(listed.get("entries") or []) != values["revision"]:
+        entries = listed.get("entries") or []
+        if revision(entries) != values["revision"]:
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         item, action = str(values["item"]), values["action"]
-        verb = (["move", item, action] if action in ("up", "down", "top") else ["retry", item] if action == "retry"
-                else ["retry", item, "--manual"] if action == "approve" else [action, item])
+        verb = (["move", item, action] if action in ("up", "down", "top")
+                else ["retry", item, "--expected-head", values["head"]] if again else [action, item])
+        if action == "approve":
+            verb.append("--manual")
         if action in ("up", "down", "top", "hold", "release"):
-            verb += ["--expected-revision", values["revision"]]
+            # The fresh list matched the page, so its lane revision is the page's; the verb checks it under its lock.
+            verb += ["--expected-revision", lane_revision(entries)]
         answer = _run([command("sd-ship"), "-C", path, "lane", *verb], WRITE_SECONDS)
-        if answer.get("code") == "stale_revision":
+        if answer.get("code") in ("stale_revision", "stale_head"):
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         if not answer.get("ok"):
             raise ValueError(answer.get("error") or "sd-ship lane refused the change.")
