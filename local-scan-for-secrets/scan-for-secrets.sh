@@ -386,7 +386,7 @@ export S4S_PAIRS
 # Only files that are pure history/logs are touched: ~/.viminfo and the AI
 # session log dirs. Live credential stores inside those dirs are excluded —
 # masking them would break the tools that read them.
-MASK_EXCLUDE_GLOBS="auth.json mcp-auth.json oauth_creds.json google_accounts.json settings.json config.toml config.json credentials.json .credentials.json"
+MASK_EXCLUDE_GLOBS="auth.json mcp-auth.json oauth_creds.json jetski-standalone-oauth-token google_accounts.json settings.json config.toml config.json credentials.json .credentials.json"
 # Vendored and derived trees that can appear anywhere under a mask target —
 # most often a scratchpad a session ran `npm install` or `python -m venv` in.
 # rg_args applies EXCLUDE_DIRS to the critical scan, but mask walks its own

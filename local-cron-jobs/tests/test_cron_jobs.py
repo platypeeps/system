@@ -677,6 +677,18 @@ class StatusExitCodeTest(unittest.TestCase):
         self.log([("2026-09-19T08:07:32-0600", "FAILED rc=1")])
         self.assertEqual(self.status("demo").returncode, 3)
 
+    def test_a_retired_jobs_last_failure_is_not_outstanding(self):
+        # sd:3212. A job retired after a failed run never logs `done` again,
+        # so its failure stayed under "recent failures" for good. No plist
+        # here means nothing to resolve; an installed job's failure still shows.
+        self.install()
+        (self.fx.folder / "logs" / "failures.log").write_text(
+            "2026-10-09T04:30:02-0600 retired-job FAILED rc=1 (log: logs/retired-job.log)\n"
+            "2026-10-09T05:00:00-0600 demo FAILED rc=1 (log: logs/demo.log)\n")
+        out = self.status().stdout
+        self.assertNotIn("retired-job FAILED", out)
+        self.assertIn("demo FAILED", out)
+
     def test_help_declares_the_codes(self):
         out = subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "help"],
                              capture_output=True, text=True, timeout=60).stdout
