@@ -1431,6 +1431,9 @@ cmd_status() {
 # for one day — cheaper than parsing dates in POSIX sh.
 failure_resolved() { # job, failure-timestamp
   local job="$1" ts="$2" last
+  # No plist here: the job was retired or uninstalled and will never log
+  # `done` again, so its old failure is nothing to act on (sd:3212).
+  [ -f "$AGENT_DIR/$(label_for "$job").plist" ] || return 0
   last=$(grep -oE "^\[$job\] [0-9T:+-]+ done" "$LOG_DIR/$job.log" 2>/dev/null \
     | tail -1 | awk '{print $2}')
   [ -n "$last" ] && [ "$last" \> "$ts" ]
