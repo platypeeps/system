@@ -58,12 +58,13 @@ Each section below answers one exploration point of the item.
    `restore` already migrates the staged copy, blocks queued and running assignments, and leaves the `restore` hold row open.
 6. **Settle stale rows.** In one transaction, release each open `runner_lease` and note its run `abandoned at promotion`.
    A lease names a supervisor pid on the dead hub; a pid check on this machine could match an unrelated process.
-7. **Install the hub role.** Run the `sd`, `cron` and `agents` stages with the hub role on (see "Hub role" below).
+7. **Take the hub's name.** If no tailnet peer holds the hub's name, run `tailscale set --hostname=<hub name>`.
+   If the dead node still holds it, stop and print the one console step: rename or remove that node in the Tailscale admin console.
+   A rerun continues here. The step ends only when the fence reads "holder".
+8. **Install the hub role.** Run the `sd`, `cron` and `agents` stages with the hub role on (see "Hub role" below).
+   They add the hub-role labels only when the fence reads "holder", so this step must follow step 7; a rerun from the marker keeps that order.
    That starts `sd-serve`, the dashboard and its `tailscale serve` route, `task-actions` and its funnel, the backup jobs and `offsite-verify`.
    `lane-run` already runs on every machine; `hosts_lane` now answers yes for each lane whose host is NULL.
-8. **Take the hub's name.** If no tailnet peer holds the hub's name, run `tailscale set --hostname=<hub name>`.
-   If the dead node still holds it, stop and print the one console step: rename or remove that node in the Tailscale admin console.
-   A rerun continues here.
 9. **Prove and report.** Open one tailnet session to this machine's `sd-serve` and run `sd task show 1`.
    Print the loss report (below). Delete the marker.
 
@@ -73,9 +74,12 @@ Dispatch stays paused until the operator reads the report and runs `sd restore r
 
 Recommended (decision D1): after each hourly snapshot, mirror the hourly root to the NAS share, in the same job.
 This copies the nightly job's chain exactly: `sd-db.sh backup && offsite-verify.py --preflight-only && mirror-sync.sh sync`.
-The mirror is exact, not additive, with its own conf and its own NAS folder, `Backup/sd-backups-hourly`.
-An exact mirror keeps the NAS window equal to the disk's, so the hourly window drops from 7 to 2 days: about 36 GB on each side.
-Each run moves one 783 MB directory and deletes one.
+The copy is additive (`MIRROR_SYNC_ADDITIVE`), with its own conf and its own NAS folder, `Backup/sd-backups-hourly`.
+An exact mirror was rejected: a promoted hub starts with an empty local root, and its first mirror would delete the NAS history it was restored from.
+The NAS keeps its own window: after the copy, the same job deletes NAS directories whose manifest checkpoint is more than 7 days old, reusing the backup job's owned-backup retention code.
+Only the fence holder runs that prune, as the `--preflight-only` gate already ensures.
+The local hourly window drops from 7 to 2 days, about 36 GB; the NAS keeps 7 days, about 130 GB.
+Each run copies one 783 MB directory and prunes at most one.
 `offsite-verify` gains a second root with a 3-hour age limit, so a stalled hourly copy mails the next morning.
 
 The recovery point becomes 1 hour, or the nightly 24 hours when the NAS was down.
@@ -100,7 +104,7 @@ Lane queues are the one loss with work in it; see "Lanes and gates".
 ### Hub identity
 
 Recommended (D3): the hub's tailnet machine name moves; `hub.json` stays the same on every satellite.
-A satellite's `hub.json` names `hub.example.test` (the hub's MagicDNS name). After step 8, that name resolves to the promoted machine.
+A satellite's `hub.json` names `hub.example.test` (the hub's MagicDNS name). After step 7, that name resolves to the promoted machine.
 The dashboard origin (`https://<name>...:8443`) and the task-actions funnel URL in sent mails keep working, because both are built from the node name.
 The cost is one manual console step per failover: the dead node gives up the name. No tool can do it without a Tailscale API key, a new secret.
 
@@ -157,7 +161,7 @@ Job files come from the satellite's config `cron-jobs/jobs/`; the readiness chec
 | --- | --- | --- |
 | GitHub token (MCP server) and `gh` login | per machine | readiness checks `gh auth status` and push access to each NULL-host repository |
 | Mail for backup failures (`local-notify`) | `<config>/notify/.env`, per machine | readiness checks that the file names every variable `notify.sh` needs |
-| `tailscale serve` (dashboard) and `funnel` (task-actions) | per node | step 7 sets both; the funnel needs the tailnet policy to allow funnel for this user |
+| `tailscale serve` (dashboard) and `funnel` (task-actions) | per node | step 8 sets both; the funnel needs the tailnet policy to allow funnel for this user |
 | Hub cron jobs | `<config>/cron-jobs/jobs/` on the hub | the satellite's own config holds the hub-role job files, with its own paths |
 | Hub-only host jobs (`<config>/cron-jobs/jobs/<hub host>/`) | hub only | not moved: they are the hub's personal jobs, not the role (Non-goals) |
 
@@ -226,8 +230,9 @@ The NAS copies stay on the NAS, which is where every hub keeps them.
 
 The repaired old hub has the lost window in its old `sd.db`: every write after the last snapshot.
 
-- **Take the role back** (the normal path, since the standby is a work machine): run `promote` on the repaired machine from the work satellite's hand-back snapshot, with the console step reversed.
-  Before that, move its old `sd.db` to `sd.db.demoted-<date>`. That file stays as the record of the lost window; the operator copies any item or note back by hand.
+- **Take the role back** (the normal path, since the standby is a work machine): first make the repaired machine a satellite, then run `promote` on it from the work satellite's hand-back snapshot, with the console step reversed.
+  To make it a satellite: move its old `sd.db` to `sd.db.demoted-<date>`, and copy `hub.json` from any satellite (D3 keeps it the same on all of them).
+  Step 1's preflight then finds `hub.json`, as on any satellite. The demoted file stays as the record of the lost window; the operator copies any item or note back by hand.
 - **Rejoin as a satellite** (only when another personal machine takes the role): move `sd.db` aside the same way, add `<profile>.satellite`, run `update satellite --apply`.
 
 No `demote` verb is built: `promote --undo` covers the standby, and the old hub's steps are two commands in the runbook.
@@ -280,12 +285,15 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | 5 restore | `sd.db` installed, hold row open | a candidate is refused | try the next; none left: put `hub.json` back, delete the marker, exit 1 | restore test with a corrupt newest and a good second; with all corrupt |
 | 5 restore | SQLite copy in progress | killed mid-copy | SQLite's backup API rolls back; the marker names the candidate; the rerun restores it again | kill test inside `_install_restore` (existing pattern) |
 | 6 settle | leases released | killed before commit | one transaction; the rerun releases them | test with an open lease in the snapshot |
-| 7 role install | agents and jobs installed | a stage fails part way | stages converge; the rerun installs the rest | promote rerun test after a failed `agents` stage double |
-| 8 name | tailnet name set | a peer holds the name | stop and print the console step; the rerun continues | test with a `tailscale status` double that lists the name on a peer |
+| 7 name | tailnet name set | a peer holds the name | stop and print the console step; no hub-role service is installed; the rerun continues at step 7 | test with a `tailscale status` double that lists the name on a peer |
+| 8 role install | agents and jobs installed | a stage fails part way | stages converge; the rerun installs the rest | promote rerun test after a failed `agents` stage double |
+| 7 to 8 order | none | the stages run before the fence reads "holder" | they add no hub-role label; step 8 refuses until step 7 passes | test that step 8 with a "not holder" fence double installs nothing |
 | 9 prove | marker deleted | the session fails | exit 1, the marker stays; the rerun proves again | test with `serve` not started |
 | fence | old hub returns | demoted, or Tailscale logged out | serve, NULL-host lanes, NAS copies and the `hub-pin` push refuse | one test per caller with a holder, a non-holder and an unknown `tailscale` double |
 | older state | a machine with no `sd.hub_name` | the fence cannot name the holder | reads unknown: serve and NULL-host lanes refuse, and `status` names the missing setting | fence test with no setting |
 | older state | the hub before slice 2 lands its setting | the hub's own lanes stop | slice 2 sets `sd.hub_name` on the hub in the same rollout, and its `status` checks it before the fence turns on | rollout step in the slice 2 body; status test |
+| hourly copy | NAS gains a directory | a promoted hub with a nearly empty local root copies | additive: the NAS history stays; only the prune deletes, by checkpoint age | mirror test with a one-directory source and a seven-directory NAS root |
+| hand-back entry | old `sd.db` moved aside, `hub.json` copied | the operator skips the copy | step 1 refuses: no `hub.json`; nothing moved | promote test on a machine with a local `sd.db` and no `hub.json` |
 | undo 1 | role stopped, hand-back snapshot written | the snapshot fails | the role restarts; nothing deleted; exit 1 | undo test with a failing backup double |
 | undo 3 | nothing | the new hub restored another snapshot, or does not answer | refuse; nothing deleted; the records stay until the checks pass | undo test with a `restore` row naming an older snapshot |
 | undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest | kill test between 4 and 5 |
@@ -314,7 +322,7 @@ Slices 2 and 3 touch `sd_db`. They land in the pack once sd:2997 step 1 moves it
 
 The operator decided on 2026-10-10 (sd:3256 note).
 
-- **D1. Recovery point.** Chain an exact hourly NAS mirror in the hourly job, and cut the hourly window to 2 days: a 1-hour recovery point, about 36 GB on the NAS.
+- **D1. Recovery point.** Chain an additive hourly NAS copy in the hourly job, with its own 7-day NAS prune, and cut the local hourly window to 2 days: a 1-hour recovery point.
 - **D2. Where the verb lives.** `machine-setup.sh promote`. Roles, agents, cron and Tailscale routes live there, and sd:2997 does not move it.
 - **D3. How satellites find the hub.** The hub's tailnet machine name moves, with one console step per failover; `hub.json` and every URL stay.
 - **D4. The standby machine.** The work satellite. It runs the work repositories' lanes, and while promoted it holds the personal records.
