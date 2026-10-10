@@ -676,52 +676,6 @@ def repo_ci(connection: sqlite3.Connection, path: Path | str) -> str:
     return CI_MODES[0] if row is None else row["ci"]
 
 
-#: What `repo.satellite_gate` accepts, default first: `off` runs the gate on
-#: the hub, `accept` lets the hub merge on a satellite's pass (sd:2704).
-SATELLITE_GATE_VALUES = ("off", "accept")
-
-
-def set_satellite_gate(
-    connection: sqlite3.Connection,
-    path: Path | str,
-    value: str,
-) -> tuple[str, str]:
-    """Set one registered repository's `satellite_gate`. Returns `(path, before)`.
-
-    Same refusals as `set_runner_merge`: a value that is not one of
-    `SATELLITE_GATE_VALUES`, and a path no row holds.
-    """
-    if value not in SATELLITE_GATE_VALUES:
-        accepted = " or ".join(SATELLITE_GATE_VALUES)
-        raise RepoRefusal(f"{value!r} is not a satellite gate setting; expected {accepted}")
-    given = str(Path(path).expanduser().resolve())
-    probe = paths.keys(given)
-    row = connection.execute(
-        f"SELECT path, satellite_gate FROM repo WHERE path IN ({paths.placeholders(probe)})",
-        probe).fetchone()
-    if row is None:
-        raise RepoRefusal(
-            f"{given} is not a registered repository; run `sd-db.sh repo add {given}`")
-    target = row["path"]
-    before = row["satellite_gate"]
-    upsert_repo(connection, target, satellite_gate=value)
-    return target, before
-
-
-def repo_satellite_gate(connection: sqlite3.Connection, path: Path | str) -> str:
-    """Whether the hub may merge one repository on a satellite's gate pass.
-
-    An unregistered path reads `off`, the column default: the operator has
-    not granted it, so the hub runs the gate itself.
-    """
-    given = str(Path(path).expanduser().resolve())
-    probe = paths.keys(given)
-    row = connection.execute(
-        f"SELECT satellite_gate FROM repo WHERE path IN ({paths.placeholders(probe)})",
-        probe).fetchone()
-    return SATELLITE_GATE_VALUES[0] if row is None else row["satellite_gate"]
-
-
 #: The word that names the hub for `repo.lane_host`; the column holds NULL for it.
 LANE_HUB = "hub"
 #: A lane host is a `hostname -s`, lower-cased: the `local-cron-jobs` folder rule.

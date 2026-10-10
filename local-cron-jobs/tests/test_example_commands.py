@@ -71,11 +71,11 @@ class LaneRunJobTest(unittest.TestCase):
         for retired in ("-C", "--satellite-only", "change-me"):
             self.assertNotIn(retired, text)
 
-    def test_the_satellite_readme_names_the_job_as_the_way_to_take_requests_in(self):
+    def test_the_lane_host_readme_names_the_job(self):
         readme = (FOLDER.parent / "local-sd-db" / "README.md").read_text()
-        offload = readme.split("### Satellite gate offload", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("examples/lane-run.job", offload)
-        self.assertIn("lane run --hosted", offload)
+        section = readme.split("### Lane host", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("examples/lane-run.job", section)
+        self.assertIn("lane run --hosted", section)
 
     def test_the_job_runs_the_pack_sd_ship_with_exactly_those_words(self):
         fx = Fixture()

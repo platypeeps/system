@@ -1,0 +1,22 @@
+-- Drop `repo.satellite_gate` (sd:3217, design sd:3003, "What retires").
+--
+-- A lane host per repository replaced the satellite gate offload: the machine
+-- that hosts a repository's lane gates and merges it, and the pack no longer
+-- merges on a satellite's pass. Nothing reads the grant, and
+-- `sd-db.sh repo satellite-gate` is gone. 020 stays as applied; this file
+-- undoes its column.
+--
+-- `DROP COLUMN` in place, as 020's reverse does it: SQLite rewrites `repo`
+-- only, and every row keeps its other values. The column has no index, view
+-- or trigger, which would make SQLite refuse the drop. A pack older than
+-- sd:3214 reads a missing column as `off`, which grants nothing.
+-- The reverse, run by hand with the runner, the dashboard and the serve agent
+-- stopped. It cannot restore an `accept`: every row reads `off`.
+--
+--   BEGIN;
+--   ALTER TABLE repo ADD COLUMN satellite_gate TEXT NOT NULL DEFAULT 'off'
+--       CHECK (satellite_gate IN ('off', 'accept'));
+--   PRAGMA user_version = 24;
+--   COMMIT;
+
+ALTER TABLE repo DROP COLUMN satellite_gate;

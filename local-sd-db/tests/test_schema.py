@@ -957,12 +957,18 @@ class TheSatelliteGateColumn(SchemaCase):
         finally:
             connection.close()
 
+    def _through_twenty(self):
+        # Through 20 only: 25 drops the column again (sd:3217).
+        through = [m for m in schema_module.migrations() if m[0] <= 20]
+        with mock.patch("sd_db.migrate.migrations", return_value=through):
+            return migrate(self.path)
+
     def test_every_existing_row_arrives_at_off_and_keeps_its_values(self):
         self._at_version_nineteen()
-        result = migrate(self.path)
-        self.assertEqual((result.before, result.applied),
-                         (19, list(range(20, SCHEMA_VERSION + 1))))
-        connection = connect(self.path, write=True)
+        result = self._through_twenty()
+        self.assertEqual((result.before, result.applied), (19, [20]))
+        # The library refuses a file below its version; read it raw.
+        connection = sqlite3.connect(self.path)
         self.addCleanup(connection.close)
         rows = [tuple(row) for row in connection.execute(
             "SELECT path, satellite_gate, ci, runner_merge, managed, remote FROM repo ORDER BY path")]
@@ -972,8 +978,9 @@ class TheSatelliteGateColumn(SchemaCase):
 
     def test_the_check_holds_the_column_to_off_and_accept(self):
         self._at_version_nineteen()
-        migrate(self.path)
-        connection = connect(self.path, write=True)
+        self._through_twenty()
+        # The library refuses a file below its version; read it raw.
+        connection = sqlite3.connect(self.path)
         self.addCleanup(connection.close)
         connection.execute("UPDATE repo SET satellite_gate = 'accept' WHERE path = '/one'")
         for value in ("on", "ACCEPT", "", None):
@@ -985,9 +992,7 @@ class TheSatelliteGateColumn(SchemaCase):
     def test_the_reverse_returns_the_file_to_nineteen(self):
         self._at_version_nineteen()
         # Through 20 only: 21 adds a `judgment` column 20's reverse leaves.
-        through = [m for m in schema_module.migrations() if m[0] <= 20]
-        with mock.patch("sd_db.migrate.migrations", return_value=through):
-            migrate(self.path)
+        self._through_twenty()
         text = dict(schema_module.migrations())[20].read_text(encoding="utf-8")
         raw = sqlite3.connect(self.path, isolation_level=None)
         self.addCleanup(raw.close)
@@ -1186,11 +1191,18 @@ class TheLaneHostColumn(SchemaCase):
         finally:
             connection.close()
 
+    def _through_twenty_four(self):
+        # Through 24 only: 25 drops `satellite_gate`, which these rows carry (sd:3217).
+        through = [m for m in schema_module.migrations() if m[0] <= 24]
+        with mock.patch("sd_db.migrate.migrations", return_value=through):
+            return migrate(self.path)
+
     def test_every_existing_row_arrives_at_null_and_keeps_its_values(self):
         self._at_version_twenty_three()
-        result = migrate(self.path)
+        result = self._through_twenty_four()
         self.assertEqual((result.before, result.applied), (23, [24]))
-        connection = connect(self.path, write=True)
+        # The library refuses a file below its version; read it raw.
+        connection = sqlite3.connect(self.path)
         self.addCleanup(connection.close)
         rows = [tuple(row) for row in connection.execute(
             "SELECT path, lane_host, satellite_gate, ci, runner_merge, managed, remote FROM repo ORDER BY path")]
@@ -1200,8 +1212,9 @@ class TheLaneHostColumn(SchemaCase):
 
     def test_the_check_holds_a_value_to_lower_case_letters_digits_and_dashes(self):
         self._at_version_twenty_three()
-        migrate(self.path)
-        connection = connect(self.path, write=True)
+        self._through_twenty_four()
+        # The library refuses a file below its version; read it raw.
+        connection = sqlite3.connect(self.path)
         self.addCleanup(connection.close)
         connection.execute("UPDATE repo SET lane_host = 'build-2' WHERE path = '/one'")
         for value in ("Build_2", "build 2", "", "build.example.test"):
@@ -1213,13 +1226,102 @@ class TheLaneHostColumn(SchemaCase):
 
     def test_the_reverse_returns_the_file_to_twenty_three(self):
         self._at_version_twenty_three()
-        migrate(self.path)
+        self._through_twenty_four()
         text = dict(schema_module.migrations())[24].read_text(encoding="utf-8")
         raw = sqlite3.connect(self.path, isolation_level=None)
         self.addCleanup(raw.close)
         raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
         self.assertEqual(schema_version(raw), 23)
         self.assertNotIn("lane_host", [row[1] for row in raw.execute("PRAGMA table_info(repo)")])
+
+
+class TheSatelliteGateDrop(SchemaCase):
+    """Migration 25. `repo.satellite_gate` goes: the pack retired the
+    satellite gate offload, so nothing reads the grant (sd:3217, design sd:3003).
+
+    Dropped in place, as 20's reverse drops it: every row keeps its other
+    values. A failed drop leaves the file at 24 with the column and its
+    values, and the reverse returns the file to 24 with every row at `off`.
+    """
+
+    COLUMNS = "path, remote, mode, runner_merge, managed, ci, lane_host, status_source, pieces_source"
+
+    def _at_version_twenty_four(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                # 24 literally, for the reason `_at_version_nine` gives.
+                if version > 24:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.executemany(
+                "INSERT INTO repo (path, remote, runner_merge, managed, ci, satellite_gate, lane_host, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 't', 't')",
+                [("/one", "git@github.com:platypeeps/one.git", "auto", 1, "local", "accept", "build-2"),
+                 ("/two", None, "manual", 0, "github", "off", None)])
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _rows(self, connection):
+        return [tuple(row) for row in connection.execute(
+            f"SELECT {self.COLUMNS}, created_at, updated_at FROM repo ORDER BY path")]
+
+    def _columns(self, connection):
+        return [row[1] for row in connection.execute("PRAGMA table_info(repo)")]
+
+    def test_the_column_goes_and_every_row_keeps_its_other_values(self):
+        self._at_version_twenty_four()
+        raw = sqlite3.connect(self.path)
+        before = self._rows(raw)
+        raw.close()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (24, [25]))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        self.assertNotIn("satellite_gate", self._columns(connection))
+        self.assertEqual(self._rows(connection), before)
+        self.assertEqual(before[0][:7], ("/one", "git@github.com:platypeeps/one.git", None, "auto", 1,
+                                         "local", "build-2"))
+
+    def test_a_failed_drop_leaves_the_file_at_twenty_four_and_a_rerun_finishes_it(self):
+        self._at_version_twenty_four()
+        # SQLite refuses to drop an indexed column; an index the operator
+        # added by hand is the one way this one statement can fail.
+        raw = sqlite3.connect(self.path)
+        raw.execute("CREATE INDEX by_gate ON repo(satellite_gate)")
+        raw.commit()
+        before = self._rows(raw)
+        raw.close()
+        with self.assertRaises(sqlite3.OperationalError):
+            migrate(self.path)
+        raw = sqlite3.connect(self.path)
+        self.assertEqual(schema_version(raw), 24)
+        self.assertIn("satellite_gate", self._columns(raw))
+        self.assertEqual([row[0] for row in raw.execute("SELECT satellite_gate FROM repo ORDER BY path")],
+                         ["accept", "off"])
+        self.assertEqual(self._rows(raw), before)
+        raw.execute("DROP INDEX by_gate")
+        raw.commit()
+        raw.close()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (24, [25]))
+
+    def test_the_reverse_returns_the_file_to_twenty_four_with_every_row_off(self):
+        self._at_version_twenty_four()
+        migrate(self.path)
+        text = dict(schema_module.migrations())[25].read_text(encoding="utf-8")
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        self.assertEqual(schema_version(raw), 24)
+        self.assertEqual([row[0] for row in raw.execute("SELECT satellite_gate FROM repo ORDER BY path")],
+                         ["off", "off"])
+        with self.assertRaises(sqlite3.IntegrityError):
+            raw.execute("UPDATE repo SET satellite_gate = 'on' WHERE path = '/one'")
 
 
 class TheConnection(SchemaCase):
