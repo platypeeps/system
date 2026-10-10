@@ -82,9 +82,14 @@ its run ends, so refresh waits for it. A lane whose runner never ran has no
 lock yet. The helper makes and holds one for every folder under the lane
 root, every repository in the registry (`sd-db.sh repo list`) and every
 checkout in the conf, since a lane is named after its checkout's folder. A
-registry it cannot read refuses with nothing moved. With every lock held, the helper waits until `sd gate status
---json` shows no holders and no waiters, and checks again after its last
-pass over the locks. Then it runs the refresh steps as its child and
+registry it cannot read refuses with nothing moved. Each pass tries every
+lock first and keeps the ones it gets, then waits for the busy ones, so
+`lane run --hosted` cannot lead the drain from lane to lane (sd:3265). With
+every lock held, the helper reads the holders `sd gate status --json` lists
+and waits until each of them has ended. A waiter, or a gate admitted later,
+does not count: no lane gates without its runner lock, so it is no lane's.
+Waiting for an idle gate starved a busy satellite for hours. A pass that
+takes a new lock reads the holders again. Then it runs the refresh steps as its child and
 releases the locks when it exits. TERM, INT or HUP sent to the helper alone
 does not end it early: it waits for the child, which is in its process
 group. Ctrl-C reaches both. The child inherits the lock descriptors, so a

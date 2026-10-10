@@ -1620,8 +1620,9 @@ case "$1" in
     ;;
   refresh)
     shift
-    # The helper holds every lane's runner lock and waits for an idle gate,
-    # then runs this again as its child with REPO_SYNC_LANES_HELD=1 (sd:3099).
+    # The helper holds every lane's runner lock and waits out the gate
+    # holders from before, then runs this again as its child with
+    # REPO_SYNC_LANES_HELD=1 (sd:3099, sd:3265).
     if is_satellite; then
       echo "repo-sync.sh refresh: this machine is a satellite ($HOME/.config/sd/hub.json); only follow moves its system and pack checkouts, to the hub's pins" >&2
       exit 1
@@ -1838,8 +1839,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              ~/.local/state/sd/lanes), making it for a lane folder, a
              registered repository (sd-db.sh repo list) or a conf checkout
              whose runner never ran, so `lane run` exits at once,
-             and wait for `sd gate status` to show no holders or waiters,
-             checked again after the last lock. TERM, INT, HUP or kill -9
+             and wait until each gate holder `sd gate status` listed once
+             every lock was held has ended; a waiter or a later gate is no
+             lane's and does not count. TERM, INT, HUP or kill -9
              of the helper leaves the locks held until the refresh steps
              end. The wait is
              bounded: 45 minutes in total for the lane locks and the gate

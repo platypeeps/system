@@ -21,7 +21,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from test_refresh_drain import DrainFixture  # noqa: E402
+from test_refresh_drain import GATE_NEW_HOLDER_EACH_CALL, HOSTED_RUNNER, DrainFixture  # noqa: E402
 
 
 # For the make stub: record the HEAD each `make -C <dir> setup` ran at, and
@@ -632,6 +632,35 @@ class FollowTest(unittest.TestCase):
         self.assertIn("busy-repo", result.stderr)
         self.assertIn("repo-sync.sh follow: refused, nothing moved", result.stderr)
         self.assertEqual(old, (f.head(system), f.head(pack)))
+
+    def test_a_busy_satellite_moves_within_one_bounded_window(self):
+        """REGRESSION (sd:3265). New ships and gates keep arriving: a hosted
+        runner goes lane to lane and the gate queue never empties. Follow
+        moves both checkouts within the bound, and no ship runs while it
+        moves them."""
+        f = self.fixture()
+        system, pack, _ = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, *pinned)
+        locks = [f.lane(f"lane-{n}") for n in range(5)]
+        ships = f.tmp / "ships"
+        runner = subprocess.Popen([sys.executable, "-c", HOSTED_RUNNER, str(ships), "3", *map(str, locks)],
+                                  stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (runner.kill(), runner.wait(), runner.stdout.close()))
+        f.assert_line(runner.stdout.readline(), "locked")
+        script = f.tmp / "gate.sh"
+        script.write_text(GATE_NEW_HOLDER_EACH_CALL)
+
+        f.run("follow", expect=0, extra_env={
+            "REPO_SYNC_DRAIN_WAIT": "10", "MAKE_HOOK": f"echo move >> {ships}",
+            "SD_GATE_SCRIPT": str(script), "GATE_COUNT": str(f.tmp / "gate.count")})
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        running = 0
+        for line in ships.read_text().splitlines():
+            if line == "move":
+                self.assertEqual(0, running, ships.read_text())
+            running += {"start": 1, "end": -1}.get(line.split()[0], 0)
 
     def test_follow_is_a_no_op_when_already_there(self):
         """NEW. At the hub's pair, follow drains nothing and runs no make."""
