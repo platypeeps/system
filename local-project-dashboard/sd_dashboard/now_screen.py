@@ -84,7 +84,7 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
-from sd_db import operations, progress
+from sd_db import operations, progress, reads
 from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
@@ -359,6 +359,18 @@ def _jobs(connection, backend) -> list[dict]:
                     Path(root) if isinstance(root, (str, Path)) else None)
 
 
+def work_rows(connection: sqlite3.Connection, now: str) -> list[dict]:
+    """The items `sd today` lists, in its order, as rows a snooze can hold (sd:3271).
+
+    The id is `item:<id>`, so the key is `today:item:<id>`. The row's problem is its status and due date: a changed
+    item is not the one the operator snoozed, and a new title is not a new problem.
+    """
+    return [{"id": f"item:{row['id']}", "kind": "item", "item": row["id"], "what": f"#{row['id']} {row['title']}",
+             "detail": f"{row['status']} · due {row['due']}" if row["due"] else row["status"],
+             "state": row["status"], "due": row["due"], "problem": [row["status"], row["due"]]}
+            for row in reads.today_items(connection, now=now)]
+
+
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, jev=None) -> dict:
     """The merged, ranked, banded rows, and what each source said if it said nothing.
 
@@ -372,6 +384,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     the background and without changing a row; None, the default, asks nothing.
     A row the operator snoozed (sd:1896) is in `snoozed`, with its `until`,
     and not in `rows`; `snooze_error` says why none could be read.
+    `work` is the work items `sd today` lists (sd:3271), snoozed on the same page: a snoozed item is in `snoozed`
+    with its `until` and not in `work`; `work_error` says why the items could not be read, and is never an empty list.
     """
     read = fleet or fleet_module.collect
     rows: list[dict] = []
@@ -392,7 +406,13 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     job_failures.shadow(rows, jev)
     snoozes, snooze_error = snooze.held(connection, now=now)
     shown, snoozed = snooze.split("today", [{**row, "band": band(row["rank"])} for row in merge(rows)], snoozes)
-    return {"now": now, "sources": sources, "rows": shown, "snoozed": snoozed, "snooze_error": snooze_error}
+    try:
+        items, work_error = work_rows(connection, now), ""
+    except (SdDbError, sqlite3.Error) as failure:
+        items, work_error = [], str(failure) or "the work items could not be read"
+    work, work_snoozed = snooze.split("today", items, snoozes)
+    return {"now": now, "sources": sources, "rows": shown, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
+            "work": work, "work_error": work_error}
 
 
 def now_panel() -> object:

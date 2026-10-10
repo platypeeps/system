@@ -9,3 +9,6 @@ Status mail, backups, HOA water and Wants you wait for collectors.
 Snooze hides a row for 1 hour, until the next 08:00 or for 1 week; it posts
 `/api/snooze`, and the row waits under Snoozed with an Unsnooze (sd:1896).
 A row whose problem reads otherwise shows again before its time.
+Your work lists the items `sd today` lists, from the same `/api/now` document; each row has the same Snooze,
+keyed `today:item:<id>`, and the item shows again early when its status or due date changes (sd:3271).
+The classic Today and `sd today` still list a snoozed item.
