@@ -58,7 +58,7 @@ COLUMNS = {
     "provider": {"none": "name enabled reason author_rank reviewer_rank"},
     "publication_claim": {"history": "payload",
                           "none": "id item active_item state created_at updated_at"},
-    "repo": {"key": "path", "none": "remote mode runner_merge managed ci satellite_gate lane_host status_source pieces_source created_at updated_at"},
+    "repo": {"key": "path", "none": "remote mode runner_merge managed ci lane_host status_source pieces_source created_at updated_at"},
     "repo_protection": {"key": "repo", "history": "body reason",
                         "none": "observed_at status default_branch"},
     "request_outcome": {"none": "id committed_at"},
@@ -238,10 +238,12 @@ class TheMigration(AThirteenStore):
         connection = sqlite3.connect(self.database, isolation_level=None)
         paths.install(connection)
         connection.execute("PRAGMA foreign_keys = ON")
-        # 024 to 015 came after 014 and are reversed first, newest first:
+        # 025 to 015 came after 014 and are reversed first, newest first:
         # 014's reverse is written against the table at 14, without
         # `repo.managed`, `repo.ci`, `repo.satellite_gate`, `repo.lane_host`, 021's to 023's
-        # `judgment` columns or `runner_run.detached_from`.
+        # `judgment` columns or `runner_run.detached_from`. 025's reverse puts
+        # `satellite_gate` back so 020's can drop it.
+        connection.executescript(reverse_script("025_repo_drop_satellite_gate.sql"))
         connection.executescript(reverse_script("024_repo_lane_host.sql"))
         connection.executescript(reverse_script("023_judgment_error.sql"))
         connection.executescript(reverse_script("022_judgment_batch_children.sql"))
