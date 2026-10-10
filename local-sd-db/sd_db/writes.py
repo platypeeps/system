@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import paths
@@ -521,6 +521,63 @@ def unresolved_state(connection: sqlite3.Connection, kind: str) -> list[sqlite3.
             (kind,),
         )
     )
+
+
+#: The longest a row stays hidden. A row snoozed for longer is a row nobody
+#: will see again, which is a delete by another name.
+SNOOZE_DAYS = 31
+#: A row key is a page and the row's own id (`today:job:nightly:1`).
+SNOOZE_KEY_LENGTH = 512
+
+
+def snooze(
+    connection: sqlite3.Connection,
+    key: str,
+    until: str | None,
+    *,
+    now: str | None = None,
+) -> int:
+    """Hide the Today or Health row `key` until `until`, or show it again (sd:1896).
+
+    One `snooze` row per write, through `record_state`: the latest row for a
+    key is the answer (`snoozed`), so clearing is the same write with
+    `until=None`. Nothing expires a row; the reader compares the time with
+    its own clock. `until` must be aware, after `now` and within
+    `SNOOZE_DAYS`.
+    """
+    if not isinstance(key, str) or not key.strip() or len(key) > SNOOZE_KEY_LENGTH:
+        raise SdDbError(f"a snooze needs the row's key, 1 to {SNOOZE_KEY_LENGTH} characters")
+    if until is not None:
+        until = stamp(until)
+        moment = datetime.fromisoformat(until)
+        start = datetime.fromisoformat(stamp(now)) if now else datetime.now(UTC)
+        if moment <= start:
+            raise SdDbError(f"snooze time {until} is already past; pick a later one")
+        if moment - start > timedelta(days=SNOOZE_DAYS):
+            raise SdDbError(f"snooze time {until} is more than {SNOOZE_DAYS} days away; pick a nearer one")
+    return record_state(connection, "snooze", key=key, body={"until": until})
+
+
+def snoozed(connection: sqlite3.Connection, *, now: str) -> dict[str, str]:
+    """Every row key hidden at `now`, with the time it shows again.
+
+    The latest `snooze` row per key, read through `state_by_kind_key`. A body
+    this cannot read hides nothing: an unreadable snooze shows its row.
+    """
+    at = datetime.fromisoformat(stamp(now))
+    found: dict[str, str] = {}
+    for row in connection.execute(
+        "SELECT key, body FROM state WHERE id IN "
+        "(SELECT max(id) FROM state WHERE kind = 'snooze' GROUP BY key)"
+    ):
+        try:
+            until = json.loads(row["body"]).get("until")
+            moment = datetime.fromisoformat(stamp(until))
+        except (TypeError, ValueError, AttributeError, SdDbError):
+            continue
+        if moment > at:
+            found[row["key"]] = moment.isoformat(timespec="seconds")
+    return found
 
 
 # ---------------------------------------------------------------- shadow

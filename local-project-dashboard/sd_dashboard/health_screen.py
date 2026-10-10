@@ -52,7 +52,7 @@ from sd_db.errors import SdDbError
 from sd_db import protection as protection_module
 
 from . import fleet as fleet_module
-from . import health_collectors, ports_screen
+from . import health_collectors, ports_screen, snooze
 from .protection_screen import APPLICABLE, FLAGS, GAPS, ORDER
 
 __all__ = ["AREAS", "document"]
@@ -708,6 +708,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
     at it is left to stop at its own budget, not waited on. While it runs, a
     later request starts no second scan of that area (`_Scans`); the area
     shows its last answer marked `stale`, or is its error if it has none.
+    A row the operator snoozed (sd:1896) is in its area's `snoozed`, with its
+    `until`, and not in `rows`; `snooze_error` says why none could be read.
     """
     try:
         known: list[str] | Exception = [row["path"] for row in repos.registered(connection)]
@@ -735,6 +737,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         "sec": lambda: _security_rows(read_protection(connection), now=now),
         "cred": lambda: _credential_rows(read_creds(connection), now=now),
     }
+    snoozes, snooze_error = snooze.held(connection, now=now)
     running = {key: _SCANS.start(key, readers[key], now=now) for key in POOLED}
     stop = time.monotonic() + PAGE_SECONDS
     areas = []
@@ -763,5 +766,6 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
                 _settle(area, name, scan.result)
         elif key in readers:
             _settle(area, name, readers[key])
+        area["rows"], area["snoozed"] = snooze.split("health", area["rows"], snoozes)
         areas.append(area)
-    return {"read": now, "areas": areas}
+    return {"read": now, "areas": areas, "snooze_error": snooze_error}

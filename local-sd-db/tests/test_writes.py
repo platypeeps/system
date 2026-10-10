@@ -17,6 +17,8 @@ from sd_db import (
     resolve_state,
     set_item_fields,
     skill_use_since,
+    snooze,
+    snoozed,
     start_trial,
     transition,
     trials,
@@ -167,6 +169,53 @@ class TheStateTable(WriteCase):
         self.assertEqual(len(unresolved_state(self.connection, "restore")), 1)
         resolve_state(self.connection, row)
         self.assertEqual(unresolved_state(self.connection, "restore"), [])
+
+
+class TheSnooze(WriteCase):
+    """A row hidden until a time (sd:1896): a `snooze` state row per write,
+    the latest per key the answer, and the reader's clock the expiry."""
+
+    NOW = "2026-10-10T12:00:00Z"
+
+    def test_a_snooze_holds_until_its_time_and_then_lapses(self):
+        snooze(self.connection, "today:job:nightly:1", "2026-10-11T08:00:00-06:00", now=self.NOW)
+        self.assertEqual(snoozed(self.connection, now=self.NOW), {"today:job:nightly:1": "2026-10-11T14:00:00+00:00"})
+        self.assertEqual(snoozed(self.connection, now="2026-10-11T13:59:59Z"),
+                         {"today:job:nightly:1": "2026-10-11T14:00:00+00:00"})
+        self.assertEqual(snoozed(self.connection, now="2026-10-11T14:00:00Z"), {})
+        row = self.connection.execute("SELECT kind, key, body, resolved_at FROM state").fetchone()
+        self.assertEqual(tuple(row), ("snooze", "today:job:nightly:1", '{"until": "2026-10-11T14:00:00+00:00"}', None))
+
+    def test_the_latest_write_for_a_key_wins_and_a_cleared_one_shows_the_row(self):
+        snooze(self.connection, "health:br:system", "2026-10-17T12:00:00Z", now=self.NOW)
+        snooze(self.connection, "health:br:system", "2026-10-10T13:00:00Z", now=self.NOW)
+        snooze(self.connection, "today:ahead:system:2", "2026-10-11T12:00:00Z", now=self.NOW)
+        self.assertEqual(snoozed(self.connection, now=self.NOW), {"health:br:system": "2026-10-10T13:00:00+00:00",
+                                                                  "today:ahead:system:2": "2026-10-11T12:00:00+00:00"})
+        snooze(self.connection, "health:br:system", None, now=self.NOW)
+        self.assertEqual(snoozed(self.connection, now=self.NOW), {"today:ahead:system:2": "2026-10-11T12:00:00+00:00"})
+        # Clearing a key nobody snoozed writes the same row and shows nothing new.
+        snooze(self.connection, "today:dark:jobs", None, now=self.NOW)
+        self.assertEqual(len(snoozed(self.connection, now=self.NOW)), 1)
+
+    def test_a_time_in_the_past_too_far_ahead_or_without_a_zone_is_refused(self):
+        for until, said in (("2026-10-10T11:59:59Z", "already past"), ("2026-10-10T12:00:00Z", "already past"),
+                            ("2026-11-10T12:00:01Z", "31 days"), ("2026-10-11T08:00:00", "no timezone"),
+                            ("tomorrow", "not an ISO-8601")):
+            with self.subTest(until=until), self.assertRaises(SdDbError) as raised:
+                snooze(self.connection, "today:job:nightly:1", until, now=self.NOW)
+            self.assertIn(said, str(raised.exception))
+        for key in ("", None, 7, "x" * 513):
+            with self.subTest(key=key), self.assertRaises(SdDbError):
+                snooze(self.connection, key, "2026-10-11T08:00:00Z", now=self.NOW)
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM state").fetchone()[0], 0)
+
+    def test_a_body_the_reader_cannot_parse_shows_the_row(self):
+        """An unreadable snooze is not a snooze: the row it would hide shows."""
+        for key, body in (("today:a", "not json"), ("today:b", '["2026-10-11T08:00:00Z"]'),
+                          ("today:c", '{"until": "soon"}'), ("today:d", None)):
+            record_state(self.connection, "snooze", key=key, body=body, timestamp=self.NOW)
+        self.assertEqual(snoozed(self.connection, now=self.NOW), {})
 
 
 if __name__ == "__main__":

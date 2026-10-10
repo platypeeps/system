@@ -11,12 +11,14 @@ here opens a database of its own; the criterion 2 grep in
 import json
 import os
 import re
+import sqlite3
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import contributions, operations, progress, upsert_shadow
+from sd_db import contributions, operations, progress, upsert_shadow, writes
+from sd_db.writes import snooze
 from sd_dashboard import fleet, now_screen
 
 from fleet_support import FleetCase
@@ -183,7 +185,7 @@ class Document(ScreenCase):
                 repos=[repo("pushy", ahead=1), repo("messy", dirty=2)],
                 trees=[tree("gone", live=False)]))
         shadow.assert_called_once_with(self.connection, tracker="github")
-        self.assertEqual(set(document), {"rows", "sources", "now"})
+        self.assertEqual(set(document), {"rows", "sources", "now", "snoozed", "snooze_error"})
         self.assertEqual(document["now"], NOW)
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
             (2, "pr:example/project#14:2", "look"),
@@ -228,6 +230,32 @@ class Document(ScreenCase):
             document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet())
         self.assertEqual([(row["rank"], row["id"], row["detail"]) for row in document["rows"]],
                          [(0, "dark:prs", "shadow table unreadable")])
+
+    def test_a_snoozed_row_leaves_the_rows_until_its_time_and_then_comes_back(self):
+        """sd:1896. The key is the page and the row id; Health's key for the same id hides nothing here."""
+        fleet = self.fixture_fleet(repos=[repo("pushy", ahead=1), repo("messy", dirty=2)])
+        snooze(self.connection, "today:ahead:pushy:1", "2026-09-06T15:00:00Z", now=NOW)
+        snooze(self.connection, "health:dirty:messy:2", "2026-09-06T15:00:00Z", now=NOW)
+        document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)
+        self.assertEqual([row["id"] for row in document["rows"]], ["dirty:messy:2"])
+        self.assertEqual([(row["id"], row["until"], row["band"]) for row in document["snoozed"]],
+                         [("ahead:pushy:1", "2026-09-06T15:00:00+00:00", "look")])
+        self.assertEqual(document["snooze_error"], "")
+        later = now_screen.document(self.connection, now="2026-09-06T15:00:00Z", jobs=self.quiet, fleet=fleet)
+        self.assertEqual([row["id"] for row in later["rows"]], ["ahead:pushy:1", "dirty:messy:2"])
+        self.assertEqual(later["snoozed"], [])
+        # The id keys on the fact: one more unpushed commit is a new row the old snooze does not cover.
+        grown = now_screen.document(self.connection, now=NOW, jobs=self.quiet,
+                                    fleet=self.fixture_fleet(repos=[repo("pushy", ahead=2)]))
+        self.assertEqual([row["id"] for row in grown["rows"]], ["ahead:pushy:2"])
+
+    def test_a_snooze_read_that_fails_shows_every_row_and_says_why(self):
+        snooze(self.connection, "today:ahead:pushy:1", "2026-09-06T15:00:00Z", now=NOW)
+        with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
+            document = now_screen.document(self.connection, now=NOW, jobs=self.quiet,
+                                           fleet=self.fixture_fleet(repos=[repo("pushy", ahead=1)]))
+        self.assertEqual([row["id"] for row in document["rows"]], ["ahead:pushy:1"])
+        self.assertEqual((document["snoozed"], document["snooze_error"]), ([], "database is locked"))
 
 
 class DarkCollector(FleetCase):

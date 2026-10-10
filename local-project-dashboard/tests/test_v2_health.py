@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import threading
 import time
@@ -33,8 +34,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import credentials, upsert_repo
-from sd_db.writes import record_state
+from sd_db import credentials, upsert_repo, writes
+from sd_db.writes import record_state, snooze
 
 from sd_dashboard import health_collectors, health_screen, server, v2
 
@@ -220,6 +221,29 @@ class TheDocument(Collectors, ScreenCase):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
+
+    def test_a_snoozed_row_leaves_its_area_until_its_time_and_then_comes_back(self):
+        """sd:1896. The key is the page and the row id; Today's key for the same id hides nothing here."""
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", now=NOW)
+        snooze(self.connection, "today:unread:beta", "2026-09-06T15:00:00Z", now=NOW)
+        doc = self.doc()
+        wt = doc["areas"][2]
+        self.assertEqual([row["id"] for row in wt["rows"]], ["unread:beta"])
+        self.assertEqual([(row["id"], row["until"], row["state"]) for row in wt["snoozed"]],
+                         [("gone:group/alpha", "2026-09-06T15:00:00+00:00", "caution")])
+        self.assertEqual(doc["snooze_error"], "")
+        self.assertTrue(all(area["snoozed"] == [] for area in doc["areas"] if area["id"] != "wt"))
+        later = health_screen.document(self.connection, now="2026-09-06T15:00:01Z", fleet=fleet_of(TREES),
+                                       ports=ports_snapshot, protection=protection_of(PROTECTION))
+        self.assertEqual({row["id"] for row in later["areas"][2]["rows"]}, {"gone:group/alpha", "unread:beta"})
+        self.assertEqual(later["areas"][2]["snoozed"], [])
+
+    def test_a_snooze_read_that_fails_shows_every_row_and_says_why(self):
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", now=NOW)
+        with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
+            doc = self.doc()
+        self.assertEqual({row["id"] for row in doc["areas"][2]["rows"]}, {"gone:group/alpha", "unread:beta"})
+        self.assertEqual((doc["areas"][2]["snoozed"], doc["snooze_error"]), ([], "database is locked"))
 
     def test_registrations_whose_directory_is_gone_are_one_row_per_checkout(self):
         wt = self.doc()["areas"][2]
