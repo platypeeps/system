@@ -120,8 +120,7 @@ addEventListener('DOMContentLoaded', () => {
     if (!Q[2] && urgent(t)) { needsDate = 'out'; words.push(`you pick a later due date${t.due ? ` (now ${fmt(t.due)})` : ''}`); }
     return { ok: true, ch, words, needsDate };
   }
-  // build: the row carries what sd_db.workflow.edit_item takes (tasks_screen._edit_capability): a kind in DETAIL_KINDS, and
-  // for a work item a repository whose status_source is row. A file-owned work row's every edit fails (review, PR #46).
+  // build: the row carries what sd_db.workflow.edit_item takes (tasks_screen._edit_capability): a kind in DETAIL_KINDS.
   const EDITABLE = t => !!t?.edit?.allowed;
   const noEdit = t => t.edit?.reason || `a ${t.kind} item uses its own editing workflow`;
   // build: sd_db.workflow.TASK_STATUS_KINDS; workflow._recurring refuses a rule on any other kind.

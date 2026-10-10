@@ -729,9 +729,8 @@ def _plan_repo(connection, path, *, with_items, home):
                        with_items=with_items)
     row = dict(row)
     refusals = _guards(connection)
-    for column in ("status_source", "pieces_source"):
-        if row[column] == "retiring":
-            refusals.append(_refusal("P2", "repo", path, f"repo {_quoted(path)} has {column} retiring"))
+    if row["pieces_source"] == "retiring":
+        refusals.append(_refusal("P2", "repo", path, f"repo {_quoted(path)} has pieces_source retiring"))
     tables = {"repo": [row], "repo_protection": _rows(connection, "SELECT * FROM repo_protection WHERE repo=?", (path,)),
               "item": [], "note": [], "assignment": []}
     items = [ident for (ident,) in connection.execute("SELECT id FROM item WHERE repo=? ORDER BY id", (path,))]

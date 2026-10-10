@@ -1247,7 +1247,7 @@ class TheSatelliteGateDrop(SchemaCase):
     values, and the reverse returns the file to 24 with every row at `off`.
     """
 
-    COLUMNS = "path, remote, mode, runner_merge, managed, ci, lane_host, status_source, pieces_source"
+    COLUMNS = "path, remote, mode, runner_merge, managed, ci, lane_host, pieces_source"
 
     def _at_version_twenty_four(self):
         connection = connect(self.path, create=True, write=True)
@@ -1282,7 +1282,7 @@ class TheSatelliteGateDrop(SchemaCase):
         before = self._rows(raw)
         raw.close()
         result = migrate(self.path)
-        self.assertEqual((result.before, result.applied), (24, [25]))
+        self.assertEqual((result.before, result.applied), (24, [25, 26]))
         connection = connect(self.path, write=True)
         self.addCleanup(connection.close)
         self.assertNotIn("satellite_gate", self._columns(connection))
@@ -1311,15 +1311,17 @@ class TheSatelliteGateDrop(SchemaCase):
         raw.commit()
         raw.close()
         result = migrate(self.path)
-        self.assertEqual((result.before, result.applied), (24, [25]))
+        self.assertEqual((result.before, result.applied), (24, [25, 26]))
 
     def test_the_reverse_returns_the_file_to_twenty_four_with_every_row_off(self):
         self._at_version_twenty_four()
         migrate(self.path)
-        text = dict(schema_module.migrations())[25].read_text(encoding="utf-8")
         raw = sqlite3.connect(self.path, isolation_level=None)
         self.addCleanup(raw.close)
-        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        # 26 came after and is reversed first, newest first.
+        for version in (26, 25):
+            text = dict(schema_module.migrations())[version].read_text(encoding="utf-8")
+            raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
         self.assertEqual(schema_version(raw), 24)
         self.assertEqual([row[0] for row in raw.execute("SELECT satellite_gate FROM repo ORDER BY path")],
                          ["off", "off"])
@@ -1331,6 +1333,140 @@ class TheSatelliteGateDrop(SchemaCase):
         paths.install(reference)
         for version, path in schema_module.migrations():
             if version <= 24:
+                reference.executescript(path.read_text(encoding="utf-8"))
+        self.assertEqual(raw.execute("PRAGMA table_info(repo)").fetchall(),
+                         reference.execute("PRAGMA table_info(repo)").fetchall())
+        self.assertEqual(raw.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+
+class TheStatusSourceDrop(SchemaCase):
+    """Migration 26. `repo.status_source` goes: the pack reads every item's
+    status from its row (sd:3015), so nothing reads the owner (sd:3231).
+
+    Dropped in place, as 25 drops `satellite_gate`: every row keeps its other
+    values, `pieces_source` among them. A failed drop leaves the file at 25
+    with the column and its values, and the reverse returns the file to 25's
+    shape with every row at `row`, the owner the rows have been since.
+    """
+
+    COLUMNS = "path, remote, mode, runner_merge, pieces_source, managed, ci, lane_host"
+
+    def _at_version_twenty_five(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                # 25 literally, for the reason `_at_version_nine` gives.
+                if version > 25:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.executemany(
+                "INSERT INTO repo (path, remote, runner_merge, status_source, pieces_source, managed, ci, "
+                "lane_host, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 't1', 't2')",
+                [("/one", "git@github.com:platypeeps/one.git", "auto", "row", "row", 1, "local", "build-2"),
+                 ("/three", None, "manual", "row", "retiring", 0, "github", None),
+                 ("/two", None, "manual", "file", "file", 0, "github", None)])
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _rows(self, connection):
+        return [tuple(row) for row in connection.execute(
+            f"SELECT {self.COLUMNS}, created_at, updated_at FROM repo ORDER BY path")]
+
+    def _columns(self, connection):
+        return [row[1] for row in connection.execute("PRAGMA table_info(repo)")]
+
+    def test_the_column_goes_and_every_row_keeps_its_other_values(self):
+        self._at_version_twenty_five()
+        raw = sqlite3.connect(self.path)
+        before = self._rows(raw)
+        raw.close()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (25, [26]))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        self.assertNotIn("status_source", self._columns(connection))
+        self.assertEqual(self._rows(connection), before)
+        self.assertEqual(before[0], ("/one", "git@github.com:platypeeps/one.git", None, "auto", "row", 1,
+                                     "local", "build-2", "t1", "t2"))
+        self.assertEqual([row[4] for row in before], ["row", "retiring", "file"])
+
+    def test_a_failed_drop_leaves_the_file_at_twenty_five_and_a_rerun_finishes_it(self):
+        self._at_version_twenty_five()
+        # SQLite refuses to drop an indexed column; an index the operator
+        # added by hand is the one way this one statement can fail.
+        raw = sqlite3.connect(self.path)
+        raw.execute("CREATE INDEX by_owner ON repo(status_source)")
+        raw.commit()
+        before = self._rows(raw)
+        raw.close()
+        with self.assertRaises(sqlite3.OperationalError):
+            migrate(self.path)
+        raw = sqlite3.connect(self.path)
+        self.assertEqual(schema_version(raw), 25)
+        self.assertIn("status_source", self._columns(raw))
+        self.assertEqual([row[0] for row in raw.execute("SELECT status_source FROM repo ORDER BY path")],
+                         ["row", "row", "file"])
+        self.assertEqual(self._rows(raw), before)
+        raw.execute("DROP INDEX by_owner")
+        raw.commit()
+        raw.close()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (25, [26]))
+
+    def test_a_retiring_repository_refuses_the_drop_and_names_it(self):
+        """`retiring` is a restore's hold on rows not yet proven against the
+        repository's files; dropping the column would drop the hold (sd:3231
+        review round 1). The file stays at 25, untouched, until it clears."""
+        self._at_version_twenty_five()
+        raw = sqlite3.connect(self.path)
+        raw.execute("UPDATE repo SET status_source = 'retiring' WHERE path IN ('/three', '/two')")
+        raw.commit()
+        before = self._rows(raw)
+        raw.close()
+        with self.assertRaises(sqlite3.IntegrityError) as raised:
+            migrate(self.path)
+        self.assertIn("repo.status_source is retiring for /three, /two;", str(raised.exception))
+        self.assertIn("sd restore reimport", str(raised.exception))
+        raw = sqlite3.connect(self.path)
+        self.assertEqual(schema_version(raw), 25)
+        self.assertEqual([row[0] for row in raw.execute("SELECT status_source FROM repo ORDER BY path")],
+                         ["row", "retiring", "retiring"])
+        self.assertEqual(self._rows(raw), before)
+        raw.execute("UPDATE repo SET status_source = 'row'")
+        raw.commit()
+        raw.close()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (25, [26]))
+        connection = connect(self.path)
+        self.addCleanup(connection.close)
+        self.assertEqual(connection.execute("SELECT count(*) FROM sqlite_temp_master").fetchone()[0], 0)
+
+    def test_the_reverse_returns_the_file_to_twenty_five_with_every_row_on_row(self):
+        self._at_version_twenty_five()
+        raw = sqlite3.connect(self.path)
+        before = self._rows(raw)
+        raw.close()
+        migrate(self.path)
+        text = dict(schema_module.migrations())[26].read_text(encoding="utf-8")
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        self.assertEqual(schema_version(raw), 25)
+        self.assertEqual([row[0] for row in raw.execute("SELECT status_source FROM repo ORDER BY path")],
+                         ["row", "row", "row"])
+        self.assertEqual(self._rows(raw), before)
+        with self.assertRaises(sqlite3.IntegrityError):
+            raw.execute("UPDATE repo SET status_source = 'owned' WHERE path = '/one'")
+        # The column sits where 001 put it: a backup restore compares 25's shape.
+        reference = sqlite3.connect(":memory:")
+        self.addCleanup(reference.close)
+        paths.install(reference)
+        for version, path in schema_module.migrations():
+            if version <= 25:
                 reference.executescript(path.read_text(encoding="utf-8"))
         self.assertEqual(raw.execute("PRAGMA table_info(repo)").fetchall(),
                          reference.execute("PRAGMA table_info(repo)").fetchall())

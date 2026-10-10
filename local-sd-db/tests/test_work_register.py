@@ -1,9 +1,8 @@
-"""`work register`: the step retirement removed, and the row it makes.
+"""`work register`, and the row it makes.
 
-Every repository has retired the file source, so `import docs-work` refuses on
-the first one it meets and a `docs/work` folder made after the cutover has no
-row at all -- which `sd-status` reports as `status-unreadable`, and which cost
-one item a hand-written `INSERT` on 2026-09-11. These cases pin the verb that
+The row owns a `docs/work` item's status, so a folder with no row has no
+status at all -- which `sd-status` reports as `status-unreadable`, and which
+cost one item a hand-written `INSERT` on 2026-09-11. These cases pin the verb that
 replaces that `INSERT`, at both levels: the function that writes the row, and
 the entrypoint a person actually types.
 """
@@ -33,7 +32,7 @@ class RegisterCase(unittest.TestCase):
         self.db = connect(path)
         self.addCleanup(self.db.close)
         self.repo = "/Users/nobody/repos/system"
-        upsert_repo(self.db, self.repo, status_source="row")
+        upsert_repo(self.db, self.repo)
 
     def register(self, **overrides):
         values = {
@@ -103,20 +102,13 @@ class WhatItRefuses(RegisterCase):
     def test_a_repository_nobody_registered(self):
         self.assertRefused("is not registered", repo="/Users/nobody/repos/other")
 
-    def test_a_repository_whose_files_still_own_status(self):
-        # The refusal exists because the row would be a *second* answer, not
-        # because the write would fail. A file-source repository still has a
-        # readable status in its prd.
-        upsert_repo(self.db, "/Users/nobody/repos/filed", status_source="file")
-        self.assertRefused("second answer", repo="/Users/nobody/repos/filed")
-
     def test_a_path_that_is_not_the_file_the_readers_key_on(self):
         self.assertRefused("docs/work/<item>/prd.md", path="docs/work/a-folder/design.md")
         self.assertRefused("docs/work/<item>/prd.md", path="docs/work/prd.md")
         self.assertRefused("docs/work/<item>/prd.md", path="notes/a-folder/prd.md")
 
     def test_a_nested_prd_is_not_the_file_the_readers_key_on(self):
-        # `docs_work.files` keys on `len(parts) == 4`. The old `< 4` filed this
+        # The readers key on `docs/work/<item>/prd.md`. The old `< 4` filed this
         # row, and no reader ever saw it again.
         self.assertRefused("docs/work/<item>/prd.md", path="docs/work/a/nested/prd.md")
 
@@ -140,7 +132,7 @@ class TheVerb(CliCase):
         self.sd_db("repo", "add", str(self.repo))
         connection = connect(self.home / ".local/share/sd/sd.db")
         self.addCleanup(connection.close)
-        upsert_repo(connection, str(self.repo.resolve()), status_source="row")
+        upsert_repo(connection, str(self.repo.resolve()))
         connection.commit()
 
     def rows(self):
@@ -296,7 +288,7 @@ class TheVerb(CliCase):
         connection = connect(self.home / ".local/share/sd/sd.db")
         self.addCleanup(connection.close)
         upsert_repo(connection, str(self.repo.resolve()),
-                    remote="https://github.com/platypeeps/system", status_source="row")
+                    remote="https://github.com/platypeeps/system")
         connection.commit()
         worktree = self.home / "worktrees" / "agent-1"
         support.git(self.repo, "worktree", "add", "-q", "-b", "plan/a-folder", str(worktree))
@@ -403,7 +395,7 @@ class WhichRepositoryACloneSpeaksFor(RegisterCase):
     def test_a_registered_path_wins_over_a_remote_match(self):
         """An ordinary checkout costs one indexed lookup and never scans."""
         upsert_repo(self.db, "/Users/nobody/repos/clone",
-                    remote="git@github.com:platypeeps/system.git", status_source="row")
+                    remote="git@github.com:platypeeps/system.git")
         self.assertEqual(
             registered_for(self.db, "/Users/nobody/repos/clone",
                            "git@github.com:platypeeps/system.git"),
@@ -413,7 +405,7 @@ class WhichRepositoryACloneSpeaksFor(RegisterCase):
     def test_an_origin_two_registered_paths_share_resolves_to_itself(self):
         """sd:1219 (941f61d80ffc, a09df0750b08): the first path in path order was a guess."""
         upsert_repo(self.db, "/srv/example.test/repos/clone",
-                    remote="git@github.com:platypeeps/system.git", status_source="row")
+                    remote="git@github.com:platypeeps/system.git")
         clone = "/Volumes/sd-work/worktrees/442/5-1-abc"
         self.assertEqual(registered_for(self.db, clone, "git@github.com:platypeeps/system.git"), clone)
 
@@ -497,7 +489,7 @@ class ResolvingAnSshWorktreeAgainstAnHttpsRow(RegisterCase):
     def test_a_worktree_with_an_ssh_origin_resolves_to_the_https_row(self):
         """The exact refusal sd:1436 records, at the resolver `work register` uses."""
         upsert_repo(self.db, self.repo,
-                    remote="https://github.com/platypeeps/system", status_source="row")
+                    remote="https://github.com/platypeeps/system")
         worktree = f"{self.repo}/.claude/worktrees/agent-1"
         self.assertEqual(
             registered_for(self.db, worktree, "git@github.com:platypeeps/system.git"),

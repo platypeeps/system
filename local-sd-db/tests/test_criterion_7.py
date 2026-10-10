@@ -55,7 +55,7 @@ class Criterion7(unittest.TestCase):
         self.db = connect(self.path)
         self.addCleanup(self.db.close)
         self.repo = "/repos/system"
-        upsert_repo(self.db, self.repo, remote="git@example.invalid:system.git", status_source="row")
+        upsert_repo(self.db, self.repo, remote="git@example.invalid:system.git")
         self.item = create_item(
             self.db, kind="work", title="An unmerged slice", repo=self.repo,
             branch="feat/sd-1-slice", status="in_progress", source="docs/work",

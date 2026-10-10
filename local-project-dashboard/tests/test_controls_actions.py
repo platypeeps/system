@@ -470,9 +470,9 @@ class ItemRepository(BrowserSession):
 
     def test_a_work_item_is_offered_no_repository_field_because_the_library_refuses_one(self):
         first = self.repo("/repos/system")
-        upsert_repo(self.connection, first, status_source="row")
+        upsert_repo(self.connection, first)
         other = self.repo("/repos/other")
-        upsert_repo(self.connection, other, status_source="row")
+        upsert_repo(self.connection, other)
         item = self.item("Work with a source identity", kind="work", repo=first, path="docs/work/x/prd.md")
         markup = self.details_form(item)
         self.assertNotIn("repo", Fields(markup).fields)
@@ -499,8 +499,6 @@ class ItemKind(BrowserSession):
         self.assertEqual([entry["attributes"]["value"] for entry in options
                           if "selected" in entry["attributes"]], ["task"])
         self.repo("/repos/system")
-        self.connection.execute("UPDATE repo SET status_source = 'row' WHERE path = '/repos/system'")
-        self.connection.commit()
         work = self.item("Work", kind="work", repo="/repos/system")
         self.assertNotIn('name="kind"', str(controls.item_controls(self.connection, work)))
 
@@ -649,7 +647,7 @@ class ItemStatusOnly(BrowserSession):
         self.assertEqual([entry["attributes"]["value"] for entry in Fields(self.status_form(task)).options["status"]],
                          list(workflow.TASK_STATUSES))
         self.repo("/repos/system")
-        upsert_repo(self.connection, "/repos/system", status_source="row")
+        upsert_repo(self.connection, "/repos/system")
         work = self.item("Work", kind="work", repo="/repos/system")
         self.assertIsNotNone(self.details_form(work))
         self.assertEqual([entry["attributes"]["value"] for entry in Fields(self.status_form(work)).options["status"]],

@@ -37,7 +37,7 @@ class CompletionRepoKeys(unittest.TestCase):
         initialise(self.path)
         self.db = connect(self.path)
         self.addCleanup(self.db.close)
-        upsert_repo(self.db, KEY, status_source="row")
+        upsert_repo(self.db, KEY)
         self.item = create_item(self.db, kind="work", title="Keyed work", repo=KEY,
                                 path="docs/work/keyed/prd.md", source="docs/work",
                                 external_id=f"{KEY}::docs/work/keyed/prd.md")

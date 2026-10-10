@@ -10,7 +10,6 @@ from pathlib import Path
 from sd_db import (
     connect,
     create_assignment,
-    create_item,
     initialise,
     record_state,
     set_item_fields,
@@ -49,30 +48,9 @@ class Recovery(unittest.TestCase):
         self.git("commit", "-qm", "fixture source")
         return self.git("rev-parse", "HEAD")
 
-    def work(self, slug="one", *, row=True):
-        relative = f"docs/work/{slug}/prd.md"
-        path = self.repo / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"---\ntitle: {slug}\nstatus: ready\ncreated: 2026-08-01\n---\nDetails.\n")
-        commit = self.commit()
-        if not row:
-            return path, None
-        item = create_item(self.db, kind="work", title=slug, repo=str(self.repo),
-                           status="ready", path=relative, source="docs/work", source_commit=commit,
-                           external_id=f"{self.repo}::{relative}", session="docs/work migration")
-        return path, item
-
     def apply(self):
         preview = reimport(self.db, str(self.repo), dry_run=True)
         return reimport(self.db, str(self.repo), expected_fingerprint=preview["fingerprint"])
-
-    def retire_work(self):
-        for path in self.repo.glob("docs/work/*/prd.md"):
-            path.write_text(path.read_text().replace("status: ready\n", ""))
-        (self.repo / "docs/work/.status-source").write_text("row\n")
-        self.commit()
-        upsert_repo(self.db, str(self.repo), status_source="retiring")
-        record_state(self.db, "restore", key="old-snapshot")
 
     def piece(self):
         path = self.repo / "content/2026/piece/index.md"
@@ -85,39 +63,15 @@ class Recovery(unittest.TestCase):
         record_state(self.db, "restore", key="old-snapshot")
         return path, item
 
-    def test_pinned_history_rebuilds_rows_and_does_not_rewrite_checkout(self):
-        path, item = self.work()
-        self.retire_work()
-        before = path.read_bytes()
-        result = self.apply()
-        self.assertEqual(result["authorities"], {"status_source": 1})
-        row = self.db.execute("SELECT * FROM item WHERE id=?", (item,)).fetchone()
-        self.assertEqual((row["title"], row["status"]), ("one", "ready"))
-        self.assertEqual(path.read_bytes(), before)
-        self.assertEqual(self.db.execute("SELECT status_source FROM repo").fetchone()[0], "row")
-        self.assertEqual(self.db.execute("SELECT count(*) FROM state WHERE kind='restore' AND resolved_at IS NULL").fetchone()[0], 1)
-        with self.assertRaisesRegex(RecoveryRefused, "not awaiting"):
-            reimport(self.db, str(self.repo))
-
-    def test_inventory_finds_missing_rows_and_restores_from_history(self):
-        self.work()
-        self.work("two", row=False)
-        self.retire_work()
-        result = self.apply()
-        self.assertEqual(result["authorities"]["status_source"], 2)
-        self.assertEqual(self.db.execute("SELECT count(*) FROM item").fetchone()[0], 2)
-        self.assertEqual(self.db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
-
     def test_missing_commit_refuses_before_any_row_or_authority_changes(self):
-        _, item = self.work()
-        _, other = self.work("two")
-        self.retire_work()
-        set_item_fields(self.db, other, source_commit="0" * 40)
+        _, item = self.piece()
+        # No captured source, so the recovery reads history at the recorded commit.
+        set_item_fields(self.db, item, body={}, source_commit="0" * 40)
         before = list(self.db.execute("SELECT title, status FROM item"))
         with self.assertRaises(SdDbError):
             reimport(self.db, str(self.repo))
         self.assertEqual(list(self.db.execute("SELECT title, status FROM item")), before)
-        self.assertEqual(self.db.execute("SELECT status_source FROM repo").fetchone()[0], "retiring")
+        self.assertEqual(self.db.execute("SELECT pieces_source FROM repo").fetchone()[0], "retiring")
         self.assertEqual(self.db.execute("SELECT count(*) FROM state WHERE kind='verified'").fetchone()[0], 0)
 
     def test_writing_recovery_uses_hash_bound_capture_without_a_commit(self):
@@ -135,31 +89,20 @@ class Recovery(unittest.TestCase):
             reimport(self.db, str(self.repo))
         self.assertEqual(self.db.execute("SELECT pieces_source FROM repo").fetchone()[0], "retiring")
 
-    def test_later_progress_is_not_overwritten_by_migration_replay(self):
-        _, item = self.work()
-        self.retire_work()
-        self.db.execute("UPDATE item SET status='in_progress' WHERE id=?", (item,))
-        add_note(self.db, item, "comment", "Implemented the first step", session="user")
-        with self.assertRaisesRegex(RecoveryRefused, "later progress"):
-            reimport(self.db, str(self.repo))
-        self.assertEqual(self.db.execute("SELECT status FROM item").fetchone()[0], "in_progress")
-
     @hub_only
     def test_restore_blocks_old_assignments_and_marks_unproven_cutover(self):
-        self.work()
-        self.retire_work()
+        self.piece()
         self.db.execute("DELETE FROM state WHERE kind='restore'")
-        upsert_repo(self.db, str(self.repo), status_source="file")
+        upsert_repo(self.db, str(self.repo), pieces_source="file")
         assignment = create_assignment(self.db, role="worker", status="queued")
         snapshot = run(home=self.home)
         restore(snapshot.directory, home=self.home)
         self.assertEqual(self.db.execute("SELECT status FROM assignment WHERE id=?", (assignment,)).fetchone()[0], "blocked")
-        self.assertEqual(self.db.execute("SELECT status_source FROM repo").fetchone()[0], "retiring")
+        self.assertEqual(self.db.execute("SELECT pieces_source FROM repo").fetchone()[0], "retiring")
         self.assertEqual(self.db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
     def test_preview_writes_no_rows_and_a_stale_preview_is_refused(self):
-        _, item = self.work()
-        self.retire_work()
+        _, item = self.piece()
         before = "\n".join(self.db.iterdump())
         preview = reimport(self.db, str(self.repo), dry_run=True)
         self.assertEqual("\n".join(self.db.iterdump()), before)
@@ -169,8 +112,7 @@ class Recovery(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT title FROM item").fetchone()[0], "Concurrent edit")
 
     def test_killed_reimport_rolls_back_rows_and_authority_and_can_restart(self):
-        _, item = self.work()
-        self.retire_work()
+        self.piece()
         before = "\n".join(self.db.iterdump())
         script = """import os,sys
 from sd_db import connect
@@ -184,7 +126,7 @@ recovery.reimport(db, sys.argv[2], expected_fingerprint=preview["fingerprint"])
                                 env=dict(os.environ), capture_output=True, text=True)
         self.assertEqual(result.returncode, 73, result.stderr)
         self.assertEqual("\n".join(self.db.iterdump()), before)
-        self.assertEqual(self.apply()["authorities"], {"status_source": 1})
+        self.assertEqual(self.apply()["authorities"], {"pieces_source": 1})
 
     def test_same_stage_metadata_and_title_changes_are_not_overwritten(self):
         _, item = self.piece()
@@ -220,20 +162,10 @@ recovery.reimport(db, sys.argv[2], expected_fingerprint=preview["fingerprint"])
             reimport(self.db, str(self.repo), dry_run=True)
         self.assertEqual("\n".join(self.db.iterdump()), before)
 
-    def test_a_rehearsal_label_is_not_immutable_proof_that_an_edit_is_disposable(self):
-        _, item = self.work()
-        self.retire_work()
-        set_item_fields(self.db, item, title="rehearsal title")
-        before = "\n".join(self.db.iterdump())
-        with self.assertRaisesRegex(RecoveryRefused, "later progress in title"):
-            reimport(self.db, str(self.repo), dry_run=True)
-        self.assertEqual("\n".join(self.db.iterdump()), before)
-
     def test_apply_requires_a_fingerprint_and_changes_nothing_without_one(self):
-        self.work()
-        self.retire_work()
+        self.piece()
         before = "\n".join(self.db.iterdump())
         with self.assertRaisesRegex(RecoveryRefused, "requires the preview fingerprint"):
             reimport(self.db, str(self.repo))
         self.assertEqual("\n".join(self.db.iterdump()), before)
-        self.assertEqual(self.apply()["authorities"], {"status_source": 1})
+        self.assertEqual(self.apply()["authorities"], {"pieces_source": 1})

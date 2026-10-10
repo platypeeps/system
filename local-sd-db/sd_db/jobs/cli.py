@@ -4,13 +4,8 @@ The shell script is the entrypoint the repository's convention asks for; it
 resolves the folder and hands the verb here. Everything that needs to know
 the schema lives on this side.
 
-`import`, `verify` and `retire` are the migrations of requirement 2. `import`
-and `verify` never retire anything, whatever source they are pointed at;
-`retire` is the separate verb and the separate sitting, and it exists for
-`docs/work` alone. The other four sources stay authoritative and stay written
-by whatever writes them today, because the retire step of each source runs in
-a pull request after the one that lands its writer -- criterion 23's rule,
-and the reason the freeze is minutes rather than a slice.
+`import` and `verify` are the migrations of requirement 2. The sources stay
+authoritative and stay written by whatever writes them today.
 
 `sd shadow sync` is deliberately **not** here. Verbs live in the pack; what
 lives in this library is `sd_db.shadow_sync`, the function that verb calls.
@@ -39,7 +34,6 @@ from ..repos import ConfMissing, seed as seed_repos
 from ..repos import LANE_HUB, set_ci, set_lane_host, set_managed, set_runner_merge
 from ..schema import SCHEMA_VERSION
 from ..sources import docs_work, index_cache, issues, register
-from ..sources import retire as retire_source
 from ..sources import run as run_sitting
 from ..sources import vault
 from ..sources import verify as verify_source
@@ -314,13 +308,12 @@ def _judgments_unlabelled(argv: list[str]) -> int:
     return 0
 
 
-#: The five migrations of requirement 2, by the name the operator types.
+#: The migrations of requirement 2, by the name the operator types.
 #: Enumerated here rather than discovered by scanning the package: a source
 #: is a deliberate addition with a decision behind it, and import-time
 #: discovery would let one appear because a file landed in a directory.
 SOURCES = {
     "index": lambda connection: index_cache.Reader.at(),
-    "docs-work": docs_work.Reader.from_table,
     "register": lambda connection: register.Reader.at(),
     "vault": lambda connection: vault.Reader.at(home=_home()),
     "issues": lambda connection: issues.Reader(),
@@ -448,7 +441,7 @@ def command_repo(argv: list[str]) -> int:
                 return 0
         for row in rows:
             print(f"sd-db: {row['path']}  {row['remote'] or '-'}  "
-                  f"{row['status_source']}  {'yes' if row['managed'] else 'no'}  "
+                  f"{'yes' if row['managed'] else 'no'}  "
                   f"{row['ci']}  {row['lane_host'] or LANE_HUB}  {row['runner_merge']}")
         return 0
     finally:
@@ -458,11 +451,8 @@ def command_repo(argv: list[str]) -> int:
 def command_work(argv: list[str]) -> int:
     """`work register <docs/work/<item>/prd.md>`.
 
-    The step retirement removed. `import docs-work` reads the file source, and
-    every repository has retired it, so the importer refuses on the first one
-    it meets: a folder created after the cutover has no row, and no readable
-    status anywhere. This makes the row, from what the folder and git already
-    say.
+    The row owns the item's status, and this makes the row for a new
+    folder, from what the folder and git already say.
 
     It takes no repository argument. The repository is the one enclosing the
     working directory (R10-D6), and the path is relative to it -- a row whose
@@ -591,13 +581,7 @@ def _last_commit(root: Path, relative: str) -> str | None:
     does not carry the contents being registered. A git read that fails is
     raised, not taken for uncommitted, or a broken checkout writes NULL.
 
-    The same commit the file source recorded -- `docs_work._candidate` reads
-    `log -1` over the path -- so a row made here and a row made by the old
-    import name the same thing by `source_commit` and a reader comparing them
-    is comparing like with like.
-
-    It is read against `HEAD`, not against `origin/main` as the import was: a
-    folder is registered while it is being written, on the branch that carries
+    It is read against `HEAD`, not against `origin/main`: a folder is registered while it is being written, on the branch that carries
     it, and the default branch has not seen it yet. Uncommitted is the
     ordinary case at that moment, which is why the column is nullable.
     """
@@ -615,52 +599,13 @@ def _last_commit(root: Path, relative: str) -> str | None:
 def _source(name: str, connection):
     if name not in SOURCES:
         raise SdDbError(
-            f"no source {name!r}; the five are {', '.join(sorted(SOURCES))}"
+            f"no source {name!r}; the sources are {', '.join(sorted(SOURCES))}"
         )
     return SOURCES[name](connection)
 
 
-def _for_import(source):
-    """The source narrowed to what the file still answers for, if it can narrow.
-
-    Asked of the source rather than switched on its name, as `retire` asks
-    for `for_retire`: `docs/work` is the one source with repositories that
-    have retired, and this holds no list of sources to keep in step.
-    """
-    narrow = getattr(source, "for_import", None)
-    return source if narrow is None else narrow()
-
-
-def _retired(token: str, verb: str, source) -> tuple[list[str], bool]:
-    """One line per repository the run left out as retired, and whether that
-    was all of them.
-
-    A retired repository is the intended end state of `retire`, not a fault
-    of `import`: its status lives in the row and the row is what to read. So
-    it is reported by name, exit code untouched, and a fleet with nothing
-    left on the file source is said plainly rather than refused -- which is
-    what every run of both verbs did from the last retire until 2026-09-11,
-    on every one of the twelve registered repositories.
-    """
-    already = list(getattr(source, "already", []))
-    lines = [
-        f"{token}: {path} was retired and its status lives in the `item` row "
-        f"now; read the row, not the file"
-        for path in already
-    ]
-    nothing_left = getattr(source, "nothing_left", None)
-    if already and nothing_left is not None and nothing_left():
-        lines.append(
-            f"{token}: {len(already)} repositor{'y' if len(already) == 1 else 'ies'}, "
-            f"all retired; nothing to {verb} -- use `sd-db.sh work register` "
-            f"for a new item"
-        )
-        return lines, True
-    return lines, False
-
-
 def command_import(argv: list[str]) -> int:
-    """Freeze, import and verify one source. Retires nothing, and says so."""
+    """Freeze, import and verify one source."""
     if not argv:
         print(
             f"sd-db import: needs one of {', '.join(sorted(SOURCES))}",
@@ -669,58 +614,13 @@ def command_import(argv: list[str]) -> int:
         return 1
     connection = _open_for_write()
     try:
-        source = _for_import(_source(argv[0], connection))
-        retired, nothing_left = _retired(argv[0], "import", source)
-        # Before the sitting: a failure in a repository still on `file`
-        # leaves this function, and the retired ones must be named anyway.
-        for line in retired:
-            print(f"sd-db: {line}")
-        sitting = None if nothing_left else run_sitting(connection, source)
+        sitting = run_sitting(connection, _source(argv[0], connection))
     finally:
         connection.close()
-    if sitting is None:
-        return 0
     for line in sitting.report():
         print(f"sd-db: {line}")
-    # The old line here said "nothing retired; the source is unchanged and
-    # still authoritative" for every source. It is still true of four of
-    # them, and false of `docs/work`, which now has a retire step and a verb
-    # to run it. A comment that outlives what it describes is the defect this
-    # pair of work items keeps finding, and so is a printed line.
-    if hasattr(source, "retire"):
-        print(
-            f"sd-db: nothing retired here; `sd-db.sh retire {argv[0]}` is the "
-            f"sitting that does, and it runs this import again first"
-        )
-    else:
-        print("sd-db: nothing retired; the source is unchanged and still authoritative")
+    print("sd-db: the source is unchanged and still authoritative")
     return 0 if sitting.clean else 1
-
-
-def command_retire(argv: list[str]) -> int:
-    """The retire sitting: refuse, import, verify, snapshot, the row, the commit.
-
-    One command, one source, one sitting, and every refusal it can make names
-    what it refused on. It is not idempotent in the way `import` is -- it is
-    idempotent in the way a migration is, which is that a second run finds
-    the marker committed and reports that there was nothing left to do.
-    """
-    if not argv:
-        print(
-            f"sd-db retire: needs one of {', '.join(sorted(SOURCES))}",
-            file=sys.stderr,
-        )
-        return 1
-    connection = _open_for_write()
-    try:
-        result = retire_source(
-            connection, _source(argv[0], connection), token=argv[0], home=_home()
-        )
-    finally:
-        connection.close()
-    for line in result.report():
-        print(f"sd-db: {line}")
-    return 0
 
 
 def command_verify(argv: list[str]) -> int:
@@ -733,20 +633,11 @@ def command_verify(argv: list[str]) -> int:
         return 1
     connection = _open_for_write()
     try:
-        source = _for_import(_source(argv[0], connection))
-        retired, nothing_left = _retired(argv[0], "verify", source)
-        # Before the freeze, for the reason `command_import` gives.
-        for line in retired:
-            print(f"sd-db: {line}")
-        if nothing_left:
-            frozen, differences = None, []
-        else:
-            frozen = source.freeze()
-            differences = verify_source(connection, source, frozen)
+        source = _source(argv[0], connection)
+        frozen = source.freeze()
+        differences = verify_source(connection, source, frozen)
     finally:
         connection.close()
-    if frozen is None:
-        return 0
     if not differences:
         print(f"sd-db: {argv[0]}: {len(frozen.records)} record(s) agree with the rows")
         return 0
@@ -924,7 +815,6 @@ COMMANDS = {
     "item": command_item,
     "import": command_import,
     "verify": command_verify,
-    "retire": command_retire,
     "work": command_work,
     "usage": command_usage,
     "judgments": command_judgments,

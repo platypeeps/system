@@ -223,7 +223,7 @@ class BrowserActions(BrowserSession):
         moved = root / "archived.md"
         original.write_text("Original content")
         moved.write_text("Archived content")
-        upsert_repo(self.connection, str(root), status_source="row")
+        upsert_repo(self.connection, str(root))
         item = self.item("Work to stop", repo=str(root), path="original.md",
                          source="fixture", external_id="stable-source-identity")
         state = workflow.item_state(self.connection, item)
@@ -263,16 +263,10 @@ class BrowserActions(BrowserSession):
         revision = workflow.item_state(self.connection, work)["revision"]
         self.assertEqual(self.post(f"/api/items/{work}/cancel-task", {"revision": revision, "reason": "No"})[0], 400)
 
-    def test_active_assignments_and_file_owned_work_do_not_offer_cancel(self):
+    def test_active_assignments_do_not_offer_cancel(self):
         self.repo()
-        item = self.item("Source-owned", repo="/repos/system")
-        body = self.request(f"/item/{item}")[2]
-        self.assertNotIn(f'action="/api/items/{item}/cancel"', body)
-        self.assertNotIn(f'action="/api/items/{item}"', body)
-        state = workflow.item_state(self.connection, item)
-        self.assertEqual(self.post(f"/api/items/{item}/cancel", {
-            "revision": state["revision"], "reason": "Try"})[0], 400)
-        upsert_repo(self.connection, "/repos/system", status_source="row")
+        item = self.item("Row-owned", repo="/repos/system")
+        self.assertIn(f'action="/api/items/{item}/cancel"', self.request(f"/item/{item}")[2])
         self.assignment(item, status="running")
         body = self.request(f"/item/{item}")[2]
         self.assertNotIn(f'action="/api/items/{item}/cancel"', body)
@@ -295,7 +289,7 @@ class BrowserActions(BrowserSession):
         self.assertEqual(reads.item_shadow(self.connection, item)["state"], "open")
 
     def test_title_only_edit_preserves_existing_priority(self):
-        upsert_repo(self.connection, "/repos/system", status_source="row")
+        upsert_repo(self.connection, "/repos/system")
         item = self.item("Original", repo="/repos/system", priority=0)
         state = workflow.item_state(self.connection, item)
         body = self.request(f"/item/{item}")[2]

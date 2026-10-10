@@ -509,10 +509,10 @@ class TheMigrationVerbs(MigrationVerbCase):
         """sd:1843. `ci` sits before `lane_host` and `runner_merge`,
         and the verb round-trips through `list`."""
         self.sd_db("repo", "add", str(self.checkout))
-        self.assertEqual(self._list_row()[-5:], ["file", "no", "github", "hub", "manual"])
+        self.assertEqual(self._list_row()[-4:], ["no", "github", "hub", "manual"])
         completed = self.sd_db("repo", "ci", str(self.checkout), "local")
         self.assertIn("ci github -> local", completed.stdout)
-        self.assertEqual(self._list_row()[-5:], ["file", "no", "local", "hub", "manual"])
+        self.assertEqual(self._list_row()[-4:], ["no", "local", "hub", "manual"])
         completed = self.sd_db("repo", "ci", str(self.checkout), "github")
         self.assertIn("ci local -> github", completed.stdout)
         self.assertEqual(self._list_row()[-3], "github")
@@ -520,15 +520,28 @@ class TheMigrationVerbs(MigrationVerbCase):
     def test_repo_satellite_gate_is_an_unknown_verb_and_list_prints_no_grant(self):
         """sd:3217. The pack retired the satellite gate offload, and 25 drops
         `repo.satellite_gate`: the verb refuses as any unknown verb, and a
-        `list` row is path, remote, status source, managed, ci, lane host,
-        runner merge."""
+        `list` row carries no grant."""
         self.sd_db("repo", "add", str(self.checkout))
         completed = self.sd_db("repo", "satellite-gate", str(self.checkout), "accept", expect=1)
         self.assertIn("sd-db repo: expected add", completed.stderr)
         self.assertNotIn("satellite", completed.stderr)
+        self.assertNotIn("satellite", self.sd_db("repo", "list").stdout)
+
+    def test_repo_list_prints_no_status_source_and_retire_is_an_unknown_verb(self):
+        """sd:3231. The pack reads every item's status from its row (sd:3015),
+        and 26 drops `repo.status_source`: a `list` row is path, remote,
+        managed, ci, lane host, runner merge. `retire` refuses as any unknown
+        verb, and `import` no longer names `docs-work` as a source."""
+        self.sd_db("repo", "add", str(self.checkout))
         row = self._list_row()
-        self.assertEqual(len(row), 8, row)
-        self.assertEqual(row[-5:], ["file", "no", "github", "hub", "manual"])
+        self.assertEqual(len(row), 7, row)
+        self.assertEqual(row[-4:], ["no", "github", "hub", "manual"])
+        self.assertNotIn("file", row)
+        completed = self.sd_db("retire", "docs-work", expect=1)
+        self.assertIn("Usage: sd-db.sh <command>", completed.stderr)
+        self.assertNotIn("retire S", completed.stderr)
+        completed = self.sd_db("import", "docs-work", expect=1)
+        self.assertIn("the sources are index, issues, register, vault", completed.stderr)
 
     def test_repo_lane_host_sets_the_host_prints_before_and_after_and_hub_writes_null(self):
         """sd:3075, acceptance 1. An unset row reads `hub`; the verb names a
@@ -624,242 +637,10 @@ class TheMigrationVerbs(MigrationVerbCase):
         completed = self.sd_db("repo", "list", "--manged", expect=1)
         self.assertIn("--manged", completed.stderr)
 
-    def test_import_docs_work_lands_rows_and_points_at_the_retire_verb(self):
-        """`import` still retires nothing, and now names the verb that does.
-
-        The line it used to print said the source was "unchanged and still
-        authoritative", which stopped being true of `docs/work` the moment
-        the retire step landed. A printed line that outlives what it
-        describes is the same defect as a comment that does.
-        """
-        self.sd_db("repo", "add", str(self.checkout))
-        completed = self.sd_db("import", "docs-work")
-        self.assertIn("1 seen, 1 inserted", completed.stdout)
-        self.assertIn("nothing retired here", completed.stdout)
-        self.assertIn("sd-db.sh retire docs-work", completed.stdout)
-        self.assertNotIn("still authoritative", completed.stdout)
-
-    def test_a_second_import_reports_the_same_counts_with_zero_new_rows(self):
-        self.sd_db("repo", "add", str(self.checkout))
-        self.sd_db("import", "docs-work")
-        completed = self.sd_db("import", "docs-work")
-        self.assertIn("1 seen, 0 inserted", completed.stdout)
-        self.assertIn("1 unchanged", completed.stdout)
-
-    def test_verify_agrees_after_an_import(self):
-        self.sd_db("repo", "add", str(self.checkout))
-        self.sd_db("import", "docs-work")
-        completed = self.sd_db("verify", "docs-work")
-        self.assertIn("agree with the rows", completed.stdout)
-
-    def test_verify_names_the_difference_and_exits_one(self):
-        self.sd_db("repo", "add", str(self.checkout))
-        completed = self.sd_db("verify", "docs-work", expect=1)
-        self.assertIn("missing from the rows", completed.stderr)
-
-    def test_an_unknown_source_names_the_five(self):
+    def test_an_unknown_source_names_the_sources(self):
         completed = self.sd_db("import", "nowhere", expect=1)
-        self.assertIn("docs-work", completed.stderr)
+        self.assertIn("register", completed.stderr)
         self.assertIn("vault", completed.stderr)
-
-
-class ARetiredRepositoryIsANoOp(MigrationVerbCase):
-    """A repository that has retired is the intended end state, not a fault.
-
-    From the last retire until 2026-09-11 both verbs exited 1 on every run:
-    the whole-tree reader met a retired repository first, refused, and the
-    eleven others were never read. The verbs now leave a retired repository
-    out and say so by name, read whatever is still on the file source, and
-    exit 0 when nothing they read failed. The fixture is two checkouts, one
-    retired the way `retire` leaves one -- lines gone, marker committed --
-    and one still on `file` with its line in place.
-    """
-
-    def setUp(self):
-        super().setUp()
-        # `repo add` records the key of the resolved path, `~/` and the path
-        # under the home (sd:1439), and the lines name that.
-        self.checkout = self.checkout.resolve()
-        self.retired = self.home.resolve() / "retired"
-        self.checkout_key = "~/" + self.checkout.relative_to(self.home.resolve()).as_posix()
-        self.retired_key = "~/retired"
-        self.retired.mkdir()
-        for argv in (
-            ["init", "-q", "-b", "main", "."],
-            ["config", "user.email", "fixture@example.invalid"],
-            ["config", "user.name", "Fixture"],
-        ):
-            subprocess.run(["git", "-C", str(self.retired), *argv], check=True,
-                           capture_output=True)
-        item = self.retired / "docs/work/2026-07-02-retired-item/prd.md"
-        item.parent.mkdir(parents=True)
-        item.write_text(
-            "---\ntitle: a retired item\ncreated: 2026-07-02\n---\n\nbody\n",
-            encoding="utf-8",
-        )
-        (self.retired / "docs/work/.status-source").write_text("row\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.retired), "add", "-A"], check=True,
-                       capture_output=True)
-        subprocess.run(["git", "-C", str(self.retired), "commit", "-qm", "retired"],
-                       check=True, capture_output=True)
-        self.sd_db("repo", "add", str(self.checkout))
-        self.sd_db("repo", "add", str(self.retired))
-
-    def switch(self, checkout):
-        """The row alone says `row`, as a retire killed before its commit leaves it."""
-        raw = sqlite3.connect(self.home / ".local/share/sd/sd.db", isolation_level=None)
-        try:
-            raw.execute("UPDATE repo SET status_source = 'row' WHERE path = ?",
-                        (checkout,))
-        finally:
-            raw.close()
-
-    def test_import_reports_the_retired_one_by_name_and_imports_the_other(self):
-        completed = self.sd_db("import", "docs-work")
-        self.assertIn(f"{self.retired_key} was retired", completed.stdout)
-        self.assertIn("read the row, not the file", completed.stdout)
-        self.assertIn("1 seen, 1 inserted", completed.stdout)
-        self.assertNotIn("all retired", completed.stdout)
-        raw = sqlite3.connect(self.home / ".local/share/sd/sd.db")
-        try:
-            repos = sorted(row[0] for row in raw.execute("SELECT repo FROM item"))
-        finally:
-            raw.close()
-        self.assertEqual(repos, [self.checkout_key])
-
-    def test_verify_leaves_the_retired_one_out_and_agrees_on_the_other(self):
-        self.sd_db("import", "docs-work")
-        completed = self.sd_db("verify", "docs-work")
-        self.assertIn(f"{self.retired_key} was retired", completed.stdout)
-        self.assertIn("1 record(s) agree with the rows", completed.stdout)
-
-    def test_a_row_that_says_row_is_retired_even_with_its_lines_in_place(self):
-        """The retire switches the row before it commits, so a killed one
-        leaves lines behind that a row already answers for. An import that
-        read them would write the stale words back over the row."""
-        self.sd_db("import", "docs-work")
-        self.switch(self.checkout_key)
-        completed = self.sd_db("import", "docs-work")
-        self.assertIn(f"{self.checkout_key} was retired", completed.stdout)
-        self.assertIn(f"{self.retired_key} was retired", completed.stdout)
-        self.assertNotIn("seen", completed.stdout)
-
-    def test_a_fleet_with_every_repository_retired_says_so_and_exits_zero(self):
-        self.switch(self.checkout_key)
-        for verb in ("import", "verify"):
-            completed = self.sd_db(verb, "docs-work")
-            self.assertEqual(
-                completed.stdout.count("was retired"), 2, completed.stdout
-            )
-            self.assertIn(
-                f"docs-work: 2 repositories, all retired; nothing to {verb}",
-                completed.stdout,
-            )
-            self.assertIn("sd-db.sh work register", completed.stdout)
-            self.assertEqual(completed.stderr, "")
-
-    def test_a_failing_file_repository_still_exits_one(self):
-        """The retired one is a no-op; the one still on `file` is not excused."""
-        self.item().write_text(
-            "---\ntitle: an item\nstatus: nonsense\ncreated: 2026-07-01\n---\n",
-            encoding="utf-8",
-        )
-        subprocess.run(["git", "-C", str(self.checkout), "commit", "-qam", "broken"],
-                       check=True, capture_output=True)
-        completed = self.sd_db("import", "docs-work", expect=1)
-        self.assertIn("'nonsense'", completed.stderr)
-        # The failure leaves the sitting; the retired one is still reported.
-        self.assertIn(f"{self.retired_key} was retired", completed.stdout)
-
-    def test_a_verify_whose_freeze_fails_still_names_the_retired_one(self):
-        self.item().write_text(
-            "---\ntitle: an item\nstatus: nonsense\ncreated: 2026-07-01\n---\n",
-            encoding="utf-8",
-        )
-        subprocess.run(["git", "-C", str(self.checkout), "commit", "-qam", "broken"],
-                       check=True, capture_output=True)
-        completed = self.sd_db("verify", "docs-work", expect=1)
-        self.assertIn("'nonsense'", completed.stderr)
-        self.assertIn(f"{self.retired_key} was retired", completed.stdout)
-
-
-class TheRetireVerb(MigrationVerbCase):
-    """`retire` through the entrypoint: wired into the `case`, not only Python.
-
-    A verb reachable from `sd_db.jobs.cli` and missing from the shell script
-    is a verb only the tests can run, which is convention 1's whole point.
-    """
-
-    def pack(self, **kwargs):
-        from . import support
-
-        return support.pack(self.home, **kwargs)
-
-    def test_it_refuses_under_a_pack_that_cannot_read_the_row(self):
-        """The version installed here is `eb7695c7`'s shape: `delivered` and
-        no `status_marker`. A `delivered`-only guard would let it through."""
-        from . import support
-
-        self.pack(library=support.PACK_BEFORE_THE_ROW_READERS)
-        self.sd_db("repo", "add", str(self.checkout))
-        self.sd_db("import", "docs-work")
-        completed = self.sd_db("retire", "docs-work", expect=1)
-        self.assertIn("47d41245a470", completed.stderr)
-        self.assertIn("status_marker", completed.stderr)
-        self.assertIn("status: planning", self.item().read_text(encoding="utf-8"))
-
-    def test_it_refuses_with_no_pack_installed_at_all(self):
-        self.sd_db("repo", "add", str(self.checkout))
-        self.sd_db("import", "docs-work")
-        completed = self.sd_db("retire", "docs-work", expect=1)
-        self.assertIn("no receipt", completed.stderr)
-
-    def test_it_refuses_before_the_source_has_ever_been_imported(self):
-        self.pack()
-        self.sd_db("repo", "add", str(self.checkout))
-        completed = self.sd_db("retire", "docs-work", expect=1)
-        self.assertIn("never been verified", completed.stderr)
-        self.assert_runnable(completed.stderr)
-
-    def assert_runnable(self, text):
-        """Every `sd-db.sh ...` a message prints has to be a command that runs.
-
-        A source is named for what it reads -- `docs/work` -- and the CLI takes
-        no slashes, so a refusal that interpolated the source's own name told
-        the operator to run `sd-db.sh import docs/work`, which the CLI rejects.
-        Checked against the registries themselves rather than a list written
-        here, so a source or verb added later is covered by existing.
-        """
-        from sd_db.jobs.cli import COMMANDS, SOURCES
-
-        found = re.findall(r"`sd-db\.sh ([a-z-]+)(?: ([^`\s]+))?`", text)
-        self.assertTrue(found, f"no `sd-db.sh ...` command in: {text}")
-        for verb, argument in found:
-            self.assertIn(verb, COMMANDS, f"`sd-db.sh {verb}` is not a verb")
-            if argument:
-                self.assertIn(argument, SOURCES, f"`{argument}` is not a source")
-
-    def test_it_removes_the_line_writes_the_marker_and_sets_the_row(self):
-        self.pack()
-        self.sd_db("repo", "add", str(self.checkout))
-        self.sd_db("import", "docs-work")
-        completed = self.sd_db("retire", "docs-work")
-        self.assertIn("1 line(s) removed, 0 archived line(s) kept", completed.stdout)
-        self.assertIn("now reads status from the row", completed.stdout)
-        self.assertNotIn("status:", self.item().read_text(encoding="utf-8"))
-        self.assertEqual(
-            (self.checkout / "docs/work/.status-source").read_text(encoding="utf-8"),
-            "row\n",
-        )
-        listed = self.sd_db("repo", "list")
-        # Status source, managed, ci, lane host, then runner merge: the
-        # five trailing fields `repo list` prints.
-        self.assertEqual(listed.stdout.split()[-5:], ["row", "no", "github", "hub", "manual"])
-
-    def test_it_needs_a_source(self):
-        completed = self.sd_db("retire", expect=1)
-        self.assertIn("needs one of", completed.stderr)
-        self.assertIn("docs-work", completed.stderr)
 
 
 # The remove-verb cases' own imports.

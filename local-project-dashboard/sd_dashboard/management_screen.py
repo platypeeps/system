@@ -236,7 +236,7 @@ def _repos(connection) -> list[dict]:
             "runner_merge": row["runner_merge"], "managed": "yes" if row["managed"] else "no",
             # sd:3075: NULL is the hub; a database before migration 24 has no column and reads as the hub.
             "lane_host": (row["lane_host"] if "lane_host" in row.keys() else None) or repos.LANE_HUB,
-            "status_source": row["status_source"], "pieces_source": row["pieces_source"],
+            "pieces_source": row["pieces_source"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
             "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
         })

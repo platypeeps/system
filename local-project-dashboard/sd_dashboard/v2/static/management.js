@@ -25,12 +25,12 @@ function absorb(doc) {
   const gitBy = Object.fromEntries((GIT?.repos || []).map(g => [tilde(g.path), g]));
   REPOS = (doc.repos || []).map(r => {
     const m = (r.remote || '').match(/github\.com[:/]([^/]+)\/(.+?)(\.git)?$/);
-    return { path: r.path, remote: r.remote, source: r.status_source, managed: r.managed, merge: r.runner_merge, lane: r.lane_host || 'hub', mode: r.mode, ci: r.ci,
+    return { path: r.path, remote: r.remote, managed: r.managed, merge: r.runner_merge, lane: r.lane_host || 'hub', mode: r.mode, ci: r.ci,
       pieces: r.pieces_source, created: r.created_at, updated: r.updated_at, review: r.review, protection: r.protection, runtimes: r.runtimes,
       owner: m ? m[1] : '?', slug: m ? `${m[1]}/${m[2]}` : '', name: nameOf(r.path), registered: true, git: gitBy[r.path] || null };
   });
   const unreg = (GIT?.repos || []).filter(g => !REPOS.some(r => r.path === tilde(g.path)))
-    .map(g => ({ path: tilde(g.path), remote: '', source: '—', managed: '—', merge: '—', lane: '—', mode: '—', owner: '—', slug: '', name: nameOf(tilde(g.path)), registered: false, git: g }));
+    .map(g => ({ path: tilde(g.path), remote: '', managed: '—', merge: '—', lane: '—', mode: '—', owner: '—', slug: '', name: nameOf(tilde(g.path)), registered: false, git: g }));
   ALL = [...REPOS, ...unreg];
   ALL.forEach(r => { const g = r.git; r.branch = g ? g.branch : '—'; r.lag = g && g.behind_default !== null ? g.behind_default : -1; r.fetched = g ? g.fetched_iso || '' : ''; });
   // build (sd:1629): the settings columns sort on their shown words.
@@ -192,7 +192,7 @@ const repoChips = () => [RS.managed && { key: 'managed', label: `Managed: ${RS.m
 const text = { q: '' };
 function tokens() {
   const chips = {}, free = [];
-  text.q.split(/\s+/).filter(Boolean).forEach(w => { const m = w.match(/^(managed|merge|source|state|agent):(\w+)$/i); m ? chips[m[1].toLowerCase()] = m[2].toLowerCase() : free.push(w.toLowerCase()); });
+  text.q.split(/\s+/).filter(Boolean).forEach(w => { const m = w.match(/^(managed|merge|state|agent):(\w+)$/i); m ? chips[m[1].toLowerCase()] = m[2].toLowerCase() : free.push(w.toLowerCase()); });
   return { chips, free };
 }
 
@@ -200,8 +200,8 @@ function tokens() {
 const RS = { sort: 'name', dir: 1, page: 1, size: 25, managed: null, merge: null, cols: 'git' };
 function repoRows() {
   const { chips, free } = tokens();
-  const managed = chips.managed || RS.managed, merge = chips.merge || RS.merge, source = chips.source;
-  return ALL.filter(r => (!managed || r.managed === managed) && (!merge || r.merge === merge) && (!source || r.source === source) && free.every(f => (r.path + ' ' + r.remote).toLowerCase().includes(f)))
+  const managed = chips.managed || RS.managed, merge = chips.merge || RS.merge;
+  return ALL.filter(r => (!managed || r.managed === managed) && (!merge || r.merge === merge) && free.every(f => (r.path + ' ' + r.remote).toLowerCase().includes(f)))
     .sort((a, b) => String(a[RS.sort]).localeCompare(String(b[RS.sort]), 'en', { numeric: true }) * RS.dir);
 }
 function gitCells(r) {
@@ -301,7 +301,7 @@ function renderRepoPage(el) {
       <li><span class="route">${I('shield-check')}GitHub · API</span> read here; edits stay on the classic Protection screen</li>
     </ul>
 
-    <section class="set" aria-labelledby="set-db"><header><h3 id="set-db">sd-db row <button class="help" type="button" aria-label="Help: sd-db row" data-help="<b>The row the runner and dashboard read.</b> Three fields have sd-db verbs: <code>repo runner-merge</code>, <code>repo managed</code> and <code>repo lane-host</code>. The rest change only through registration or the docs/work migration.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db · local</span>
+    <section class="set" aria-labelledby="set-db"><header><h3 id="set-db">sd-db row <button class="help" type="button" aria-label="Help: sd-db row" data-help="<b>The row the runner and dashboard read.</b> Three fields have sd-db verbs: <code>repo runner-merge</code>, <code>repo managed</code> and <code>repo lane-host</code>. The rest change only through registration or a migration.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db · local</span>
       <p class="src">repo table · read ${hhmm(READ)} UTC</p></header>
       ${setRow('path', r.path, lock('primary key'))}
       ${setRow('remote', r.remote || html`<span class="no">none</span>`, lock('from the checkout'))}
@@ -311,7 +311,6 @@ function renderRepoPage(el) {
         html`<input class="fld" type="text" data-set="lane_host" list="lane-hosts" value="${r.lane}" aria-label="Move lane to" autocomplete="off" spellcheck="false"><datalist id="lane-hosts">${laneHosts().map(h => html`<option value="${h}"></option>`)}</datalist>`, html` data-key="lane_host"`)}
       ${setRow(html`<code>mode</code>`, r.mode || html`<span class="no">unset</span>`, lock('no sd-db verb writes it'))}
       ${setRow(html`<code>ci</code>`, r.ci, lock('sd-db.sh repo ci'))}
-      ${setRow(html`<code>status_source</code>`, r.source, lock('moves only by the docs/work migration'))}
       ${setRow(html`<code>pieces_source</code>`, r.pieces, lock('moves only by migration'))}
       ${setRow('registered', html`<time class="rel" datetime="${r.created}"></time> <span class="no">· updated</span> <time class="rel" datetime="${r.updated}"></time>`)}
     </section>
@@ -748,7 +747,7 @@ function selectRow(id, open) {
         ${pw === true ? '' : html`<p class="why">No pull offered: ${pw}.</p>`}`
       : html`<h3>Git state</h3><p class="why"><span class="g-unknown" aria-hidden="true">▨</span> Not read: ${pw}.</p>`;
     h = html`<p class="kind">${I(r.registered ? 'settings' : 'folder-code')} Repo${r.registered ? '' : ' · not registered'}</p><h2>${r.name}</h2>
-      <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd><dt>Status source</dt><dd>${r.source}</dd></dl>
+      <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd></dl>
       ${r.registered ? html`<p><a class="btn quiet" href="?view=repos&amp;repo=${encodeURIComponent(r.path)}">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
         : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db.sh repo add ${r.path}</code> registers it.</p>`}${git}${act}`;

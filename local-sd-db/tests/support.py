@@ -71,64 +71,8 @@ def write_item(
     return path
 
 
-def write_archived_item(
-    root: Path, month: str, slug: str, *, status: str = "done", **kwargs
-) -> Path:
-    """A prd two levels deeper, which is closed history and stays that way.
-
-    `docs/work/archive/<month>/<slug>/prd.md`. The one-star glob the
-    migration enumerates with does not reach it, and neither does the retire:
-    an archived `status:` line is a record of what an item's status *was*.
-    """
-    path = root / "docs" / "work" / "archive" / month / slug / "prd.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fields = {"title": "an archived item", "created": "2026-05-01",
-              "body": "the problem.", **kwargs, "status": status}
-    path.write_text(PRD.format(**fields), encoding="utf-8")
-    return path
-
-
-#: Both lines matter, and the `__future__` one is the subtle half. A module
-#: executed with no `sys.modules` entry cannot define a dataclass whose field
-#: annotations are *strings*: `dataclasses._is_type` reads
-#: `sys.modules.get(cls.__module__).__dict__` unguarded, and it is reached
-#: only when an annotation needs resolving against the module. `sd_lib.py`
-#: has `from __future__ import annotations`, so every annotation is a string.
-#: A stub with a dataclass but no `__future__` import passes under a probe
-#: that the real file kills -- this fixture was that stub, and the mutation
-#: that removes the registration escaped until the import was added.
-PACK_LIBRARY = '''\
-"""A stand-in for the pack's `bin/sd_lib.py`, carrying both names checked."""
-
-from __future__ import annotations
-
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class Shaped:
-    """As `sd_lib.py:254` is. The probe must survive executing this."""
-
-    name: str = ""
-
-
-def status_marker(root, work_dir="docs/work"):
-    return "file", ""
-
-
-def delivered(root, item):
-    return "yes"
-'''
-
-#: A pack from `eb7695c7`, which is a real version of the real pack: it
-#: answers `delivered` and knows nothing of the marker or the rows. It is the
-#: shape a `delivered`-only version check waves through.
-PACK_BEFORE_THE_ROW_READERS = '''\
-"""The pack as of `eb7695c7`: `delivered` landed, the row readers had not."""
-
-
-def delivered(root, item):
-    return "yes"
+#: A stand-in for the pack's `bin/sd_lib.py`; nothing reads its contents.
+PACK_LIBRARY = '''"""A stand-in for the pack's `bin/sd_lib.py`."""
 '''
 
 
@@ -143,9 +87,7 @@ def pack(
     """An installed pack, as the pack's own installer leaves one.
 
     The receipt under the state home naming a checkout and a commit, and that
-    checkout carrying `bin/sd_lib.py`. Built this way round because the
-    retire's version check is about what is *installed*: a checkout sitting
-    on disk that no receipt names is a checkout, not an installation.
+    checkout carrying `bin/sd_lib.py`.
 
     `library=None` leaves the checkout with no `bin/sd_lib.py`;
     `receipt=False` leaves the machine with no installed pack at all.

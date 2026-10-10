@@ -27,9 +27,6 @@ from .writes import now as current_time
 def _work_guard(connection: sqlite3.Connection, row: dict) -> str:
     if row["kind"] != "work":
         return "this operation is for work items; ordinary tasks use task controls"
-    owner = connection.execute("SELECT status_source FROM repo WHERE path = ?", (row["repo"],)).fetchone()
-    if owner is None or owner["status_source"] != "row":
-        return "work belongs to its current source owner until database cutover completes"
     active = connection.execute(
         "SELECT id FROM assignment WHERE item = ? AND status IN ('queued', 'running', 'ending') LIMIT 1",
         (row["id"],),

@@ -669,11 +669,9 @@ class RepoRefusals(Store):
         self.assertEqual(plan["rows"], [])
 
     def test_p2_a_retiring_source(self):
-        for column in ("status_source", "pieces_source"):
-            with self.subTest(column=column):
-                self.db.execute(f"UPDATE repo SET status_source='file', pieces_source='file', {column}='retiring'")
-                self.assertEqual([r["message"] for r in self.refused(self.plan_repo(self.source), "P2")],
-                                 [f"repo {self.source} has {column} retiring"])
+        self.db.execute("UPDATE repo SET pieces_source='retiring'")
+        self.assertEqual([r["message"] for r in self.refused(self.plan_repo(self.source), "P2")],
+                         [f"repo {self.source} has pieces_source retiring"])
 
     def test_p3_an_item_without_with_items(self):
         item = self.item(repo=self.source)
@@ -1026,6 +1024,7 @@ class ImportedSources(Store):
     def test_imported_is_every_source_module_and_the_report_writer(self):
         import importlib
         import sd_db.sources
+        import sd_db.sources.docs_work
         declared = set()
         for module_file in sorted(Path(sd_db.sources.__file__).parent.glob("*.py")):
             if module_file.name == "__init__.py":
@@ -1035,6 +1034,8 @@ class ImportedSources(Store):
                 # A sixth importer without a `SOURCE` constant fails here, by name.
                 self.assertTrue(hasattr(module, "SOURCE"), f"{module_file.name} has a Reader and no SOURCE")
                 declared.add(module.SOURCE)
+        # `docs/work` lost its Reader (sd:3231), and `sd work register` still files its rows.
+        declared.add(sd_db.sources.docs_work.SOURCE)
         state = reporting.ingest(self.db, job="probe", run_id="r1", started=STAMP, ended=STAMP, exit_code=1,
                                  text="failed\n", source_path="test")
         filed = self.db.execute("SELECT source FROM item WHERE source IS NOT NULL AND external_id='probe:r1'").fetchone()
@@ -1158,7 +1159,7 @@ class QuotedTextIsCapped(Store):
         # path, as `key` does for every refusal; the message quotes 200.
         path = "/" + "r" * 100_000
         self.assertEqual(len(path), 100_001)
-        upsert_repo(self.db, path, status_source="retiring", pieces_source="file")
+        upsert_repo(self.db, path, pieces_source="retiring")
         item = self.item(repo=path)
         self.newer()
         plans = {"P1": self.plan_repo(path + "/absent"), "P2": self.plan_repo(path),
@@ -1171,7 +1172,7 @@ class QuotedTextIsCapped(Store):
                 self.assertIn(path[:200] + "...", refusal["message"])
                 self.assertEqual(refusal["commands"], [])
         self.assertEqual([r["message"] for r in self.refused(plans["P2"], "P2")],
-                         [f"repo {path[:200]}... has status_source retiring"])
+                         [f"repo {path[:200]}... has pieces_source retiring"])
 
     @hub_only
     def test_a_repo_row_too_large_for_a_note_gives_a_short_r1_refusal(self):

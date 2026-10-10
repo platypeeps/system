@@ -104,10 +104,9 @@ class TheStatusRule(WriteCase):
 class TheOtherWrites(WriteCase):
     def test_a_repository_updates_only_the_fields_given(self):
         upsert_repo(self.connection, "/repos/one", remote="git@example:one", mode="full")
-        upsert_repo(self.connection, "/repos/one", status_source="row")
+        upsert_repo(self.connection, "/repos/one")
         row = self.connection.execute("SELECT * FROM repo").fetchone()
         self.assertEqual(row["remote"], "git@example:one")
-        self.assertEqual(row["status_source"], "row")
         self.assertEqual(row["runner_merge"], "manual")
 
     def test_an_exec_note_carries_the_run_and_others_may_not(self):

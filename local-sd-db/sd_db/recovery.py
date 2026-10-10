@@ -16,7 +16,6 @@ from . import paths as sdpaths
 from .database import transaction
 from .errors import SdDbError
 from .sources import docs_work
-from .sources.frontmatter import read as read_frontmatter
 from .writes import (
     _transition,
     add_note,
@@ -27,8 +26,7 @@ from .writes import (
     upsert_repo,
 )
 
-AUTHORITIES = {"status_source": ("docs/work", "docs/work/.status-source"),
-               "pieces_source": ("writing-piece", "content/.status-source")}
+AUTHORITIES = {"pieces_source": ("writing-piece", "content/.status-source")}
 
 
 class RecoveryRefused(SdDbError):
@@ -54,32 +52,6 @@ def _historical(root, relative, commit, valid):
         if valid(text):
             return text, ref
     raise RecoveryRefused(f"{relative}: no committed historical source with a status; restore a newer backup")
-
-
-def _work(connection, repo):
-    root = sdpaths.expand(repo)
-    held = {r["path"]: dict(r) for r in connection.execute(
-        "SELECT * FROM item WHERE repo=? AND source='docs/work'", (repo,))}
-    paths = set(held) | {p.relative_to(root).as_posix() for p in root.glob("docs/work/*/prd.md")}
-    if not paths:
-        raise RecoveryRefused("no docs/work source inventory is available to prove this repository")
-    prepared = []
-    for path in sorted(paths):
-        if not isinstance(path, str) or re.fullmatch(r"docs/work/[^/]+/prd\.md", path) is None:
-            raise RecoveryRefused(f"invalid docs/work source path: {path!r}")
-        old = held.get(path)
-        commit = old["source_commit"] if old else None
-        text, commit = _historical(root, path, commit,
-            lambda text: read_frontmatter(text)[0].get("status") in docs_work.STATUSES)
-        matter, _ = read_frontmatter(text)
-        candidate = docs_work.Reader(paths=[repo])._candidate(root, commit, path)
-        values = {"kind": "work", "repo": repo, "path": path, "source": "docs/work",
-                  "external_id": f"{repo}::{path}", "title": candidate.title,
-                  "status": candidate.status, "source_commit": commit,
-                  "branch": old["branch"] if old else matter.get("branch"),
-                  "created_at": old["created_at"] if old else candidate.created}
-        prepared.append((old, values, {"commit": commit, "path": path}))
-    return prepared
 
 
 def _pieces(connection, repo):
@@ -137,7 +109,7 @@ def reimport(connection: sqlite3.Connection, repo: str, *, dry_run: bool = False
             raise RecoveryRefused(f"{repo} is not awaiting a reimport")
         if not sdpaths.expand(repo).is_dir():
             raise RecoveryRefused(f"repository is unavailable: {repo}")
-        prepared = {name: (_work if name == "status_source" else _pieces)(connection, repo) for name in columns}
+        prepared = {name: _pieces(connection, repo) for name in columns}
         fingerprint = hashlib.sha256(json.dumps({"restore": restores[0]["id"], "repo": repo,
                                                 "prepared": prepared}, sort_keys=True).encode()).hexdigest()
         if expected_fingerprint is not None and expected_fingerprint != fingerprint:

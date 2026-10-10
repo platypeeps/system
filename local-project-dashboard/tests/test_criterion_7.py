@@ -52,7 +52,7 @@ class Criterion7(BrowserSession):
     def setUp(self):
         super().setUp()
         self.checkout = "/repos/system"
-        upsert_repo(self.connection, self.checkout, remote="git@example.invalid:system.git", status_source="row")
+        upsert_repo(self.connection, self.checkout, remote="git@example.invalid:system.git")
         self.work = self.item(
             "An unmerged slice", repo=self.checkout, branch="feat/sd-1-slice", status="in_progress",
             source="docs/work", path="docs/work/2026-09-05-slice/prd.md",
