@@ -1997,6 +1997,19 @@ defaults_write() { # domain key type value
     || echo "  DIFFERS $1 $2 not written; set it by hand to $4, or grant the terminal Full Disk Access and re-run"
 }
 
+# The screen saver never starts (sd:3261). idleTime is a per-host key, so it
+# lives in the currentHost domain; every profile gets it, no manifest line.
+# The drift grep in status_stage counts the `defaults -currentHost write` line.
+stage_screensaver_off() {
+  cur=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo "(unset)")
+  if [ "$cur" = "0" ]; then
+    echo "  ok      com.apple.screensaver idleTime = 0 (currentHost)"
+  else
+    run defaults -currentHost write com.apple.screensaver idleTime -int 0 \
+      || echo "  DIFFERS com.apple.screensaver idleTime not written; set it by hand to 0 (defaults -currentHost write com.apple.screensaver idleTime -int 0)"
+  fi
+}
+
 # One key in a JSON settings file: ok, or MISSING/DIFFERS and the merge.
 self_update_json() { # file key json-value
   if app_data_blocked "$1"; then
@@ -2052,6 +2065,7 @@ stage_macos() {
   echo "== macos"
   command -v defaults >/dev/null 2>&1 || { echo "  defaults MISSING (not macOS?)"; return 0; }
   stage_self_update
+  stage_screensaver_off
   entries=$(manifest macos)
   if [ -z "$entries" ]; then
     echo "  no macOS settings in this profile"
@@ -4477,7 +4491,7 @@ status_stage() {
   # made, a file that disagrees, a manifest entry the machine lacks,
   # something installed that no manifest claims, and a launchd item whose
   # plist is fine but which launchd is not running.
-  n=$(printf '%s\n' "$out" | grep -cE 'DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults write|^  extra ' || :)
+  n=$(printf '%s\n' "$out" | grep -cE 'DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults (-currentHost )?write|^  extra ' || :)
   drift=$((drift + ${n:-0}))
 }
 
