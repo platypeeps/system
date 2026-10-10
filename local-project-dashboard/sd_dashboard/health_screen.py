@@ -52,7 +52,7 @@ from sd_db.errors import SdDbError
 from sd_db import protection as protection_module
 
 from . import fleet as fleet_module
-from . import health_collectors, ports_screen
+from . import health_collectors, ports_screen, snooze
 from .protection_screen import APPLICABLE, FLAGS, GAPS, ORDER
 
 __all__ = ["AREAS", "document"]
@@ -321,6 +321,8 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
                           "Size": _size(volume["size_kb"]), "File system": volume["filesystem"]},
                 "cli": f"df -h {shlex.quote(volume['mount'])}",
                 "note": f"Health lights caution at {VOLUME_CAUTION}% and warning at {VOLUME_WARNING}%.",
+                # A snooze's problem (sd:1896): the band, not the percent, which drifts with every write.
+                "problem": [volume["mount"]],
             })
     for entry in scan["storage"]:
         root = entry["root"]
@@ -338,6 +340,7 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
                 "kind": "Disk · storage folder", "facts": {"Path": path, "Size": _size(folder["kb"]), "Storage folder": root},
                 "cli": f"du -sh {shlex.quote(path)}/* | sort -h | tail -5",
                 "note": "Not a fault: a storage folder is where large uncommitted data belongs. Review it when its volume passes 80%.",
+                "problem": [path],  # its size drifts with every write (sd:1896)
             })
     if not scan["storage"]:
         rows.append({"id": "rs:none", "state": "unknown", "type": "check", "what": "No storage folder configured: sizes not read",
@@ -580,7 +583,8 @@ def _credential_row(probe: dict, now: datetime) -> dict:
         state = "warning" if days <= EXPIRY_WARNING else "caution" if days <= EXPIRY_CAUTION else "ok"
         return {**row, "state": state, "what": f"{name}: expired" if days < 0 else f"{name}: expires in {days} days",
                 "detail": f"expires {probe['expires']}",
-                "note": f"Health lights caution {EXPIRY_CAUTION} days before expiry and warning at {EXPIRY_WARNING}."}
+                "note": f"Health lights caution {EXPIRY_CAUTION} days before expiry and warning at {EXPIRY_WARNING}.",
+                "problem": [name, probe["expires"]]}  # the days left drift each day; the state carries the band (sd:1896)
     if probe.get("valid") or probe.get("signed_in"):
         return {**row, "state": "ok", "what": f"{name}: accepted",
                 "detail": "no expiry reported" if "expires" in probe else name}
@@ -603,13 +607,15 @@ def _credential_rows(found: tuple[str, dict] | None, *, now: str) -> tuple[list[
     if not rows:
         # No probe is not a clean bill.
         rows.append({"id": "cred:empty", "state": "unknown", "type": "check", "what": "The credentials heartbeat names no probe",
-                     "detail": f"recorded {stamp}", "kind": "Credentials", "facts": {"Observed": stamp}, "cli": CREDENTIALS_CLI})
+                     "detail": f"recorded {stamp}", "kind": "Credentials", "facts": {"Observed": stamp}, "cli": CREDENTIALS_CLI,
+                     "problem": ["no probe"]})  # each night's run records a new time for the same answer (sd:1896)
     age = (moment - _when(stamp)).total_seconds() / 3600
     if age > CREDENTIALS_STALE_HOURS:
         rows.append({"id": "cred:stale", "state": "caution", "type": "check",
                      "what": f"Credentials last observed {round(age / 24)} days ago",
                      "detail": f"the nightly job has not recorded since {stamp}", "kind": "Credentials",
-                     "facts": {"Observed": stamp}, "cli": CREDENTIALS_CLI})
+                     "facts": {"Observed": stamp}, "cli": CREDENTIALS_CLI,
+                     "problem": [stamp]})  # the age drifts each day; a later stamp is a new stall (sd:1896)
     return rows, {"at": stamp}
 
 
@@ -708,6 +714,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
     at it is left to stop at its own budget, not waited on. While it runs, a
     later request starts no second scan of that area (`_Scans`); the area
     shows its last answer marked `stale`, or is its error if it has none.
+    A row the operator snoozed (sd:1896) is in its area's `snoozed`, with its
+    `until`, and not in `rows`; `snooze_error` says why none could be read.
     """
     try:
         known: list[str] | Exception = [row["path"] for row in repos.registered(connection)]
@@ -735,6 +743,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         "sec": lambda: _security_rows(read_protection(connection), now=now),
         "cred": lambda: _credential_rows(read_creds(connection), now=now),
     }
+    snoozes, snooze_error = snooze.held(connection, now=now)
     running = {key: _SCANS.start(key, readers[key], now=now) for key in POOLED}
     stop = time.monotonic() + PAGE_SECONDS
     areas = []
@@ -763,5 +772,6 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
                 _settle(area, name, scan.result)
         elif key in readers:
             _settle(area, name, readers[key])
+        area["rows"], area["snoozed"] = snooze.split("health", area["rows"], snoozes)
         areas.append(area)
-    return {"read": now, "areas": areas}
+    return {"read": now, "areas": areas, "snooze_error": snooze_error}

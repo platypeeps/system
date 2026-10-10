@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import threading
 import time
@@ -33,8 +34,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import credentials, upsert_repo
-from sd_db.writes import record_state
+from sd_db import credentials, upsert_repo, writes
+from sd_db.writes import record_state, snooze
 
 from sd_dashboard import health_collectors, health_screen, server, v2
 
@@ -47,6 +48,7 @@ from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 HEALTH_JS = (V2 / "static" / "health.js").read_text(encoding="utf-8")
+SNOOZE_JS = (V2 / "static" / "snooze.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 TREES = [
@@ -220,6 +222,48 @@ class TheDocument(Collectors, ScreenCase):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
+
+    def seen(self, row_id, doc=None):
+        """The row's fingerprint as the page reads it, which the page posts with its snooze."""
+        return next(row["seen"] for area in (doc or self.doc())["areas"] for row in area["rows"] if row["id"] == row_id)
+
+    def test_a_snoozed_row_leaves_its_area_until_its_time_and_then_comes_back(self):
+        """sd:1896. The key is the page and the row id; Today's key for the same id hides nothing here."""
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", seen=self.seen("gone:group/alpha"), now=NOW)
+        snooze(self.connection, "today:unread:beta", "2026-09-06T15:00:00Z", seen=self.seen("unread:beta"), now=NOW)
+        doc = self.doc()
+        wt = doc["areas"][2]
+        self.assertEqual([row["id"] for row in wt["rows"]], ["unread:beta"])
+        self.assertEqual([(row["id"], row["until"], row["state"]) for row in wt["snoozed"]],
+                         [("gone:group/alpha", "2026-09-06T15:00:00+00:00", "caution")])
+        self.assertEqual(doc["snooze_error"], "")
+        self.assertTrue(all(area["snoozed"] == [] for area in doc["areas"] if area["id"] != "wt"))
+        later = health_screen.document(self.connection, now="2026-09-06T15:00:01Z", fleet=fleet_of(TREES),
+                                       ports=ports_snapshot, protection=protection_of(PROTECTION))
+        self.assertEqual({row["id"] for row in later["areas"][2]["rows"]}, {"gone:group/alpha", "unread:beta"})
+        self.assertEqual(later["areas"][2]["snoozed"], [])
+
+    def test_a_snoozed_row_whose_problem_changed_shows_again(self):
+        """sd:1896 review: `dep:<repo>` names the repository, not its alerts. A snooze of one low alert does not
+        hide the critical one that joins it, and the row hides again only if it reads as it did."""
+        def alerts(severity):
+            found = [{**PROTECTION[0], "managed": True, "observed_at": NOW,
+                      "alerts": {"dependabot": {"open": sum(severity.values()), "severity": severity}}}]
+            return self.doc(protection=lambda connection: found)
+        low = alerts({"low": 1})
+        snooze(self.connection, "health:dep:/checkouts/alpha", "2026-09-06T15:00:00Z",
+               seen=self.seen("dep:/checkouts/alpha", low), now=NOW)
+        self.assertEqual([row["id"] for row in alerts({"low": 1})["areas"][4]["snoozed"]], ["dep:/checkouts/alpha"])
+        worse = alerts({"low": 1, "critical": 1})["areas"][4]
+        self.assertEqual([(row["id"], row["state"]) for row in worse["rows"]], [("dep:/checkouts/alpha", "warning")])
+        self.assertEqual(worse["snoozed"], [])
+
+    def test_a_snooze_read_that_fails_shows_every_row_and_says_why(self):
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", seen=self.seen("gone:group/alpha"), now=NOW)
+        with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
+            doc = self.doc()
+        self.assertEqual({row["id"] for row in doc["areas"][2]["rows"]}, {"gone:group/alpha", "unread:beta"})
+        self.assertEqual((doc["areas"][2]["snoozed"], doc["snooze_error"]), ([], "database is locked"))
 
     def test_registrations_whose_directory_is_gone_are_one_row_per_checkout(self):
         wt = self.doc()["areas"][2]
@@ -766,7 +810,7 @@ class ThePage(Collectors, BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "health.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "snooze.js", "health.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
         # /health is the service's own check, which the runtime reads; the page does not take it over.
@@ -799,6 +843,10 @@ window.shell.state = s => OUT.states.push(s);
 """
 
 
+SNOOZED_TYPES = ("check", "storage folder", "build output", "volume", "worktree registrations", "unread registrations",
+                 "merged branches", "port", "branch protection", "dependabot alerts", "secret scanning", "credential")
+
+
 class TheScript(Collectors, ScreenCase):
     """health.js against the document `health_screen` builds from the fixtures above."""
 
@@ -810,7 +858,7 @@ class TheScript(Collectors, ScreenCase):
                   + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
                   + "URLSearchParams.prototype.toString = function () { return ''; };\n"
                   + "ANSWER = (path, body) => path === '/api/health' ? [STATUS, DOC] : [404, { error: 'no answer' }];\n"
-                  + HEALTH_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
+                  + SNOOZE_JS + HEALTH_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -836,15 +884,9 @@ class TheScript(Collectors, ScreenCase):
             ["dependabot alerts.review", "dependabot alerts", "safe", "o", False, False],
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
             ["credential.probe", "credential", "safe", "r", False, False],
-            ["storage folder.snooze", "storage folder", "undo", "z", None, True],
-            ["build output.snooze", "build output", "undo", "z", None, True],
-            ["volume.snooze", "volume", "undo", "z", None, True],
-            ["worktree registrations.snooze", "worktree registrations", "undo", "z", None, True],
-            ["unread registrations.snooze", "unread registrations", "undo", "z", None, True],
-            ["merged branches.snooze", "merged branches", "undo", "z", None, True],
-            ["port.snooze", "port", "undo", "z", None, True],
-            ["branch protection.snooze", "branch protection", "undo", "z", None, True],
-        ])
+        ] + [[f"{t}.{c}", t, "undo", key, None, True] for t in SNOOZED_TYPES
+              for c, key in (("snooze", "z"), ("snooze-hour", "h"), ("snooze-week", "w"))]
+          + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True]])
 
     def test_an_area_with_no_reader_is_an_unknown_lamp_that_names_what_it_does_not_read(self):
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of(PROTECTION))
@@ -1041,11 +1083,55 @@ R.why = cmd('worktree registrations.prune').consequence(o); R.snooze = cmd('work
 shellRun(cmd('worktree registrations.prune'), o); await flush();""")
         self.assertEqual(out["R"]["cli"], "git -C '/checkouts/group/alpha' worktree prune -v")
         self.assertEqual(out["R"]["why"], "Removes 2 worktree registrations whose directories are gone. No directory is touched.")
-        self.assertEqual(out["R"]["snooze"], "no CLI verb: sd has no snooze")
+        self.assertIs(out["R"]["snooze"], True)
         self.assertEqual(out["confirms"], ["worktree registrations.prune"])
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["toasts"][-1][0], "Not run here: copy the line from Details and run it in a terminal · "
                                                "group/alpha: 2 worktrees registered, directory gone")
+
+    def test_snooze_posts_the_row_and_its_time_then_reads_health_again_and_undo_clears_it(self):
+        """sd:1896: the server judges the time, so the page sends one it computed, and Undo writes the same key with none."""
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : [200, { key: 'k', until: body.until }];
+var o = C.get('gone:group/alpha'), t0 = Date.now(); OUT.gets = [];
+shellRun(cmd('worktree registrations.snooze-hour'), o); await flush();
+R.ahead = Date.parse(OUT.posts[0][1].until) - t0;
+OUT.toasts[OUT.toasts.length - 1].undo(); await flush();
+R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' }); R.seen = o.seen;""")
+        # The row's own fingerprint goes with it, so the snooze holds only while the row reads the same.
+        self.assertRegex(out["R"]["seen"], r"^[0-9a-f]{16}$")
+        self.assertEqual([(path, {k: v for k, v in body.items() if k != "until"}) for path, body, _ in out["posts"]],
+                         [("/api/snooze", {"page": "health", "row": "gone:group/alpha", "seen": out["R"]["seen"]})] * 2)
+        self.assertEqual(out["posts"][1][1]["until"], None)
+        self.assertTrue(3590e3 <= out["R"]["ahead"] <= 3610e3, out["R"]["ahead"])
+        self.assertEqual(out["gets"], ["/api/health", "/api/health"])
+        self.assertRegex(out["toasts"][-2][0], r"^Snoozed until (\w{3} \w{3} \d\d )?\d\d:\d\d · group/alpha: ")
+        self.assertTrue(out["toasts"][-2][1])
+        self.assertEqual(out["toasts"][-1][0], "Snooze 1 hour undone · group/alpha: 2 worktrees registered, directory gone")
+        self.assertEqual(out["R"]["off"], "an ok row has nothing to snooze")
+
+    def test_a_snoozed_row_is_drawn_apart_and_unsnooze_brings_it_back(self):
+        seen = next(row["seen"] for row in health_screen.document(
+            self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
+            protection=protection_of(PROTECTION))["areas"][2]["rows"] if row["id"] == "gone:group/alpha")
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-07T08:00:00Z", seen=seen, now=NOW)
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : [200, { key: 'k', until: body.until }];
+R.areas = ELS.areas.html; R.snoozed = ELS.snoozed.html; var o = C.get('snoozed:gone:group/alpha'); R.type = o.type;
+shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
+        self.assertNotIn("directory gone", out["R"]["areas"])
+        self.assertIn("Snoozed · 1", out["R"]["snoozed"])
+        self.assertIn("group/alpha: 2 worktrees registered, directory gone", out["R"]["snoozed"])
+        self.assertEqual(out["R"]["type"], "snoozed row")
+        self.assertEqual([body for _, body, _ in out["posts"]],
+                         [{"page": "health", "row": "gone:group/alpha", "until": None, "seen": seen},
+                          {"page": "health", "row": "gone:group/alpha", "until": "2026-09-07T08:00:00+00:00", "seen": seen}])
+        self.assertEqual(out["toasts"][-2][0], "Shows again · group/alpha: 2 worktrees registered, directory gone")
+
+    def test_a_snooze_read_that_failed_is_a_partial_read(self):
+        with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
+            out = self.run_page("R.snoozed = ELS.snoozed.html;")
+        self.assertEqual(out["states"][-1], {"kind": "partial", "source": "/api/health",
+                                             "text": "Snoozes were not read: database is locked. Every row shows."})
+        self.assertEqual(out["R"]["snoozed"], "")
 
     def sync(self, finished):
         """Re-run collector on the protection collector: the run starts, reads as running once, then `finished`."""

@@ -5,8 +5,8 @@
 // health_collectors (disk and merged branches, sd:2202 and sd:2204).
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
 // An area with no reader shows as unknown with what it does not read, never as a clean lamp.
-// Every fix is a CLI line for Copy; Re-check reads the document again. The one write is Re-run collector, which starts
-// the server's shadow sync (sd:2894).
+// Every fix is a CLI line for Copy; Re-check reads the document again. The writes are Re-run collector, which starts
+// the server's shadow sync (sd:2894), and Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   const { html, put, plural } = window.markup;
@@ -30,7 +30,7 @@
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const $ = id => document.getElementById(id);
 
-  let DOC = null, AREAS = [], ROWS = [], selected = null, query = '';
+  let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], selected = null, query = '';
   const F = { state: new Set(), area: new Set() };
   const byId = id => ROWS.find(r => r.id === id);
 
@@ -191,22 +191,24 @@
       DOC = doc; AREAS = doc.areas;
       AREAS.forEach(a => a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]));
       ROWS = AREAS.flatMap(a => a.rows.map(r => ({ ...r, area: a.id })));
+      SNOOZED = AREAS.flatMap(a => a.snoozed);
       document.body.dataset.observed = doc.read;
       const failed = AREAS.filter(a => a.error || a.stale);
       const [w, c] = attention(), unread = AREAS.filter(a => !a.read).length;
       const want = [w ? `${w} warning` : '', c ? `${c} caution` : ''].filter(Boolean).join(', ') || 'no';
       put($('subhead'), html`${AREAS.length} areas · ${want} ${w + c === 1 ? 'row wants' : 'rows want'} you${unread ? ` · ${plural(unread, 'area')} with no reader yet` : ''} · read <time class="rel" datetime="${doc.read}"></time>`);
-      return { objects: ROWS.map(r => ({ ...r, label: r.what })),
-        state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source: '/api/health' } : null };
+      return { objects: [...ROWS.map(r => ({ ...r, label: r.what })), ...SNOOZED.map(window.snooze.object)],
+        state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source: '/api/health' }
+          : doc.snooze_error ? window.snooze.unread(doc.snooze_error, '/api/health') : null };
     },
     // Nothing from the last read stays on screen: rows, lamps, the observed time and the badge.
     clear: () => {
-      DOC = null; AREAS = []; ROWS = [];
+      DOC = null; AREAS = []; ROWS = []; SNOOZED = [];
       delete document.body.dataset.observed;
       put($('subhead'), html`Health could not be read.`);
       shell.attention({ state: 'unknown', n: 0, what: 'rows' });
     },
-    draw: () => lamps(),
+    draw: () => { lamps(); window.snooze.draw($('snoozed'), SNOOZED); },
     current: () => selected,
     first: () => ROWS[0]?.id,
     // apply() reconciles against the rows the filters show; the new reading's Details are drawn here.
@@ -277,9 +279,10 @@
       { id: 'credential.probe', on: 'credential', label: 'Probe again', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: o => o.cli, run: copyOnly },
     );
-    // Snooze sits on every type that wants you, as the design declares it; sd has no snooze verb, so it stays off.
-    ['storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'port', 'branch protection'].forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', key: 'z', risk: 'undo', bulk: true,
-      when: () => 'no CLI verb: sd has no snooze', cli: o => `sd now snooze ${o.id} --until 08:00`, run: o => `Snoozed until 08:00 · ${o.label}`, undo: () => {} }));
+    // Snooze (sd:1896) on every row type; an ok row wants nothing, so it has nothing to snooze.
+    window.snooze.register(C, { page: 'health', reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
+      types: ['check', 'storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'port',
+        'branch protection', 'dependabot alerts', 'secret scanning', 'credential'] });
 
     const u = new URLSearchParams(location.search);
     (u.get('state') || '').split(',').filter(s => STATES.includes(s)).forEach(s => F.state.add(s));

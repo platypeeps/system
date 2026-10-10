@@ -4,8 +4,9 @@
   products/system/designs/v2/health.{html,css,js} at d82daa1, with design.md and commands.md.
   Data: /api/health (health_screen.document: the fleet child's worktree registrations, Operations >
   Ports' collect_ports and protection.rows), read when the page opens and on Refresh. Five of the design's areas have no reader
-  yet; the document names them and the page shows them as not read. Every fix is a CLI line for Copy. The one write is
-  Re-run collector: POST /api/shadow/sync starts the server's shadow sync, as Contributions' does (sd:2894).
+  yet; the document names them and the page shows them as not read. Every fix is a CLI line for Copy. The two writes are
+  Re-run collector: POST /api/shadow/sync starts the server's shadow sync, as Contributions' does (sd:2894), and
+  Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Health reads again.
   Nothing here is sample data.
 -->
 <html lang="en">
@@ -43,11 +44,13 @@
     <div class="filters" id="filters" role="group" aria-label="Filters"></div>
     <p class="filtered" id="filtered" role="status" hidden></p>
     <div id="areas"></div>
+    <div id="snoozed"></div>
   </main>
   <div class="details" id="details"><p class="why">Reading the fleet…</p></div>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
+<script src="/ui/snooze.js"></script>
 <script src="/ui/health.js"></script>
 <script src="/ui/shell.js"></script>
 </body>

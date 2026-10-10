@@ -2,6 +2,7 @@
 <!--
   Today, v2 (sd:2110), the default page at / and /today since sd:2163. Built from ui-design products/system/designs/v2/today.html at a3861c9 and design.md.
   Data: /api/now, the document now_screen.document builds for v1 Today's Now section, read when the page opens and on Refresh.
+  Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Now reads again.
   Decisions (sd:3012): /api/decisions, read by decisions.js when the page opens and on Refresh; a choice posts /api/decisions/answer.
   The decisions waiting count in Today's rail badge with the caution rows (today.js attend).
   Sources: repos and sessions (fleet child), prs (shadow table), jobs (launchd through sd_db.operations.inventory).
@@ -68,6 +69,7 @@
         <tbody id="rows"><tr class="empty"><td colspan="5">Reading the fleet…</td></tr></tbody>
       </table>
       <p class="filtered" id="filtered" hidden></p>
+      <div id="snoozed"></div>
     </section>
 
     <section aria-labelledby="decisions-h">
@@ -88,6 +90,7 @@
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
+<script src="/ui/snooze.js"></script>
 <script src="/ui/today.js"></script>
 <script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>
