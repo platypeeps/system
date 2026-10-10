@@ -36,6 +36,7 @@ from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
+from test_v2_shell_shared import cell_grammar
 
 V2 = Path(v2.__file__).resolve().parent
 METRICS_JS = (V2 / "static" / "metrics.js").read_text(encoding="utf-8")
@@ -186,9 +187,10 @@ class TheScript(Fixture):
         out = self.run_page("R.lamps = ELS.annunciator.html;")
         self.assertEqual(out["gets"], ["/api/metrics"])
         lamps = out["R"]["lamps"]
-        self.assertRegex(lamps, r'data-cell="spend" data-state="ok" data-ev="spend".*?<b>\$80.00</b>')
-        self.assertRegex(lamps, r'data-cell="w-claude" data-state="caution" data-ev="win:claude:10080".*?<b>80%</b> used')
-        self.assertRegex(lamps, r'data-cell="ci" data-state="unknown".*?not read')
+        self.assertRegex(lamps, r'data-cell="spend" data-ev="spend" data-state="ok".*?<b>\$80.00</b>')
+        self.assertRegex(lamps, r'data-cell="w-claude" data-ev="win:claude:10080" data-state="caution".*?<b>80%</b> used')
+        self.assertRegex(lamps, r'data-cell="ci" data-ev="unread:ci" data-state="unknown".*?not read')
+        self.assertEqual(cell_grammar(self, lamps)[-1], ("button", None))
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "readings past a threshold"})
         self.assertIsNone(out["states"][-1])
 

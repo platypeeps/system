@@ -3,20 +3,6 @@
  * Route: custom, locked to foundation/. Real data only: sd-db 23:52 UTC, Gmail 23:54 UTC, job logs 23:54 UTC. */
 
 /* Annunciator (today.html grammar) */
-.cell { font: inherit; border: 0; text-align: left; cursor: pointer; width: 100%; display: grid; grid-template-rows: auto 1fr; gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel); color: var(--color-muted); text-decoration: none; }
-.cell:hover { background: var(--color-well); }
-.cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-.cell .lbl { font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; display: flex; align-items: center; gap: var(--space-2xs); }
-.cell .lbl .i { margin-left: auto; }
-.cell .ph { white-space: nowrap; }
-.cell[data-state="ok"] .lbl .i { color: var(--color-ok); }
-.cell[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
-.cell[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
-.cell[data-state="caution"] .val, .cell[data-state="caution"] .val b { color: var(--color-caution-lamp-ink); }
-.cell[data-state="warning"] .val, .cell[data-state="warning"] .val b { color: var(--color-warning-ink); }
-.cell[data-state="unknown"] { background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
-.cell[data-state="unknown"] .lbl { color: var(--color-ink-2); } /* muted on the hatch measured 3.83:1 in light */
-.cell[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--color-accent); }
 
 /* Section heads */
 section + section { margin-top: var(--space-2xl); }
@@ -54,12 +40,6 @@ section + section { margin-top: var(--space-2xl); }
 .toggle input { width: 1.1rem; height: 1.1rem; accent-color: var(--color-accent); margin: 0; }
 
 /* Ledger */
-.ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); }
-.ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
-.ledger tbody tr { cursor: pointer; }
-.ledger tbody tr:hover td { background: var(--color-well); }
-.ledger tbody tr[aria-selected="true"] td { background: var(--color-accent-bg); }
-.ledger tbody tr[aria-selected="true"] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
 .ledger .g { width: 2rem; text-align: center; font-family: var(--font-data); }
 .ledger .what { font-weight: 500; }
@@ -104,9 +84,7 @@ section + section { margin-top: var(--space-2xl); }
 .details .done { font: 500 var(--text-sm)/1 var(--font-data); color: var(--color-ok); display: inline-flex; align-items: center; gap: var(--space-2xs); min-height: var(--row-touch); }
 
 @media (max-width: 599px) {
-  .annunciator { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #refresh { grid-column: 1 / -1; }
-  .cell .ph { white-space: normal; }
   .ack .cols { grid-template-columns: minmax(0, 1fr); }
   .filters label.sel { flex: 1 1 8rem; }
   .filters select { width: 100%; }
@@ -129,8 +107,4 @@ section + section { margin-top: var(--space-2xl); }
   .cad th.job { padding: 0; }
   .ledger .what button { display: flex; align-items: center; min-height: var(--row-touch); }
   time.rel { display: inline-flex; align-items: center; min-height: var(--row-touch); min-width: var(--row-touch); }
-}
-@media (forced-colors: active) {
-  .cell[data-state="warning"], .cell[data-state="caution"] { border: 2px solid CanvasText; }
-  .ledger tbody tr[aria-selected="true"] td:first-child, .cad tbody tr[aria-current="true"] td:first-child { outline: 2px solid Highlight; }
 }

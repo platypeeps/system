@@ -2,7 +2,7 @@
 // reference is marked "build:". The events are /api/activity (activity_screen.py), never sample data. A command that executes
 // posts to the route v1 already answers, and its toast comes after the write lands, not before.
 // Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
-const { html, put, plural } = window.markup;
+const { html, put, plural, cells } = window.markup;
 window.PAGE_COMMANDS = [
   { label: 'Filter the timeline', icon: 'search', run: () => document.getElementById('shift').focus() },
 ];
@@ -108,11 +108,11 @@ addEventListener('DOMContentLoaded', () => {
     pageAttention();
     const n = (k, s) => EVENTS.filter(e => e.k === k && (!s || e.s === s)).length;
     const worst = k => unknownWhy(k) ? 'unknown' : n(k, 'warning') ? 'warning' : n(k, 'caution') ? 'caution' : 'ok';
-    const pressed = k => String(F.kind.has(k)); // a lamp, its Kind chip and its lane button are one control (design.md § Interaction rules)
+    // A lamp, its Kind chip and its lane button are one control (design.md § Interaction rules): pressed is F.kind.
     // build: a kind with no answer is a lamp that cannot be pressed, as the design's deploy cell is.
     const cell = (k, val) => unknownWhy(k.id)
-      ? html`<li><div class="cell" data-kind="${k.id}" data-state="unknown"><span class="lbl">${k.name}${ICON(k.icon)}</span><span class="val"><span class="ph"><b>unknown</b></span> · <span class="ph">no source</span></span></div></li>`
-      : html`<li><button class="cell" type="button" data-kind="${k.id}" data-state="${worst(k.id)}" aria-pressed="${pressed(k.id)}"><span class="lbl">${k.name}${ICON(k.icon)}</span><span class="val">${val}</span></button></li>`;
+      ? { state: 'unknown', attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val: html`<span class="ph"><b>unknown</b></span> · <span class="ph">no source</span>` }
+      : { button: true, state: worst(k.id), pressed: F.kind.has(k.id), attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val };
     // Runs mixes two sources: a job carries `job`, an assignment carries `status`; count each by its own field.
     const asg = EVENTS.filter(e => e.k === 'run' && e.status);
     const jobsFailed = EVENTS.filter(e => e.k === 'run' && e.job && e.s === 'warning').length;
@@ -124,9 +124,9 @@ addEventListener('DOMContentLoaded', () => {
       review: html`<span class="ph"><b>${n('review', 'caution')}</b> adjudicated</span> · <span class="ph">${n('review', 'ok')} clean</span>${DOC?.review_unrecorded ? html` · <span class="ph">${plural(DOC.review_unrecorded, 'merge')} unrecorded</span>` : ''}`,
     };
     const d = new Date(OBSERVED);
-    put($('annunciator'), html`
-      ${KINDS.map(k => cell(k, VAL[k.id] || ''))}
-      <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${ICON('rotate-ccw')}</span><span class="val"><span class="ph"><b>${d.toISOString().slice(11, 16)}</b> UTC</span> · <span class="ph">${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}</span></span></button></li>`);
+    put($('annunciator'), cells([...KINDS.map(k => cell(k, VAL[k.id] || '')),
+      { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: ICON('rotate-ccw'),
+        val: html`<span class="ph"><b>${d.toISOString().slice(11, 16)}</b> UTC</span> · <span class="ph">${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}</span>` }]));
   }
   $('annunciator').addEventListener('click', e => {
     const c = e.target.closest('button.cell'); if (!c) return;

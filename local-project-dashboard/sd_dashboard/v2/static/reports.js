@@ -4,7 +4,7 @@
 // A command that executes posts to a route server.action_route answers, and its toast comes after the write lands.
 // The page reads /api/reports through the shell's reader (read.js, sd:2487), which holds the generation, retirement and
 // failure rules; Acknowledge's Undo posts the reopen route with the revision the acknowledge answered (sd:2395).
-const { html, put, plural } = window.markup;
+const { html, put, plural, cells } = window.markup;
 const G = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so byId(), backticks and \ stay literal
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
@@ -90,18 +90,20 @@ function lamps() {
     const unread = f.unread.length ? html` · <span class="ph">${f.unread.length} not read</span>` : '';
     const val = f.s === 'ok' ? html`<span class="ph">all clear</span>` : f.s === 'unknown' ? html`<span class="ph"><b>${f.unread.length}</b> not read</span> · <span class="ph">none failing seen</span>`
       : f.bad.length ? html`<span class="ph"><b>${f.bad.length}</b> failing</span> · <span class="ph">${f.act} need action</span>${unread}` : html`<span class="ph"><b>${f.act}</b> need action</span> · <span class="ph">${f.partial.length ? `${f.partial.length} partial` : 'none failing now'}</span>${unread}`;
-    return html`<li><button class="cell" type="button" data-fam="${k}" data-state="${f.s}" aria-pressed="${String(F.fam === k)}" title="${[...f.bad, ...f.partial.map(j => j + ' (partial)'), ...f.unread.map(j => j + ' (not read)')].join(', ')}"><span class="lbl">${label}${I(icon)}</span><span class="val">${val}</span></button></li>`;
+    return { button: true, state: f.s, pressed: F.fam === k, label, mark: I(icon), val,
+      attrs: html` data-fam="${k}" title="${[...f.bad, ...f.partial.map(j => j + ' (partial)'), ...f.unread.map(j => j + ' (not read)')].join(', ')}"` };
   });
   // build: without a family list the page draws no family lamp; this one says which file it reads.
   const fam = DOC.families || {};
-  if (fam.state !== 'read' && !FAMILIES.length) out.push(html`<li><div class="cell" data-state="unknown" title="${fam.problems?.join('; ') || ''}"><span class="lbl">Job families${I('clipboard-list')}</span><span class="val"><span class="ph">no family list</span> · <span class="ph">${fam.source || 'report-families.conf'}</span></span></div></li>`);
+  if (fam.state !== 'read' && !FAMILIES.length) out.push({ state: 'unknown', attrs: html` title="${fam.problems?.join('; ') || ''}"`, label: 'Job families', mark: I('clipboard-list'),
+    val: html`<span class="ph">no family list</span> · <span class="ph">${fam.source || 'report-families.conf'}</span>` });
   // A lamp with nothing to filter is a div that says why (design.md § Lamps); the partial read above the table says the rest.
   // build: the count is the stored reports that did not come from cron-report; the HTML count is the documents roots.
   const other = ROWS.filter(r => r.source.source !== 'cron-report').length;
-  out.push(html`<li><div class="cell" data-state="unknown"><span class="lbl">Runner &amp; review${I('git-pull-request')}</span><span class="val"><span class="ph">${other ? html`<b>${other}</b> other reports` : 'no reports'}</span> <span class="ph">stored</span></span></div></li>`);
-  out.push(html`<li><div class="cell" data-state="unknown"><span class="lbl">HTML reports${I('file-text')}</span><span class="val">${DOC.html == null ? html`<span class="ph">not read</span>` : html`<span class="ph"><b>${DOC.html}</b> folders</span>`} · <span class="ph">not indexed</span></span></div></li>`);
-  out.push(html`<li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val"><span class="ph">${READ ? html`<b>${READ.slice(11, 16)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span></span></button></li>`);
-  put(byId('annunciator'), html`${out}`);
+  out.push({ state: 'unknown', label: 'Runner & review', mark: I('git-pull-request'), val: html`<span class="ph">${other ? html`<b>${other}</b> other reports` : 'no reports'}</span> <span class="ph">stored</span>` });
+  out.push({ state: 'unknown', label: 'HTML reports', mark: I('file-text'), val: html`${DOC.html == null ? html`<span class="ph">not read</span>` : html`<span class="ph"><b>${DOC.html}</b> folders</span>`} · <span class="ph">not indexed</span>` });
+  out.push({ button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'), val: html`<span class="ph">${READ ? html`<b>${READ.slice(11, 16)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span>` });
+  put(byId('annunciator'), cells(out));
 }
 // The shell's state slot (design.md § State slot). build: it names every source that was not read, and status mail.
 function pageState() {

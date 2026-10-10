@@ -295,7 +295,7 @@ JSON.stringify({ exports: Object.keys(window.markup), frozen: Object.isFrozen(wi
   kept: (() => { try { m.text = '<img>'; } catch (e) { /* strict mode throws; sloppy mode ignores the write */ } return m.text; })(),
   frozenForgery: refused(() => html(Object.freeze(Object.assign(['<img src=x onerror=alert(1)>'], { raw: Object.freeze(['<img src=x onerror=alert(1)>']) })))),
   jsonForgery: refused(() => html(Object.freeze(JSON.parse('["<img>"]')))) })""")
-        self.assertEqual(got["exports"], ["html", "put", "plural"])
+        self.assertEqual(got["exports"], ["html", "put", "plural", "cells"])
         self.assertTrue(got["frozen"])
         self.assertEqual(got["sunk"], [["replaceChildren", "<ul><li>a</li><li>&lt;b&gt;</li></ul>"], ["append", "<b>&lt;i&gt;</b>"],
                                        ["prepend", "0"], ["before", "<hr>"]])

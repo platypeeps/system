@@ -32,6 +32,7 @@ from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
+from test_v2_shell_shared import cell_grammar
 
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "contributions.js").read_text(encoding="utf-8")
@@ -407,6 +408,7 @@ R.off = [w('contribution.ack', 'issue:""" + ISSUE + """'), w('contribution.nudge
         self.assertEqual(re.findall(r'data-cell="(\w+)" data-state="(\w+)"', lamps),
                          [("newly_unblocked", "caution"), ("awaiting_you", "caution"), ("awaiting_them", "ok"), ("github", "unknown")])
         self.assertIn("not checked", lamps)
+        self.assertEqual(cell_grammar(self, lamps), [("button", "caution"), ("button", "caution"), ("button", "ok"), ("div", "unknown")])
         self.assertNotIn("GitHub now", rows)
         self.assertIn('title="example/project">example/project</span><span class="v">2</span>', settled)
         self.assertIn("No merge or close dates recorded", out["R"]["note"])
@@ -573,7 +575,7 @@ class TheFocus(Script):
         out = self.run_page("""const lamp = button('annunciator', b => b.dataset.cell === 'awaiting_them'); lamp.focus();
 ELS.annunciator.listeners.click[0]({ target: lamp }); R.on = where(); R.html = ELS.annunciator.html;""", extra=BOXES)
         self.assertEqual(out["R"]["on"], ["annunciator", {"cell": "awaiting_them", "state": "ok"}, True])
-        self.assertIn('aria-pressed="true" data-cell="awaiting_them"', out["R"]["html"])
+        self.assertIn('data-cell="awaiting_them" data-state="ok" aria-pressed="true"', out["R"]["html"])
 
     def test_a_landed_acknowledge_puts_focus_on_the_rows_action_menu(self):
         out = self.run_page(f"""DOC.rows.forEach(r => {{ r.event_ids = []; }});

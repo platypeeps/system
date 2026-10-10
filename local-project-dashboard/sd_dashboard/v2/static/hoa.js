@@ -4,7 +4,7 @@
 // build: no Leaflet. The design vendored Leaflet 1.9.4; this page draws the same vectors as one SVG with Fit, zoom and drag,
 // so the dashboard ships no third-party script. Clusters and the aerial button are not built (docs/pages/hoa.md).
 (() => {
-  const { html, put, plural } = window.markup;
+  const { html, put, plural, cells } = window.markup;
   const $ = id => document.getElementById(id);
   const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };
   const RANK = { warning: 3, caution: 2, unknown: 1, ok: 0, queued: 0 };
@@ -23,7 +23,7 @@
   // ---------- Annunciator ----------
   // build: every cell is a reading of the document or unknown with its reason; the design's mail-only facts (the 05:50 fault,
   // "9 overdue") have no reader, so Water is unknown and Followups counts the checkout's open followup notes.
-  function cells() {
+  function readCells() {
     const m = DOC.mission, la = m.analog[m.analog.length - 1], lp = m.pump[m.pump.length - 1], f = DOC.followups;
     const why = m.error || 'no rows in the export';
     const out = [{ id: 'water', label: 'Water', state: 'unknown', val: html`<b>—</b> not read`, small: 'no live reader: the export holds daily rows, not the pump now' }];
@@ -45,8 +45,10 @@
     return out;
   }
   function lamps() {
-    const clock = html`<li><button class="cell clock" type="button" id="refresh"><span class="lbl"><span><span class="live" aria-hidden="true"></span> Observed</span> <kbd>r</kbd></span><span class="val"><span class="ph"><b>${DOC ? DOC.read.slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span><small>refresh</small></span></button></li>`;
-    put($('annunciator'), html`${CELLS.map(c => html`<li><button class="cell" type="button" data-cell="${c.id}" data-state="${c.state}"${c.open ? html` data-open="${c.open}"` : ''}><span class="lbl">${c.label} <span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${GLYPH[c.state]}</span></span><span class="val"><span class="ph">${c.val}</span><small>${c.small}</small></span></button></li>`)}${clock}`);
+    const clock = { button: true, cls: 'clock', attrs: html` id="refresh"`, label: html`<span><span class="live" aria-hidden="true"></span> Observed</span>`, mark: html`<kbd>r</kbd>`,
+      val: html`<span class="ph"><b>${DOC ? DOC.read.slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span>`, small: 'refresh' };
+    put($('annunciator'), cells([...CELLS.map(c => ({ button: true, state: c.state, attrs: html` data-cell="${c.id}"${c.open ? html` data-open="${c.open}"` : ''}`,
+      label: c.label, mark: html`<span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${GLYPH[c.state]}</span>`, val: html`<span class="ph">${c.val}</span>`, small: c.small })), clock]));
   }
   function attention() {
     const lit = CELLS.filter(c => c.state === 'warning' || c.state === 'caution').sort((a, b) => RANK[b.state] - RANK[a.state]);
@@ -248,7 +250,7 @@
       OB = doc.followups.rows;
       AL = M.alarms.slice().reverse().map((a, i) => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime}:${i}`, st, why }; });
       P = project(); if (!P) { zoom = 1; center = null; }
-      CELLS = cells(); attention();
+      CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
       const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, doc.followups.error && `Followups: ${doc.followups.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
