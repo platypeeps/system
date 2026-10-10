@@ -150,8 +150,11 @@ Blocked entries show for three days; older ones drop off.
 Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names; set `sd.lane_root` where builders write them.
 Up, down, top, hold, release and cancel run `sd-ship lane move|hold|release|cancel` and nothing else.
 Cancel asks first: no verb takes it back, so the entry must be enqueued again from its worktree.
+A blocked row offers Retry, `sd-ship lane retry <item>`: its last entry is queued again at the same head with the body the lane kept.
+On a repository whose `runner_merge` is manual it also offers Approve, `lane retry <item> --manual`, which asks first: it grants the merge.
+Both stay hidden until `sd-ship lane retry --help` answers, so a pack without the verb (before sd:3254) shows neither.
 The page sends the lane's revision; a queue that changed since the read is refused, and the page reads it again.
-Move, hold and release pass it as `--expected-revision`, so the verb checks it again under the queue's lock; cancel takes no revision, so its check is best effort.
+Move, hold and release pass it as `--expected-revision`, so the verb checks it again under the queue's lock; cancel and retry take no revision, so their check is best effort.
 The runner reads the queue at each item boundary, so an edit never changes a merge in progress.
 
 **Protection** at `/protection` is one table, one row per registered repository:
@@ -284,7 +287,7 @@ change workflow rows. The browser supplies its signed, expiring HttpOnly
 SameSite=Strict session cookie and matching CSRF token, plus an exact same
 Origin. Invalid input, stale revisions, unknown actions and untrusted hosts
 are refused. No command or arbitrary file path is accepted by these routes.
-`/api/queue/move` accepts a repository only when it is registered, and an action from a fixed list of six.
+`/api/queue/move` accepts a repository only when it is registered, and an action from a fixed list of eight.
 `POST /api/notes/quick/add` writes outside the database: it runs `sd store add
 sdw.quick-note` from the service's PATH as an argv list, once the text passes
 the Notes rules in `notes_screen.quick_text` (sd:2549).

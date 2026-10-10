@@ -2,8 +2,9 @@
 
 What this slice promises: `/api/queue` draws each registered repository's lane from `sd-ship lane list`, one row per
 item in one of five states (merging, next, building, blocked, landed), with load5 and the gate slots in the header.
-The only write is `/api/queue/move`: it runs `sd-ship lane move|hold|release|cancel` with exactly the page's item and place,
-under the session cookie, CSRF and Origin checks, and refuses a revision the queue has moved past.
+The only write is `/api/queue/move`: it runs `sd-ship lane move|hold|release|cancel|retry` with exactly the page's item and
+place, under the session cookie, CSRF and Origin checks, and refuses a revision the queue has moved past. Retry and Approve
+(`retry --manual`) show on blocked rows only when `sd-ship lane retry --help` answers (sd:3012); Approve only on a manual repo.
 
 `sd-ship` and `sd` are stubs on PATH that answer from a fixture and log their arguments; no test reaches a real lane.
 One test runs the pinned pack's own `sd-ship` on a queue under a temporary `SD_LANE_ROOT`, so the order the page asks
@@ -25,6 +26,7 @@ from pathlib import Path
 from unittest import mock
 
 from sd_dashboard import queue_screen, v2
+from sd_db import upsert_repo
 
 from support import NOW, ScreenCase
 from test_v2_read import READ_SHELL
@@ -43,6 +45,7 @@ STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "$QUEUE_LOG"
 case "$*" in
   *"lane list") cat "$QUEUE_FIXTURE" ;;
+  "lane retry --help") if [ -n "$QUEUE_NO_RETRY" ]; then echo "invalid choice: 'retry'" >&2; exit 2; fi; echo usage ;;
   "gate status --json") printf '{"slots": 4, "holders": [{"slot": 1}], "waiters": [], "load": [1, 2, 3]}\\n' ;;
   *) if [ -n "$QUEUE_REFUSE" ]; then printf '{"ok": false, "error": "%s", "code": "%s"}\\n' "$QUEUE_REFUSE" "$QUEUE_CODE"; exit 3; fi
      printf '{"ok": true}\\n' ;;
@@ -175,6 +178,16 @@ class TheRows(Lane, ScreenCase):
         self.assertEqual((failed["status"], failed["step"], failed["reason"]),
                          ("failed", "merge", "merge refused: required check pending"))
 
+    def test_a_pack_with_lane_retry_offers_it_and_names_the_repos_merge_setting(self):
+        doc = self.doc()
+        self.assertEqual((doc["retry"], doc["lanes"][0]["runner_merge"]), (True, "manual"))
+        self.assertIn(["lane", "retry", "--help"], self.calls())
+
+    def test_a_pack_without_lane_retry_hides_it(self):
+        # Before the pack carries sd:3254 its argparse refuses `retry`; the page offers neither button.
+        with mock.patch.dict(os.environ, {"QUEUE_NO_RETRY": "1"}):
+            self.assertIs(self.doc()["retry"], False)
+
     def test_a_lane_that_cannot_be_listed_is_named_not_dropped(self):
         self.fixture.write_text("not json")
         doc = self.doc()
@@ -219,6 +232,29 @@ class TheMove(Lane, BrowserSession):
         with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:9 has no pending entry in this lane"}):
             status, _, answer = self.move("cancel", item=9)
         self.assertEqual((status, answer["error"]), (400, "sd:9 has no pending entry in this lane"))
+
+    def test_retry_calls_exactly_lane_retry_with_the_item(self):
+        status, _, answer = self.move("retry", item=4)
+        self.assertEqual((status, answer["ok"], answer["action"]), (200, True, "retry"))
+        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"],
+                                        ["-C", str(self.checkout), "lane", "retry", "4"]])
+
+    def test_approve_calls_lane_retry_with_manual(self):
+        status, _, answer = self.move("approve", item=5)
+        self.assertEqual((status, answer["ok"], answer["action"]), (200, True, "approve"))
+        self.assertEqual(self.calls()[-1], ["-C", str(self.checkout), "lane", "retry", "5", "--manual"])
+
+    def test_approve_on_an_auto_repo_runs_nothing(self):
+        # runner_merge=auto needs no grant; the page offers no Approve there, and a stale page is refused too.
+        upsert_repo(self.connection, str(self.checkout), runner_merge="auto")
+        self.connection.commit()
+        status, _, _ = self.move("approve", item=5)
+        self.assertEqual((status, self.calls()), (400, []))
+
+    def test_a_refused_retry_is_the_answer(self):
+        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:4's last entry kept no body copy"}):
+            status, _, answer = self.move("retry", item=4)
+        self.assertEqual((status, answer["error"]), (400, "sd:4's last entry kept no body copy"))
 
     def test_a_post_without_the_csrf_token_runs_nothing(self):
         status, _, _ = self.move(**{"X-SD-CSRF": "0" * 64})
@@ -361,7 +397,6 @@ class TheScript(Lane, ScreenCase):
                             move=(409, {"error": "The queue changed since the page read it.", "reload": True}))
         self.assertIn('<p class="fail" role="alert">sd:9 not moved up: The queue changed since the page read it.</p>', out["R"]["lanes"])
 
-
     def cancel(self, answer, move=(200, {"ok": True, "action": "cancel", "item": 9, "edits": "Edits take effect at the next item boundary."})):
         """Click Cancel on sd:9; the confirm answers `answer` and records what it asked."""
         return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
@@ -388,6 +423,47 @@ class TheScript(Lane, ScreenCase):
         out = self.cancel(True, move=(400, {"error": "sd:9 has no pending entry in this lane"}))
         self.assertIn('<p class="fail" role="alert">sd:9 not cancelled: sd:9 has no pending entry in this lane The queue is unchanged.</p>',
                       out["R"]["lanes"])
+
+
+    def test_blocked_rows_offer_retry_and_approve_on_a_manual_repo(self):
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertEqual(re.findall(r'data-act="retry" data-item="(\d+)"', lanes), ["5", "4"])
+        self.assertEqual(re.findall(r'data-act="approve" data-item="(\d+)"', lanes), ["5", "4"])
+        offered = [row for row in lanes.split("<li ")[1:] if 'data-act="retry"' in row]
+        self.assertEqual([re.search(r'data-state="(\w+)"', row)[1] for row in offered], ["blocked", "blocked"])
+
+    def test_an_auto_repo_gets_retry_without_approve(self):
+        upsert_repo(self.connection, str(self.checkout), runner_merge="auto")
+        self.connection.commit()
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertEqual((lanes.count('data-act="retry"'), lanes.count('data-act="approve"')), (2, 0))
+
+    def test_a_pack_without_lane_retry_shows_neither_button(self):
+        with mock.patch.dict(os.environ, {"QUEUE_NO_RETRY": "1"}):
+            lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertEqual((lanes.count('data-act="retry"'), lanes.count('data-act="approve"')), (0, 0))
+
+    def click(self, act, item, answer=True, move=(200, {"ok": True, "edits": "Edits take effect at the next item boundary."})):
+        """Click a blocked row's button; a confirm answers `answer` and records what it asked."""
+        return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
+                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '{item}', act: '{act}' }} }}); R.lanes = ELS.lanes.html;", move)
+
+    def test_retry_posts_at_once_and_says_the_entry_is_queued_again(self):
+        out = self.click("retry", 4)
+        self.assertNotIn("asked", out)
+        self.assertEqual(out["posts"][0][1]["action"], "retry")
+        self.assertIn("sd:4 queued again.", out["R"]["lanes"])
+
+    def test_approve_asks_first_and_names_the_entry_and_command(self):
+        out = self.click("approve", 5)
+        self.assertIn("sd:5", out["asked"]["title"])
+        self.assertEqual(out["asked"]["cli"], f"sd-ship -C '{self.checkout}' lane retry 5 --manual")
+        self.assertEqual(out["posts"][0][1]["action"], "approve")
+        self.assertIn("sd:5 approved and queued again.", out["R"]["lanes"])
+
+    def test_approve_kept_at_the_confirm_posts_nothing(self):
+        out = self.click("approve", 5, answer=False)
+        self.assertEqual((out["posts"], out["gets"]), ([], ["/api/queue"]))
 
 
 class TheRegistration(Registers, unittest.TestCase):

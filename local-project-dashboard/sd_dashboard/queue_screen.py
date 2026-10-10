@@ -14,11 +14,16 @@ The five states, from each entry's `status`:
             with the first line of its reason.
   landed    `merged` today, in this machine's zone, with the merge commit and the pull request its subject names.
 
-Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel`, the queue's only writers. It compares the
+Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel|retry`, the queue's only writers. It compares the
 page's revision (a digest of the pending order and holds, the one `lane list` prints) with a fresh `lane list` first
 and refuses a stale one. `move`, `hold` and `release` also take it as `--expected-revision` and check it again under
-the queue's lock, so a write that lands between the two checks is refused too. `cancel` takes no revision, so its
-check stays best effort. The runner reads the queue again at each item boundary, so an edit takes effect there.
+the queue's lock, so a write that lands between the two checks is refused too. `cancel` and `retry` take no revision,
+so their check stays best effort. The runner reads the queue again at each item boundary, so an edit takes effect there.
+
+Retry and Approve act on a blocked row (sd:3012): `lane retry <item>` queues its last entry again at the same head with
+the body copy the lane kept (pack sd:3254); Approve adds `--manual`, the merge grant, so only a repo whose
+`runner_merge` is manual takes it. The page offers both only when `sd-ship lane retry --help` exits 0: an older pack
+has no such verb.
 """
 
 from __future__ import annotations
@@ -38,8 +43,9 @@ WRITE_SECONDS = 30
 GIT_SECONDS = 5
 BUILDING_HOURS = 6
 BLOCKED_DAYS = 3
-#: What the page sends as `action`: `move`'s relative places, the two hold verbs, and cancel.
-ACTIONS = ("up", "down", "top", "hold", "release", "cancel")
+#: What the page sends as `action`: `move`'s relative places, the two hold verbs, cancel, and a blocked row's retry and
+#: approve (`retry --manual`).
+ACTIONS = ("up", "down", "top", "hold", "release", "cancel", "retry", "approve")
 #: Who acts on a blocked entry, by its status and failed step.
 WHO = {("prepared", None): "operator", ("skipped", None): "builder", ("failed", "prepare"): "builder",
        ("failed", "merge"): "lane", ("failed", None): "lane"}
@@ -77,6 +83,16 @@ def _run(argv: list[str], seconds: int) -> dict:
 
 def lane_list(path: str) -> dict:
     return _run([command("sd-ship"), "-C", path, "lane", "list"], LIST_SECONDS)
+
+
+def has_retry() -> bool:
+    """Whether the installed pack has `lane retry` (sd:3254); a probe that fails to run counts as no."""
+    try:
+        done = subprocess.run([command("sd-ship"), "lane", "retry", "--help"], capture_output=True, text=True,
+                              timeout=LIST_SECONDS, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
 
 
 def revision(entries: list[dict]) -> str:
@@ -190,7 +206,8 @@ def document(connection, *, now: str = "") -> dict:
     from sd_db import repos
 
     clock = _when(now) or time.time()
-    paths = [os.path.expanduser(row["path"]) for row in repos.registered(connection)]
+    merge = {os.path.expanduser(row["path"]): row["runner_merge"] for row in repos.registered(connection)}
+    paths = list(merge)
     lanes, problems, root = [], [], None
     for path in paths:
         if not os.path.isdir(path):
@@ -207,10 +224,10 @@ def document(connection, *, now: str = "") -> dict:
             continue
         entries = answer.get("entries") or []
         lanes.append({"repo": Path(path).name, "path": path, "lane": str(lane), "revision": revision(entries),
-                      "rows": rows(entries, path=path, lane=lane, now=clock)})
+                      "runner_merge": merge[path], "rows": rows(entries, path=path, lane=lane, now=clock)})
     return {"read": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock)), "load": _load(), "gates": _gates(),
             "lanes": lanes, "problems": problems, "root": str(root) if root else None, "edits": EDITS,
-            "registered": len(paths)}
+            "registered": len(paths), "retry": has_retry() if lanes else False}
 
 
 def move(payload: dict):
@@ -219,23 +236,27 @@ def move(payload: dict):
     if (set(values) != {"repo", "item", "action", "revision"} or not isinstance(values["repo"], str)
             or type(values["item"]) is not int or not 1 <= values["item"] <= 9223372036854775807
             or values["action"] not in ACTIONS or not isinstance(values["revision"], str)):
-        raise ValueError("Name the repository, the item, one of up, down, top, hold, release or cancel, and the lane's revision.")
+        raise ValueError("Name the repository, the item, one of up, down, top, hold, release, cancel, retry or approve, "
+                         "and the lane's revision.")
 
     def write(connection):
         from sd_db import repos, workflow
 
-        path = next((os.path.expanduser(row["path"]) for row in repos.registered(connection)
-                     if os.path.expanduser(row["path"]) == values["repo"]), None)
-        if path is None:
+        row = next((row for row in repos.registered(connection) if os.path.expanduser(row["path"]) == values["repo"]), None)
+        if row is None:
             raise ValueError("That repository is not registered.")
+        path = os.path.expanduser(row["path"])
+        if values["action"] == "approve" and row["runner_merge"] != "manual":
+            raise ValueError("Approve grants the merge on a repository whose runner_merge is manual; this one needs no grant.")
         listed = lane_list(path)
         if not listed.get("ok"):
             raise ValueError(f"The lane was not read: {listed.get('error')}")
         if revision(listed.get("entries") or []) != values["revision"]:
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         item, action = str(values["item"]), values["action"]
-        verb = ["move", item, action] if action in ("up", "down", "top") else [action, item]
-        if action != "cancel":
+        verb = (["move", item, action] if action in ("up", "down", "top") else ["retry", item] if action == "retry"
+                else ["retry", item, "--manual"] if action == "approve" else [action, item])
+        if action in ("up", "down", "top", "hold", "release"):
             verb += ["--expected-revision", values["revision"]]
         answer = _run([command("sd-ship"), "-C", path, "lane", *verb], WRITE_SECONDS)
         if answer.get("code") == "stale_revision":
