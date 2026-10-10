@@ -1,0 +1,39 @@
+-- Drop `repo.status_source` (sd:3231).
+--
+-- The pack reads every `docs/work` item's status from its row (sd:3015), so
+-- nothing reads who owns it. The `retire` verb that switched the column went
+-- with it. 001 stays as applied; this file undoes its column.
+-- `pieces_source` stays: the writing pieces keep their own owner.
+--
+-- `DROP COLUMN` in place, as 025 drops `satellite_gate`: SQLite rewrites
+-- `repo` only, and every row keeps its other values. The column has no index,
+-- view or trigger, which would make SQLite refuse the drop.
+-- The reverse, run by hand with the runner, the dashboard and the serve agent
+-- stopped. Every row reads `row`, the owner the rows have been since sd:3015;
+-- a `file` or `retiring` value is not restored. It rebuilds `repo` rather than
+-- adding the column at the end, so the column sits where 001 put it and a
+-- backup restore compares the table to 25's shape. Foreign keys are off for
+-- the rebuild, as `DROP TABLE repo` would check them.
+--
+--   PRAGMA foreign_keys = OFF;
+--   BEGIN;
+--   CREATE TABLE repo_at_25 (
+--       path TEXT PRIMARY KEY, remote TEXT, mode TEXT,
+--       runner_merge TEXT NOT NULL DEFAULT 'manual' CHECK (runner_merge IN ('manual', 'auto')),
+--       status_source TEXT NOT NULL DEFAULT 'file' CHECK (status_source IN ('file', 'retiring', 'row')),
+--       pieces_source TEXT NOT NULL DEFAULT 'file' CHECK (pieces_source IN ('file', 'retiring', 'row')),
+--       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+--       managed INTEGER NOT NULL DEFAULT 0 CHECK (managed IN (0, 1)),
+--       ci TEXT NOT NULL DEFAULT 'github' CHECK (ci IN ('github', 'local')),
+--       lane_host TEXT CHECK (lane_host IS NULL OR (lane_host <> '' AND lane_host NOT GLOB '*[^a-z0-9-]*')));
+--   INSERT INTO repo_at_25 (path, remote, mode, runner_merge, status_source, pieces_source,
+--                           created_at, updated_at, managed, ci, lane_host)
+--       SELECT path, remote, mode, runner_merge, 'row', pieces_source,
+--              created_at, updated_at, managed, ci, lane_host FROM repo;
+--   DROP TABLE repo;
+--   ALTER TABLE repo_at_25 RENAME TO repo;
+--   PRAGMA user_version = 25;
+--   COMMIT;
+--   PRAGMA foreign_keys = ON;
+
+ALTER TABLE repo DROP COLUMN status_source;

@@ -17,10 +17,8 @@ A **row** in the shared `sd` database holds the status. The dashboard, the
 runner and every session on this machine read that row without a network call.
 
 The trap is that writing the folder does not create the row. Nothing creates
-it for you. The importer that once did now names each retired repository,
-exits 0 and creates nothing — and every repository is retired. So a folder
-written today has no row and no readable status until you run, from the
-repository root:
+it for you. So a folder written today has no row and no readable status
+until you run, from the repository root:
 
 ```sh
 ./local-sd-db/sd-db.sh work register docs/work/<item>/prd.md

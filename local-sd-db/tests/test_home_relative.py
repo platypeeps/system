@@ -58,7 +58,7 @@ COLUMNS = {
     "provider": {"none": "name enabled reason author_rank reviewer_rank"},
     "publication_claim": {"history": "payload",
                           "none": "id item active_item state created_at updated_at"},
-    "repo": {"key": "path", "none": "remote mode runner_merge managed ci lane_host status_source pieces_source created_at updated_at"},
+    "repo": {"key": "path", "none": "remote mode runner_merge managed ci lane_host pieces_source created_at updated_at"},
     "repo_protection": {"key": "repo", "history": "body reason",
                         "none": "observed_at status default_branch"},
     "request_outcome": {"none": "id committed_at"},
@@ -238,11 +238,13 @@ class TheMigration(AThirteenStore):
         connection = sqlite3.connect(self.database, isolation_level=None)
         paths.install(connection)
         connection.execute("PRAGMA foreign_keys = ON")
-        # 025 to 015 came after 014 and are reversed first, newest first:
+        # 026 to 015 came after 014 and are reversed first, newest first:
         # 014's reverse is written against the table at 14, without
         # `repo.managed`, `repo.ci`, `repo.satellite_gate`, `repo.lane_host`, 021's to 023's
-        # `judgment` columns or `runner_run.detached_from`. 025's reverse puts
-        # `satellite_gate` back so 020's can drop it.
+        # `judgment` columns or `runner_run.detached_from`. 026's reverse puts
+        # `status_source` back at `row`, which every row here held, and 025's
+        # puts `satellite_gate` back so 020's can drop it.
+        connection.executescript(reverse_script("026_repo_drop_status_source.sql"))
         connection.executescript(reverse_script("025_repo_drop_satellite_gate.sql"))
         connection.executescript(reverse_script("024_repo_lane_host.sql"))
         connection.executescript(reverse_script("023_judgment_error.sql"))
@@ -262,8 +264,10 @@ class TheMigration(AThirteenStore):
 
     def test_a_replay_changes_nothing(self):
         migrate(self.database)
-        migrated = rows(self.database)
         connection = sqlite3.connect(self.database)
+        # 014 names `repo.status_source`, which 026 drops, so the replay runs at 25.
+        connection.executescript(reverse_script("026_repo_drop_status_source.sql"))
+        migrated = rows(self.database)
         paths.install(connection)
         with connection:
             connection.executescript(
@@ -425,7 +429,6 @@ class TwoHomes(HomeCase):
         connection = connect(database, home=self.home)
         with connection:
             repos.add(connection, checkout, home=self.home)
-            connection.execute("UPDATE repo SET status_source = 'row'")
         self.registered = workflow.register_work_item(
             connection, repo=str(checkout), path="docs/work/2026-09-24-an-item/prd.md",
             title="an item", created_at="2026-09-24", who="fixture")
@@ -482,13 +485,12 @@ class TwoHomes(HomeCase):
 #: key, so equality is right for them. A lookup whose argument comes from a
 #: caller must probe `paths.keys` with `IN (...)` instead.
 EQUALITY_LOOKUPS = {
-    "progress.py": (6, "stored row values; `item.path` is repo-relative; `shadow.repo` is a slug"),
-    "recovery.py": (2, "`_work` and `_pieces` take the row path `reimport` found with `row_for`"),
+    "progress.py": (5, "stored row values; `item.path` is repo-relative; `shadow.repo` is a slug"),
+    "recovery.py": (1, "`_pieces` takes the row path `reimport` found with `row_for`"),
     "removal.py": (7, "`_plan_repo` rebinds `path` to the row `row_for` found; `_detach` reads it off the plan"),
     "runner.py": (6, "every argument is an item or run row's `repo`"),
     "runner_exec.py": (1, "the item row's `repo`"),
     "ship.py": (1, "the item row's `repo`"),
-    "workflow.py": (3, "the item row's `repo`"),
     "writes.py": (1, "`upsert_repo`, whose guard refuses an unconverted path"),
 }
 

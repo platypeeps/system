@@ -1,27 +1,13 @@
-"""The five migrations, and the fixed order they run in.
+"""The migrations, and the fixed order they run in.
 
-Requirement 2 fills the database from five sources. Each is one command, one
-source, idempotent, reporting counts, in the order **freeze, import, verify,
-retire**. This package holds all four now. It held the first three until the
-`docs/work` retire landed, and the other four sources still have no retire
-step of their own -- which is criterion 23's rule rather than a shortcut: the
-retire step of a source runs in a pull request *after* the one that lands its
-writer, so that the window in which the source is frozen is minutes rather
-than a slice.
+Requirement 2 filled the database from five sources. Four remain; the
+`docs/work` importer and its retire are gone, since every item's status
+lives in its row (sd:3231). Each is one command, one source, idempotent,
+reporting counts, in the order **freeze, import, verify**.
 
     frozen = source.freeze()           # read the source once, at one moment
     counts = land(connection, source, frozen)
     differences = verify(connection, source, frozen)
-    retired = source.retire(connection, frozen)   # once, and never again
-
-**The retire is a sitting, not a fourth line in a script.** `retire()` below
-runs freeze, import and verify once more, refuses on anything they find,
-takes a snapshot, and only then lets the source stop being the source. The
-refusals come first because a refusal that has already written something is
-not a refusal; the snapshot comes before the one irreversible step; and the
-row is switched before the commit, because a source whose lines are gone
-while the rows still say `file` is a source nobody can read, where the other
-order leaves only a line that is stale.
 
 **The freeze is a refusal, not a row.** A sitting freezes its source by
 refusing to run while anything is still writing it -- an uncommitted `prd.md`,
@@ -30,8 +16,7 @@ returning, leaving the source exactly as it found it. There is no `freeze`
 kind in `state` because there is nothing to remember: a process that died
 mid-sitting left a source that was never modified. What *is* remembered is
 the verify, as a `verified` row carrying the source, the repository and the
-content hash it found equal, which is what a later retire is allowed to
-trust. A verify that finds a difference writes no such row, which is exactly
+content hash it found equal. A verify that finds a difference writes no such row, which is exactly
 how "a seeded verify difference lifts the freeze with the source unchanged"
 reads from the database afterwards.
 
@@ -52,7 +37,6 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Protocol
 
 from ..errors import SdDbError
@@ -181,12 +165,12 @@ class Difference:
 
 
 class Source(Protocol):
-    """What a migration is. Five of these, and no base class between them.
+    """What a migration is. Four of these, and no base class between them.
 
     The sources share this shape and nothing else: one reads SQLite, one
-    reads git trees, one reads a markdown register, one reads a vault, one
-    reads GitHub. A base class would have to abstract over that and would buy
-    nothing, since the contract is three methods and an optional fourth.
+    reads a markdown register, one reads a vault, one reads GitHub. A base
+    class would have to abstract over that and would buy nothing, since the
+    contract is three methods.
     """
 
     name: str
@@ -200,15 +184,6 @@ class Source(Protocol):
     def rows(self, connection: sqlite3.Connection) -> dict[str, Record]:
         """What the database holds, in the source's own shape, for the verify."""
 
-    def retire(self, connection: sqlite3.Connection, frozen: Frozen) -> "Retired":
-        """Stop being the source. Once, in one commit, after the verify.
-
-        Optional, and deliberately so: four of the five sources have no
-        retire step built yet, and `retire()` below asks whether a source
-        carries this method rather than assuming every source does. A
-        `Protocol` with a body is not enforcement -- the enumeration in
-        `retire()` is.
-        """
 
 
 def land(connection: sqlite3.Connection, source: Source, frozen: Frozen) -> Counts:
@@ -257,9 +232,7 @@ class Sitting:
     frozen_hash: str
     verified: int | None
     notes: list[str] = field(default_factory=list)
-    #: What the freeze read, kept so a retire does not freeze the source a
-    #: second time. Two freezes are two moments, and the second one would be
-    #: reading a source the first one has already been trusted about.
+    #: What the freeze read, kept for the caller that reports on it.
     frozen: Frozen | None = None
 
     @property
@@ -287,14 +260,11 @@ class Sitting:
 
 
 def run(connection: sqlite3.Connection, source: Source) -> Sitting:
-    """Freeze, import, verify. Retires nothing; `retire()` below is that step.
+    """Freeze, import, verify.
 
     A verify difference writes no `verified` row, which is what lifts the
-    freeze: `retire()` reads that row and refuses without one carrying this
-    run's frozen hash. Nothing about the source is touched either way -- a
-    source stays authoritative and stays written by whatever writes it today
-    until its own retire lands, which for four of the five is still every
-    time this runs.
+    freeze. Nothing about the source is touched either way: a source stays
+    authoritative and stays written by whatever writes it today.
     """
     frozen = source.freeze()
     counts = land(connection, source, frozen)
@@ -320,202 +290,4 @@ def run(connection: sqlite3.Connection, source: Source) -> Sitting:
         verified=verified,
         notes=list(frozen.notes),
         frozen=frozen,
-    )
-
-
-# ----------------------------------------------------------------- the retire
-
-
-@dataclass
-class Retired:
-    """What one source's own retire step did to the source itself.
-
-    `removed` and `kept` are counted separately and both are reported. The
-    archive is not an oversight the retire missed: an archived item's line is
-    a record of what its status *was*, and a retire that swept the whole tree
-    would rewrite history to say the database knows a status for an item
-    nobody will ever ask about again.
-    """
-
-    removed: int = 0
-    kept: int = 0
-    commits: dict[str, str] = field(default_factory=dict)
-    switched: list[str] = field(default_factory=list)
-    already: list[str] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)
-
-
-@dataclass
-class Retirement:
-    """One retire sitting, end to end, and what each phase did."""
-
-    source: str
-    pack: str
-    sitting: Sitting | None
-    snapshot: Path | None
-    retired: Retired
-
-    def report(self) -> list[str]:
-        lines = [f"{self.source}: retiring under pack {self.pack}"]
-        if self.sitting is not None:
-            lines.extend(self.sitting.report())
-        if self.snapshot is not None:
-            lines.append(f"{self.source}: snapshot at {self.snapshot}")
-        lines.extend(self.retired.notes)
-        for path in self.retired.switched:
-            lines.append(f"{self.source}: {path} now reads status from the row")
-        for path, commit in sorted(self.retired.commits.items()):
-            lines.append(f"{self.source}: {path} retired in {commit[:12]}")
-        for path in self.retired.already:
-            lines.append(f"{self.source}: {path} was already retired; left alone")
-        lines.append(
-            f"{self.source}: {self.retired.removed} line(s) removed, "
-            f"{self.retired.kept} archived line(s) kept"
-        )
-        return lines
-
-
-def verified_for(
-    connection: sqlite3.Connection, source: str, frozen_hash: str
-) -> int | None:
-    """The `verified` row that agrees with this hash, newest first, or `None`.
-
-    Read back from the table rather than taken from the `Sitting` the caller
-    is holding, because the row is the thing the retire is allowed to trust
-    and an object in memory is not it. The body is JSON written by
-    `record_state`; a row whose body will not parse is not a row that agrees.
-    """
-    for row in connection.execute(
-        "SELECT id, body FROM state WHERE kind = 'verified' AND key = ? "
-        "ORDER BY id DESC",
-        (source,),
-    ):
-        try:
-            body = json.loads(row["body"] or "{}")
-        except ValueError:
-            continue
-        if isinstance(body, dict) and body.get("hash") == frozen_hash:
-            return int(row["id"])
-    return None
-
-
-def retire(
-    connection: sqlite3.Connection,
-    source: Source,
-    *,
-    token: str,
-    home,
-    environ: dict[str, str] | None = None,
-    snapshot: bool = True,
-) -> Retirement:
-    """One sitting: refuse, import, verify, snapshot, switch the row, commit.
-
-    The order is the whole design, and every step of it was put there by a
-    way this can go wrong.
-
-    1. **The pack first.** The retire hands a question to the database, and
-       every reader of that question has to be able to ask the new way before
-       the old way stops existing. Checked before anything is read, so the
-       refusal costs nothing and leaves nothing behind.
-    2. **A source with no retire step stops here**, which is four of the five
-       and says so rather than failing on a missing attribute. A source that
-       has already been retired stops here too, and reports it: a sitting run
-       twice answers "there was nothing left" rather than freezing an empty
-       source and calling every row that exists a difference.
-    3. **A `verified` row must already exist for this source.** A source that
-       has never once agreed with the rows is a source nobody has imported;
-       this refusal comes before the import so that the operator is told to
-       run the import rather than having one run silently underneath them.
-    4. **Freeze, import, verify once more.** The freeze refuses on an
-       uncommitted file, naming it. The import carries a line the old command
-       moved since the last sitting into the row, which is the entire reason
-       the sitting imports again rather than trusting yesterday's rows.
-    5. **A `verified` row written by *this* sitting for the hash it just
-       froze.** A difference the import could not settle writes no such row,
-       and the retire stops. The lines are all still in place at that point,
-       which is what "a verify difference lifts the freeze" means from the
-       source's side. It has to be this sitting's row and not merely a
-       matching one: a source that has not changed since yesterday has
-       yesterday's row with today's hash on it, and the rows may have drifted
-       in between.
-    6. **The snapshot**, through the ordinary backup path, so the thing that
-       proves it is the same thing that proves every other backup. It is the
-       last step before the only irreversible one.
-    7. **The source's own retire**, which switches the row and then commits.
-
-    Steps 1 to 5 leave the source untouched. Steps 1 to 4's freeze also
-    leave the rows untouched; step 5's refusal comes after an import, so the
-    rows then hold what the source says, which is where an import always
-    leaves them and is the state the next sitting starts from anyway.
-    """
-    # Imported here and not at the top: `sd_db/__init__` imports `backup`
-    # before `sources`, and a module-level import of it from this side is a
-    # cycle. `pack` follows it down for no reason but to sit beside it. The
-    # name is reached through the module and not through the package, because
-    # `sd_db.backup` the attribute is `backup.run` re-exported.
-    from ..backup import run as take_snapshot
-    from ..pack import installed
-
-    found = installed(home=home, environ=environ)
-    if not found.usable:
-        raise MigrationRefused(found.refusal())
-
-    if not hasattr(source, "retire"):
-        raise MigrationRefused(
-            f"{source.name} has no retire step built; it stays authoritative "
-            f"and stays written by whatever writes it today"
-        )
-
-    # A source that knows part of what it reads is already retired hands back
-    # a reader narrowed to the rest; one that does not is read whole. Asked
-    # of the source rather than switched on its name, so this function holds
-    # no list of sources to keep in step with anything.
-    narrow = getattr(source, "for_retire", None)
-    if narrow is not None:
-        source = narrow()
-    nothing_left = getattr(source, "nothing_left", None)
-    if nothing_left is not None and nothing_left():
-        return Retirement(
-            source=source.name,
-            pack=found.version,
-            sitting=None,
-            snapshot=None,
-            retired=source.retire(connection, None),
-        )
-
-    if not list(
-        connection.execute(
-            "SELECT id FROM state WHERE kind = 'verified' AND key = ? LIMIT 1",
-            (source.name,),
-        )
-    ):
-        raise MigrationRefused(
-            f"{source.name} has never been verified against the rows, so there "
-            f"is no `verified` row to trust; run `sd-db.sh import "
-            f"{token}` and read what it says before retiring anything"
-        )
-
-    sitting = run(connection, source)
-    # The row this sitting's own verify wrote, read back from the table
-    # rather than taken from the object in hand -- and it must be *this*
-    # sitting's. An earlier sitting's row can carry the same hash while the
-    # rows have drifted since, and a gate that accepted it would retire the
-    # source on the strength of a verify that ran yesterday.
-    if sitting.verified is None or (
-        verified_for(connection, source.name, sitting.frozen_hash) != sitting.verified
-    ):
-        raise MigrationRefused(
-            f"{source.name}: this sitting wrote no `verified` row for source "
-            f"hash {sitting.frozen_hash[:12]}, so the rows and the source do "
-            f"not agree and nothing may be retired. "
-            + "; ".join(str(one) for one in sitting.differences)
-        )
-
-    taken = take_snapshot(home=home).directory if snapshot else None
-    return Retirement(
-        source=source.name,
-        pack=found.version,
-        sitting=sitting,
-        snapshot=taken,
-        retired=source.retire(connection, sitting.frozen),
     )

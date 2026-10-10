@@ -100,16 +100,12 @@ class TheDocuments(ScreenCase):
         self.assertNotEqual(next(r for r in tasks_screen.document(self.connection, now=NOW)["rows"] if r["id"] == ask)["revision"], old)
 
     def test_each_row_says_whether_edit_item_takes_its_fields_and_why_not(self):
-        # The seeded work row's repository keeps the schema default, status_source `file`, so edit_item refuses it; a work
-        # row in a repository the database owns is editable. Each row's `edit` is checked against edit_item itself
-        # (review, PR #46).
-        owned = self.repo("/repos/owned")
-        upsert_repo(self.connection, owned, status_source="row")
-        mine = self.item("Owned work", kind="work", repo=owned, path="docs/work/mine/prd.md")
+        # The row owns every work item's fields (sd:3015), so the seeded work row is editable; a report keeps its own
+        # editing workflow. Each row's `edit` is checked against edit_item itself (review, PR #46).
+        report = self.item("Look at the failed run", kind="report", fields={"attention": True})
         rows = {row["id"]: row for row in tasks_screen.document(self.connection, now=NOW)["rows"]}
-        self.assertEqual(rows[self.ids["port"]]["edit"],
-                         {"allowed": False, "reason": "work metadata belongs to its file owner until database cutover completes"})
-        self.assertEqual(rows[mine]["edit"], {"allowed": True, "reason": None})
+        self.assertEqual(rows[self.ids["port"]]["edit"], {"allowed": True, "reason": None})
+        self.assertEqual(rows[report]["edit"], {"allowed": False, "reason": "report items use their own editing workflow"})
         for item, row in rows.items():
             try:
                 workflow.edit_item(self.connection, item, {}, who="test")
@@ -727,7 +723,7 @@ shellRun(cmd('note.resolve'), C.get('note:{note}')); await flush();""", answer)
     def owned_work(self):
         """A work item in a repository the database owns, with no assignment: sd work relink and cancel take it."""
         owned = self.repo("/repos/owned")
-        upsert_repo(self.connection, owned, status_source="row")
+        upsert_repo(self.connection, owned)
         mine = self.item("Owned work", kind="work", repo=owned, path="docs/work/mine/prd.md")
         self.doc = tasks_screen.document(self.connection, now=NOW)
         self.details[str(mine)] = tasks_screen.details(self.connection, mine, now=NOW)
@@ -866,11 +862,13 @@ R.cancel = cmd('asg.cancel').when(C.get('asg:{asg["id"]}'));""")
             "cancel": asg["cancel"]["reason"]})
         self.assertTrue(out["R"]["cancel"])
 
-    def test_edit_controls_are_off_for_a_work_row_its_files_own(self):
-        # The seeded work row's repository lets its files own status, so edit_item refuses every field edit: Edit, P2 and a
-        # matrix placement are off with the library's reason, and nothing is posted (review, PR #46).
-        port = self.ids["port"]
-        why = "work metadata belongs to its file owner until database cutover completes"
+    def test_edit_controls_are_off_for_a_row_edit_item_refuses(self):
+        # edit_item refuses every field edit on a report: Edit, P2 and a matrix placement are off with the library's
+        # reason, and nothing is posted (review, PR #46).
+        port = self.item("Look at the failed run", kind="report", fields={"attention": True})
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.details[str(port)] = tasks_screen.details(self.connection, port, now=NOW)
+        why = "report items use their own editing workflow"
         out = self.run_page(f"""open({port}); await flush();
 R.edit = cmd('item.edit').when(C.get('{port}')); R.p2 = cmd('item.p2').when(C.get('{port}'));
 document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); await flush();

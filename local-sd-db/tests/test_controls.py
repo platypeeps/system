@@ -67,7 +67,7 @@ class Controls(unittest.TestCase):
         self.git("add", "."); self.git("commit", "-m", "Fixture\n\nAuthored-with: codex/openai")
         self.remote = self.root / "remote.git"
         subprocess.run(["git", "clone", "--bare", str(self.repo), str(self.remote)], capture_output=True, check=True)
-        upsert_repo(self.db, str(self.repo), remote=str(self.remote), status_source="row")
+        upsert_repo(self.db, str(self.repo), remote=str(self.remote))
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True, text=True).stdout.strip()

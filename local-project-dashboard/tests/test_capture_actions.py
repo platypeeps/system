@@ -26,8 +26,8 @@ class CaptureActions(BrowserSession):
         self.assertEqual(self.snapshot(), before)
 
     def test_all_note_kinds_attach_to_selected_parent_without_creating_tasks(self):
-        upsert_repo(self.connection, "/repos/one", status_source="row")
-        upsert_repo(self.connection, "/repos/two", status_source="row")
+        upsert_repo(self.connection, "/repos/one")
+        upsert_repo(self.connection, "/repos/two")
         first = workflow.capture_task(self.connection, title="Same title", repo="/repos/one", who="operator")
         second = workflow.capture_task(self.connection, title="Same title", repo="/repos/two", who="operator")
         item = second["item"]["id"]
@@ -116,7 +116,7 @@ class FollowupItemCapture(BrowserSession):
     """
 
     def test_a_followup_item_is_filed_with_the_cli_write_and_linked_to_its_parent(self):
-        upsert_repo(self.connection, "/repos/one", status_source="row")
+        upsert_repo(self.connection, "/repos/one")
         parent = workflow.capture_task(self.connection, title="The parent", repo="/repos/one", who="operator")
         parent_id = parent["item"]["id"]
         notes = len(reads.item_notes(self.connection, parent_id))
@@ -149,8 +149,8 @@ class FollowupItemCapture(BrowserSession):
         # caller serialising an optional field filed the child with no
         # repository under a parent that had one (PR #428 review). A named
         # repository still wins over the parent's.
-        upsert_repo(self.connection, "/repos/one", status_source="row")
-        upsert_repo(self.connection, "/repos/two", status_source="row")
+        upsert_repo(self.connection, "/repos/one")
+        upsert_repo(self.connection, "/repos/two")
         parent = workflow.capture_task(self.connection, title="The parent", repo="/repos/one", who="operator")["item"]["id"]
         status, _, state = self.post("/api/items", {
             "title": "Chase", "kind": "followup", "followup_of": parent, "repo": None})

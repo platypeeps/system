@@ -144,29 +144,23 @@ class StatusGuards(WorkflowCase):
         self.assertEqual(item_state(self.db, state["item"]["id"]), state)
 
     def test_work_done_cannot_bypass_delivery_checks(self):
-        upsert_repo(self.db, "/repos/work", status_source="row")
+        upsert_repo(self.db, "/repos/work")
         item = create_item(self.db, kind="work", title="Code delivery", repo="/repos/work")
         with self.assertRaisesRegex(TransitionRefused, "delivery"):
             change_status(self.db, item, "done", who="operator")
         self.assertNotIn("done", allowed_statuses(self.db, item))
 
-    def test_work_status_stays_with_its_current_owner_until_cutover(self):
-        for owner in ("file", "retiring", "row"):
-            repo = f"/repos/{owner}"
-            upsert_repo(self.db, repo, status_source=owner)
-            item = create_item(self.db, kind="work", title="Work", repo=repo)
-            if owner == "row":
-                self.assertEqual(change_status(self.db, item, "ready", who="operator")["item"]["status"], "ready")
-            else:
-                before = item_state(self.db, item)
-                with self.subTest(owner=owner), self.assertRaisesRegex(TransitionRefused, "owner"):
-                    change_status(self.db, item, "ready", who="operator")
-                self.assertEqual(allowed_statuses(self.db, item), [])
-                self.assertEqual(item_state(self.db, item), before)
+    def test_the_row_owns_every_work_items_status(self):
+        """sd:3231: no repository's files own status any more, so every
+        registered repository's work moves through the row."""
+        upsert_repo(self.db, "/repos/work")
+        item = create_item(self.db, kind="work", title="Work", repo="/repos/work")
+        self.assertIn("ready", allowed_statuses(self.db, item))
+        self.assertEqual(change_status(self.db, item, "ready", who="operator")["item"]["status"], "ready")
 
     def test_work_repository_cannot_be_changed_away_from_its_stable_source(self):
-        upsert_repo(self.db, "/repos/one", status_source="row")
-        upsert_repo(self.db, "/repos/two", status_source="row")
+        upsert_repo(self.db, "/repos/one")
+        upsert_repo(self.db, "/repos/two")
         item = create_item(self.db, kind="work", title="Work", repo="/repos/one",
                            source="docs/work", external_id="/repos/one::docs/work/x/prd.md")
         before = item_state(self.db, item)
@@ -269,7 +263,7 @@ class StatusGuards(WorkflowCase):
             self.assertEqual(item_state(self.db, item), state)
 
     def test_work_body_cannot_be_replaced_by_task_editor(self):
-        upsert_repo(self.db, "/repos/work", status_source="row")
+        upsert_repo(self.db, "/repos/work")
         item = create_item(self.db, kind="work", title="Work", repo="/repos/work", body={"Goals": "Keep"})
         with self.assertRaisesRegex(WorkflowError, "task"):
             edit_item(self.db, item, {"body": "Replace"}, who="operator")
@@ -326,7 +320,7 @@ class BranchClearing(WorkflowCase):
     """sd:2818: `edit_item` clears a stale branch and sets none."""
 
     def work_on(self, branch, status="done"):
-        upsert_repo(self.db, "/repos/work", status_source="row")
+        upsert_repo(self.db, "/repos/work")
         item = create_item(self.db, kind="work", status=status, title="Work",
                            repo="/repos/work", branch=branch)
         return item_state(self.db, item)
@@ -392,7 +386,7 @@ class Unparking(WorkflowCase):
         self.assertEqual(unparked["notes"][-1]["body"], "Unparked by operator")
 
     def test_any_kind_but_a_writing_piece_unparks(self):
-        upsert_repo(self.db, "/repos/work", status_source="file")
+        upsert_repo(self.db, "/repos/work")
         for kind, columns in (("personal", {}), ("work", {"repo": "/repos/work"})):
             with self.subTest(kind=kind):
                 state = self.parked(kind=kind, **columns)
@@ -483,7 +477,7 @@ class KindEditing(WorkflowCase):
         for kind in produced:
             with self.subTest(target=kind):
                 self.refused(item, {"kind": kind}, "own producer")
-        upsert_repo(self.db, "/repos/work", status_source="row")
+        upsert_repo(self.db, "/repos/work")
         for kind in ("work", "report", "dep", "skill-review", "proposal"):
             source = create_item(self.db, kind=kind, title=kind,
                                  repo="/repos/work" if kind == "work" else None)
@@ -681,7 +675,7 @@ class FollowupRepository(WorkflowCase):
                          edited)
         for kind in ("personal", "work"):
             if kind == "work":
-                upsert_repo(self.db, "/repos/work", status_source="row")
+                upsert_repo(self.db, "/repos/work")
             other = create_item(self.db, kind=kind, title=f"A {kind}",
                                 repo="/repos/work" if kind == "work" else None)
             with self.subTest(kind=kind):

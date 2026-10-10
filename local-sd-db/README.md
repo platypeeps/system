@@ -139,11 +139,10 @@ backup, and the fixture harness both repositories test against.
       credentials.py  `sd-db.sh credentials`: credential presence and
                     expiry as the `credentials:nightly` heartbeat, never a
                     value (sd:2203)
-      sources/      the five migrations: freeze, import, verify, and the one
-                    retire that exists -- `docs/work`'s
+      sources/      the four migrations: freeze, import, verify
         frontmatter.py  the block at the top of a prd and a vault note
         index_cache.py  the pack's index.sqlite  -> shadow
-        docs_work.py    docs/work/*/prd.md       -> item, from committed trees
+        docs_work.py    the `docs/work` rows' source key and git helpers
         register.py     the simulator's register -> item
         vault.py        Blog Ideas and Topics    -> item of kind idea
         issues.py       the open GitHub issues   -> shadow, never item
@@ -179,7 +178,7 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh repo ci PATH github|local  # where its checks run
     ./sd-db.sh repo lane-host PATH HOST|hub  # which machine runs its lane
 
-A `repo list` row reads `path remote status_source managed ci lane_host runner_merge`.
+A `repo list` row reads `path remote managed ci lane_host runner_merge`.
 `remote` is the checkout's origin URL as written, ssh or https: the runner clones over it, so it is not respelled.
 Rows are compared by repository identity, so the two spellings of one GitHub repository match.
 `repo add` on a registered path rereads the checkout, so it refreshes a row whose repository moved to a new owner.
@@ -191,27 +190,15 @@ No rule derives the flag: the GitHub owner does not decide it, so the operator s
 `ci` is `github` or `local`, and every row starts at `github`.
 `local` means the pack runs `sd-check` in a clean worktree of the head and posts an `sd/local-gate` status (sd:1843).
 
-`status_source` says who owns `docs/work` item status: the prd files (`file`) or the rows (`row`).
-Every new row starts at `file`; only `retire docs-work` switches it to `row`, directly.
-`retiring` is not part of that switch: a restore sets it on a repository whose snapshot predates its retire,
-and `sd restore reimport` clears it.
-The retire switched every repository registered at that time, with or without a `docs/work` folder.
-A repository registered later stays at `file`.
-A completed retire commits the marker `docs/work/.status-source` in each such repository with a `docs/work` folder.
-An interrupted retire can leave a `row` repository without the marker, so a missing marker is not proof of `file`.
-Without a `docs/work` folder the value changes nothing, because the repository has no work items.
-So `file` there is correct, and it needs no migration.
-`work register` refuses a `file` repository; run `retire docs-work` before a first work item there.
+The row owns every `docs/work` item's status; `work register` makes the row for a new folder.
 
     ./sd-db.sh work register docs/work/<item>/prd.md
                               # register one folder as the row that owns it,
                               # from inside the checkout that holds it
     ./sd-db.sh import SOURCE  # freeze, import and verify one source; SOURCE is
-                              # index, docs-work, register, vault or issues
+                              # index, register, vault or issues
     ./sd-db.sh verify SOURCE  # compare a source with the rows, and name every
                               # difference
-    ./sd-db.sh retire SOURCE  # hand a source over to the database, once;
-                              # docs-work is the only one with this step
 
     ./sd-db.sh usage          # the month's cost, per bill and per role, and
                               # every `bound` row; `--month YYYY-MM` for
@@ -1027,33 +1014,11 @@ command does. `tests/test_one_double.py` greps the repository to keep it that
 way: a second GitHub double, or a `subprocess` patch around one of the
 stubbed commands, fails the suite.
 
-## `import` retires nothing; `retire` is the other verb
+## `import` freezes, imports and verifies
 
-`import` runs three of the four steps -- freeze, import, verify -- and stops,
-whatever source it is pointed at. Four of the five sources stay authoritative
-and stay written by whatever writes them today, because the retire step of a
-source lands in a pull request *after* the one that lands its writer, which
-is what keeps the window in which a source is frozen down to minutes.
-
-`docs/work` is the one that has reached that pull request. `retire docs-work`
-is one sitting: it refuses under a pack whose `sd_lib` cannot answer both
-`status_marker` and `delivered`, naming the version -- the first is how a
-checkout with a database reads `.status-source` under the retiring repository's `docs/work/`, the second is what
-a database-free one asks git once that marker exists, and the retire's commit
-turns both paths on at once; refuses without a `verified` row for the
-hash it just froze, naming the differences; and refuses on an uncommitted
-file, naming it. Then it imports and verifies once more, takes a backup, sets
-each repository's `status_source` to `row`, and makes one commit removing
-every active item's `status:` line and adding `.status-source` under the retiring repository's `docs/work/`. The
-archive keeps its lines, all 491 of them on the pack's default branch on
-2026-09-06: they are records of what a finished item's status *was*.
-
-The row is switched before the commit and not after, and that order is the
-answer to being killed halfway. Killed before the switch, every line is still
-in place and still authoritative, so a rerun repeats the sitting. Killed
-after it, the rows answer and the lines are a stale copy of the same words,
-so a rerun goes on to the commit. The other order has a window where the
-lines are gone and the rows are not yet the answer.
+`import` runs three steps -- freeze, import, verify -- and stops, whatever
+source it is pointed at. The four sources stay authoritative and stay written
+by whatever writes them today.
 
 Two things follow that are easy to read past:
 
@@ -1063,32 +1028,20 @@ Two things follow that are easy to read past:
 * **A verify difference lifts the freeze and changes nothing.** The verify
   compares source and rows by identity and content, never by count, and names
   every difference. A clean verify writes a `verified` row in `state`; a
-  difference writes none, and `retire` refuses without one carrying the hash
-  it just froze.
-* **The git-backed sources read committed trees, never the checkout's
-  working copy.** Both read with `git show` and record the commit as the
-  row's `source_commit`. Neither fetches: what lands is what the checkout
-  last fetched. They differ in which branches they read:
-  * `register` reads only the default remote branch, `origin/HEAD`'s target
-    (`default_branch` in `sd_db/sources/docs_work.py`). Until 2026-09-11 it
-    read the working copy, and on 2026-09-10 it landed O30 from a feature
-    branch three days before `main` carried it. The sitting's report names
-    the ref and the commit. The ref is not written to `item.branch` -- that
-    column is the branch the runner works on, and `origin/main` is a
-    remote-tracking name, not one.
-  * `docs/work` reads every candidate `branches()` returns: the default
-    plus each remote branch not yet merged into it. `live()` drops a branch
-    whose change to a file is already in the default. Branches that still
-    disagree on a status refuse the sitting. Otherwise the newest commit
-    wins, and its branch is written to `item.branch`. An item that lives
-    only on a feature branch lands from it, and the sitting names it in a
-    note. See `freeze` in `sd_db/sources/docs_work.py`.
+  difference writes none.
+* **`register` reads committed trees, never the checkout's working copy.**
+  It reads with `git show` and records the commit as the row's
+  `source_commit`. It does not fetch: what lands is what the checkout last
+  fetched. It reads only the default remote branch, `origin/HEAD`'s target
+  (`default_branch` in `sd_db/sources/docs_work.py`). Until 2026-09-11 it
+  read the working copy, and on 2026-09-10 it landed O30 from a feature
+  branch three days before `main` carried it. The sitting's report names
+  the ref and the commit. The ref is not written to `item.branch` -- that
+  column is the branch the runner works on, and `origin/main` is a
+  remote-tracking name, not one.
 
 Measured against the real sources on 2026-09-06: `index.sqlite` 1,175 rows,
-the vault 192 notes, the register 3 open entries, GitHub 3 open issues, and
-`docs/work` 64 items across six repositories -- the last enumerated from the
-`repo` table, with the archive excluded, which is the count requirement 2
-states.
+the vault 192 notes, the register 3 open entries and GitHub 3 open issues.
 
 ## After the retirement, a folder needs `work register`
 
@@ -1097,10 +1050,7 @@ reads the file source; every repository has now retired that source; so the
 importer refused on the first repository it met and wrote nothing, for any
 repository. That was the intended end state -- the rows are the answer, the
 files no longer are -- except that the import was also the only thing that
-*made* a row. (The refusal itself has since been settled as intended and made
-a reported no-op: `import` and `verify` name each retired repository, read
-whatever is still on `file`, and exit 0 when nothing they read failed. A fleet
-with nothing left to read says so in one line and points here.) A `docs/work` folder created after the cutover therefore had no
+*made* a row. (`import docs-work` and `retire` went in sd:3231.) A `docs/work` folder created after the cutover therefore had no
 row and, its `status:` line having been removed by the same retirement, no
 readable status anywhere. `sd-status` reports that as `status-unreadable`, and
 on 2026-09-11 it took a hand-written `INSERT` into the shared database to

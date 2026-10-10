@@ -173,7 +173,7 @@ Usage: sd-db.sh <command>
               one file instead.
   repo list [--managed]
               The repositories the table holds, which is the enumeration,
-              each with its status source, its managed flag (yes|no), its ci
+              each with its remote, its managed flag (yes|no), its ci
               setting (github|local), its lane host and its runner merge
               setting, which stays the last field. `--managed` prints only the rows marked
               managed.
@@ -220,10 +220,8 @@ Usage: sd-db.sh <command>
   work register PATH
               Register the docs/work item at PATH (relative to the
               repository enclosing the working directory) as the row
-              that owns its status. This is what `import docs-work`
-              used to do and cannot any more: every repository has
-              retired the file source, so a folder made after the
-              cutover has no row until this makes one. Title and date
+              that owns its status: a new folder has no row until this
+              makes one. Title and date
               come from the frontmatter, the commit from git, and the
               status is always `planning`. The branch is the one this
               checkout is on when that is a local branch other than
@@ -233,27 +231,12 @@ Usage: sd-db.sh <command>
               names no head. Registering twice reports the existing
               row and changes nothing.
   import S    Freeze one source, import it, and verify the rows against it.
-              S is index, docs-work, register, vault or issues. Idempotent:
-              a second run reports the same counts with zero new rows. It
-              retires nothing, whatever S is -- `retire` is the other verb.
-              For docs-work, a repository that has retired is a reported
-              no-op, not a failure: its status lives in the row. Once every
-              registered repository has, the verb says so and exits 0;
-              `work register` is how a new item gets a row.
+              S is index, register, vault or issues. Idempotent: a second
+              run reports the same counts with zero new rows. The source is
+              left unchanged. `work register` is how a new docs/work item
+              gets a row.
   verify S    Compare one source with the rows by identity and content,
-              never by count, and name every difference. A retired
-              docs-work repository is reported and left out, as `import`
-              does; a fleet with none left to read is a no-op that exits 0.
-  retire S    Hand S over to the database, once. It refuses under a pack
-              whose sd_lib cannot answer `status_marker` and `delivered`,
-              naming the version;
-              without a `verified` row for what it just froze, naming the
-              differences; and on an uncommitted file, naming it. Then it
-              imports and verifies S once more, takes a backup, sets each
-              repository's status_source to `row`, and makes one commit that
-              removes every active item's `status:` line and adds
-              docs/work/.status-source. The archive keeps its lines: they
-              are records of what was. Only docs-work has a retire step.
+              never by count, and name every difference.
   backup [--destination PATH] [--keep all|N | --keep-days N]
          [--require-mount PATH] [--no-row-prune]
               Snapshot the database, then restore the snapshot to prove it:
@@ -459,7 +442,7 @@ case "${1:-}" in
         fi
         echo "$output"
         ;;
-    init|migrate|status|restore|repo|item|work|import|verify|retire|usage|judgments|credentials)
+    init|migrate|status|restore|repo|item|work|import|verify|usage|judgments|credentials)
         # Convention 1 for every verb here: `-h` or `--help` anywhere prints
         # the usage and acts on nothing. `init --help` ran init on the live
         # database (sd:2716): `sd_db.jobs.cli` reads no flags of its own.

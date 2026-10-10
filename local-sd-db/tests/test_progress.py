@@ -34,7 +34,7 @@ class ProgressCase(unittest.TestCase):
         initialise(self.path)
         self.db = connect(self.path)
         self.addCleanup(self.db.close)
-        upsert_repo(self.db, str(self.repo), status_source="row")
+        upsert_repo(self.db, str(self.repo))
         self.item = create_item(self.db, kind="work", title="Stable work", repo=str(self.repo),
                                 path="docs/work/original/prd.md", source="docs/work",
                                 external_id=f"{self.repo}::docs/work/original/prd.md")

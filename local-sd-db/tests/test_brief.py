@@ -235,7 +235,7 @@ class WhichItems(BriefCase):
         self.assertNotIn("on theirs", result.text)
 
     def test_an_item_stored_on_the_remote_tracking_name_is_on_the_checked_out_branch(self):
-        # `sources.docs_work` records the ref it read the prd from, which is
+        # The `docs/work` importer recorded the ref it read the prd from, which is
         # `origin/feat/mine`; `brief.checked_out_branch` answers `feat/mine`.
         # Compared exactly they never met, so a session working the branch
         # was briefed on every open item in the repository instead.

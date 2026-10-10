@@ -250,7 +250,11 @@ class Publication(WritingCase):
         # Python on this side and cannot be registered on a remote connection.
         migrating = sqlite3.connect(self.path, isolation_level=None)
         paths.install(migrating)
+        # 014 names `repo.status_source`, which 026 drops: step back to 25 for it, then forward again.
+        drop = (SCHEMA_DIR / "026_repo_drop_status_source.sql").read_text(encoding="utf-8")
+        migrating.executescript("\n".join(line[4:] for line in drop.splitlines() if line.startswith("--   ")))
         migrating.executescript((SCHEMA_DIR / "014_home_relative_repo_paths.sql").read_text(encoding="utf-8"))
+        migrating.executescript(drop + "\nPRAGMA user_version = 26;")
         migrating.close()
         self.assertEqual(piece_state(self.db, self.item)["item"]["repo"], "~/writing")
         with self.assertRaisesRegex(WorkflowError, "newer evidence"):

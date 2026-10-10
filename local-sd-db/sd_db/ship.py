@@ -168,8 +168,8 @@ def prepare_delivery(connection: sqlite3.Connection, run_id: str, *, verificatio
         raise WorkflowError("delivery proof must use the owned merge clone")
     info = identity(connection, assignment["item"])
     item, repo = info["item"], info["repo"]
-    if item["kind"] != "work" or repo["status_source"] != "row":
-        raise WorkflowError("only database-owned work can prepare a delivery proof")
+    if item["kind"] != "work":
+        raise WorkflowError("only work can prepare a delivery proof")
     key = receipt_key(_github_repository(repo["remote"]), run["branch"], item["id"])
     _, receipt = read(connection, key)
     scope = hashlib.sha256(json.dumps({k: item[k] for k in ("title", "body", "path")}, sort_keys=True).encode()).hexdigest()

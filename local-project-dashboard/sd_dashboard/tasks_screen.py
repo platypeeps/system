@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sd_db import reads, repos, workflow
+from sd_db import reads, workflow
 
 __all__ = ["details", "document"]
 
@@ -54,22 +54,16 @@ def _assignment_states(connection, *, now: str) -> dict[int, str]:
     return live
 
 
-def _edit_capability(connection, row) -> dict:
+def _edit_capability(row) -> dict:
     """Whether `workflow.edit_item` takes this row's fields, with the reason it gives when it refuses.
 
-    The two refusals `edit_item` makes for a field edit before it reads the changes: a kind outside
-    `workflow.DETAIL_KINDS`, and a work item whose repository still lets its files own status (`repo.status_source` is
-    not `row`; the schema default is `file`). Without this, a file-owned work row showed Edit, P2 and the matrix drop,
-    and every save failed (review, PR #46). `test_v2_tasks` checks it against `edit_item` itself.
+    The refusal `edit_item` makes for a field edit before it reads the changes: a kind outside
+    `workflow.DETAIL_KINDS`. Without this, such a row showed Edit, P2 and the matrix drop, and every save failed
+    (review, PR #46). `test_v2_tasks` checks it against `edit_item` itself.
     """
     reason = None
     if row["kind"] not in workflow.DETAIL_KINDS:
         reason = f"{row['kind']} items use their own editing workflow"
-    elif row["kind"] == "work":
-        # `repos.row_for`, as `register_work_item` reads it: the dashboard issues no SQL of its own (test_criterion_12).
-        owner = repos.row_for(connection, row["repo"]) if row["repo"] else None
-        if owner is None or owner["status_source"] != "row":
-            reason = "work metadata belongs to its file owner until database cutover completes"
     return {"allowed": reason is None, "reason": reason}
 
 
@@ -110,7 +104,7 @@ def _document(connection, *, now: str) -> dict:
             "urgent_otherwise": reads.is_urgent({**dict(row), "due": None}, now=now),
             # The row's own `item_state`, so each row reads its history once (sd:2380).
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
-            "edit": _edit_capability(connection, row),
+            "edit": _edit_capability(row),
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]

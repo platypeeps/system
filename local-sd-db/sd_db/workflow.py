@@ -427,14 +427,11 @@ def register_work_item(
 ) -> dict:
     """Register a `docs/work` folder that exists on disk as the row that owns it.
 
-    Retirement handed status to the database and, with it, the making of the
-    row: `import docs-work` reads the file source, every repository has now
-    retired that source, and the importer refuses on the first retired
-    repository it meets. A folder created after the cutover therefore had
-    nothing to register it and no readable status at all -- which is what
-    `sd-status` reports as `status-unreadable`.
+    The row owns the item's status (sd:3015), and this is how a new folder
+    gets one; without it the folder has no readable status at all, which is
+    what `sd-status` reports as `status-unreadable`.
 
-    This is that missing step and it is deliberately narrow. It creates one
+    It is deliberately narrow. It creates one
     row for one folder out of what the folder and git already say, and decides
     nothing: the title and date come from the frontmatter, the commit from the
     checkout, the status is always `planning`, because an item nobody has
@@ -464,19 +461,13 @@ def register_work_item(
     # The key the row holds, so `external_id` is built from it and a second
     # machine builds the same one (sd:1439).
     repo = owner["path"]
-    if owner["status_source"] != "row":
-        raise WorkflowError(
-            f"{repo} still lets its files own status; a row here would be a second answer"
-        )
 
     parts = tuple(pathlib.PurePosixPath(path).parts)
     if path.startswith("/") or ".." in parts:
         raise WorkflowError("path must be relative to the repository, without `..`")
     # Exactly four components, because that is what the readers enumerate:
-    # `sources.docs_work.files` keys on `len(parts) == 4`. Registering
-    # `docs/work/a/nested/prd.md` under `< 4` filed a row the import and the
-    # verify could never see again, so the item existed and no source ever
-    # matched it.
+    # `docs/work/<item>/prd.md`, one star. `docs/work/a/nested/prd.md` would
+    # file a row no reader matches to a folder.
     if len(parts) != 4 or parts[:2] != ("docs", "work") or parts[-1] != "prd.md":
         raise WorkflowError("path must be docs/work/<item>/prd.md, the file the readers key on")
 
@@ -526,10 +517,6 @@ def edit_item(
         unpark = isinstance(changes, dict) and set(changes) == PARK_FIELDS
         if row["kind"] not in DETAIL_KINDS and not reclassify and not unpark:
             raise WorkflowError(f"{row['kind']} items use their own editing workflow")
-        if row["kind"] == "work" and not unpark:
-            owner = connection.execute("SELECT status_source FROM repo WHERE path = ?", (row["repo"],)).fetchone()
-            if owner is None or owner["status_source"] != "row":
-                raise WorkflowError("work metadata belongs to its file owner until database cutover completes")
         values = _fields(connection, changes)
         if "parked_at" in values and row["piece"]:
             raise WorkflowError("a writing piece revives with `sd writing park --revive`, which moves its file")
@@ -571,9 +558,9 @@ def allowed_statuses(connection: sqlite3.Connection, item: int, *, state: dict |
     in the same snapshot, so a caller listing many items reads each history
     once (sd:2380); it must be this item's.
 
-    A `TASK_STATUS_KINDS` item gets `TASK_STATUSES`; database-owned work that
-    is not done gets every status but `done`; every other kind, and any item
-    with a queued or running assignment, gets none.
+    A `TASK_STATUS_KINDS` item gets `TASK_STATUSES`; work that is not done
+    gets every status but `done`; every other kind, and any item with a
+    queued or running assignment, gets none.
 
     The dashboard item screen offers exactly these choices, but only on the
     panels it renders: `task` and `TASK_STATUS_KINDS` items always, a `work`
@@ -596,9 +583,6 @@ def allowed_statuses(connection: sqlite3.Connection, item: int, *, state: dict |
         return list(TASK_STATUSES)
     if row["kind"] == "work":
         if row["status"] == "done":
-            return []
-        owner = connection.execute("SELECT status_source FROM repo WHERE path = ?", (row["repo"],)).fetchone()
-        if owner is None or owner["status_source"] != "row":
             return []
         return [status for status in STATUSES if status != "done"]
     return []
@@ -679,9 +663,6 @@ def change_status(
         if row["kind"] == "work":
             if row["status"] == "done":
                 raise TransitionRefused("completed work is terminal; its delivery or cancellation history cannot be reopened here")
-            owner = connection.execute("SELECT status_source FROM repo WHERE path = ?", (row["repo"],)).fetchone()
-            if owner is None or owner["status_source"] != "row":
-                raise TransitionRefused("work status belongs to its current source owner until database cutover completes")
         if row["kind"] == "work" and target == "done":
             raise TransitionRefused("work completion requires verified delivery or cancellation evidence")
         if target not in allowed_statuses(connection, item):

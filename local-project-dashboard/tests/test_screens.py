@@ -147,7 +147,7 @@ class Today(ScreenCase):
     def test_an_empty_today_says_so(self):
         from sd_db import progress, upsert_repo
 
-        upsert_repo(self.connection, "/repos/system", status_source="row")
+        upsert_repo(self.connection, "/repos/system")
         progress.cancel_work(self.connection, self.sent, reason="Fixture complete", who="operator")
         progress.cancel_work(self.connection, self.running, reason="Fixture complete", who="operator")
         page = self.render("/classic/today")

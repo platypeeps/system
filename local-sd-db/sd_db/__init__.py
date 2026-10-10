@@ -65,11 +65,8 @@ from .sources import (
     Frozen,
     MigrationRefused,
     Record,
-    Retired,
-    Retirement,
     Sitting,
 )
-from .sources import retire as retire_migration
 from .sources import run as run_migration
 from .sources import verify as verify_migration
 from .writes import (
@@ -163,9 +160,6 @@ __all__ = [
     "resolve_note",
     "resolve_state",
     "restore",
-    "retire_migration",
-    "Retired",
-    "Retirement",
     "run_migration",
     "sample",
     "SCHEMA_VERSION",
