@@ -43,10 +43,19 @@ EXTRA_PATH = "/Volumes/Scratch"
 # call, the way a declined or missing password does; nofda makes plutil fail
 # the way root without Full Disk Access does; ticketless has no cached ticket,
 # so `sudo -n` fails and only a `sudo -v` password prompt would succeed;
-# silent makes plutil fail without a word, as the CI runner's did.
+# silent makes plutil fail without a word, as the CI runner's did; ruled has
+# no ticket but the sudoers drop-in, so `sudo -n` allows only the plutil read.
 SUDO_STUB = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$SUDO_LOG"
 mode="${SUDO_STUB:-ok}"
+if [ "$mode" = ruled ] && [ "$1" = "-n" ]; then
+  case "$2" in
+    -l) [ "$3" = plutil ] && exit 0 ;;
+    plutil) ;;
+    *) echo "sudo: a password is required" >&2; exit 1 ;;
+  esac
+  [ "$2" = plutil ] || { echo "sudo: a password is required" >&2; exit 1; }
+fi
 if [ "$mode" = ticketless ] && [ "$1" = "-n" ]; then echo "sudo: a password is required" >&2; exit 1; fi
 if [ -n "$SUDO_RESET" ] && [ -e "$SUDO_RESET" ] && [ "$1" = "-n" ]; then echo "sudo: a password is required" >&2; exit 1; fi
 while [ "$1" = "-n" ] || [ "$1" = "sudo" ]; do shift; done
@@ -117,6 +126,7 @@ class SpotlightExclusionsTest(unittest.TestCase):
         self.repos = f"{self.home}/repos"
         self.plist = base / "VolumeConfiguration.plist"
         self.sudo_log = base / "sudo.log"
+        self.sudoers = base / "sudoers.d/machine-setup-spotlight-read"
         self.launchctl_log = base / "launchctl.log"
         self.sudo_log.touch()
         self.launchctl_log.touch()
@@ -151,6 +161,7 @@ class SpotlightExclusionsTest(unittest.TestCase):
             "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG": "en_US.UTF-8",
             **fixture_config.env(self.config_root),
+            "MACHINE_SETUP_SPOTLIGHT_SUDOERS": str(self.sudoers),
             "SUDO_STUB": sudo,
             "SUDO_LOG": str(self.sudo_log),
             "LAUNCHCTL_LOG": str(self.launchctl_log),
@@ -282,6 +293,46 @@ class SpotlightExclusionsTest(unittest.TestCase):
                       "and no sudo ticket is cached; run 'sudo -v', then re-run "
                       "(or re-run with --apply)\n", out)
         self.assertNotIn("MISSING Spotlight", out)
+
+    # ------------------------------------------------ sudoers drop-in ----
+
+    def test_a_run_with_no_ticket_reads_through_the_drop_in(self):
+        self.write_plist([self.repos, TMP_PATH])
+        out = self.system(sudo="ruled")
+        self.assertNotIn("DEFER", out)
+        self.assertIn(f"  ok      Spotlight excludes {TMP_PATH}\n", out)
+        self.assertNotIn("-v", self.sudo_log.read_text().splitlines())
+
+    def test_a_dry_run_shows_the_drop_in_it_would_install(self):
+        self.write_plist([self.repos, TMP_PATH])
+        out = self.system()
+        line = next(x for x in out.splitlines() if "NOPASSWD" in x)
+        self.assertTrue(line.startswith("  [dry-run] sudo sh -c "), line)
+        self.assertIn(f"NOPASSWD: /usr/bin/plutil -convert xml1 -o - {self.plist}'", line)
+        tmp = self.sudoers.parent / f".{self.sudoers.name}.tmp"
+        self.assertIn(f"visudo -cf {tmp} && mv {tmp} {self.sudoers}", line)
+        self.assertFalse(self.sudoers.exists())
+
+    def test_apply_installs_the_drop_in_through_sudo(self):
+        self.write_plist([self.repos, TMP_PATH])
+        self.system("--apply")
+        runs = [x for x in self.sudo_log.read_text().splitlines() if "NOPASSWD" in x]
+        self.assertEqual(len(runs), 1, runs)
+        self.assertTrue(runs[0].startswith("sudo sh -c printf"), runs[0])
+
+    def test_an_installed_drop_in_is_ok(self):
+        self.write_plist([self.repos, TMP_PATH])
+        self.sudoers.parent.mkdir()
+        self.sudoers.touch()
+        out = self.system()
+        self.assertIn("  ok      Spotlight read sudoers drop-in\n", out)
+        self.assertNotIn("NOPASSWD", out)
+
+    def test_a_profile_without_a_list_installs_no_drop_in(self):
+        self.manifest.unlink()
+        out = self.system()
+        self.assertNotIn("Spotlight read sudoers", out)
+        self.assertNotIn("NOPASSWD", out)
 
     def test_a_dry_run_never_prompts_for_a_password(self):
         self.write_plist([])
