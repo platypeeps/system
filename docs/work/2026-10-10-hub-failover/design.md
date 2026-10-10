@@ -172,33 +172,71 @@ Lane logs follow `sd.bulk_storage_root`, which is already per machine.
 
 ### Satellite readiness
 
-`machine-setup.sh status` on the standby satellite prints one `hub-ready` block, read-only. Each line is `ok` or a drift word:
+The standby is the work satellite (D4). `machine-setup.sh status` there prints one `hub-ready` block, read-only. Each line is `ok` or a drift word:
 
 - the system and pack checkouts at the hub's `hub-pin` (what `follow` keeps), and the pack's `sd_db` matches the hub's build (the satellite stage's proof line);
 - the NAS share mounted, and both backup roots readable;
 - `sd.hub_name` set, and equal to the name in `hub.json`;
 - the hub-role plists and job files present and rendering;
-- `gh` logged in with push access; the notify config complete;
+- the active `gh` login has push access to every NULL-host repository and to every repository whose lane this machine hosts;
+- the notify config complete;
 - free disk above twice the newest snapshot.
 
 A machine that fails a line can still be promoted by hand, but the verb's preflight refuses until each line reads `ok`.
 
+### The work satellite as standby
+
+The operator chose the work satellite (D4). It runs the work repositories' lanes, and while promoted it holds the personal records.
+This section lists what that costs and how the records leave again.
+
+**Lanes.** The work lanes stay on it: their `repo.lane_host` names it.
+While promoted it also runs every NULL-host lane. `lane run --hosted` runs lanes one after another, so a long personal gate delays a work merge, and the reverse.
+No lane moves between the two sets; the operator may move a busy lane with the existing Move lane control.
+
+**One GitHub login for both sets.** `gh` has one active account per host, and the lanes share it.
+Readiness checks push access to both sets with that one login. If two accounts are needed, the line reads `DIFFERS` and promotion refuses.
+Switching `gh` accounts during a promotion is not part of this design: it would change the work lanes' identity under them.
+
+**What is copied there.** Only what the hub role needs:
+
+- at promotion, the restored state folder `~/.local/share/sd/`: the database, `providers.yaml`, `commands.yaml`, the journals, `executions/` and `publications/`;
+- while promoted, the snapshots the hub-role jobs write to its local backup root, and the dashboard's and task-actions' state;
+- before any failover, only the hub-role plists, job files and `sd.hub_name`, which hold no records.
+
+No hub config folder, no hub secret and no hub host job is copied.
+As a satellite it already reads every record over the wire and holds the hub's `providers.yaml`; promotion adds the records at rest.
+
+**The drill touches the records too.** The monthly drill restores a copy into a throwaway home under the system disk and deletes it when the run ends, pass or fail, as `offsite-verify` does.
+A drill killed before its cleanup leaves the folder; the next drill and `status` remove it first and name it.
+
+**How the records leave.** The role goes back to a hub on a personal machine as soon as one is ready; the work satellite is a stopgap.
+`machine-setup.sh promote --undo` on the work satellite, in order:
+
+1. Stop the hub-role agents and jobs, then write one last snapshot to the NAS hourly root. Its checkpoint id is the hand-back point.
+2. The repaired or replacement hub runs `promote` from that snapshot, and takes the tailnet name back.
+3. `--undo` continues only when three checks pass: the fence reads "not holder"; the new hub answers a session;
+   and the new hub's open `restore` row names the hand-back snapshot. That last check ties the deletion to the one snapshot that carries every record written here.
+4. Delete `~/.local/share/sd/`, the local backup root the hub-role jobs wrote, and any drill folder left behind.
+5. Put `hub.json` back, then run `update satellite --apply`.
+6. Prove it: `status` shows no local `sd.db`, no hub-role backup root and no `promote-intent` marker.
+
+The NAS copies stay on the NAS, which is where every hub keeps them.
+
 ### Demotion and return
 
-The repaired machine has the lost window in its old `sd.db`: every write after the last snapshot.
+The repaired old hub has the lost window in its old `sd.db`: every write after the last snapshot.
 
-- **Rejoin as a satellite.** Move `sd.db` to `sd.db.demoted-<date>`, add `<profile>.satellite`, run `update satellite --apply`.
-  The moved file stays as the record of the lost window; the operator copies any item or note back by hand.
-- **Take the role back.** Run a backup on the temporary hub, stop its role, then run `promote` on the repaired machine, with the console step reversed.
-  This is the same verb, so it gets the same drill.
+- **Take the role back** (the normal path, since the standby is a work machine): run `promote` on the repaired machine from the work satellite's hand-back snapshot, with the console step reversed.
+  Before that, move its old `sd.db` to `sd.db.demoted-<date>`. That file stays as the record of the lost window; the operator copies any item or note back by hand.
+- **Rejoin as a satellite** (only when another personal machine takes the role): move `sd.db` aside the same way, add `<profile>.satellite`, run `update satellite --apply`.
 
-A `demote` verb is not built now. If the drill shows the steps are error-prone, it folds into `promote --undo`.
+No `demote` verb is built: `promote --undo` covers the standby, and the old hub's steps are two commands in the runbook.
 
 ### Drill
 
 `machine-setup.sh promote --drill` runs steps 1, 5, 6 and 9 against a throwaway home on the standby satellite.
 It leaves `hub.json`, launchd and Tailscale alone, starts `sd-db.sh serve --loopback` on the restored copy and opens one session.
-It prints the time of each step and the total.
+It prints the time of each step and the total, then deletes the throwaway home.
 A monthly job on the standby runs it and mails a miss.
 
 Target: under 15 minutes from the decision to the first satellite session served.
@@ -214,7 +252,7 @@ the NULL-host repositories and their open pull requests; the leases released in 
 
 | New or changed | Replaces or reuses |
 | --- | --- |
-| `machine-setup.sh promote` (with `--drill`) | nothing; reuses the stages, `refresh_drain.py` and the follow-intent pattern |
+| `machine-setup.sh promote` (with `--drill` and `--undo`) | nothing; reuses the stages, `refresh_drain.py` and the follow-intent pattern |
 | `sd-db.sh restore --newest ROOT...` | reuses `restore`; the copy-off-share step from `offsite-verify.py` |
 | Hourly NAS mirror chained in the hourly job | reuses `mirror-sync.sh` and `offsite-verify --preflight-only`, as the nightly job does |
 | `sd.hub_name`, one declared pack setting | nothing; it could later replace each `<profile>.satellite` file |
@@ -248,6 +286,11 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | fence | old hub returns | demoted, or Tailscale logged out | serve, NULL-host lanes, NAS copies and the `hub-pin` push refuse | one test per caller with a holder, a non-holder and an unknown `tailscale` double |
 | older state | a machine with no `sd.hub_name` | the fence cannot name the holder | reads unknown: serve and NULL-host lanes refuse, and `status` names the missing setting | fence test with no setting |
 | older state | the hub before slice 2 lands its setting | the hub's own lanes stop | slice 2 sets `sd.hub_name` on the hub in the same rollout, and its `status` checks it before the fence turns on | rollout step in the slice 2 body; status test |
+| undo 1 | role stopped, hand-back snapshot written | the snapshot fails | the role restarts; nothing deleted; exit 1 | undo test with a failing backup double |
+| undo 3 | nothing | the new hub restored another snapshot, or does not answer | refuse; nothing deleted; the records stay until the checks pass | undo test with a `restore` row naming an older snapshot |
+| undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest | kill test between 4 and 5 |
+| undo 5 | `hub.json` back | the satellite stage fails | the rerun runs the stage again; `status` names it | undo rerun test after a failed stage double |
+| drill | throwaway home written | killed before cleanup | the next drill and `status` remove the folder first | kill test inside the drill |
 | rollback | system reverted below the promote slice | marker and moved `hub.json` left | the old code ignores the marker; the machine runs as a hub without the role overlay; `status` shows `hub.json` missing on a satellite profile | none new; named here |
 
 ## Slices
@@ -260,34 +303,23 @@ the NULL-host repositories and their open pull requests; the leases released in 
    Leaves working: the hub as today; a demoted machine fenced.
 3. **Restore picks the newest (pack, `sd_db`).** `restore --newest ROOT...` and the lease settling.
    Leaves working: `restore DIR` unchanged.
-4. **Promote (system).** The hub role as a state, the `promote` verb, the `hub-ready` block and the README runbook, demotion included.
+4. **Promote (system).** The hub role as a state, the `promote` verb with `--undo`, the `hub-ready` block and the README runbook, demotion included.
    Leaves working: satellites as today; a promotion is possible.
 5. **Drill (system and config).** `promote --drill`, the monthly job example, and the first timed run quoted in the PR body.
 
 Slices 2 and 3 touch `sd_db`. They land in the pack once sd:2997 step 1 moves it there; before that, they wait, as its freeze rule says.
 `promote` calls `sd-db.sh` by path, so sd:2997's shim keeps it working through step 4.
 
-## Open decisions
+## Decisions
 
-The recommended option is first in each.
+The operator decided on 2026-10-10 (sd:3256 note).
 
-- **D1. Recovery point.**
-  Option: chain an exact hourly NAS mirror and cut the hourly window to 2 days (recovery point 1 hour, about 36 GB on the NAS).
-  Option: the same mirror, keeping the 7-day window (about 117 GB on the NAS).
-  Option: build nothing; accept up to 24 hours off the hub, and 1 hour only when the USB disk survives.
-- **D2. Where the verb lives.**
-  Option: `machine-setup.sh promote`. Roles, agents, cron and Tailscale routes live there, and sd:2997 does not move it.
-  Option: `sd-db.sh promote`. It moves to the pack with sd:2997, and would then drive launchd and cron from the pack.
-- **D3. How satellites find the hub.**
-  Option: the hub's tailnet machine name moves, with one console step per failover; `hub.json` and every URL stay.
-  Option: rewrite `hub.json` on each satellite; every dashboard and task-actions URL changes.
-- **D4. The standby machine.**
-  Option: terra, as the one standby, with an exception to its setup-only ruling while it is promoted. The hub's personal records then stay off a work machine.
-  Option: the work satellite. It already runs lanes, so it is closest to ready, but it would hold the personal database.
-  Option: both kept ready, chosen at failure time; the readiness work doubles.
-- **D5. The fence.**
-  Option: the holder check by tailnet name, with the new `sd.hub_name` setting; unknown refuses writes that leave the machine.
-  Option: no automatic fence; the operator keeps the old hub off the network until it is demoted by hand.
+- **D1. Recovery point.** Chain an exact hourly NAS mirror in the hourly job, and cut the hourly window to 2 days: a 1-hour recovery point, about 36 GB on the NAS.
+- **D2. Where the verb lives.** `machine-setup.sh promote`. Roles, agents, cron and Tailscale routes live there, and sd:2997 does not move it.
+- **D3. How satellites find the hub.** The hub's tailnet machine name moves, with one console step per failover; `hub.json` and every URL stay.
+- **D4. The standby machine.** The work satellite. It runs the work repositories' lanes, and while promoted it holds the personal records.
+  "The work satellite as standby" covers the lanes, the readiness checks, what is copied there and how the records leave.
+- **D5. The fence.** A machine holds the hub role only while its tailnet name equals `sd.hub_name`; unknown refuses writes that leave the machine.
 
 ## Acceptance criteria
 
@@ -296,7 +328,8 @@ The recommended option is first in each.
 - [ ] After slice 1, `offsite-verify` passes with an hourly NAS snapshot under 3 hours old.
 - [ ] With the fence on, a machine whose tailnet name differs from `sd.hub_name` refuses `sd-db.sh serve`, `lane run` for a NULL-host repository, the NAS copy and the `hub-pin` push; each refusal names the holder.
 - [ ] Each failure-table row's test stops the process at its step; the next run finishes or undoes it.
-- [ ] `machine-setup.sh status` on each satellite prints the `hub-ready` block, and the standby's reads all `ok`.
+- [ ] `machine-setup.sh status` on each satellite prints the `hub-ready` block, and the work satellite's reads all `ok`.
+- [ ] After a drill and after a `promote --undo` rehearsal, `find ~/.local/share/sd -name 'sd.db*'` on the work satellite prints nothing, and no drill folder remains.
 - [ ] `sd-docs-lint` passes from the repository root.
 
 ## Risks
@@ -308,4 +341,8 @@ The recommended option is first in each.
 - **Partial mirror copies.** An hourly mirror stopped mid-directory leaves a partial snapshot on the NAS. `restore --newest` refuses it on its manifest hashes and takes the next. The evidence that ties a candidate to its pass is the manifest's own checkpoint id and hashes, checked on the copied bytes.
 - **Promotion picks a stale snapshot.** Ordering by the manifest's checkpoint time, not the directory name, ties "newest" to when the data was taken. A demoted hub cannot add newer ones to the NAS, because the fence refuses its copy.
 - **The funnel may need a tailnet policy grant for the new node.** Readiness cannot check the policy without an API key; the drill does not test the funnel. The first real promotion may need one policy edit.
+- **Personal records on a work machine (D4).** While promoted, and briefly during each monthly drill, the work satellite holds the personal records at rest.
+  Software the employer runs there, such as backup or endpoint scanning, may copy them; this design cannot see or stop that. Accepted by the operator's choice; `--undo` keeps the stay short.
+- **Shared lane capacity.** Personal and work lanes run in turn on one machine while promoted, so merges in both sets slow down. Accepted for a stopgap.
+- **One GitHub identity.** If the personal and work repositories ever need different `gh` accounts, readiness reads `DIFFERS` and promotion refuses until one login can push to both.
 - **sd:2997 timing.** Slices 2 and 3 wait for its step 1. If sd:2997 stalls, slices 1, 4 and 5 still land; `promote` then refuses at preflight until `restore --newest` exists.
