@@ -80,6 +80,9 @@ HARDEN_DIRS=".codex .claude .gemini .aws .config/gh .config/gcloud .ssh .prism .
 # open it: the calling terminal also needs Full Disk Access. The override
 # exists for the tests; nothing else should set it.
 SPOTLIGHT_PLIST="${MACHINE_SETUP_SPOTLIGHT_PLIST:-/System/Volumes/Data/.Spotlight-V100/VolumeConfiguration.plist}"
+# The sudoers drop-in that lets a run with no ticket read that file (sd:3232).
+# The override exists for the tests, like the one above.
+SPOTLIGHT_SUDOERS="${MACHINE_SETUP_SPOTLIGHT_SUDOERS:-/etc/sudoers.d/machine-setup-spotlight-read}"
 # The PlistBuddy override exists for the tests too: CI runs on Linux, which
 # has no PlistBuddy, and the tests put a stand-in there.
 PLISTBUDDY="${MACHINE_SETUP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
@@ -1550,6 +1553,21 @@ stage_system() {
     sudoers_cmd='echo "Defaults timestamp_timeout=60" > /etc/sudoers.d/timestamp-timeout && chmod 440 /etc/sudoers.d/timestamp-timeout && visudo -c'
     sudo_run "sudo sh -c '$sudoers_cmd'" sudo sh -c "$sudoers_cmd"
   fi
+  # Reading Spotlight's exclusions needs root on every run, and a nightly run
+  # or an agent shell has no ticket (sd:3232). This rule allows that one read
+  # without a password and nothing else; adding a path still asks. visudo
+  # checks the file before it goes in, and sudo skips names with a dot, so a
+  # bad or half-written rule never takes effect.
+  if [ -n "$(spotlight_wanted)" ]; then
+    if [ -e "$SPOTLIGHT_SUDOERS" ]; then
+      echo "  ok      Spotlight read sudoers drop-in"
+    else
+      sr_rule="$(id -un) ALL=(root) NOPASSWD: /usr/bin/plutil -convert xml1 -o - $SPOTLIGHT_PLIST"
+      sr_tmp="$(dirname "$SPOTLIGHT_SUDOERS")/.$(basename "$SPOTLIGHT_SUDOERS").tmp"
+      sr_cmd="printf '%s\\n' '$sr_rule' > $sr_tmp && chmod 440 $sr_tmp && visudo -cf $sr_tmp && mv $sr_tmp $SPOTLIGHT_SUDOERS || { rm -f $sr_tmp; exit 1; }"
+      sudo_run "sudo sh -c \"$sr_cmd\"" sudo sh -c "$sr_cmd"
+    fi
+  fi
   fw=/usr/libexec/ApplicationFirewall/socketfilterfw
   if [ -x "$fw" ]; then
     if "$fw" --getglobalstate 2>/dev/null | grep -q enabled; then
@@ -1625,12 +1643,14 @@ spotlight_expand() {
 # reads the copy without sudo. PlistBuddy alone cannot tell an unreadable file
 # from a missing key: it reports both as "Does Not Exist".
 #
-# Without --apply this never prompts: `sudo -n` either has a cached ticket or
-# the read defers. The nightly `status` run is non-interactive.
+# Without --apply this never prompts: `sudo -n` has a cached ticket, the
+# sudoers drop-in allows the read (sd:3232), or the read defers. The nightly
+# `status` run is non-interactive.
 spotlight_read() { # outfile
   SPOTLIGHT_KEY=0; SPOTLIGHT_WHY=""; SPOTLIGHT_FIX=""
   : > "$1"
-  if ! sudo -n true 2>/dev/null; then
+  if ! sudo -n true 2>/dev/null &&
+     ! sudo -n -l plutil -convert xml1 -o - "$SPOTLIGHT_PLIST" >/dev/null 2>&1; then
     if [ "$APPLY" -ne 1 ] || ! sudo -v; then
       SPOTLIGHT_WHY="reading $SPOTLIGHT_PLIST needs sudo, and no sudo ticket is cached"
       SPOTLIGHT_FIX="run 'sudo -v', then re-run (or re-run with --apply)"
