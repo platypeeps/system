@@ -33,7 +33,7 @@ STATUS_CHANGE = "status_change"
 
 #: The `state` kinds. The `CHECK` in the schema is the enforcement; this is
 #: the list callers name, so a typo is an error here and not a silent row.
-STATE_KINDS = ("checkpoint", "verified", "restore", "watermark", "heartbeat", "check")
+STATE_KINDS = ("checkpoint", "verified", "restore", "watermark", "heartbeat", "check", "snooze")
 #: The kinds whose NULL `resolved_at` is open work; the rest are logs and
 #: cursors read latest-per-key, where NULL means nothing (sd:2849).
 OPEN_STATE_KINDS = ("restore", "verified", "check")

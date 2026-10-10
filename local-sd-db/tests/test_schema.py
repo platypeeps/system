@@ -282,6 +282,7 @@ class TheStateCheckKind(SchemaCase):
         for kind in STATE_KINDS:
             connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, 't', '{}')", (kind, f"k-{kind}"))
         self.assertIn("check", STATE_KINDS)
+        self.assertIn("snooze", STATE_KINDS)
 
 
 class TheLatestStateByKindAndKey(SchemaCase):
@@ -1282,7 +1283,7 @@ class TheSatelliteGateDrop(SchemaCase):
         before = self._rows(raw)
         raw.close()
         result = migrate(self.path)
-        self.assertEqual((result.before, result.applied), (24, [25, 26]))
+        self.assertEqual((result.before, result.applied), (24, list(range(25, SCHEMA_VERSION + 1))))
         connection = connect(self.path, write=True)
         self.addCleanup(connection.close)
         self.assertNotIn("satellite_gate", self._columns(connection))
@@ -1311,7 +1312,7 @@ class TheSatelliteGateDrop(SchemaCase):
         raw.commit()
         raw.close()
         result = migrate(self.path)
-        self.assertEqual((result.before, result.applied), (24, [25, 26]))
+        self.assertEqual((result.before, result.applied), (24, list(range(25, SCHEMA_VERSION + 1))))
 
     def test_the_reverse_returns_the_file_to_twenty_four_with_every_row_off(self):
         self._at_version_twenty_four()
@@ -1385,7 +1386,7 @@ class TheStatusSourceDrop(SchemaCase):
         before = self._rows(raw)
         raw.close()
         result = migrate(self.path)
-        self.assertEqual((result.before, result.applied), (25, [26]))
+        self.assertEqual((result.before, result.applied), (25, list(range(26, SCHEMA_VERSION + 1))))
         connection = connect(self.path, write=True)
         self.addCleanup(connection.close)
         self.assertNotIn("status_source", self._columns(connection))
@@ -1415,7 +1416,7 @@ class TheStatusSourceDrop(SchemaCase):
         raw.commit()
         raw.close()
         result = migrate(self.path)
-        self.assertEqual((result.before, result.applied), (25, [26]))
+        self.assertEqual((result.before, result.applied), (25, list(range(26, SCHEMA_VERSION + 1))))
 
     def test_a_retiring_repository_refuses_the_drop_and_names_it(self):
         """`retiring` is a restore's hold on rows not yet proven against the
@@ -1440,7 +1441,7 @@ class TheStatusSourceDrop(SchemaCase):
         raw.commit()
         raw.close()
         result = migrate(self.path)
-        self.assertEqual((result.before, result.applied), (25, [26]))
+        self.assertEqual((result.before, result.applied), (25, list(range(26, SCHEMA_VERSION + 1))))
         connection = connect(self.path)
         self.addCleanup(connection.close)
         self.assertEqual(connection.execute("SELECT count(*) FROM sqlite_temp_master").fetchone()[0], 0)
@@ -1471,6 +1472,119 @@ class TheStatusSourceDrop(SchemaCase):
         self.assertEqual(raw.execute("PRAGMA table_info(repo)").fetchall(),
                          reference.execute("PRAGMA table_info(repo)").fetchall())
         self.assertEqual(raw.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+
+class TheSnoozeKind(SchemaCase):
+    """Migration 27 (sd:1896). `snooze` joins the `state` kinds: a Today or
+    Health row hidden until a time. The table is rebuilt as 7 rebuilt it, so
+    every row comes through with its id and all four indexes come back. A
+    failed rebuild leaves the file at 26, and the reverse returns it to 26's
+    shape without the snooze rows."""
+
+    ROWS = [(7, "heartbeat", "runner", "t1", "{}", None),
+            (9, "restore", "2026-09-01", "t2", "{}", "t3"),
+            (11, "check", "run-1", "t4", "{}", None),
+            (12, "checkpoint", "contribution:a", "t5", "{}", None)]
+
+    def _at_version_twenty_six(self):
+        connection = connect(self.path, create=True, write=True)
+        try:
+            paths.install(connection)
+            for version, path in schema_module.migrations():
+                # 26 literally, for the reason `_at_version_nine` gives.
+                if version > 26:
+                    break
+                connection.executescript(
+                    f"BEGIN;\n{path.read_text(encoding='utf-8')}\n"
+                    f"PRAGMA user_version = {version};\nCOMMIT;")
+            connection.executemany(
+                "INSERT INTO state (id, kind, key, timestamp, body, resolved_at) VALUES (?, ?, ?, ?, ?, ?)", self.ROWS)
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _rows(self, connection):
+        return [tuple(row) for row in connection.execute(
+            "SELECT id, kind, key, timestamp, body, resolved_at FROM state ORDER BY id")]
+
+    def _shape(self, connection):
+        from sd_db.backup import _schema_objects
+
+        return ([tuple(row) for row in connection.execute("PRAGMA table_info(state)")],
+                _schema_objects(connection, ["state"]))
+
+    def _reference(self, upto):
+        reference = sqlite3.connect(":memory:")
+        self.addCleanup(reference.close)
+        paths.install(reference)
+        for version, path in schema_module.migrations():
+            if version <= upto:
+                reference.executescript(path.read_text(encoding="utf-8"))
+        return reference
+
+    def test_rows_survive_the_rebuild_and_a_snooze_is_accepted(self):
+        self._at_version_twenty_six()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (26, list(range(27, SCHEMA_VERSION + 1))))
+        connection = connect(self.path, write=True)
+        self.addCleanup(connection.close)
+        self.assertEqual(self._rows(connection), self.ROWS)
+        self.assertEqual(self._shape(connection), self._shape(self._reference(26)))
+        connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('snooze', 'today:job:x:1', 't6', '{}')")
+        connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('snooze', 'today:job:x:1', 't7', '{}')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('bored', 'x', 't8', '{}')")
+        # The heartbeat's and the check's one-row-per-key indexes came back with the table.
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('heartbeat', 'runner', 't9', '{}')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('check', 'run-1', 't9', '{}')")
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE 'state_before_%'").fetchone()[0], 0)
+
+    def test_a_failed_rebuild_leaves_the_file_at_twenty_six_and_a_rerun_finishes_it(self):
+        self._at_version_twenty_six()
+        # A row the new CHECK refuses fails the copy, after the rename and the
+        # new table: the one way the rebuild can stop half done.
+        raw = sqlite3.connect(self.path)
+        raw.execute("PRAGMA ignore_check_constraints = ON")
+        raw.execute("INSERT INTO state (id, kind, key, timestamp) VALUES (20, 'bored', 'x', 't9')")
+        raw.commit()
+        raw.close()
+        with self.assertRaises(sqlite3.IntegrityError):
+            migrate(self.path)
+        raw = sqlite3.connect(self.path)
+        self.assertEqual(schema_version(raw), 26)
+        self.assertEqual(self._rows(raw), self.ROWS + [(20, "bored", "x", "t9", None, None)])
+        self.assertEqual(self._shape(raw), self._shape(self._reference(26)))
+        self.assertEqual(raw.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE 'state_before_%'").fetchone()[0], 0)
+        raw.execute("DELETE FROM state WHERE id = 20")
+        raw.commit()
+        raw.close()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (26, list(range(27, SCHEMA_VERSION + 1))))
+
+    def test_the_reverse_returns_the_file_to_twenty_six_without_the_snoozes(self):
+        self._at_version_twenty_six()
+        migrate(self.path)
+        connection = connect(self.path, write=True)
+        connection.execute(
+            "INSERT INTO state (id, kind, key, timestamp, body) VALUES (30, 'snooze', 'today:job:x:1', 't6', '{}')")
+        connection.commit()
+        connection.close()
+        text = dict(schema_module.migrations())[27].read_text(encoding="utf-8")
+        raw = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(raw.close)
+        raw.executescript("\n".join(line[4:] for line in text.splitlines() if line.startswith("--   ")))
+        self.assertEqual(schema_version(raw), 26)
+        self.assertEqual(self._rows(raw), self.ROWS)
+        with self.assertRaises(sqlite3.IntegrityError):
+            raw.execute("INSERT INTO state (kind, key, timestamp, body) VALUES ('snooze', 'today:job:x:1', 't7', '{}')")
+        # A backup restore compares the table and its indexes to 26's shape.
+        self.assertEqual(self._shape(raw), self._shape(self._reference(26)))
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (26, list(range(27, SCHEMA_VERSION + 1))))
 
 
 class TheConnection(SchemaCase):

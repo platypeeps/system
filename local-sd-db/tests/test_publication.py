@@ -11,7 +11,7 @@ from unittest.mock import patch
 from sd_db import paths
 from sd_db import publication as pub
 from sd_db.publication_render import md_to_html
-from sd_db.schema import SCHEMA_DIR
+from sd_db.schema import SCHEMA_DIR, SCHEMA_VERSION
 from sd_db.testing.wire import hub_only
 from sd_db.workflow import WorkflowError
 from sd_db.writes import record_state, resolve_state
@@ -251,10 +251,11 @@ class Publication(WritingCase):
         migrating = sqlite3.connect(self.path, isolation_level=None)
         paths.install(migrating)
         # 014 names `repo.status_source`, which 026 drops: step back to 25 for it, then forward again.
+        # 026's reverse leaves `state` as it is, so the forward step ends at the current version.
         drop = (SCHEMA_DIR / "026_repo_drop_status_source.sql").read_text(encoding="utf-8")
         migrating.executescript("\n".join(line[4:] for line in drop.splitlines() if line.startswith("--   ")))
         migrating.executescript((SCHEMA_DIR / "014_home_relative_repo_paths.sql").read_text(encoding="utf-8"))
-        migrating.executescript(drop + "\nPRAGMA user_version = 26;")
+        migrating.executescript(drop + f"\nPRAGMA user_version = {SCHEMA_VERSION};")
         migrating.close()
         self.assertEqual(piece_state(self.db, self.item)["item"]["repo"], "~/writing")
         with self.assertRaisesRegex(WorkflowError, "newer evidence"):
