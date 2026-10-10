@@ -906,7 +906,8 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
 
     def test_install_all_installs_every_job(self):
         # PIN. There is no profile filter: --all is every job in the job
-        # directories, including the extra ones.
+        # directories, including the extra ones. Where machine-setup records
+        # a profile, --all refuses instead (sd:3186, HostJobsTest).
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
         (self.extra / "private.job").write_text('JOB_SCHEDULE="0 4 * * *"\nJOB_COMMAND="true"\n')
         env = {**self.extra_env(), "CRON_JOBS_PROFILE": "other"}
@@ -1153,6 +1154,47 @@ class HostJobsTest(unittest.TestCase):
         # uninstall --all reaches this host's jobs too, as it did the shared.
         result = self.run_script("uninstall", "--all")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.installed(), [])
+
+    def test_a_recorded_profile_refuses_install_all_and_verify_all(self):
+        # REGRESSION (sd:3186). --all read every shared job, not the set the
+        # machine-setup profile names, so a satellite loaded every hub job.
+        # Where a profile is recorded, the cron stage owns that set: --all
+        # refuses, installs nothing and reports nothing missing.
+        for name in ("one", "two", "three", "four", "five"):
+            self.fx.write_job(name, self.JOB.format("true"))
+        state = self.fx.home / ".config" / "machine-setup"
+        state.mkdir(parents=True)
+        (state / "profile").write_text("satellite\n")
+        for args in (("install", "--all"), ("install", "--every"), ("verify", "--all"), ("verify",)):
+            result = self.run_script(*args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn("machine-setup.sh update cron", result.stderr, args)
+            self.assertNotIn("missing", result.stdout, args)
+        self.assertEqual(self.installed(), [])
+        # One named job still installs; uninstall --all still clears.
+        self.assertEqual(self.run_script("install", "one").returncode, 0)
+        self.assertEqual(self.installed(), [f"{LABEL_PREFIX}.cron.one.plist"])
+        self.assertEqual(self.run_script("uninstall", "--all").returncode, 0)
+        self.assertEqual(self.installed(), [])
+
+    def test_a_profile_override_or_a_state_folder_it_cannot_read_refuses_too(self):
+        # MACHINE_SETUP_PROFILE names the profile for one run, as it does for
+        # machine-setup. A state folder this run cannot search may hold a
+        # profile: that is unknown, not "no profile", so --all refuses.
+        self.fx.write_job("one", self.JOB.format("true"))
+        env = {**self.env(), "MACHINE_SETUP_PROFILE": "satellite"}
+        result = subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "--all"],
+                                env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        state = self.fx.tmp / "state"
+        state.mkdir()
+        state.chmod(0o600)
+        self.addCleanup(state.chmod, 0o700)
+        env = {**self.env(), "MACHINE_SETUP_STATE": str(state)}
+        result = subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), "install", "--all"],
+                                env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(self.installed(), [])
 
     def test_env_file_supplies_the_host(self):

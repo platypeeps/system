@@ -96,8 +96,8 @@ backup, and the fixture harness both repositories test against.
       hub.py        `~/.config/sd/hub.json`, which makes a machine a satellite
       tailnet.py    this Tailscale node and its peers, by `tailscale whois`
       satellite.py  the checks the machine-setup `satellite` stage runs
-      self_install.py  a satellite installs the hub's build from
-                    origin/main when its digest is the hub's (sd:2802)
+      self_install.py  a satellite installs the hub's build from HEAD
+                    or origin/main when its digest is the hub's (sd:2802)
       migrate.py    applying migrations, by command and never on open
       writes.py     every write, as a named function
       registry.py   providers.yaml merged with the provider and bill rows;
@@ -409,9 +409,10 @@ The machine-setup `satellite` stage writes it.
 After the hub's `sd_db` changes, the hub refuses an older satellite with `BuildMismatch`.
 The satellite then installs the hub's build itself (sd:2802); the plan is `docs/work/2026-10-05-satellite-self-install/`.
 
-- It fetches `origin` in the system checkout and exports `origin/main:local-sd-db` with `git archive`.
+- It exports `HEAD:local-sd-db` of the system checkout with `git archive`; on a satellite, HEAD is the hub's pin `repo-sync.sh follow` moved it to (sd:3168).
+  When that is not the hub's build, it fetches `origin` and exports `origin/main:local-sd-db` the same way.
   The checkout's worktree and `HEAD` do not change.
-- It installs only when that export's build digest equals the hub's; the refusal carries the hub's digest.
+- It installs only an export whose build digest equals the hub's; the refusal carries the hub's digest.
   A hub that runs another build gets no install, and the error says why.
 - A fresh `python -I` in the venv must then report the hub's digest.
 - On a refusal, the command installs the hub's build, and the error asks you to run the command again.

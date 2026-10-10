@@ -16,6 +16,7 @@ while [ -L "$SELF" ]; do
 done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
 . "$DIR/../lib/config.sh"
+. "$DIR/../lib/bounded.sh"
 
 # The work checkout root. REPO_SYNC_WORK_ROOT and local-ai-apps'
 # AI_APPS_WORK_ROOT mean the same thing; SYSTEM_TOOLS_WORK_ROOT sets both.
@@ -400,6 +401,24 @@ pin_default() {
   return 1
 }
 
+# Prints "on <branch>, N ahead, M behind <upstream>" when checkout $1 is on
+# a branch other than origin's default, and its upstream, just fetched, moved
+# past the branch's own commits (sd:3125). That is work in progress, often a
+# pull request branch; `pull --ff-only` can never move it. Returns 1
+# otherwise, and when any read or the fetch fails, so the pull still runs
+# and reports that failure.
+side_branch_diverged() {
+  d_branch=$(git -C "$1" symbolic-ref -q --short HEAD) || return 1
+  d_default=$(pin_default "$1") || return 1
+  [ "$d_branch" != "$d_default" ] || return 1
+  d_up=$(git -C "$1" rev-parse -q --abbrev-ref '@{u}' 2>/dev/null) || return 1
+  git -C "$1" fetch -q 2>/dev/null || return 1
+  d_counts=$(git -C "$1" rev-list --left-right --count 'HEAD...@{u}') || return 1
+  set -- $d_counts
+  [ "$1" -gt 0 ] && [ "$2" -gt 0 ] || return 1
+  echo "on $d_branch, $1 ahead, $2 behind $d_up"
+}
+
 # A satellite follows the hub (sd:3100): `$HOME/.config/sd/hub.json`, the
 # file local-sd-db's hub.py reads, makes this machine one.
 is_satellite() {
@@ -461,7 +480,10 @@ sync() {
       fi
     elif [ -d "$target/.git" ]; then
       echo "=== refreshing $full_repo"
-      if ! (cd "$target" && git pull --ff-only && git submodule update --init --recursive); then
+      if state=$(side_branch_diverged "$target"); then
+        echo "$state; left alone"
+        echo "$full_repo $state" >> "$DIVLOG"
+      elif ! (cd "$target" && git pull --ff-only && git submodule update --init --recursive); then
         echo "!!! failed: $full_repo" >&2
         echo "$full_repo" >> "$FAILLOG"
       fi
@@ -480,6 +502,10 @@ sync() {
   if [ -s "$PINLOG" ]; then
     echo "pinned: $(wc -l < "$PINLOG" | tr -d ' ') checkout(s), not pulled"
     sed 's/^/  /' "$PINLOG"
+  fi
+  if [ -s "$DIVLOG" ]; then
+    echo "diverged: $(wc -l < "$DIVLOG" | tr -d ' ') checkout(s), left alone; rebase or merge by hand"
+    sed 's/^/  /' "$DIVLOG"
   fi
   if [ -s "$FAILLOG" ]; then
     echo "failed: $(wc -l < "$FAILLOG" | tr -d ' ') repo(s)"
@@ -661,9 +687,22 @@ drain_exec() {
 }
 
 # The intent marker (sd:3100, operator ruling): written before any move and
-# deleted once make setup succeeds at the pin or a rollback puts all back. A
-# killed follow leaves it, so the next run finishes and sets up again.
+# deleted only once make setup and the machine-setup update are proven at the
+# pin (sd:3168). A killed or rolled-back follow leaves it, so the next run
+# finishes, sets up and updates again.
 FOLLOW_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/follow-intent"
+
+# The words machine-setup's `status` counts as drift (its status_stage grep);
+# test_follow holds the two equal.
+FOLLOW_DRIFT='DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults write|^  extra '
+
+# No drift is no proof: a SKIP, a hub that did not answer or a check that
+# stopped part way prints no drift word. So each stage's dry run must also
+# print the line it prints only once it checked the end state: bin-links
+# status's last line, and the satellite's line for a build the hub accepted.
+# test_follow holds both to what the stages print.
+FOLLOW_PROOF_bin='^  PATH +on PATH$'
+FOLLOW_PROOF_satellite='^  ok +sd_db .* matches the hub'
 
 # Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
 # already there and is clean, or a pack at $2 for `make setup` while the
@@ -672,7 +711,7 @@ FOLLOW_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/follow-intent"
 follow_want() {
   if is_pinned "$3" && [ "$(git -C "$3" rev-parse HEAD)" = "$2" ]; then
     if [ "$1" = pack ] && [ -e "$FOLLOW_INTENT" ]; then
-      echo "follow: pack at the hub's pin, but a follow stopped before its make setup finished ($FOLLOW_INTENT); setting up again"
+      echo "follow: pack at the hub's pin, but a follow stopped before its make setup finished, or its machine-setup update failed ($FOLLOW_INTENT); setting up again"
       printf '%s\n' "setup$US$2$US$3" >> "$TMPD/moves"
     else
       echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
@@ -736,8 +775,10 @@ follow() {
     return 1
   fi
   if [ ! -s "$TMPD/moves" ]; then
-    rm -f "$FOLLOW_INTENT"
-    return 0
+    # Nothing to move or set up (no pack in the conf). A marker left is still
+    # an update not proven, so it runs the stages again.
+    [ -e "$FOLLOW_INTENT" ] || return 0
+    echo "follow: at the hub's pin, but a follow's update was not proven ($FOLLOW_INTENT); updating again"
   fi
   if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
     rm -rf "$TMPD"
@@ -765,7 +806,44 @@ follow() {
     fi
   done 3< "$TMPD/moves"
   echo "----------------------------------------"
+  # The two update stages that need the locks run here, with the lanes still
+  # held, so they never run under a lane run (sd:3168): satellite installs the
+  # hub's sd_db into the pack's venv, and bin relinks the commands. Neither
+  # loads or unloads a LaunchAgent. A full update would not do: its cron and agents stages
+  # reinstall this job's own LaunchAgent, and launchd then boots out the
+  # running follow mid-update. Those stages run in the job's chained update,
+  # after this. A failure leaves the move and the marker: the next run sets
+  # up and updates again. Each stage and its check share one 450 s bound, so
+  # both stay inside the job's limit after the drain's 45 minutes.
+  # The exit alone does not say the stage worked: bin pipes bin-links through
+  # sed, and the satellite stage reports a failed install as a line. So each
+  # --apply is followed by the stage's dry run, and a drift word there fails
+  # the stage as a failed exit does; a check that cannot answer fails it too,
+  # and so does one without the stage's proof line (FOLLOW_PROOF_*).
   if [ "$f_failed" -eq 0 ]; then
+    f_ms="$f_sys/local-machine-setup/machine-setup.sh"
+    for f_stage in bin satellite; do
+      echo "--- machine-setup update $f_stage --apply, then its dry run"
+      f_why=
+      if [ "$f_stage" = bin ]; then f_proof=$FOLLOW_PROOF_bin; else f_proof=$FOLLOW_PROOF_satellite; fi
+      if st_bounded 450 sh -c 'sh "$1" update "$2" --apply && sh "$1" update "$2" > "$3"' \
+          sh "$f_ms" "$f_stage" "$TMPD/check" < /dev/null; then
+        # grep: 0 is a match, 1 none, 2 an unreadable check (a failure).
+        f_rc=0
+        grep -E "$FOLLOW_DRIFT" "$TMPD/check" > "$TMPD/drift" || f_rc=$?
+        if [ "$f_rc" -eq 0 ]; then
+          cat "$TMPD/drift"
+          f_why=" left drift, named above"
+        elif [ "$f_rc" -eq 1 ]; then
+          grep -Eq "$f_proof" "$TMPD/check" && continue
+          sed 's/^/    /' "$TMPD/check"
+          f_why=" did not prove its end state, printed above"
+        fi
+      fi
+      echo "!!! failed: machine-setup update $f_stage$f_why; the checkouts stay at the hub's pin; by hand: sh '$f_ms' update $f_stage --apply"
+      echo "follow  : moved, update failed; $FOLLOW_INTENT stays, so the next run sets up and updates again"
+      return 1
+    done
     rm -f "$FOLLOW_INTENT"
     echo "follow  : done"
     return 0
@@ -791,8 +869,9 @@ follow() {
       fi
     fi
   done 3< "$TMPD/moved"
+  # The marker stays either way: the rollback's make setup at the old sha
+  # proves no update, and only that proof deletes it.
   if [ "$f_back" = 1 ]; then
-    rm -f "$FOLLOW_INTENT"
     echo "follow  : failed; each checkout it moved is back at its old sha, so a migrate note above does not apply; the next run retries"
   else
     echo "follow  : failed; $FOLLOW_INTENT stays, so the next run finishes the move and sets up again"
@@ -1523,7 +1602,8 @@ case "$1" in
     # temp file rather than a variable, which would not survive the pipeline.
     FAILLOG=$(mktemp)
     PINLOG=$(mktemp)
-    trap 'rm -f "$FAILLOG" "$PINLOG"' EXIT INT TERM
+    DIVLOG=$(mktemp)
+    trap 'rm -f "$FAILLOG" "$PINLOG" "$DIVLOG"' EXIT INT TERM
     sync
     ;;
   refresh)
@@ -1571,6 +1651,7 @@ case "$1" in
     TMPD=$(mktemp -d)
     FAILLOG="$TMPD/faillog"; : > "$FAILLOG"
     PINLOG="$TMPD/pinlog"; : > "$PINLOG"
+    DIVLOG="$TMPD/divlog"; : > "$DIVLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     EMAIL_FAILED=0
     SYNC_FAILED=0
@@ -1692,7 +1773,10 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              summary; exits 1 if any repo failed, having tried all the others.
              A checkout on a detached HEAD is pinned: sync fetches it, never
              pulls it, and lists it as "pinned at <sha>", with ", N behind
-             origin/<default>" when it is. A pinned checkout is not a failure
+             origin/<default>" when it is. A branch other than the default,
+             with its own commits, that its upstream moved past is listed
+             under "diverged:" and left alone, not failed (sd:3125).
+             A pinned checkout is not a failure
   check      read-only: report which configured repos have no checkout
              (MISSING) and which sit on a different origin than the conf
              names (DIFFERS). Touches no network, so a repo that is merely
@@ -1769,13 +1853,20 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              from the pack origin and, where a checkout differs, drain the
              lanes as refresh does, then move it, detached, to exactly that
              sha, never to origin's default branch, and run `make setup` in
-             the pack. Every check runs first: a failed fetch, a tag with no
+             the pack. Then, lanes still held, it runs this system
+             checkout's `machine-setup.sh update bin --apply` and
+             `update satellite --apply`, each followed by its dry run and
+             bounded at 450 s; a failure, a drift word in the dry run, or a
+             dry run without the stage's proof line (a SKIP proves nothing)
+             exits 1, keeps the move and names the command. Every check
+             runs first: a failed fetch, a tag with no
              pack= line, uncommitted changes or a drain timeout refuses with
              nothing moved. When a move fails, each checkout it moved goes
              back to its old sha and the pack runs `make setup` again there,
-             so the next run retries the pair. A run killed after it wrote
-             $XDG_STATE_HOME/repo-sync/follow-intent leaves it, and the next
-             run finishes and sets the pack up again, even at the pin.
+             so the next run retries the pair. A run killed or rolled back
+             after it wrote $XDG_STATE_HOME/repo-sync/follow-intent leaves
+             it, and the next run finishes, sets the pack up and updates
+             again, even at the pin; only a proven update deletes it.
              Already there, or no hub-pin tag, is a no-op. On the hub it says so and
              does nothing. On a satellite, sync and nightly never pull system or
              pack; only follow moves them.

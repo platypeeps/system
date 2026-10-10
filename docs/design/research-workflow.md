@@ -33,12 +33,16 @@ sd-research-kit conventions
 | Path | Holds |
 |---|---|
 | `00-overview/` | `understanding.md`, `open-questions.md`, `next-research.md` — fixed names |
-| `10-sources/` | `registry.md` (what was read, when, status), `references.md` |
+| `10-sources/` | `registry.md` (what was read, when, status, corrections on record), `references.md` |
 | `20-map/` | `MAP-*.md` — ledgers, crosswalks, comparisons |
 | `30-brief/` | `BRIEF-*` positions · `REVIEW-*` assessments · `SUMMARY-*` condensations |
 | `40-docs/` | `PRD-` `DESIGN-` `PLAN-` `SPIKE-` `SURVEY-` `DISCOVERY-` `BENCHMARK-` `DECK-` `OUTREACH-` |
 | `90-scratch/` | Throwaway and superseded. Never cited. |
 | `docs/dashboard/` | Rendered HTML. Generated, gitignored, served. |
+
+Every `registry.md` carries a `## Corrections on record` section: claims that
+reading the source overturned, so nobody re-derives the old answer. An empty
+section is a statement that none is recorded yet; delete no entry.
 
 The numbers are **reading order, not workflow**. `00` is where a newcomer
 starts and `90` is where nothing is cited from.

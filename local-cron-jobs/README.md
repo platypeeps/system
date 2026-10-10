@@ -23,6 +23,12 @@ this host's `<config>/cron-jobs/jobs/<host>/`, and any `CRON_JOBS_EXTRA_DIRS`.
 Other hosts' folders are never read, so one config directory can serve several
 machines (see [Per-machine jobs](#per-machine-jobs)).
 
+`--all` reads no profile. Where `local-machine-setup` has recorded one
+(`~/.config/machine-setup/profile`, or `MACHINE_SETUP_PROFILE`), `install --all`
+and `verify --all` refuse and exit 1: the profile names this machine's jobs, and
+`machine-setup.sh update cron` installs exactly those (sd:3186). `uninstall
+--all` still runs.
+
 `verify` renders the plist the generator would write now into a scratch
 directory and compares it byte-for-byte with the installed one; it never
 touches launchd. A job whose plist has gone stale — the generator changed, the

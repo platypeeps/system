@@ -158,14 +158,29 @@ class TheInstall(Case):
                          str(self.origin.source.resolve()))
 
     def test_a_tip_that_is_not_the_hubs_build_installs_nothing(self):
-        hubs = self.origin.digest()
+        # Neither HEAD (the first commit) nor the fetched tip is the hub's build.
+        hubs = self.origin.push_change("the hub's build")
         self.origin.push_change("a merge the hub has not restarted on")
         outcome = self.install(hubs)
         self.assertFalse(outcome.installed)
+        self.assertIn("HEAD", outcome.text)
         self.assertIn("origin/main", outcome.text)
         self.assertIn(hubs, outcome.text)
         self.assertEqual(self.unpack.calls, [])
         self.assertIsNone(self.installed())
+
+    def test_head_at_the_hubs_pin_installs_when_origin_main_moved_on(self):
+        """sd:3168. `repo-sync.sh follow` moves the system checkout to the
+        hub's pin; once main moves past it, the hub's build is HEAD's, not
+        origin/main's. HEAD is tried first, under the same digest check."""
+        hubs = self.origin.digest()
+        git(self.origin.source, "switch", "--quiet", "--detach")
+        self.origin.push_change("a merge after the hub pinned its build")
+        outcome = self.install(hubs)
+        self.assertTrue(outcome.installed, outcome.text)
+        self.assertEqual(self.installed(), hubs)
+        self.assertIn("HEAD", outcome.text)
+        self.assertEqual(len(self.unpack.calls), 1)
 
     def test_the_off_switch_installs_and_fetches_nothing(self):
         before = git(self.origin.source, "rev-parse", "origin/main")
@@ -520,7 +535,7 @@ class TheNightly(Case):
     def test_a_dry_run_plans_the_install_and_installs_nothing(self):
         wanted = self.origin.digest()
         lines = self.run_stage(mismatch(hub_value=wanted, hub_build=wanted), apply=False)
-        self.assertIn(f"  [dry-run] install the hub's sd_db build {wanted} from origin/main of "
+        self.assertIn(f"  [dry-run] install the hub's sd_db build {wanted} from HEAD or origin/main of "
                       f"{self.origin.source}, if its digest is the hub's", lines)
         self.assertEqual(self.unpack.calls, [])
 

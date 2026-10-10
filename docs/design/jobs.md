@@ -39,7 +39,9 @@ The repository ships no installed jobs. `local-cron-jobs/examples/` is a
 
 A host job overrides a same-named shared one, and other hosts' folders are
 never read. `install --all` installs the shared jobs plus this host's; no
-profile filter sits between the folders and the install.
+profile filter sits between the folders and the install. So on a machine where
+`local-machine-setup` records a profile, `install --all` and `verify --all`
+refuse, and its cron stage installs the jobs that profile names (sd:3186).
 
 ## What the jobs are
 

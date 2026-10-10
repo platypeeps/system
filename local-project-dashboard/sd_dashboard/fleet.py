@@ -348,13 +348,19 @@ def fetched(repo):
 
 
 def facts(collectors, repo):
-    """`collectors.git_facts` read through `read_output`: the same five commands, the same keys, plus `truncated`.
+    """`collectors.git_facts`'s keys read through `read_output`, plus `truncated`.
 
     `None` when the checkout's `.git` is gone, as `git_facts` answers; `Unreadable`
-    when `rev-parse`, `status` or `log` exits non-zero, because a row with no
+    when `status` or `log` exits non-zero, because a row with no
     branch and no dirt is not a clean checkout and must not read as one.
-    `rev-list` and `remote get-url` may fail on their own: no upstream and no
-    remote are facts, and the row says "unknown" and no link for them.
+    `symbolic-ref` and `remote get-url` may fail on their own: no default
+    branch and no remote are facts, and the row says "unknown" and no link.
+
+    One `status --porcelain=v2 --branch` answers what `rev-parse`, `status`
+    and the upstream `rev-list` answered as three commands (sd:2195): starting
+    git is most of what the fleet read costs. Its `# branch.*` headers come
+    before the entries, so a status cut at the ceiling still names the
+    branch, and each entry is one line, as in the first porcelain format.
     """
     p = str(repo)
     if not (repo / ".git").exists():
@@ -377,14 +383,19 @@ def facts(collectors, repo):
                              else f"git {args[0]} did not run")
         return text
 
-    branch = git("rev-parse", "--abbrev-ref", "HEAD", needed=True) or "?"
-    dirty = sum(1 for line in git("status", "--porcelain", needed=True).split("\n") if line.strip())
+    branch, dirty, ahead, behind = "?", 0, None, None
+    for line in git("status", "--porcelain=v2", "--branch", needed=True).split("\n"):
+        if line.startswith("# branch.head "):
+            # `(detached)` is the `HEAD` that `rev-parse --abbrev-ref` printed.
+            head = line[len("# branch.head "):]
+            branch = "HEAD" if head == "(detached)" else head or "?"
+        elif line.startswith("# branch.ab "):
+            # `+<ahead> -<behind>`, present only when the upstream resolves.
+            a, b = line[len("# branch.ab "):].split()[:2]
+            ahead, behind = int(a.lstrip("+")), int(b.lstrip("-"))
+        elif line.strip() and not line.startswith("#"):
+            dirty += 1
     when, subject, author = (git("log", "-1", "--format=%cI%x1f%s%x1f%an", needed=True).split("\x1f") + ["", "", ""])[:3]
-    ahead = behind = None
-    counts = git("rev-list", "--left-right", "--count", "@{upstream}...HEAD")
-    if counts and "\t" in counts:
-        b, a = counts.split("\t")[:2]
-        behind, ahead = int(b), int(a)
     # Behind the remote's default branch, from local refs only (sd:1676): the
     # upstream count above follows whatever branch is checked out, and a
     # primary checkout parked on a feature branch still lags `main`. Counted

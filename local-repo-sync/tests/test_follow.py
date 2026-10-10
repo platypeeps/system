@@ -15,6 +15,8 @@ without them; a PIN case keeps behaviour the change had to preserve.
 
 import json
 import pathlib
+import re
+import subprocess
 import sys
 import unittest
 
@@ -29,6 +31,23 @@ FAIL_FIRST_SETUP = ('git -C "$2" rev-parse HEAD >> "$MAKE_LOG.heads"; '
                     'else : > "$MAKE_LOG.failed"; MAKE_RC=1; fi')
 
 
+# For machine-setup.sh in the fixture's system checkout (sd:3168): log the
+# arguments of each run, run UPDATE_HOOK, exit UPDATE_RC. A run of every
+# stage, or of cron or agents, reinstalls the follow job's own LaunchAgent:
+# launchd boots the job out, so the stub ends as a TERMed process does. A
+# dry run ends with the line the real stage prints once it has checked the
+# end state (PROOF); a hook that exits first leaves it out.
+PROOF = {"bin": "  PATH         on PATH", "satellite": "  ok      sd_db 0.1 build 0123abcd matches the hub's"}
+MACHINE_SETUP_STUB = ('[ -z "$UPDATE_LOG" ] || printf \'%s\\n\' "$*" >> "$UPDATE_LOG"\n'
+                      'case "$2" in --apply|cron|agents) echo bootout >> "$UPDATE_LOG"; exit 143 ;; esac\n'
+                      '[ -z "$UPDATE_HOOK" ] || eval "$UPDATE_HOOK"\n'
+                      'if [ "$3" != --apply ]; then case "$2" in\n'
+                      f'  bin) echo "{PROOF["bin"]}" ;;\n'
+                      f'  satellite) echo "{PROOF["satellite"]}" ;;\n'
+                      'esac; fi\n'
+                      'exit "${UPDATE_RC:-0}"\n')
+
+
 class FollowFixture(DrainFixture):
     def satellite(self):
         config = self.tmp / "home" / ".config" / "sd"
@@ -37,10 +56,12 @@ class FollowFixture(DrainFixture):
 
     def system_repo(self, rel="a/system"):
         repo = self.repo(rel)
-        for path in ("local-sd-db/sd_db/schema.py", "local-repo-sync/repo-sync.sh"):
+        bodies = {"local-sd-db/sd_db/schema.py": "SCHEMA_VERSION = 24\n",
+                  "local-repo-sync/repo-sync.sh": "",
+                  "local-machine-setup/machine-setup.sh": MACHINE_SETUP_STUB}
+        for path, body in bodies.items():
             (repo / path).parent.mkdir(parents=True, exist_ok=True)
-            self.commit(repo, path, "SCHEMA_VERSION = 24\n" if path.endswith(".py") else "",
-                        f"add {path}")
+            self.commit(repo, path, body, f"add {path}")
         self.git(repo, "push", "-q", "origin", "main")
         return repo
 
@@ -59,7 +80,8 @@ class FollowFixture(DrainFixture):
         # The state home holds follow's intent marker; it is the fixture's,
         # never the machine's.
         env = {"GIT_COMMITTER_NAME": "Hub", "GIT_COMMITTER_EMAIL": "hub@example.test",
-               "XDG_STATE_HOME": str(self.tmp / "state"), **(extra_env or {})}
+               "XDG_STATE_HOME": str(self.tmp / "state"), "UPDATE_LOG": str(self.update_log),
+               **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 
     def set_hub_pin(self, system, sha, pack=None, body=None):
@@ -93,6 +115,14 @@ class FollowFixture(DrainFixture):
         """The pack HEAD at each make setup FAIL_FIRST_SETUP saw."""
         heads = pathlib.Path(f"{self.make_log}.heads")
         return heads.read_text().splitlines() if heads.exists() else []
+
+    @property
+    def update_log(self):
+        return self.tmp / "update.log"
+
+    def update_calls(self):
+        """The arguments of each machine-setup.sh run the stub logged."""
+        return self.update_log.read_text().splitlines() if self.update_log.exists() else []
 
     def gate_calls(self):
         if not self.sd_log.exists():
@@ -301,11 +331,13 @@ class FollowTest(unittest.TestCase):
         self.assertIn("back at its old sha, so a migrate note above does not apply; the next run retries",
                       result.stdout)
         self.assertEqual(old, (f.head(system), f.head(pack)))
-        self.assertFalse(f.intent.exists())
+        # Only the update's proof deletes the marker (sd:3168 class pass).
+        self.assertTrue(f.intent.exists())
 
         f.run("follow", expect=0)
 
         self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertFalse(f.intent.exists())
 
     def test_the_rollback_reinstalls_the_pack_commands_at_the_old_sha(self):
         """NEW (round 2). A make setup that failed part way may have installed
@@ -565,6 +597,260 @@ class FollowTest(unittest.TestCase):
         f.run("follow", expect=0, extra_env={"REPO_LIST_RC": "3"})
 
         self.assertEqual(pinned, f.head(system))
+
+
+class FollowUpdateTest(unittest.TestCase):
+    """follow runs `machine-setup.sh update --apply` inside the drain (sd:3168).
+
+    The satellite job used to chain the update after follow, once the lane
+    locks were released, so its satellite and bin stages could run under a
+    live lane run.
+    """
+
+    def fixture(self):
+        f = FollowFixture()
+        self.addCleanup(f.destroy)
+        f.satellite()
+        return f
+
+    def moved_pair(self, f):
+        system, pack = f.system_repo(), f.pack_repo()
+        f.pin(system)
+        f.pin(pack)
+        old = (f.head(system), f.head(pack))
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+        return system, pack, old, pinned
+
+    def test_a_follow_that_moves_runs_the_update_while_the_lanes_are_held(self):
+        """NEW. The update runs once, at the pin, with every lane lock held."""
+        f = self.fixture()
+        system, pack, _, pinned = self.moved_pair(f)
+        lock = f.lane("some-repo")
+        during = f.tmp / "during"
+        hook = f'{sys.executable} {f.probe} {lock} >> {during}; git -C "{system}" rev-parse HEAD >> {during}'
+
+        result = f.run("follow", expect=0, extra_env={"UPDATE_HOOK": hook})
+
+        self.assertEqual(["update bin --apply", "update bin", "update satellite --apply", "update satellite"],
+                         f.update_calls())
+        self.assertEqual(["held", pinned[0]] * 4, during.read_text().splitlines())
+        self.assertEqual("free", f.state(lock))
+        self.assertIn("follow  : done", result.stdout)
+
+    def test_the_update_never_reinstalls_the_follow_job_itself(self):
+        """NEW (review round 1). A full update runs the cron and agents stages,
+        which reinstall this job's own LaunchAgent; launchd then boots out the
+        running follow mid-update. follow runs only the stages that need the
+        locks, so it finishes and clears its marker."""
+        f = self.fixture()
+        system, pack, _, pinned = self.moved_pair(f)
+
+        result = f.run("follow", expect=0)
+
+        self.assertNotIn("bootout", f.update_calls())
+        self.assertIn("follow  : done", result.stdout)
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertFalse(f.intent.exists())
+
+    def test_the_stages_follow_names_are_machine_setup_stages(self):
+        """NEW. The stub accepts any name; the real script's STAGES must hold both."""
+        script = pathlib.Path(__file__).resolve().parents[2] / "local-machine-setup" / "machine-setup.sh"
+        line = next(l for l in script.read_text().splitlines() if l.startswith("STAGES="))
+        for stage in ("bin", "satellite"):
+            self.assertIn(stage, line.split('"')[1].split())
+
+    def test_a_no_op_follow_runs_no_update(self):
+        """PIN. At the hub's pair nothing moved, so nothing is updated."""
+        f = self.fixture()
+        system, pack = f.system_repo(), f.pack_repo()
+        f.pin(system)
+        f.pin(pack)
+        f.set_hub_pin(system, f.head(system), pack=f.head(pack))
+
+        f.run("follow", expect=0)
+
+        self.assertEqual([], f.update_calls())
+
+    def test_a_rollback_runs_no_update(self):
+        """PIN. A failed move puts the old pair back and updates nothing."""
+        f = self.fixture()
+        system, pack, old, _ = self.moved_pair(f)
+
+        f.run("follow", expect=1, extra_env={"MAKE_HOOK": FAIL_FIRST_SETUP})
+
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+        self.assertEqual([], f.update_calls())
+
+    def test_a_failed_update_exits_1_keeps_the_move_and_retries_next_run(self):
+        """NEW. The move stays; one line names the command to run by hand.
+        The marker stays too, so the next run sets up and updates again."""
+        f = self.fixture()
+        system, pack, _, pinned = self.moved_pair(f)
+
+        result = f.run("follow", expect=1, extra_env={"UPDATE_RC": "1"})
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertIn(f"!!! failed: machine-setup update bin; the checkouts stay at the hub's pin; "
+                      f"by hand: sh '{system}/local-machine-setup/machine-setup.sh' update bin --apply",
+                      result.stdout)
+        self.assertNotIn("put ", result.stdout)
+        self.assertTrue(f.intent.exists())
+
+        f.run("follow", expect=0)
+
+        self.assertEqual(["update bin --apply", "update bin --apply", "update bin",
+                          "update satellite --apply", "update satellite"], f.update_calls())
+        self.assertEqual(2, len(f.make_calls()))
+        self.assertFalse(f.intent.exists())
+
+    def test_an_update_that_exits_0_but_leaves_drift_is_a_failure(self):
+        """NEW (review round 2). Neither stage's exit says its install worked:
+        bin pipes bin-links through sed, and sd_db.satellite exits 0 when it
+        could report. follow reads the stage's dry run after --apply, and a
+        drift word there keeps the move and the marker, as a failed exit does."""
+        f = self.fixture()
+        system, pack, _, pinned = self.moved_pair(f)
+        hook = '[ "$3" = --apply ] || [ "$2" != satellite ] || echo "  DIFFERS sd_db build: satellite 1, hub 2"'
+
+        result = f.run("follow", expect=1, extra_env={"UPDATE_HOOK": hook})
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertIn("  DIFFERS sd_db build: satellite 1, hub 2", result.stdout)
+        self.assertIn(f"!!! failed: machine-setup update satellite left drift, named above; the checkouts stay "
+                      f"at the hub's pin; by hand: sh '{system}/local-machine-setup/machine-setup.sh' "
+                      f"update satellite --apply", result.stdout)
+        self.assertNotIn("follow  : done", result.stdout)
+        self.assertTrue(f.intent.exists())
+
+        f.run("follow", expect=0)
+
+        self.assertFalse(f.intent.exists())
+
+    def test_a_dry_run_that_cannot_answer_is_a_failure(self):
+        """NEW (review round 2). A failed check is an unknown result, not a pass."""
+        f = self.fixture()
+        system, pack, _, pinned = self.moved_pair(f)
+
+        result = f.run("follow", expect=1, extra_env={"UPDATE_HOOK": '[ "$3" = --apply ] || exit 3'})
+
+        self.assertIn("!!! failed: machine-setup update bin;", result.stdout)
+        self.assertEqual(["update bin --apply", "update bin"], f.update_calls())
+        self.assertTrue(f.intent.exists())
+
+    def test_a_satellite_stage_that_skips_is_not_done(self):
+        """NEW (class pass, review round 3). A SKIP is not drift, so no drift
+        is no proof: a hub that did not answer left the build unchecked.
+        follow wants the line the stage prints once the hub accepted this
+        build; without it the move and the marker stay."""
+        f = self.fixture()
+        system, pack, _, pinned = self.moved_pair(f)
+        skip = ("  SKIP    sd hub hub.example.test:8769 did not answer (timed out); "
+                "the build and providers.yaml were not checked")
+        hook = f'[ "$3" = --apply ] || [ "$2" != satellite ] || {{ echo "{skip}"; exit 0; }}'
+
+        result = f.run("follow", expect=1, extra_env={"UPDATE_HOOK": hook})
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertIn(skip, result.stdout)
+        self.assertIn("!!! failed: machine-setup update satellite did not prove its end state, printed above; "
+                      "the checkouts stay at the hub's pin", result.stdout)
+        self.assertNotIn("follow  : done", result.stdout)
+        self.assertTrue(f.intent.exists())
+
+        f.run("follow", expect=0)
+
+        self.assertFalse(f.intent.exists())
+
+    def test_a_bin_status_that_stops_part_way_is_not_done(self):
+        """NEW (class pass). bin pipes bin-links status through sed, so a
+        status that stops part way exits 0 with no drift word. Its last
+        line, PATH, is the proof that it read every link."""
+        f = self.fixture()
+        self.moved_pair(f)
+        row = "  repo-sync        linked                 local-repo-sync/repo-sync.sh"
+        hook = f'[ "$3" = --apply ] || [ "$2" != bin ] || {{ echo "{row}"; exit 0; }}'
+
+        result = f.run("follow", expect=1, extra_env={"UPDATE_HOOK": hook})
+
+        self.assertIn("!!! failed: machine-setup update bin did not prove its end state", result.stdout)
+        self.assertEqual(["update bin --apply", "update bin"], f.update_calls())
+        self.assertTrue(f.intent.exists())
+
+    def test_the_proof_lines_are_the_ones_the_stages_print(self):
+        """NEW (class pass). follow's proof patterns match what the real
+        stages print: bin-links status's last line through stage_bin's sed,
+        and sd_db.satellite's line for a build the hub accepted."""
+        root = pathlib.Path(__file__).resolve().parents[2]
+        here = (root / "local-repo-sync" / "repo-sync.sh").read_text()
+        proof = {}
+        for stage in PROOF:
+            found = re.search(rf"^FOLLOW_PROOF_{stage}='([^']*)'$", here, re.M)
+            self.assertIsNotNone(found, f"repo-sync.sh holds no FOLLOW_PROOF_{stage}='...' line")
+            proof[stage] = found.group(1)
+            self.assertRegex(PROOF[stage], proof[stage])
+        f = self.fixture()
+        links = f.tmp / "bin"
+        status = subprocess.run(
+            ["sh", "-c", 'sh "$1" status | sed "s/^/  /"', "sh", str(root / "local-bin-links" / "bin-links.sh")],
+            capture_output=True, text=True, timeout=60, check=True,
+            env={"HOME": str(f.tmp / "home"), "BIN_LINKS_DIR": str(links), "PATH": f"{links}:/usr/bin:/bin"})
+        self.assertRegex(status.stdout.splitlines()[-1], proof["bin"])
+        library = (root / "local-sd-db" / "sd_db" / "satellite.py").read_text()
+        self.assertIn('out.write(f"  {word:<7} {text}\\n")', library)
+        self.assertIn('_line(out, "ok", f"sd_db {built[\'package\']} build {built[\'build\']} matches the hub\'s")',
+                      library)
+        self.assertRegex(f"  {'ok':<7} sd_db 0.1 build 0123abcd matches the hub's", proof["satellite"])
+
+    def test_a_left_marker_with_no_pack_in_the_conf_still_updates(self):
+        """NEW (class pass). With no pack checkout and system at the pin,
+        nothing moves, and a marker an earlier failed update left is no
+        proof the update ran: follow drains, runs both stages, and only
+        then deletes it."""
+        f = self.fixture()
+        system = f.system_repo()
+        f.pin(system)
+        f.set_hub_pin(system, f.head(system), pack="e" * 40)
+        f.leave_intent(f.head(system), "e" * 40)
+
+        f.run("follow", expect=0)
+
+        self.assertEqual(["update bin --apply", "update bin", "update satellite --apply", "update satellite"],
+                         f.update_calls())
+        self.assertTrue(f.gate_calls())
+        self.assertFalse(f.intent.exists())
+
+    def test_a_rollback_keeps_a_marker_an_earlier_update_left(self):
+        """NEW (class pass). An update that failed at the old pair left the
+        marker. A rollback from the next pair puts the checkouts back and
+        runs make setup at the old sha, which proves nothing about that
+        update, so the marker stays: when the hub pins the old pair again,
+        follow sets up and updates instead of a no-op."""
+        f = self.fixture()
+        system, pack, old, pinned = self.moved_pair(f)
+        f.leave_intent(*old)
+
+        f.run("follow", expect=1, extra_env={"MAKE_HOOK": FAIL_FIRST_SETUP})
+
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+        self.assertEqual([], f.update_calls())
+        self.assertTrue(f.intent.exists())
+
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.run("follow", expect=0)
+
+        self.assertEqual(["update bin --apply", "update bin", "update satellite --apply", "update satellite"],
+                         f.update_calls())
+        self.assertFalse(f.intent.exists())
+
+    def test_follow_counts_the_drift_words_machine_setup_status_counts(self):
+        """NEW. One vocabulary: follow's copy of status_stage's grep stays equal."""
+        here = pathlib.Path(__file__).resolve().parents[1] / "repo-sync.sh"
+        script = here.parents[1] / "local-machine-setup" / "machine-setup.sh"
+        status = re.search(r"grep -cE '(DIFFERS[^']*)'", script.read_text()).group(1)
+        follow = re.search(r"^FOLLOW_DRIFT='([^']*)'$", here.read_text(), re.M)
+        self.assertIsNotNone(follow, "repo-sync.sh holds no FOLLOW_DRIFT='...' line")
+        self.assertEqual(status, follow.group(1))
 
 
 class SatelliteTest(unittest.TestCase):

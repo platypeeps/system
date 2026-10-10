@@ -123,7 +123,22 @@ it names from the pack origin; that sha is on the pack's main, and a fetch
 by a reachable sha works. Where a sha differs from HEAD, it drains the lanes
 as `refresh` does, then switches the checkout, detached and with
 `--no-overwrite-ignore`, to exactly that sha, and runs `make setup` in the
-pack. It never moves to origin's default branch. It checks every checkout
+pack. Then, with the lanes still held, it runs the system checkout's
+`local-machine-setup/machine-setup.sh update bin --apply` and
+`update satellite --apply`, each bounded at 450 s (sd:3168). The satellite
+stage installs the hub's `sd_db` into the pack's venv and the bin stage
+relinks commands, so neither may run under a lane run. It runs no other
+stage: the cron and agents stages can reinstall the follow job's own
+LaunchAgent, and launchd would boot out the running follow. Neither stage's
+exit says its install worked, so after each `--apply` follow runs the stage's
+dry run, within the same bound, and counts the drift words `status` counts.
+No drift is no proof, since a `SKIP` is not drift: the dry run must also print
+the stage's proof line, `bin-links.sh status`'s last line (`PATH on PATH`) or
+the satellite's `ok sd_db ... matches the hub's`, which only a hub that
+accepted this build prints. A failed stage, drift in its dry run, a dry run
+that cannot answer, or one without its proof line exits 1 and names the
+command to run by hand; the move and the marker stay. A no-op or a
+rolled-back follow runs no update. It never moves to origin's default branch. It checks every checkout
 first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
 a drain timeout refuses with nothing moved. It moves system, then pack; when
 a move fails, it switches each checkout it moved back to its old sha, so the
@@ -137,10 +152,11 @@ A follow killed during the pack's `make setup` leaves HEAD at the pin, so
 HEAD alone does not show it. By operator ruling on sd:3100, `follow` keeps an
 intent marker, `${XDG_STATE_HOME:-~/.local/state}/repo-sync/follow-intent`.
 It writes the target system and pack shas there, atomically, before it moves
-any checkout. It deletes the marker once `make setup` succeeds at the pin, or
-once a rollback puts every checkout back. While the marker is left, the next
-run drains, finishes the move and runs `make setup` again, even with HEAD at
-the pin. With no `hub-pin` tag yet, or with every checkout already there, it
+any checkout. It deletes the marker only once `make setup` and the update
+are proven at the pin (sd:3168). A rollback leaves it: its `make setup` at the
+old sha proves no update. While the marker is left, the next run drains,
+finishes the move and runs `make setup` and the update again, even with HEAD
+at the pin or with no pack checkout in the conf. With no `hub-pin` tag yet, or with every checkout already there, it
 does nothing and drains nothing. On the hub it says so and does nothing. If
 the move changed `SCHEMA_VERSION`,
 `follow` prints the hub's migrate note; the hub's own refresh printed it
@@ -155,7 +171,9 @@ cp local-cron-jobs/examples/repo-sync-follow.job \
 ```
 
 The job runs `follow` every five minutes. Its timeout is above the
-45-minute drain bound.
+45-minute drain bound plus the two 450 s stage bounds. A job that chains a
+full `machine-setup.sh update --apply` after `follow` (sd:3154) finds the bin
+and satellite stages already done.
 
 ## Hygiene
 
@@ -360,5 +378,10 @@ list, and `terra` is the one that reads a single conf instead of layering on
 - Pulls are `--ff-only`. A repo with local commits or a dirty tree is reported
   as a failure instead of being silently merged; the old script used a bare
   `git pull` and could leave merge commits behind.
+- One exception (sd:3125): a branch other than origin's default, with its own
+  commits, whose upstream moved on is work in progress, such as a pull
+  request branch. sync lists it under `diverged:` with its ahead and behind
+  counts, leaves it alone, and does not count it as failed. A failed fetch
+  still fails.
 - The old script also had a commented-out `git log --since=` block writing to a
   `github-commit-audit/output` folder. It was dead and is not carried over.

@@ -31,7 +31,5 @@
         <key>SYSTEM_TOOLS_CONFIG</key>
         <string>@CONFIG@</string>
     </dict>
-    <key>ProcessType</key>
-    <string>Background</string>
 </dict>
 </plist>
