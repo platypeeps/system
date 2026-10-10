@@ -640,5 +640,16 @@ class ManualMask(unittest.TestCase):
                 self.assertIn(self.TOKEN, (self.home / "repos/project/app.py").read_text())
                 self.assertNotIn("repos/project/app.py", result.stdout)
 
+    def test_mask_leaves_the_gemini_jetski_token_store_alone(self):
+        # Antigravity keeps its live login in this file; masking it logs the
+        # tool out (sd:3208). A session log beside it is still masked.
+        self.plant(".gemini/jetski-standalone-oauth-token")
+        self.plant(".gemini/tmp/session.jsonl")
+        applied = subprocess.run(["sh", str(SCRIPT), "mask", "--apply", "--no-prune"], cwd=self.root,
+                                 env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertIn(self.TOKEN, (self.home / ".gemini/jetski-standalone-oauth-token").read_text())
+        self.assertNotIn(self.TOKEN, (self.home / ".gemini/tmp/session.jsonl").read_text())
+
 if __name__ == "__main__":
     unittest.main()
