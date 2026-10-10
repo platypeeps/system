@@ -1,6 +1,6 @@
 """Queue (sd:2585): each repository's ship lane, one row per item as merging, next, building, blocked or landed, read
-by `queue_screen`. Up, down, top, hold, release and cancel post /api/queue/move, which runs
-`sd-ship lane move|hold|release|cancel` and nothing else."""
+by `queue_screen`. Up, down, top, hold, release and cancel, and a blocked row's retry and approve, post
+/api/queue/move, which runs `sd-ship lane move|hold|release|cancel|retry` and nothing else."""
 
 from __future__ import annotations
 
