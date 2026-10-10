@@ -37,8 +37,10 @@ addEventListener('DOMContentLoaded', () => {
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
     let tasks = [], READ = null, AGES = [];
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, real: true });
+    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
+  // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
+  const listed = () => tasks.filter(t => !t.parked);
   const label = t => t.id ? `#${t.id}` : (t.kind === 'ops' ? 'ops' : 'no id');
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
   function absorb(key, state) {
@@ -76,7 +78,7 @@ addEventListener('DOMContentLoaded', () => {
   // Page attention: the worst lit state among open rows, and how many rows carry it. build: set after each read.
   function attention() {
     if (!READ) { window.shell.attention?.({ state: 'unknown', n: 0, what: 'tasks not read' }); return; }
-    const lit = tasks.filter(t => t.real).map(t => [t, state(t)]).filter(([, st]) => st);
+    const lit = listed().filter(t => t.real).map(t => [t, state(t)]).filter(([, st]) => st);
     const worst = lit.some(([, st]) => st === 'warning') ? 'warning' : lit.length ? 'caution' : 'ok';
     const hits = lit.filter(([, st]) => st === worst).map(([t]) => t);
     const ops = hits.filter(t => t.kind === 'ops').length;
@@ -198,7 +200,8 @@ addEventListener('DOMContentLoaded', () => {
   // build (sd:2589): Status, In status (the reads.age_bucket key each row carries), Open only, the text filter and the list's
   // page take the query v1 /backlog took (status, age, active=1, q, page), so Operations' histogram bars and the capture
   // check land here with their filter.
-  const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set() };
+  // build (sd:3012): Parked swaps the listed rows for the ones the nightly prune parked, for triage's Unpark.
+  const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set(), parked: new Set() };
   const FKEYS = Object.keys(F);
   const find = document.getElementById('find-in');
   let Q = '';
@@ -216,12 +219,13 @@ addEventListener('DOMContentLoaded', () => {
       grp('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
       grp('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
       grp('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`)}${
-      (on() ? window.shell.list.chips(activeFilters(), visible().length, tasks.length) : html`<div class="fsum">${ICON('filter')}<span>${tasks.length} tasks</span></div>`)}`);
+      grp('parked', 'Parked', [['1', 'parked only']], html`<button class="help" type="button" aria-label="Help: parked filter" data-help="The nightly prune parks an open P4 task untouched for 30 days. Parked tasks stay off every other view; <b>parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`)}${
+      (on() ? window.shell.list.chips(activeFilters(), visible().length, listed().length) : html`<div class="fsum">${ICON('filter')}<span>${listed().length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
-  const FNAME = { kind: 'Kind', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope' };
+  const FNAME = { kind: 'Kind', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope', parked: 'Parked' };
   const fvalue = (k, v) => k === 'p' ? (v ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
-    : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? 'open only' : v;
+    : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? 'open only' : k === 'parked' ? 'parked only' : v;
   const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
   document.getElementById('filters').addEventListener('click', e => {
     const c = e.target.closest('[data-f]');
@@ -238,7 +242,7 @@ addEventListener('DOMContentLoaded', () => {
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
   const words = t => `#${t.id ?? ''} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind}`.toLowerCase();
   const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
-    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && (!Q || words(t).includes(Q));
+    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && !t.parked === !F.parked.size && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
   // ---------- Commands (products/system/commands.md) ----------
@@ -367,6 +371,14 @@ addEventListener('DOMContentLoaded', () => {
       consequence: () => 'Each task closes as done, with a cancelled receipt and your reason. No sd verb takes it back.',
       run: (o, v) => { const t = must(o);
         return landing(write(t.key, x => `/api/items/${x.id}/cancel-task`, { reason: v.reason }), () => `${label(t)} closed · sd task cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
+    // Unpark (sd:3012) clears parked_at through the item edit route, as the item page's Unpark does (sd:3007). No Undo:
+    // only the nightly prune parks, so no write takes it back.
+    { id: 'item.unpark', on: 'item', label: 'Unpark', risk: 'safe', executes: true, bulk: true, icon: 'archive-restore',
+      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id' : !t.parked ? 'it is not parked' : true; },
+      cli: o => idOr(o, t => `sd task edit ${t.id} --unpark`),
+      sends: o => `POST /api/items/${T(o).id} {parked_at: null}`,
+      run: o => { const t = must(o);
+        return landing(write(t.key, x => `/api/items/${x.id}`, { parked_at: null }), () => `${label(t)} unparked · sd task edit ${t.id} --unpark`); } },
     { id: 'item.note', on: 'item', label: 'Note', key: 'n', risk: 'safe', icon: 'notebook-pen',
       when: o => !!T(o)?.id || 'this row has no sd id to attach a note to',
       cli: o => idOr(o, t => `sd task note ${t.id} --kind comment --body "…"`),
@@ -814,7 +826,8 @@ addEventListener('DOMContentLoaded', () => {
     list: 'Every task, sortable by any column.',
   };
   function subhead() {
-    put(document.getElementById('subhead'), html`${plural(tasks.length, 'task')} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}`);
+    const parked = tasks.length - listed().length;
+    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}`);
   }
   function setView(v) {
     view = v;
@@ -836,6 +849,7 @@ addEventListener('DOMContentLoaded', () => {
     // An age v1 would not accept is dropped, as v1 dropped it; active takes 1 only, as v1's ?active=1 did.
     [...F.age].forEach(v => { if (!AGES.some(a => a.key === v)) F.age.delete(v); });
     [...F.active].forEach(v => { if (v !== '1') F.active.delete(v); });
+    [...F.parked].forEach(v => { if (v !== '1') F.parked.delete(v); });
     find.value = (q.get('q') || '').trim(); Q = find.value.toLowerCase();
     // A page is decimal digits, as on Documents (sd:2427).
     window.shell.list.listParams(q, L, { sorts: Object.keys(SORTS), size: LIST.size });
