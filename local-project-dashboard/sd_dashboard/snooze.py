@@ -10,6 +10,10 @@ that no older snooze covers.
   rows shown, and the snoozed ones, each with `until`. `sd_db.writes.snoozed`
   is read once per document. A read that fails hides nothing and says why: an
   unread snooze is not a snooze.
+- `request` is `POST /api/snooze`, `{"page", "row", "until"}`, which both
+  pages post: `until` is an aware ISO time, or null to show the row again.
+  `sd_db.writes.snooze` writes it through `record_state` and judges the time.
+  The row need not be listed now: a key no row has hides nothing.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ import sqlite3
 from sd_db import writes
 from sd_db.errors import SdDbError
 
-__all__ = ["PAGES", "held", "key", "split"]
+__all__ = ["PAGES", "held", "key", "request", "split"]
 
 PAGES = ("today", "health")
 
@@ -47,3 +51,18 @@ def split(page: str, rows: list[dict], snoozes: dict[str, str]) -> tuple[list[di
             shown.append(row)
     return shown, hidden
 
+
+
+def request(payload: dict):
+    """The POST's checks, before the server opens a writer; the write as `action_route` returns one."""
+    if (set(payload) != {"page", "row", "until"} or payload["page"] not in PAGES
+            or not isinstance(payload["row"], str) or not payload["row"].strip()
+            or not (payload["until"] is None or isinstance(payload["until"], str))):
+        raise ValueError("Send the page (today or health), the row id, and the time it shows again or null to show it now.")
+    target = key(payload["page"], payload["row"])
+
+    def write(connection):
+        writes.snooze(connection, target, payload["until"])
+        return {"key": target, "until": payload["until"] and writes.stamp(payload["until"])}
+
+    return write

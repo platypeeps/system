@@ -181,6 +181,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
     if registered is not None:
         return registered.write(payload, principal)
     values = dict(payload)
+    if path == "/api/snooze":
+        from . import snooze
+
+        # Today and Health both post it (sd:1896), so it is not one page's `Api` write.
+        return snooze.request(values)
     if path == "/api/contributions/acknowledge":
         from sd_db import contributions
 

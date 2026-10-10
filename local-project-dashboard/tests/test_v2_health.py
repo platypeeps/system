@@ -48,6 +48,7 @@ from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 HEALTH_JS = (V2 / "static" / "health.js").read_text(encoding="utf-8")
+SNOOZE_JS = (V2 / "static" / "snooze.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 TREES = [
@@ -790,7 +791,7 @@ class ThePage(Collectors, BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "health.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "snooze.js", "health.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
         # /health is the service's own check, which the runtime reads; the page does not take it over.
@@ -823,6 +824,10 @@ window.shell.state = s => OUT.states.push(s);
 """
 
 
+SNOOZED_TYPES = ("check", "storage folder", "build output", "volume", "worktree registrations", "unread registrations",
+                 "merged branches", "port", "branch protection", "dependabot alerts", "secret scanning", "credential")
+
+
 class TheScript(Collectors, ScreenCase):
     """health.js against the document `health_screen` builds from the fixtures above."""
 
@@ -834,7 +839,7 @@ class TheScript(Collectors, ScreenCase):
                   + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
                   + "URLSearchParams.prototype.toString = function () { return ''; };\n"
                   + "ANSWER = (path, body) => path === '/api/health' ? [STATUS, DOC] : [404, { error: 'no answer' }];\n"
-                  + HEALTH_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
+                  + SNOOZE_JS + HEALTH_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -860,15 +865,9 @@ class TheScript(Collectors, ScreenCase):
             ["dependabot alerts.review", "dependabot alerts", "safe", "o", False, False],
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
             ["credential.probe", "credential", "safe", "r", False, False],
-            ["storage folder.snooze", "storage folder", "undo", "z", None, True],
-            ["build output.snooze", "build output", "undo", "z", None, True],
-            ["volume.snooze", "volume", "undo", "z", None, True],
-            ["worktree registrations.snooze", "worktree registrations", "undo", "z", None, True],
-            ["unread registrations.snooze", "unread registrations", "undo", "z", None, True],
-            ["merged branches.snooze", "merged branches", "undo", "z", None, True],
-            ["port.snooze", "port", "undo", "z", None, True],
-            ["branch protection.snooze", "branch protection", "undo", "z", None, True],
-        ])
+        ] + [[f"{t}.{c}", t, "undo", key, None, True] for t in SNOOZED_TYPES
+              for c, key in (("snooze", "z"), ("snooze-hour", "h"), ("snooze-week", "w"))]
+          + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True]])
 
     def test_an_area_with_no_reader_is_an_unknown_lamp_that_names_what_it_does_not_read(self):
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of(PROTECTION))
@@ -1065,11 +1064,50 @@ R.why = cmd('worktree registrations.prune').consequence(o); R.snooze = cmd('work
 shellRun(cmd('worktree registrations.prune'), o); await flush();""")
         self.assertEqual(out["R"]["cli"], "git -C '/checkouts/group/alpha' worktree prune -v")
         self.assertEqual(out["R"]["why"], "Removes 2 worktree registrations whose directories are gone. No directory is touched.")
-        self.assertEqual(out["R"]["snooze"], "no CLI verb: sd has no snooze")
+        self.assertIs(out["R"]["snooze"], True)
         self.assertEqual(out["confirms"], ["worktree registrations.prune"])
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["toasts"][-1][0], "Not run here: copy the line from Details and run it in a terminal · "
                                                "group/alpha: 2 worktrees registered, directory gone")
+
+    def test_snooze_posts_the_row_and_its_time_then_reads_health_again_and_undo_clears_it(self):
+        """sd:1896: the server judges the time, so the page sends one it computed, and Undo writes the same key with none."""
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : [200, { key: 'k', until: body.until }];
+var o = C.get('gone:group/alpha'), t0 = Date.now(); OUT.gets = [];
+shellRun(cmd('worktree registrations.snooze-hour'), o); await flush();
+R.ahead = Date.parse(OUT.posts[0][1].until) - t0;
+OUT.toasts[OUT.toasts.length - 1].undo(); await flush();
+R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' });""")
+        self.assertEqual([(path, {k: v for k, v in body.items() if k != "until"}) for path, body, _ in out["posts"]],
+                         [("/api/snooze", {"page": "health", "row": "gone:group/alpha"})] * 2)
+        self.assertEqual(out["posts"][1][1]["until"], None)
+        self.assertTrue(3590e3 <= out["R"]["ahead"] <= 3610e3, out["R"]["ahead"])
+        self.assertEqual(out["gets"], ["/api/health", "/api/health"])
+        self.assertRegex(out["toasts"][-2][0], r"^Snoozed until (\w{3} \w{3} \d\d )?\d\d:\d\d · group/alpha: ")
+        self.assertTrue(out["toasts"][-2][1])
+        self.assertEqual(out["toasts"][-1][0], "Snooze 1 hour undone · group/alpha: 2 worktrees registered, directory gone")
+        self.assertEqual(out["R"]["off"], "an ok row has nothing to snooze")
+
+    def test_a_snoozed_row_is_drawn_apart_and_unsnooze_brings_it_back(self):
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-07T08:00:00Z", now=NOW)
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : [200, { key: 'k', until: body.until }];
+R.areas = ELS.areas.html; R.snoozed = ELS.snoozed.html; var o = C.get('snoozed:gone:group/alpha'); R.type = o.type;
+shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
+        self.assertNotIn("directory gone", out["R"]["areas"])
+        self.assertIn("Snoozed · 1", out["R"]["snoozed"])
+        self.assertIn("group/alpha: 2 worktrees registered, directory gone", out["R"]["snoozed"])
+        self.assertEqual(out["R"]["type"], "snoozed row")
+        self.assertEqual([body for _, body, _ in out["posts"]],
+                         [{"page": "health", "row": "gone:group/alpha", "until": None},
+                          {"page": "health", "row": "gone:group/alpha", "until": "2026-09-07T08:00:00+00:00"}])
+        self.assertEqual(out["toasts"][-2][0], "Shows again · group/alpha: 2 worktrees registered, directory gone")
+
+    def test_a_snooze_read_that_failed_is_a_partial_read(self):
+        with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
+            out = self.run_page("R.snoozed = ELS.snoozed.html;")
+        self.assertEqual(out["states"][-1], {"kind": "partial", "source": "/api/health",
+                                             "text": "Snoozes were not read: database is locked. Every row shows."})
+        self.assertEqual(out["R"]["snoozed"], "")
 
     def sync(self, finished):
         """Re-run collector on the protection collector: the run starts, reads as running once, then `finished`."""
