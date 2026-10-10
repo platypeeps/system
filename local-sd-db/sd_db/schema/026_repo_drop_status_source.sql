@@ -36,4 +36,23 @@
 --   COMMIT;
 --   PRAGMA foreign_keys = ON;
 
+-- The guard. `retiring` holds a repository whose restored rows are not yet
+-- proven against its `docs/work` files; `sd restore reimport` under the 25
+-- library proves them and clears it. The drop would lose that hold, so the
+-- file aborts and the store stays at 25, untouched. 009's `item.kind` guard
+-- cannot name the repositories; a temporary trigger's RAISE can, because its
+-- message is an expression from SQLite 3.47. A `file` row passes: no `file`
+-- repository held a `docs/work` item file once sd:3015 landed. `BEGIN` ends
+-- the header line: `migrate` refuses a line that starts with it.
+CREATE TEMP TRIGGER migration_026_refuses_a_retiring_repo
+BEFORE UPDATE OF status_source ON repo FOR EACH ROW BEGIN
+    SELECT RAISE(ABORT, 'migration 026 refuses: repo.status_source is retiring for '
+        || (SELECT group_concat(path, ', ')
+              FROM (SELECT path FROM repo WHERE status_source = 'retiring' ORDER BY path))
+        || '; finish each with `sd restore reimport` under the schema 25 library, '
+        || 'or restore a later snapshot, then migrate again');
+END;
+UPDATE repo SET status_source = status_source WHERE status_source = 'retiring';
+DROP TRIGGER temp.migration_026_refuses_a_retiring_repo;
+
 ALTER TABLE repo DROP COLUMN status_source;

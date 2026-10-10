@@ -200,6 +200,30 @@ class RestoreSafety(unittest.TestCase):
         self.assertEqual(self.writer.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(self.writer.execute("SELECT count(*) FROM state WHERE kind='restore' AND resolved_at IS NULL").fetchone()[0], 1)
 
+    def test_a_schema_twenty_five_snapshot_with_a_retiring_repository_is_refused(self):
+        """026 drops `repo.status_source`, and `retiring` is a restore's hold
+        on rows not yet proven against the repository's files. The staged
+        upgrade refuses, naming the repository, and nothing live moves
+        (sd:3231 review round 1)."""
+        snapshot = self.legacy_snapshot(25)
+        raw = sqlite3.connect(snapshot / "sd.db")
+        try:
+            raw.execute("INSERT INTO repo(path,status_source,created_at,updated_at) "
+                        "VALUES ('~/repos/held','retiring','2026-09-01T00:00:00+00:00','2026-09-01T00:00:00+00:00')")
+            raw.commit()
+        finally:
+            raw.close()
+        original = (snapshot / "sd.db").read_bytes()
+        before = self.bytes()
+        with self.assertRaises(BackupError) as raised:
+            restore(snapshot, home=self.home)
+        self.assertIn("restore refused before completion: migration 026 refuses: "
+                      "repo.status_source is retiring for ~/repos/held;", str(raised.exception))
+        self.assertEqual((snapshot / "sd.db").read_bytes(), original)
+        self.assert_preserved(before)
+        self.assertEqual(self.writer.execute(
+            "SELECT count(*) FROM state WHERE kind='restore' AND resolved_at IS NULL").fetchone()[0], 0)
+
     def test_failed_staged_upgrade_preserves_live_wal_configuration_and_old_backup(self):
         snapshot = self.legacy_snapshot()
         original = (snapshot / "sd.db").read_bytes()

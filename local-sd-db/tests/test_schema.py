@@ -1366,7 +1366,7 @@ class TheStatusSourceDrop(SchemaCase):
                 "INSERT INTO repo (path, remote, runner_merge, status_source, pieces_source, managed, ci, "
                 "lane_host, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 't1', 't2')",
                 [("/one", "git@github.com:platypeeps/one.git", "auto", "row", "row", 1, "local", "build-2"),
-                 ("/three", None, "manual", "retiring", "retiring", 0, "github", None),
+                 ("/three", None, "manual", "row", "retiring", 0, "github", None),
                  ("/two", None, "manual", "file", "file", 0, "github", None)])
             connection.commit()
         finally:
@@ -1409,13 +1409,41 @@ class TheStatusSourceDrop(SchemaCase):
         self.assertEqual(schema_version(raw), 25)
         self.assertIn("status_source", self._columns(raw))
         self.assertEqual([row[0] for row in raw.execute("SELECT status_source FROM repo ORDER BY path")],
-                         ["row", "retiring", "file"])
+                         ["row", "row", "file"])
         self.assertEqual(self._rows(raw), before)
         raw.execute("DROP INDEX by_owner")
         raw.commit()
         raw.close()
         result = migrate(self.path)
         self.assertEqual((result.before, result.applied), (25, [26]))
+
+    def test_a_retiring_repository_refuses_the_drop_and_names_it(self):
+        """`retiring` is a restore's hold on rows not yet proven against the
+        repository's files; dropping the column would drop the hold (sd:3231
+        review round 1). The file stays at 25, untouched, until it clears."""
+        self._at_version_twenty_five()
+        raw = sqlite3.connect(self.path)
+        raw.execute("UPDATE repo SET status_source = 'retiring' WHERE path IN ('/three', '/two')")
+        raw.commit()
+        before = self._rows(raw)
+        raw.close()
+        with self.assertRaises(sqlite3.IntegrityError) as raised:
+            migrate(self.path)
+        self.assertIn("repo.status_source is retiring for /three, /two;", str(raised.exception))
+        self.assertIn("sd restore reimport", str(raised.exception))
+        raw = sqlite3.connect(self.path)
+        self.assertEqual(schema_version(raw), 25)
+        self.assertEqual([row[0] for row in raw.execute("SELECT status_source FROM repo ORDER BY path")],
+                         ["row", "retiring", "retiring"])
+        self.assertEqual(self._rows(raw), before)
+        raw.execute("UPDATE repo SET status_source = 'row'")
+        raw.commit()
+        raw.close()
+        result = migrate(self.path)
+        self.assertEqual((result.before, result.applied), (25, [26]))
+        connection = connect(self.path)
+        self.addCleanup(connection.close)
+        self.assertEqual(connection.execute("SELECT count(*) FROM sqlite_temp_master").fetchone()[0], 0)
 
     def test_the_reverse_returns_the_file_to_twenty_five_with_every_row_on_row(self):
         self._at_version_twenty_five()

@@ -1095,6 +1095,8 @@ running assignments, and records an unresolved restore before replacing the
 live contents through SQLite. A checkout cut over after that snapshot marks
 its still-file-owned authority `retiring`; an already-row-owned snapshot keeps
 its authority. Dispatch stays paused until `sd restore resume`.
+Migration 026 refuses a store whose `repo.status_source` still reads `retiring`, naming each repository,
+so restore refuses such a snapshot: finish its reimport under the schema 25 library, or restore a later snapshot.
 
 For each retiring repository, run:
 
