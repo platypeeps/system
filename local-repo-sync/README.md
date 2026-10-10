@@ -129,8 +129,11 @@ pack. Then, with the lanes still held, it runs the system checkout's
 stage installs the hub's `sd_db` into the pack's venv and the bin stage
 relinks commands, so neither may run under a lane run. It runs no other
 stage: the cron and agents stages can reinstall the follow job's own
-LaunchAgent, and launchd would boot out the running follow. A failed stage
-exits 1 and names the command to run by hand; the move stays. A no-op or a
+LaunchAgent, and launchd would boot out the running follow. Neither stage's
+exit says its install worked, so after each `--apply` follow runs the stage's
+dry run, within the same bound, and counts the drift words `status` counts.
+A failed stage, drift in its dry run, or a dry run that cannot answer exits 1
+and names the command to run by hand; the move and the marker stay. A no-op or a
 rolled-back follow runs no update. It never moves to origin's default branch. It checks every checkout
 first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
 a drain timeout refuses with nothing moved. It moves system, then pack; when

@@ -667,6 +667,10 @@ drain_exec() {
 # finishes, sets up and updates again.
 FOLLOW_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/follow-intent"
 
+# The words machine-setup's `status` counts as drift (its status_stage grep);
+# test_follow holds the two equal.
+FOLLOW_DRIFT='DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults write|^  extra '
+
 # Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
 # already there and is clean, or a pack at $2 for `make setup` while the
 # intent marker is left; counts a dirty one in f_failed. Fields split on
@@ -774,16 +778,31 @@ follow() {
   # reinstall this job's own LaunchAgent, and launchd then boots out the
   # running follow mid-update. Those stages run in the job's chained update,
   # after this. A failure leaves the move and the marker: the next run sets
-  # up and updates again. Each stage is bounded at 450 s, so both stay inside
-  # the job's limit after the drain's 45 minutes.
+  # up and updates again. Each stage and its check share one 450 s bound, so
+  # both stay inside the job's limit after the drain's 45 minutes.
+  # The exit alone does not say the stage worked: bin pipes bin-links through
+  # sed, and the satellite stage reports a failed install as a line. So each
+  # --apply is followed by the stage's dry run, and a drift word there fails
+  # the stage as a failed exit does; a check that cannot answer fails it too.
   if [ "$f_failed" -eq 0 ]; then
+    f_ms="$f_sys/local-machine-setup/machine-setup.sh"
     for f_stage in bin satellite; do
-      echo "--- machine-setup update $f_stage --apply"
-      if ! st_bounded 450 sh "$f_sys/local-machine-setup/machine-setup.sh" update "$f_stage" --apply < /dev/null; then
-        echo "!!! failed: machine-setup update $f_stage; the checkouts stay at the hub's pin; by hand: sh '$f_sys/local-machine-setup/machine-setup.sh' update $f_stage --apply"
-        echo "follow  : moved, update failed; $FOLLOW_INTENT stays, so the next run sets up and updates again"
-        return 1
+      echo "--- machine-setup update $f_stage --apply, then its dry run"
+      f_why=
+      if st_bounded 450 sh -c 'sh "$1" update "$2" --apply && sh "$1" update "$2" > "$3"' \
+          sh "$f_ms" "$f_stage" "$TMPD/check" < /dev/null; then
+        # grep: 1 is no drift; 2, an unreadable check, is a failure.
+        f_rc=0
+        grep -E "$FOLLOW_DRIFT" "$TMPD/check" > "$TMPD/drift" || f_rc=$?
+        [ "$f_rc" -ne 1 ] || continue
+        if [ "$f_rc" -eq 0 ]; then
+          cat "$TMPD/drift"
+          f_why=" left drift, named above"
+        fi
       fi
+      echo "!!! failed: machine-setup update $f_stage$f_why; the checkouts stay at the hub's pin; by hand: sh '$f_ms' update $f_stage --apply"
+      echo "follow  : moved, update failed; $FOLLOW_INTENT stays, so the next run sets up and updates again"
+      return 1
     done
     rm -f "$FOLLOW_INTENT"
     echo "follow  : done"
@@ -1790,7 +1809,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              sha, never to origin's default branch, and run `make setup` in
              the pack. Then, lanes still held, it runs this system
              checkout's `machine-setup.sh update bin --apply` and
-             `update satellite --apply`, each bounded at 450 s; a failure
+             `update satellite --apply`, each followed by its dry run and
+             bounded at 450 s; a failure, or a drift word in the dry run,
              exits 1, keeps the move and names the command. Every check
              runs first: a failed fetch, a tag with no
              pack= line, uncommitted changes or a drain timeout refuses with

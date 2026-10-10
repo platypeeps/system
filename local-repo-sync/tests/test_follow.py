@@ -15,6 +15,7 @@ without them; a PIN case keeps behaviour the change had to preserve.
 
 import json
 import pathlib
+import re
 import sys
 import unittest
 
@@ -621,8 +622,9 @@ class FollowUpdateTest(unittest.TestCase):
 
         result = f.run("follow", expect=0, extra_env={"UPDATE_HOOK": hook})
 
-        self.assertEqual(["update bin --apply", "update satellite --apply"], f.update_calls())
-        self.assertEqual(["held", pinned[0]] * 2, during.read_text().splitlines())
+        self.assertEqual(["update bin --apply", "update bin", "update satellite --apply", "update satellite"],
+                         f.update_calls())
+        self.assertEqual(["held", pinned[0]] * 4, during.read_text().splitlines())
         self.assertEqual("free", f.state(lock))
         self.assertIn("follow  : done", result.stdout)
 
@@ -687,10 +689,53 @@ class FollowUpdateTest(unittest.TestCase):
 
         f.run("follow", expect=0)
 
-        self.assertEqual(["update bin --apply", "update bin --apply", "update satellite --apply"],
-                         f.update_calls())
+        self.assertEqual(["update bin --apply", "update bin --apply", "update bin",
+                          "update satellite --apply", "update satellite"], f.update_calls())
         self.assertEqual(2, len(f.make_calls()))
         self.assertFalse(f.intent.exists())
+
+    def test_an_update_that_exits_0_but_leaves_drift_is_a_failure(self):
+        """NEW (review round 2). Neither stage's exit says its install worked:
+        bin pipes bin-links through sed, and sd_db.satellite exits 0 when it
+        could report. follow reads the stage's dry run after --apply, and a
+        drift word there keeps the move and the marker, as a failed exit does."""
+        f = self.fixture()
+        system, pack, _, pinned = self.moved_pair(f)
+        hook = '[ "$3" = --apply ] || [ "$2" != satellite ] || echo "  DIFFERS sd_db build: satellite 1, hub 2"'
+
+        result = f.run("follow", expect=1, extra_env={"UPDATE_HOOK": hook})
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertIn("  DIFFERS sd_db build: satellite 1, hub 2", result.stdout)
+        self.assertIn(f"!!! failed: machine-setup update satellite left drift, named above; the checkouts stay "
+                      f"at the hub's pin; by hand: sh '{system}/local-machine-setup/machine-setup.sh' "
+                      f"update satellite --apply", result.stdout)
+        self.assertNotIn("follow  : done", result.stdout)
+        self.assertTrue(f.intent.exists())
+
+        f.run("follow", expect=0)
+
+        self.assertFalse(f.intent.exists())
+
+    def test_a_dry_run_that_cannot_answer_is_a_failure(self):
+        """NEW (review round 2). A failed check is an unknown result, not a pass."""
+        f = self.fixture()
+        system, pack, _, pinned = self.moved_pair(f)
+
+        result = f.run("follow", expect=1, extra_env={"UPDATE_HOOK": '[ "$3" = --apply ] || exit 3'})
+
+        self.assertIn("!!! failed: machine-setup update bin;", result.stdout)
+        self.assertEqual(["update bin --apply", "update bin"], f.update_calls())
+        self.assertTrue(f.intent.exists())
+
+    def test_follow_counts_the_drift_words_machine_setup_status_counts(self):
+        """NEW. One vocabulary: follow's copy of status_stage's grep stays equal."""
+        here = pathlib.Path(__file__).resolve().parents[1] / "repo-sync.sh"
+        script = here.parents[1] / "local-machine-setup" / "machine-setup.sh"
+        status = re.search(r"grep -cE '(DIFFERS[^']*)'", script.read_text()).group(1)
+        follow = re.search(r"^FOLLOW_DRIFT='([^']*)'$", here.read_text(), re.M)
+        self.assertIsNotNone(follow, "repo-sync.sh holds no FOLLOW_DRIFT='...' line")
+        self.assertEqual(status, follow.group(1))
 
 
 class SatelliteTest(unittest.TestCase):
