@@ -59,6 +59,18 @@ MACHINE_SETUP_STUB = ('[ -z "$UPDATE_LOG" ] || printf \'%s\\n\' "$*" >> "$UPDATE
                       'exit "${UPDATE_RC:-0}"\n')
 
 
+# For agent-prompt.sh in the fixture's system checkout (sd:3262): log the
+# arguments of each run, run PROMPT_HOOK, exit PROMPT_RC.
+AGENT_PROMPT_STUB = ('[ -z "$PROMPT_LOG" ] || printf \'%s\\n\' "$*" >> "$PROMPT_LOG"\n'
+                     '[ -z "$PROMPT_HOOK" ] || eval "$PROMPT_HOOK"\n'
+                     'exit "${PROMPT_RC:-0}"\n')
+SHARED_MD = "local-agent-prompt/prompt/shared.md"
+
+# What the real `refresh --apply` prints for a target edited in place.
+PROMPT_DIFFERS = ("echo '  DIFFERS claude /home/.claude/CLAUDE.md — block edited in place; keep it with'; "
+                  "echo \"          'capture claude --apply', or discard it with 'refresh --force'\"")
+
+
 class FollowFixture(DrainFixture):
     def satellite(self):
         config = self.tmp / "home" / ".config" / "sd"
@@ -69,7 +81,9 @@ class FollowFixture(DrainFixture):
         repo = self.repo(rel)
         bodies = {"local-sd-db/sd_db/schema.py": "SCHEMA_VERSION = 24\n",
                   "local-repo-sync/repo-sync.sh": "",
-                  "local-machine-setup/machine-setup.sh": MACHINE_SETUP_STUB}
+                  "local-machine-setup/machine-setup.sh": MACHINE_SETUP_STUB,
+                  "local-agent-prompt/agent-prompt.sh": AGENT_PROMPT_STUB,
+                  SHARED_MD: "shared rules\n"}
         for path, body in bodies.items():
             (repo / path).parent.mkdir(parents=True, exist_ok=True)
             self.commit(repo, path, body, f"add {path}")
@@ -92,6 +106,7 @@ class FollowFixture(DrainFixture):
         # never the machine's.
         env = {"GIT_COMMITTER_NAME": "Hub", "GIT_COMMITTER_EMAIL": "hub@example.test",
                "XDG_STATE_HOME": str(self.tmp / "state"), "UPDATE_LOG": str(self.update_log),
+               "PROMPT_LOG": str(self.prompt_log),
                **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 
@@ -130,6 +145,14 @@ class FollowFixture(DrainFixture):
     @property
     def update_log(self):
         return self.tmp / "update.log"
+
+    @property
+    def prompt_log(self):
+        return self.tmp / "prompt.log"
+
+    def prompt_calls(self):
+        """The arguments of each agent-prompt.sh run the stub logged."""
+        return self.prompt_log.read_text().splitlines() if self.prompt_log.exists() else []
 
     def update_calls(self):
         """The arguments of each machine-setup.sh run the stub logged."""
@@ -1011,6 +1034,97 @@ class SatelliteTest(unittest.TestCase):
         self.assertIn("only follow moves", result.stderr)
         self.assertEqual(before, f.head(system))
         self.assertIsNone(f.hub_pin(system))
+
+
+
+class FollowPromptTest(unittest.TestCase):
+    """follow refreshes the agent prompts when a move changes shared.md (sd:3262).
+
+    A satellite's follow moved system but ran no update chain, so a new
+    shared.md reached no agent's instructions file until someone ran
+    `agent-prompt.sh refresh --apply` by hand.
+    """
+
+    def fixture(self):
+        f = FollowFixture()
+        self.addCleanup(f.destroy)
+        f.satellite()
+        return f
+
+    def moved_pair(self, f, path="later"):
+        system, pack = f.system_repo(), f.pack_repo()
+        f.pin(system)
+        f.pin(pack)
+        pinned = (f.advance_origin(system, path=path, content="new rules\n"), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+        return system, pack, pinned
+
+    def test_a_move_that_changes_shared_md_refreshes_the_prompts(self):
+        """REGRESSION. The refresh runs once, from the moved checkout, with
+        the lanes still held, before follow says done."""
+        f = self.fixture()
+        system, _, pinned = self.moved_pair(f, path=SHARED_MD)
+        lock = f.lane("some-repo")
+        during = f.tmp / "during"
+        hook = f'{sys.executable} {f.probe} {lock} >> {during}; cat "{system}/{SHARED_MD}" >> {during}'
+
+        result = f.run("follow", expect=0, extra_env={"PROMPT_HOOK": hook})
+
+        self.assertEqual(["refresh --apply"], f.prompt_calls())
+        self.assertEqual(["held", "new rules"], during.read_text().splitlines())
+        self.assertLess(result.stdout.index("agent-prompt.sh refresh --apply"),
+                        result.stdout.index("follow  : done"))
+        self.assertEqual(pinned[0], f.head(system))
+
+    def test_a_move_that_leaves_shared_md_alone_runs_no_refresh(self):
+        """PIN. Only a change to shared.md calls agent-prompt.sh."""
+        f = self.fixture()
+        self.moved_pair(f)
+
+        result = f.run("follow", expect=0)
+
+        self.assertEqual([], f.prompt_calls())
+        self.assertIn("follow  : done", result.stdout)
+
+    def test_a_refused_target_is_logged_and_follow_still_exits_0(self):
+        """REGRESSION. A DIFFERS target makes refresh exit 1 and write
+        nothing; follow names the target and the commands, and the move
+        stands."""
+        f = self.fixture()
+        system, pack, pinned = self.moved_pair(f, path=SHARED_MD)
+
+        result = f.run("follow", expect=0, extra_env={"PROMPT_HOOK": PROMPT_DIFFERS, "PROMPT_RC": "1"})
+
+        self.assertIn("  DIFFERS claude", result.stdout)
+        self.assertIn(f"!!! agent-prompt.sh refresh --apply refused claude; the move stands; by hand: "
+                      f"sh '{system}/local-agent-prompt/agent-prompt.sh' diff", result.stdout)
+        self.assertIn("follow  : done", result.stdout)
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertFalse(f.intent.exists())
+
+    def test_a_follow_stopped_before_the_refresh_refreshes_on_the_next_run(self):
+        """REGRESSION. A run that moved system past a shared.md change and
+        stopped before the refresh (here its update failed) leaves the
+        marker; the next run finds system at the pin, and the marker makes
+        it refresh."""
+        f = self.fixture()
+        system, _, pinned = self.moved_pair(f, path=SHARED_MD)
+        f.run("follow", expect=1, extra_env={"UPDATE_RC": "1"})
+        self.assertEqual([], f.prompt_calls())
+
+        f.run("follow", expect=0)
+
+        self.assertEqual(["refresh --apply"], f.prompt_calls())
+        self.assertEqual(pinned[0], f.head(system))
+
+    def test_a_rollback_runs_no_refresh(self):
+        """PIN. A failed move puts system back, so its shared.md is the old one."""
+        f = self.fixture()
+        self.moved_pair(f, path=SHARED_MD)
+
+        f.run("follow", expect=1, extra_env={"MAKE_HOOK": FAIL_FIRST_SETUP})
+
+        self.assertEqual([], f.prompt_calls())
 
 
 if __name__ == "__main__":

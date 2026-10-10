@@ -733,6 +733,25 @@ follow_want() {
   fi
 }
 
+# Runs system checkout $1's `agent-prompt.sh refresh --apply`, bounded at
+# 120 s, after a follow whose move changed shared.md (sd:3262). A refusal
+# (a DIFFERS or UNKNOWN target) or a failure leaves those targets as they
+# were; it names them and the commands to run by hand, and the move stands.
+follow_prompt() {
+  p_ap="$1/local-agent-prompt/agent-prompt.sh"
+  [ -f "$p_ap" ] || return 0
+  echo "--- agent-prompt.sh refresh --apply"
+  if st_bounded 120 sh "$p_ap" refresh --apply < /dev/null > "$TMPD/prompt" 2>&1; then
+    cat "$TMPD/prompt"
+    return 0
+  fi
+  cat "$TMPD/prompt"
+  p_refused=$(sed -nE 's/^  (DIFFERS|UNKNOWN) ([^ ]+) .*/\2/p' "$TMPD/prompt" | tr '\n' ' ')
+  p_refused=${p_refused% }
+  if [ -n "$p_refused" ]; then p_what="refused $p_refused"; else p_what=failed; fi
+  echo "!!! agent-prompt.sh refresh --apply $p_what; the move stands; by hand: sh '$p_ap' diff, then capture <target> --apply or refresh --force"
+}
+
 # On a satellite, moves system and pack to the shas of the hub-pin tag on the
 # system origin, never to origin's default branch (sd:3100). Every check runs
 # before any move, so a refusal moves nothing; a failed move puts back every
@@ -793,6 +812,10 @@ follow() {
     rm -rf "$TMPD"
     drain_exec follow
   fi
+  # A marker left means an earlier run may have moved system past a
+  # shared.md change and stopped before its refresh: refresh again.
+  f_prompt=0
+  [ ! -e "$FOLLOW_INTENT" ] || f_prompt=1
   mkdir -p "${FOLLOW_INTENT%/*}" && printf 'system=%s\npack=%s\n' "$f_sys_sha" "$f_pack_sha" \
     > "$FOLLOW_INTENT.tmp" && mv -f "$FOLLOW_INTENT.tmp" "$FOLLOW_INTENT" \
     || { echo "!!! refused: cannot write $FOLLOW_INTENT; nothing moved"; return 1; }
@@ -808,10 +831,16 @@ follow() {
       f_back=0
       break
     fi
-    printf '%s\n' "$(git -C "$f_dir" rev-parse HEAD)$US$f_dir" >> "$TMPD/moved"
+    f_old=$(git -C "$f_dir" rev-parse HEAD)
+    printf '%s\n' "$f_old$US$f_dir" >> "$TMPD/moved"
     if ! pin_move "$f_dir" "$f_sha" follow followed; then
       f_failed=1
       break
+    fi
+    # git diff: 1 is a change; 2 or more cannot tell, so it counts as one.
+    if [ "$f_name" = system ] \
+        && ! git -C "$f_dir" diff --quiet "$f_old" HEAD -- local-agent-prompt/prompt/shared.md; then
+      f_prompt=1
     fi
   done 3< "$TMPD/moves"
   echo "----------------------------------------"
@@ -853,6 +882,7 @@ follow() {
       echo "follow  : moved, update failed; $FOLLOW_INTENT stays, so the next run sets up and updates again"
       return 1
     done
+    [ "$f_prompt" = 0 ] || follow_prompt "$f_sys"
     rm -f "$FOLLOW_INTENT"
     echo "follow  : done"
     return 0
@@ -1872,7 +1902,12 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              `update satellite --apply`, each followed by its dry run and
              bounded at 450 s; a failure, a drift word in the dry run, or a
              dry run without the stage's proof line (a SKIP proves nothing)
-             exits 1, keeps the move and names the command. Every check
+             exits 1, keeps the move and names the command. When the system
+             move changed local-agent-prompt/prompt/shared.md, or a run
+             finishes one the marker below names, it then runs
+             `agent-prompt.sh refresh --apply`, bounded at 120 s; a refused
+             target is named with the commands to run by hand, and follow
+             still exits 0. Every check
              runs first: a failed fetch, a tag with no
              pack= line, uncommitted changes or a drain timeout refuses with
              nothing moved. When a move fails, each checkout it moved goes
