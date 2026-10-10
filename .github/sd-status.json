@@ -8,7 +8,7 @@
         "required_approving_review_count": 0,
         "enforce_admins": true
       },
-      "because": "One maintainer account holds push and merge rights on this repository, and GitHub forbids approving your own pull request, so any required approval count above zero locks main for the only person who can merge. The ruleset `main required checks` requires a pull request (0 approvals) with the sd/local-gate status, which sd-ship merge posts after make check passes at the head, and it has no bypass, so every commit on main comes through a pull request whose checks passed; sd-review runs locally before every merge.",
+      "because": "One maintainer account holds push and merge rights on this repository, and GitHub forbids approving your own pull request, so any required approval count above zero locks main for the only person who can merge. Classic branch protection on main requires a pull request (0 approvals) with the strict sd/local-gate status, which sd-ship merge posts after make check passes at the head, and enforces it for admins, so every commit on main comes through a pull request whose checks passed; sd-review runs locally before every merge.",
       "since": "2026-09-27",
       "until": "a second account with push or merge rights on this repository exists"
     }

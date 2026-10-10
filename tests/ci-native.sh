@@ -319,7 +319,6 @@ case "$SUITE_LEG" in
     run_suite opentelemetry-demo sh local-opentelemetry-demo/opentelemetry-demo.sh test -v
     run_suite worldmonitor sh local-worldmonitor/worldmonitor.sh test -v
     run_suite ai-songs-backup sh local-ai-songs-backup/ai-songs-backup.sh test -v
-    run_suite github-rulesets sh github-rulesets/github-rulesets.sh test -v
     run_suite config-check sh local-config-check/config-check.sh test -v
     run_suite volume-probe sh local-volume-probe/volume-probe.sh test -v
     # mezmo-pipeline's suite is shell with its own tally, not
