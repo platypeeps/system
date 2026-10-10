@@ -75,6 +75,23 @@
 .cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 .ledger tr.empty td { color: var(--color-muted); padding-block: var(--space-sm); cursor: default; }
 
+/* Your work (sd:3271): the items `sd today` lists. Rows are not selectable, so no row hover; the snooze control is the shell's.
+ * Hallmark · component: work row · genre: modern-minimal · theme: design.md instrument panel
+ * states: default · hover (the title link) · focus · active · disabled -- the row actions are shell.css's; overdue is ▲, not colour alone. */
+section[aria-labelledby="work-h"] { margin-top: var(--space-xl); }
+.work tbody tr { cursor: default; }
+.work tbody tr:hover td { background: transparent; }
+.work .what { min-width: 0; overflow-wrap: anywhere; }
+.work .what a { color: var(--color-ink); text-decoration: none; }
+.work .what a:hover { text-decoration: underline; }
+.work .what a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.work .detail { white-space: nowrap; }
+@media (max-width: 899px) {
+  .work tbody tr { grid-template-areas: "g what act" ". detail detail"; }
+  .work .act { align-self: start; }
+  .work .detail { white-space: normal; }
+}
+
 /* Decisions (sd:3012): a question note's Option: lines, one button each. The rows are not selectable, so no row hover.
  * Hallmark · component: decision row · genre: modern-minimal · theme: design.md instrument panel
  * states: default · hover · focus · active · disabled (busy) · error (refused) · success (ruled) -- the .btn states are shell.css's. */

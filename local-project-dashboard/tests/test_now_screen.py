@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import contributions, operations, progress, upsert_shadow, writes
+from sd_db import contributions, operations, progress, reads, upsert_shadow, writes
 from sd_db.writes import snooze
 from sd_dashboard import fleet, now_screen
 
@@ -185,7 +185,7 @@ class Document(ScreenCase):
                 repos=[repo("pushy", ahead=1), repo("messy", dirty=2)],
                 trees=[tree("gone", live=False)]))
         shadow.assert_called_once_with(self.connection, tracker="github")
-        self.assertEqual(set(document), {"rows", "sources", "now", "snoozed", "snooze_error"})
+        self.assertEqual(set(document), {"rows", "sources", "now", "snoozed", "snooze_error", "work", "work_error"})
         self.assertEqual(document["now"], NOW)
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
             (2, "pr:example/project#14:2", "look"),
@@ -262,6 +262,54 @@ class Document(ScreenCase):
                                            fleet=self.fixture_fleet(repos=[repo("pushy", ahead=1)]))
         self.assertEqual([row["id"] for row in document["rows"]], ["ahead:pushy:1"])
         self.assertEqual((document["snoozed"], document["snooze_error"]), ([], "database is locked"))
+
+    def test_a_work_item_snoozes_by_its_status_and_due_and_shows_again_when_either_moves(self):
+        """sd:3271. The key is today:item:<id>; `seen` reads status and due, so a changed item is not the one snoozed."""
+        fleet = self.fixture_fleet()
+        first = self.item("Write the brief", status="in_progress", due="2026-09-05")
+        other = self.item("Second thing", status="in_progress")
+        document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)
+        self.assertEqual([row["id"] for row in document["work"]], [f"item:{first}", f"item:{other}"])
+        self.assertEqual(document["work_error"], "")
+        row = document["work"][0]
+        self.assertEqual((row["what"], row["detail"]), (f"#{first} Write the brief", "in_progress · due 2026-09-05"))
+        self.assertNotIn("problem", row)
+        snooze(self.connection, f"today:item:{first}", "2026-09-06T15:00:00Z", seen=row["seen"], now=NOW)
+        hidden = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)
+        self.assertEqual([r["id"] for r in hidden["work"]], [f"item:{other}"])
+        self.assertEqual([(r["id"], r["until"], r["seen"]) for r in hidden["snoozed"]],
+                         [(f"item:{first}", "2026-09-06T15:00:00+00:00", row["seen"])])
+        # A new title is not a new problem; a new due date or a new status is.
+        self.connection.execute("UPDATE item SET title = 'Write the brief, again' WHERE id = ?", (first,))
+        self.assertEqual([r["id"] for r in now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)["work"]],
+                         [f"item:{other}"])
+        self.connection.execute("UPDATE item SET due = '2026-09-04' WHERE id = ?", (first,))
+        moved = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)
+        self.assertEqual(([r["id"] for r in moved["work"]], moved["snoozed"]), ([f"item:{first}", f"item:{other}"], []))
+        self.connection.execute("UPDATE item SET due = '2026-09-05' WHERE id = ?", (first,))
+        self.connection.execute("UPDATE item SET status = 'ready_to_send' WHERE id = ?", (first,))
+        self.assertIn(f"item:{first}", [r["id"] for r in now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)["work"]])
+        # The time passing shows it again, and Health's key for the same id hides nothing.
+        self.connection.execute("UPDATE item SET status = 'in_progress' WHERE id = ?", (first,))
+        later = now_screen.document(self.connection, now="2026-09-06T15:00:00Z", jobs=self.quiet, fleet=fleet)
+        self.assertEqual(([r["id"] for r in later["work"]], later["snoozed"]), ([f"item:{first}", f"item:{other}"], []))
+        snooze(self.connection, f"health:item:{other}", "2026-09-07T15:00:00Z", seen=row["seen"], now=NOW)
+        self.assertIn(f"item:{other}", [r["id"] for r in now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)["work"]])
+
+    def test_a_work_read_that_fails_is_said_and_leaves_the_fleet_rows(self):
+        """A failed read is not an empty list: the document names the failure, and the other sources still answer."""
+        with patch.object(reads, "today_items", side_effect=sqlite3.OperationalError("database is locked")):
+            document = now_screen.document(self.connection, now=NOW, jobs=self.quiet,
+                                           fleet=self.fixture_fleet(repos=[repo("pushy", ahead=1)]))
+        self.assertEqual((document["work"], document["work_error"]), ([], "database is locked"))
+        self.assertEqual([row["id"] for row in document["rows"]], ["ahead:pushy:1"])
+
+    def test_a_snooze_read_that_fails_shows_every_work_item_too(self):
+        item = self.item("Write the brief", status="in_progress")
+        with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
+            document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet())
+        self.assertEqual(([row["id"] for row in document["work"]], document["snooze_error"]),
+                         ([f"item:{item}"], "database is locked"))
 
 
 class DarkCollector(FleetCase):
