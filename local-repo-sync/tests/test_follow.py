@@ -30,6 +30,17 @@ FAIL_FIRST_SETUP = ('git -C "$2" rev-parse HEAD >> "$MAKE_LOG.heads"; '
                     'if [ -e "$MAKE_LOG.failed" ]; then MAKE_RC=0; '
                     'else : > "$MAKE_LOG.failed"; MAKE_RC=1; fi')
 
+# For the make stub: the pack's provisioning guard (sd:3218). `make setup`
+# installs sd_db from the system checkout at SD_SYSTEM_CHECKOUT and records
+# its HEAD in $MAKE_LOG.installed, but refuses, as bin/sd_install.py does, a
+# system HEAD that is an ancestor of the sha installed.
+GUARD_SETUP = ('s_head=$(git -C "$SD_SYSTEM_CHECKOUT" rev-parse HEAD); '
+               's_inst=$(cat "$MAKE_LOG.installed"); '
+               'if [ "$s_head" != "$s_inst" ] '
+               '&& git -C "$SD_SYSTEM_CHECKOUT" merge-base --is-ancestor "$s_head" "$s_inst"; then '
+               'echo "preserving installed sd_db $s_inst: $s_head is an ancestor of it"; MAKE_RC=1; '
+               'else echo "$s_head" > "$MAKE_LOG.installed"; fi')
+
 
 # For machine-setup.sh in the fixture's system checkout (sd:3168): log the
 # arguments of each run, run UPDATE_HOOK, exit UPDATE_RC. A run of every
@@ -206,6 +217,25 @@ class HubPushTest(unittest.TestCase):
         self.assertIn("hub-pin not published", result.stdout)
         self.assertIsNone(f.hub_pin(system))
         self.assertEqual("main", f.branch(pack))
+
+    def test_a_refresh_moves_system_before_the_pack(self):
+        """NEW (sd:3218). A merge installs sd_db newer than the pinned system,
+        and the pack's make setup refuses a system older than that copy. With
+        the pack listed first in the conf, refresh still moves system first,
+        so the setup passes and the hub pin is pushed in one run."""
+        f = self.fixture()
+        pack, system = f.pack_repo(), f.system_repo()
+        f.pin(system)
+        f.pin(pack)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.git(system, "fetch", "-q", "origin")
+        pathlib.Path(f"{f.make_log}.installed").write_text(pinned[0] + "\n")
+
+        result = f.run("refresh", expect=0,
+                       extra_env={"MAKE_HOOK": GUARD_SETUP, "SD_SYSTEM_CHECKOUT": str(system)})
+
+        self.assertNotIn("preserving installed", result.stdout)
+        self.assertEqual(pinned, f.hub_pin(system))
 
     def test_a_failed_hub_refresh_pushes_nothing(self):
         """PIN. A satellite must not follow a refresh that did not finish."""
@@ -384,6 +414,48 @@ class FollowTest(unittest.TestCase):
         self.assertEqual([pinned[1], old[1]], f.setup_heads())
 
         f.run("follow", expect=0)
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+
+    def test_follow_moves_system_before_the_pack(self):
+        """PIN (sd:3218). The pack's make setup refuses a system older than
+        the sd_db installed; with the pack listed first in the conf, follow
+        still moves system first, so the setup finds system at the pin."""
+        f = self.fixture()
+        pack, system = f.pack_repo(), f.system_repo()
+        f.pin(system)
+        f.pin(pack)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+        pathlib.Path(f"{f.make_log}.installed").write_text(pinned[0] + "\n")
+
+        result = f.run("follow", expect=0,
+                       extra_env={"MAKE_HOOK": GUARD_SETUP, "SD_SYSTEM_CHECKOUT": str(system)})
+
+        self.assertNotIn("preserving installed", result.stdout)
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+
+    def test_the_rollback_sets_the_pack_up_before_system_goes_back(self):
+        """NEW (sd:3218). The sd_db installed is the hub's, newer than the old
+        system. When the pack's setup fails at the pin, the pack goes back and
+        sets up while system is still at the pin, so the guard refuses
+        nothing; then system goes back, and the next run moves both."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+        pathlib.Path(f"{f.make_log}.installed").write_text(pinned[0] + "\n")
+        env = {"SD_SYSTEM_CHECKOUT": str(system),
+               "MAKE_HOOK": ('if [ -e "$MAKE_LOG.failed" ]; then ' + GUARD_SETUP + '; '
+                             'else : > "$MAKE_LOG.failed"; MAKE_RC=1; fi')}
+
+        result = f.run("follow", expect=1, extra_env=env)
+
+        self.assertNotIn("preserving installed", result.stdout)
+        self.assertIn("each checkout it moved is back at its old sha", result.stdout)
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+
+        f.run("follow", expect=0, extra_env=env)
 
         self.assertEqual(pinned, (f.head(system), f.head(pack)))
 
