@@ -202,6 +202,30 @@ class TheUnscopedBacklog(unittest.TestCase):
             self.assertEqual([row["id"] for row in reads.backlog_items(
                 connection, repo=reads.NO_REPO, kind="followup")], [older])
 
+    def test_parked_reads_the_open_items_the_prune_parked_and_nothing_else(self):
+        """sd:3012. The default read hides a parked item, so nothing listed one to unpark.
+        `parked=True` reads the open parked items: not a parked piece, which revives
+        through its own workflow, and not a done one, which has nothing to come back to."""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "sd.db"
+            initialise(path)
+            writer = connect(path)
+            shown = create_item(writer, kind="task", title="Still listed", status="planning")
+            parked = create_item(writer, kind="task", title="Parked by the prune", status="planning")
+            piece = create_item(writer, kind="idea", title="A parked piece", status="planning")
+            finished = create_item(writer, kind="task", title="Parked, then done", status="planning")
+            set_item_fields(writer, parked, parked_at="2026-09-01T02:00:00Z")
+            set_item_fields(writer, piece, piece="a-parked-piece", parked_at="2026-09-01T02:00:00Z")
+            set_item_fields(writer, finished, parked_at="2026-09-01T02:00:00Z")
+            transition(writer, finished, "done", who="test")
+            writer.commit()
+            writer.close()
+            connection = connect(path, write=False)
+            self.addCleanup(connection.close)
+
+            self.assertEqual([row["id"] for row in reads.backlog_items(connection, now=NOW)], [shown])
+            self.assertEqual([row["id"] for row in reads.backlog_items(connection, now=NOW, parked=True)], [parked])
+
     def test_a_repository_registered_under_the_token_does_not_shadow_the_selector(self):
         """The collision, tested through the API that would cause it.
 

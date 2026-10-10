@@ -153,10 +153,16 @@ _STATUS_SINCE = """
 """
 
 
-def _unparked_clause(connection: sqlite3.Connection) -> str:
-    """A schema-2 store remains readable until its explicit migration."""
+def _unparked_clause(connection: sqlite3.Connection, *, parked: bool = False) -> str:
+    """A schema-2 store remains readable until its explicit migration; it parks nothing.
+
+    `parked` selects the other side: the items the nightly prune parked, never a
+    writing piece, which revives through its own workflow (sd:3012).
+    """
     columns = {row[1] for row in connection.execute("PRAGMA table_info(item)")}
-    return "item.parked_at IS NULL" if "parked_at" in columns else "1"
+    if "parked_at" not in columns:
+        return "0" if parked else "1"
+    return "(item.parked_at IS NOT NULL AND item.piece IS NULL)" if parked else "item.parked_at IS NULL"
 
 
 def capture_items(connection: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -765,8 +771,12 @@ def backlog_items(
     status: str | None = None,
     include_done_days: int = 7,
     now: str | None = None,
+    parked: bool = False,
 ) -> list[sqlite3.Row]:
     """Unparked open items, and `done` for the week, in one shared order.
+
+    `parked=True` reads the open items the nightly prune parked instead, in the
+    same order, for the Tasks page's Parked view and its Unpark (sd:3012).
 
     The list, the board and the matrix are three views of *one row set*
     (requirement 5), so there is one query. A view that filtered again would
@@ -787,7 +797,9 @@ def backlog_items(
                "(item.status = 'done' AND "
                f"{_STATUS_SINCE} >= :cutoff)"]
     params: dict[str, object] = {"cutoff": cutoff}
-    sql = _BACKLOG_SQL.format(clauses=" OR ".join(clauses), unparked=_unparked_clause(connection))
+    if parked:
+        clauses = ["item.status != 'done'"]
+    sql = _BACKLOG_SQL.format(clauses=" OR ".join(clauses), unparked=_unparked_clause(connection, parked=parked))
     rows = list(connection.execute(sql, params).fetchall())
     if kind:
         rows = [row for row in rows if row["kind"] == kind]

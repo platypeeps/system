@@ -5,7 +5,8 @@ both built here from the reads v1 already makes, so the port adds no second
 query of the store:
 
 - `/api/tasks` is `document`: every row `reads.backlog_items` returns for v1
-  /backlog (unparked open items, and `done` for the week), each with the
+  /backlog (unparked open items, and `done` for the week), then the open items
+  the nightly prune parked (`parked`, its stamp; None on every other row), each with the
   revision a write sends back and the statuses `workflow.allowed_statuses`
   accepts for it, so the board refuses a move for the reason the library
   would, before it posts. Each row carries its `reads.age_bucket` key and the
@@ -27,8 +28,9 @@ query of the store:
 
 Every write the page makes goes through a route `server.action_route`
 already answered for v1: status, edit (priority, due, recurrence), note
-resolve, work relink and cancel, and task cancel (`/cancel-task`, the bulk
-Close of sd:3012). Nothing here writes.
+resolve, work relink and cancel, task cancel (`/cancel-task`, the bulk
+Close of sd:3012), and Unpark (the edit route with `parked_at: null`, sd:3012).
+Nothing here writes.
 """
 
 from __future__ import annotations
@@ -83,7 +85,8 @@ def document(connection, *, now: str) -> dict:
 def _document(connection, *, now: str) -> dict:
     from .screens import _repo_labels
 
-    rows = reads.backlog_items(connection, now=now)
+    # The parked rows follow the listed ones (sd:3012): the page shows them only under its Parked chip, for Unpark.
+    rows = reads.backlog_items(connection, now=now) + reads.backlog_items(connection, now=now, parked=True)
     label = _repo_labels(row["repo"] for row in rows)
     live = _assignment_states(connection, now=now)
     out = []
@@ -105,6 +108,7 @@ def _document(connection, *, now: str) -> dict:
             # The row's own `item_state`, so each row reads its history once (sd:2380).
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(row),
+            "parked": row["parked_at"],
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
