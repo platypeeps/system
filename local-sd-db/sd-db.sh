@@ -174,9 +174,8 @@ Usage: sd-db.sh <command>
   repo list [--managed]
               The repositories the table holds, which is the enumeration,
               each with its status source, its managed flag (yes|no), its ci
-              setting (github|local), its satellite gate setting
-              (off|accept) and its runner merge setting, which
-              stays the last field. `--managed` prints only the rows marked
+              setting (github|local), its lane host and its runner merge
+              setting, which stays the last field. `--managed` prints only the rows marked
               managed.
   repo runner-merge PATH manual|auto
               Set whether the runner may merge this repository's work by
@@ -194,11 +193,6 @@ Usage: sd-db.sh <command>
               sd-ship run sd-check in a clean worktree and post an
               `sd/local-gate` status. The path must already be registered;
               this writes no new row.
-  repo satellite-gate PATH off|accept
-              Set whether the hub may merge this repository on a
-              satellite's gate pass. `off`, the default every row starts
-              at, runs the gate on the hub. The path must already be
-              registered; this writes no new row.
   repo lane-host PATH HOST|hub
               Set the machine that runs this repository's merge lane: its
               `hostname -s`, lower-cased, or `hub`, the default every row

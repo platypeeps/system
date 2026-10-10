@@ -36,7 +36,7 @@ from ..repos import add as add_repo
 from ..repos import registered
 from ..repos import registered_for
 from ..repos import ConfMissing, seed as seed_repos
-from ..repos import LANE_HUB, set_ci, set_lane_host, set_managed, set_runner_merge, set_satellite_gate
+from ..repos import LANE_HUB, set_ci, set_lane_host, set_managed, set_runner_merge
 from ..schema import SCHEMA_VERSION
 from ..sources import docs_work, index_cache, issues, register
 from ..sources import retire as retire_source
@@ -347,8 +347,8 @@ def _open_for_read() -> sqlite3.Connection:
 def command_repo(argv: list[str]) -> int:
     """`repo add <path>`, `repo seed [conf]`, `repo list [--managed]`,
     `repo runner-merge <path> <manual|auto>`, `repo managed <path> <yes|no>`,
-    `repo ci <path> <github|local>`, `repo satellite-gate <path> <off|accept>`,
-    `repo lane-host <path> <host|hub>`, `repo remove <path> ...`.
+    `repo ci <path> <github|local>`, `repo lane-host <path> <host|hub>`,
+    `repo remove <path> ...`.
 
     The `repo` table is what criterion 6 enumerates from, so an empty one
     makes that criterion pass over nothing. `add` and `seed` are the two ways
@@ -360,17 +360,15 @@ def command_repo(argv: list[str]) -> int:
     registering verbs already made. `managed` is the same shape for
     `repo.managed` (sd:1619). Nothing derives that flag; the operator sets
     each row. `ci` is the same shape again for `repo.ci` (sd:1843): whether
-    the pack waits for GitHub Actions or runs `sd-check` locally.
-    `satellite-gate` is that shape for `repo.satellite_gate` (sd:2704):
-    whether the hub may merge on a satellite's gate pass. `lane-host` sets
+    the pack waits for GitHub Actions or runs `sd-check` locally. `lane-host` sets
     `repo.lane_host` (sd:3075), the machine that runs the repository's lane;
     `hub` writes NULL, and it prints the value before and after.
 
-    `list` prints `managed`, `ci`, `satellite_gate`, `lane_host`, then `runner_merge`, so
+    `list` prints `managed`, `ci`, `lane_host`, then `runner_merge`, so
     the merge setting stays the last field of each row, where the operator's
     instructions read it.
     """
-    verbs = ("add", "seed", "list", "runner-merge", "managed", "ci", "satellite-gate", "lane-host", "remove")
+    verbs = ("add", "seed", "list", "runner-merge", "managed", "ci", "lane-host", "remove")
     if not argv or argv[0] not in verbs:
         print(f"sd-db repo: expected {', '.join(verbs[:-1])} or {verbs[-1]}",
               file=sys.stderr)
@@ -424,14 +422,6 @@ def command_repo(argv: list[str]) -> int:
             path, before = set_ci(connection, rest[0], rest[1])
             print(f"sd-db: {path} ci {before} -> {rest[1]}")
             return 0
-        if verb == "satellite-gate":
-            if len(rest) != 2:
-                print("sd-db repo satellite-gate: needs a path and off or accept",
-                      file=sys.stderr)
-                return 1
-            path, before = set_satellite_gate(connection, rest[0], rest[1])
-            print(f"sd-db: {path} satellite_gate {before} -> {rest[1]}")
-            return 0
         if verb == "lane-host":
             if len(rest) != 2 or rest[1].startswith("-"):
                 print("sd-db repo lane-host: needs a path and a host name or hub, and takes no flag",
@@ -459,7 +449,7 @@ def command_repo(argv: list[str]) -> int:
         for row in rows:
             print(f"sd-db: {row['path']}  {row['remote'] or '-'}  "
                   f"{row['status_source']}  {'yes' if row['managed'] else 'no'}  "
-                  f"{row['ci']}  {row['satellite_gate']}  {row['lane_host'] or LANE_HUB}  {row['runner_merge']}")
+                  f"{row['ci']}  {row['lane_host'] or LANE_HUB}  {row['runner_merge']}")
         return 0
     finally:
         connection.close()

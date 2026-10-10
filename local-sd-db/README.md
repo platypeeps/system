@@ -62,9 +62,9 @@ backup, and the fixture harness both repositories test against.
                     before 018's (sd:1335)
       schema/020_repo_satellite_gate.sql  `repo.satellite_gate`, `off` or
                     `accept`: whether the hub may merge on a satellite's
-                    gate pass. The column only, every row starts at `off`,
-                    set with `repo satellite-gate`. Carries its reverse in
-                    its header, run before 019's (sd:2704)
+                    gate pass. The column only, every row starts at `off`;
+                    025 drops it. Carries its reverse in its header, run
+                    before 019's (sd:2704)
       schema/021_judgment_call_context.sql  five `judgment` columns
                     for the context of a call: `location` (a `~/` key like
                     `skill_use.cwd`), `threshold`, `run_id`, `prompt_hash`
@@ -83,6 +83,11 @@ backup, and the fixture harness both repositories test against.
                     runs the repository's lane; NULL, the hub, on every
                     row. Set with `repo lane-host`. Carries its reverse in
                     its header, run before 023's (sd:3075)
+      schema/025_repo_drop_satellite_gate.sql  drops
+                    `repo.satellite_gate`: the lane host replaced the
+                    satellite gate offload. Every row keeps its other
+                    values. Carries its reverse in its header, run before
+                    024's; the reverse sets every row to `off` (sd:3217)
       schema.py     the version, the table list, the migration files
       recurrence.py the RRULE subset a recurring task carries -- FREQ,
                     INTERVAL, BYMONTH, BYMONTHDAY, stdlib only -- and the
@@ -172,10 +177,9 @@ backup, and the fixture harness both repositories test against.
     ./sd-db.sh repo runner-merge PATH manual|auto   # may the runner merge it
     ./sd-db.sh repo managed PATH yes|no   # does the operator manage it
     ./sd-db.sh repo ci PATH github|local  # where its checks run
-    ./sd-db.sh repo satellite-gate PATH off|accept  # may the hub merge on a satellite's pass
     ./sd-db.sh repo lane-host PATH HOST|hub  # which machine runs its lane
 
-A `repo list` row reads `path remote status_source managed ci satellite_gate lane_host runner_merge`.
+A `repo list` row reads `path remote status_source managed ci lane_host runner_merge`.
 `remote` is the checkout's origin URL as written, ssh or https: the runner clones over it, so it is not respelled.
 Rows are compared by repository identity, so the two spellings of one GitHub repository match.
 `repo add` on a registered path rereads the checkout, so it refreshes a row whose repository moved to a new owner.
@@ -465,53 +469,8 @@ A read fault, a database that cannot be opened, or clones that disagree raise `L
 A missing row reads as the hub.
 The hub's lock file sits beside the database; a satellite host's sits under `$XDG_STATE_HOME/sd/ship-locks/`.
 
-### Satellite gate offload: the satellite gates, the hub merges
-
-The path forward is a lane host per repository (sd:3003): the machine that hosts a repository gates and merges it,
-and no request crosses a machine.
+The machine that hosts a repository gates and merges it, and no request crosses a machine.
 Run `local-cron-jobs/examples/lane-run.job` on every machine: `sd-ship lane run --hosted` runs each lane the machine hosts.
-Move a lane with `sd-db.sh repo lane-host PATH HOST|hub` or the dashboard's Move lane control.
-The offload below, with its `--satellite-only` job, stays until the pack retires it.
-
-In a repository with `repo.ci = local` and `repo.satellite_gate = accept`, a satellite runs the gate.
-The hub's lane merges the item and runs no `sd-check` for it.
-The merge compares the satellite's offload receipt under the pack's trust rule, under the hub's repository lock.
-The design record is the pack's, under sd:2704; the pack's `WORKFLOW.md` lists each step.
-
-Who does the work (sd:2724):
-
-| Work | Satellite | Hub |
-| --- | --- | --- |
-| Catch up with the base | `git merge origin/main`, or `sd-ship prepare --catch-up` | nothing |
-| Run `sd-check` | `sd gate check --base main`; it writes the offload receipt to the hub | nothing for this item |
-| Review, push, bind the pull request | `sd-ship prepare --item N --title T --body-file F` | nothing |
-| Post `sd/local-gate` | `prepare`, from the offload receipt | nothing |
-| Ask for the merge | `sd-ship lane request --item N --manual` | nothing |
-| Take requests in | nothing | `sd-ship -C <checkout> lane run --satellite-only`, from a scheduled job; `lane-run.job` replaces it |
-| Merge | nothing | `sd-ship merge --satellite-gate`: accepts the receipt, posts no status, merges |
-| A refusal or a moved branch or base | reads the next action on the request row and the item, then gates and requests again | hands the item back |
-
-The opt-in is a `repo` column, set per repository on the hub:
-
-    ./sd-db.sh repo satellite-gate PATH accept   # the hub may merge on a satellite's pass
-    ./sd-db.sh repo satellite-gate PATH off      # the rollback
-
-- Every row starts at `off`, and a library older than the column reads `off`.
-- With `off`, intake refuses new requests, and the merge hands back any waiting entry.
-- The adversarial review sd:2782 of that binding closed with pack #1385, so `accept` is open to a repository.
-- `accept` restricts every gate's environment in that repository, not only the satellite's (sd:2817).
-  - The hub's own gate, the merge gate, local reuse and a satellite's gate all run `sd-check` under one filter.
-  - The filter keeps `HOME`, `USER` and `PATH`, and the variables an offload view compares.
-  - A compared variable is in the pack's `OFFLOAD_VARIABLES`, or starts with an `OFFLOAD_VARIABLE_PREFIXES` prefix.
-  - A variable whose name contains a credential word (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `COOKIE`, `AUTH`) is dropped.
-  - The gate drops every other variable, such as `SKIP_TESTS`, `RUN_INTEGRATION`, `SSH_AUTH_SOCK` or `TMPDIR`.
-  - A check that needs a dropped variable fails on every machine; keep that repository at `off` until the pack allowlists it.
-  - The pack's `sd_gate_receipts.offload_environment` is the filter, and `offload_run` applies it to every gate.
-  - Each receipt binds an `environment_mode`, so a pass from before the opt-in does not stand after it.
-  Reason: the satellite and the hub then run the same check, and a dropped variable chooses no tests on either.
-- Roll out one repository at a time: set `accept`, install the hub's job, then request from the satellite.
-- The job is `local-cron-jobs/examples/satellite-lane-run.job`, one copy per opted-in repository, on the hub only.
-  `local-cron-jobs/examples/lane-run.job` replaces it: one file on every machine, no checkout named.
 
 ## `judgments`: what the judgment models cost, by stage
 
