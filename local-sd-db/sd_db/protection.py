@@ -161,16 +161,6 @@ REQUESTS_EXHAUSTED = f"{BUDGET_EXHAUSTED}: request limit reached"
 TIME_EXHAUSTED = f"{BUDGET_EXHAUSTED}: time limit reached"
 HEARTBEAT_KEY = "protection-sync:github"
 
-#: The remotes this reads: ssh (`git@github.com:o/r.git`, `ssh://git@github.com/o/r`)
-#: and https (`https://github.com/o/r`), a URL form with a port as well
-#: (`ssh://git@github.com:443/o/r`). Anything else is not GitHub and is
-#: skipped -- not `unknown`, because there is nothing to be unknown about.
-_GITHUB_REMOTE = re.compile(
-    r"^(?:(?:https?|ssh)://(?:[^@/]+@)?github\.com(?::\d+)?/|(?:ssh://)?(?:[^@/]+@)?github\.com[:/])"
-    r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"
-)
-
-
 #: What `observe` spends per repository: the repository, its default
 #: branch's classic protection and, whatever that answers, the first page of
 #: the branch's rules (sd:1430: a ruleset beside a classic object gates the
@@ -232,11 +222,15 @@ MAX_RULE_PAGES = 100
 
 
 def github_slug(remote: str | None) -> tuple[str, str] | None:
-    """`(owner, name)` for a github.com remote, or None for any other."""
-    match = _GITHUB_REMOTE.match((remote or "").strip())
-    if match is None:
-        return None
-    return match.group("owner"), match.group("name")
+    """`(owner, name)` for a github.com remote, or None for any other.
+
+    `repos.parse_remote` decides which remotes are GitHub (sd:1025). Anything
+    else is skipped -- not `unknown`, because there is nothing to be unknown about.
+    """
+    from .repos import parse_remote
+
+    found = parse_remote(remote)
+    return (found.owner, found.name) if found.kind == "github" else None
 
 
 def protection_path(owner: str, name: str, branch: str) -> str:

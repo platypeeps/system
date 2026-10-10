@@ -321,15 +321,61 @@ def seed(
 
 
 #: `scheme://[user[:password]@]host[:port]/path`, the URL form of a remote.
-_URL_REMOTE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/]*@)?(?P<host>[^/:]+)(?::\d*)?(?P<path>/.*)?$")
+#: A `?` or `#` ends the authority, so it may not hide in the user part:
+#: `https://a.example#@github.com/o/r` reaches `a.example`, not GitHub.
+_URL_REMOTE = re.compile(
+    r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*)://(?:(?P<user>[^@/?#]*)@)?(?P<host>[^/:?#]+)"
+    r"(?::(?P<port>\d*))?(?P<path>/.*)?$")
 
 #: `[user@]host:path`, git's scp-like form. A colon before any slash is what
 #: separates it from a local path; `C:/...` is excluded by the one-letter host.
-_SCP_REMOTE = re.compile(r"^(?:[^@/:]+@)?(?P<host>[^@/:]{2,}):(?P<path>[^/].*)$")
+_SCP_REMOTE = re.compile(r"^(?:(?P<user>[^@/:]+)@)?(?P<host>[^@/:]{2,}):(?P<path>[^/].*)$")
+
+#: One owner or repository name in a github.com path.
+_GITHUB_NAME = re.compile(r"[A-Za-z0-9_.-]+")
+
+#: The transports a github.com remote is read from; `git://`, `git+ssh://`
+#: and `file://` are not, and stay unknown rather than become GitHub.
+_GITHUB_SCHEMES = frozenset({"https", "http", "ssh"})
+
+#: The transports another host is recognised over when the text mentions
+#: github.com; any other scheme leaves such a remote unknown.
+_OTHER_SCHEMES = frozenset({"https", "http", "ssh", "git"})
+
+#: A host name another host must be spelled with before it can clear a
+#: remote whose text mentions github.com.
+_HOST_NAME = re.compile(r"[A-Za-z0-9.-]+")
 
 
-def remote_identity(remote: str | None) -> str:
-    """The repository an origin URL names: `github.com/owner/name` on GitHub.
+@dataclass(frozen=True)
+class RemoteIdentity:
+    """What an origin URL names, under the one contract ownership and delivery share (sd:1025).
+
+    `kind` is one of three outcomes:
+
+    - `github`: a github.com remote naming exactly one `owner/name`, over
+      https, http, ssh or git's scp-like form. `key` is
+      `github.com/<owner>/<name>` lower-cased; `owner` and `name` keep the
+      remote's case.
+    - `other`: a remote that names something else -- another host, a local
+      path or a `file://` URL. `key` is the remote with the host lower-cased
+      and a trailing slash and `.git` removed; the rest compares as written.
+    - `unknown`: no remote, or text that mentions github.com without naming
+      one GitHub repository or one other host. `key` is "", and an unknown
+      identity matches nothing, itself included.
+    """
+
+    kind: str
+    key: str = ""
+    owner: str = ""
+    name: str = ""
+
+
+_UNKNOWN = RemoteIdentity("unknown")
+
+
+def parse_remote(remote: str | None) -> RemoteIdentity:
+    """The repository an origin URL names; ownership and delivery both read this.
 
     On github.com the scheme, the ssh user, a port, a trailing slash, a
     `.git` suffix and letter case are spelling, not identity: GitHub serves
@@ -343,30 +389,80 @@ def remote_identity(remote: str | None) -> str:
     directories (sd:1436 review). There only the host's case, a trailing
     slash and a `.git` suffix are removed, and the rest compares as written.
     A local path or `file://` URL, which test fixtures clone from, is the
-    same case with no host. An absent remote answers "".
+    same case with no host.
+
+    Text that mentions github.com and is neither is `unknown`: a GitHub
+    path that is not exactly `owner/name`, a transport GitHub is not read
+    over, a GitHub-looking host, or a local path such as `github.com/o/r`.
+    It is never `other`, so a manual merge cannot skip it as unrelated, and
+    never `github`, so delivery cannot take it for a repository.
     """
     value = (remote or "").strip()
     if not value:
-        return ""
+        return _UNKNOWN
     found = _URL_REMOTE.match(value) or _SCP_REMOTE.match(value)
+    scheme = (found.groupdict().get("scheme") or "").lower() if found else ""
     if found is not None and found["host"].lower() == "github.com":
-        path = (found["path"] or "").strip("/").removesuffix(".git").strip("/")
-        return f"github.com/{path.lower()}"
+        return _github(found, scheme)
+    if "github.com" in value.lower() and not _clear_other_host(found, scheme, value):
+        return _UNKNOWN
     if found is not None:
         value = value[:found.start("host")] + found["host"].lower() + value[found.end("host"):]
-    return value.rstrip("/").removesuffix(".git").rstrip("/")
+    return RemoteIdentity("other", value.rstrip("/").removesuffix(".git").rstrip("/"))
+
+
+def _github(found: re.Match, scheme: str) -> RemoteIdentity:
+    """A github.com match as `owner/name`, or unknown when it names no one repository."""
+    if scheme and scheme not in _GITHUB_SCHEMES:
+        return _UNKNOWN
+    if found["user"] == "" or found.groupdict().get("port") == "":
+        return _UNKNOWN
+    path = (found["path"] or "").removeprefix("/") if scheme else found["path"]
+    parts = path.removesuffix("/").removesuffix(".git").split("/")
+    if len(parts) != 2 or not all(_GITHUB_NAME.fullmatch(part) for part in parts):
+        return _UNKNOWN
+    owner, name = parts
+    return RemoteIdentity("github", f"github.com/{owner}/{name}".lower(), owner, name)
+
+
+def _clear_other_host(found: re.Match | None, scheme: str, value: str) -> bool:
+    """Whether a remote that mentions github.com still names one other host.
+
+    The host decides, never user or path text: `github.com-bot@gitlab.com:o/r`
+    is another host. A malformed port, a backslash, white space, a host that
+    itself contains github.com, or a path that carries a `user@github.com`
+    authority (`user:token@github.com/o/r` is scp-like for host `user`)
+    leaves the answer unknown.
+    """
+    if found is None or "\\" in value or any(char.isspace() for char in value):
+        return False
+    if scheme and scheme not in _OTHER_SCHEMES:
+        return False
+    port = found.groupdict().get("port")
+    if port and (len(port) > 5 or int(port) > 65535):
+        return False
+    host = found["host"]
+    if "@github.com" in (found["path"] or "").lower():
+        return False
+    return bool(_HOST_NAME.fullmatch(host)) and "github.com" not in host.lower()
+
+
+def remote_identity(remote: str | None) -> str:
+    """`parse_remote(remote).key`: `github.com/owner/name` on GitHub, "" when unknown."""
+    return parse_remote(remote).key
 
 
 def same_remote(left: str | None, right: str | None) -> bool:
     """Whether two origin URLs name one repository.
 
-    Both sides reduce through `remote_identity`, so an ssh clone speaks for a
+    Both sides reduce through `parse_remote`, so an ssh clone speaks for a
     row that recorded the https spelling (sd:1436). Only spelling is removed:
     a different host, port, user, owner or name is still a different
-    repository wherever it can be one, and two absent remotes are never one.
+    repository wherever it can be one, and an absent or unknown remote is
+    never one with anything (sd:1025).
     """
-    identity = remote_identity(left)
-    return bool(identity) and identity == remote_identity(right)
+    found, other = parse_remote(left), parse_remote(right)
+    return found.kind != "unknown" and (found.kind, found.key) == (other.kind, other.key)
 
 
 def registered_for(connection: sqlite3.Connection, root: str, origin: str | None) -> str:
