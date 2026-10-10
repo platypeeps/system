@@ -213,6 +213,8 @@ def pr_rows(rows: list[dict], today: str) -> list[dict]:
                     + (f", first seen {days}d ago" if quiet else ""),
             "detail": row.get("title") or "",
             "source": "prs",
+            # A snooze's problem (sd:1896): the days since first seen drift each day; the rank is in the id.
+            "problem": [f"{row.get('repo')}#{row.get('number')}", row.get("title") or ""],
         })
     return out
 
@@ -285,10 +287,13 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
             triage = job_failures.classify(job, log)
             row.update(id=f"job:{name}:{f'signal{killed}' if killed is not None else code}", what=f"{name} failed with {outcome}",
                        job=name, run=job.get("run"), triage=triage, detail=f"{row['detail']} · triage: {triage['class']}, {triage['why']}")
+            # A snooze's problem (sd:1896) is the outcome: each run's log time moves the detail.
+            row["problem"] = [row["what"]]
         elif state == "interrupted":
             stop = _signal_name(killed) if killed is not None else "a stop with no signal recorded"
             row.update(id=f"job:{name}:interrupted{killed if killed is not None else ''}",
                        what=f"{name} was interrupted by {stop}")
+            row["problem"] = [row["what"]]
         elif state == "unloaded":
             row.update(id=f"job:{name}:unloaded", what=f"{name} is installed but not loaded",
                        detail=f"launchd will not run it until it is loaded · load: local-cron-jobs/cron-jobs.sh install {name}")

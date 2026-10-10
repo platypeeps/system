@@ -223,10 +223,14 @@ class TheDocument(Collectors, ScreenCase):
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
 
+    def seen(self, row_id, doc=None):
+        """The row's fingerprint as the page reads it, which the page posts with its snooze."""
+        return next(row["seen"] for area in (doc or self.doc())["areas"] for row in area["rows"] if row["id"] == row_id)
+
     def test_a_snoozed_row_leaves_its_area_until_its_time_and_then_comes_back(self):
         """sd:1896. The key is the page and the row id; Today's key for the same id hides nothing here."""
-        snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", now=NOW)
-        snooze(self.connection, "today:unread:beta", "2026-09-06T15:00:00Z", now=NOW)
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", seen=self.seen("gone:group/alpha"), now=NOW)
+        snooze(self.connection, "today:unread:beta", "2026-09-06T15:00:00Z", seen=self.seen("unread:beta"), now=NOW)
         doc = self.doc()
         wt = doc["areas"][2]
         self.assertEqual([row["id"] for row in wt["rows"]], ["unread:beta"])
@@ -239,8 +243,23 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual({row["id"] for row in later["areas"][2]["rows"]}, {"gone:group/alpha", "unread:beta"})
         self.assertEqual(later["areas"][2]["snoozed"], [])
 
+    def test_a_snoozed_row_whose_problem_changed_shows_again(self):
+        """sd:1896 review: `dep:<repo>` names the repository, not its alerts. A snooze of one low alert does not
+        hide the critical one that joins it, and the row hides again only if it reads as it did."""
+        def alerts(severity):
+            found = [{**PROTECTION[0], "managed": True, "observed_at": NOW,
+                      "alerts": {"dependabot": {"open": sum(severity.values()), "severity": severity}}}]
+            return self.doc(protection=lambda connection: found)
+        low = alerts({"low": 1})
+        snooze(self.connection, "health:dep:/checkouts/alpha", "2026-09-06T15:00:00Z",
+               seen=self.seen("dep:/checkouts/alpha", low), now=NOW)
+        self.assertEqual([row["id"] for row in alerts({"low": 1})["areas"][4]["snoozed"]], ["dep:/checkouts/alpha"])
+        worse = alerts({"low": 1, "critical": 1})["areas"][4]
+        self.assertEqual([(row["id"], row["state"]) for row in worse["rows"]], [("dep:/checkouts/alpha", "warning")])
+        self.assertEqual(worse["snoozed"], [])
+
     def test_a_snooze_read_that_fails_shows_every_row_and_says_why(self):
-        snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", now=NOW)
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", seen=self.seen("gone:group/alpha"), now=NOW)
         with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
             doc = self.doc()
         self.assertEqual({row["id"] for row in doc["areas"][2]["rows"]}, {"gone:group/alpha", "unread:beta"})
@@ -1077,9 +1096,11 @@ var o = C.get('gone:group/alpha'), t0 = Date.now(); OUT.gets = [];
 shellRun(cmd('worktree registrations.snooze-hour'), o); await flush();
 R.ahead = Date.parse(OUT.posts[0][1].until) - t0;
 OUT.toasts[OUT.toasts.length - 1].undo(); await flush();
-R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' });""")
+R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' }); R.seen = o.seen;""")
+        # The row's own fingerprint goes with it, so the snooze holds only while the row reads the same.
+        self.assertRegex(out["R"]["seen"], r"^[0-9a-f]{16}$")
         self.assertEqual([(path, {k: v for k, v in body.items() if k != "until"}) for path, body, _ in out["posts"]],
-                         [("/api/snooze", {"page": "health", "row": "gone:group/alpha"})] * 2)
+                         [("/api/snooze", {"page": "health", "row": "gone:group/alpha", "seen": out["R"]["seen"]})] * 2)
         self.assertEqual(out["posts"][1][1]["until"], None)
         self.assertTrue(3590e3 <= out["R"]["ahead"] <= 3610e3, out["R"]["ahead"])
         self.assertEqual(out["gets"], ["/api/health", "/api/health"])
@@ -1089,7 +1110,10 @@ R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' });""")
         self.assertEqual(out["R"]["off"], "an ok row has nothing to snooze")
 
     def test_a_snoozed_row_is_drawn_apart_and_unsnooze_brings_it_back(self):
-        snooze(self.connection, "health:gone:group/alpha", "2026-09-07T08:00:00Z", now=NOW)
+        seen = next(row["seen"] for row in health_screen.document(
+            self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
+            protection=protection_of(PROTECTION))["areas"][2]["rows"] if row["id"] == "gone:group/alpha")
+        snooze(self.connection, "health:gone:group/alpha", "2026-09-07T08:00:00Z", seen=seen, now=NOW)
         out = self.run_page("""ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : [200, { key: 'k', until: body.until }];
 R.areas = ELS.areas.html; R.snoozed = ELS.snoozed.html; var o = C.get('snoozed:gone:group/alpha'); R.type = o.type;
 shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
@@ -1098,8 +1122,8 @@ shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.l
         self.assertIn("group/alpha: 2 worktrees registered, directory gone", out["R"]["snoozed"])
         self.assertEqual(out["R"]["type"], "snoozed row")
         self.assertEqual([body for _, body, _ in out["posts"]],
-                         [{"page": "health", "row": "gone:group/alpha", "until": None},
-                          {"page": "health", "row": "gone:group/alpha", "until": "2026-09-07T08:00:00+00:00"}])
+                         [{"page": "health", "row": "gone:group/alpha", "until": None, "seen": seen},
+                          {"page": "health", "row": "gone:group/alpha", "until": "2026-09-07T08:00:00+00:00", "seen": seen}])
         self.assertEqual(out["toasts"][-2][0], "Shows again · group/alpha: 2 worktrees registered, directory gone")
 
     def test_a_snooze_read_that_failed_is_a_partial_read(self):

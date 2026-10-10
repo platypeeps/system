@@ -145,7 +145,10 @@ R.types = REG.filter(c => c.id.endsWith('.snooze')).map(c => c.on);
 shellRun(cmd('repo.snooze-week'), C.get('ahead:pushy:1')); await flush();
 R.ahead = Date.parse(OUT.posts[0][1].until) - Date.now();""")
         self.assertEqual(out["R"]["types"], ["job", "pull request", "repo", "sessions", "collector"])
-        self.assertEqual([(path, body["page"], body["row"]) for path, body, _ in out["posts"]], [("/api/snooze", "today", "ahead:pushy:1")])
+        # The row's own fingerprint goes with it, so the snooze holds only while the row reads the same.
+        seen = next(row["seen"] for row in self.doc["rows"] if row["id"] == "ahead:pushy:1")
+        self.assertEqual([(path, body["page"], body["row"], body["seen"]) for path, body, _ in out["posts"]],
+                         [("/api/snooze", "today", "ahead:pushy:1", seen)])
         self.assertTrue(7 * 864e5 - 60e3 <= out["R"]["ahead"] <= 7 * 864e5, out["R"]["ahead"])
         self.assertEqual(out["gets"], ["/api/now", "/api/now"])
 
@@ -158,7 +161,7 @@ R.primary = REG.filter(c => c.on === 'snoozed row').map(c => c.id);""")
         self.assertIn("Snoozed · 1", out["R"]["snoozed"])
         self.assertIn(row["what"], out["R"]["snoozed"])
         self.assertEqual(out["R"]["obj"], {"id": "snoozed:ahead:pushy:1", "type": "snoozed row", "label": row["what"],
-                                           "row": "ahead:pushy:1", "until": "2026-09-07T08:00:00+00:00"})
+                                           "row": "ahead:pushy:1", "until": "2026-09-07T08:00:00+00:00", "seen": row["seen"]})
         self.assertEqual(out["R"]["primary"], ["snoozed row.unsnooze"])
 
     def test_a_snooze_read_that_failed_is_a_partial_read(self):

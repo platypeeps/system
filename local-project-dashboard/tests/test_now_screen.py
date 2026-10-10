@@ -196,7 +196,8 @@ class Document(ScreenCase):
         ])
         self.assertEqual(document["sources"], {"repos": "", "sessions": "", "prs": "", "jobs": ""})
         for row in document["rows"]:
-            self.assertEqual(set(row), {"rank", "band", "kind", "id", "what", "detail", "source"})
+            # `seen` is the snooze's fingerprint; the `problem` it reads stays on the server (sd:1896).
+            self.assertEqual(set(row), {"rank", "band", "kind", "id", "what", "detail", "source", "seen"})
 
     def test_an_empty_fleet_and_no_pulls_is_an_empty_list_with_every_source_read(self):
         document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet())
@@ -234,8 +235,9 @@ class Document(ScreenCase):
     def test_a_snoozed_row_leaves_the_rows_until_its_time_and_then_comes_back(self):
         """sd:1896. The key is the page and the row id; Health's key for the same id hides nothing here."""
         fleet = self.fixture_fleet(repos=[repo("pushy", ahead=1), repo("messy", dirty=2)])
-        snooze(self.connection, "today:ahead:pushy:1", "2026-09-06T15:00:00Z", now=NOW)
-        snooze(self.connection, "health:dirty:messy:2", "2026-09-06T15:00:00Z", now=NOW)
+        seen = {row["id"]: row["seen"] for row in now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)["rows"]}
+        snooze(self.connection, "today:ahead:pushy:1", "2026-09-06T15:00:00Z", seen=seen["ahead:pushy:1"], now=NOW)
+        snooze(self.connection, "health:dirty:messy:2", "2026-09-06T15:00:00Z", seen=seen["dirty:messy:2"], now=NOW)
         document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=fleet)
         self.assertEqual([row["id"] for row in document["rows"]], ["dirty:messy:2"])
         self.assertEqual([(row["id"], row["until"], row["band"]) for row in document["snoozed"]],
@@ -248,9 +250,13 @@ class Document(ScreenCase):
         grown = now_screen.document(self.connection, now=NOW, jobs=self.quiet,
                                     fleet=self.fixture_fleet(repos=[repo("pushy", ahead=2)]))
         self.assertEqual([row["id"] for row in grown["rows"]], ["ahead:pushy:2"])
+        # The same id with a problem that reads otherwise is not the row the operator snoozed (sd:1896 review).
+        dirtied = now_screen.document(self.connection, now=NOW, jobs=self.quiet,
+                                      fleet=self.fixture_fleet(repos=[repo("pushy", ahead=1, dirty=3)]))
+        self.assertEqual(([row["id"] for row in dirtied["rows"]], dirtied["snoozed"]), (["ahead:pushy:1"], []))
 
     def test_a_snooze_read_that_fails_shows_every_row_and_says_why(self):
-        snooze(self.connection, "today:ahead:pushy:1", "2026-09-06T15:00:00Z", now=NOW)
+        snooze(self.connection, "today:ahead:pushy:1", "2026-09-06T15:00:00Z", seen="0f0f", now=NOW)
         with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
             document = now_screen.document(self.connection, now=NOW, jobs=self.quiet,
                                            fleet=self.fixture_fleet(repos=[repo("pushy", ahead=1)]))

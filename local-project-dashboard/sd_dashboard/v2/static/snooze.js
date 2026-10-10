@@ -1,7 +1,8 @@
 // Snooze (sd:1896): Today and Health hide a row until a time. It loads before the page script, which registers the
 // commands once shell.js has made shell.commands and draws the rows its document lists as snoozed.
-// The one write is POST /api/snooze { page, row, until }; until null shows the row again. The server judges the time
+// The one write is POST /api/snooze { page, row, until, seen }; until null shows the row again. The server judges the time
 // (later than now, at most 31 days away), so the page computes it and says when; it keeps no snooze of its own.
+// `seen` is the row's own, as the document gave it: the snooze holds only while the row's problem reads the same.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   const { html, put } = window.markup;
@@ -20,18 +21,18 @@
   // `types` are the page's row types; `off(o)` names why a row has nothing to snooze, or is false; `reread` reads the page
   // again, so a snoozed row leaves the list and an unsnoozed one comes back. Undo writes the other way.
   function register(C, { page, types, off = () => false, reread }) {
-    const post = (row, until) => window.shell.post('/api/snooze', { page, row, until }).then(v => { reread(); return v; });
+    const post = (row, until, seen) => window.shell.post('/api/snooze', { page, row, until, seen }).then(v => { reread(); return v; });
     types.forEach(t => CHOICES.forEach(ch => C.register({ id: `${t}.${ch.id}`, on: t, label: ch.label, key: ch.key, risk: 'undo', bulk: true,
       when: o => off(o) || true, cli: CLI,
-      run: o => { const until = ch.until(new Date()); return post(o.id, until.toISOString()).then(() => `Snoozed until ${when(until)} · ${o.label}`); },
-      undo: o => post(o.id, null) })));
+      run: o => { const until = ch.until(new Date()); return post(o.id, until.toISOString(), o.seen).then(() => `Snoozed until ${when(until)} · ${o.label}`); },
+      undo: o => post(o.id, null, o.seen) })));
     C.register({ id: 'snoozed row.unsnooze', on: 'snoozed row', label: 'Unsnooze', key: 's', risk: 'undo', bulk: true, primary: () => true, cli: CLI,
-      run: o => post(o.row, null).then(() => `Shows again · ${o.label}`),
-      undo: o => post(o.row, o.until) });
+      run: o => post(o.row, null, o.seen).then(() => `Shows again · ${o.label}`),
+      undo: o => post(o.row, o.until, o.seen) });
   }
 
   // One object per snoozed row, apart from the rows shown: its own type carries Unsnooze and nothing else.
-  const object = r => ({ id: `snoozed:${r.id}`, type: 'snoozed row', label: r.what, row: r.id, until: r.until });
+  const object = r => ({ id: `snoozed:${r.id}`, type: 'snoozed row', label: r.what, row: r.id, until: r.until, seen: r.seen });
 
   // The snoozed rows under the page's list, closed until opened; a redraw keeps it open.
   function draw(el, rows) {

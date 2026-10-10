@@ -78,7 +78,7 @@
     const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
     const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
     return { id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
-             repo: pr && pr[1], number: pr && +pr[2] };
+             repo: pr && pr[1], number: pr && +pr[2], seen: r.seen };
   }
 
   function render() {

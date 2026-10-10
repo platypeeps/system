@@ -1,7 +1,8 @@
 -- `snooze` joins the `state` kinds (sd:1896): a Today or Health row the
 -- operator hid until a time. One row per snooze, keyed by the page and the
--- row's id (`today:job:nightly:1`), with the time in the body; clearing it
--- writes the same key with no time. The latest row for a key is the answer,
+-- row's id (`today:job:nightly:1`), with the time and the row's fingerprint
+-- (`seen`, what the operator saw) in the body; clearing it writes the same key
+-- with no time. The latest row for a key is the answer,
 -- read through 013's `state_by_kind_key`. Nothing expires a row: a reader
 -- compares the time with its own clock.
 --

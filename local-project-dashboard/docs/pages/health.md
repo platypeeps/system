@@ -67,4 +67,5 @@ Contributions does, and reads Health again when the run ends (sd:2894).
 Snooze, on every row that is not ok, hides the row for 1 hour, until the next
 08:00 or for 1 week (sd:1896). It posts `/api/snooze`, as Today does, and the
 row waits under Snoozed with its time and an Unsnooze until then. A snooze
-read that fails hides nothing and says so.
+holds only while the row reads as it did: more alerts, a worse state or another
+count shows it again. A snooze read that fails hides nothing and says so.

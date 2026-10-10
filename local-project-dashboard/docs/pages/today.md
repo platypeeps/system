@@ -8,3 +8,4 @@ only the newer one draws, and a failed read clears every row and its commands.
 Status mail, backups, HOA water and Wants you wait for collectors.
 Snooze hides a row for 1 hour, until the next 08:00 or for 1 week; it posts
 `/api/snooze`, and the row waits under Snoozed with an Unsnooze (sd:1896).
+A row whose problem reads otherwise shows again before its time.
