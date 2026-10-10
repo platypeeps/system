@@ -33,6 +33,7 @@ from support import NOW, ScreenCase
 from test_v2_read import READ_SHELL
 from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
+from test_v2_shell_shared import cell_grammar
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
 
@@ -265,7 +266,7 @@ class TheScript(ScreenCase):
         self.assertNotRegex(rows, r'class="unread"|class="dot"|▲|■')
         ann = out["R"]["ann"]
         self.assertNotRegex(ann + out["R"]["lanes"], r'data-state="(caution|warning)"|class="fail"')
-        self.assertRegex(ann, r'data-state="unknown" title="' + re.escape(briefs_screen.WATCHDOG_REASON) + '"')
+        self.assertRegex(ann, r'title="' + re.escape(briefs_screen.WATCHDOG_REASON) + '" data-state="unknown"')
         self.assertIn("<b>4</b> in 7 days", ann)
         self.assertEqual(len(re.findall(r'class="lane-btn"', out["R"]["lanes"])), 3)
         self.assertEqual(out["R"]["sub"], "5 briefs")
@@ -409,7 +410,7 @@ R.cli = cmd('brief.open').cli(C.get('2026-09-06 - Intel Brief')); R.exec = cmd('
 ELS.lanes.listeners.click[0]({ target: { closest: s => s === '.lane-btn' ? { dataset: { src: 'Intel Brief' } } : null } });
 R.det = ELS.details.html;""", answer=f"() => [200, {json.dumps(cut)}]")
         self.assertIn("at least <b>4</b> in 7 days", out["R"]["ann"])
-        self.assertIn('data-state="ok"', out["R"]["ann"])
+        self.assertEqual(cell_grammar(self, out["R"]["ann"]), [("div", "ok"), ("div", "unknown"), ("button", None)])
         self.assertIn("Counts before 09-03 are not read.", out["states"][-1]["text"])
         self.assertIn("<dd>2 of the newest 4</dd>", out["R"]["det"])
         full = self.run_page("R.ann = ELS.annunciator.html;")["R"]["ann"]

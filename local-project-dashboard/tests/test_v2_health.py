@@ -45,6 +45,7 @@ from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
+from test_v2_shell_shared import cell_grammar
 
 V2 = Path(v2.__file__).resolve().parent
 HEALTH_JS = (V2 / "static" / "health.js").read_text(encoding="utf-8")
@@ -902,6 +903,7 @@ class TheScript(Collectors, ScreenCase):
         self.assertRegex(lamps, r'data-area="wt" data-state="caution"[^>]*>.*?<b>2</b> dir gone')
         self.assertRegex(lamps, r'data-area="disk" data-state="caution"[^>]*>.*?<b>85%</b> fullest</span> <span class="ph">Mac data')
         self.assertRegex(lamps, r'data-area="br" data-state="caution"[^>]*>.*?<b>3</b> merged')
+        self.assertEqual({tag for tag, _ in cell_grammar(self, lamps)}, {"button"})
         areas = out["R"]["areas"]
         self.assertIn("<b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: GitHub PAT presence and expiry", areas)
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)

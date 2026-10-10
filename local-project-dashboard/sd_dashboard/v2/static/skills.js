@@ -5,7 +5,7 @@
 // request, so none carries the reference's Undo. Run, Schedule, Adopt and Scan are copy only: the dashboard has no route that
 // creates the item a run needs, adds a launchd job, adopts a skill or scans sessions, and the reference's chat proposals are
 // not ported.
-const { html, put, plural } = window.markup;
+const { html, put, plural, cells } = window.markup;
 // Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
 window.PAGE_KEYS = [['/', 'Filter, run or adopt a skill'], ['→', 'In the field: the next reading (filter, run, adopt)']];
 window.PAGE_COMMANDS = [
@@ -59,18 +59,16 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Annunciator ----------
   // A lamp with nothing to filter is a div that says so, not a button (design.md § Lamps).
-  const lamp = (facet, state, label, value, small) => {
-    const inner = html`<span class="lbl">${label} <span class="g" aria-hidden="true">${state === 'caution' ? '▲' : state === 'unknown' ? '▨' : '●'}</span></span><span class="val"><span class="ph">${value}</span><small>${small}</small></span>`;
-    return facet ? html`<li><button class="cell" type="button" data-facet="${facet}" data-state="${state}" aria-pressed="${String(facet === filter)}">${inner}</button></li>`
-      : html`<li><div class="cell" data-state="${state}">${inner}</div></li>`;
-  };
+  const lampGlyph = state => html`<span class="g" aria-hidden="true">${state === 'caution' ? '▲' : state === 'unknown' ? '▨' : '●'}</span>`;
+  const lamp = (facet, state, label, value, small) => ({ button: !!facet, state, pressed: facet ? facet === filter : undefined,
+    attrs: facet ? html` data-facet="${facet}"` : '', label, mark: lampGlyph(state), val: html`<span class="ph">${value}</span>`, small });
   function drawHead() {
     const paths = Object.keys(DOC.paths), [, lastWeek, thisWeek] = DOC.totals;
     const first = trials.map(s => s.trial[1]).sort()[0];
     const days = first ? Math.max(0, Math.ceil((Date.parse(first) - Date.parse(DOC.read)) / 864e5)) : 0;
     const other = others();
     document.getElementById('sub').textContent = `The sd pack catalog: ${plural(S.length, 'skill')}. ${onPath.length} on paths, ${trials.length} on trial, ${contrib.length} in contrib.`;
-    put(document.getElementById('annunciator'), html`${[
+    put(document.getElementById('annunciator'), cells([
       lamp(onPath.length && 'path', 'ok', 'Paths', html`<b>${onPath.length}</b> on ${plural(paths.length, 'path')}`, paths.join(' · ')),
       lamp(trials.length && 'trial', 'ok', 'Trials', html`<b>${trials.length}</b> on trial`, first ? `first ends ${md(first)} · ${plural(days, 'day')}` : 'none running'),
       lamp(contrib.length && 'contrib', 'ok', 'Contrib', html`<b>${contrib.length}</b> to try`, 'not installed'),
@@ -78,12 +76,15 @@ addEventListener('DOMContentLoaded', () => {
       lamp('', 'ok', 'Use this week', html`<b>${thisWeek}</b> uses`, `${lastWeek} the week before · all skills`),
       lamp(unusedPath.length && 'unused', unusedPath.length ? 'caution' : 'ok', 'Unused on paths', html`<b>${unusedPath.length}</b> of ${onPath.length}`,
         unusedPath.length ? 'no use in three weeks · demote?' : 'every path skill was used'),
-      html`<li><a class="cell" href="?row=hygiene" data-open="hygiene" data-state="${DOC.junk ? 'caution' : 'ok'}"><span class="lbl">Use records <span aria-hidden="true">${DOC.junk ? '▲' : '●'}</span></span><span class="val"><span class="ph"><b>${DOC.junk}</b> rows name a path</span><small>${DOC.junk ? 'not a skill · recorder bug' : 'every row names a skill'}</small></span></a></li>`,
+      { href: '?row=hygiene', attrs: html` data-open="hygiene"`, state: DOC.junk ? 'caution' : 'ok', label: 'Use records', mark: lampGlyph(DOC.junk ? 'caution' : 'ok'),
+        val: html`<span class="ph"><b>${DOC.junk}</b> rows name a path</span>`, small: DOC.junk ? 'not a skill · recorder bug' : 'every row names a skill' },
       // build: read, not drawn: the reference's "not read" lamp holds only while skill_use has no row from another surface.
-      html`<li><a class="cell" href="?row=surfaces" data-open="surfaces" data-state="${other ? 'ok' : 'unknown'}"><span class="lbl">Codex · opencode use <span aria-hidden="true">${other ? '●' : '▨'}</span></span><span class="val"><span class="ph"><b>${other || '—'}</b> ${other ? 'rows' : 'not read'}</span><small>${other ? 'from surfaces other than claude' : html`no rows · <code>sd skill scan</code> not run`}</small></span></a></li>`,
+      { href: '?row=surfaces', attrs: html` data-open="surfaces"`, state: other ? 'ok' : 'unknown', label: 'Codex · opencode use', mark: lampGlyph(other ? 'ok' : 'unknown'),
+        val: html`<span class="ph"><b>${other || '—'}</b> ${other ? 'rows' : 'not read'}</span>`, small: other ? 'from surfaces other than claude' : html`no rows · <code>sd skill scan</code> not run` },
       // build: refresh rereads /api/skills instead of reloading the page.
-      html`<li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val"><span class="ph"><b>${String(DOC.read).slice(11, 16)}</b> UTC</span><small>${String(DOC.read).slice(0, 10)} · refresh</small></span></button></li>`,
-    ]}`);
+      { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'), val: html`<span class="ph"><b>${String(DOC.read).slice(11, 16)}</b> UTC</span>`,
+        small: `${String(DOC.read).slice(0, 10)} · refresh` },
+    ]));
   }
 
   // ---------- Catalog ledger: filter, sort, page (shell.list, sd:2682) ----------

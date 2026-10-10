@@ -6,6 +6,10 @@ same on every page, the list grammar's styles, and the lamp hover: a ring in the
 
 The JavaScript runs under JavaScriptCore (osascript) on the blocks the tests cut out of `shell.js`, so a test reads the
 shipped code, not a copy. Reports wires the list grammar end to end; `test_v2_reports` drives that page.
+
+sd:2680: one annunciator and one ledger layout. shell.css holds the whole lamp (a page sets only `--cells`, its column
+count) and the ledger's desktop rules, with the browser's auto table layout and no colgroup. `markup.cells(spec)` draws
+every page's lamps; `cell_grammar` is the markup test each page's own suite runs on what it drew.
 """
 
 from __future__ import annotations
@@ -23,16 +27,66 @@ SHELL_CSS = (STATIC / "shell.css").read_text(encoding="utf-8")
 PAGE_CSS = {p.name: p.read_text(encoding="utf-8") for p in STATIC.glob("*.css") if p.name not in ("shell.css", "tokens.css")}
 PAGE_JS = {p.name: p.read_text(encoding="utf-8") for p in STATIC.glob("*.js")
            if p.name not in ("shell.js", "markup.js", "sections.js", "read.js")}
-# The rules every page that draws an annunciator or a ledger had, word for word; shell.css now holds the one copy.
+# The rules every page that draws an annunciator or a ledger shares; shell.css holds the one copy (sd:2588, sd:2680).
 SHARED = (
-    ".annunciator { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl);"
+    ".annunciator { display: grid; grid-template-columns: repeat(var(--cells, 3), minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl);"
     " padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); list-style: none; }",
     ".annunciator li { display: contents; }",
-    ".cell .val { font: 400 var(--text-sm)/1.3 var(--font-data); align-self: end; color: var(--color-ink-2); }",
+    ".cell { font: inherit; border: 0; text-align: left; width: 100%; min-width: 0; display: grid; grid-template-rows: auto 1fr;"
+    " gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel);"
+    " color: var(--color-muted); text-decoration: none; }",
+    ".cell .lbl { font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; display: flex;"
+    " align-items: center; justify-content: space-between; gap: var(--space-xs); }",
+    ".cell .val { font: 400 var(--text-sm)/1.3 var(--font-data); align-self: end; color: var(--color-ink-2); overflow-wrap: anywhere; }",
     ".cell .val b { font-weight: 500; font-size: var(--text-md); color: var(--color-ink); }",
+    # A phrase moves to the next line whole and wraps inside only when longer than the lamp: a nowrap one ran past the edge.
+    ".cell .ph { display: inline-block; max-width: 100%; }",
+    '.cell[data-state="unknown"] { color: var(--color-ink-2); background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }',
     ".ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }",
+    ".ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase;"
+    " color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }",
+    ".ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }",
     ".ledger .g { text-align: center; font-family: var(--font-data); }",
 )
+# The lamp and ledger selectors only shell.css may style. A page keeps what is its own: `.annunciator { --cells: N; }`, a
+# cell's extra class (`.cell.clock`), what sits inside a cell (`.cell kbd`) and its narrow-screen ledger cards.
+SHELL_ONLY = re.compile(r'(?m)^\s*(\.cell(\s*[{,]|:hover|:focus-visible|:disabled|\s+\.(lbl|ph|val)\b|\[data-state|\[aria-pressed)'
+                        r'|(a|button)\.cell\b|\.ledger(\s+(th|td)\s*[{,]|\s*[{,]|\s+col\b|\s+tbody tr(:hover td|\[aria-selected="true"\] td)?\s*[{,]))')
+# The pages whose script draws an annunciator; each draws it through markup.cells. Today's lamps are server HTML that
+# today.js fills in place, so its test reads today.html against the same grammar.
+LAMP_PAGES = ("activity", "briefs", "contributions", "designs", "health", "hoa", "metrics", "reports", "skills")
+# One lamp as markup.cells draws it: a link, a button or a div; the page's attributes; then the label, the value and words
+# for a screen reader. A page that draws a lamp by hand fails here.
+CELL = re.compile(r'<li><(button|a|div) class="cell(?: [\w-]+)?"(?: type="button"| href="[^"]*")?((?: [\w-]+="[^"]*")*)>'
+                  r'<span class="lbl">(?:(?!</?li>).)*?</span><span class="val">(?:(?!</?li>).)*</span>(?:<span class="sr">[^<]*</span>)?</\1></li>', re.S)
+
+
+def wide(css):
+    """`css` without its comments and its @media (max-width: …) blocks, where a page lays its ledger out as cards."""
+    css, out, i = re.sub(r"/\*.*?\*/", "", css, flags=re.S), [], 0
+    for m in re.finditer(r"@media \(max-width:[^{]*\{", css):
+        if m.start() < i:
+            continue
+        depth, j = 1, m.end()
+        while depth:
+            depth += {"{": 1, "}": -1}.get(css[j], 0)
+            j += 1
+        out.append(css[i:m.start()])
+        i = j
+    return "".join(out) + css[i:]
+
+
+def cell_grammar(case, markup):
+    """Fail `case` unless every <li> in `markup` is a lamp markup.cells drew; return each lamp's (tag, data-state)."""
+    items = re.findall(r"<li>.*?</li>(?=<li>|$)", markup.strip(), re.S)
+    case.assertTrue(items, "no lamp drawn")
+    out = []
+    for item in items:
+        m = CELL.fullmatch(item)
+        case.assertIsNotNone(m, f"not a markup.cells lamp: {item[:160]}")
+        state = re.search(r' data-state="(\w+)"', m.group(2))
+        out.append((m.group(1), state.group(1) if state else None))
+    return out
 
 
 def run_js(body):
@@ -82,6 +136,56 @@ class TheSharedRules(unittest.TestCase):
             for name, css in PAGE_CSS.items():
                 with self.subTest(name, rule=rule[:30]):
                     self.assertNotIn(rule, css)
+
+    def test_no_page_restyles_the_lamp_or_the_ledger(self):
+        for name, css in PAGE_CSS.items():
+            if name == "home.css":  # Home's lamp grid is its own component (home.js), not the annunciator
+                continue
+            with self.subTest(name):
+                self.assertEqual([m.group(0).strip() for m in SHELL_ONLY.finditer(wide(css))], [])
+                for decl in re.findall(r"(?m)^\s*\.annunciator\s*\{([^}]*)\}", css):
+                    self.assertRegex(decl.strip(), r"^--cells: \d;$")
+
+    def test_one_ledger_layout_auto_with_no_colgroup(self):
+        self.assertNotIn("table-layout", SHELL_CSS)
+        for name, text in {**PAGE_CSS, **PAGE_JS, **{p.name: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}}.items():
+            with self.subTest(name):
+                self.assertFalse("table-layout" in text or "<colgroup" in text)
+
+
+class TheCells(unittest.TestCase):
+    """sd:2680: markup.cells(spec) draws every annunciator's lamps; no page writes a lamp's markup by hand."""
+
+    def test_every_lamp_page_draws_through_cells_and_writes_no_cell_markup(self):
+        for page in LAMP_PAGES:
+            with self.subTest(page):
+                js = PAGE_JS[f"{page}.js"]
+                self.assertTrue("cells(" in js and 'class="cell' not in js)
+
+    def test_todays_server_drawn_lamps_follow_the_same_grammar(self):
+        today = (V2 / "today.html").read_text(encoding="utf-8")
+        lamps = re.search(r'<ul class="annunciator" id="annunciator">(.*?)</ul>', today, re.S).group(1)
+        self.assertEqual(cell_grammar(self, re.sub(r">\s+<li>", "><li>", lamps)), [("button", "unknown")] * 4 + [("button", None)])
+        self.assertNotIn('class="cell', PAGE_JS["today.js"])
+
+    def test_a_spec_becomes_a_button_a_link_or_a_div(self):
+        out = run_js("""const { cells } = window.markup;
+  R.button = cells([{ button: true, state: 'caution', pressed: true, attrs: html` data-area="wt"`, label: 'Worktrees', mark: ICON('folder'),
+    val: html`<b>2</b> gone`, sr: 'state caution' }]).text;
+  R.link = cells([{ href: '?row=a&b', state: 'ok', label: 'Use', mark: html`<span class="g" aria-hidden="true">●</span>`, val: '1 row', small: 'from claude' }]).text;
+  R.div = cells([null, { state: 'unknown', cls: 'clock', label: '<x>', val: 'not read' }, false]).text;
+  R.plain = cells([{ button: true, attrs: html` id="refresh"`, label: 'Observed', val: 'now' }]).text;
+  try { cells([{ attrs: ' onclick="x()"', label: 'a', val: 'b' }]); R.refused = false; } catch (e) { R.refused = e instanceof TypeError; }""")
+        self.assertEqual(out["button"], '<li><button class="cell" type="button" data-area="wt" data-state="caution" aria-pressed="true">'
+                         '<span class="lbl">Worktrees<svg class="i" aria-hidden="true"><use href="#i-folder"/></svg></span>'
+                         '<span class="val"><b>2</b> gone</span><span class="sr">state caution</span></button></li>')
+        self.assertEqual(out["link"], '<li><a class="cell" href="?row=a&amp;b" data-state="ok"><span class="lbl">Use<span class="g" aria-hidden="true">●</span></span>'
+                         '<span class="val">1 row<small>from claude</small></span></a></li>')
+        self.assertEqual(out["div"], '<li><div class="cell clock" data-state="unknown"><span class="lbl">&lt;x&gt;</span><span class="val">not read</span></div></li>')
+        self.assertEqual(out["plain"], '<li><button class="cell" type="button" id="refresh"><span class="lbl">Observed</span><span class="val">now</span></button></li>')
+        self.assertTrue(out["refused"])
+        self.assertEqual(cell_grammar(self, out["button"] + out["link"] + out["div"] + out["plain"]),
+                         [("button", "caution"), ("a", "ok"), ("div", "unknown"), ("button", None)])
 
 
 class TheLampHover(unittest.TestCase):

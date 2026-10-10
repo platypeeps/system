@@ -31,6 +31,8 @@ from test_v2_read import READ_SHELL
 from test_v2_registry import Registers
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT, Refused
+from test_v2_shell_shared import cell_grammar
+from test_v2_shell_shared import cell_grammar
 from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
@@ -287,6 +289,8 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         self.assertEqual(re.findall(r'data-facet="(\w+)" data-state="(\w+)"', lamps), [("path", "ok"), ("contrib", "ok"), ("unused", "caution")])
         self.assertIn('data-open="hygiene" data-state="caution"', lamps)
         self.assertIn('data-open="surfaces" data-state="ok"', lamps)
+        self.assertEqual([tag for tag, _ in cell_grammar(self, lamps)], ["button", "div", "button", "div", "button", "a", "a", "button"])
+        self.assertEqual([tag for tag, _ in cell_grammar(self, lamps)], ["button", "div", "button", "div", "button", "a", "a", "button"])
         self.assertEqual(out["R"]["sub"], "The sd pack catalog: 3 skills. 2 on paths, 0 on trial, 1 in contrib.")
         self.assertEqual(out["R"]["tally"], "3 uses this week · 1 catalog skills used")
         self.assertEqual(out["attention"], {"state": "caution", "n": 2, "what": "unused path skills and use-record faults"})

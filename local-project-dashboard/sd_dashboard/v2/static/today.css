@@ -3,19 +3,7 @@
  * Page CSS from ui-design products/system/designs/v2/today.html at a3861c9 (a file, since the dashboard CSP refuses inline style).
  * Left out with the sections they styled: Wants you, Briefs and the chat proposal card have no collector in the build yet. */
 /* Annunciator: one lamp per Now source; the Observed clock does not count. */
-.annunciator { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl); padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); list-style: none; }
-.cell { font: inherit; border: 0; text-align: left; cursor: pointer; width: 100%; display: grid; grid-template-rows: auto 1fr; gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel); color: var(--color-muted); text-decoration: none; }
-.cell:hover { background: var(--color-well); }
-.cell .lbl { font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; display: flex; align-items: center; gap: var(--space-2xs); }
-.cell .lbl .i { margin-left: auto; }
-.cell .ph { white-space: nowrap; }
-.cell[data-state="ok"] .lbl .i { color: var(--color-ok); }
-.cell[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
-.cell[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
-.cell[data-state="caution"] .val, .cell[data-state="caution"] .val b { color: var(--color-caution-lamp-ink); }
-.cell[data-state="warning"] .val, .cell[data-state="warning"] .val b { color: var(--color-warning-ink); }
-.cell[data-state="unknown"] { background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
-.cell[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--color-accent); }
+.annunciator { --cells: 5; }
 
 /* Section heads */
 .sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }
@@ -24,12 +12,6 @@
 .tally .i { vertical-align: -0.2em; }
 
 /* Now ledger */
-.ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); }
-.ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
-.ledger tbody tr { cursor: pointer; }
-.ledger tbody tr:hover td { background: var(--color-well); }
-.ledger tbody tr[aria-selected="true"] td { background: var(--color-accent-bg); }
-.ledger tbody tr[aria-selected="true"] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
 .ledger .g { width: 2rem; text-align: center; font-family: var(--font-data); }
 .ledger .what { font-weight: 500; }
@@ -51,11 +33,9 @@
 .details .kind { font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); }
 .details h3 { font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); }
 /* build: five cells, not nine (four sources and the clock), so one row where it fits and a 3 + 2 grid where it does not. */
-@media (max-width: 1100px) { .annunciator { grid-template-columns: repeat(3, minmax(0, 1fr)); } #refresh { grid-column: span 2; } }
+@media (max-width: 1100px) { #refresh { grid-column: span 2; } }
 @media (max-width: 599px) {
-  .annunciator { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #refresh { grid-column: 1 / -1; }
-  .cell .ph { white-space: normal; }
 }
 @media (max-width: 899px) {
   .ledger thead { display: none; }
@@ -67,12 +47,7 @@
   .ledger tbody tr[aria-selected="true"] { background: var(--color-accent-bg); box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
   .ledger tbody tr[aria-selected="true"] td { background: transparent; box-shadow: none; }
 }
-@media (forced-colors: active) {
-  .cell[data-state="warning"], .cell[data-state="caution"] { border: 2px solid CanvasText; }
-  .ledger tbody tr[aria-selected="true"] td:first-child { outline: 2px solid Highlight; }
-}
 
-.cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 .ledger tr.empty td { color: var(--color-muted); padding-block: var(--space-sm); cursor: default; }
 
 /* Decisions (sd:3012): a question note's Option: lines, one button each. The rows are not selectable, so no row hover.

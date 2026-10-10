@@ -69,5 +69,19 @@
   // (design review 2026-09-29, item 18). shell.js and tasks.js read it (sd:2124, from the design source at d82daa1).
   const word = (n, one, many = /s$/.test(one) ? one : `${one}s`) => (n === 1 ? one : many);
   const plural = Object.assign((n, one, many) => `${n} ${word(n, one, many)}`, { word });
-  window.markup = Object.freeze({ html, put, plural });
+  // An annunciator's lamps (sd:2680): one <li> per spec, the same markup on every page, so shell.css styles a lamp once.
+  // A spec is { label, mark, val, small, sr, state, pressed, button, href, cls, attrs }. label, val, small and sr are text or
+  // html`…`; mark is html`…` set at the label's end (an icon, a state glyph or a key). A lamp with href is a link, one with
+  // button: true a button, any other a div that reads out and does nothing. attrs is html`…` holding the page's own
+  // attributes (id, data-*, title); pressed sets aria-pressed. A falsy spec draws nothing. tests/test_v2_shell_shared.py
+  // holds the grammar each page's suite checks its lamps against.
+  const cells = specs => html`${specs.filter(Boolean).map(c => {
+    const cls = c.cls ? ` ${c.cls}` : '';
+    const at = html`${c.attrs}${c.state ? html` data-state="${c.state}"` : ''}${c.pressed === undefined ? '' : html` aria-pressed="${String(!!c.pressed)}"`}`;
+    const inner = html`<span class="lbl">${c.label}${c.mark}</span><span class="val">${c.val}${c.small ? html`<small>${c.small}</small>` : ''}</span>${c.sr ? html`<span class="sr">${c.sr}</span>` : ''}`;
+    return c.href ? html`<li><a class="cell${cls}" href="${c.href}"${at}>${inner}</a></li>`
+      : c.button ? html`<li><button class="cell${cls}" type="button"${at}>${inner}</button></li>`
+      : html`<li><div class="cell${cls}"${at}>${inner}</div></li>`;
+  })}`;
+  window.markup = Object.freeze({ html, put, plural, cells });
 })();

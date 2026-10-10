@@ -39,6 +39,7 @@ from test_v2_today import OSASCRIPT, Refused
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
+from test_v2_shell_shared import cell_grammar
 
 V2 = Path(v2.__file__).resolve().parent
 REPORTS_JS = (V2 / "static" / "reports.js").read_text(encoding="utf-8")
@@ -450,8 +451,9 @@ R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].htm
                             doc=doc)
         self.assertEqual(out["R"]["marks"], ["no log yet", "no log yet", "ran", "ran", "ran", "ran", "2 failed"])
         self.assertEqual(out["R"]["weekly"], ["none", "none", "ok", "none", "none", "none", "none"])
-        self.assertRegex(out["R"]["lamps"], r'data-fam="sync" data-state="warning"')
-        self.assertRegex(out["R"]["lamps"], r'data-fam="scan" data-state="ok"')
+        self.assertRegex(out["R"]["lamps"], r'data-fam="sync"[^>]*data-state="warning"')
+        self.assertRegex(out["R"]["lamps"], r'data-fam="scan"[^>]*data-state="ok"')
+        self.assertEqual(cell_grammar(self, out["R"]["lamps"]), [("button", "warning"), ("button", "ok"), ("div", "unknown"), ("div", "unknown"), ("button", None)])
         self.assertIn("■ 1 failed last run", out["R"]["tally"])
         self.assertEqual(out["attention"], {"state": "warning", "n": 1, "what": "reports want you"})
 
@@ -474,7 +476,7 @@ R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].htm
                  "no log": lamps(no_log), "no log, nothing scheduled this week": lamps(idle), "its last run was not read": lamps(cut)}
         for case, html in cases.items():
             with self.subTest(case):
-                self.assertRegex(html, r'data-fam="scan" data-state="unknown"')
+                self.assertRegex(html, r'data-fam="scan"[^>]*data-state="unknown"')
                 self.assertNotIn("all clear", html)
                 self.assertIn("not read", html)
         self.assertIn("gone-job (not read)", cases["job not installed"])
@@ -484,15 +486,15 @@ R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].htm
             doc["cadence"]["monthly"] = {"log": True, "from": "2026-01-01", "read_from": None, "runs": {d: [0, 0] for d in DAYS},
                                          "scheduled": [False] * len(DAYS), "last": last}
             return lamps(doc, ("weekly-scan", "monthly"))
-        self.assertRegex(monthly({"day": "2026-09-01", "read": False, "runs": [0, 0]}), r'data-fam="scan" data-state="unknown"')
-        self.assertRegex(monthly({"day": "2026-01-01", "read": False, "runs": [0, 0]}), r'data-fam="scan" data-state="unknown"')
-        self.assertRegex(monthly({"day": None, "read": False, "runs": [0, 0]}), r'data-fam="scan" data-state="unknown"')
-        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [0, 1]}), r'data-fam="scan" data-state="warning"')
-        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [1, 1]}), r'data-fam="scan" data-state="caution"')
-        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [0, 0]}), r'data-fam="scan" data-state="caution"')
-        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [1, 0]}), r'data-fam="scan" data-state="ok"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": False, "runs": [0, 0]}), r'data-fam="scan"[^>]*data-state="unknown"')
+        self.assertRegex(monthly({"day": "2026-01-01", "read": False, "runs": [0, 0]}), r'data-fam="scan"[^>]*data-state="unknown"')
+        self.assertRegex(monthly({"day": None, "read": False, "runs": [0, 0]}), r'data-fam="scan"[^>]*data-state="unknown"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [0, 1]}), r'data-fam="scan"[^>]*data-state="warning"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [1, 1]}), r'data-fam="scan"[^>]*data-state="caution"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [0, 0]}), r'data-fam="scan"[^>]*data-state="caution"')
+        self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [1, 0]}), r'data-fam="scan"[^>]*data-state="ok"')
         # With every job's log read and no failure, the lamp is still all clear.
-        self.assertRegex(lamps(json.loads(json.dumps(self.doc))), r'data-fam="scan" data-state="ok"')
+        self.assertRegex(lamps(json.loads(json.dumps(self.doc))), r'data-fam="scan"[^>]*data-state="ok"')
 
     def test_the_day_a_cut_read_begins_on_is_unknown_not_clean_failed_or_missing(self):
         # A cut read can start partway through its first day, so that day was not read in full.

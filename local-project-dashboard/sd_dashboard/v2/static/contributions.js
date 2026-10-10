@@ -4,7 +4,7 @@
 // chip, its "settled on GitHub" lane and its settled-per-day chart have no reading here and say so. Acknowledge and Make task run
 // through dashboard routes and ask first: neither has a verb that reverses it. Draft nudge and Open on GitHub are copy only;
 // Re-run collector asks the server to run sd shadow sync (sd:2207). The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
-const { html, put, plural } = window.markup;
+const { html, put, plural, cells } = window.markup;
 // Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
 window.PAGE_KEYS = [['/', 'Filter contributions']];
 window.PAGE_COMMANDS = [
@@ -143,7 +143,7 @@ addEventListener('DOMContentLoaded', () => {
     put(document.getElementById('sub'), html`Pull requests and issues you opened or owe · <span id="open-n">${n(openN(scope))}</span> open · read <time class="rel" datetime="${DOC.read}"></time>`);
     document.querySelectorAll('#scope input').forEach(i => { i.checked = i.value === scope; const b = i.nextElementSibling?.querySelector('b'); if (b) b.textContent = n(openN(i.value)); });
     const cnt = g => tot(g);
-    const cells = [
+    const LANES = [
       ['newly_unblocked', 'Newly unblocked', 'git-merge', 'caution', 'ready'],
       ['awaiting_you', 'Awaiting you', 'flag-triangle-right', 'caution', 'rows'],
       ['awaiting_them', 'Awaiting them', 'inbox', 'ok', 'rows'],
@@ -151,12 +151,12 @@ addEventListener('DOMContentLoaded', () => {
     // A lane with no rows has nothing to filter: a div that says so, not a disabled button (design.md § Lamps).
     const lamp = ([id, lbl, icon, lit, unit]) => {
       const k = cnt(id), s = k ? lit : 'ok';
-      const inner = html`<span class="lbl">${lbl}${I(icon)}</span><span class="val"><span class="ph"><b>${k}</b> ${unit}</span></span><span class="sr">state ${s}</span>`;
-      return k ? html`<li><button class="cell" type="button" aria-pressed="${String(lane === id)}" data-cell="${id}" data-state="${s}">${inner}</button></li>`
-        : html`<li><div class="cell" data-cell="${id}" data-state="${s}">${inner}</div></li>`;
+      return { button: !!k, pressed: k ? lane === id : undefined, state: s, attrs: html` data-cell="${id}"`, label: lbl, mark: I(icon),
+        val: html`<span class="ph"><b>${k}</b> ${unit}</span>`, sr: `state ${s}` };
     };
     // build: the reference's fourth lamp counted rows GitHub had already settled, from a gh read. The dashboard makes none.
-    putKeep(document.getElementById('annunciator'), html`${cells.map(lamp)}<li><div class="cell" data-cell="github" data-state="unknown"><span class="lbl">Settled on GitHub${I('circle-dot')}</span><span class="val"><span class="ph">not checked</span> · <span class="ph">the dashboard does not read GitHub</span></span><span class="sr">state unknown</span></div></li>`);
+    putKeep(document.getElementById('annunciator'), cells([...LANES.map(lamp), { state: 'unknown', attrs: html` data-cell="github"`, label: 'Settled on GitHub',
+      mark: I('circle-dot'), val: html`<span class="ph">not checked</span> · <span class="ph">the dashboard does not read GitHub</span>`, sr: 'state unknown' }]));
     const unknown = tot('unknown');
     put(document.getElementById('source'), html`<span class="g-${unknown ? 'unknown' : 'ok'}" aria-hidden="true">${GLYPH[unknown ? 'unknown' : 'ok']}</span>
       <button class="linkish" type="button" data-collector>Collector</button>
