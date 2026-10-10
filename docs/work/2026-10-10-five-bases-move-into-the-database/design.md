@@ -186,6 +186,7 @@ Made by the operator on 2026-10-10; the notes on sd:1145 and sd:1146 hold them.
 | after render | mirror written | a hand edit to a mirror file | the render refuses that file and reports it | `test_records_render`: a `mirror-hash` mismatch is refused |
 | after render | rows restored to an older snapshot | a render would write older content over the mirror | the render refuses until `sd restore resume`; re-apply edits from the mirror first | `test_records_render`: an open restore refuses |
 | rollback | driver back to `vault` | rows are newer than the notes | render before the revert; mirror files read back as the rows' payloads; import again | `test_records_render`: render then freeze round-trips every kind |
+| rollback | none | the render fails or refuses a file, so the notes are older than the rows | stop the rollback: keep W2 and the import refusal, fix the render, then start the rollback again | `test_records_render`: a refused file exits non-zero; W1's import still refuses under `db` |
 | routine edit | routine text | an old routine still edits a note by hand | the render refuses the edited file; the next-day check names it | the hand-edit test |
 
 ## Slices
@@ -221,7 +222,8 @@ Each slice writes its tests first; each test fails on the base branch. Each leav
 10. Next day: `cron-jobs.sh status <job>` exits 0 for each; the heartbeat is `ok`.
 
 Before step 5 only rows changed: rerun, or restore the step 2 backup.
-From step 5 on, roll back: render if the hub can, revert W2 and pull it, then `sd-db.sh import vault` brings rows level with the notes.
+From step 5 on, roll back only after `sd-db.sh records render` exits 0 with 0 refused and every mirror file reads back as its row's payload; then revert W2, pull it, and `sd-db.sh import vault` finds the notes level with the rows.
+If that render fails or refuses any file, stop: the database stays the source, W2 stays, and the import stays refused, because importing stale notes would overwrite newer rows. Fix the render first.
 After the sitting, file one pack item to remove the `vault` driver once no plugin names it.
 
 ## Risks
