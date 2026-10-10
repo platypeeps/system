@@ -5,19 +5,6 @@
  * A quiet day is a gap; only the watchdog's failure list turns a gap into a ■ fault. Real data, Gmail read 2026-09-27 23:59Z. */
 
 /* Annunciator (Today grammar) */
-.cell { font: inherit; border: 0; text-align: left; cursor: pointer; width: 100%; display: grid; grid-template-rows: auto 1fr; gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel); color: var(--color-muted); text-decoration: none; }
-.cell:hover { background: var(--color-well); }
-.cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-.cell .lbl { font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; display: flex; align-items: center; gap: var(--space-2xs); }
-.cell .lbl .i { margin-left: auto; }
-.cell .ph { white-space: nowrap; }
-.cell[data-state="ok"] .lbl .i { color: var(--color-ok); }
-.cell[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
-.cell[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
-.cell[data-state="caution"] .val, .cell[data-state="caution"] .val b { color: var(--color-caution-lamp-ink); }
-.cell[data-state="warning"] .val, .cell[data-state="warning"] .val b { color: var(--color-warning-ink); }
-.cell[data-state="unknown"] { background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
-.cell[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--color-accent); }
 
 .sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }
 .sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-2xs); }
@@ -29,7 +16,7 @@
 .lanes { display: grid; grid-template-columns: minmax(9rem, 13rem) minmax(0, 1fr); column-gap: var(--space-sm); }
 .lane { display: contents; }
 .lane-btn { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2xs); min-height: var(--row); padding: 0 var(--space-xs); border: 0; border-bottom: var(--rule-hair) solid var(--color-rule-2); background: transparent; color: var(--color-ink-2); font: 400 var(--text-xs)/1.2 var(--font-data); text-align: left; cursor: pointer; min-width: 0; }
-.lane-btn .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane-btn .nm { overflow-wrap: anywhere; }
 .lane-btn .n { color: var(--color-muted); }
 .lane-btn:hover { background: var(--color-well); color: var(--color-ink); }
 .lane-btn[aria-pressed="true"] { color: var(--color-ink); box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); background: var(--color-accent-bg); }
@@ -71,26 +58,18 @@
 .linkbtn:hover { color: var(--color-ink); }
 
 /* Ledger (Today grammar) */
-.ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); table-layout: fixed; }
 .ledger th.r { text-align: right; }
-.ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); }
-.ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; overflow: hidden; }
-.ledger col.c-g { width: 2rem; } .ledger col.c-src { width: 10rem; } .ledger col.c-at { width: 6.5rem; } .ledger col.c-act { width: 9.5rem; }
 .ledger .act { text-align: right; white-space: nowrap; padding-right: 0; overflow: visible; }
 .ledger tbody tr[data-picked] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .ledger tbody tr[data-picked] .g::after { content: " ✓"; color: var(--color-accent); }
-.ledger tbody tr { cursor: pointer; }
-.ledger tbody tr:hover td { background: var(--color-well); }
-.ledger tbody tr[aria-selected="true"] td { background: var(--color-accent-bg); }
-.ledger tbody tr[aria-selected="true"] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
 .ledger tr.day td { height: auto; padding: var(--space-sm) var(--space-xs) var(--space-2xs); font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); cursor: default; background: transparent; border-bottom: var(--rule-hair) solid var(--color-rule); }
 .ledger .what { font-weight: 400; }
 .ledger .what button { all: unset; cursor: pointer; display: block; overflow-wrap: anywhere; }
 .ledger .what button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .ledger tr.unread .what { font-weight: 600; color: var(--color-ink); }
-.ledger .what small { display: block; font: 400 var(--text-xs)/1.35 var(--font-data); color: var(--color-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ledger .src { white-space: nowrap; font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-ink-2); text-overflow: ellipsis; }
+.ledger .what small { display: -webkit-box; font: 400 var(--text-xs)/1.35 var(--font-data); color: var(--color-ink-2); overflow-wrap: anywhere; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ledger .src { white-space: nowrap; font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-ink-2); }
 .ledger .at { white-space: nowrap; font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); text-align: right; }
 .ledger .dot { display: inline-block; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--color-ink-2); vertical-align: 0.1em; }
 .empty { margin: var(--space-sm) 0; font-size: var(--text-sm); color: var(--color-muted); }
@@ -112,15 +91,13 @@
   .ledger .what button { min-height: var(--row-touch); display: flex; flex-direction: column; justify-content: center; }
 }
 @media (max-width: 599px) {
-  .annunciator { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cell .ph { white-space: normal; }
   .lanes { grid-template-columns: minmax(0, 1fr); }
   .lane-btn { border-bottom: 0; }
   .axis-label { display: none; }
   .fsum { margin-left: 0; }
 }
 @media (max-width: 899px) {
-  .ledger colgroup, .ledger thead { display: none; }
+  .ledger thead { display: none; }
   .ledger .what small { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .ledger, .ledger tbody { display: block; }
   .ledger tbody tr { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) auto; grid-template-areas: "g what what" ". src src" ". at act"; align-items: center; border-bottom: var(--rule-hair) solid var(--color-rule-2); padding: var(--space-xs) 0; }
@@ -133,7 +110,5 @@
   .ledger tbody tr[aria-selected="true"] td { background: transparent; box-shadow: none; }
 }
 @media (forced-colors: active) {
-  .cell[data-state="warning"], .cell[data-state="caution"] { border: 2px solid CanvasText; }
-  .ledger tbody tr[aria-selected="true"] td:first-child { outline: 2px solid Highlight; }
   .track .tick, .track .fail { fill: CanvasText; }
 }

@@ -37,6 +37,7 @@ from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT, Refused
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
+from test_v2_shell_shared import cell_grammar
 
 V2 = Path(v2.__file__).resolve().parent
 ACTIVITY_JS = (V2 / "static" / "activity.js").read_text(encoding="utf-8")
@@ -392,6 +393,7 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         out = self.run_page("R.lanes = ELS.lanes.html; R.ann = ELS.annunciator.html; R.rows = ELS.rows.html;")
         self.assertRegex(out["R"]["lanes"], r'data-kind="review"[^>]*><svg[^>]*></svg><span>Reviews</span><span class="n">1</span>')
         self.assertIn('<button class="cell" type="button" data-kind="review" data-state="ok"', out["R"]["ann"])
+        self.assertEqual(cell_grammar(self, out["R"]["ann"])[-1], ("button", None))  # the lamps, then Observed
         self.assertIn("<b>0</b> adjudicated</span> · <span class=\"ph\">1 clean</span>", out["R"]["ann"])
         self.assertNotIn("unrecorded", out["R"]["ann"])
         self.assertIn("codex reviewed system#41", out["R"]["rows"])

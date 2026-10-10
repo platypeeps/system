@@ -14,12 +14,6 @@
 section + section { margin-top: var(--space-2xl); }
 
 /* Board */
-.ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
-.ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
-.ledger tbody tr { cursor: pointer; }
-.ledger tbody tr:hover td { background: var(--color-well); }
-.ledger tbody tr[aria-selected="true"] td { background: var(--color-accent-bg); }
-.ledger tbody tr[aria-selected="true"] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
 .ledger .g { width: 1.75rem; text-align: center; font-family: var(--font-data); }
 .ledger .what button { all: unset; cursor: pointer; font-weight: 500; }
@@ -95,7 +89,6 @@ section + section { margin-top: var(--space-2xl); }
 .rel { border-bottom: 1px dotted var(--color-rule); cursor: pointer; }
 
 @media (pointer: coarse) {
-  .ledger td { height: var(--row-touch); }
   .src > button { min-height: var(--row-touch); }
   .vbar { height: calc(var(--row-touch) + 2 * var(--rule-hair)); }
   .claim .meta .chip { min-height: var(--row-touch); }
@@ -117,6 +110,5 @@ section + section { margin-top: var(--space-2xl); }
 }
 @media (max-width: 399px) { .ledger .acts .rowact .btn { display: none; } } /* the row keeps ⋯; the primary command stays in Details */
 @media (forced-colors: active) {
-  .ledger tbody tr[aria-selected="true"] td:first-child, .src[aria-current="true"] > button, .claim[aria-current="true"] { outline: 2px solid Highlight; }
   .track i.on, .rounds i.on { background: CanvasText; }
 }

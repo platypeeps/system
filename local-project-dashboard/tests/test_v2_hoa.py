@@ -33,6 +33,7 @@ from test_v2_read import READ_SHELL
 from test_v2_tasks import SHELL, STAND_IN
 from test_workflow_actions import BrowserSession
 from test_v2_registry import Registers
+from test_v2_shell_shared import cell_grammar
 
 V2 = Path(v2.__file__).resolve().parent
 HOA_JS = (V2 / "static" / "hoa.js").read_text(encoding="utf-8")
@@ -248,11 +249,12 @@ class TheScript(Fixture):
         self.assertEqual(out["gets"], ["/api/hoa"])
         lamps = out["R"]["lamps"]
         self.assertRegex(lamps, r'data-cell="water" data-state="unknown".*?no live reader')
-        self.assertRegex(lamps, r'data-cell="tank" data-state="ok" data-open="day:2026-09-05".*?<b>16.1</b> ft mean')
-        self.assertRegex(lamps, r'data-cell="pumps" data-state="ok" data-open="day:2026-09-04".*?<b>16.9</b> h A2.*?0 starts · 91,119 gal · 09-04')
-        self.assertRegex(lamps, r'data-cell="alarms" data-state="unknown".*?the export ends 2026-09-05.*?2 alarms in 30 d · 1 generator test')
-        self.assertRegex(lamps, rf'data-cell="followups" data-state="warning" data-open="followup:{self.late}".*?<b>1</b> overdue.*?3 open · 1 due within a week')
-        self.assertRegex(lamps, r'data-cell="mission" data-state="ok" data-open="source:mission".*?<b>1 d</b> old')
+        self.assertRegex(lamps, r'data-cell="tank" data-open="day:2026-09-05" data-state="ok".*?<b>16.1</b> ft mean')
+        self.assertRegex(lamps, r'data-cell="pumps" data-open="day:2026-09-04" data-state="ok".*?<b>16.9</b> h A2.*?0 starts · 91,119 gal · 09-04')
+        self.assertRegex(lamps, r'data-cell="alarms"[^>]*data-state="unknown".*?the export ends 2026-09-05.*?2 alarms in 30 d · 1 generator test')
+        self.assertRegex(lamps, rf'data-cell="followups" data-open="followup:{self.late}" data-state="warning".*?<b>1</b> overdue.*?3 open · 1 due within a week')
+        self.assertRegex(lamps, r'data-cell="mission" data-open="source:mission" data-state="ok".*?<b>1 d</b> old')
+        self.assertEqual(cell_grammar(self, lamps)[-1], ("button", None))
         self.assertIn("3 mapped assets, 4 lot and tract outlines; Mission export through 2026-09-05", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "HOA annunciator cells"})
         self.assertIsNone(out["states"][-1])
@@ -296,7 +298,7 @@ R.after = ELS.map.html;""")
         self.assertEqual(out["states"][-1]["kind"], "partial")
         self.assertIn("Mission export: pump-daily.csv has no", out["states"][-1]["text"])
         self.assertRegex(out["R"]["lamps"], r'data-cell="pumps" data-state="unknown".*?pump-daily.csv has no')
-        self.assertRegex(out["R"]["lamps"], r'data-cell="tank" data-state="ok"')
+        self.assertRegex(out["R"]["lamps"], r'data-cell="tank"[^>]*data-state="ok"')
         self.assertIn("<b>▨ Not read.</b> pump-daily.csv has no", out["R"]["trends"])
 
     def test_a_document_that_does_not_arrive_leaves_no_row_and_says_so(self):

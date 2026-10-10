@@ -9,7 +9,7 @@
 // the server's shadow sync (sd:2894), and Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
-  const { html, put, plural } = window.markup;
+  const { html, put, plural, cells } = window.markup;
   const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
   const RANK = { warning: 0, caution: 1, unknown: 2, queued: 3, ok: 4 };
   const STATES = ['warning', 'caution', 'unknown', 'queued', 'ok'];
@@ -72,7 +72,10 @@
   const areaShown = a => a.rows.some(passes) || (!F.state.size && !query && (!F.area.size || F.area.has(a.id)));
 
   function lamps() {
-    put($('annunciator'), html`${AREAS.filter(a => !NO_LAMP.has(a.id)).map(a => { const s = areaState(a); return html`<li><button class="cell" type="button" data-area="${a.id}" data-state="${s}" aria-pressed="${F.area.has(a.id) ? 'true' : 'false'}"><span class="lbl">${a.name}${I(LOOK[a.id]?.[0] || 'circle-help')}</span><span class="val">${lampValue(a)}</span><span class="sr">state ${s} · shows only ${a.name} rows</span></button></li>`; })}<li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val"><span class="ph">${DOC ? html`<b>${new Date(DOC.read).toISOString().slice(11, 16)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span></span></button></li>`);
+    put($('annunciator'), cells([...AREAS.filter(a => !NO_LAMP.has(a.id)).map(a => { const s = areaState(a); return { button: true, state: s, pressed: F.area.has(a.id),
+      attrs: html` data-area="${a.id}"`, label: a.name, mark: I(LOOK[a.id]?.[0] || 'circle-help'), val: lampValue(a), sr: `state ${s} · shows only ${a.name} rows` }; }),
+      { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'),
+        val: html`<span class="ph">${DOC ? html`<b>${new Date(DOC.read).toISOString().slice(11, 16)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span>` }]));
   }
 
   function renderFilters() {
@@ -91,7 +94,7 @@
         : a.missing.length ? html`<p class="unread"><b>Not read here:</b> ${a.missing.join(', ')}.</p>` : ''}
       ${a.stale ? html`<p class="unread"><b>Not re-read:</b> ${a.stale}</p>` : ''}
       ${a.read && !a.error ? pre(a) : ''}
-      ${rows.length ? html`<table class="ledger" aria-labelledby="h-${a.id}"><colgroup><col class="g"><col><col class="fix"></colgroup>
+      ${rows.length ? html`<table class="ledger" aria-labelledby="h-${a.id}">
         <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Finding</th><th scope="col">Fix</th></tr></thead>
         <tbody>${rows.map((r, i) => html`<tr data-id="${r.id}" aria-selected="${r.id === selected ? 'true' : 'false'}"${i > 0 && rows[i - 1].state !== r.state ? html` class="band-start"` : ''}>
           <td class="g g-${r.state}"><span aria-hidden="true">${GLYPH[r.state]}</span><span class="sr">${r.state}</span></td>

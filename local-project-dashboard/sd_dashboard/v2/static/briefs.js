@@ -3,7 +3,7 @@
 // holds, never sample data. The design reads brief mail; no mail reader exists, so unread state, follow-up flags and the
 // watchdog's failures are left out, and the Missed lamp is unknown with the document's reason. The one write is Make task, which
 // opens the shell's capture form; the form files it with POST /api/items.
-const { html, put, plural } = window.markup;
+const { html, put, plural, cells } = window.markup;
 // build: nothing here can be loud. The watchdog is not read, so the page claims nothing for the rail or Today.
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'watchdog not read' };
 window.PAGE_COMMANDS = [];
@@ -76,10 +76,11 @@ addEventListener('DOMContentLoaded', () => {
     const got = !!READER && READER.state !== 'error', floor = capped() && BRIEFS.length && oldest() >= DAYS[0];
     const count = got ? html`<span class="ph">${floor ? 'at least ' : ''}<b>${n}</b> in ${range === '24h' ? '24 hours' : `${RANGES[range]} days`}</span> · <span class="ph">${plural(srcs, 'source')}</span>` : html`<span class="ph"><b>not read</b></span>`;
     const read = READ ? html`<span class="ph"><b>${hhmm(READ)}</b> UTC</span> · <span class="ph">${dayLabel(READ.slice(0, 10))}</span>` : html`<span class="ph"><b>not yet</b></span>`;
-    put(document.getElementById('annunciator'), html`
-      <li><div class="cell" data-state="${got ? 'ok' : 'unknown'}"><span class="lbl">Briefs${I('inbox')}</span><span class="val">${count}</span></div></li>
-      <li><div class="cell" data-state="unknown" title="${WATCH}"><span class="lbl">Missed${I('siren')}</span><span class="val"><span class="ph"><b>unknown</b></span> · <span class="ph">no watchdog reader</span></span></div></li>
-      <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val">${read}</span></button></li>`);
+    put(document.getElementById('annunciator'), cells([
+      { state: got ? 'ok' : 'unknown', label: 'Briefs', mark: I('inbox'), val: count },
+      { state: 'unknown', attrs: html` title="${WATCH}"`, label: 'Missed', mark: I('siren'), val: html`<span class="ph"><b>unknown</b></span> · <span class="ph">no watchdog reader</span>` },
+      { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'), val: read },
+    ]));
   }
   document.getElementById('annunciator').addEventListener('click', e => { if (e.target.closest('#refresh')) briefs.load(); });
 

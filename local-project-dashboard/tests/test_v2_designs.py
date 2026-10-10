@@ -27,6 +27,7 @@ from test_v2_read import READ_SHELL
 from test_v2_registry import Registers
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT, Refused
+from test_v2_shell_shared import cell_grammar
 from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
@@ -161,8 +162,9 @@ class TheScript(unittest.TestCase):
         self.assertIn("v2 mockup · stale screenshot: v2-tasks-1440.png", rows)
         self.assertIn("v1 mockup · uncommitted change in the working tree", rows)
         self.assertIn("brief only · a brief and no page yet", rows)
-        self.assertEqual(re.findall(r'data-state="(\w+)" data-filter="(\w+)"', lamps),
-                         [("ok", "recent"), ("caution", "stale"), ("caution", "noshot"), ("caution", "dirty"), ("ok", "brief")])
+        self.assertEqual(re.findall(r'data-filter="(\w+)" data-state="(\w+)"', lamps),
+                         [("recent", "ok"), ("stale", "caution"), ("noshot", "caution"), ("dirty", "caution"), ("brief", "ok")])
+        self.assertEqual(cell_grammar(self, lamps), [("button", s) for s in ("ok", "caution", "caution", "caution", "ok", None)])
         self.assertEqual(re.findall(r'data-filter="(\w+)"[^>]*>.*?<b>(\d+)</b>', lamps, re.S),
                          [("recent", "2"), ("stale", "1"), ("noshot", "1"), ("dirty", "1"), ("brief", "1")])
         self.assertEqual(out["text"]["sub"], "4 pages in 2 products")

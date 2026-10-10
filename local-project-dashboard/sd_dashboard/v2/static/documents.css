@@ -22,13 +22,7 @@
 .linkish { font: inherit; color: var(--color-ink-2); background: none; border: 0; padding: 0 var(--space-2xs); text-decoration: underline; cursor: pointer; min-height: 1.75rem; }
 
 /* Ledger */
-.ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); padding: var(--space-2xs) var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }
 .ledger th[aria-sort] { color: var(--color-ink); }
-.ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }
-.ledger tbody tr { cursor: pointer; }
-.ledger tbody tr:hover td { background: var(--color-well); }
-.ledger tbody tr[aria-selected="true"] td { background: var(--color-accent-bg); }
-.ledger tbody tr[aria-selected="true"] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .ledger .g { width: 1.75rem; text-align: center; font-family: var(--font-data); }
 .ledger .what button { all: unset; cursor: pointer; font-weight: 500; }
 .ledger .what button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
@@ -74,7 +68,6 @@
 .rel { border-bottom: 1px dotted var(--color-rule); cursor: pointer; }
 
 @media (pointer: coarse) {
-  .ledger td { height: var(--row-touch); }
   .linkish { min-height: var(--row-touch); }
 }
 @media (max-width: 1099px) {
@@ -96,7 +89,4 @@
 }
 @media (max-width: 399px) {
   .ledger .acts .rowact .btn { display: none; } /* the row keeps ⋯; the primary command stays in Details */
-}
-@media (forced-colors: active) {
-  .ledger tbody tr[aria-selected="true"] td:first-child { outline: 2px solid Highlight; }
 }

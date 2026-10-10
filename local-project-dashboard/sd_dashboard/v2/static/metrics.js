@@ -3,7 +3,7 @@
 // A part that did not read, and each panel no reader covers, is unknown with its reason.
 // build: bars are SVG rects sized by attribute, not CSSOM widths, and the age chart is the design's bar list only.
 (() => {
-  const { html, put, plural } = window.markup;
+  const { html, put, plural, cells } = window.markup;
   const $ = id => document.getElementById(id);
   const G = { ok: '●', caution: '▲', warning: '■', unknown: '▨', queued: '◌' };
   const RANK = { warning: 3, caution: 2, unknown: 1, ok: 0 };
@@ -50,7 +50,7 @@
   const scState = r => r.fallthrough && !r.passes ? 'caution' : 'ok';
 
   // ---------- Annunciator ----------
-  function cells() {
+  function readCells() {
     const d = DOC, u = d.usage, out = [];
     out.push(u.error ? { id: 'spend', label: 'Spend month', state: 'unknown', val: html`<b>—</b> not read`, small: u.error }
       : { id: 'spend', label: 'Spend month', state: 'ok', ev: 'spend', val: html`<b>${money(u.spent)}</b>`, small: `${u.month} to date · ${plural(u.bills.length, 'bill')}` });
@@ -61,8 +61,10 @@
     return out;
   }
   function lamps() {
-    const clock = html`<li><button class="cell" type="button" id="refresh"><span class="lbl">Observed <kbd>r</kbd></span><span class="val"><span class="ph"><b>${DOC ? DOC.read.slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span><small>${DOC ? `${DOC.read.slice(0, 10)} · refresh` : 'refresh'}</small></span></button></li>`;
-    put($('annunciator'), html`${CELLS.map(c => html`<li><button class="cell" type="button" data-cell="${c.id}" data-state="${c.state}" data-ev="${c.ev || ''}"><span class="lbl">${c.label} <span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${G[c.state]}</span></span><span class="val"><span class="ph">${c.val}</span><small>${c.small}</small></span></button></li>`)}${clock}`);
+    const clock = { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: html`<kbd>r</kbd>`,
+      val: html`<span class="ph"><b>${DOC ? DOC.read.slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span>`, small: DOC ? `${DOC.read.slice(0, 10)} · refresh` : 'refresh' };
+    put($('annunciator'), cells([...CELLS.map(c => ({ button: true, state: c.state, attrs: html` data-cell="${c.id}" data-ev="${c.ev || ''}"`,
+      label: c.label, mark: html`<span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${G[c.state]}</span>`, val: html`<span class="ph">${c.val}</span>`, small: c.small })), clock]));
   }
   function attention() {
     const lit = CELLS.filter(c => c.state === 'warning' || c.state === 'caution'), worst = lit.some(c => c.state === 'warning') ? 'warning' : lit.length ? 'caution' : 'ok';
@@ -159,7 +161,7 @@
   const spec = {
     source: '/api/metrics', what: 'the Metrics readings',
     adopt: doc => {
-      DOC = doc; evidence(); CELLS = cells(); attention();
+      DOC = doc; evidence(); CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
       const failed = ['usage', 'trend', 'numbers', 'scorecard', 'skills', 'age', 'observed'].filter(k => doc[k].error);
       FIRST = CELLS.find(c => c.state === 'warning' || c.state === 'caution')?.ev || Object.keys(EV).find(k => k.startsWith('win:')) || null;

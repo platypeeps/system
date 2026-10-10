@@ -1,7 +1,7 @@
 // ---------- Page script: data, render, Details, commands. Read design.md § Page contract and § Commands. ----------
 // Designs (sd:2126). Built from the design source's products/system/designs/pages/designs.js at 2729265.
 // build: the ledger comes from /api/designs through shell.read, not from data/designs-data.js; links open /designs/<path>.
-const { html, put } = window.markup;
+const { html, put, cells } = window.markup;
 const I = (n, cls = '') => html`<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
 const DAY = 864e5;
@@ -44,11 +44,12 @@ const T = iso => iso ? html`<time class="rel" datetime="${iso}" data-long></time
 function renderAnnunciator() {
   // No "all pages" lamp: the head counts the pages and the view row's All chip clears a filter.
   const n = k => ROWS.filter(FILTERS[k].test).length;
-  const cell = (k, state, val) => html`<li><button class="cell" type="button" data-state="${state}" data-filter="${k}" aria-pressed="${String(F.f === k)}">
-    <span class="lbl">${FILTERS[k].lbl} ${state === 'caution' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : I(FILTERS[k].icon)}</span><span class="val">${val}</span></button></li>`;
+  const cell = (k, state, val) => ({ button: true, state, pressed: F.f === k, attrs: html` data-filter="${k}"`, label: FILTERS[k].lbl,
+    mark: state === 'caution' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : I(FILTERS[k].icon), val });
   const [hh, day] = [D.read.slice(11, 16), `${+D.read.slice(8, 10)} ${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[+D.read.slice(5, 7) - 1]}`];
   // build: Observed rereads /api/designs instead of reloading the page.
-  put(document.getElementById('annunciator'), html`${Object.keys(FILTERS).map(k => { const c = n(k); return cell(k, FILTERS[k].warn && c ? 'caution' : 'ok', html`<b>${c}</b> ${markup.plural.word(c, k === 'brief' ? 'product' : 'page')}`); })}<li><button class="cell" type="button" id="refresh"><span class="lbl">Observed${I('rotate-ccw')}</span><span class="val"><span class="ph"><b>${hh}</b> UTC</span> · <span class="ph">${day} · ${D.head || 'no commit'}</span></span></button></li>`);
+  put(document.getElementById('annunciator'), cells([...Object.keys(FILTERS).map(k => { const c = n(k); return cell(k, FILTERS[k].warn && c ? 'caution' : 'ok', html`<b>${c}</b> ${markup.plural.word(c, k === 'brief' ? 'product' : 'page')}`); }),
+    { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'), val: html`<span class="ph"><b>${hh}</b> UTC</span> · <span class="ph">${day} · ${D.head || 'no commit'}</span>` }]));
 }
 function renderRows() {
   const rows = ranked();
