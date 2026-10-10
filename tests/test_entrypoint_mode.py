@@ -1,8 +1,8 @@
 """Every folder's entrypoint is executable in the git index (sd:2648).
 
 Convention 1 gives each runnable folder one entrypoint, and `./<name>.sh`
-only runs when git tracks it as mode 100755. `github-rulesets.sh` was tracked
-100644, so running it directly exited 126 and nothing noticed: `sh <file>`
+only runs when git tracks it as mode 100755. An entrypoint once tracked as
+100644 exited 126 when run directly and nothing noticed: `sh <file>`
 works either way, and that is how every suite calls it.
 
 The entrypoints are read from `git ls-files -s`, not listed here, so a new
