@@ -82,9 +82,14 @@ its run ends, so refresh waits for it. A lane whose runner never ran has no
 lock yet. The helper makes and holds one for every folder under the lane
 root, every repository in the registry (`sd-db.sh repo list`) and every
 checkout in the conf, since a lane is named after its checkout's folder. A
-registry it cannot read refuses with nothing moved. With every lock held, the helper waits until `sd gate status
---json` shows no holders and no waiters, and checks again after its last
-pass over the locks. Then it runs the refresh steps as its child and
+registry it cannot read refuses with nothing moved. Each pass tries every
+lock first and keeps the ones it gets, then waits for the busy ones, so
+`lane run --hosted` cannot lead the drain from lane to lane (sd:3265). With
+every lock held, the helper reads the holders `sd gate status --json` lists
+and waits until each of them has ended. A waiter, or a gate admitted later,
+does not count: no lane gates without its runner lock, so it is no lane's.
+Waiting for an idle gate starved a busy satellite for hours. A pass that
+takes a new lock reads the holders again. Then it runs the refresh steps as its child and
 releases the locks when it exits. TERM, INT or HUP sent to the helper alone
 does not end it early: it waits for the child, which is in its process
 group. Ctrl-C reaches both. The child inherits the lock descriptors, so a
@@ -140,7 +145,14 @@ the stage's proof line, `bin-links.sh status`'s last line (`PATH on PATH`) or
 the satellite's `ok sd_db ... matches the hub's`, which only a hub that
 accepted this build prints. A failed stage, drift in its dry run, a dry run
 that cannot answer, or one without its proof line exits 1 and names the
-command to run by hand; the move and the marker stay. A no-op or a
+command to run by hand; the move and the marker stay. When the system move
+changed `local-agent-prompt/prompt/shared.md`, follow then runs that
+checkout's `agent-prompt.sh refresh --apply`, bounded at 120 s, with the
+lanes still held (sd:3262). A run that finds the marker below refreshes too,
+since the run that left it may have moved system and stopped first. The
+refresh refuses a `DIFFERS` or `UNKNOWN` target and writes nothing; follow
+prints a `!!!` line naming the target and the commands to run by hand, and
+still exits 0, since the move stands. A no-op or a
 rolled-back follow runs no update. It never moves to origin's default branch. It checks every checkout
 first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
 a drain timeout refuses with nothing moved. It moves system, then pack; when
@@ -175,7 +187,8 @@ cp local-cron-jobs/examples/repo-sync-follow.job \
 ```
 
 The job runs `follow` every five minutes. Its timeout is above the
-45-minute drain bound plus the two 450 s stage bounds. A job that chains a
+45-minute drain bound plus the two 450 s stage bounds and the 120 s prompt
+refresh. A job that chains a
 full `machine-setup.sh update --apply` after `follow` (sd:3154) finds the bin
 and satellite stages already done.
 

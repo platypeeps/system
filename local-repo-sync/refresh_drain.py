@@ -3,10 +3,15 @@
 `repo-sync.sh refresh` and `follow` (sd:3100) call this first, because
 POSIX sh cannot hold a flock. It takes every lane's runner lock under the lane root: while one is
 held, that lane's `lane run` exits at once and its queued entries stay
-pending. A running lane keeps its lock until its run ends. With every lock
-held it waits until `sd gate status --json` shows no holders and no waiters,
-then runs the refresh steps with REPO_SYNC_LANES_HELD=1 and exits with their
-status. The child inherits the lock descriptors and this process keeps its
+pending. A running lane keeps its lock until its run ends. Each pass tries
+every lock first and keeps the ones it gets, then waits for the busy ones:
+waiting on one lane at a time let `lane run --hosted` go on to the next lane,
+so the drain chased it through every queue (sd:3265). With every lock held it
+waits until the gate holders `sd gate status --json` showed at that moment
+have ended. A gate admitted later is no lane's: a lane gates only under its
+held runner lock. Waiting for an idle gate starved a busy machine for hours,
+since new gates kept arriving (sd:3265). Then it runs the refresh steps with
+REPO_SYNC_LANES_HELD=1 and exits with their status. The child inherits the lock descriptors and this process keeps its
 copies, so the locks stay held until both have exited: a `kill -9` of this
 process leaves them with the child until its last step ends. No step leaves
 a process behind to keep them: services restart through launchd, which
@@ -18,8 +23,8 @@ A lane whose runner never ran has no lock file yet: every folder under the
 lane root, every repository in the registry (`sd-db.sh repo list`, which
 `lane run --hosted` reads; for `refresh` only) and every name in
 REPO_SYNC_LANE_NAMES (the conf's checkouts) gets one, made and held here; a
-lane is named after its checkout's folder. The gate is checked again after the last pass over the
-locks, just before the child.
+lane is named after its checkout's folder. A pass that takes a new lock
+checks the gate again, so a gate a new lane's runner left is seen.
 
 The wait is bounded: 45 minutes in total for the locks and the gate
 together (operator ruling), or REPO_SYNC_DRAIN_WAIT seconds. Past it, refresh refuses with nothing moved and
@@ -95,31 +100,36 @@ def wait(busy, deadline, limit):
 
 def take_locks(root, held, deadline, limit, names=()):
     """Take each runner lock under root not yet held, making the missing ones
-    of lane folders and named lanes; returns how many were new."""
+    of lane folders and named lanes; returns how many were new. It tries them
+    all before it waits, so a lane it already holds starts no new run."""
     lanes = {folder.parent.name for folder in root.glob("*/lane")} | set(names)
     locks = {root / name / "lane" / "queue" / "runner.lock" for name in lanes}
     new = [lock for lock in sorted(locks | set(root.glob("*/lane/queue/runner.lock"))) if lock not in held]
     for lock in new:
         try:
             lock.parent.mkdir(parents=True, exist_ok=True)
-            handle = open(lock, "a", encoding="utf-8")
+            held[lock] = open(lock, "a", encoding="utf-8")
         except OSError as error:
             raise Refused(f"cannot open {lock}: {error.strerror}") from None
-        held[lock] = handle
+    busy = list(new)
 
-        def busy(handle=handle, lock=lock):
+    def still_busy():
+        for lock in list(busy):
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(held[lock], fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                return f"lane {lock.parent.parent.parent.name} (its runner holds {lock})"
+                continue
+            busy.remove(lock)
+        if not busy:
             return None
+        return "; ".join(f"lane {lock.parent.parent.parent.name} (its runner holds {lock})" for lock in busy)
 
-        wait(busy, deadline, limit)
+    wait(still_busy, deadline, limit)
     return len(new)
 
 
-def gate_busy(env):
-    """None when the gate has no holders and no waiters, else what it holds."""
+def gate_holders(env):
+    """The holders `sd gate status --json` lists now, as a key per holder."""
     try:
         out = subprocess.run(["sd", "gate", "status", "--json"], capture_output=True,
                              text=True, env=env, timeout=120)
@@ -131,13 +141,28 @@ def gate_busy(env):
     try:
         status = json.loads(out.stdout)
         holders, waiters = status["holders"], status["waiters"]
-        if not isinstance(holders, list) or not isinstance(waiters, list):
+        if not isinstance(holders, list) or not isinstance(waiters, list) \
+                or not all(isinstance(holder, dict) for holder in holders):
             raise TypeError
     except (ValueError, KeyError, TypeError):
         raise Refused("sd gate status --json printed no holders and waiters lists", manual=True) from None
-    if not holders and not waiters:
-        return None
-    return f"the gate: {len(holders)} holder(s), {len(waiters)} waiter(s)"
+    # A slot's next holder has another pid or start, so a key names one gate run.
+    return {(holder.get("slot"), holder.get("pid"), holder.get("since")): holder for holder in holders}
+
+
+def wait_gate(env, deadline, limit):
+    """Wait until each gate holder present now has ended; later ones do not count."""
+    first = gate_holders(env)
+
+    def busy():
+        left = [first[key] for key in gate_holders(env) if key in first]
+        if not left:
+            return None
+        pids = ", ".join(f"pid {holder.get('pid') or '?'}" for holder in left)
+        return f"the gate: {len(left)} holder(s) that started before the lanes were held ({pids})"
+
+    if first:
+        wait(busy, deadline, limit)
 
 
 def registry_names(script, env):
@@ -157,7 +182,7 @@ def registry_names(script, env):
 
 
 def drain(env, names=()):
-    """Hold every lane lock and see an idle gate; returns the held handles."""
+    """Hold every lane lock and outwait the gates from before; returns the held handles."""
     raw = env.get("REPO_SYNC_DRAIN_WAIT", str(DEFAULT_WAIT))
     if not raw.isdigit():
         raise Refused(f"REPO_SYNC_DRAIN_WAIT must be a number of seconds, got {raw!r}")
@@ -169,14 +194,18 @@ def drain(env, names=()):
         print("sd is not on PATH: no gate to wait on", flush=True)
     held = {}
     # A lane folder made during the gate wait is taken on the next pass, and
-    # a gate a runner left behind is seen: the last step is a gate check.
+    # its runner's gate is seen: each pass that takes a lock checks the gate.
+    # The first pass checks it even with no lane at all.
+    first = True
     while True:
         new = take_locks(root, held, deadline, limit, names)
-        if has_sd:
-            wait(lambda: gate_busy(env), deadline, limit)
-        if not new:
+        if not new and not first:
             break
-    print(f"lanes held: {len(held)} runner lock(s) under {root}; gate idle", flush=True)
+        first = False
+        if has_sd:
+            wait_gate(env, deadline, limit)
+    print(f"lanes held: {len(held)} runner lock(s) under {root}; "
+          "every gate from before is done", flush=True)
     return held
 
 
