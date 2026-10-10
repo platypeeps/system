@@ -11,7 +11,6 @@ own README. There is no repository-wide build.
 | `local-*` | Run a service or tool locally (mostly docker or launchd) |
 | `mezmo-*` | Helpers and test data for the Mezmo pipeline API |
 | `network-testing` | iperf3/ping testing between machines on a LAN |
-| `github-rulesets` | This repository's GitHub rulesets as files (`.github/rulesets/`), diffed and applied with `gh` |
 | `lib` | The shared config resolver the tools source |
 | `docs` | Design documents and planned work (`docs/work/`) |
 
