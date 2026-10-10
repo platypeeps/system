@@ -33,6 +33,12 @@ class TheSnoozeRoute(BrowserSession):
         self.assertEqual((status, body), (200, {"key": "today:ahead:pushy:1", "until": None}))
         self.assertEqual(self.held(), {})
 
+    def test_a_work_item_keys_on_today_by_its_item_id(self):
+        until = later(hours=1)
+        status, _, body = self.post("/api/snooze", {"page": "today", "row": "item:7", "until": until, "seen": "0f0f"})
+        self.assertEqual((status, body["key"]), (200, "today:item:7"))
+        self.assertEqual(self.held(), {"today:item:7": {"until": writes.stamp(until), "seen": "0f0f"}})
+
     def test_a_health_row_keys_on_its_own_page(self):
         self.assertEqual(self.post("/api/snooze", {"page": "health", "row": "br:system", "until": later(days=7), "seen": "0f0f"})[0], 200)
         self.assertEqual(list(self.held()), ["health:br:system"])

@@ -144,7 +144,7 @@ class TheSnooze(TheReader):
 R.types = REG.filter(c => c.id.endsWith('.snooze')).map(c => c.on);
 shellRun(cmd('repo.snooze-week'), C.get('ahead:pushy:1')); await flush();
 R.ahead = Date.parse(OUT.posts[0][1].until) - Date.now();""")
-        self.assertEqual(out["R"]["types"], ["job", "pull request", "repo", "sessions", "collector"])
+        self.assertEqual(out["R"]["types"], ["job", "pull request", "repo", "sessions", "collector", "work item"])
         # The row's own fingerprint goes with it, so the snooze holds only while the row reads the same.
         seen = next(row["seen"] for row in self.doc["rows"] if row["id"] == "ahead:pushy:1")
         self.assertEqual([(path, body["page"], body["row"], body["seen"]) for path, body, _ in out["posts"]],
@@ -163,6 +163,49 @@ R.primary = REG.filter(c => c.on === 'snoozed row').map(c => c.id);""")
         self.assertEqual(out["R"]["obj"], {"id": "snoozed:ahead:pushy:1", "type": "snoozed row", "label": row["what"],
                                            "row": "ahead:pushy:1", "until": "2026-09-07T08:00:00+00:00", "seen": row["seen"]})
         self.assertEqual(out["R"]["primary"], ["snoozed row.unsnooze"])
+
+    ITEM = {"id": "item:7", "kind": "item", "item": 7, "what": "#7 Write the brief", "detail": "in_progress · due 2026-09-05",
+            "state": "in_progress", "due": "2026-09-05", "seen": "0123456789abcdef"}
+
+    def test_a_work_item_is_a_row_that_snoozes_under_its_own_key(self):
+        """sd:3271: the items `sd today` lists get the same control as a Now row, keyed today:item:<id>."""
+        self.doc["work"], self.doc["work_error"] = [self.ITEM, {**self.ITEM, "id": "item:9", "item": 9, "what": "#9 Later", "due": None,
+                                                                 "detail": "in_progress"}], ""
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
+R.work = ELS.work.html; R.tally = ELS['work-tally'].html; R.obj = C.get('item:7');
+shellRun(cmd('work item.snooze-hour'), C.get('item:7')); await flush();""")
+        self.assertIn("Write the brief", out["R"]["work"])
+        self.assertIn('href="/tasks?row=7"', out["R"]["work"])
+        self.assertIn("in_progress · due 2026-09-05", out["R"]["work"])
+        self.assertIn("1 overdue", out["R"]["tally"])
+        self.assertEqual((out["R"]["obj"]["type"], out["R"]["obj"]["seen"]), ("work item", "0123456789abcdef"))
+        self.assertEqual([(path, body["page"], body["row"], body["seen"]) for path, body, _ in out["posts"]],
+                         [("/api/snooze", "today", "item:7", "0123456789abcdef")])
+        self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+
+    def test_a_work_read_that_failed_says_so_and_is_not_an_empty_list(self):
+        self.doc["work"], self.doc["work_error"] = [], "database is locked"
+        out = self.run_page("R.work = ELS.work.html;")
+        self.assertIn("Work could not be read: database is locked", out["R"]["work"])
+        self.assertNotIn("Nothing", out["R"]["work"])
+
+    def test_no_work_item_says_so(self):
+        self.doc["work"], self.doc["work_error"] = [], ""
+        out = self.run_page("R.work = ELS.work.html;")
+        self.assertIn("Nothing is due and nothing is in progress", out["R"]["work"])
+
+    def test_a_snoozed_work_item_waits_under_snoozed_and_a_failed_read_retires_the_rows(self):
+        self.doc["work"], self.doc["work_error"] = [], ""
+        self.doc["snoozed"] = [{**self.ITEM, "until": "2026-09-07T08:00:00+00:00"}]
+        out = self.run_page("""R.snoozed = ELS.snoozed.html; R.obj = C.get('snoozed:item:7');""")
+        self.assertIn("#7 Write the brief", out["R"]["snoozed"])
+        self.assertEqual((out["R"]["obj"]["type"], out["R"]["obj"]["row"], out["R"]["obj"]["seen"]),
+                         ("snoozed row", "item:7", "0123456789abcdef"))
+        self.doc["work"] = [self.ITEM]
+        out = self.run_page("""ANSWER = () => [500, { error: 'fleet collection was stopped at its budget' }]; refresh(); await flush();
+R.work = ELS.work.html; R.type = C.get('item:7').type;""")
+        self.assertIn("Work could not be read", out["R"]["work"])
+        self.assertEqual(out["R"]["type"], "not listed")
 
     def test_a_snooze_read_that_failed_is_a_partial_read(self):
         self.doc["snooze_error"] = "database is locked"

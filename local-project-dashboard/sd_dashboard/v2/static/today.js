@@ -1,6 +1,7 @@
 // Today v2 (sd:2110): the page script. It loads before shell.js, which reads what it declares.
 // Rows: /api/now, the document now_screen.document builds (the one v1 Today's Now section reads). Nothing here is sample data.
 // A snoozed row (sd:1896) is in the document's `snoozed`, not its rows: snooze.js draws it under the list with its Unsnooze.
+// The work items `sd today` lists (sd:3271) are the document's `work`: their own table, the same Snooze, keyed today:item:<id>.
 // Ported from ui-design products/system/designs/v2/today.html at a3861c9; the sources the build has no collector for are left out.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
@@ -19,13 +20,13 @@
   const STATE = { broken: 'warning', look: 'caution', queued: 'queued' };
   const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
   const SRC = { jobs: ['Jobs', 'activity', 'jobs'], prs: ['Pull requests', 'git-pull-request', 'trackers'], sessions: ['Sessions', 'bot', 'sessions'], repos: ['Repos', 'hard-drive-download', 'repos'] };
-  const TYPE = { job: 'job', pr: 'pull request', ahead: 'repo', dirty: 'repo', worktree: 'sessions', dark: 'collector' };
+  const TYPE = { job: 'job', pr: 'pull request', ahead: 'repo', dirty: 'repo', worktree: 'sessions', dark: 'collector', item: 'work item' };
   const KIND = { job: 'Job', pr: 'Pull request', ahead: 'Repo', dirty: 'Repo', worktree: 'Sessions', dark: 'Collector' };
   const { html, put } = window.markup;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const area = s => `/operations?area=${SRC[s]?.[2] || s}`;
 
-  let DOC = null, ROWS = [], SNOOZED = [], srcFilter = null, query = '';
+  let DOC = null, ROWS = [], WORK = [], WORK_ERROR = '', SNOOZED = [], srcFilter = null, query = '';
   const $ = id => document.getElementById(id);
 
   function facts(r) {
@@ -97,7 +98,23 @@
     attend();
     lamps();
     hideRows();
+    work();
     window.snooze.draw($('snoozed'), SNOOZED);
+  }
+
+  // Your work (sd:3271): the items due or in progress, as `sd today` lists them. A row is not selectable: its title opens
+  // the item on Tasks. Overdue is a due date before the day the document was read; a read that failed is said, never empty.
+  function work() {
+    const day = DOC.now.slice(0, 10), late = r => !!r.due && r.due < day;
+    put($('work'), WORK_ERROR ? html`<tr class="empty"><td colspan="4">Work could not be read: ${WORK_ERROR}. Refresh tries again.</td></tr>`
+      : WORK.length ? html`${WORK.map(r => { const s = late(r) ? 'caution' : 'queued'; return html`<tr data-item="${r.item}">
+        <td class="g g-${s}" title="${late(r) ? 'overdue' : 'queued'}">${GLYPH[s]}</td>
+        <td class="what"><a href="/tasks?row=${r.item}">${r.what}</a></td>
+        <td class="detail">${r.detail}</td>
+        <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`; })}`
+      : html`<tr class="empty"><td colspan="4">Nothing is due and nothing is in progress.</td></tr>`);
+    const n = WORK.filter(late).length;
+    put($('work-tally'), WORK.length ? html`<span>${WORK.length} listed</span>${n ? html`<span class="g-caution">▲ ${n} overdue</span>` : ''}` : html``);
   }
 
   // The badge counts the loudest state: warning rows, else caution rows and the decisions decisions.js says wait (sd:3012),
@@ -138,12 +155,12 @@
   // runs no command, a selection whose row is gone moves to the first row the filter shows, and a failed read clears the page.
   let reading = null, failed = '', reads = 0;
   function adopt(doc) {
-    DOC = doc; ROWS = doc.rows; SNOOZED = doc.snoozed;
+    DOC = doc; ROWS = doc.rows; WORK = doc.work || []; WORK_ERROR = doc.work_error || ''; SNOOZED = doc.snoozed;
     document.body.dataset.observed = doc.now;
-    return { objects: [...ROWS.map(objectOf), ...SNOOZED.map(window.snooze.object)],
+    return { objects: [...ROWS.map(objectOf), ...WORK.map(objectOf), ...SNOOZED.map(window.snooze.object)],
              state: doc.snooze_error ? window.snooze.unread(doc.snooze_error, '/api/now') : null };
   }
-  function clear(err) { DOC = null; ROWS = []; SNOOZED = []; failed = err.message; delete document.body.dataset.observed; }
+  function clear(err) { DOC = null; ROWS = []; WORK = []; WORK_ERROR = ''; SNOOZED = []; failed = err.message; delete document.body.dataset.observed; }
   function draw() {
     if (DOC) return render();
     // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
@@ -152,6 +169,8 @@
     put($('observed'), html`<span class="ph">not read</span>`);
     put($('tally'), html``);
     put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${failed}</td></tr>`);
+    put($('work'), html`<tr class="empty"><td colspan="4">Work could not be read: ${failed}. Refresh tries again.</td></tr>`);
+    put($('work-tally'), html``);
     window.snooze.draw($('snoozed'), []);
     attend();
     hideRows();
@@ -188,7 +207,10 @@
     window.snooze.register(C, { page: 'today', types: [...new Set(Object.values(TYPE))], reread: () => load() });
 
     $('rows').addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
-    document.addEventListener('shell:open', e => { if (ROWS.some(r => r.id === e.detail)) select(e.detail, true); });
+    document.addEventListener('shell:open', e => {
+      if (ROWS.some(r => r.id === e.detail)) select(e.detail, true);
+      const w = WORK.find(r => r.id === e.detail); if (w) location.href = `/tasks?row=${w.item}`;
+    });
     document.addEventListener('shell:picked', e => $('rows').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
     $('annunciator').addEventListener('click', e => {
       const c = e.target.closest('button.cell'); if (!c) return;

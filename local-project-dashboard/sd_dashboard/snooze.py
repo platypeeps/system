@@ -12,6 +12,9 @@ it still reads the same: a changed or worsened problem shows again.
   the disk (days to an expiry, a percent used, a log time) names its problem
   in `problem` instead, and the hash reads that; `split` drops `problem`.
 
+- A work item (sd:3271) is a Today row too: id `item:<id>`, so its key is `today:item:<id>`, and its problem is its
+  status and due date (`now_screen.work_rows`). A new title does not show it again; a new status or due date does.
+
 - `split` is what `now_screen.document` and `health_screen.document` call: the
   rows shown, and the snoozed ones, each with `until`; every row carries its
   `seen`. `sd_db.writes.snoozed` is read once per document. A read that fails
