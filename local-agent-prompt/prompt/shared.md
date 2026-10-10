@@ -108,7 +108,7 @@ Put large uncommitted data (run outputs, logs, captures) under the bulk storage 
 
 The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then `sd-ship lane watch`; build no hand-run chains.
 Request Copilot only on a PR the operator names, once, on the final head (`sd-ship prepare --copilot-review request`); never re-request after a push.
-Builders run gates in the foreground or as a background command that wakes the agent on exit (Bash `run_in_background` in Claude Code), never with Monitor or `sleep`: Monitor stops at 30 minutes and leaves the builder idle unreported.
+Builders run only foreground test runs of 10 minutes or less, never `run_in_background`, Monitor or `sleep`: a background exit did not wake idle teammates (4 h stalls); the lane runs the full `make check`.
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.
 Stop a ship chain by its process group (`kill -- -<pgid>`): a killed shell alone leaves its children holding a gate slot.
 Before a builder merges main into its branch, stop every queued ship for that item: the ship merges in the same worktree and its abort can discard the builder's merge.
