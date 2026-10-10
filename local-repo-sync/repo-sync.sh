@@ -623,12 +623,21 @@ refresh() {
       return 0
     fi
   fi
+  # System moves first, whatever the conf or argument order: the pack's make
+  # setup installs sd_db from the system checkout and refuses one older than
+  # the copy installed (sd:3218).
+  while IFS= read -r r_target; do
+    [ "$(hub_checkout "$r_target" || true)" != system ] || printf '%s\n' "$r_target"
+  done < "$TMPD/targets" > "$TMPD/ordered"
+  while IFS= read -r r_target; do
+    [ "$(hub_checkout "$r_target" || true)" = system ] || printf '%s\n' "$r_target"
+  done < "$TMPD/targets" >> "$TMPD/ordered"
   r_failed=0
   # The list is on fd 3, so a git or make that reads stdin cannot eat it.
   while IFS= read -r r_target <&3; do
     refresh_one "$r_target" || r_failed=$((r_failed + 1))
     echo
-  done 3< "$TMPD/targets"
+  done 3< "$TMPD/ordered"
   if [ "$r_failed" -eq 0 ] && ! push_pins; then
     r_failed=$((r_failed + 1))
   fi
@@ -850,7 +859,10 @@ follow() {
   fi
   # Back to the old pair: the next run sees both off their pins and retries.
   # The pack's make setup runs again at the old sha, so the commands it
-  # installs match its HEAD again.
+  # installs match its HEAD again. The pack goes back first, the reverse of
+  # the moves: with system still at the pin, that setup finds no installed
+  # sd_db newer than system's, so it refuses nothing (sd:3218).
+  sed -n '1!G;h;$p' "$TMPD/moved" > "$TMPD/back"
   while IFS=$US read -r f_old f_dir <&3; do
     if [ "$(git -C "$f_dir" rev-parse HEAD)" = "$f_old" ]; then continue; fi
     f_setup=
@@ -868,7 +880,7 @@ follow() {
         f_back=0
       fi
     fi
-  done 3< "$TMPD/moved"
+  done 3< "$TMPD/back"
   # The marker stays either way: the rollback's make setup at the old sha
   # proves no update, and only that proof deletes it.
   if [ "$f_back" = 1 ]; then

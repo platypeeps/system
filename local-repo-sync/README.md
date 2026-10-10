@@ -63,7 +63,10 @@ and prints the old and new sha. It refuses a checkout with uncommitted
 changes or a submodule, never overwrites an ignored file that origin now
 tracks (the switch fails and nothing moves), and leaves a checkout on a
 branch alone. In the command pack (it has
-`bin/sd_install.py`) it then runs `make setup`. When local-sd-db's
+`bin/sd_install.py`) it then runs `make setup`. It moves the system
+checkout first, whatever the conf or argument order: the pack's setup
+installs `sd_db` from it and refuses a system older than the copy installed
+(sd:3218). When local-sd-db's
 `SCHEMA_VERSION` changed, it prints the steps: stop the dashboard, the runner
 and `sd-serve`, run `sd-db.sh backup`, then `sd-db.sh migrate`. It runs
 neither. It exits 1 when any checkout failed.
@@ -141,9 +144,10 @@ command to run by hand; the move and the marker stay. A no-op or a
 rolled-back follow runs no update. It never moves to origin's default branch. It checks every checkout
 first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
 a drain timeout refuses with nothing moved. It moves system, then pack; when
-a move fails, it switches each checkout it moved back to its old sha, so the
-pair is never left split and the next run retries both. It then runs `make
-setup` in the pack again at the old sha, so the installed commands and the
+a move fails, it switches each checkout it moved back to its old sha, pack
+first, so the pair is never left split and the next run retries both. Once
+the pack is back, and while system is still at the pin, it runs `make
+setup` in the pack again at the old sha (sd:3218), so the installed commands and the
 venv's pinned requirements match the pack's HEAD again; a package only the
 hub's pin added stays in the venv, unused. If that fails too, it prints the
 one command to run by hand.
