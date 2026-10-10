@@ -204,6 +204,16 @@ class TheDocuments(ScreenCase):
         self.assertTrue(rows[report]["urgent_otherwise"])
         self.assertFalse(rows[self.ids["plan"]]["urgent_otherwise"], "a due date is the page's own rule, not sent")
 
+    def test_the_items_the_prune_parked_follow_the_listed_rows_with_their_stamp(self):
+        # sd:3012: nothing listed a parked item, so the item page's Unpark was reachable only by its number.
+        parked = self.item("Parked by the prune", kind="task", priority=4)
+        set_item_fields(self.connection, parked, parked_at="2026-09-01T02:00:00Z")
+        self.connection.commit()
+        rows = tasks_screen.document(self.connection, now=NOW)["rows"]
+        self.assertEqual([(row["id"], row["parked"]) for row in rows][-1], (parked, "2026-09-01T02:00:00Z"))
+        self.assertEqual({row["id"] for row in rows if row["parked"] is None}, {self.ids["plan"], self.ids["ask"], self.ids["port"]})
+        self.assertEqual(rows[-1]["revision"], workflow.item_state(self.connection, parked)["revision"])
+
     def test_a_missing_item_raises_for_the_route_to_answer_404(self):
         with self.assertRaises(workflow.MissingItem):
             tasks_screen.details(self.connection, 9999, now=NOW)
@@ -548,6 +558,7 @@ class TheScript(ScreenCase):
             ["item.p3", "item", "undo", None, None, True, True],
             ["item.p4", "item", "undo", None, None, True, True],
             ["item.close", "item", "confirm", None, True, True, False],
+            ["item.unpark", "item", "safe", None, True, True, False],
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
@@ -848,6 +859,53 @@ C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush();""",
         self.assertEqual(out["bulkCli"], f"sd task edit {plan} --priority 1 && sd task edit {ask} --priority 1")
         self.assertEqual(out["toasts"], [[f"Edit → P3 · 1 item · 1 of 2 not changed: #{ask} Answer the question (it is already P3)", True],
                                          ["Edit → P1 · 2 items", True]])
+
+    def park(self):
+        """A P4 task the nightly prune parked, in the store and in the documents read again."""
+        parked = self.item("Parked by the prune", kind="task", priority=4)
+        set_item_fields(self.connection, parked, parked_at="2026-09-01T02:00:00Z")
+        self.connection.commit()
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        return parked
+
+    # sd:3012: triage's Parked view. A parked row stays off every other view, the badge and the count; the Parked chip
+    # shows only the parked rows, and Unpark runs on each picked one through the item edit route.
+    def test_a_parked_row_shows_only_under_the_parked_chip(self):
+        self.park()
+        out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;
+ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'parked', v: '1' } } : null } });
+R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
+        self.assertIn("3 tasks · 1 parked", out["R"]["sub"])
+        self.assertNotIn("Parked by the prune", out["R"]["board"])
+        self.assertIn("Plan the review", out["R"]["board"])
+        self.assertIn('data-f="parked" data-v="1"', out["R"]["filters"])
+        self.assertIn("Parked by the prune", out["R"]["parked"])
+        self.assertNotIn("Plan the review", out["R"]["parked"])
+        self.assertIn("parked=1", out["R"]["url"])
+        self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "overdue tasks"})
+
+    def test_the_parked_chip_is_read_from_the_address(self):
+        self.park()
+        out = self.run_page("R.board = ELS['view-board'].html;", search="?parked=1")
+        self.assertIn("Parked by the prune", out["R"]["board"])
+        self.assertNotIn("Plan the review", out["R"]["board"])
+
+    def test_unpark_runs_on_every_picked_parked_row_and_is_off_for_a_listed_one(self):
+        parked = self.park()
+        other = self.item("Parked the same night", kind="followup", priority=4)
+        set_item_fields(self.connection, other, parked_at="2026-09-01T02:00:00Z")
+        self.connection.commit()
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        revisions = {row["id"]: row["revision"] for row in self.doc["rows"]}
+        answer = """(path, body) => { const id = +path.split('/').pop(); return [200, { item: { id, status: 'planning', priority: 4, due: null, recurrence: null, parked_at: null }, notes: [], revision: String(id).repeat(64).slice(0, 64) }]; }"""
+        out = self.run_page(f"""R.off = cmd('item.unpark').when(C.get('{self.ids["plan"]}'));
+C.runBulk(cmd('item.unpark'), [C.get('{parked}'), C.get('{other}')]); await flush();""", answer)
+        self.assertEqual(out["R"]["off"], "it is not parked")
+        self.assertEqual(out["confirms"], [])
+        self.assertEqual(out["posts"], [[f"/api/items/{parked}", {"parked_at": None, "revision": revisions[parked]}, 64],
+                                        [f"/api/items/{other}", {"parked_at": None, "revision": revisions[other]}, 64]])
+        self.assertEqual(out["bulkCli"], f"sd task edit {parked} --unpark && sd task edit {other} --unpark")
+        self.assertEqual(out["toasts"], [["Unpark · 2 items", False]])
 
     def test_commands_are_off_where_the_library_would_refuse_them(self):
         plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
