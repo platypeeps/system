@@ -7,10 +7,12 @@ build (`remote.BuildMismatch`). Until this module, the operator then ran
 
 `install_hub_build` installs the hub's build into the virtual environment
 that holds this package, and only when it can prove the bytes are the
-hub's. It fetches `origin` in the source checkout, exports
-`origin/main:local-sd-db` with `git archive` into a temporary folder (the
-checkout's worktree is never touched), and hashes that `sd_db` with the
-digest the handshake uses (`remote.tree_digest`). Only an equal digest is
+hub's. It exports `HEAD:local-sd-db` of the source checkout with `git
+archive` into a temporary folder (the checkout's worktree is never touched),
+and hashes that `sd_db` with the digest the handshake uses
+(`remote.tree_digest`). On a satellite, HEAD is the hub's pin `repo-sync.sh
+follow` moved it to (sd:3168). When HEAD is not the hub's build, it fetches
+`origin` and tries `origin/main` the same way. Only an equal digest is
 built and installed. A fresh `python -I` in the venv must then name the
 hub's digest, or the install is reported as unverified.
 
@@ -63,6 +65,9 @@ LOCK = "sd-db-self-install.lock"
 PACK_STATE_DIR = "sd-ai-command-pack"
 PACK_LOCK = "sd-db-provision.lock"
 BRANCH = "origin/main"
+#: Where the hub's build is looked for, in order: the source checkout's HEAD,
+#: then `BRANCH`, fetched first.
+COMMITS = ("HEAD", BRANCH)
 LIBRARY = "local-sd-db"
 
 #: Seconds for each git step, for each build, probe and pip step, and for
@@ -237,26 +242,36 @@ def _build_wheel(python: Path, library: Path, dist: Path) -> Path:
     return dist / done.stdout.strip()
 
 
+def _find(checkout: Path, hub_build: str, folder: Path) -> tuple[str, str, Path]:
+    """The first of `COMMITS` whose `sd_db` is `hub_build`: its name, commit and export."""
+    tried = []
+    for name in COMMITS:
+        if name == BRANCH:
+            _git(checkout, "fetch", "--quiet", "origin")
+        commit = _git(checkout, "rev-parse", "--verify", "--quiet", f"{name}^{{commit}}").stdout.strip()
+        library = _export(checkout, commit, folder / f"export-{len(tried)}")
+        found = remote.tree_digest(library / "sd_db")
+        if found == hub_build:
+            return name, commit, library
+        tried.append(f"{name} ({commit[:12]}) builds {found}")
+    raise _Refused(f"{' and '.join(tried)} in {checkout}, and the hub runs {hub_build}: neither is the "
+                   f"hub's build; nothing installed")
+
+
 def _install_locked(hub_build: str, venv: Path, checkout: Path) -> Outcome:
     python = venv / "bin" / "python"
     # Another process may have installed it while this one waited.
     if installed_digest(python) == hub_build:
         return Outcome(True, f"the hub's sd_db build {hub_build} is already installed in {venv}")
-    _git(checkout, "fetch", "--quiet", "origin")
-    commit = _git(checkout, "rev-parse", "--verify", "--quiet", f"{BRANCH}^{{commit}}").stdout.strip()
     with tempfile.TemporaryDirectory(prefix="sd-db-self-install.") as folder:
-        library = _export(checkout, commit, Path(folder) / "export")
-        found = remote.tree_digest(library / "sd_db")
-        if found != hub_build:
-            raise _Refused(f"{BRANCH} ({commit[:12]}) of {checkout} builds {found} and the hub runs "
-                           f"{hub_build}: the hub runs a build that is not {BRANCH}'s tip; nothing installed")
+        name, commit, library = _find(checkout, hub_build, Path(folder))
         wheel = _build_wheel(python, library, Path(folder) / "dist")
         pip_install(python, wheel)
     after = installed_digest(python)
     if after != hub_build:
-        raise _Refused(f"installed {BRANCH} ({commit[:12]}) into {venv}, and a fresh interpreter there "
+        raise _Refused(f"installed {name} ({commit[:12]}) into {venv}, and a fresh interpreter there "
                        f"reads build {after}, not the hub's {hub_build}: the install did not verify")
-    text = (f"installed the hub's sd_db build {hub_build} ({BRANCH} {commit[:12]} of {checkout}) "
+    text = (f"installed the hub's sd_db build {hub_build} ({name} {commit[:12]} of {checkout}) "
             f"into {venv}")
     try:
         (venv / MARKER).write_text(f"{checkout.resolve()}\n", encoding="utf-8")
@@ -267,7 +282,7 @@ def _install_locked(hub_build: str, venv: Path, checkout: Path) -> Outcome:
 
 def install_hub_build(hub_build: str, *, venv: Path | None = None, source: Path | None = None,
                       environ=None) -> Outcome:
-    """Install the hub's build `hub_build` from `origin/main`, only if it is that build.
+    """Install the hub's build `hub_build` from HEAD or `origin/main`, only if it is that build.
 
     `venv` defaults to the one holding this package; `source` to the
     checkout `source_checkout` finds. Never raises for a refused step: the

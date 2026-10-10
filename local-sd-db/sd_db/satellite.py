@@ -16,8 +16,8 @@ carry the drift words the stage's counter greps for:
   a missing file is one line of drift, not three.
 * `DIFFERS` for a build the hub refuses, with both sides' values. With
   `--apply` it installs the hub's build into the pack's venv, but only from
-  `origin/main` of the system checkout and only when that tip's digest is
-  the hub's (`sd_db.self_install`, sd:2802); a dry run prints the plan.
+  HEAD or `origin/main` of the system checkout and only when that commit's
+  digest is the hub's (`sd_db.self_install`, sd:2802); a dry run prints the plan.
   The checkout is `SD_DB_SOURCE_CHECKOUT`, which `machine-setup.sh` sets to
   its own, or the one the venv recorded. A satellite newer than the hub, or
   a hub too old to send its digest, is not installed over.
@@ -154,7 +154,7 @@ def _remedy(mismatch: remote.BuildMismatch) -> str:
     if mismatch.upgrade == "hub":
         return "upgrade the hub's sd_db, restart its `sd-db.sh serve`, then rerun"
     if mismatch.upgrade == "satellite":
-        return "install the hub's sd_db build here (`--apply` does when origin/main is it), then rerun"
+        return "install the hub's sd_db build here (`--apply` does when HEAD or origin/main is it), then rerun"
     return "install the same sd_db build on both machines, then rerun"
 
 
@@ -173,7 +173,7 @@ def _install(out, mismatch: remote.BuildMismatch, *, apply: bool, source: Path |
         _line(out, "SKIP", f"self-install is off ({self_install.OFF}={os.environ.get(self_install.OFF)})")
         return
     shown = source or os.environ.get(self_install.SOURCE) or "the source checkout the venv recorded"
-    _plan(out, apply, f"install the hub's sd_db build {digest} from {self_install.BRANCH} of {shown}, "
+    _plan(out, apply, f"install the hub's sd_db build {digest} from {' or '.join(self_install.COMMITS)} of {shown}, "
                       f"if its digest is the hub's")
     if not apply:
         return

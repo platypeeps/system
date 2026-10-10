@@ -410,7 +410,7 @@ class TheSatellite(Case):
                 self.assertFalse(log.exists())
 
     def test_the_stage_names_its_own_checkout_as_the_source_to_install_from(self):
-        # sd:2802: `--apply` installs the hub's build from origin/main of a
+        # sd:2802: `--apply` installs the hub's build from HEAD or origin/main of a
         # system checkout; the stage names its own, and an exported value wins.
         (self.profiles / "work.satellite").write_text("hub.example.test\n")
         write_stub(self.root, "stub-python", 'echo "  ok      source=$SD_DB_SOURCE_CHECKOUT args=$*"\n')
