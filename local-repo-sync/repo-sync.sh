@@ -662,14 +662,22 @@ drain_exec() {
 }
 
 # The intent marker (sd:3100, operator ruling): written before any move and
-# deleted once make setup and the machine-setup update succeed at the pin, or
-# a rollback puts all back. A killed follow leaves it, so the next run
+# deleted only once make setup and the machine-setup update are proven at the
+# pin (sd:3168). A killed or rolled-back follow leaves it, so the next run
 # finishes, sets up and updates again.
 FOLLOW_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/follow-intent"
 
 # The words machine-setup's `status` counts as drift (its status_stage grep);
 # test_follow holds the two equal.
 FOLLOW_DRIFT='DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults write|^  extra '
+
+# No drift is no proof: a SKIP, a hub that did not answer or a check that
+# stopped part way prints no drift word. So each stage's dry run must also
+# print the line it prints only once it checked the end state: bin-links
+# status's last line, and the satellite's line for a build the hub accepted.
+# test_follow holds both to what the stages print.
+FOLLOW_PROOF_bin='^  PATH +on PATH$'
+FOLLOW_PROOF_satellite='^  ok +sd_db .* matches the hub'
 
 # Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
 # already there and is clean, or a pack at $2 for `make setup` while the
@@ -742,8 +750,10 @@ follow() {
     return 1
   fi
   if [ ! -s "$TMPD/moves" ]; then
-    rm -f "$FOLLOW_INTENT"
-    return 0
+    # Nothing to move or set up (no pack in the conf). A marker left is still
+    # an update not proven, so it runs the stages again.
+    [ -e "$FOLLOW_INTENT" ] || return 0
+    echo "follow: at the hub's pin, but a follow's update was not proven ($FOLLOW_INTENT); updating again"
   fi
   if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
     rm -rf "$TMPD"
@@ -783,21 +793,26 @@ follow() {
   # The exit alone does not say the stage worked: bin pipes bin-links through
   # sed, and the satellite stage reports a failed install as a line. So each
   # --apply is followed by the stage's dry run, and a drift word there fails
-  # the stage as a failed exit does; a check that cannot answer fails it too.
+  # the stage as a failed exit does; a check that cannot answer fails it too,
+  # and so does one without the stage's proof line (FOLLOW_PROOF_*).
   if [ "$f_failed" -eq 0 ]; then
     f_ms="$f_sys/local-machine-setup/machine-setup.sh"
     for f_stage in bin satellite; do
       echo "--- machine-setup update $f_stage --apply, then its dry run"
       f_why=
+      if [ "$f_stage" = bin ]; then f_proof=$FOLLOW_PROOF_bin; else f_proof=$FOLLOW_PROOF_satellite; fi
       if st_bounded 450 sh -c 'sh "$1" update "$2" --apply && sh "$1" update "$2" > "$3"' \
           sh "$f_ms" "$f_stage" "$TMPD/check" < /dev/null; then
-        # grep: 1 is no drift; 2, an unreadable check, is a failure.
+        # grep: 0 is a match, 1 none, 2 an unreadable check (a failure).
         f_rc=0
         grep -E "$FOLLOW_DRIFT" "$TMPD/check" > "$TMPD/drift" || f_rc=$?
-        [ "$f_rc" -ne 1 ] || continue
         if [ "$f_rc" -eq 0 ]; then
           cat "$TMPD/drift"
           f_why=" left drift, named above"
+        elif [ "$f_rc" -eq 1 ]; then
+          grep -Eq "$f_proof" "$TMPD/check" && continue
+          sed 's/^/    /' "$TMPD/check"
+          f_why=" did not prove its end state, printed above"
         fi
       fi
       echo "!!! failed: machine-setup update $f_stage$f_why; the checkouts stay at the hub's pin; by hand: sh '$f_ms' update $f_stage --apply"
@@ -829,8 +844,9 @@ follow() {
       fi
     fi
   done 3< "$TMPD/moved"
+  # The marker stays either way: the rollback's make setup at the old sha
+  # proves no update, and only that proof deletes it.
   if [ "$f_back" = 1 ]; then
-    rm -f "$FOLLOW_INTENT"
     echo "follow  : failed; each checkout it moved is back at its old sha, so a migrate note above does not apply; the next run retries"
   else
     echo "follow  : failed; $FOLLOW_INTENT stays, so the next run finishes the move and sets up again"
@@ -1810,15 +1826,17 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              the pack. Then, lanes still held, it runs this system
              checkout's `machine-setup.sh update bin --apply` and
              `update satellite --apply`, each followed by its dry run and
-             bounded at 450 s; a failure, or a drift word in the dry run,
+             bounded at 450 s; a failure, a drift word in the dry run, or a
+             dry run without the stage's proof line (a SKIP proves nothing)
              exits 1, keeps the move and names the command. Every check
              runs first: a failed fetch, a tag with no
              pack= line, uncommitted changes or a drain timeout refuses with
              nothing moved. When a move fails, each checkout it moved goes
              back to its old sha and the pack runs `make setup` again there,
-             so the next run retries the pair. A run killed after it wrote
-             $XDG_STATE_HOME/repo-sync/follow-intent leaves it, and the next
-             run finishes, sets the pack up and updates again, even at the pin.
+             so the next run retries the pair. A run killed or rolled back
+             after it wrote $XDG_STATE_HOME/repo-sync/follow-intent leaves
+             it, and the next run finishes, sets the pack up and updates
+             again, even at the pin; only a proven update deletes it.
              Already there, or no hub-pin tag, is a no-op. On the hub it says so and
              does nothing. On a satellite, sync and nightly never pull system or
              pack; only follow moves them.

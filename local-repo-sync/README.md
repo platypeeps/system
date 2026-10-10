@@ -132,8 +132,12 @@ stage: the cron and agents stages can reinstall the follow job's own
 LaunchAgent, and launchd would boot out the running follow. Neither stage's
 exit says its install worked, so after each `--apply` follow runs the stage's
 dry run, within the same bound, and counts the drift words `status` counts.
-A failed stage, drift in its dry run, or a dry run that cannot answer exits 1
-and names the command to run by hand; the move and the marker stay. A no-op or a
+No drift is no proof, since a `SKIP` is not drift: the dry run must also print
+the stage's proof line, `bin-links.sh status`'s last line (`PATH on PATH`) or
+the satellite's `ok sd_db ... matches the hub's`, which only a hub that
+accepted this build prints. A failed stage, drift in its dry run, a dry run
+that cannot answer, or one without its proof line exits 1 and names the
+command to run by hand; the move and the marker stay. A no-op or a
 rolled-back follow runs no update. It never moves to origin's default branch. It checks every checkout
 first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
 a drain timeout refuses with nothing moved. It moves system, then pack; when
@@ -148,10 +152,11 @@ A follow killed during the pack's `make setup` leaves HEAD at the pin, so
 HEAD alone does not show it. By operator ruling on sd:3100, `follow` keeps an
 intent marker, `${XDG_STATE_HOME:-~/.local/state}/repo-sync/follow-intent`.
 It writes the target system and pack shas there, atomically, before it moves
-any checkout. It deletes the marker once `make setup` and the update succeed
-at the pin, or once a rollback puts every checkout back. While the marker is
-left, the next run drains, finishes the move and runs `make setup` and the
-update again, even with HEAD at the pin. With no `hub-pin` tag yet, or with every checkout already there, it
+any checkout. It deletes the marker only once `make setup` and the update
+are proven at the pin (sd:3168). A rollback leaves it: its `make setup` at the
+old sha proves no update. While the marker is left, the next run drains,
+finishes the move and runs `make setup` and the update again, even with HEAD
+at the pin or with no pack checkout in the conf. With no `hub-pin` tag yet, or with every checkout already there, it
 does nothing and drains nothing. On the hub it says so and does nothing. If
 the move changed `SCHEMA_VERSION`,
 `follow` prints the hub's migrate note; the hub's own refresh printed it
