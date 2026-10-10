@@ -6,7 +6,7 @@ suite never reads the operator's copy: every case points SYSTEM_TOOLS_CONFIG at
 this folder's fixtures, or at a temporary copy when the case writes.
 
 Nor does it read the operator's Mac: env() points the apps scan at no folder,
-and seal() fails a case that reaches a real `defaults` or `sudo`.
+and seal() fails a case that reaches a real `defaults`, `sudo` or `launchctl`.
 """
 
 import pathlib
@@ -24,8 +24,9 @@ LABEL_PREFIX = "local.system-tools"
 # Names no folder, so the apps scan finds no application on any machine.
 NO_APPLICATIONS = HERE / "fixtures" / "no-applications"
 # Commands that read this machine whatever $HOME says: `defaults` asks
-# cfprefsd, which answers for the login user, and `sudo` reads as root.
-MACHINE_READERS = ("defaults", "sudo")
+# cfprefsd, which answers for the login user, `sudo` reads as root, and
+# `launchctl` answers for the login user's launchd.
+MACHINE_READERS = ("defaults", "sudo", "launchctl")
 
 
 def copy_config(base):

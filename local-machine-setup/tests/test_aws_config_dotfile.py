@@ -192,6 +192,8 @@ class AwsConfigCaptureTest(unittest.TestCase):
         write_stub(self.stubs, "defaults", "exit 1\n")
         # No sudo ticket: the spotlight step reports it cannot read.
         write_stub(self.stubs, "sudo", "exit 1\n")
+        # capture asks launchctl which agents are disabled (sd:3183): none.
+        write_stub(self.stubs, "launchctl", "exit 0\n")
         fixture_config.seal(self, self.stubs)
 
     def capture(self):

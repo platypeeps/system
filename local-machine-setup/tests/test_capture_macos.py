@@ -73,6 +73,8 @@ class CaptureMacosTest(unittest.TestCase):
         write_stub(self.stubs, "defaults", DEFAULTS_STUB)
         # No sudo ticket: the spotlight step reports it cannot read.
         write_stub(self.stubs, "sudo", "#!/bin/sh\nexit 1\n")
+        # capture asks launchctl which agents are disabled (sd:3183): none.
+        write_stub(self.stubs, "launchctl", "#!/bin/sh\nexit 0\n")
         fixture_config.seal(self, self.stubs)
 
     def capture(self, *flags):

@@ -2512,8 +2512,19 @@ capture_agents() {
   tmp="$1"
   echo "  agents:"
   : > "$tmp/have.agent"
+  # `launchctl disable` turns an agent off and leaves its plist installed; the
+  # roster must not turn it back on (sd:3183). A failed read says nothing about
+  # any label, so those agents are captured as before, with a line saying so.
+  if ! disabled=$(launchctl print-disabled "gui/$(id -u)" 2>/dev/null); then
+    disabled=
+    echo "    UNKNOWN launchctl could not list the disabled agents; disabled ones are captured as installed"
+  fi
   for pl in $(owned_agent_plists); do
     label=$(basename "$pl" .plist)
+    if printf '%s\n' "$disabled" | grep -qF -e "\"$label\" => disabled" -e "\"$label\" => true"; then
+      echo "    SKIPPED $label — launchctl reports it disabled; not captured"
+      continue
+    fi
     hits=$(grep -cIE '(API_KEY|_TOKEN|SECRET|PASSWORD|AKIA|ghp_|github_pat_|sk-[A-Za-z0-9]{16,})' "$pl" 2>/dev/null || true)
     ent=$(grep -cIE '>([0-9a-fA-F]{32,}|[A-Za-z0-9+/]{40,}={0,2})<' "$pl" 2>/dev/null || true)
     hits=$(( ${hits:-0} + ${ent:-0} ))

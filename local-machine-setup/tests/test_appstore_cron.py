@@ -15,6 +15,7 @@ copy of lib/ and a stub cron-jobs.sh that only logs, so no case touches
 launchd or the checkout. `mas` and `launchctl` are stubs on PATH.
 """
 
+import os
 import pathlib
 import plistlib
 import shutil
@@ -596,6 +597,38 @@ class CaptureTest(StageTest):
         self.assertIn("REFUSED personal.cron", result.stdout)
         self.assertEqual((self.profiles / "personal.agent").read_text(), "org.example.helper\n")
         self.assertEqual((self.profiles / "personal.cron").read_text(), "own-job\n")
+
+    def test_capture_skips_an_agent_launchctl_reports_disabled(self):
+        # sd:3183. `launchctl disable` turns an agent off and leaves its plist
+        # in place; capture read the plist and wrote the label back into the
+        # roster, so the next update would turn the agent on again.
+        for label in ("org.example.helper", "org.example.paused"):
+            (self.agents / f"{label}.plist").write_bytes(plistlib.dumps({
+                "Label": label, "ProgramArguments": ["/opt/example/helper"]}))
+        write_exec(self.stubs / "launchctl", f"""#!/bin/sh
+if [ "$1 $2" = "print-disabled gui/{os.getuid()}" ]; then
+  printf 'disabled services = {{\\n\\t"org.example.helper" => enabled\\n'
+  printf '\\t"org.example.paused" => disabled\\n}}\\n'
+fi
+exit 0
+""")
+        result = self.capture(MACHINE_SETUP_AGENT_GLOBS="org.example.*")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SKIPPED org.example.paused", result.stdout)
+        agents = (self.profiles / "personal.agent").read_text()
+        self.assertIn("org.example.helper", agents)
+        self.assertNotIn("org.example.paused", agents)
+
+    def test_capture_keeps_an_agent_when_launchctl_cannot_say_if_it_is_disabled(self):
+        # sd:3183. A failed probe is unknown, not "enabled" and not "disabled":
+        # capture says so and records the agent as it did before.
+        (self.agents / "org.example.helper.plist").write_bytes(plistlib.dumps({
+            "Label": "org.example.helper", "ProgramArguments": ["/opt/example/helper"]}))
+        write_exec(self.stubs / "launchctl", "#!/bin/sh\nexit 1\n")
+        result = self.capture(MACHINE_SETUP_AGENT_GLOBS="org.example.*")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("UNKNOWN", result.stdout)
+        self.assertIn("org.example.helper", (self.profiles / "personal.agent").read_text())
 
     def test_capture_leaves_a_cron_jobs_plist_out_of_the_agent_roster(self):
         # A label glob wider than the prefix can reach a plist local-cron-jobs
