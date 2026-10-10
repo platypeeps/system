@@ -590,7 +590,7 @@ class TheMigrationVerbs(MigrationVerbCase):
         self.assertIn("not a registered repository", completed.stdout + completed.stderr)
         completed = self.sd_db("repo", "ci", str(self.checkout), expect=1)
         self.assertIn("needs a path and github or local", completed.stderr)
-        self.assertEqual(self._list_row()[-4], "github")
+        self.assertEqual(self._list_row()[-3], "github")
 
     def test_repo_managed_refuses_a_bad_value_an_unknown_path_and_a_missing_argument(self):
         self.sd_db("repo", "add", str(self.checkout))
@@ -600,7 +600,7 @@ class TheMigrationVerbs(MigrationVerbCase):
         self.assertIn("not a registered repository", completed.stdout + completed.stderr)
         completed = self.sd_db("repo", "managed", str(self.checkout), expect=1)
         self.assertIn("needs a path and yes or no", completed.stderr)
-        self.assertEqual(self._list_row()[-5], "no")
+        self.assertEqual(self._list_row()[-4], "no")
 
     def test_repo_list_managed_prints_only_the_managed_rows(self):
         other = self.home / "other"

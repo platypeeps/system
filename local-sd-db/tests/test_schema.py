@@ -58,6 +58,9 @@ class TheTables(SchemaCase):
              "INSERT (OR IGNORE )?INTO [a-z_]+", "--", "local-sd-db/sd_db"],
             cwd=PACKAGE_ROOT.parent, capture_output=True, text=True,
         ).stdout
+        # An SQL comment is a hand-run reverse, not a library write: 025's
+        # rebuilds `repo` through a scratch table (sd:3217).
+        source = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("--"))
         # `main.`: the hub names its outcome table's schema (`sd_db.serve`).
         written = set(re.findall(r"INSERT (?:OR IGNORE )?INTO (?:main\.)?([a-z_]+)", source))
         self.assertTrue(written, "the grep found no inserts at all")
@@ -1322,6 +1325,16 @@ class TheSatelliteGateDrop(SchemaCase):
                          ["off", "off"])
         with self.assertRaises(sqlite3.IntegrityError):
             raw.execute("UPDATE repo SET satellite_gate = 'on' WHERE path = '/one'")
+        # The column sits where 020 put it: a backup restore compares 24's shape.
+        reference = sqlite3.connect(":memory:")
+        self.addCleanup(reference.close)
+        paths.install(reference)
+        for version, path in schema_module.migrations():
+            if version <= 24:
+                reference.executescript(path.read_text(encoding="utf-8"))
+        self.assertEqual(raw.execute("PRAGMA table_info(repo)").fetchall(),
+                         reference.execute("PRAGMA table_info(repo)").fetchall())
+        self.assertEqual(raw.execute("PRAGMA foreign_key_check").fetchall(), [])
 
 
 class TheConnection(SchemaCase):

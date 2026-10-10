@@ -11,12 +11,31 @@
 -- or trigger, which would make SQLite refuse the drop. A pack older than
 -- sd:3214 reads a missing column as `off`, which grants nothing.
 -- The reverse, run by hand with the runner, the dashboard and the serve agent
--- stopped. It cannot restore an `accept`: every row reads `off`.
+-- stopped. It cannot restore an `accept`: every row reads `off`. It rebuilds
+-- `repo` rather than adding the column at the end, so the column sits where
+-- 020 put it and a backup restore compares the table to 24's shape. Foreign
+-- keys are off for the rebuild, as `DROP TABLE repo` would check them.
 --
+--   PRAGMA foreign_keys = OFF;
 --   BEGIN;
---   ALTER TABLE repo ADD COLUMN satellite_gate TEXT NOT NULL DEFAULT 'off'
---       CHECK (satellite_gate IN ('off', 'accept'));
+--   CREATE TABLE repo_at_24 (
+--       path TEXT PRIMARY KEY, remote TEXT, mode TEXT,
+--       runner_merge TEXT NOT NULL DEFAULT 'manual' CHECK (runner_merge IN ('manual', 'auto')),
+--       status_source TEXT NOT NULL DEFAULT 'file' CHECK (status_source IN ('file', 'retiring', 'row')),
+--       pieces_source TEXT NOT NULL DEFAULT 'file' CHECK (pieces_source IN ('file', 'retiring', 'row')),
+--       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+--       managed INTEGER NOT NULL DEFAULT 0 CHECK (managed IN (0, 1)),
+--       ci TEXT NOT NULL DEFAULT 'github' CHECK (ci IN ('github', 'local')),
+--       satellite_gate TEXT NOT NULL DEFAULT 'off' CHECK (satellite_gate IN ('off', 'accept')),
+--       lane_host TEXT CHECK (lane_host IS NULL OR (lane_host <> '' AND lane_host NOT GLOB '*[^a-z0-9-]*')));
+--   INSERT INTO repo_at_24 (path, remote, mode, runner_merge, status_source, pieces_source,
+--                           created_at, updated_at, managed, ci, lane_host)
+--       SELECT path, remote, mode, runner_merge, status_source, pieces_source,
+--              created_at, updated_at, managed, ci, lane_host FROM repo;
+--   DROP TABLE repo;
+--   ALTER TABLE repo_at_24 RENAME TO repo;
 --   PRAGMA user_version = 24;
 --   COMMIT;
+--   PRAGMA foreign_keys = ON;
 
 ALTER TABLE repo DROP COLUMN satellite_gate;
