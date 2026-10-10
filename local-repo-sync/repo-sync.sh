@@ -703,7 +703,7 @@ FOLLOW_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/follow-intent"
 
 # The words machine-setup's `status` counts as drift (its status_stage grep);
 # test_follow holds the two equal.
-FOLLOW_DRIFT='DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults write|^  extra '
+FOLLOW_DRIFT='DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults (-currentHost )?write|^  extra '
 
 # No drift is no proof: a SKIP, a hub that did not answer or a check that
 # stopped part way prints no drift word. So each stage's dry run must also

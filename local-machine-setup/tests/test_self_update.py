@@ -26,16 +26,19 @@ FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
 # `defaults read DOMAIN KEY` answers from $DEFAULTS_DB, one "DOMAIN KEY VALUE"
-# line per key; `defaults write DOMAIN KEY -TYPE VALUE` appends one.
+# line per key; `defaults write DOMAIN KEY -TYPE VALUE` appends one. With
+# `-currentHost` first, the domain is stored as "host:DOMAIN".
 DEFAULTS_STUB = r"""#!/bin/sh
+host=
+if [ "$1" = "-currentHost" ]; then host="host:"; shift; fi
 case "$1" in
   read)
-    v=$(grep "^$2 $3 " "$DEFAULTS_DB" 2>/dev/null | tail -1 | cut -d' ' -f3-)
+    v=$(grep "^$host$2 $3 " "$DEFAULTS_DB" 2>/dev/null | tail -1 | cut -d' ' -f3-)
     [ -n "$v" ] || { echo "The domain/default pair of ($2, $3) does not exist" >&2; exit 1; }
     echo "$v" ;;
   write)
     case "$5" in true) v=1 ;; false) v=0 ;; *) v=$5 ;; esac
-    echo "$2 $3 $v" >> "$DEFAULTS_DB" ;;
+    echo "$host$2 $3 $v" >> "$DEFAULTS_DB" ;;
   *) exit 1 ;;
 esac
 """
@@ -140,8 +143,9 @@ class SelfUpdateOffTest(unittest.TestCase):
 
         drift_before = int(clean.stdout.split("drift   : ")[1].split()[0])
         drift_after = int(converged.stdout.split("drift   : ")[1].split()[0])
-        # Two iTerm2 keys, Claude desktop, Zed, VS Code and Docker.
-        self.assertEqual(drift_before - drift_after, 6, clean.stdout)
+        # Two iTerm2 keys, Claude desktop, Zed, VS Code, Docker and the
+        # screen saver.
+        self.assertEqual(drift_before - drift_after, 7, clean.stdout)
         self.assertIn("[dry-run] defaults write com.googlecode.iterm2 SUEnableAutomaticChecks -bool false",
                       clean.stdout)
         self.assertIn("MISSING", clean.stdout)
@@ -178,6 +182,58 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.assertIn("com.apple.dock autohide 1", writes)
         self.assertFalse([w for w in writes if "Maccy" in w], writes)
 
+    def test_an_unset_screen_saver_idle_time_is_written_with_no_manifest_line(self):
+        # sd:3261: every profile turns the screen saver off. This profile has
+        # no .macos manifest, so the write must come before that early return.
+        result = self.run_verb("update", "macos", "--apply")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no macOS settings in this profile", result.stdout)
+        self.assertIn("host:com.apple.screensaver idleTime 0",
+                      self.defaults_db.read_text().splitlines())
+
+    def test_a_nonzero_screen_saver_idle_time_is_written_to_zero(self):
+        self.defaults_db.write_text("host:com.apple.screensaver idleTime 300\n")
+
+        result = self.run_verb("update", "macos", "--apply")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.defaults_db.read_text().splitlines()[-1],
+                         "host:com.apple.screensaver idleTime 0")
+
+    def test_a_zero_screen_saver_idle_time_is_ok_and_not_written(self):
+        self.defaults_db.write_text("host:com.apple.screensaver idleTime 0\n")
+
+        result = self.run_verb("update", "macos", "--apply")
+
+        self.assertIn("  ok      com.apple.screensaver idleTime = 0 (currentHost)", result.stdout)
+        self.assertEqual(self.defaults_db.read_text().count("com.apple.screensaver"), 1)
+
+    def test_a_dry_run_counts_the_screen_saver_write_as_drift(self):
+        self.defaults_db.write_text("host:com.apple.screensaver idleTime 0\n")
+        converged = self.run_verb("status")
+        self.defaults_db.write_text("")
+
+        unset = self.run_verb("status")
+
+        self.assertIn("[dry-run] defaults -currentHost write com.apple.screensaver idleTime -int 0",
+                      unset.stdout)
+        self.assertNotIn("com.apple.screensaver", converged.stdout.replace(
+            "ok      com.apple.screensaver idleTime = 0 (currentHost)", ""))
+        counts = [int(r.stdout.split("drift   : ")[1].split()[0]) for r in (unset, converged)]
+        self.assertEqual(counts[0] - counts[1], 1, unset.stdout)
+
+    def test_a_refused_screen_saver_write_is_reported_and_the_stage_goes_on(self):
+        write_exec(self.stubs / "defaults", REFUSING_DEFAULTS_STUB)
+        self.refused_domain = "com.apple.screensaver"
+
+        result = self.run_verb("update", "macos", "--apply")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("DIFFERS com.apple.screensaver idleTime not written; set it by hand",
+                      result.stdout)
+        self.assertIn("com.googlecode.iterm2 SUAutomaticallyUpdate 0",
+                      self.defaults_db.read_text().splitlines())
 
     def test_an_app_data_folder_this_process_cannot_read_is_deferred_not_drift(self):
         # sd:3145: under launchd, macOS refuses reads of Maccy's container and
