@@ -29,6 +29,7 @@ from test_v2_today import OSASCRIPT
 
 V2 = Path(v2.__file__).resolve().parent
 TODAY_JS = (V2 / "static" / "today.js").read_text(encoding="utf-8")
+SNOOZE_JS = (V2 / "static" / "snooze.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 RECONCILE = re.search(r"^  function reconcile\(.*?^  }$", SHELL_JS, re.S | re.M).group(0)
@@ -78,7 +79,7 @@ class TheReader(ScreenCase):
     def run_page(self, body, search=""):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
                   + f"\nconst DOC0 = {json.dumps(self.doc)};\nlocation.search = {json.dumps(search)};\n"
-                  + "ANSWER = () => [200, DOC0];\n" + TODAY_JS
+                  + "ANSWER = () => [200, DOC0];\n" + SNOOZE_JS + TODAY_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
@@ -134,6 +135,56 @@ R.sel = selected(); R.details = ELS.details.html;""", search="?row=job%3Anightly
         self.assertNotIn("fetch('/api/now'", TODAY_JS)
 
 
+
+class TheSnooze(TheReader):
+    """sd:1896: Snooze on every Today row, the snoozed rows apart with Unsnooze, and the fixed times."""
+
+    def test_snooze_posts_the_row_and_reads_now_again(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
+R.types = REG.filter(c => c.id.endsWith('.snooze')).map(c => c.on);
+shellRun(cmd('repo.snooze-week'), C.get('ahead:pushy:1')); await flush();
+R.ahead = Date.parse(OUT.posts[0][1].until) - Date.now();""")
+        self.assertEqual(out["R"]["types"], ["job", "pull request", "repo", "sessions", "collector"])
+        # The row's own fingerprint goes with it, so the snooze holds only while the row reads the same.
+        seen = next(row["seen"] for row in self.doc["rows"] if row["id"] == "ahead:pushy:1")
+        self.assertEqual([(path, body["page"], body["row"], body["seen"]) for path, body, _ in out["posts"]],
+                         [("/api/snooze", "today", "ahead:pushy:1", seen)])
+        self.assertTrue(7 * 864e5 - 60e3 <= out["R"]["ahead"] <= 7 * 864e5, out["R"]["ahead"])
+        self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+
+    def test_a_snoozed_row_is_drawn_apart_with_unsnooze(self):
+        row = self.doc["rows"].pop()
+        self.doc["snoozed"] = [{**row, "until": "2026-09-07T08:00:00+00:00"}]
+        out = self.run_page("""R.rows = ELS.rows.html; R.snoozed = ELS.snoozed.html; R.obj = C.get('snoozed:ahead:pushy:1');
+R.primary = REG.filter(c => c.on === 'snoozed row').map(c => c.id);""")
+        self.assertNotIn("pushy", out["R"]["rows"])
+        self.assertIn("Snoozed · 1", out["R"]["snoozed"])
+        self.assertIn(row["what"], out["R"]["snoozed"])
+        self.assertEqual(out["R"]["obj"], {"id": "snoozed:ahead:pushy:1", "type": "snoozed row", "label": row["what"],
+                                           "row": "ahead:pushy:1", "until": "2026-09-07T08:00:00+00:00", "seen": row["seen"]})
+        self.assertEqual(out["R"]["primary"], ["snoozed row.unsnooze"])
+
+    def test_a_snooze_read_that_failed_is_a_partial_read(self):
+        self.doc["snooze_error"] = "database is locked"
+        out = self.run_page("")
+        self.assertEqual(out["states"][-1], {"kind": "partial", "source": "/api/now",
+                                             "text": "Snoozes were not read: database is locked. Every row shows."})
+
+    def test_the_fixed_times_and_how_a_toast_says_them(self):
+        out = self.run_page("""const S = window.snooze, at = (h, m) => new Date(2026, 9, 10, h, m);
+const show = d => [d.getDate(), d.getHours(), d.getMinutes()];
+R.early = show(S.CHOICES[0].until(at(7, 59))); R.late = show(S.CHOICES[0].until(at(8, 0)));
+R.hour = show(S.CHOICES[1].until(at(23, 30)));
+R.today = S.when(at(8, 0), at(7, 0)); R.other = S.when(new Date(2026, 9, 11, 8, 0), at(7, 0));
+R.keys = S.CHOICES.map(c => [c.id, c.label, c.key]);""")
+        self.assertEqual(out["R"]["early"], [10, 8, 0])
+        self.assertEqual(out["R"]["late"], [11, 8, 0])
+        self.assertEqual(out["R"]["hour"], [11, 0, 30])
+        self.assertEqual((out["R"]["today"], out["R"]["other"]), ("08:00", "Sun Oct 11 08:00"))
+        self.assertEqual(out["R"]["keys"], [["snooze", "Snooze until 08:00", "z"], ["snooze-hour", "Snooze 1 hour", "h"],
+                                            ["snooze-week", "Snooze 1 week", "w"]])
+
+
 DECISIONS_JS = (V2 / "static" / "decisions.js").read_text(encoding="utf-8")
 
 
@@ -155,7 +206,7 @@ class TheBadge(TheReader):
                   + f"\nconst DOC0 = {json.dumps(self.doc)}, DECISIONS = {json.dumps({'decisions': decisions})};\n"
                   + "ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : path === '/api/decisions' ? [200, DECISIONS]"
                     " : [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }];\n"
-                  + TODAY_JS + "\n" + DECISIONS_JS
+                  + SNOOZE_JS + TODAY_JS + "\n" + DECISIONS_JS
                   + "\nvar R = {};\nconst click = (note, i) => ELS.decisions.listeners.click[0]({ target: { closest: s => s === 'button[data-option]'"
                     " ? { dataset: { note: String(note), option: String(i) }, closest: () => null } : null } });\n"
                   + "(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"

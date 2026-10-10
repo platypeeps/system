@@ -43,11 +43,12 @@ stamp is a `local-sd-db` change and not this one. `needs_you` only, as the
 pack read `needsYou` only: a pull request that is merely yours is not one
 that is waiting on you.
 
-**No dismiss.** The pack's rows carried an ack key and a control that wrote
-to an ack store; the decision that made the pack's dashboard read-only
-deleted that store (sd:719, note 1347), and nothing here writes. The ids
-keep the pack's shapes so the comparison holds row for row and so a later
-ack store, if one is wanted, has a key to use.
+**No dismiss, but a snooze.** The pack's rows carried an ack key and a
+control that wrote to an ack store; the decision that made the pack's
+dashboard read-only deleted that store (sd:719, note 1347). The ids keep
+the pack's shapes so the comparison holds row for row, and a snooze
+(sd:1896, `snooze`) keys on them: a snoozed row is in `snoozed` until its
+time and back in `rows` after it. Nothing here writes.
 
 **Failed scheduled jobs are the fourth source.** Four launchd cron jobs
 failed on 2026-09-27 and Today said nothing, because the pack's Now never
@@ -87,7 +88,7 @@ from sd_db import operations, progress
 from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
-from . import job_failures
+from . import job_failures, snooze
 from .markup import join, tag
 from .operations_screen import _signal_name
 
@@ -212,6 +213,8 @@ def pr_rows(rows: list[dict], today: str) -> list[dict]:
                     + (f", first seen {days}d ago" if quiet else ""),
             "detail": row.get("title") or "",
             "source": "prs",
+            # A snooze's problem (sd:1896): the days since first seen drift each day; the rank is in the id.
+            "problem": [f"{row.get('repo')}#{row.get('number')}", row.get("title") or ""],
         })
     return out
 
@@ -284,10 +287,13 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
             triage = job_failures.classify(job, log)
             row.update(id=f"job:{name}:{f'signal{killed}' if killed is not None else code}", what=f"{name} failed with {outcome}",
                        job=name, run=job.get("run"), triage=triage, detail=f"{row['detail']} · triage: {triage['class']}, {triage['why']}")
+            # A snooze's problem (sd:1896) is the outcome: each run's log time moves the detail.
+            row["problem"] = [row["what"]]
         elif state == "interrupted":
             stop = _signal_name(killed) if killed is not None else "a stop with no signal recorded"
             row.update(id=f"job:{name}:interrupted{killed if killed is not None else ''}",
                        what=f"{name} was interrupted by {stop}")
+            row["problem"] = [row["what"]]
         elif state == "unloaded":
             row.update(id=f"job:{name}:unloaded", what=f"{name} is installed but not loaded",
                        detail=f"launchd will not run it until it is loaded · load: local-cron-jobs/cron-jobs.sh install {name}")
@@ -364,6 +370,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     and the reason for one that was not, the same text its row shows.
     `jev` is the command `job_failures.shadow` asks about failed jobs, in
     the background and without changing a row; None, the default, asks nothing.
+    A row the operator snoozed (sd:1896) is in `snoozed`, with its `until`,
+    and not in `rows`; `snooze_error` says why none could be read.
     """
     read = fleet or fleet_module.collect
     rows: list[dict] = []
@@ -382,8 +390,9 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
         sources[source] = ""
         rows.extend(found)
     job_failures.shadow(rows, jev)
-    return {"now": now, "sources": sources,
-            "rows": [{**row, "band": band(row["rank"])} for row in merge(rows)]}
+    snoozes, snooze_error = snooze.held(connection, now=now)
+    shown, snoozed = snooze.split("today", [{**row, "band": band(row["rank"])} for row in merge(rows)], snoozes)
+    return {"now": now, "sources": sources, "rows": shown, "snoozed": snoozed, "snooze_error": snooze_error}
 
 
 def now_panel() -> object:

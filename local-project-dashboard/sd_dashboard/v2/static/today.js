@@ -1,5 +1,6 @@
 // Today v2 (sd:2110): the page script. It loads before shell.js, which reads what it declares.
 // Rows: /api/now, the document now_screen.document builds (the one v1 Today's Now section reads). Nothing here is sample data.
+// A snoozed row (sd:1896) is in the document's `snoozed`, not its rows: snooze.js draws it under the list with its Unsnooze.
 // Ported from ui-design products/system/designs/v2/today.html at a3861c9; the sources the build has no collector for are left out.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
@@ -24,7 +25,7 @@
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const area = s => `/operations?area=${SRC[s]?.[2] || s}`;
 
-  let DOC = null, ROWS = [], srcFilter = null, query = '';
+  let DOC = null, ROWS = [], SNOOZED = [], srcFilter = null, query = '';
   const $ = id => document.getElementById(id);
 
   function facts(r) {
@@ -77,7 +78,7 @@
     const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
     const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
     return { id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
-             repo: pr && pr[1], number: pr && +pr[2] };
+             repo: pr && pr[1], number: pr && +pr[2], seen: r.seen };
   }
 
   function render() {
@@ -96,6 +97,7 @@
     attend();
     lamps();
     hideRows();
+    window.snooze.draw($('snoozed'), SNOOZED);
   }
 
   // The badge counts the loudest state: warning rows, else caution rows and the decisions decisions.js says wait (sd:3012),
@@ -136,11 +138,12 @@
   // runs no command, a selection whose row is gone moves to the first row the filter shows, and a failed read clears the page.
   let reading = null, failed = '', reads = 0;
   function adopt(doc) {
-    DOC = doc; ROWS = doc.rows;
+    DOC = doc; ROWS = doc.rows; SNOOZED = doc.snoozed;
     document.body.dataset.observed = doc.now;
-    return { objects: ROWS.map(objectOf), state: null };
+    return { objects: [...ROWS.map(objectOf), ...SNOOZED.map(window.snooze.object)],
+             state: doc.snooze_error ? window.snooze.unread(doc.snooze_error, '/api/now') : null };
   }
-  function clear(err) { DOC = null; ROWS = []; failed = err.message; delete document.body.dataset.observed; }
+  function clear(err) { DOC = null; ROWS = []; SNOOZED = []; failed = err.message; delete document.body.dataset.observed; }
   function draw() {
     if (DOC) return render();
     // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
@@ -149,6 +152,7 @@
     put($('observed'), html`<span class="ph">not read</span>`);
     put($('tally'), html``);
     put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${failed}</td></tr>`);
+    window.snooze.draw($('snoozed'), []);
     attend();
     hideRows();
   }
@@ -180,6 +184,8 @@
         cli: o => `gh pr view --web --repo ${o.repo} ${o.number}`,
         run: o => { window.open(`https://github.com/${o.repo}/pull/${o.number}`, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; } },
     );
+    // Snooze (sd:1896) on every row type: the row leaves Now until its time, and Unsnooze brings it back sooner.
+    window.snooze.register(C, { page: 'today', types: [...new Set(Object.values(TYPE))], reread: () => load() });
 
     $('rows').addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
     document.addEventListener('shell:open', e => { if (ROWS.some(r => r.id === e.detail)) select(e.detail, true); });
