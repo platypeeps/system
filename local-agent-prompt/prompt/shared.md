@@ -117,6 +117,7 @@ Run mechanical builder work (deletions, renames, doc moves) on Sonnet; keep desi
 # Review rounds
 
 A change that moves state in steps gets the failure table (step, state moved, failure, recovery, test) in its `design.md` or PR body before the first review round.
+Before such a design enters the lane, its builder runs one read-only adversarial `codex exec` review and fixes what it finds: 4 such designs took 2 to 6 lane rounds (sd:2997).
 Trigger: two findings of the same class in different rounds, or three blocking rounds in a row.
 Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings.
 Add each instance to the failure table; fix each row lacking a recovery or a test, fail-first.
