@@ -55,15 +55,31 @@ It was rehearsed in September and never run for real: the live database holds no
 
 `kind = 'idea'` with `piece IS NULL` stays out of the writing pipeline, which selects `piece IS NOT NULL`.
 A Blog Idea promoted to a piece keeps the `promoted_rows` contract (sd:1994). Nothing deletes a row; `declined` is a stage.
-`reads.backlog_items` adds `item.source IS NOT 'vault'`, so 275 open base rows stay off the list, board and matrix.
+
+**Tasks, Today and counts (D6).** Base rows join the backlog and Today through the shared queries, with no new filter.
+The status maps decide what lands where: Today reads `in_progress`, `ready_to_send` and due rows.
+Standing states (an `active` Market Watch entity, an `active` Topic) map to `ready`, so they wait on Tasks and do not hold Today forever.
+Work states (a `drafting` Blog Idea, an `approved` Tip) map to `in_progress` and `ready_to_send`, so they reach Today.
+A base row moves by stage only: `workflow.allowed_statuses` answers `[]` for a `vault` row, and `sd task status` refuses it, naming the stage move.
+So the Tasks board does not offer a drag that the stage map would contradict. Read on 2026-10-10, before and after the import:
+
+| View | Now | After the import |
+|---|---|---|
+| Tasks, open rows | 395 | 671 (275 base rows and 1 quick note) |
+| Tasks, done this week | 875 | 981 for 7 days (106 `declined` and `filed` rows), then 875 |
+| Today | 51 | 58 (7 `drafting` Blog Ideas); 102 if standing states mapped to `in_progress` |
+
+Base rows carry no priority and no due date, so the matrix places them as not urgent and not important.
+The nightly prune parks only priority-4 rows, so it never parks a base row.
 
 **Rejected: a new `record` table.** It needs migration 027, its own write routes, notes, revisions and backup handling.
 `item` already has all of them, and the importer already targets it. A new `item.kind` was rejected too: migration 009 shows it needs a `sqlite_master` edit to change a name only.
 
 **Kinds.** The writing plugin's manifest owns every kind (sd:1098). It declares `blog-idea`, `topic`, `tip` and `quick-note`, with maps for the first two.
-It gains `market` (candidate `planning`, active `in_progress`, paused `blocked`, declined `done`; `slug` unique; human-only active, paused, declined)
+It gains `market` (candidate `planning`, active `ready`, paused `blocked`, declined `done`; `slug` unique; human-only active, paused, declined)
 and `skill-proposal` (filed and declined `done`, no transitions: an archive).
 It gains maps for `tip` (inbox `planning`, accepted and ready `ready`, approved `ready_to_send`, published and declined `done`) and `quick-note` (new `planning`).
+The `topic` map changes `active` from `in_progress` to `ready`, the standing-state rule above; `blog-idea` keeps its map.
 The `blog-idea`, `tip` and `topic` templates lose their Meta Bind lines.
 
 **Import.** `sd-db.sh import vault` keeps freeze, land and verify, with four changes.
@@ -93,10 +109,12 @@ The pack's `db` driver enforces `human-only` and `protected-fields` for agents; 
 
 The routines live in the vault, outside every repository; the sitting edits them and `sd task note` records each edit.
 
-**Dashboard.** A v2 Bases page reads `GET /api/bases`: rows by kind, filtered by ladder word, sorted by score or date, with the `.base` views as presets.
-It shows the mirror heartbeat and a Render mirror control, `POST /api/bases/render`.
+**Dashboard.** No Bases page: base rows are on Tasks, so a second list would repeat it.
+`/api/tasks` adds three row fields, `base` (`fields.kind`), `stage` and `score`, null for other rows.
+The Tasks list gains a Base filter and a stage column, and sorts by score; that covers the `.base` views.
 `/item/<id>` for a `vault` row shows a stage select, the declared fields, the body and a link to its mirror section.
 `POST /api/items/<id>/stage` and `POST /api/items/<id>` send a `vault` row to `records.edit_row`; other rows keep their current handlers.
+Health shows the mirror heartbeat and a Render mirror control, `POST /api/records/render`.
 
 **Mirror.** `records.render(connection, vault, kinds=None)`, also `sd-db.sh records render`, writes two read-only copies from rows only.
 The Markdown mirror sits at each row's `path`, with `status` from `stage` and a `mirror-hash` of the rest of the file.
@@ -113,17 +131,12 @@ It records a `heartbeat` state row, key `records-mirror`, body `{at, ok, written
 A write never fails for its render: it prints `mirror not updated: <reason>` and the heartbeat says `ok: false`. The verb exits 1 on a refusal or an error.
 
 **New mechanisms**, and what each replaces: `sd_db/records.py` replaces the vault driver's note writes;
-the Bases page and `GET /api/bases` replace the `.base` views as the editing surface;
+three `/api/tasks` row fields and a Base filter replace the `.base` views as the editing surface;
 the pack's `db` driver and `rules` replace the vault driver for the writing plugin;
-`sd-db.sh records render` and `POST /api/bases/render` are the catch-up after a failed render, with no prior equivalent;
+`sd-db.sh records render` and `POST /api/records/render` are the catch-up after a failed render, with no prior equivalent;
 `mirror-hash` is the hand-edit check, kept in the file it guards; `market` and `skill-proposal` declare notes that had no kind.
 Reused: `item`, the `vault` source, the `heartbeat` state kind, the item routes, `md_to_html`, the `root|vault` line.
 No migration, config key or scheduled job is added. Retired: the 547 Meta Bind lines and the routines' hand edits of notes.
-
-**Open for the operator**, as question notes with buttons; this page assumes the first option of each.
-D1 `item` rows, or a new table. D2 Markdown mirror plus HTML, or HTML only. D3 one HTML page per base, or one per open row.
-D4 Quick Notes moves with the flip, or a per-kind driver. D5 (on sd:1146) Skill Proposals as an archive kind, or an importer special case.
-D6 base rows off the backlog, or on it.
 
 ## Non-goals
 
@@ -141,7 +154,20 @@ D6 base rows off the backlog, or on it.
 - [ ] After the flip, `sd-db.sh import vault` exits non-zero and names the `db` driver; `sd store list sdw.market --status active` lists the active count of the sitting.
 - [ ] `sd-db.sh records render` exits 0 with 0 refused; a second run writes 0 files.
 - [ ] A dashboard stage move writes a `comment` note, and a `status_change` note when the status changes.
+- [ ] After the import, `reads.backlog_items` holds one open row per open base row more than before (276 on 2026-10-10), and `reads.today_items` one row per `in_progress` or `ready_to_send` base row (7).
+- [ ] `sd task status <id> done` on a `vault` row exits non-zero and names the stage move; its `/api/tasks` row has `allowed: []`.
 - [ ] `sd-db.sh test`, `dashboard.sh test`, the pack's and the writing plugin's `make check` pass with 0 failures.
+
+## Decisions
+
+Made by the operator on 2026-10-10; the notes on sd:1145 and sd:1146 hold them.
+
+- D1: rows live in `item`, with no migration.
+- D2: the vault keeps a Markdown mirror at the notes' paths, plus the HTML pages.
+- D3: one HTML page per base; declined rows are table lines only.
+- D4: Quick Notes moves to the database with the flip.
+- D5: Skill Proposals is an archive kind in the writing manifest.
+- D6: base rows join the backlog and Today.
 
 ## Failure table
 
@@ -166,18 +192,19 @@ D6 base rows off the backlog, or on it.
 
 Each slice writes its tests first; each test fails on the base branch. Each leaves the system working as named.
 
-1. **S1 importer and backlog** (system: `sources/vault.py`, `reads.py`). Every declared kind, the shared normalization, per-kind counts, the `db` refusal, the backlog clause, the `workflow.py` guard message.
-   Leaves working: the vault stays the source; `import vault` can be rehearsed on all five bases; the backlog is unchanged for today's rows.
+1. **S1 importer and stage-only moves** (system: `sources/vault.py`, `workflow.py`). Every declared kind, the shared normalization, per-kind counts, the `db` refusal,
+   `allowed_statuses` and `sd task status` refusing a `vault` row, the `workflow.py` guard message.
+   Leaves working: the vault stays the source; `import vault` can be rehearsed on all five bases; no live row changes.
 2. **S2 `records` module** (system). The read and write functions, `rules_for(kind)` through `sd plugin list --json`.
    Leaves working: nothing calls it yet; the remote surface test still passes.
-3. **W1 kinds and maps** (writing plugin). `market`, `skill-proposal`, four maps, two `store.bases` folders, templates without Meta Bind. The driver stays `vault`.
+3. **W1 kinds and maps** (writing plugin). `market`, `skill-proposal`, four new maps, `topic` active to `ready`, two `store.bases` folders, templates without Meta Bind. The driver stays `vault`.
    Leaves working: `sd store add sdw.market` writes vault notes; `sd plugin list --json` shows six workflow kinds.
 4. **P1 `db` driver** (command pack). The `db` branch for every `sd store` verb, and `rules` in `sd plugin list --json`. Needs S2 installed.
    Leaves working: every plugin still on `vault` behaves as before.
 5. **S3 mirror renderer** (system). The Markdown and HTML mirror, the overwrite rule, the hub and restore refusals, the heartbeat, `sd-db.sh records render`, the render after each write.
    Invoke `hallmark` and apply the UI foundation before the HTML design. Leaves working: no row exists yet, so nothing renders on the live vault.
-6. **S4 dashboard** (system). The Bases page, `GET /api/bases`, `POST /api/bases/render`, the item panel, the route dispatch.
-   Invoke `hallmark` first. Leaves working: the page lists zero rows until the sitting; pieces and tasks use their current handlers.
+6. **S4 dashboard** (system). The `/api/tasks` fields, the Tasks Base filter and stage column, the item panel, the route dispatch, the Health heartbeat and `POST /api/records/render`.
+   Invoke `hallmark` first. Leaves working: Tasks is unchanged until the sitting adds rows; pieces and tasks use their current handlers.
 7. **W2 the flip** (writing plugin): `store.driver` becomes `db`. It merges only inside the sitting.
 
 **The sitting**, on the hub. Record each step's decisive line in `sd task note 1145`.
@@ -204,5 +231,9 @@ After the sitting, file one pack item to remove the `vault` driver once no plugi
 - The flip and the routine edits are separate steps. A routine that runs between them writes a vault note; the render reports it, and the jobs stay uninstalled until step 9.
 - Obsidian Sync can carry a phone edit into a mirror file at any time. The render refuses it rather than losing it; the operator still has to act on the report.
 - Rendering a whole kind per write reads about 2 MB of Markdown for Market Watch. Accepted; if a write gets slow, the render narrows to the row and its page.
+- Tasks grows from 395 to 671 open rows, about 70 percent. Accepted by D6; the Base filter narrows it.
+- The import's opening notes carry the sitting's time, so every base row's age starts at 0 that day, and Notes shows 382 openings.
+  The 106 done rows sit in the done-this-week window for 7 days. Accepted: `create_item` keeps the real time on purpose.
+- A standing state mapped to `ready` never reaches Today. If the operator wants active entities on Today, the map changes in the writing manifest, not here.
 - `kind = 'idea'` for rows that are not ideas reads oddly in raw SQL. Accepted for no migration; `fields.kind` names the real kind.
 - The six vault routines change outside any repository and outside review. Each edit is recorded on the item; the next-day check is the test.
