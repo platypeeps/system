@@ -424,6 +424,19 @@ class TheSatellite(Case):
         out = self.run_stage("satellite", "--apply", SD_DB_PYTHON=sys.executable, SD_PACK_ROOT=pack)
         self.assertIn("  ok      pack satellite source=None args=--hub hub.example.test --apply", out)
 
+    def test_a_pack_without_lib_sd_db_runs_no_installed_copy(self):
+        # sd:3279: with no lib/sd_db/__init__.py the import would fall through to a
+        # copy installed in the interpreter, a namespace sd_db/ folder included.
+        (self.profiles / "work.satellite").write_text("hub.example.test\n")
+        python = self.root / "python"
+        python.write_text("#!/bin/sh\necho '  ok      an installed copy ran'\n")
+        python.chmod(0o755)
+        pack = self.root / "pack"
+        (pack / "lib/sd_db").mkdir(parents=True)
+        out = self.run_stage("satellite", SD_DB_PYTHON=python, SD_PACK_ROOT=pack)
+        self.assertNotIn("an installed copy ran", out)
+        self.assertIn(f"  MISSING sd_db: no {pack}/lib/sd_db/__init__.py — ", out)
+
     def test_no_interpreter_is_missing(self):
         self.start_hub()
         out = self.run_stage("satellite", SD_DB_PYTHON=self.root / "no-python")

@@ -1536,6 +1536,11 @@ stage_satellite() {
     echo "  MISSING sd_db: no interpreter at $SD_DB_PYTHON — install the pack (python3 bin/sd_install.py --user), then rerun"
     return 0
   fi
+  # Without it the import falls through to a copy installed in the interpreter.
+  if [ ! -f "$SD_PACK_ROOT/lib/sd_db/__init__.py" ]; then
+    echo "  MISSING sd_db: no $SD_PACK_ROOT/lib/sd_db/__init__.py — move the pack to the hub's pin: local-repo-sync/repo-sync.sh follow"
+    return 0
+  fi
   set -- --hub "$host"
   [ -z "$port" ] || set -- "$@" --port "$port"
   if [ "$APPLY" -eq 1 ]; then set -- "$@" --apply; fi
