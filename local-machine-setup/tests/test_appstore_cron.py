@@ -368,9 +368,14 @@ exit 0
                         ignore=shutil.ignore_patterns("tests", "__pycache__", "logs"))
         shutil.copytree(LIB, base / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
         (self.jobs / "dropped-job.job").write_text('JOB_SCHEDULE="0 4 * * *"\nJOB_COMMAND="true"\n')
+        # A first install: launchd does not hold the label yet. The stage's
+        # stub answers every `print` as loaded, and a loaded label names its
+        # log, which install reads to find the run's lock (sd:3317).
+        first = pathlib.Path(self.tmp.name) / "first-install"
+        write_exec(first / "launchctl", '#!/bin/sh\n[ "$1" != print ] || exit 1\nexit 0\n')
         env = {
             "HOME": str(self.home),
-            "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": f"{first}:{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG": "en_US.UTF-8",
             **fixture_config.env(self.config_root),
             "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX,
@@ -386,6 +391,56 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("EXTRA   dropped-job", result.stdout)
         self.assertIn("uninstall dropped-job", self.cron_log.read_text())
+
+
+class CronBusyJobTest(StageTest):
+    """sd:3317. cron-jobs.sh refuses to install or uninstall a job while a run
+    holds its lock, and the stage reports that and goes on.
+
+    The nightly update runs this stage, and lane-run fires every five minutes:
+    a refusal that ended the run under `set -e` would skip every later stage.
+    The stub refuses for the jobs named in CRON_BUSY, as cron-jobs.sh does,
+    and fails `verify` for busy-stale; launchctl does not hold busy-unloaded.
+    Each of the stage's five cron-jobs.sh calls meets one busy job.
+    """
+
+    def setUp(self):
+        super().setUp()
+        write_exec(self.folder.parent / "local-cron-jobs/cron-jobs.sh", r"""#!/bin/sh
+printf '%s\n' "$*" >> "$CRON_LOG"
+[ "$1 $2" != "verify busy-stale" ] || exit 1
+case "$1:$CRON_BUSY:" in
+  install:*":$2:"*|uninstall:*":$2:"*)
+    echo "cron-jobs.sh: $2: a run is in progress; retry after it ends" >&2
+    exit 1 ;;
+esac
+exit 0
+""")
+        write_exec(self.stubs / "launchctl",
+                   '#!/bin/sh\ncase "$*" in *.cron.busy-unloaded) exit 1 ;; esac\nexit 0\n')
+        (self.folder.parent / "local-cron-jobs/retired-jobs.txt").write_text("busy-retired  # sd:1 2026-10-01\n")
+        (self.profiles / "personal.cron").write_text(
+            "busy-job\nbusy-stale\nbusy-unloaded\nshared-job\n")
+        for job in ("busy-job", "busy-stale", "busy-unloaded", "shared-job", "busy-extra", "dropped-job"):
+            (self.jobs / f"{job}.job").write_text('JOB_SCHEDULE="0 1 * * *"\n')
+        for job in ("busy-stale", "busy-unloaded", "busy-extra", "busy-retired", "dropped-job"):
+            self.install_plist(job)
+
+    def test_a_refused_install_and_uninstall_are_reported_and_the_stage_goes_on(self):
+        busy = ("busy-job", "busy-stale", "busy-unloaded", "busy-extra", "busy-retired")
+        result = self.run_stage("cron", "--apply", CRON_BUSY=":" + ":".join(busy))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for job, verb in (("busy-job", "install"), ("busy-stale", "install"), ("busy-unloaded", "install"),
+                          ("busy-extra", "uninstall"), ("busy-retired", "uninstall")):
+            self.assertIn(f"FAILED  {job} — cron-jobs.sh {verb} {job} did not finish; "
+                          "the next update retries it", result.stdout)
+        self.assertIn("STALE   busy-stale", result.stdout)
+        self.assertIn("UNLOADED busy-unloaded", result.stdout)
+        self.assertIn("a run is in progress; retry after it ends", result.stderr)
+        # The jobs after each refusal are still handled.
+        log = self.cron_log.read_text().splitlines()
+        self.assertIn("install shared-job", log)
+        self.assertIn("uninstall dropped-job", log)
 
 
 class CronRetiredTest(StageTest):

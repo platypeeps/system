@@ -923,6 +923,16 @@ sys.exit(0 if ours else 1)
 PY
 }
 
+# cron-jobs.sh install or uninstall for one job. A failure is reported and the
+# stage goes on: cron-jobs.sh refuses both while a run holds the job's lock
+# (sd:3317), and lane-run fires every five minutes, so ending the nightly run
+# under set -e would skip every later stage. A refused job keeps its plist as
+# it was, so the next update finds the same drift and retries.
+cron_jobs() { # install|uninstall, job
+  run "$ROOT/local-cron-jobs/cron-jobs.sh" "$1" "$2" ||
+    echo "  FAILED  $2 — cron-jobs.sh $1 $2 did not finish; the next update retries it"
+}
+
 stage_cron() {
   echo "== cron"
   # Without its host jobs, the sweep below read each one as an orphan and
@@ -951,7 +961,7 @@ stage_cron() {
     cron_plist_ours "$rp" "$r" 2>/dev/null || owner=$?
     case "$owner" in
       0) echo "  EXTRA   $r — retired in local-cron-jobs/retired-jobs.txt, still installed"
-         run "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$r" ;;
+         cron_jobs uninstall "$r" ;;
       1) echo "  FOREIGN $r — retired, but not installed by local-cron-jobs; left in place" ;;
       *) echo "  UNKNOWN $r — retired, but cannot tell who installed it; left in place" ;;
     esac
@@ -979,19 +989,19 @@ stage_cron() {
     [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?
     if [ ! -f "$jp" ]; then
       echo "  MISSING $j — no plist installed"
-      run "$ROOT/local-cron-jobs/cron-jobs.sh" install "$j"
+      cron_jobs install "$j"
     elif [ "$owner" = 1 ]; then
       echo "  FOREIGN $j — in this profile, but another installer's agent holds its label; left in place"
     elif ! "$ROOT/local-cron-jobs/cron-jobs.sh" verify "$j" >/dev/null 2>&1; then
       echo "  STALE   $j — installed plist no longer matches the generator"
-      run "$ROOT/local-cron-jobs/cron-jobs.sh" install "$j"
+      cron_jobs install "$j"
     # A plist can be present and current yet not registered with launchd — a
     # failed bootstrap, a bootout, files restored onto a machine that never
     # loaded them. No content check can see that; ask launchd. install
     # bootstraps, so re-running it is the repair as well as the install.
     elif ! launchctl print "gui/$(id -u)/$LABEL_PREFIX.cron.$j" >/dev/null 2>&1; then
       echo "  UNLOADED $j — plist current but launchd is not running it"
-      run "$ROOT/local-cron-jobs/cron-jobs.sh" install "$j"
+      cron_jobs install "$j"
     else
       echo "  ok      $j"
     fi
@@ -1016,7 +1026,7 @@ stage_cron() {
       cron_plist_ours "$xp" "$xj" || owner=$?
       case "$owner" in
         0) echo "  EXTRA   $xj — installed but no longer in this profile"
-           run "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$xj" ;;
+           cron_jobs uninstall "$xj" ;;
         1) echo "  FOREIGN $xj — not installed by local-cron-jobs; left in place" ;;
         *) echo "  UNKNOWN $xj — cannot tell who installed it; left in place" ;;
       esac

@@ -17,6 +17,7 @@ PIN means it records a decision that was deliberate and could be undone by
 accident; a PIN passing against old code is expected, not a defect.
 """
 
+import fcntl
 import os
 import pathlib
 import plistlib
@@ -26,6 +27,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -1010,7 +1012,8 @@ class InstallBootstrapTest(unittest.TestCase):
             'case "$1" in\n',
             'case "$1" in\n'
             f'  bootout) (sleep 1; rm -f \'{held}\') >/dev/null 2>&1 & exit 0 ;;\n'
-            f'  print) [ -e \'{held}\' ] || exit 1 ;;\n', 1)
+            f'  print) [ -e \'{held}\' ] || exit 1\n'
+            f'    printf \'\\tstdout path = %s\\n\' \'{self.fx.folder}/logs/demo.log\' ;;\n', 1)
         launchctl.write_text(text)
         launchctl.chmod(launchctl.stat().st_mode | stat.S_IXUSR)
         result = self.run_script("install", "demo", env={"CRON_TEST_HELD": "1", "PATH": self.fx.path(stub)})
@@ -1020,6 +1023,237 @@ class InstallBootstrapTest(unittest.TestCase):
         before_bootstrap = after[:after.index(self.bootstraps()[0])]
         self.assertGreaterEqual(sum(c.startswith("launchctl print") for c in before_bootstrap), 2, calls)
         self.assertFalse(held.exists())
+
+
+# What a `launchctl` stub asks of a lock file: `held` when another open file
+# holds its flock, `free` when this one could take it. A fresh open is a file
+# description of its own, so the stub's inherited fd 8 does not answer for it.
+PROBE_LOCK = ("import fcntl, sys\n"
+              "f = open(sys.argv[1], 'a')\n"
+              "try:\n"
+              "    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+              "    print('free')\n"
+              "except BlockingIOError:\n"
+              "    print('held')\n")
+
+
+class InstallRespectsTheJobLockTest(unittest.TestCase):
+    """sd:3317. `install` and `uninstall` leave a running job alone.
+
+    REGRESSION. Both booted the label out whenever launchd held it, and
+    `bootout` sends TERM to the run: a reinstall on a satellite killed a lane
+    run mid-ship, and the lane recorded the runner dead with its entry running.
+    They now hold the job's own lock (the `flock` a run takes, sd:1251) from
+    before the plist is written until the label is back, and refuse while a run
+    holds it. launchctl is stub_bin's, with launchd's label state kept in a
+    file per label: loaded until `bootout`, loaded again on `bootstrap`.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.calls = self.fx.tmp / "launchctl-calls"
+        self.calls.write_text("")
+        self.fx.write_job("demo", 'JOB_SCHEDULE="*/10 * * * *"\nJOB_COMMAND="true"\n')
+        self.agents = self.fx.home / "Library" / "LaunchAgents"
+        self.agents.mkdir(parents=True)
+
+    def plist(self, job="demo"):
+        return self.agents / f"{LABEL_PREFIX}.cron.{job}.plist"
+
+    def lock(self, job="demo"):
+        return self.fx.folder / "logs" / f".{job}.flock"
+
+    def hold(self, job="demo"):
+        """Take the job's lock the way a run in progress holds it."""
+        held = open(self.lock(job), "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def lock_is_free(self, job="demo"):
+        probe = subprocess.run([sys.executable, "-c", PROBE_LOCK, str(self.lock(job))],
+                               capture_output=True, text=True, check=True)
+        return probe.stdout.strip() == "free"
+
+    def launchd(self, name="launchd-bin", on_bootout="", on_bootstrap="", stdout=True):
+        """stub_bin's launchctl in a folder of its own, holding every label
+        until `bootout` and again after `bootstrap`. `on_*` run first. Its
+        `print` names the label's log unless `stdout` is false."""
+        folder = self.fx.tmp / name
+        if folder.exists():
+            return folder
+        folder.mkdir()
+        launchctl = folder / "launchctl"
+        gone =f"{self.fx.tmp}/gone."
+        launchctl.write_text((stub_bin(self.fx.tmp) / "launchctl").read_text().replace(
+            'case "$1" in\n',
+            f'gone="{gone}$(basename "${{3:-$2}}" .plist)"\n'
+            'case "$1" in\n'
+            '  print) [ ! -e "$gone" ] || exit 1\n'
+            + (f'    printf \'\\tstdout path = %s/%s.log\\n\' "${{CRON_TEST_STDOUT_DIR:-{self.fx.folder}/logs}}" "${{2##*.cron.}}"\n'
+               if stdout else '') +
+            '    exit 0 ;;\n'
+            f'  bootout) {on_bootout}touch "$gone"; exit 0 ;;\n'
+            f'  bootstrap) {on_bootstrap}rm -f "$gone"; exit 0 ;;\n', 1))
+        launchctl.chmod(launchctl.stat().st_mode | stat.S_IXUSR)
+        return folder
+
+    def run_script(self, *args, path=None, env=None):
+        env = {"PATH": path or self.fx.path(self.launchd()),
+               "HOME": str(self.fx.home),
+               "SYSTEM_TOOLS_CONFIG": str(self.fx.config),
+               "CRON_TEST_CALLS": str(self.calls),
+               "PROBE_LOCK": PROBE_LOCK, **(env or {})}
+        return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
+                              env=env, capture_output=True, text=True, timeout=60)
+
+    def bootouts(self):
+        return [line for line in self.calls.read_text().splitlines() if line.startswith("launchctl bootout")]
+
+    def test_install_refuses_while_a_run_holds_the_lock(self):
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        result = self.run_script("install", "demo")
+        out = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, out)
+        self.assertIn("demo: a run is in progress; retry after it ends", result.stderr)
+        self.assertNotIn("installed:", out)
+        self.assertEqual(self.bootouts(), [])
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        # Unwritten, so `verify` still reads it STALE and the next install retries.
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+
+    def test_uninstall_refuses_while_a_run_holds_the_lock(self):
+        self.plist().write_text("the plist launchd holds\n")
+        self.hold()
+        result = self.run_script("uninstall", "demo")
+        out = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, out)
+        self.assertIn("demo: a run is in progress; retry after it ends", result.stderr)
+        self.assertNotIn("uninstalled:", out)
+        self.assertEqual(self.bootouts(), [])
+        self.assertTrue(self.plist().exists())
+
+    def test_uninstall_all_skips_only_the_busy_job(self):
+        self.fx.write_job("other", 'JOB_SCHEDULE="0 * * * *"\nJOB_COMMAND="true"\n')
+        self.plist().write_text("demo\n")
+        self.plist("other").write_text("other\n")
+        self.hold()
+        result = self.run_script("uninstall", "--all")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("uninstalled: other", result.stdout)
+        self.assertIn("uninstall failed for: demo", result.stderr)
+        self.assertEqual(self.bootouts(), [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron.other"])
+        self.assertTrue(self.plist().exists())
+        self.assertFalse(self.plist("other").exists())
+
+    def test_install_all_skips_only_the_busy_job(self):
+        self.fx.write_job("other", 'JOB_SCHEDULE="0 * * * *"\nJOB_COMMAND="true"\n')
+        self.hold()
+        result = self.run_script("install", "--all")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("installed: other", result.stdout)
+        self.assertIn("install failed for: demo", result.stderr)
+        self.assertEqual(self.bootouts(), [f"launchctl bootout gui/{os.getuid()}/{LABEL_PREFIX}.cron.other"])
+        self.assertFalse(self.plist().exists())
+
+    def test_without_a_run_both_proceed_as_before(self):
+        """PIN: a free lock changes nothing, and neither leaves it held."""
+        installed = self.run_script("install", "demo")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("installed: demo", installed.stdout)
+        self.assertTrue(self.lock_is_free())
+        uninstalled = self.run_script("uninstall", "demo")
+        self.assertEqual(uninstalled.returncode, 0, uninstalled.stdout + uninstalled.stderr)
+        self.assertIn("uninstalled: demo", uninstalled.stdout)
+        self.assertEqual(len(self.bootouts()), 2, self.calls.read_text())
+        self.assertFalse(self.plist().exists())
+        self.assertTrue(self.lock_is_free())
+
+    def test_the_lock_is_held_across_bootout_and_bootstrap_and_released_per_job(self):
+        """A slot that fires mid-install skips rather than starting a run the
+        bootout would kill, and `--all` lets each job's lock go once that job
+        is back in launchd."""
+        self.fx.write_job("other", 'JOB_SCHEDULE="0 * * * *"\nJOB_COMMAND="true"\n')
+        probe = (f'echo "$1 $(basename "${{3:-$2}}") $(\'{sys.executable}\' -c "$PROBE_LOCK" '
+                 f'\'{self.lock()}\')" >> \'{self.fx.tmp}/probes\'; ')
+        result = self.run_script("install", "--all", path=self.fx.path(
+            self.launchd("probe-bin", on_bootout=probe, on_bootstrap=probe)))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        probes = (self.fx.tmp / "probes").read_text().splitlines()
+        self.assertEqual(probes, [
+            f"bootout {LABEL_PREFIX}.cron.demo held",
+            f"bootstrap {LABEL_PREFIX}.cron.demo.plist held",
+            f"bootout {LABEL_PREFIX}.cron.other free",
+            f"bootstrap {LABEL_PREFIX}.cron.other.plist free",
+        ])
+
+    def test_an_install_killed_after_bootout_leaves_no_lock_and_a_rerun_finishes(self):
+        """The step between unload and load: the kernel drops the lock with
+        the killed shell, and the next install bootstraps the unloaded label."""
+        killed = self.run_script("install", "demo", path=self.fx.path(
+            self.launchd("kill-bin", on_bootout="touch \"$gone\"; kill -9 $PPID; ")))
+        self.assertEqual(killed.returncode, -signal.SIGKILL, killed.stdout + killed.stderr)
+        self.assertNotIn("launchctl bootstrap", self.calls.read_text())
+        self.assertTrue(self.lock_is_free())
+        rerun = self.run_script("install", "demo")
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertIn("installed: demo", rerun.stdout)
+        self.assertIn("launchctl bootstrap", self.calls.read_text())
+
+    def test_a_label_another_checkout_installed_is_judged_by_that_checkouts_lock(self):
+        """REGRESSION (codex pre-review). The loaded plist runs the checkout
+        that installed it, and that checkout's run locks its own logs/: a
+        worktree, or a clone that moved. This checkout's lock is free."""
+        other = self.fx.tmp / "other-checkout" / "local-cron-jobs" / "logs"
+        other.mkdir(parents=True)
+        held = open(other / ".demo.flock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.plist().write_text("the plist launchd holds\n")
+        for verb in ("install", "uninstall"):
+            result = self.run_script(verb, "demo", env={"CRON_TEST_STDOUT_DIR": str(other)})
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("demo: a run is in progress; retry after it ends", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
+        self.assertTrue(self.lock_is_free())
+
+    def test_a_loaded_label_that_names_no_log_is_refused(self):
+        """Every plist this script wrote names its log; without one the run's
+        lock is unknown, and unknown is not free."""
+        self.plist().write_text("the plist launchd holds\n")
+        for verb in ("install", "uninstall"):
+            result = self.run_script(verb, "demo", path=self.fx.path(self.launchd("bare-bin", stdout=False)))
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("launchd names no log", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+
+    def test_a_label_whose_log_folder_is_gone_is_replaced(self):
+        """PIN: a removed worktree's label stays replaceable. launchd cannot
+        start a run whose log folder is gone, so this checkout's lock serves."""
+        result = self.run_script("install", "demo",
+                                 env={"CRON_TEST_STDOUT_DIR": str(self.fx.tmp / "removed" / "logs")})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo", result.stdout)
+        self.assertEqual(len(self.bootouts()), 1)
+
+    def test_a_lock_it_cannot_test_is_not_read_as_free(self):
+        """A probe that fails says nothing: perl not running is not "no run"."""
+        folder = self.fx.tmp / "no-perl-bin"
+        folder.mkdir()
+        perl = folder / "perl"
+        perl.write_text("#!/bin/sh\nexit 2\n")
+        perl.chmod(perl.stat().st_mode | stat.S_IXUSR)
+        self.plist().write_text("the plist launchd holds\n")
+        for verb in ("install", "uninstall"):
+            result = self.run_script(verb, "demo", path=self.fx.path(folder, self.launchd(f"{verb}-bin")))
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("could not test the lock", result.stderr)
+        self.assertEqual(self.bootouts(), [])
+        self.assertEqual(self.plist().read_text(), "the plist launchd holds\n")
 
 
 class HostJobsTest(unittest.TestCase):
@@ -1256,6 +1490,9 @@ def stub_bin(tmp):
         "      printf '\\tlast exit code = %s\\n' \"${CRON_TEST_EXIT:-1}\"\n"
         "    fi\n"
         "    printf '\\tjob state = exited\\n'\n"
+        # The log the plist names, in the fixture's own logs/ unless a test
+        # moves it: install and uninstall lock the folder it sits in (sd:3317).
+        "    printf '\\tstdout path = %s/%s.log\\n' \"${CRON_TEST_STDOUT_DIR:-" + str(tmp / "local-cron-jobs" / "logs") + "}\" \"${2##*.cron.}\"\n"
         "    if [ \"${CRON_TEST_RUNS:-1}\" != 0 ]; then\n"
         "      printf '\\tresource coalition = {\\n\\t\\tID = %s\\n\\t}\\n' "
         "\"${CRON_TEST_LIFETIME:-" + LIFETIME + "}\"\n"

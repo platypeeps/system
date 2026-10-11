@@ -1261,9 +1261,52 @@ wait_unloaded() { # job
   done
 }
 
+# Take the job's own lock on fd 8, the one a run holds (above), and keep it
+# until the label is back (sd:3317). `bootout` sends TERM to a running job, so
+# a reinstall while a run was mid-work killed it. Held, not just tested: a slot
+# that fires between `bootout` and `bootstrap` then skips instead of starting a
+# run the next step would kill. A run in progress, or a lock this cannot test,
+# leaves the job as it is and returns 1; a failed probe is not a free lock.
+# The caller closes fd 8 once launchd holds the label again.
+#
+# The lock is the one beside the log the loaded label writes: a plist that
+# another checkout installed (a worktree, a moved clone) runs that checkout's
+# cron-jobs.sh, and its runs lock that checkout's logs/. launchd names the log
+# as `stdout path`, and every plist this script has written sets one. A loaded
+# label without one is not ours to guess about. A label `print` cannot find is
+# not loaded, so `bootout` is skipped and this checkout's lock serves. Nor does
+# a log folder that is gone: launchd cannot start a run there.
+hold_job_lock() { # job
+  local lock="$LOG_DIR/.$1.flock" taken=0 out stdout
+  if out=$(launchctl print "$DOMAIN/$(label_for "$1")" 2>/dev/null); then
+    stdout=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*stdout path = //p' | head -1)
+    if [ -z "$stdout" ]; then
+      echo "cron-jobs.sh: $1: launchd names no log for $(label_for "$1"), so its lock is unknown; nothing changed" >&2
+      return 1
+    fi
+    [ ! -d "${stdout%/*}" ] || lock="${stdout%/*}/.$1.flock"
+  fi
+  exec 8>>"$lock" || {
+    echo "cron-jobs.sh: $1: could not test the lock on $lock; nothing changed" >&2
+    return 1
+  }
+  perl -e "$LOCK_TAKE" || taken=$?
+  [ "$taken" -ne 0 ] || return 0
+  exec 8>&-
+  if [ "$taken" -eq 1 ]; then
+    echo "cron-jobs.sh: $1: a run is in progress; retry after it ends" >&2
+  else
+    echo "cron-jobs.sh: $1: could not test the lock on $lock (perl exit $taken); nothing changed" >&2
+  fi
+  return 1
+}
+
 cmd_install() {
   local job="$1" err
   load_job "$job"
+  # Before the plist is written: a refused install leaves the file launchd
+  # holds, so `verify` still reads it STALE and the next install retries.
+  hold_job_lock "$job" || return 1
   mkdir -p "$AGENT_DIR"
   write_plist "$job"
   if is_loaded "$job"; then
@@ -1276,10 +1319,12 @@ cmd_install() {
     wait_unloaded "$job"
     if ! err=$(launchctl bootstrap "$DOMAIN" "$(plist_for "$job")" 2>&1); then
       echo "failed: $job ($(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//'))" >&2
+      exec 8>&-
       return 1
     fi
   fi
   launchctl enable "$DOMAIN/$(label_for "$job")"
+  exec 8>&-
   # No record is written here, and that is the ninth round of the #486 review.
   # `install` bootstraps the label, so launchd is at `runs = 0` and
   # `last exit code = (never exited)`: it holds no verdict, the stale record
@@ -1290,10 +1335,14 @@ cmd_install() {
   echo "installed: $job  (schedule: $JOB_SCHEDULE local, plist: $(plist_for "$job"))"
 }
 
+# The lock only where there is a label to boot out: a job never loaded here
+# has no run to kill, and `uninstall --all` leaves it no lock file.
 cmd_uninstall() {
   local job="$1"
   if is_loaded "$job"; then
+    hold_job_lock "$job" || return 1
     launchctl bootout "$DOMAIN/$(label_for "$job")" 2>/dev/null || true
+    exec 8>&-
   fi
   rm -f "$(plist_for "$job")"
   echo "uninstalled: $job"
@@ -1579,6 +1628,8 @@ usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|
                (MACHINE_SETUP_STATE/profile or MACHINE_SETUP_PROFILE);
                there `machine-setup.sh update cron` owns the job set.
   uninstall    unload + remove plist (<job> or --all)
+               install and uninstall refuse and exit 1 while a run holds
+               the job's lock: `bootout` would stop it. Retry after it ends.
   run          run a job once now, foreground — output goes to the terminal
                and to the job's log, so a hand-run clears an outstanding
                failure the same way a scheduled run does
