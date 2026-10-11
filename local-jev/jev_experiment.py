@@ -19,6 +19,9 @@ file holds the steps built so far:
   the same redacted payload, under the stopping rule: registration guard,
   frozen heuristic, ledger isolation, public-pool scope, one retry, spend cap,
   Kev outage.
+* `labels sheet --population C1` (step 8) draws the blinded hand-label sheet,
+  its Markdown copy and its key from one population's sealed answer files;
+  it reads no finding, and refuses C2 until step 15 seals it.
 
 **It reads the workflow database read-only.** Every query opens it through
 `sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
@@ -978,6 +981,8 @@ def blocking_at_head(db, wanted: set) -> dict:
 
 
 def cmd_labels(args, out, env) -> int:
+    if args.kind == "sheet":
+        return cmd_sheet(args, out, env)
     db = args.db or default_db(env)
     name = args.population
     if name == "C2":
@@ -1853,6 +1858,262 @@ def cmd_replay(args, out, env) -> int:
     return 0
 
 
+# --- step 8: the blinded label kit ---------------------------------------------
+
+#: The five arms, in the key's column order and the pattern's letter order.
+ARMS = ("rules", "heuristic", "jev", "kev", "haiku")
+#: Production's cutoff, read on the answer's top probability as the
+#: pre-registration's "Production answer" says (operator, on #14765).
+UNSURE_BELOW = 0.6
+#: The draws' caps, and the arms whose every model skip is drawn; Haiku's are
+#: labelled only where they fall in the disagreement draw (H1).
+DISAGREEMENT_CAP = 150
+SKIP_CAP = 300
+SKIP_ARMS = ("jev", "kev")
+#: The paths a sheet row shows before `+n more` (design.md, "Sheet").
+SHEET_PATHS = 10
+SHEET_COLUMNS = ("row", "repo", "commit", "paths", "path_count", "lines_moved",
+                 "routing_said", "candidates", "label", "sure", "note")
+KEY_COLUMNS = ("row", "repo", "commit", "population", "hosted", *ARMS,
+               "jev_raw", "kev_raw", "haiku_raw",
+               "jev_confidence", "kev_confidence", "haiku_confidence",
+               "pattern", "disagreement_draw", "stratum_heads", "stratum_drawn",
+               "disagreement_weight", "jev_skip_draw", "jev_skip_weight",
+               "kev_skip_draw", "kev_skip_weight")
+
+
+def production(line: dict | None, routed: str) -> str | None:
+    """An arm's production answer: its tier when its top probability is at
+    or above the cutoff; the rules' tier below it, with no distribution, or
+    when the call failed; None when the arm was not asked about the head."""
+    if line is None:
+        return None
+    found = line.get("probabilities")
+    top = max(found.values()) if isinstance(found, dict) and found \
+        and all(map(unit, found.values())) else None
+    if line.get("outcome") == "ok" and line.get("tier") in TIERS and top is not None \
+            and top >= UNSURE_BELOW:
+        return line["tier"]
+    return routed
+
+
+def allocate(sizes: dict, cap: int) -> dict:
+    """Rows per stratum: all of them up to `cap`; above it, one per stratum
+    first, then each row to the stratum furthest below its share."""
+    total = sum(sizes.values())
+    if total <= cap:
+        return dict(sizes)
+    taken = dict.fromkeys(sizes, 1 if len(sizes) <= cap else 0)
+    while sum(taken.values()) < cap:
+        pick = max((s for s in sorted(sizes) if taken[s] < sizes[s]),
+                   key=lambda s: sizes[s] * cap / total - taken[s])
+        taken[pick] += 1
+    return taken
+
+
+def label_kit(rows: list[dict], answers: dict, heuristic, seed: int = SEED):
+    """The sheet's rows, the key's rows and a summary, from population rows
+    and each model arm's answer lines by (repository, head).
+
+    The arms vote with production answers. A model arm with no line for a
+    head was not asked about it: a hosted arm outside the public pool
+    (decision #14288) has no vote, rather than the rules' tier it never gave,
+    and the pattern shows `-` for it. A line without an answer votes the
+    rules' tier, as production falls back. So a head is a disagreement when
+    the arms asked about it split on review or `skip`, and an arm's skip
+    draw holds the model skips of the heads it was asked about.
+
+    The disagreement draw keeps every disagreement up to `DISAGREEMENT_CAP`;
+    above it, a seeded draw within each pattern, each row weighted by its
+    pattern's heads over its pattern's drawn rows. Each skip draw keeps
+    every model skip up to `SKIP_CAP`, else a seeded simple random draw.
+    Each draw has its own stream, seeded with `seed`, the population and the
+    draw's name, so one draw's size never moves another's rows and two
+    populations' draws are independent. The order and each row's candidates
+    use a fourth stream, which selects nothing.
+
+    One population per sheet: C2 gets its own draws, as C3 does (operator,
+    on #14764), so rows of two populations refuse."""
+    if len({r["population"] for r in rows}) > 1:
+        raise Refused("a sheet draws over one population; C2 and C3 get sheets of their own")
+    population = rows[0]["population"] if rows else ""
+    heads, left_out = [], collections.Counter()
+    for row in sorted(rows, key=lambda r: (r["population"], r["repository"], r["head"])):
+        if not row.get("state"):
+            left_out["no-state"] += 1
+            continue
+        if row.get("routed") not in TIERS:
+            left_out["no-routed-tier"] += 1
+            continue
+        state, routed = json.loads(row["state"]), row["routed"]
+        ident = (row["repository"], row["head"])
+        lines = {arm: answers.get(arm, {}).get(ident) for arm in MODEL_ARMS}
+        votes = {"rules": routed, "heuristic": heuristic(state, routed),
+                 **{arm: production(lines[arm], routed) for arm in MODEL_ARMS}}
+        heads.append({"row": row, "state": state, "lines": lines, "votes": votes,
+                      "pattern": "".join("-" if votes[a] is None else "S" if votes[a] == "skip"
+                                         else "R" for a in ARMS)})
+    key: dict[tuple, dict] = {}
+
+    def keyed(head):
+        return key.setdefault((head["row"]["repository"], head["row"]["head"]), {"head": head})
+
+    strata: dict[str, list] = {}
+    for head in heads:
+        if "S" in head["pattern"] and "R" in head["pattern"]:
+            strata.setdefault(head["pattern"], []).append(head)
+    taken = allocate({p: len(m) for p, m in strata.items()}, DISAGREEMENT_CAP)
+    rng = random.Random(f"{seed}:{population}:disagreement")
+    for pattern in sorted(strata):
+        for head in rng.sample(strata[pattern], taken[pattern]):
+            keyed(head).update(disagreement_draw=1, stratum_heads=len(strata[pattern]),
+                               stratum_drawn=taken[pattern],
+                               disagreement_weight=len(strata[pattern]) / taken[pattern])
+    skips = {}
+    for arm in SKIP_ARMS:
+        pool = [h for h in heads if h["votes"][arm] == "skip" and h["votes"]["rules"] != "skip"]
+        drawn = random.Random(f"{seed}:{population}:skip:{arm}").sample(
+            pool, min(SKIP_CAP, len(pool)))
+        for head in drawn:
+            keyed(head).update({f"{arm}_skip_draw": 1,
+                                f"{arm}_skip_weight": len(pool) / len(drawn)})
+        # The sampling rate a pooled H1 look thins every population to the
+        # lowest of (design.md, review round 1); none without a model skip.
+        skips[arm] = {"pool": len(pool), "drawn": len(drawn),
+                      "rate": len(drawn) / len(pool) if pool else None}
+    order = random.Random(f"{seed}:order")
+    entries = [key[ident] for ident in sorted(key)]
+    order.shuffle(entries)
+    sheet, keys = [], []
+    for number, entry in enumerate(entries, 1):
+        head = entry["head"]
+        row, state, votes, lines = head["row"], head["state"], head["votes"], head["lines"]
+        shown = state["changed_paths"][:SHEET_PATHS]
+        more = state["path_count"] - len(shown)
+        candidates = sorted({v for v in votes.values() if v is not None})
+        order.shuffle(candidates)
+        sheet.append({"row": number, "repo": row["alias"], "commit": row["head"],
+                      "paths": "; ".join(shown) + (f" +{more} more" if more else ""),
+                      "path_count": state["path_count"], "lines_moved": state["lines_moved"],
+                      "routing_said": state["deterministic_routing_said"],
+                      "candidates": ", ".join(candidates), "label": "", "sure": "", "note": ""})
+        keys.append({
+            "row": number, "repo": row["alias"], "commit": row["head"],
+            "population": row["population"], "hosted": int(lines["jev"] is not None),
+            **{arm: votes[arm] or "" for arm in ARMS},
+            **{f"{arm}_raw": "" if lines[arm] is None else lines[arm].get("tier")
+               or lines[arm].get("outcome") for arm in MODEL_ARMS},
+            **{f"{arm}_confidence": "" if lines[arm] is None or lines[arm].get("confidence")
+               is None else lines[arm]["confidence"] for arm in MODEL_ARMS},
+            "pattern": head["pattern"], "disagreement_draw": entry.get("disagreement_draw", 0),
+            "stratum_heads": entry.get("stratum_heads", ""),
+            "stratum_drawn": entry.get("stratum_drawn", ""),
+            "disagreement_weight": entry.get("disagreement_weight", ""),
+            **{f"{arm}_skip{part}": entry.get(f"{arm}_skip{part}", 0 if part == "_draw" else "")
+               for arm in SKIP_ARMS for part in ("_draw", "_weight")}})
+    summary = {"heads": len(heads), "left_out": dict(left_out), "rows": len(sheet),
+               "rows_by_population": dict(collections.Counter(k["population"] for k in keys)),
+               "disagreement": {"pool": sum(map(len, strata.values())),
+                                "drawn": sum(taken.values()), "strata": len(strata)},
+               "skip": skips}
+    return [as_cells(r) for r in sheet], [as_cells(k) for k in keys], summary
+
+
+def thinned(rows: list[dict], arm: str, population: str, common: float, own,
+            seed: int = SEED) -> list[dict]:
+    """One population's drawn skips of one arm, thinned for a pooled H1
+    look (design.md, "Pooled H1"): one generator per arm and population,
+    advanced once per row in `(repo, commit)` order, keeps a row when its
+    number falls below `common / own`. A row was drawn at `own`, so it is
+    kept at `common`, the lowest rate across the looked-at populations,
+    whatever its population: the pooled sample has one inclusion chance."""
+    if own is None or not 0 < common <= own <= 1:
+        raise Refused(f"no thinning from {own!r} to {common!r}: the common rate is the lowest "
+                      "rate of the populations pooled, each above 0")
+    rng = random.Random(f"{seed}:thin:{arm}:{population}")
+    return [row for row in sorted(rows, key=lambda r: (r["repo"], r["commit"]))
+            if rng.random() < common / own]
+
+
+def as_cells(row: dict) -> dict:
+    """A row as the CSV holds it, so the files and the tests read one form."""
+    return {name: str(value) for name, value in row.items()}
+
+
+def csv_bytes(columns, rows) -> bytes:
+    import csv
+    import io
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue().encode("utf-8")
+
+
+def sheet_markdown(name: str, sheet: list[dict]) -> bytes:
+    """The sheet's reading copy: one section per row, in the sheet's order."""
+    out = [f"# Hand-label sheet {name}", "",
+           f"Fill `label` (skip, cheap, standard or deep) and `sure` (1 guess, 2 fairly sure,"
+           f" 3 sure) in `sheet-{name}.csv`; this copy is for reading.",
+           "Read each commit's diff in the local clone. The candidates are the tiers given"
+           " for it, in no order.", ""]
+    for row in sheet:
+        out += [f"## Row {row['row']}", "",
+                f"- Repository: {row['repo']}", f"- Commit: `{row['commit']}`",
+                f"- Paths ({row['path_count']}, {row['lines_moved']} lines moved): {row['paths']}",
+                f"- Routing said: {row['routing_said']}",
+                f"- Candidates: {row['candidates']}", ""]
+    return "\n".join(out).encode("utf-8")
+
+
+def cmd_sheet(args, out, env) -> int:
+    db = args.db or default_db(env)
+    if args.population == "C2":
+        raise Refused("C2 is sealed by step 15 after its 14 days end (2026-10-20 09:01 MDT), "
+                      "and step 15 is not built; nothing was read")
+    # Before any answer is read: the draws come from sealed answer files only.
+    unsealed = sealed(db, args.out, env.get("HOME"))
+    if unsealed:
+        raise Refused("C1 is not sealed: " + "; ".join(unsealed) + "; nothing was read")
+    heuristic = frozen_heuristic()
+    inputs, answers = {}, {}
+    for name in ("population.jsonl", *(f"replay/{arm}.jsonl" for arm in MODEL_ARMS)):
+        data = (args.out / name).read_bytes()
+        inputs[name] = hashlib.sha256(data).hexdigest()
+        lines = [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
+        if name == "population.jsonl":
+            rows = [r for r in lines if r["population"] == args.population]
+        else:
+            answers[name[len("replay/"):-len(".jsonl")]] = {
+                (line["repository"], line["head"]): line for line in lines}
+    sheet, key, summary = label_kit(rows, answers, heuristic)
+    tag = args.population
+    files = {f"sheet-{tag}.csv": csv_bytes(SHEET_COLUMNS, sheet),
+             f"sheet-{tag}.md": sheet_markdown(tag, sheet),
+             f"key-{tag}.csv": csv_bytes(KEY_COLUMNS, key)}
+    summary.update(population=tag, seed=SEED, inputs=inputs,
+                   files={name: hashlib.sha256(data).hexdigest() for name, data in files.items()})
+    files[f"sheet-{tag}.json"] = (json.dumps(summary, indent=2, sort_keys=True) + "\n").encode()
+    # Written once: a file that holds other bytes, a filled sheet among them,
+    # refuses the run before anything is written. The same bytes are kept, so
+    # a run stopped between two files finishes on the next.
+    labels = args.out / "labels"
+    other = [name for name, data in files.items()
+             if (labels / name).exists() and (labels / name).read_bytes() != data]
+    if other:
+        raise Refused(f"labels/{other[0]} exists with other contents; a sheet is written once")
+    labels.mkdir(parents=True, exist_ok=True)
+    for name, data in files.items():
+        target = labels / name
+        if not target.exists():
+            part = target.with_name(name + ".part")
+            part.write_bytes(data)
+            os.replace(part, target)
+    json.dump(summary, out, indent=2, sort_keys=True)
+    out.write("\n")
+    return 0
+
+
 # --- entry --------------------------------------------------------------------
 
 def default_db(env=None) -> Path:
@@ -1884,7 +2145,13 @@ def build_parser() -> argparse.ArgumentParser:
     obj.add_argument("--db", type=db_path, help="default: the live workflow database")
     obj.add_argument("--out", type=Path, required=True,
                      help="the experiment data folder, holding population.jsonl")
-    rep = verbs.add_parser("replay", help="step 5: ask one model arm about every head")
+    sht = kinds.add_parser("sheet", help="step 8: the blinded hand-label sheet and its key")
+    sht.add_argument("--population", choices=("C1", "C2"), required=True,
+                     help="the sealed population to draw from; each gets its own sheet")
+    sht.add_argument("--db", type=db_path, help="default: the live workflow database")
+    sht.add_argument("--out", type=Path, required=True,
+                     help="the experiment data folder, holding population.jsonl and replay/")
+    rep =verbs.add_parser("replay", help="step 5: ask one model arm about every head")
     rep.add_argument("--arm", choices=MODEL_ARMS, required=True)
     rep.add_argument("--population", type=Path, required=True, help="population.jsonl")
     rep.add_argument("--out", type=Path, required=True, help="the experiment data folder")

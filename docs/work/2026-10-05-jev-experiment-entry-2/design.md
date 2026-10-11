@@ -205,19 +205,49 @@ The label is written to the experiment ledger only with `label`, source `review-
 
 ### Blinded hand labels second
 
-**Sample.** Two draws over C1 and C2, merged into one sheet; a head in both is one row. The seed is in the pre-registration (`docs/experiments/2026-10-05-jev-entry-2-preregistration.md`).
+**Sample.** Two draws over one population, merged into one sheet; a head in both is one row. The seed is in the pre-registration (`docs/experiments/2026-10-05-jev-entry-2-preregistration.md`).
+
+**Deviation from the registration** (operator, on #14764). The pre-registration draws one sheet over C1 and C2 together.
+Each population now gets its own sheet with the same draws, seed and caps, as C3 already does: C1 now, C2 after step 15.
+Reason: C1 is sealed and exploratory (#14288) and is labelled before C2 seals; a joint draw could drop C1 rows already labelled and let them take confirmatory C2 slots.
+Pooled disagreement-draw estimates weight each row by its own population's sampling rate. Pooled H1 thins instead; see "Pooled H1" below.
 
 - **Disagreement draw**: every head where the five arms disagree on review or `skip`: at least one answers `skip` and at least one does not.
   Above 150, a seeded random draw stratified by disagreement pattern keeps 150, and each row carries its stratum weight.
 - **Skip draw**: every Jev and Kev model skip. Above 300 for an arm, a seeded simple random draw keeps 300 of that arm's.
 
+Both draws read production answers: an arm's tier when its top probability is at least 0.6, as the pre-registration defines it, not its confidence (operator, on #14765). A hosted arm not asked about a head (outside the public pool, decision #14288) has no vote there, not the rules' tier it never gave.
+So a head is a disagreement when the arms asked about it split, and each arm's skip draw covers the heads it was asked about; the key's `hosted` column marks the pool.
+
 The key records which draw each row came from; the sheet does not.
 If the extension (C3) runs, C3 gets its own sheet from the same two draws over C3 heads alone.
-Pooled H1 uses one common skip-draw rate per arm, the lowest of C1+C2 and C3; the other population's labelled skips are thinned at random to it, so Clopper-Pearson stays exact.
-Pooled disagreement-draw estimates weight each row by its own population's sampling rate.
+
+**Pooled H1** (review rounds 1 and 2 of step 8). Separate sheets give each population its own skip-draw rate per arm: 300 of 400 model skips in one and 20 of 20 in another are rates 0.75 and 1.
+Pooled as they stand, the second is overrepresented, and no weighting gives an equal-probability sample.
+So before any pooled H1 look, the first (C1+C2) and the one after the extension alike, each arm is thinned on its own:
+
+- Each population's sheet records the arm's rate, `drawn / pool`, as `skip.<arm>.rate` in `sheet-<population>.json`; no model skip means no rate.
+- The common rate is the lowest rate of every population included in that look (C1, C2, and C3 once it runs), among those with a rate.
+- `jev_experiment.thinned` thins each population's drawn model skips to it: one generator per arm and population, `random.Random(f"2764:thin:<arm>:<population>")`, advanced once per row in `(repo, commit)` order of the key; a row stays when its number is below the common rate over its population's rate.
+  A generator built afresh for each row draws one number for all of them, so it keeps every row or none (review round 2); a test pins that counterexample.
+  The population that sets the common rate keeps every row.
+- A row was drawn at its population's rate and stays at the common rate over that, so every model skip of every included population is in the pooled sample with the same chance, the common rate.
+  A thinned-out row keeps its label; it is left out of the pooled H1 look only.
+
+**Draws and streams.** Every draw has its own generator, seeded with a string, which Python hashes with SHA-512, so the stream is the same on every run and machine.
+
+| Draw | Generator and seed | Advance order | Inclusion per row | Across populations |
+|---|---|---|---|---|
+| Disagreement draw | one per sheet, `2764:<population>:disagreement` | one `sample` per pattern, patterns sorted, rows in `(population, repository, head)` order | every row up to 150; above, the pattern's drawn over its heads | own stream per population; estimates weight each row by its pattern's heads over its drawn rows |
+| Skip draw, Jev and Kev | one per arm and sheet, `2764:<population>:skip:<arm>` | one `sample` over the arm's model skips in `(population, repository, head)` order | every skip up to 300; above, 300 over the pool | own stream per population; thinned to one common rate before a pooled H1 look |
+| Thinning | one per arm and population, `2764:thin:<arm>:<population>` | one number per drawn row, `(repo, commit)` order | the common rate over the population's rate, so the common rate overall | the same chance in every population |
+| Sheet order and candidates | one per sheet, `2764:order` | the rows' shuffle, then each row's candidates | selects nothing | blinding only |
+
+Before review round 2, the two draws used one seed string in every population, so C1, C2 and C3 drew the same positions in pools of one size.
+Each population now has its own streams; on C1 every pool is under its cap, so C1's sheet and key are unchanged.
 Order is shuffled with the same seed.
 
-**Sheet.** `labels/sheet.csv` in the raw data folder, with a Markdown copy for reading:
+**Sheet.** `labels/sheet-<population>.csv` in the raw data folder, such as `sheet-C1.csv`, with a Markdown copy for reading:
 
 | Column | Content |
 |---|---|
@@ -232,7 +262,7 @@ Order is shuffled with the same seed.
 | `sure` | blank: 1 guess, 2 fairly sure, 3 sure |
 | `note` | blank |
 
-The key, `labels/key.csv`, maps `row` to each arm's answer.
+The key, `labels/key-<population>.csv`, maps `row` to each arm's answer and draw weights; `sheet-<population>.json` holds the counts and the input files' SHA-256.
 It stays closed until the labels are complete; the SHA-256 of the filled sheet goes on sd:2764 before the key opens.
 The sheet shows no review finding, so the two label sources stay independent.
 
@@ -347,7 +377,7 @@ Expected hosted spend for the replay of 2,222 heads is under $5, nearly all of i
 | `population.jsonl` | one state per head, with alias, base, head, routed tier, blocking@head |
 | `replay/<arm>.jsonl` | one answer per head: tier, distribution, tokens, cost, wait |
 | `experiment.db` | the experiment ledger, through `JEV_METER_DB` (see Ledger isolation) |
-| `labels/` | `sheet.csv`, `sheet.md`, `key.csv`, the filled sheet |
+| `labels/` | `sheet-<population>.csv`, `.md` and `.json`, `key-<population>.csv`, the filled sheet |
 | `injection/`, `scanner/` | inputs, answers |
 | `results.md` | each hypothesis, its number, its query |
 

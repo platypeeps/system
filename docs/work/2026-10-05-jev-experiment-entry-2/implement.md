@@ -88,8 +88,8 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
    Check: each arm's file has one line per head in its scope; no-answer counts are in the manifest; spend is under $10.
    Then seal C1: the SHA-256 of each arm's C1 answer file goes on sd:2764 before step 4 runs on C1.
 
-8. **Blinded label kit** (`labels sheet`). Sheet, Markdown copy and sealed key per `design.md`, seed 2764, from C1 and C2: the disagreement draw and the skip draw, merged by head.
-   C1 rows can be labelled after step 7; C2 rows join after step 15.
+8. **Blinded label kit** (`labels sheet --population C1|C2`). Sheet, Markdown copy and sealed key per `design.md`, seed 2764, one sheet per population: the disagreement draw and the skip draw, merged by head.
+   C1's sheet can be labelled after step 7; C2 gets its own sheet after step 15 (operator, on #14764).
    Tests: no arm name and no finding in the sheet; the key maps every row; the order is stable for the seed.
    Check: the disagreement draw has min(150, disagreements) rows, and the skip draw min(300, model skips) for each of Jev and Kev.
 
@@ -105,6 +105,7 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
     Check: 400 variants per arm answered, plus 20 finding pairs per model arm.
 
 12. **Analysis** (`report`). The analysis plan in the pre-registration, in its order, into `results.md` with the query for each number.
+    Before each pooled H1 look, thin each arm's skip labels per population to the lowest `skip.<arm>.rate` across every included population with `jev_experiment.thinned`, as `design.md` "Pooled H1" says.
     Check: every hypothesis is held, failed or not decidable, with its n against the sample-size table; the decision rule's line is named.
 
 13. **Privacy review.** The eight rules in `design.md` on the draft's numbers and quotes.
