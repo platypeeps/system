@@ -3,6 +3,8 @@
 - `{DRAFT_PATH}` — the `## Draft` section is the piece. `## Notes / angle` and `## Outline` are internal scaffolding that will never be published; read them only to understand what the author was trying to do.
 - `{RESEARCH_PATH}` — the sourcing record. Every factual claim in the draft is supposed to trace back to something here.
 
+If the repository has `profile/guardrails.md`, read it: it holds the repository's editorial guardrails and escalation classes. A hit on any class it names is a CERTAIN finding that quotes the class. State in one line which guardrails file you read, or that none exists.
+
 ## Attack it on these axes, in priority order
 
 **1. Argument validity.** Does the evidence presented actually support the conclusion drawn? Find every logical jump. Where is the chain weakest?
