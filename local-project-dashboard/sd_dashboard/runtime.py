@@ -224,6 +224,8 @@ def _installed_library_commit():
     A VCS install records `vcs_info.commit_id` in direct_url.json; a path
     install (`pip install ./local-sd-db`, as both CIs do) records `dir_info`
     and no commit, so there is nothing to compare and the caller skips.
+    A build from another tree (the pack's `lib/`, sd:2997) records a commit
+    this checkout does not hold, so it skips too (sd:3322).
     """
     import importlib.metadata
 
@@ -232,7 +234,9 @@ def _installed_library_commit():
         record = json.loads(text) if text else None
     except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
         return None
-    vcs_info = record.get("vcs_info") if isinstance(record, dict) else None
+    if not isinstance(record, dict) or record.get("subdirectory") != "local-sd-db":
+        return None
+    vcs_info = record.get("vcs_info")
     commit = vcs_info.get("commit_id") if isinstance(vcs_info, dict) else None
     return commit if isinstance(commit, str) and commit else None
 
