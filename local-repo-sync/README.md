@@ -70,6 +70,21 @@ that checkout by `local-repo-sync/repo-sync.sh`. When the pack's
 the runner and `sd-serve`, run the pack's `bin/sd-db backup`, then
 `bin/sd-db migrate`. It runs neither. It exits 1 when any checkout failed.
 
+When it moves system or the pack, refresh first stops `sd-serve` and the
+dashboard (`<prefix>.sd-serve` and `<prefix>.sd-dashboard`, the prefix from
+`SYSTEM_TOOLS_LABEL_PREFIX`) with `launchctl bootout` (sd:3279). Each imports
+`sd_db` lazily from those checkouts, so a running one would load new modules
+into an old process. A bootout that fails moves nothing, starts the ones it
+stopped and exits 1. After the moves, failed or not, it bootstraps each
+stopped one again, `sd-serve` first, but only when the database's
+`user_version` equals the pack's `lib/sd_db` `SCHEMA_VERSION`. Otherwise
+they stay stopped and refresh exits 1, so no `hub-pin` goes out: migrate,
+then refresh again. `~/.local/state/repo-sync/refresh-stopped` lists each
+one stopped and not started yet, so a refresh after a kill or a failed
+start starts them. This is steps 1 and 5 of D2 in the pack's design for
+moving `sd_db` into the pack (sd:2997); its migrate and rollback record are
+not here.
+
 `refresh` drains the lanes before it moves anything (sd:3099). POSIX sh
 cannot hold a flock, so `refresh_drain.py`, a stdlib helper beside the
 script, holds every lane's `runner.lock` under the lane root. The root is

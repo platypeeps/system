@@ -13,6 +13,7 @@ without it.
 
 import pathlib
 import shutil
+import sqlite3
 import sys
 import unittest
 
@@ -46,6 +47,26 @@ esac
 """
 
 
+# launchd for refresh's library consumers (sd:3279): a file per loaded label
+# under LAUNCHD_STATE. bootout and bootstrap go to MAKE_LOG, so a case reads
+# their order against make setup; LAUNCHCTL_FAIL names the one call that
+# fails, "<verb> <label>".
+LAUNCHCTL_STUB = """#!/bin/sh
+case "$1" in
+  print) [ -e "$LAUNCHD_STATE/${2##*/}" ]; exit $? ;;
+  bootout) label=${2##*/} ;;
+  bootstrap) label=$(basename "$3" .plist) ;;
+  *) echo "launchctl stub: unexpected $*" >&2; exit 2 ;;
+esac
+printf 'launchctl %s %s\\n' "$1" "$label" >> "$MAKE_LOG"
+[ "$1 $label" != "${LAUNCHCTL_FAIL:-}" ] || exit 5
+if [ "$1" = bootout ]; then rm -f "$LAUNCHD_STATE/$label"; else : > "$LAUNCHD_STATE/$label"; fi
+"""
+
+SERVE = "local.system-tools.sd-serve"
+DASHBOARD = "local.system-tools.sd-dashboard"
+
+
 class PinFixture(HygieneFixture):
     def __init__(self):
         super().__init__()
@@ -55,6 +76,11 @@ class PinFixture(HygieneFixture):
         self.others = 0
         (self.bin / "sd").write_text(SD_STUB)
         (self.bin / "sd").chmod(0o755)
+        (self.bin / "launchctl").write_text(LAUNCHCTL_STUB)
+        (self.bin / "launchctl").chmod(0o755)
+        self.launchd = self.tmp / "launchd"
+        self.launchd.mkdir()
+        self.database = self.tmp / "sd.db"
         # The drain reads the repo registry through this checkout's sd-db.sh;
         # the stub prints REPO_LIST, or fails with REPO_LIST_RC.
         sd_db = self.tmp / "local-sd-db" / "sd-db.sh"
@@ -71,7 +97,9 @@ class PinFixture(HygieneFixture):
 
     def run(self, *args, expect=0, extra_env=None):
         env = {"MAKE_LOG": str(self.make_log), "SD_LOG": str(self.sd_log),
-               "SD_LANE_ROOT": str(self.lanes), **(extra_env or {})}
+               "SD_LANE_ROOT": str(self.lanes), "LAUNCHD_STATE": str(self.launchd),
+               "REPO_SYNC_SD_DB": str(self.database), "SYSTEM_TOOLS_LABEL_PREFIX": "local.system-tools",
+               "XDG_STATE_HOME": str(self.tmp / "state"), **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 
     def head(self, repo):
@@ -487,6 +515,101 @@ class RefreshTest(unittest.TestCase):
         result = f.run("refresh", expect=0)
 
         self.assertNotIn("migrate", result.stdout)
+
+
+class ConsumersTest(unittest.TestCase):
+    """sd:3279: refresh stops the hub's sd_db consumers before it moves the
+    pack or system, and starts them once the database's schema is the pack
+    lib's. Each imports lazily, so a running one would load new modules
+    into an old process. Design D2 steps 1 and 5."""
+
+    def setUp(self):
+        self.f = PinFixture()
+        self.addCleanup(self.f.destroy)
+        self.pack = self.f.repo("a/pack")
+        (self.pack / "bin").mkdir()
+        (self.pack / "lib/sd_db").mkdir(parents=True)
+        self.f.commit(self.pack, "bin/sd_install.py", "", "installer")
+        self.f.commit(self.pack, "lib/sd_db/schema.py", "SCHEMA_VERSION = 5\n", "schema 5")
+        self.f.git(self.pack, "push", "-q", "origin", "main")
+        self.f.pin(self.pack)
+        self.new = self.f.advance_origin(self.pack)
+        self.schema(5)
+        self.load(SERVE, DASHBOARD)
+        self.stopped = self.f.tmp / "state/repo-sync/refresh-stopped"
+
+    def schema(self, version):
+        connection = sqlite3.connect(self.f.database)
+        connection.execute(f"PRAGMA user_version = {version}")
+        connection.close()
+
+    def load(self, *labels):
+        for label in labels:
+            (self.f.launchd / label).touch()
+
+    def loaded(self):
+        return sorted(p.name for p in self.f.launchd.iterdir())
+
+    def test_consumers_stop_before_the_move_and_start_after_it(self):
+        self.f.run("refresh", expect=0)
+        self.assertEqual([f"launchctl bootout {SERVE}", f"launchctl bootout {DASHBOARD}",
+                          f"-C {self.pack} setup",
+                          f"launchctl bootstrap {SERVE}", f"launchctl bootstrap {DASHBOARD}"],
+                         self.f.make_calls())
+        self.assertEqual(self.new, self.f.head(self.pack))
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_a_database_at_another_schema_leaves_them_stopped_until_a_rerun(self):
+        self.schema(4)
+        result = self.f.run("refresh", expect=1)
+        self.assertEqual([], self.loaded())
+        self.assertIn("database schema 4, the pack's lib/ 5", result.stdout)
+        self.assertIn(f"{self.pack}/bin/sd-db migrate", result.stdout)
+        self.assertEqual(f"{SERVE}\n{DASHBOARD}\n", self.stopped.read_text())
+        self.schema(5)
+        self.f.run("refresh", expect=0)
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_a_stop_that_fails_moves_nothing_and_starts_the_stopped_one_again(self):
+        before = self.f.head(self.pack)
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_FAIL": f"bootout {DASHBOARD}"})
+        self.assertIn("nothing moved", result.stdout)
+        self.assertEqual(before, self.f.head(self.pack))
+        self.assertNotIn(f"-C {self.pack} setup", self.f.make_calls())
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_a_move_that_fails_still_starts_them(self):
+        self.f.run("refresh", expect=1, extra_env={"MAKE_RC": "2"})
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+
+    def test_a_start_that_fails_stays_listed_for_the_rerun(self):
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_FAIL": f"bootstrap {SERVE}"})
+        self.assertIn(f"bootstrap {SERVE}", result.stdout)
+        self.assertEqual([], self.loaded())
+        self.assertEqual(f"{SERVE}\n{DASHBOARD}\n", self.stopped.read_text())
+        self.f.run("refresh", expect=0)
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+
+    def test_a_refresh_killed_between_stop_and_start_is_finished_by_the_next(self):
+        # The state a kill after both bootouts leaves: both listed, neither loaded.
+        for label in (SERVE, DASHBOARD):
+            (self.f.launchd / label).unlink()
+        self.stopped.parent.mkdir(parents=True)
+        self.stopped.write_text(f"{SERVE}\n{DASHBOARD}\n")
+        self.f.run("refresh", expect=0)
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_a_refresh_of_no_hub_checkout_stops_nothing(self):
+        other = self.f.repo("a/other")
+        self.f.pin(other)
+        self.f.advance_origin(other)
+        self.f.run("refresh", str(other), expect=0)
+        self.assertEqual([], [c for c in self.f.make_calls() if c.startswith("launchctl")])
+
 
 if __name__ == "__main__":
     unittest.main()
