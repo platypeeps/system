@@ -94,10 +94,10 @@ for var in TYPESAFE_API_KEY JEV_URL JEV_MODEL JEV_TIMEOUT JEV_RETRIES \
   [ -n "$value" ] && export "$var"
 done
 
-# The meter writes through `sd_db`, and a bare python3 answers but records
-# nothing (sd:2087). Pick the interpreter the way sd-db.sh does: PYTHON, then
-# SD_DB_PYTHON, then the command pack's venv, which is where the pack installs
-# `sd_db`, then python3.
+# The meter loads `sd_db` from the command pack's lib/ (jev_meter.py, sd:3279),
+# so the interpreter no longer decides which copy runs. Pick it the way
+# sd-db.sh does: PYTHON, then SD_DB_PYTHON, then the command pack's venv, then
+# python3.
 if [ -z "${PYTHON:-}" ]; then
   for candidate in "${SD_DB_PYTHON:-}" \
                    "$HOME/repos/platypeeps/sd-ai-command-pack/.venv/bin/python"; do

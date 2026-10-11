@@ -241,8 +241,11 @@ with no such entry the row carries tokens and no cost
 (`local-sd-db/README.md`, section `judgments`). Leave the entry's `model` out
 to price every Jev model; the row records the model the response names.
 A locked ledger is waited on for 250 ms and then the row is dropped; `JEV_METER_BUSY_MS` sets another bound.
-The row needs `sd_db`, so `jev.sh` runs the interpreter `sd-db.sh` would:
-`PYTHON`, `SD_DB_PYTHON`, then the command pack's venv, then `python3`.
+The row needs `sd_db`, which `jev_meter` loads from the command pack's `lib/`
+(`SD_PACK_ROOT`, default `~/repos/platypeeps/sd-ai-command-pack`) ahead of any
+installed copy (sd:3279). `jev.sh` still picks `PYTHON`, `SD_DB_PYTHON`, then
+the command pack's venv, then `python3`; the interpreter no longer decides
+which `sd_db` runs.
 
 Name yourself, or the row is named after the program that ran `jev`
 (`jev.sh` reads its command line with `ps`), and `unknown` only when that
@@ -505,7 +508,7 @@ row, the answer, the probabilities, the model's own latency where it reports
 one, tokens and cost. An unreachable or unkeyed arm records a decline, and
 so does a reply that does not carry exactly the options asked about.
 Before any arm calls out, the child checks that the ledger would take its
-row: `sd_db` installed and naming the arm, and the database at the
+row: the pack's `lib/sd_db` naming the arm, and the database at the
 library's schema. Without that, the arm does not run, so no paid call goes
 unrecorded.
 
