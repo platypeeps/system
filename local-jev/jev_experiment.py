@@ -45,15 +45,19 @@ import collections
 import contextlib
 import datetime
 import hashlib
+import ipaddress
 import json
 import math
 import os
 import random
 import re
+import socket
 import subprocess
 import sys
 import time
 import unicodedata
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import jev_meter
@@ -1081,7 +1085,7 @@ def ask_once(arm: str, payload: dict, definition: dict, conf: dict, env) -> dict
                          probabilities=jev.distribution_of(answer, definition))
         else:
             job = {"payload": payload}
-            got = (jev_compare.kev_arm(job, env) if arm == "kev"
+            got = (jev_compare.kev_arm(job, env, LOCAL_ONLY) if arm == "kev"
                    else jev_compare.haiku_arm(job, env, "anthropic"))
             event.update({k: v for k, v in got.items() if not k.startswith("_")})
         if event.get("answer") is None:
@@ -1181,6 +1185,35 @@ def settle(ledger: Path, row: dict, env) -> str:
     return said
 
 
+class Unredirected(urllib.request.HTTPRedirectHandler):
+    """A redirect is an error: the Kev arm's request goes to its own address only."""
+
+    def redirect_request(self, *args):
+        return None
+
+
+#: Kev's opener in the replay: no proxy, no redirect, so the request reaches
+#: the address `on_this_machine` checked and nothing else.
+LOCAL_ONLY = urllib.request.build_opener(urllib.request.ProxyHandler({}), Unredirected)
+
+
+def on_this_machine(url: str) -> str | None:
+    """Why `url` may not be on this machine, else None: Kev is asked about
+    every state, private ones included, so every address its host resolves to
+    must be loopback. A name that does not resolve is not loopback."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return f"{url} is not an http address"
+    try:
+        found = socket.getaddrinfo(parts.hostname, parts.port or 80, proto=socket.IPPROTO_TCP)
+        addresses = {ipaddress.ip_address(info[4][0].split("%")[0]) for info in found}
+    except (OSError, ValueError) as exc:
+        return f"{parts.hostname} does not resolve here ({exc})"
+    if not addresses or not all(a.is_loopback for a in addresses):
+        return f"{parts.hostname} resolves to an address off this machine"
+    return None
+
+
 def kev_up() -> bool:
     """`kev.sh status` exits 0. A probe that fails or hangs is not up."""
     try:
@@ -1226,6 +1259,12 @@ def cmd_replay(args, out, env) -> int:
         if not key or key.lower() in jev.PLACEHOLDER_KEYS:
             raise Refused("no JEV_COMPARE_ANTHROPIC_KEY; the Haiku arm runs on the anthropic "
                           "transport only")
+    else:
+        fault = on_this_machine((env.get("JEV_COMPARE_KEV_URL") or jev_compare.DEFAULT_KEV_URL)
+                                .strip())
+        if fault:
+            raise Refused(f"Kev is asked about private states, so it must run here: {fault}; "
+                          "nothing was sent")
     population_text = args.population.read_bytes()
     population_sha = hashlib.sha256(population_text).hexdigest()
     rows = scope(arm, read_jsonl(args.population), db, env.get("HOME"))

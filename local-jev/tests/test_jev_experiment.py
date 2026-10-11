@@ -9,10 +9,13 @@ import contextlib
 import hashlib
 import io
 import json
+import socket
 import subprocess
 import tempfile
+import threading
 import unittest
 import unittest.mock
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import jev_experiment as experiment
@@ -1235,6 +1238,49 @@ class TheReplay(CompareCase):
         env = self.env()
         env.pop(name)
         return env
+
+    def test_kev_off_this_machine_is_refused(self):
+        remote = [(2, 1, 6, "", ("198.51.100.7", 80)), (2, 1, 6, "", ("127.0.0.1", 80))]
+        for url, resolved in (("http://192.0.2.1:9/v1/systemone", None),
+                              ("file:///v1/systemone", None),
+                              ("http://kev.example.test/v1/systemone", [remote]),
+                              ("http://kev.example.test/v1/systemone", socket.gaierror(8, "no"))):
+            with self.subTest(url=url, resolved=resolved), contextlib.ExitStack() as stack:
+                if resolved is not None:     # no real lookup: it can wait 30 s here
+                    stack.enter_context(unittest.mock.patch.object(
+                        socket, "getaddrinfo", side_effect=resolved))
+                self.assertEqual(self.replay("kev", env=self.env(JEV_COMPARE_KEV_URL=url))[0], 2)
+        self.assertEqual(Arm.seen, [])
+
+    def test_kev_s_redirect_is_not_followed(self):
+        landed = []
+
+        class Redirect(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                self.send_response(302)
+                self.send_header("Location", "/landed")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_GET(self):
+                landed.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        url = f"http://127.0.0.1:{server.server_address[1]}/v1/systemone"
+        code, _out = self.replay("kev", env=self.env(JEV_COMPARE_KEV_URL=url, KEV_API_KEY="k"))
+        self.assertEqual(code, 0)
+        self.assertEqual(landed, [])
+        self.assertEqual({a["outcome"] for a in self.answers("kev")}, {"unavailable"})
 
     def seal(self, *arms):
         """A note on sd:2764 carrying each arm's answer file hash."""

@@ -323,13 +323,15 @@ def parse_reply(reply, question: dict) -> list[float]:
 
 # --- transports -----------------------------------------------------------------
 
-def http_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
-    """POST JSON, return the parsed reply; a failure is a `Declined`."""
+def http_json(url: str, body: dict, headers: dict, timeout: float, opener=None) -> dict:
+    """POST JSON, return the parsed reply; a failure is a `Declined`. An
+    `opener` replaces urllib's default one, redirects and proxies included."""
     request = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), method="POST",
         headers=dict(headers, **{"Content-Type": "application/json"}))
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with (opener.open if opener else urllib.request.urlopen)(request, timeout=timeout) \
+                as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         exc.close()
@@ -519,7 +521,7 @@ def wanted(env, stage) -> bool:
     return stage_listed(env, stage)
 
 
-def kev_arm(job: dict, env) -> dict:
+def kev_arm(job: dict, env, opener=None) -> dict:
     event = {"provider": jev.BASELINE_PROVIDER,
              "model": (env.get("JEV_COMPARE_KEV_MODEL") or env.get("KEV_MODEL") or
                        DEFAULT_KEV_MODEL).strip(),
@@ -534,7 +536,7 @@ def kev_arm(job: dict, env) -> dict:
     try:
         try:
             response = http_json((env.get("JEV_COMPARE_KEV_URL") or DEFAULT_KEV_URL).strip(),
-                                 payload, headers, timeout_of(env))
+                                 payload, headers, timeout_of(env), opener)
         finally:
             event["duration_ms"] = int(round((time.monotonic() - started) * 1000))
         event["_response"] = response
