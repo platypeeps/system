@@ -291,18 +291,15 @@ def criteria(order=TIERS) -> str:
     return ",".join(f"{name}={TIER_CRITERIA[name]}" for name in order)
 
 
-#: A path sign anywhere in a string, deny by default (review round 3; rounds
-#: 1 and 2 listed path shapes and each missed one): any `~` or `\`, any `$`
-#: or `%` with something other than space after it, any control character
-#: (an ANSI colour code ends in a letter that would glue a slash), any `file:`
-#: scheme, and any `/` that no letter, digit, closing bracket or other `/`
-#: comes right before. So `/x`, `/ x`, `"/x"`, `file:x`, `C:/x`, `./x`,
-#: `$VAR`, `%VAR%` and `%2F` match, whatever follows; `src/a.py`,
-#: `foo/opt/x`, `1/2`, `and/or`, `25% off` and a route group such as
-#: `app/(site)/x` do not. A false halt costs a resume the operator reviews;
-#: a miss sends a path off the machine.
-ABSOLUTE = re.compile(r"[~\\\x00-\x1f\x7f-\x9f]|[$%]\S|(?<![A-Za-z0-9])(?i:file):"
-                      r"|(?<![A-Za-z0-9)\]}/])/")
+#: A path sign anywhere in a string, with no exception for what comes before
+#: it (review round 4; rounds 1 to 3 each let some character glue a slash
+#: into a relative path, and each round found one that hid a root): any `/`,
+#: `\`, `~` or `file:`, any `$` or `%` with something other than space after
+#: it, and any control character. So every changed path that names a folder
+#: halts, as do `1/2`, `and/or` and `profile:`; `a.py`, `25% off` and plain
+#: words do not. A false halt costs a resume the operator reviews; a miss
+#: sends a path off the machine.
+ABSOLUTE = re.compile(r"[/\\~\x00-\x1f\x7f-\x9f]|[$%]\S|(?i:file):")
 
 
 def private_path(state: str, home: str | None) -> str | None:
@@ -319,8 +316,7 @@ def private_path(state: str, home: str | None) -> str | None:
             for item in value:
                 yield from strings(item)
     for text in strings(json.loads(state)):
-        if ABSOLUTE.search(text) or "/Users/" in text or "/home/" in text \
-                or (home and home in text):
+        if ABSOLUTE.search(text) or (home and home in text):
             return text
     return None
 

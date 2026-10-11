@@ -144,10 +144,10 @@ BOUNDARIES = (
     ("B19 ${HOME}/", "see ${HOME}/notes.md", True),
     ("B20 other punctuation", "!/opt/a/b #/opt/a/b -/opt/a/b @/opt/a/b", True),
     ("B21 typographic quote", "matched \u201c/opt/private/file.py\u201d", True),
-    ("B22 glued after a word", "foo/opt/private/file.py", False),
-    ("B23 relative paths", "src/a.py docs/**", False),
-    ("B24 fractions and and/or", "1/2 of the paths, and/or, 25% off", False),
-    ("B25 glued after a closing bracket", "app/(site)/styles/a.css x[0]/y/z {a}/b/c", False),
+    ("B22 glued after a word", "foo/opt/private/file.py", True),
+    ("B23 relative paths", "src/a.py docs/**", True),
+    ("B24 fractions and and/or", "1/2 of the paths, and/or, 25% off", True),
+    ("B25 glued after a closing bracket", "app/(site)/styles/a.css x[0]/y/z {a}/b/c", True),
     # Round 3: deny by default. A path sign is a hit whatever follows it;
     # one form per row, so no row passes on another form's hit.
     ("R01 one segment", "/secret", True),
@@ -178,7 +178,16 @@ BOUNDARIES = (
     ("R25 ANSI colour before a path", "\x1b[31m/etc/passwd\x1b[0m", True),
     ("R26 C1 control before a path", "\x9b31m/etc/passwd", True),
     ("R27 file: URL without a slash", "FILE:private.txt", True),
-    ("R28 profile: is not a scheme", "profile: standard", False),
+    ("R28 profile:, false halt", "profile: standard", True),
+    # Review round 4: a closing bracket before a root slash.
+    ("R29 closing bracket before a root", "never skip ]/opt/private/file.py", True),
+    ("R30 closing brace before a root", "never skip }/private.txt", True),
+    ("R31 closing parenthesis before a root", "see x)/etc/passwd", True),
+    # What still passes: no slash, backslash, tilde, `file:`, variable sign
+    # or control character anywhere.
+    ("N01 plain words", "no category matched; default tier standard", False),
+    ("N02 a percent then a space", "25% off", False),
+    ("N03 a file at the top level", "README.md", False),
 )
 
 
@@ -187,8 +196,8 @@ class TheBoundaryClass(unittest.TestCase):
 
     def test_each_boundary_form(self):
         for row, text, halts in BOUNDARIES:
-            for state in (experiment.state_of(["src/a.py", text], 1, "r"),
-                          experiment.state_of(["src/a.py"], 1, text)):
+            for state in (experiment.state_of(["a.py", text], 1, "r"),
+                          experiment.state_of(["a.py"], 1, text)):
                 with self.subTest(row):
                     found = experiment.private_path(state, None)
                     self.assertEqual(found is not None, halts, f"{row}: {text!r}")
@@ -214,16 +223,16 @@ class TheRebuiltState(unittest.TestCase):
         for path in ("/Users/someone/x.py", "/etc/hosts", "~/notes.md", "src/home/x/Users/y"):
             state = experiment.state_of(["a.py", path], 1, "r")
             self.assertIsNotNone(experiment.private_path(state, None), path)
-        self.assertIsNone(experiment.private_path(experiment.state_of(["src/a.py"], 1, "r"), None))
+        self.assertIsNone(experiment.private_path(experiment.state_of(["a.py"], 1, "r"), None))
 
     def test_an_absolute_path_inside_a_string_is_found(self):
         for reason in ("never skip /opt/private/file.py", "matched (/srv/x)",
                        "path=/var/lib/y", "see ~/notes.md first", "a, /etc/hosts"):
-            state = experiment.state_of(["src/a.py"], 1, reason)
+            state = experiment.state_of(["a.py"], 1, reason)
             self.assertIsNotNone(experiment.private_path(state, None), reason)
         for reason in ("no category matched; default tier standard",
-                       "docs/a.md and tests/b.py; 1/2 of the paths"):
-            state = experiment.state_of(["src/a.py", "a/b/c.md"], 1, reason)
+                       "docs and tests only; half of the paths"):
+            state = experiment.state_of(["a.py", "README.md"], 1, reason)
             self.assertIsNone(experiment.private_path(state, None), reason)
 
 
