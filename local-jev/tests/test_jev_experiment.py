@@ -119,6 +119,50 @@ class TheHeuristic(unittest.TestCase):
                                         "standard"), "standard")
 
 
+#: The class from review rounds 1 and 2: the boundary before (and after) an
+#: absolute or home path token in text sent to the hosted call. One row per
+#: boundary form, as (id, text, whether it must halt). PR body, failure table.
+BOUNDARIES = (
+    ("B01 start of string", "/opt/private/file.py", True),
+    ("B02 whitespace", "never skip\t/opt/private/file.py", True),
+    ("B03 double quote", 'matched "/opt/private/file.py"', True),
+    ("B04 single quote", "matched '/opt/private/file.py'", True),
+    ("B05 backtick", "matched `/opt/private/file.py`", True),
+    ("B06 emphasis *", "never skip **/opt/private/file.py**", True),
+    ("B07 emphasis _", "never skip _/opt/private/file.py_", True),
+    ("B08 parenthesis", "see [x](/opt/private/file.py)", True),
+    ("B09 bracket and brace", "paths [/opt/a/b] {/srv/c/d}", True),
+    ("B10 angle bracket", "link </opt/private/file.py>", True),
+    ("B11 KEY=/path", "ROOT=/opt/private/file.py", True),
+    ("B12 x:/path", "x:/opt/private/file.py", True),
+    ("B13 path:line", "/opt/private/file.py:12 is risky", True),
+    ("B14 comma and semicolon", "a.py,/opt/x/y;/srv/z/w", True),
+    ("B15 file:// URL", "file:///opt/private/file.py", True),
+    ("B16 ~/ home", "see ~/notes/a.md", True),
+    ("B17 ~user/ home", "see ~someone/notes.md", True),
+    ("B18 $HOME/", "see $HOME/notes.md", True),
+    ("B19 ${HOME}/", "see ${HOME}/notes.md", True),
+    ("B20 other punctuation", "!/opt/a/b #/opt/a/b -/opt/a/b @/opt/a/b", True),
+    ("B21 typographic quote", "matched \u201c/opt/private/file.py\u201d", True),
+    ("B22 glued after a word", "foo/opt/private/file.py", False),
+    ("B23 relative paths", "src/a.py ./a/b.py ../c/d.py docs/**/*.md", False),
+    ("B24 fractions and and/or", "1/2 of the paths, and/or a / b", False),
+    ("B25 glued after a closing bracket", "app/(site)/styles/a.css x[0]/y/z {a}/b/c", False),
+)
+
+
+class TheBoundaryClass(unittest.TestCase):
+    """Each boundary form halts in a changed path and in a routing reason."""
+
+    def test_each_boundary_form(self):
+        for row, text, halts in BOUNDARIES:
+            for state in (experiment.state_of(["src/a.py", text], 1, "r"),
+                          experiment.state_of(["src/a.py"], 1, text)):
+                with self.subTest(row):
+                    found = experiment.private_path(state, None)
+                    self.assertEqual(found is not None, halts, f"{row}: {text!r}")
+
+
 class TheRebuiltState(unittest.TestCase):
     """Step 1: the state is the pack's, less the suffix `sd-review` adds."""
 

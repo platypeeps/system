@@ -271,10 +271,14 @@ def criteria(order=TIERS) -> str:
     return ",".join(f"{name}={TIER_CRITERIA[name]}" for name in order)
 
 
-#: An absolute or home path anywhere in a string: `/`, `~/` or a lone `~` at
-#: the start or after a space, quote, bracket or separator. A relative path
-#: such as `src/a.py` has no such boundary before its slash.
-ABSOLUTE = re.compile(r"""(?:^|[\s"'`(\[{<=:,;|])(?:/|~/|~(?=$|[\s"'`)\]}>,;]))""")
+#: An absolute or home path anywhere in a string, as one rule rather than a
+#: list of delimiters (review rounds 1 and 2): a run of `/` that no letter,
+#: digit, dot, `/` or closing bracket precedes, followed by a path segment and
+#: another `/`; or `~`, `~user`, `$HOME` or `${HOME}` followed by `/`, likewise
+#: unglued. So any other character before it is a boundary: space, quote, `*`,
+#: `_`, opening bracket, `=`, `:`, URL scheme. `src/a.py`, `./a`, `foo/opt/x`,
+#: `1/2` and a route group such as `app/(site)/x` are glued and do not match.
+ABSOLUTE = re.compile(r"(?<![A-Za-z0-9./)\]}])(?:/+[^\s/]+/|~[A-Za-z0-9._-]*/|\$\{?HOME\}?/)")
 
 
 def private_path(state: str, home: str | None) -> str | None:
