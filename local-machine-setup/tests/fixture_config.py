@@ -5,8 +5,9 @@ templates from $SYSTEM_TOOLS_CONFIG/machine-setup, outside the repository. The
 suite never reads the operator's copy: every case points SYSTEM_TOOLS_CONFIG at
 this folder's fixtures, or at a temporary copy when the case writes.
 
-Nor does it read the operator's Mac: env() points the apps scan at no folder,
-and seal() fails a case that reaches a real `defaults`, `sudo` or `launchctl`.
+Nor does it read the operator's Mac: env() points the apps scan at no folder
+and the Spotlight sudoers drop-in at no file, and seal() fails a case that
+reaches a real `defaults`, `sudo` or `launchctl`.
 """
 
 import pathlib
@@ -23,6 +24,9 @@ AGENTS = MACHINE_SETUP / "launchagents"
 LABEL_PREFIX = "local.system-tools"
 # Names no folder, so the apps scan finds no application on any machine.
 NO_APPLICATIONS = HERE / "fixtures" / "no-applications"
+# Names no file in a folder that does not exist, so the system stage never
+# sees this Mac's drop-in (sd:3307) and a stray write has nowhere to land.
+NO_SUDOERS = HERE / "fixtures" / "no-sudoers.d" / "machine-setup-spotlight-read"
 # Commands that read this machine whatever $HOME says: `defaults` asks
 # cfprefsd, which answers for the login user, `sudo` reads as root, and
 # `launchctl` answers for the login user's launchd.
@@ -52,7 +56,8 @@ def copy_capture_config(base):
 def env(config=CONFIG):
     """The variables that point machine-setup.sh at `config`."""
     return {"SYSTEM_TOOLS_CONFIG": str(config),
-            "MACHINE_SETUP_APPLICATIONS_DIR": str(NO_APPLICATIONS)}
+            "MACHINE_SETUP_APPLICATIONS_DIR": str(NO_APPLICATIONS),
+            "MACHINE_SETUP_SPOTLIGHT_SUDOERS": str(NO_SUDOERS)}
 
 
 def seal(case, stubs):
