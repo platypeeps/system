@@ -344,27 +344,57 @@ def pinned_pack() -> Path:
     return Path(named) if named else Path(os.path.realpath(queue_screen.command("sd-ship"))).parent.parent
 
 
+#: Three pending entries, written by the pinned pack's own `sd_lane.store` into the fixture database.
+SEED = """\
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sd_lane
+from sd_db.database import connect, transaction
+connection = connect(sys.argv[2], write=True)
+with transaction(connection):
+    for entry in json.loads(sys.argv[4]):
+        sd_lane.store(connection, sys.argv[3], entry)
+connection.close()
+"""
+
+
 class TheRealLane(BrowserSession):
-    """The pinned pack's `sd-ship lane` on a temporary lane root: the page's reorder is what `lane list` shows."""
+    """The pinned pack's `sd-ship lane` on a temporary lane root: the page's reorder is what `lane list` shows.
+
+    The pack keeps the queue in the hub database (pack sd:3282), so the entries go there through its own writer:
+    a `<lane>/queue/queue.json` is only an earlier version's file, which `lane list` imports by publishing each
+    pending head to `origin`. The checkout's origin names a GitHub repository, as every lane's must.
+    """
 
     def setUp(self):
         super().setUp()
         self.checkout = Path(self.tmp.name) / "system"
         self.checkout.mkdir()
         git(self.checkout, "init", "-q", "-b", "main")
-        self.repo(str(self.checkout))
+        origin = "https://github.com/example/system.git"
+        git(self.checkout, "remote", "add", "origin", origin)
+        upsert_repo(self.connection, str(self.checkout), remote=origin)
+        self.connection.commit()
+        # `sd-ship` opens `$HOME/.local/share/sd/sd.db`; the fixture database stands there.
+        home = Path(self.tmp.name) / "home"
+        (home / ".local/share/sd").mkdir(parents=True)
+        (home / ".local/share/sd/sd.db").symlink_to(self.path)
         root = Path(self.tmp.name) / "lanes"
-        queue = root / "system" / "lane" / "queue"
-        queue.mkdir(parents=True)
-        entries = [{"item": n, "title": f"item {n}", "status": "pending", "expected_head": "e" * 40} for n in (1, 2, 3)]
-        (queue / "queue.json").write_text(json.dumps({"entries": entries}))
-        ship = pinned_pack() / "bin" / "sd-ship"
+        (root / "system" / "lane" / "queue").mkdir(parents=True)
+        entries = [{"id": f"seed-{n}", "item": n, "title": f"item {n}", "status": "pending", "position": n,
+                    "expected_head": "e" * 40, "repository": "example/system", "branch": f"b{n}"} for n in (1, 2, 3)]
+        pack = pinned_pack()
+        ship = pack / "bin" / "sd-ship"
         self.assertTrue(ship.is_file(), f"no pinned sd-ship at {ship}")
+        subprocess.run([sys.executable, "-c", SEED, str(pack / "bin"), str(self.path), "example/system",
+                        json.dumps(entries)], check=True, capture_output=True, text=True,
+                       env={**os.environ, "HOME": str(home)})
         bin_dir = Path(self.tmp.name) / "bin"
         bin_dir.mkdir()
         (bin_dir / "sd-ship").write_text(f'#!/bin/sh\nexec "{sys.executable}" "{ship}" "$@"\n')
         (bin_dir / "sd-ship").chmod(0o755)
-        patch = mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}", "SD_LANE_ROOT": str(root)})
+        patch = mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}", "SD_LANE_ROOT": str(root),
+                                             "HOME": str(home)})
         patch.start()
         self.addCleanup(patch.stop)
 

@@ -16,7 +16,7 @@ Usage: ci-native.sh preflight
 
   preflight  the fixture digest, sd-docs-lint, the citation, Jev contract,
              product-name and entrypoint-mode gates, the unwired-suite guard, and the venv at
-             $CI_WORK_ROOT/venv with local-sd-db installed
+             $CI_WORK_ROOT/venv with the pack's lib/ (sd_db) installed
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
 Run it through tests/check.sh (or `make check`) on a workstation; it expects
@@ -203,9 +203,21 @@ fi
 # check.sh takes the first python3.14 on the caller's PATH.
 python3 -m venv "$CI_WORK_ROOT/venv"
 export PYTHON="$CI_WORK_ROOT/venv/bin/python"
-"$PYTHON" -m pip install --no-index ./local-sd-db
+# The pack owns sd_db (sd:2997): install the pinned pack's lib/, the one copy
+# its sd-ship imports too, and name the commit tested against.
+echo "sd_db: pack lib/ at $(git -C "$SD_ACCEPTANCE_PACK" rev-parse HEAD)"
+"$PYTHON" -m pip install --no-index "$SD_ACCEPTANCE_PACK/lib"
 # Ship acceptance needs an installed copy, not source on PYTHONPATH.
 "$PYTHON" -I -c 'import pathlib, sd_db, sys; assert pathlib.Path(sd_db.__file__).is_relative_to(pathlib.Path(sys.prefix))'
+# And it is that lib/, file for file: a pin older than the pack's step 1 has none.
+"$PYTHON" -I - "$SD_ACCEPTANCE_PACK/lib/sd_db" <<'PY_SAME_LIBRARY'
+import filecmp, pathlib, sd_db, sys
+installed, pack = pathlib.Path(sd_db.__file__).parent, pathlib.Path(sys.argv[1])
+names = sorted(str(p.relative_to(pack)) for p in pack.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+match, mismatch, errors = filecmp.cmpfiles(pack, installed, names, shallow=False)
+if mismatch or errors or not match:
+    raise SystemExit(f"installed sd_db differs from {pack}: {mismatch + errors or 'no files'}")
+PY_SAME_LIBRARY
 exit 0
 fi
 

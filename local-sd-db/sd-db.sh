@@ -21,6 +21,11 @@ python_is_new_enough() {
     "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 13) else 1)' 2>/dev/null
 }
 
+# The pack checkout. The pack owns sd_db (sd:2997), so the database verbs run
+# its bin/sd-db; this script stays as the path cron jobs and LaunchAgents
+# name until step 4 of that design retires it.
+SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+
 # Called by the verbs, not at load: help and usage need no interpreter, and a
 # machine without one still gets them.
 resolve_python() {
@@ -37,7 +42,7 @@ resolve_python() {
     fi
     for candidate in \
         "${SD_DB_PYTHON:-}" \
-        "$HOME/repos/platypeeps/sd-ai-command-pack/.venv/bin/python" \
+        "$SD_PACK_ROOT/.venv/bin/python" \
         /opt/homebrew/bin/python3 \
         python3
     do
@@ -140,6 +145,23 @@ elif command -v notify >/dev/null 2>&1; then
 else
     NOTIFY="$DIR/../local-notify/notify.sh"
 fi
+
+# Hand a database verb to the pack's bin/sd-db, under the Python picked above:
+# `env python3` on a bare cron PATH is 3.9, which bin/sd-db refuses. It mails
+# a failed backup through SD_NOTIFY or `notify` on PATH, so name this
+# checkout's notify script when PATH has none, as the backup verb did here.
+run_pack() {
+    entry="$SD_PACK_ROOT/bin/sd-db"
+    if [ ! -f "$entry" ]; then
+        echo "sd-db: no $entry; this machine's pack predates sd_db's move into it. Move it: local-repo-sync/repo-sync.sh refresh on the hub, or repo-sync.sh follow on a satellite" >&2
+        exit 1
+    fi
+    if [ -z "${SD_NOTIFY:-}" ] && [ "$NOTIFY" != notify ]; then
+        SD_NOTIFY="$NOTIFY"
+        export SD_NOTIFY
+    fi
+    exec "$PYTHON" "$entry" "$@"
+}
 
 usage() {
     cat >&2 <<'USAGE'
@@ -384,13 +406,14 @@ Usage: sd-db.sh <command>
               caller that imports `sd_db` itself: `local-sd-plan`'s nightly.
   help        This text.
 
-Which library runs: the verbs that open a database (backup, serve, and the
-ones `sd_db.jobs.cli` answers) run this checkout's `sd_db`, unless the Python
-they run under has a copy installed that is built for a newer schema. Then
-they run that copy and say so on stderr, so a checkout behind `origin/main`
-still opens a database the installed copy migrated. SD_DB_LIBRARY=checkout
-or SD_DB_LIBRARY=installed forces one side; `test` and `check` always run
-the checkout. The other verbs build or test this checkout.
+Which library runs: the pack owns sd_db (sd:2997). The verbs that open a
+database (backup, serve, and the ones `sd_db.jobs.cli` answers) run the pack's
+bin/sd-db from SD_PACK_ROOT (default ~/repos/platypeeps/sd-ai-command-pack),
+which reads the pack's lib/. A pack without bin/sd-db refuses with exit 1;
+`repo-sync.sh refresh` or `follow` moves it. SD_DB_LIBRARY, set to checkout,
+installed or auto, runs this folder's frozen copy instead, by the old rule:
+its own suite does that until the copy is deleted. `test` and `check` always
+run this checkout. The other verbs build or test this checkout.
 
 The build backend is `_build.py` in this folder and has no dependencies, so
 every command above works with no network.
@@ -424,6 +447,7 @@ case "${1:-}" in
         # `|| status=$?` and not a bare assignment: `set -e` at the top of
         # this file kills the script on a failing command substitution, which
         # would swallow the output and send no mail at all.
+        [ -n "${SD_DB_LIBRARY:-}" ] || run_pack backup "$@"
         choose_library
         status=0
         output="$(exec_library -m sd_db.jobs.backup "$@" 2>&1)" || status=$?
@@ -449,6 +473,7 @@ case "${1:-}" in
         for word in "$@"; do
             case "$word" in -h|--help) usage; exit 0 ;; esac
         done
+        [ -n "${SD_DB_LIBRARY:-}" ] || run_pack "$@"
         choose_library
         exec_library -m sd_db.jobs.cli "$@"
         ;;
@@ -543,6 +568,7 @@ case "${1:-}" in
         echo "$LIBRARY"
         ;;
     serve)
+        [ -n "${SD_DB_LIBRARY:-}" ] || run_pack "$@"
         shift
         choose_library
         exec_library -m sd_db.serve "$@"

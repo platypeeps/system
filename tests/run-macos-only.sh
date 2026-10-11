@@ -43,11 +43,16 @@ fi
 logs="$(mktemp -d "${TMPDIR:-/tmp}/run-macos-only.XXXXXX")"
 # As the preflight does: the ship lifecycle runs the pack's sd-ship, which imports an
 # installed sd_db, not source on PYTHONPATH. Suites run under this venv.
-echo "== installing local-sd-db into a throwaway venv"
+# The pack owns sd_db (sd:2997); its lib/ is what gets installed.
+if [ -z "${SD_ACCEPTANCE_PACK:-}" ] || [ ! -f "$SD_ACCEPTANCE_PACK/lib/pyproject.toml" ]; then
+  echo "run-macos-only.sh: no pack with lib/ at ${SD_ACCEPTANCE_PACK:-$pack}; set SD_ACCEPTANCE_PACK" >&2
+  exit 1
+fi
+echo "== installing sd_db from pack lib/ at $(git -C "$SD_ACCEPTANCE_PACK" rev-parse HEAD) into a throwaway venv"
 python3 -m venv "$logs/venv"  # no --copies: see tests/ci-native.sh
-"$logs/venv/bin/python" -m pip install -q --no-index "$ROOT/local-sd-db" > "$logs/pip.log" 2>&1 || {
+"$logs/venv/bin/python" -m pip install -q --no-index "$SD_ACCEPTANCE_PACK/lib" > "$logs/pip.log" 2>&1 || {
   cat "$logs/pip.log" >&2
-  echo "run-macos-only.sh: could not install local-sd-db" >&2
+  echo "run-macos-only.sh: could not install the pack's lib/" >&2
   exit 1
 }
 PYTHON="$logs/venv/bin/python"; export PYTHON
