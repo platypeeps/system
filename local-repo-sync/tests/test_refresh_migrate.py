@@ -19,7 +19,6 @@ against the script without it.
 import os
 import pathlib
 import shutil
-import sqlite3
 import subprocess
 import sys
 import unittest
@@ -147,25 +146,22 @@ class MigrateFixture(FollowFixture):
 
     @staticmethod
     def good(name):
-        return f"CREATE TABLE fixture_{name} (a INTEGER);\n"
+        return f"CREATE VIEW fixture_{name} AS SELECT 1 AS a;\n"
 
     @staticmethod
     def bad(name):
-        return f"CREATE TABLE fixture_{name} (a INTEGER);\nINSERT INTO fixture_no_such_table VALUES (1);\n"
+        return f"CREATE VIEW fixture_{name} AS SELECT 1 AS a;\nINSERT INTO fixture_no_such_table VALUES (1);\n"
 
     def version(self):
-        connection = sqlite3.connect(f"file:{self.database}?mode=ro", uri=True)
-        try:
-            return connection.execute("PRAGMA user_version").fetchone()[0]
-        finally:
-            connection.close()
+        # The sqlite3 CLI, as refresh reads it: only sd_db opens the store from Python.
+        return int(self.read_only("PRAGMA user_version"))
 
     def restores(self):
-        connection = sqlite3.connect(f"file:{self.database}?mode=ro", uri=True)
-        try:
-            return [row[0] for row in connection.execute("SELECT body FROM state WHERE kind = 'restore'")]
-        finally:
-            connection.close()
+        return [line for line in self.read_only("SELECT body FROM state WHERE kind = 'restore'").splitlines() if line]
+
+    def read_only(self, sql):
+        return subprocess.run(["sqlite3", str(self.database), sql],
+                              check=True, capture_output=True, text=True).stdout.strip()
 
     def backup_dirs(self):
         if not self.backups.exists():
