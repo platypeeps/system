@@ -445,7 +445,7 @@ Both refuse an unregistered path and a name outside `[a-z0-9-]+`.
 A move sets every clone row of the remote, so clones never disagree.
 Pending entries follow the lane: the queue lives in the hub database (pack sd:3282), so a move copies nothing.
 Until the new host runs pack sd:3283, it runs only entries enqueued on it, so the old host's entries wait in the queue.
-The dashboard Queue page lists each managed lane with its host; Release there ends a stuck running entry's claim.
+The dashboard Queue page lists each managed lane with its host; Release there ends a stuck merge's claim.
 
 A move holds the ship lock of the machine that hosts the lane, from before its read to after its commit.
 Every ship takes that lock, so a held lock proves no ship runs; a busy one refuses the move and names its holder.

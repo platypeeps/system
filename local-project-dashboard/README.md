@@ -151,8 +151,9 @@ Blocked entries show for three days; older ones drop off.
 Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names; set `sd.lane_root` where builders write them.
 Up, down, top, hold, release and cancel run `sd-ship lane move|hold|release|cancel` and nothing else.
 Cancel asks first: no verb takes it back, so the entry must be enqueued again from its worktree.
-A running row offers Release, which asks first, then runs `lane cancel <item>` on that entry (D3 of pack sd:3174): the claim ends at once, without waiting for its lease.
-At `step: prepare` the entry goes back to pending; at `merge` it fails, and a merge already started may still land. `sd-ship` refuses to release a holder alive on this machine.
+A running row at `step: merge` offers Release, which asks first, then runs `lane cancel <item>` on that entry (D3 of pack sd:3174): the entry fails at once, without waiting for its lease, and a merge already started may still land.
+`sd-ship` refuses to release a holder alive on this machine.
+A row in prepare offers no Release: `lane cancel` binds no step, so a prepare that reached merge first would be failed, not put back. The lane host reclaims a stuck prepare once its lease passes.
 Release sends the entry id the row showed; the page's revision also covers each running entry's holder and step, so a claim taken again since is refused.
 A blocked row offers Retry, `sd-ship lane retry <item>`: its last entry is queued again at the same head with the body the lane kept.
 On a repository whose `runner_merge` is manual it also offers Approve, `lane retry <item> --manual`, which asks first: it grants the merge.

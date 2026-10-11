@@ -373,6 +373,17 @@ class TheMove(Lane, BrowserSession):
         self.assertEqual((status, answer.get("reload")), (409, True), answer)
         self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"]])
 
+    def test_release_in_prepare_runs_nothing(self):
+        # sd:3284 review: `lane cancel` binds no step, so a prepare that moves to merge before the verb would be failed
+        # instead of put back. The server releases only an entry it read at `merge`.
+        entries = self.entries()
+        entries[5] = {**entries[5], "step": "prepare"}
+        self.list(entries)
+        status, _, answer = self.reclaim(revision=self.revision())
+        self.assertEqual(status, 400, answer)
+        self.assertIn("merge", answer["error"])
+        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"]])
+
     def test_release_without_the_entry_it_showed_runs_nothing(self):
         status, _, _ = self.reclaim(entry=None)
         self.assertEqual((status, self.calls()), (400, []))
@@ -523,9 +534,8 @@ class RealLane(BrowserSession):
         self.assertTrue(ship.is_file(), f"no pinned sd-ship at {ship}")
         self.host = subprocess.run([sys.executable, "-c", HOST, str(pack / "bin")], check=True, capture_output=True,
                                    text=True, env={**os.environ, "HOME": str(home)}).stdout.strip()
-        subprocess.run([sys.executable, "-c", SEED, str(pack / "bin"), str(self.path), "example/system",
-                        json.dumps(self.seeds())], check=True, capture_output=True, text=True,
-                       env={**os.environ, "HOME": str(home)})
+        self.pack, self.home = pack, home
+        self.store(self.seeds())
         bin_dir = Path(self.tmp.name) / "bin"
         bin_dir.mkdir()
         (bin_dir / "sd-ship").write_text(f'#!/bin/sh\nexec "{sys.executable}" "{ship}" "$@"\n')
@@ -534,6 +544,12 @@ class RealLane(BrowserSession):
                                              "HOME": str(home)})
         patch.start()
         self.addCleanup(patch.stop)
+
+    def store(self, entries):
+        """Write `entries` through the pinned pack's own `sd_lane.store`, as a runner's write would land."""
+        subprocess.run([sys.executable, "-c", SEED, str(self.pack / "bin"), str(self.path), "example/system",
+                        json.dumps(entries)], check=True, capture_output=True, text=True,
+                       env={**os.environ, "HOME": str(self.home)})
 
     def seeds(self):
         return [{"id": f"seed-{n}", "item": n, "title": f"item {n}", "status": "pending", "position": n,
@@ -575,19 +591,24 @@ class TheRealLane(RealLane):
 
 
 class TheRealRelease(RealLane):
-    """Release on the pinned pack's `lane cancel`: a holder on another host is released; one alive here is refused."""
+    """Release on the pinned pack's `lane cancel`: at `merge`, a holder on another host is released and one alive here
+    is refused; at `prepare` the page refuses, since `lane cancel` binds no step (sd:3284 review)."""
+
+    step = "merge"
+
+    def running(self, **change):
+        return {**super().seeds()[0], "status": "running", "step": self.step, "started_at": "2026-09-06T11:50:00Z",
+                "lease_until": "2026-09-06T13:00:00Z", "holder": self.holder(), "enqueued_on": "build-2", **change}
 
     def seeds(self):
-        running = {**super().seeds()[0], "status": "running", "step": "prepare", "started_at": "2026-09-06T11:50:00Z",
-                   "lease_until": "2026-09-06T13:00:00Z", "holder": self.holder(), "enqueued_on": "build-2"}
-        return [running, *super().seeds()[1:]]
+        return [self.running(), *super().seeds()[1:]]
 
     def release(self):
         lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
         merging = lane["rows"][0]
-        self.assertEqual((merging["state"], merging["entry"]), ("merging", "seed-1"))
+        self.assertEqual(merging["state"], "merging")
         return self.post("/api/queue/move", {"repo": str(self.checkout), "item": 1, "action": "reclaim",
-                                             "revision": lane["revision"], "entry": merging["entry"]}), merging
+                                             "revision": lane["revision"], "entry": "seed-1"}), merging
 
     def status(self):
         return [(entry["item"], entry["status"]) for entry in queue_screen.lane_list(str(self.checkout))["entries"]]
@@ -598,11 +619,11 @@ class TheRealReleaseOfARemoteHolder(TheRealRelease):
     def holder(self):
         return {"host": "build-2", "pid": 4242, "token": "claim-token"}
 
-    def test_release_puts_a_prepare_held_on_another_host_back_to_pending(self):
+    def test_release_fails_a_merge_held_on_another_host(self):
         (status, _, answer), merging = self.release()
-        self.assertEqual((merging["host"], merging["step"]), ("build-2", "prepare"))
+        self.assertEqual((merging["host"], merging["step"], merging["entry"]), ("build-2", "merge", "seed-1"))
         self.assertEqual((status, answer.get("ok")), (200, True), answer)
-        self.assertEqual(self.status(), [(1, "pending"), (2, "pending"), (3, "pending")])
+        self.assertEqual(self.status(), [(1, "failed"), (2, "pending"), (3, "pending")])
 
     def test_a_queue_write_between_the_check_and_the_verb_refuses_the_release(self):
         listed = queue_screen.lane_list
@@ -614,6 +635,35 @@ class TheRealReleaseOfARemoteHolder(TheRealRelease):
         with mock.patch.object(queue_screen, "lane_list", then_another_writer):
             (status, _, answer), _ = self.release()
         self.assertEqual((status, answer.get("reload")), (409, True), answer)
+        self.assertEqual(self.status()[0], (1, "running"))
+
+
+class TheRealReleaseInPrepare(TheRealRelease):
+    """sd:3284 review: `lane cancel` takes no step, so a prepare that reaches merge between the page's check and the
+    verb would be failed, not put back. The page offers no Release in prepare and the server refuses one."""
+
+    step = "prepare"
+
+    def holder(self):
+        return {"host": "build-2", "pid": 4242, "token": "claim-token"}
+
+    def test_the_row_offers_no_release_in_prepare(self):
+        merging = queue_screen.document(self.connection, now=NOW)["lanes"][0]["rows"][0]
+        self.assertEqual((merging["step"], merging["entry"]), ("prepare", None))
+
+    def test_a_prepare_that_reaches_merge_during_the_release_is_not_failed(self):
+        lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
+        listed = queue_screen.lane_list
+
+        def then_the_runner_steps_to_merge(path):
+            answer = listed(path)
+            self.store([self.running(step="merge", lease_until="2026-09-06T14:00:00Z")])
+            return answer
+        with mock.patch.object(queue_screen, "lane_list", then_the_runner_steps_to_merge):
+            status, _, answer = self.post("/api/queue/move", {"repo": str(self.checkout), "item": 1, "action": "reclaim",
+                                                              "revision": lane["revision"], "entry": "seed-1"})
+        self.assertEqual(status, 400, answer)
+        self.assertIn("merge", answer["error"])
         self.assertEqual(self.status()[0], (1, "running"))
 
 
@@ -700,10 +750,7 @@ class TheScript(Lane, ScreenCase):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
         self.assertNotIn('data-act="reclaim"', lanes)
 
-    def release(self, answer, step="merge", move=(200, {"ok": True, "action": "reclaim", "item": 3, "edits": "Edits take effect at the next item boundary."})):
-        entries = self.entries()
-        entries[5] = {**entries[5], "step": step}
-        self.list(entries)
+    def release(self, answer, move=(200, {"ok": True, "action": "reclaim", "item": 3, "edits": "Edits take effect at the next item boundary."})):
         return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
                              f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '3', act: 'reclaim', entry: 'e-3' }} }}); R.lanes = ELS.lanes.html;", move)
 
@@ -720,9 +767,14 @@ class TheScript(Lane, ScreenCase):
                                               "revision": revision, "entry": "e-3"})
         self.assertIn("sd:3 released from its holder.", out["R"]["lanes"])
 
-    def test_release_at_prepare_says_the_entry_goes_back_to_pending(self):
-        asked = self.release(True, step="prepare")["asked"]
-        self.assertIn("goes back to pending at its place", asked["body"])
+    def test_a_running_row_in_prepare_offers_no_release(self):
+        # sd:3284 review: in prepare the lane reclaims a stuck claim once its lease passes; Release waits for merge.
+        entries = self.entries()
+        entries[5] = {**entries[5], "step": "prepare"}
+        self.list(entries)
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertNotIn('data-act="reclaim"', lanes)
+        self.assertIn("the lane reclaims it once its lease passes", lanes)
 
     def test_release_kept_at_the_confirm_posts_nothing(self):
         out = self.release(False)

@@ -25,12 +25,17 @@ lock, so a write that lands between the two checks is refused too. `cancel` need
 entry (pack sd:3282), so a Cancel on a pending row the runner claimed since must not reach it.
 The runner reads the queue again at each item boundary, so an edit takes effect there.
 
-Release acts on a running row (sd:3284, D3 of pack sd:3174): `lane cancel <item>` releases the claim at once, without
-waiting for its lease, so a holder on another machine that stopped answering no longer blocks the lane. The page sends
-the entry id the row showed. The page's revision also covers each running entry's id, holder (host and pid) and step, so
-a claim taken again since, or a step that moved on, is refused before the verb; the server then checks that the fresh
-list still runs that entry. `lane cancel` checks the lane revision under the queue's lock, which catches the entry going
-back to pending; a new claim on the same entry between the server's check and the verb is the one gap it cannot see.
+Release acts on a running row at `step: merge` (sd:3284, D3 of pack sd:3174): `lane cancel <item>` fails the entry at
+once, without waiting for its lease, so a merge holder on another machine that stopped answering no longer blocks the
+lane. The page sends the entry id the row showed. The page's revision also covers each running entry's id, holder
+(host and pid) and step, so a claim taken again since, or a step that moved on, is refused before the verb; the server
+then checks that the fresh list still runs that entry at `merge`. `lane cancel` checks the lane revision under the
+queue's lock, which catches the entry going back to pending.
+
+No Release in prepare: `lane cancel` binds neither the claim nor the step it acts on (pack `bin/sd_lane.py` `cancel`),
+so a prepare that reaches merge between the server's check and the verb would be failed instead of put back. Merge is
+the last step, so a release read there ends as the dialog says, or is refused once the entry finished. A stuck prepare
+waits for its lease: the lane host reclaims it at its next run.
 
 Retry and Approve act on a blocked row (sd:3012): `lane retry <item>` queues its last entry again at the same head with
 the body copy the lane kept (pack sd:3254); Approve adds `--manual`, the merge grant, so only a repo whose
@@ -192,8 +197,9 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
         if status == "running":
             started, holder = _when(entry.get("started_at")), _holder(entry)
             merging.append({**base, "state": "merging", "step": entry.get("step") or None,
-                            # Release names the entry it showed; one with no holder or id shows nothing to release.
-                            "entry": entry.get("id") if holder and isinstance(entry.get("id"), str) else None,
+                            # Release names the entry it showed: only at merge, with a holder and an id (see above).
+                            "entry": entry.get("id") if holder and isinstance(entry.get("id"), str)
+                            and entry.get("step") == "merge" else None,
                             "host": holder.get("host"), "claim_age": int(now - started) if started else None,
                             "lease_until": entry.get("lease_until") or None,
                             "lease_passed": (_when(entry.get("lease_until")) or now) < now,
@@ -290,10 +296,16 @@ def move(payload: dict):
         entries = listed.get("entries") or []
         if revision(entries) != values["revision"]:
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
-        if reclaim and not any(row.get("status") == "running" and row.get("item") == values["item"]
-                               and row.get("id") == values["entry"] and _holder(row) for row in entries):
-            raise workflow.StaleItem(f"sd:{values['item']} is not running under the claim the page showed. "
-                                     "Read it again, then retry.")
+        if reclaim:
+            running = next((row for row in entries if row.get("status") == "running" and row.get("item") == values["item"]
+                            and row.get("id") == values["entry"] and _holder(row)), None)
+            if running is None:
+                raise workflow.StaleItem(f"sd:{values['item']} is not running under the claim the page showed. "
+                                         "Read it again, then retry.")
+            if running.get("step") != "merge":
+                raise ValueError(f"sd:{values['item']} is at {running.get('step') or 'a step not recorded'}; Release runs "
+                                 "only at merge. lane cancel binds no step, so a prepare that reached merge first would "
+                                 "be failed. The lane reclaims a stuck prepare once its lease passes.")
         item, action = str(values["item"]), values["action"]
         verb = (["move", item, action] if action in ("up", "down", "top")
                 else ["retry", item, "--expected-head", values["head"]] if again

@@ -2,8 +2,9 @@
 // merging, next, building, blocked, landed. A lane with no row shares one Idle line, each with its host (sd:3284). Up, down, top, hold, release and cancel post /api/queue/move with the lane's
 // revision; the server runs sd-ship lane move|hold|release|cancel|retry, refuses a stale revision, and the page reads again.
 // Cancel asks first (sd:3012): no verb takes it back, so the entry must be enqueued again from its worktree.
-// A running row whose entry names a holder offers Release (sd:3284, D3 of pack sd:3174): it asks first, naming the holder,
-// step and claim age, then posts action `reclaim` with the entry id the row showed; the server runs `lane cancel`.
+// A running row at step merge whose entry names a holder offers Release (sd:3284, D3 of pack sd:3174): it asks first, naming
+// the holder and claim age, then posts action `reclaim` with the entry id the row showed; the server runs `lane cancel`.
+// Not in prepare: lane cancel binds no step, so a prepare reaching merge first would be failed; its lease reclaims it.
 // A blocked row offers Retry (lane retry) and, on a runner_merge=manual repo, Approve (lane retry --manual), only when the
 // installed pack's retry takes --expected-head (DOC.retry). Each button carries the head its row showed, and the server
 // passes it on, so neither acts on an entry that ended at another head since the read. Retry runs at once: Cancel takes
@@ -35,7 +36,7 @@
   }
   // Each state's glyph, label and fact line. A state's glyph carries it; colour only repeats it.
   const VIEW = {
-    merging: r => [r.lease_passed ? G.caution : G.live, 'MERGING', html`<b>${r.step || 'step not recorded'}</b> on <b>${r.host || 'host not recorded'}</b> · claimed ${r.claim_age == null ? 'at a time not recorded' : `${dur(r.claim_age)} ago`} · ${r.lease_until ? `lease ${r.lease_passed ? 'passed' : 'to'} ${at(r.lease_until)}` : 'lease not recorded'} · head ${r.head || 'not recorded'}`],
+    merging: r => [r.lease_passed ? G.caution : G.live, 'MERGING', html`<b>${r.step || 'step not recorded'}</b> on <b>${r.host || 'host not recorded'}</b> · claimed ${r.claim_age == null ? 'at a time not recorded' : `${dur(r.claim_age)} ago`} · ${r.lease_until ? `lease ${r.lease_passed ? 'passed' : 'to'} ${at(r.lease_until)}` : 'lease not recorded'} · head ${r.head || 'not recorded'}${r.step === 'prepare' ? ' · the lane reclaims it once its lease passes' : ''}`],
     next: r => [r.held ? G.caution : G.queued, `${r.held ? 'HELD' : 'NEXT'} ${r.position}`, html`gate <b>${r.gate}</b>${r.gate_summary ? ` (${r.gate_summary})` : ''} · head ${r.head || 'not recorded'}${r.held ? ' · skipped until released' : ''}`],
     building: r => [{ running: G.live, pass: G.ok, fail: G.warning }[r.gate] || G.unknown, 'BUILDING', html`gate <b>${r.gate}</b>${r.summary ? ` · ${r.summary}` : ''}${r.head ? ` · head ${r.head}` : ''} · log changed ${at(new Date(r.changed * 1000).toISOString())}`],
     blocked: r => [G.caution, 'BLOCKED', html`<b>${r.who} acts</b> · ${r.status}${r.step ? ` at ${r.step}` : ''} · ${r.reason} · head ${r.head || 'not recorded'}`],
@@ -99,17 +100,12 @@
       body: 'The entry leaves the queue and the runner never ships it. To ship it later, enqueue it again from its worktree.',
       cli: `sd-ship -C ${S.shq(l.path)} lane cancel ${item}`, ok: 'Cancel entry', keep: 'Keep it queued' });
   }
-  // Release says what the pack's reclaim does at the row's step; at an unknown step it names both outcomes.
-  const AFTER = {
-    prepare: 'The entry goes back to pending at its place, and a runner prepares it again.',
-    merge: 'The entry fails with the release as its reason. A merge it already started may still land, so read its pull request before you enqueue it again.',
-    unknown: 'At prepare the entry goes back to pending; at merge it fails, and a merge it already started may still land.',
-  };
+  // Release is offered only at merge, so the dialog names the one outcome the pack's reclaim has there.
   function letGo(l, item, entry) {
     const r = l.rows.find(x => x.state === 'merging' && x.item === item && x.entry === entry) || {}, S = window.shell;
     const host = r.host || 'a host not recorded', age = r.claim_age == null ? 'at a time not recorded' : `${dur(r.claim_age)} ago`;
     return S.confirm({ title: `Release sd:${item}${r.title ? ` · ${r.title}` : ''} from ${host}?`,
-      body: `${host} claimed it ${age}, at ${r.step || 'a step not recorded'}. ${AFTER[r.step] || AFTER.unknown} The holder's next queue write is refused. sd-ship refuses the release instead when the holder runs alive on this machine.`,
+      body: `${host} claimed it ${age}, at ${r.step || 'a step not recorded'}. The entry fails with the release as its reason. A merge it already started may still land, so read its pull request before you enqueue it again. The holder's next queue write is refused. sd-ship refuses the release instead when the holder runs alive on this machine.`,
       cli: `sd-ship -C ${S.shq(l.path)} lane cancel ${item}`, ok: 'Release entry', keep: 'Keep it running' });
   }
   async function act(b) {
