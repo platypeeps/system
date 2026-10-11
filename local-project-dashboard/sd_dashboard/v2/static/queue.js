@@ -2,6 +2,9 @@
 // merging, next, building, blocked, landed. A lane with no row shares one Idle line, each with its host (sd:3284). Up, down, top, hold, release and cancel post /api/queue/move with the lane's
 // revision; the server runs sd-ship lane move|hold|release|cancel|retry, refuses a stale revision, and the page reads again.
 // Cancel asks first (sd:3012): no verb takes it back, so the entry must be enqueued again from its worktree.
+// A running row with a claim offers Release (sd:3337, D3 of pack sd:3174): it asks first, naming the holder, claim age and
+// what the pack does at that step, then posts action `reclaim` with the claim the row showed (`<holder token>:<step>`);
+// the server runs `lane cancel --expected-claim`, so a claim that moved on since the read releases nothing.
 // A blocked row offers Retry (lane retry) and, on a runner_merge=manual repo, Approve (lane retry --manual), only when the
 // installed pack's retry takes --expected-head (DOC.retry). Each button carries the head its row showed, and the server
 // passes it on, so neither acts on an entry that ended at another head since the read. Retry runs at once: Cancel takes
@@ -27,6 +30,10 @@
     const one = (act, label, aria) => html`<button class="btn quiet sm" type="button" data-act="${act}" data-item="${String(r.item)}" data-head="${r.expected_head}" data-repo="${lane.path}" aria-label="${aria}"${busy ? html` disabled` : ''}>${label}</button>`;
     return html`<div class="ctl" role="group" aria-label="Unblock sd:${String(r.item)}">${one('retry', 'Retry', `Retry sd:${r.item}: queue it again at the same head`)}${lane.runner_merge === 'manual' ? one('approve', 'Approve…', `Approve sd:${r.item}: queue it again with the merge granted`) : ''}</div>`;
   }
+  function free(lane, r) {
+    if (!r.claim) return html`<span></span>`;
+    return html`<div class="ctl" role="group" aria-label="Claim of sd:${String(r.item)}"><button class="btn quiet sm" type="button" data-act="reclaim" data-item="${String(r.item)}" data-claim="${r.claim}" data-repo="${lane.path}" aria-label="Release sd:${String(r.item)} from ${r.host || 'its holder'}"${busy ? html` disabled` : ''}>Release…</button></div>`;
+  }
   // Each state's glyph, label and fact line. A state's glyph carries it; colour only repeats it.
   const VIEW = {
     merging: r => [r.lease_passed ? G.caution : G.live, 'MERGING', html`<b>${r.step || 'step not recorded'}</b> on <b>${r.host || 'host not recorded'}</b> · claimed ${r.claim_age == null ? 'at a time not recorded' : `${dur(r.claim_age)} ago`} · ${r.lease_until ? `lease ${r.lease_passed ? 'passed' : 'to'} ${at(r.lease_until)}` : 'lease not recorded'} · head ${r.head || 'not recorded'}`],
@@ -38,7 +45,7 @@
   function row(lane, r, last) {
     const [g, st, facts] = VIEW[r.state](r);
     const subject = r.state === 'building' ? html`<code>${r.builder}</code>` : html`<code>sd:${String(r.item)}</code>${r.title}`;
-    return html`<li class="qrow" data-state="${r.state}"${r.held ? html` data-held=""` : ''}><span class="g g-${g[0]}" aria-hidden="true">${g[1]}</span><span class="st">${st}</span><span class="s"><span><span class="sr">${g[0]} · </span>${subject}</span><small>${facts}</small></span>${r.state === 'next' ? controls(lane, r, last) : r.state === 'blocked' ? again(lane, r) : html`<span></span>`}</li>`;
+    return html`<li class="qrow" data-state="${r.state}"${r.held ? html` data-held=""` : ''}><span class="g g-${g[0]}" aria-hidden="true">${g[1]}</span><span class="st">${st}</span><span class="s"><span><span class="sr">${g[0]} · </span>${subject}</span><small>${facts}</small></span>${r.state === 'next' ? controls(lane, r, last) : r.state === 'blocked' ? again(lane, r) : r.state === 'merging' ? free(lane, r) : html`<span></span>`}</li>`;
   }
   function lane(l) {
     const last = l.rows.filter(r => r.state === 'next').length, s = said[l.path];
@@ -79,7 +86,7 @@
   }
 
   const DONE = { up: 'moved up', down: 'moved down', top: 'moved to the top', hold: 'held', release: 'released', cancel: 'cancelled',
-    retry: 'queued again', approve: 'approved and queued again' };
+    retry: 'queued again', approve: 'approved and queued again', reclaim: 'released from its holder' };
   // Cancel and Approve are the writes no verb undoes; each dialog names the entry and the command it runs.
   function grant(l, item, head) {
     const r = l.rows.find(x => x.state === 'blocked' && x.item === item), S = window.shell;
@@ -93,16 +100,29 @@
       body: 'The entry leaves the queue and the runner never ships it. To ship it later, enqueue it again from its worktree.',
       cli: `sd-ship -C ${S.shq(l.path)} lane cancel ${item}`, ok: 'Cancel entry', keep: 'Keep it queued' });
   }
+  // Release names what the pack's reclaim does at the step the row showed; the claim binds it to that step.
+  function letGo(l, item, claim) {
+    const r = l.rows.find(x => x.state === 'merging' && x.item === item && x.claim === claim) || {}, S = window.shell;
+    const host = r.host || 'a host not recorded', age = r.claim_age == null ? 'at a time not recorded' : `${dur(r.claim_age)} ago`;
+    const outcome = r.step === 'prepare'
+      ? 'The entry goes back to pending at its place and runs again; its third reclaim fails it instead.'
+      : 'The entry fails with the release as its reason. A merge it already started may still land, so read its pull request before you enqueue it again.';
+    return S.confirm({ title: `Release sd:${item}${r.title ? ` · ${r.title}` : ''} from ${host}?`,
+      body: `${host} claimed it ${age}, at ${r.step || 'a step not recorded'}. ${outcome} The holder's next queue write is refused. If the entry moved on since this read, nothing is released. sd-ship refuses the release when the holder runs alive on this machine.`,
+      cli: `sd-ship -C ${S.shq(l.path)} lane cancel ${item} --expected-claim ${S.shq(claim)}`, ok: 'Release entry', keep: 'Keep it running' });
+  }
   async function act(b) {
     const l = DOC && DOC.lanes.find(x => x.path === b.dataset.repo);
     if (!l || busy) return;
-    const item = Number(b.dataset.item), action = b.dataset.act, head = b.dataset.head || '';
+    const item = Number(b.dataset.item), action = b.dataset.act, head = b.dataset.head || '', claim = b.dataset.claim || '';
     if (action === 'cancel' && !(await sure(l, item))) return;
+    if (action === 'reclaim' && !(await letGo(l, item, claim))) return;
     if (action === 'approve' && !(await grant(l, item, head))) return;
     busy = true; draw();
     try {
       const body = { repo: l.path, item, action, revision: l.revision };
       if (action === 'retry' || action === 'approve') body.head = head;
+      if (action === 'reclaim') body.claim = claim;
       const out = await window.shell.post('/api/queue/move', body);
       const order = out.pending ? ` Order now: ${out.pending.map(n => `sd:${n}`).join(', ')}.` : '';
       said[l.path] = { ok: true, text: `sd:${item} ${DONE[action]}.${order} ${out.edits || ''}` };

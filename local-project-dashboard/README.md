@@ -151,6 +151,10 @@ Blocked entries show for three days; older ones drop off.
 Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names; set `sd.lane_root` where builders write them.
 Up, down, top, hold, release and cancel run `sd-ship lane move|hold|release|cancel` and nothing else.
 Cancel asks first: no verb takes it back, so the entry must be enqueued again from its worktree.
+A running row offers Release, which asks first, then runs `lane cancel <item> --expected-claim <token>:<step>` with the claim the row showed (sd:3337, D3 of pack sd:3174).
+At prepare the entry goes back to pending; at merge it fails, and a merge already started may still land.
+The pack checks the claim under the queue's lock (pack sd:3330): a step that moved on, a claim taken again or an entry that ended releases nothing, and the page reads again.
+`sd-ship` refuses to release a holder alive on this machine.
 A blocked row offers Retry, `sd-ship lane retry <item>`: its last entry is queued again at the same head with the body the lane kept.
 On a repository whose `runner_merge` is manual it also offers Approve, `lane retry <item> --manual`, which asks first: it grants the merge.
 Both pass the head the row showed as `--expected-head`; the verb refuses under the queue's lock an entry that ended at another head since the read.
@@ -290,7 +294,7 @@ change workflow rows. The browser supplies its signed, expiring HttpOnly
 SameSite=Strict session cookie and matching CSRF token, plus an exact same
 Origin. Invalid input, stale revisions, unknown actions and untrusted hosts
 are refused. No command or arbitrary file path is accepted by these routes.
-`/api/queue/move` accepts a repository only when it is registered, and an action from a fixed list of eight.
+`/api/queue/move` accepts a repository only when it is registered, and an action from a fixed list of nine.
 `POST /api/notes/quick/add` writes outside the database: it runs `sd store add
 sdw.quick-note` from the service's PATH as an argv list, once the text passes
 the Notes rules in `notes_screen.quick_text` (sd:2549).

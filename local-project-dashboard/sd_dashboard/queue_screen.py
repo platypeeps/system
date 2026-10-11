@@ -10,7 +10,8 @@ The five states, from each entry's `status`:
 
   merging   `running`: its holder's host, its `step` and claim age (since `started_at`), and its lease's end, each as
             `lane list` prints it; a field an earlier pack did not write reads as not recorded, never guessed. A lease
-            that ended lights caution: the holder may be stuck, and only a reclaim or a release ends it.
+            that ended lights caution: the holder may be stuck, and only a reclaim or a release ends it. Its `claim`,
+            `<holder token>:<step>`, is what Release sends back; an entry without a token or step has none.
   next      `pending`, in queue order; a `held` one keeps its place and the runner skips it.
   building  a builder gate log in the lane folder, changed in the last `BUILDING_HOURS`: empty while its gate runs.
   blocked   the newest entry of an item that `failed`, was `skipped` or stopped `prepared`, in the last `BLOCKED_DAYS`,
@@ -30,6 +31,12 @@ the body copy the lane kept (pack sd:3254); Approve adds `--manual`, the merge g
 `runner_merge` is manual takes it. Both carry the head the row showed as `--expected-head`, which the verb checks under
 the queue's lock (pack sd:3268), so neither acts on an entry that ended at another head after the page read it. The
 page offers both only when `sd-ship lane retry --help` names `--expected-head`: an older pack cannot check the head.
+
+Release acts on a running row (sd:3337, D3 of pack sd:3174): `lane cancel <item> --expected-claim <claim>` releases the
+claim the row showed, in the verb's transaction (pack sd:3330). At prepare the entry goes back to pending; at merge it
+fails, since a merge may have landed. A token is made per claim, so a step that moved on, a claim taken again at the same
+revision and an entry that finished are each refused as `stale_claim`, which the page reads as a 409. The holder token
+reaches the page for this; the pending order is not what Release acts on, so it passes no `--expected-revision`.
 """
 
 from __future__ import annotations
@@ -52,9 +59,9 @@ WRITE_SECONDS = 30
 GIT_SECONDS = 5
 BUILDING_HOURS = 6
 BLOCKED_DAYS = 3
-#: What the page sends as `action`: `move`'s relative places, the two hold verbs, cancel, and a blocked row's retry and
-#: approve (`retry --manual`).
-ACTIONS = ("up", "down", "top", "hold", "release", "cancel", "retry", "approve")
+#: What the page sends as `action`: `move`'s relative places, the two hold verbs, cancel, a blocked row's retry and
+#: approve (`retry --manual`), and a running row's Release (`reclaim`, which runs `lane cancel --expected-claim`).
+ACTIONS = ("up", "down", "top", "hold", "release", "cancel", "retry", "approve", "reclaim")
 #: The ends short of a merge that the page shows as blocked and `lane retry` takes.
 BLOCKED = ("failed", "skipped", "prepared")
 #: Who acts on a blocked entry, by its status and failed step.
@@ -174,8 +181,11 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
         base = {"item": item, "title": entry.get("title") or ""}
         if status == "running":
             started, holder = _when(entry.get("started_at")), entry.get("holder")
-            holder = holder if isinstance(holder, dict) else {}  # never the token: it is the claim itself
-            merging.append({**base, "state": "merging", "step": entry.get("step") or None,
+            holder = holder if isinstance(holder, dict) else {}
+            token, step = holder.get("token"), entry.get("step")
+            merging.append({**base, "state": "merging", "step": step or None,
+                            # The token only inside the claim Release sends back for `--expected-claim` (sd:3337).
+                            "claim": f"{token}:{step}" if isinstance(token, str) and token and step else None,
                             "host": holder.get("host") or None, "claim_age": int(now - started) if started else None,
                             "lease_until": entry.get("lease_until") or None,
                             "lease_passed": (_when(entry.get("lease_until")) or now) < now,
@@ -246,14 +256,17 @@ def document(connection, *, now: str = "") -> dict:
 def move(payload: dict):
     """Check the page's request, then return the write: a best-effort revision check, then one lane verb."""
     values = dict(payload)
-    again = values.get("action") in ("retry", "approve")
-    if (set(values) != {"repo", "item", "action", "revision", *(("head",) if again else ())}
+    again, reclaim = values.get("action") in ("retry", "approve"), values.get("action") == "reclaim"
+    if (set(values) != {"repo", "item", "action", "revision", *(("head",) if again else ()), *(("claim",) if reclaim else ())}
             or not isinstance(values["repo"], str)
             or type(values["item"]) is not int or not 1 <= values["item"] <= 9223372036854775807
             or values["action"] not in ACTIONS or not isinstance(values["revision"], str)
-            or (again and not (isinstance(values["head"], str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", values["head"])))):
-        raise ValueError("Name the repository, the item, one of up, down, top, hold, release, cancel, retry or approve, "
-                         "the lane's revision, and for retry or approve the full head the row showed.")
+            or (again and not (isinstance(values["head"], str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", values["head"])))
+            or (reclaim and not (isinstance(values["claim"], str) and len(values["claim"]) <= 200
+                                 and all(values["claim"].partition(":")[::2])))):
+        raise ValueError("Name the repository, the item, one of up, down, top, hold, release, cancel, retry, approve or "
+                         "reclaim, the lane's revision, for retry or approve the full head the row showed, and for "
+                         "reclaim the claim it showed.")
 
     def write(connection):
         from sd_db import repos, workflow
@@ -272,7 +285,8 @@ def move(payload: dict):
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         item, action = str(values["item"]), values["action"]
         verb = (["move", item, action] if action in ("up", "down", "top")
-                else ["retry", item, "--expected-head", values["head"]] if again else [action, item])
+                else ["retry", item, "--expected-head", values["head"]] if again
+                else ["cancel", item, "--expected-claim", values["claim"]] if reclaim else [action, item])
         if action == "approve":
             verb.append("--manual")
         if action in ("up", "down", "top", "hold", "release", "cancel"):
@@ -281,6 +295,9 @@ def move(payload: dict):
         answer = _run([command("sd-ship"), "-C", path, "lane", *verb], WRITE_SECONDS)
         if answer.get("code") in ("stale_revision", "stale_head"):
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
+        if answer.get("code") == "stale_claim":
+            raise workflow.StaleItem(f"sd:{item} moved on since the page read it: its step changed, another claim holds "
+                                     "it, or it ended. Nothing was released. Read it again, then retry.")
         if not answer.get("ok"):
             raise ValueError(answer.get("error") or "sd-ship lane refused the change.")
         return {"ok": True, "action": action, "item": values["item"], "pending": answer.get("pending"), "edits": EDITS}
