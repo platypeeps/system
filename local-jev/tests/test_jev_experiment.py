@@ -997,6 +997,40 @@ class TheReplay(CompareCase):
         retry = unittest.mock.patch.object(experiment, "RETRY_WAIT", 0)
         retry.start()
         self.addCleanup(retry.stop)
+        self.enterContext(unittest.mock.patch.object(experiment, "FAITHFUL_PASS", 1))
+        self.faithful = self.folder.parent / "faithful-2"
+        self.write_faithful([(99, "{}", True)])
+
+    def write_faithful(self, lines, matched=None):
+        """Step 1's result: (head, state, match) per line, and a summary that
+        passes when `matched` reaches the threshold."""
+        self.faithful.mkdir(exist_ok=True)
+        (self.faithful / "answers.jsonl").write_text("".join(json.dumps({
+            "repository": "owner/repo", "head": sha(n), "state": state, "match": match,
+            "answer": {"choice": "cheap", "confidence": 0.9, "probabilities": {"cheap": 0.9}},
+            "tries": [{"exit": 0, "wait_ms": 300}]}) + "\n" for n, state, match in lines))
+        matched = sum(m for _n, _s, m in lines) if matched is None else matched
+        (self.faithful / "summary.json").write_text(json.dumps({
+            "asked": len(lines), "matched": matched, "threshold": experiment.FAITHFUL_PASS,
+            "passed": matched >= experiment.FAITHFUL_PASS}))
+
+    def attest(self, more=(), registration=None):
+        """A note on sd:2764 binding step 1's files to the registration and population."""
+        more = list(more)
+        document = Path(more[more.index("--preregistration") + 1]) if "--preregistration" in more \
+            else experiment.REGISTRATION
+        hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in (
+            self.faithful / "answers.jsonl", self.faithful / "summary.json", document,
+            self.population)]
+        if registration is not None:
+            hashes[2] = registration
+        stamp = "2026-10-11T00:00:00+00:00"
+        with contextlib.closing(connect(self.db)) as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO item (id, kind, title, status, created_at, updated_at)"
+                " VALUES (2764, 'work', 't', 'in_progress', ?, ?)", (stamp, stamp))
+            connection.execute("INSERT INTO note (item, timestamp, kind, body) VALUES"
+                               " (2764, ?, 'comment', ?)", (stamp, " ".join(hashes)))
 
     def write_population(self, paths, private=()):
         """Heads 0 and 1 are C1; a head in `private` holds a path no public repository tracks."""
@@ -1012,10 +1046,13 @@ class TheReplay(CompareCase):
     def env(self, **extra):
         return super().env(JEV_TRACES_TIMEOUT="5", JEV_COMPARE_ANTHROPIC_KEY="test-key", **extra)
 
-    def replay(self, arm, *more, env=None):
+    def replay(self, arm, *more, env=None, faithful=True, attest=True):
+        if attest and self.faithful.exists():
+            self.attest(more)
+        gate = ["--faithful", str(self.faithful)] if faithful else []
         return run(["replay", "--arm", arm, "--population", str(self.population),
                     "--out", str(self.folder), "--ledger", str(self.ledger), "--db", str(self.db),
-                    "--traces", self.base + "/v1/traces", *more], env or self.env())
+                    "--traces", self.base + "/v1/traces", *gate, *more], env or self.env())
 
     def answers(self, name):
         path = self.folder / "replay" / f"{name}.jsonl"
@@ -1201,14 +1238,8 @@ class TheReplay(CompareCase):
                                         "unavailable", 5)])
 
     def test_step_one_answers_are_reused_for_the_same_state(self):
-        reuse = Path(tempfile.mkdtemp()) / "faithful-2" / "answers.jsonl"
-        reuse.parent.mkdir()
-        reuse.write_text("".join(json.dumps({
-            "repository": "owner/repo", "head": sha(n), "state": state,
-            "answer": {"choice": "cheap", "confidence": 0.9, "probabilities": {"cheap": 0.9}},
-            "tries": [{"exit": 0, "wait_ms": 300}]}) + "\n"
-            for n, state in ((0, self.state), (1, "{}"))))
-        self.assertEqual(self.replay("jev", "--reuse", str(reuse))[0], 0)
+        self.write_faithful([(0, self.state, True), (1, "{}", True)])
+        self.assertEqual(self.replay("jev")[0], 0)
         found = {a["head"]: a for a in self.answers("jev")}
         self.assertEqual((found[sha(0)]["reused"], found[sha(0)]["tier"]),
                          ("faithful-2", "cheap"))
@@ -1705,3 +1736,42 @@ class TheReplay(CompareCase):
         self.assertEqual([a["outcome"] for a in self.answers("kev")],
                          ["ok", "ok", "interrupted", "ok", "ok"])
         self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/systemone"]), before + 2)
+
+    def test_no_faithfulness_result_refuses_before_any_call(self):
+        for name, folder in (("no flag", None), ("empty folder", Path(tempfile.mkdtemp()))):
+            with self.subTest(name=name):
+                if folder is None:
+                    with self.assertRaises(SystemExit):
+                        self.replay("jev", faithful=False)
+                else:
+                    self.assertEqual(self.replay("jev", "--faithful", str(folder),
+                                                 faithful=False, attest=False)[0], 2)
+        self.assertEqual(Stub.seen, [])
+        self.assertFalse((self.folder / "replay").exists())
+
+    def test_a_failing_faithfulness_result_refuses(self):
+        for name, matched in (("did not pass", 0), ("summary above its answers", 1)):
+            with self.subTest(name=name):
+                self.write_faithful([(99, "{}", False)], matched=matched)
+                self.assertEqual(self.replay("jev")[0], 2)
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_faithfulness_result_for_another_registration_or_population_refuses(self):
+        self.attest(registration="0" * 64)
+        self.assertEqual(self.replay("jev", attest=False)[0], 2)
+        self.attest()
+        self.write_population(["pkg/mod.py"])
+        self.assertEqual(self.replay("jev", attest=False)[0], 2)
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_faithfulness_result_edited_after_its_note_refuses(self):
+        self.attest()
+        self.write_faithful([(0, self.state, True)])
+        self.assertEqual(self.replay("jev", attest=False)[0], 2)
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_faithfulness_result_changed_between_arms_refuses(self):
+        self.assertEqual(self.replay("kev")[0], 0)
+        self.write_faithful([(0, self.state, True)])
+        self.assertEqual(self.replay("jev")[0], 2)
+        self.assertEqual(Stub.seen, [])

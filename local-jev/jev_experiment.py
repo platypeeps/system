@@ -1044,6 +1044,37 @@ def registered(path: Path) -> dict:
             "document": hashlib.sha256(data).hexdigest()}
 
 
+def faithful_gate(folder: Path, db, registration: dict, population_sha: str) -> tuple[dict, dict]:
+    """Step 1's passing result, bound to this replay: its files' hashes, and
+    its answers by head for Jev to reuse. Refused when it is missing, did not
+    pass on a recount of its answers, or no note on sd:2764 carries the
+    hashes of both its files with this registration's and population's: the
+    full replay starts only after the faithfulness gate passes."""
+    answers, summary_path = folder / "answers.jsonl", folder / "summary.json"
+    if not answers.is_file() or not summary_path.is_file():
+        raise Refused(f"no faithfulness result in {folder}; the full replay starts after "
+                      "step 1 passes; nothing was asked")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    lines = read_jsonl(answers)
+    matched = sum(1 for one in lines if one.get("match") is True)
+    if not (summary.get("passed") is True and summary.get("threshold") == FAITHFUL_PASS
+            and summary.get("asked") == len(lines) and summary.get("matched") == matched
+            and matched >= FAITHFUL_PASS):
+        raise Refused(f"the faithfulness result in {folder} did not pass: {matched} of "
+                      f"{len(lines)} answers match, {FAITHFUL_PASS} needed; nothing was asked")
+    bound = {"answers": file_sha256(answers), "summary": file_sha256(summary_path)}
+    wanted = (bound["answers"], bound["summary"], registration["document"], population_sha)
+    with contextlib.closing(open_ro(db)) as connection:
+        notes = [body for (body,) in connection.execute(
+            "SELECT body FROM note WHERE item = ?", (ITEM,))]
+    if not any(all(value in body for value in wanted) for body in notes):
+        raise Refused(f"no note on sd:{ITEM} binds the faithfulness result to this registration "
+                      f"and population; after review, note: faithful {' '.join(wanted[:2])} "
+                      f"registration {wanted[2]} population {wanted[3]}; nothing was asked")
+    return bound, {(one["repository"], one["head"]): one for one in lines
+                   if isinstance(one.get("answer"), dict) and one["answer"].get("choice") in TIERS}
+
+
 def scope(arm: str, rows: list[dict], db, home: str | None) -> list[dict]:
     """The heads an arm is asked about: every head with a state for Kev; for a
     hosted arm, only a state whose every path a public managed repository
@@ -1413,6 +1444,10 @@ def cmd_replay(args, out, env) -> int:
     if manifest.get("registration", registration) != registration:
         raise Refused(f"{args.preregistration.name} changed since this replay started; "
                       "every arm and resume runs under one registration")
+    faithful, reuse = faithful_gate(args.faithful, db, registration, population_sha)
+    if manifest.get("faithful", faithful) != faithful:
+        raise Refused(f"the faithfulness result in {args.faithful} is not the one this replay "
+                      "started on; nothing was asked")
     name, run_id = answer_file(arm, args.rerun, manifest)
     if name not in manifest.get("arms", {}) and any(
             (folder / "replay" / f"{name}{suffix}").exists() for suffix in (".jsonl", ".asking")):
@@ -1429,11 +1464,8 @@ def cmd_replay(args, out, env) -> int:
     if paused.get("scope", scope_of(rows)) != scope_of(rows):
         raise Refused(f"{name}'s heads differ from those it started on: the public pool moved; "
                       "nothing was sent")
-    reuse = {}
-    if arm == "jev" and args.reuse:
-        for one in read_jsonl(args.reuse):
-            if isinstance(one.get("answer"), dict) and one["answer"].get("choice") in TIERS:
-                reuse[(one["repository"], one["head"])] = one
+    # Only Jev was asked in step 1; its answers there are reused, never asked again.
+    reuse = reuse if arm == "jev" else {}
     replay.mkdir(parents=True, exist_ok=True)
     answers = replay / f"{name}.jsonl"
     marker = replay / f"{name}.asking"
@@ -1469,7 +1501,7 @@ def cmd_replay(args, out, env) -> int:
     # share a ledger and a run id never take each other's rows.
     manifest.setdefault("instance", secrets.token_hex(8))
     manifest.update(
-        registration=registration,
+        registration=registration, faithful=faithful,
         heuristic_sha256=HEURISTIC_SHA256, pack=PACK_SHA, system=git_head(FOLDER.parent),
         population={"file": args.population.name, "sha256": population_sha})
     write_json(manifest_path, manifest)
@@ -1563,7 +1595,7 @@ def cmd_replay(args, out, env) -> int:
             line.update(tier=answer["choice"], probabilities=answer.get("probabilities"),
                         confidence=answer.get("confidence"), outcome="ok",
                         attempts=found.get("tries"), usd=None,
-                        reused=args.reuse.parent.name, at=now())
+                        reused=args.faithful.name, at=now())
             record(line, None)
             continue
         payload, taken = jev.redacted_payload(
@@ -1683,7 +1715,8 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--out", type=Path, required=True, help="the experiment data folder")
     rep.add_argument("--ledger", type=db_path, required=True, help="the experiment database")
     rep.add_argument("--db", type=db_path, help="default: the live workflow database")
-    rep.add_argument("--reuse", type=Path, help="step 1's answers.jsonl; Jev is not asked again")
+    rep.add_argument("--faithful", type=Path, required=True,
+                     help="step 1's passing result folder; Jev reuses its answers")
     rep.add_argument("--cap", type=dollars, default=SPEND_CAP, help="hosted spend cap in US dollars")
     rep.add_argument("--traces", default=TRACES_URL, help="the OTLP traces endpoint")
     rep.add_argument("--rerun", metavar="REASON", help="a second run, reported as one")
