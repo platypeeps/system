@@ -842,7 +842,9 @@ class TheObjectiveLabels(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse((self.out / "labels").exists())
 
-    def test_c1_runs_once_each_answer_file_s_hash_is_on_the_item(self):
+    def test_hashes_on_the_item_alone_do_not_seal_c1(self):
+        """Files no finished replay wrote, their hashes noted: still sealed shut
+        (codex round 1). `TheReplay` opens C1 after a real replay."""
         db = checkpoint_db([("ship:a", "2026-09-10T00:00:00+00:00",
                              self.body("h7", reviewed("h7", "blocking")))])
         population_file(self.out, [{"head": "h7", "population": "C1"}])
@@ -853,20 +855,16 @@ class TheObjectiveLabels(unittest.TestCase):
             path.write_text(json.dumps({"arm": arm}) + "\n")
             hashes.append(hashlib.sha256(path.read_bytes()).hexdigest())
         stamp = "2026-10-11T00:00:00+00:00"
-        argv = ["labels", "objective", "--population", "C1", "--db", str(db), "--out", str(self.out)]
         with contextlib.closing(connect(db)) as connection:
             connection.execute(
                 "INSERT INTO item (id, kind, title, status, created_at, updated_at)"
                 " VALUES (2764, 'work', 't', 'in_progress', ?, ?)", (stamp, stamp))
             connection.execute("INSERT INTO note (item, timestamp, kind, body) VALUES"
-                               " (2764, ?, 'comment', ?)", (stamp, " ".join(hashes[:2])))
-        self.assertEqual(run(argv)[0], 2)          # one arm's hash is not there yet
-        with contextlib.closing(connect(db)) as connection:
-            connection.execute("INSERT INTO note (item, timestamp, kind, body) VALUES"
-                               " (2764, ?, 'comment', ?)", (stamp, f"sealed {hashes[2]}"))
-        code, printed = run(argv)
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(printed)["all"]["blocking"], 1)
+                               " (2764, ?, 'comment', ?)", (stamp, " ".join(hashes)))
+        code, _printed = run(["labels", "objective", "--population", "C1", "--db", str(db),
+                              "--out", str(self.out)])
+        self.assertEqual(code, 2)
+        self.assertFalse((self.out / "labels").exists())
 
     def test_c2_refuses_until_step_15_seals_it(self):
         code, found, _db = self.labels([], ["h8"], population="C2")
@@ -1089,6 +1087,48 @@ class TheReplay(CompareCase):
         kev_calls = [s for s in Arm.seen if s["path"] == "/v1/systemone"]
         self.assertEqual(len(kev_calls), 5)
         self.assertFalse((self.folder / "replay" / "kev.asking").exists())
+
+    def seal(self, *arms):
+        """A note on sd:2764 carrying each arm's answer file hash."""
+        stamp = "2026-10-11T00:00:00+00:00"
+        with contextlib.closing(connect(self.db)) as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO item (id, kind, title, status, created_at, updated_at)"
+                " VALUES (2764, 'work', 't', 'in_progress', ?, ?)", (stamp, stamp))
+            connection.execute("INSERT INTO note (item, timestamp, kind, body) VALUES"
+                               " (2764, ?, 'comment', ?)", (stamp, " ".join(
+                                   hashlib.sha256((self.folder / "replay" / f"{arm}.jsonl")
+                                                  .read_bytes()).hexdigest() for arm in arms)))
+
+    def labels_c1(self):
+        return run(["labels", "objective", "--population", "C1", "--db", str(self.db),
+                    "--out", str(self.folder)], self.env())
+
+    def test_c1_labels_open_only_once_every_arm_answered_each_c1_head(self):
+        self.write_population(["a.py"], private=(1,))
+        for arm in ("kev", "jev"):
+            self.assertEqual(self.replay(arm)[0], 0)
+        real = experiment.jev_meter.write
+        calls = []
+
+        def stop_on_second(row, env=None):
+            calls.append(row)
+            if len(calls) == 2:
+                raise KeyboardInterrupt("stopped")
+            return real(row, env)
+        with unittest.mock.patch.object(experiment.jev_meter, "write", stop_on_second):
+            with self.assertRaises(KeyboardInterrupt):
+                self.replay("haiku")
+        self.seal("kev", "jev", "haiku")
+        self.assertEqual(self.labels_c1()[0], 2)        # Haiku's file is partial
+        self.assertEqual(self.replay("haiku")[0], 0)
+        self.seal("haiku")
+        registered = self.population.read_bytes()
+        self.population.write_bytes(registered + self.population.read_bytes().splitlines(True)[0])
+        self.assertEqual(self.labels_c1()[0], 2)        # not the population the replay read
+        self.population.write_bytes(registered)
+        code, printed = self.labels_c1()
+        self.assertEqual((code, json.loads(printed)["all"]["heads"]), (0, 2))
 
     def test_a_line_cut_off_by_a_stop_is_dropped_and_its_head_not_asked_again(self):
         replay = self.folder / "replay"

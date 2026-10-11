@@ -40,6 +40,7 @@ to `--out`, outside the checkout.
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import datetime
 import hashlib
@@ -849,17 +850,36 @@ def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def sealed(db, folder: Path) -> list[str]:
-    """What keeps C1 unsealed: each model arm's answer file that is missing,
-    or whose SHA-256 no note on sd:2764 carries. Empty when it is sealed."""
-    missing = []
+def sealed(db, folder: Path, home: str | None) -> list[str]:
+    """What keeps C1 unsealed; empty when it is sealed. Each model arm's
+    primary replay finished, unhalted, on the `population.jsonl` beside it and
+    on the scope that file gives it now; its answer file holds one line for
+    each C1 head in that scope and none for a head outside it; and a note on
+    sd:2764 carries that file's SHA-256."""
     with contextlib.closing(open_ro(db)) as connection:
         notes = [body for (body,) in connection.execute(
             "SELECT body FROM note WHERE item = ?", (ITEM,))]
+    population, manifest_path = folder / "population.jsonl", folder / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    if manifest.get("population", {}).get("sha256") != file_sha256(population):
+        return [f"no replay manifest names {population.name} as it is now"]
+    rows = read_jsonl(population)
+    missing = []
     for arm in MODEL_ARMS:
         path = folder / "replay" / f"{arm}.jsonl"
-        if not path.is_file():
-            missing.append(f"{path.name} is missing")
+        run = manifest.get("arms", {}).get(arm, {})
+        heads = scope(arm, rows, db, home)
+        wanted = {(r["repository"], r["head"]) for r in heads}
+        c1 = {(r["repository"], r["head"]) for r in heads if r["population"] == "C1"}
+        if not path.is_file() or not run.get("finished") or run.get("halted"):
+            missing.append(f"{arm}'s replay has not finished")
+            continue
+        if run.get("scope") != scope_of(heads):
+            missing.append(f"{arm}'s scope moved since its replay")
+            continue
+        lines = collections.Counter((r.get("repository"), r.get("head")) for r in read_jsonl(path))
+        if any(lines[ident] != 1 for ident in c1) or set(lines) - wanted:
+            missing.append(f"{path.name} does not hold one answer for each of its {len(c1)} C1 heads")
         elif not any(file_sha256(path) in body for body in notes):
             missing.append(f"no note on sd:{ITEM} carries the SHA-256 of {path.name}")
     return missing
@@ -895,7 +915,7 @@ def cmd_labels(args, out, env) -> int:
                       "and step 15 is not built; nothing was read")
     if name == "C1":
         # Before any checkpoint is opened: an unsealed C1 outcome stays unread.
-        unsealed = sealed(db, args.out)
+        unsealed = sealed(db, args.out, env.get("HOME"))
         if unsealed:
             raise Refused("C1 is not sealed: " + "; ".join(unsealed) + "; nothing was read")
     target = args.out / "labels" / f"{name}.jsonl"
