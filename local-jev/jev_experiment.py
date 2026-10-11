@@ -93,8 +93,17 @@ class Refused(RuntimeError):
 
 # --- the workflow database, read-only ----------------------------------------
 
+def db_path(raw) -> Path:
+    """The one spelling of a database path that every identity check and every
+    open after it uses: stripped as `jev_meter` strips `JEV_METER_DB`, `~`
+    expanded, links and `..` resolved (review round 3)."""
+    return Path(os.path.realpath(os.path.expanduser(str(raw).strip())))
+
+
 def open_ro(path: str | Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True)
+    # `as_uri` escapes `?` and `#`, so the file opened is the one named and
+    # `mode=ro` is the only parameter.
+    connection = sqlite3.connect(f"{db_path(path).as_uri()}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -215,9 +224,10 @@ EXTRACTIONS = {"entry1": extraction_entry1, "A": extraction_a, "B": extraction_b
 
 
 def cmd_reconcile(args, out, env) -> int:
-    rows = list(checkpoints(args.db, args.since, args.until))
+    db = args.db or default_db(env)
+    rows = list(checkpoints(db, args.since, args.until))
     result = {"window": [args.since, args.until],
-              "invalid_bodies": invalid_bodies(args.db, args.since, args.until),
+              "invalid_bodies": invalid_bodies(db, args.since, args.until),
               "extractions": {name: tally(build(rows)) for name, build in EXTRACTIONS.items()}}
     json.dump(result, out, indent=2, sort_keys=True)
     out.write("\n")
@@ -271,14 +281,16 @@ def criteria(order=TIERS) -> str:
     return ",".join(f"{name}={TIER_CRITERIA[name]}" for name in order)
 
 
-#: An absolute or home path anywhere in a string, as one rule rather than a
-#: list of delimiters (review rounds 1 and 2): a run of `/` that no letter,
-#: digit, dot, `/` or closing bracket precedes, followed by a path segment and
-#: another `/`; or `~`, `~user`, `$HOME` or `${HOME}` followed by `/`, likewise
-#: unglued. So any other character before it is a boundary: space, quote, `*`,
-#: `_`, opening bracket, `=`, `:`, URL scheme. `src/a.py`, `./a`, `foo/opt/x`,
-#: `1/2` and a route group such as `app/(site)/x` are glued and do not match.
-ABSOLUTE = re.compile(r"(?<![A-Za-z0-9./)\]}])(?:/+[^\s/]+/|~[A-Za-z0-9._-]*/|\$\{?HOME\}?/)")
+#: A path sign anywhere in a string, deny by default (review round 3; rounds
+#: 1 and 2 listed path shapes and each missed one): any `~` or `\`, any
+#: `$NAME`, `${NAME}` or `%NAME%`, and any run of `/` that no letter, digit or
+#: closing bracket comes right before, once something other than space
+#: follows it. So `/x`, `"/x"`, `file:/x`, `C:/x` and `./x` match, whatever
+#: their segment count; `src/a.py`, `foo/opt/x`, `1/2`, `and/or`, `a / b` and
+#: a route group such as `app/(site)/x` do not. A false halt costs a resume
+#: the operator reviews; a miss sends a path off the machine.
+ABSOLUTE = re.compile(r"[~\\]|\$\{?[A-Za-z_]|%[A-Za-z_][A-Za-z0-9_]*%"
+                      r"|(?<![A-Za-z0-9)\]}/])/+[^\s/]")
 
 
 def private_path(state: str, home: str | None) -> str | None:
@@ -393,7 +405,12 @@ def ask_jev(state: str, env, subject: str | None = None, sleep=time.sleep) -> di
 
 
 def same_file(one: Path, other: Path) -> bool:
-    """Whether two paths name one file; a path that does not exist names none."""
+    """Whether two paths name one file: equal once normalised, or one file by
+    identity. Equal names count even with no file there yet, because on a
+    satellite `sd_db` sends the default path to the hub."""
+    one, other = db_path(one), db_path(other)
+    if one == other:
+        return True
     try:
         return os.path.samefile(one, other)
     except OSError:
@@ -403,22 +420,26 @@ def same_file(one: Path, other: Path) -> bool:
 def cmd_faithful(args, out, env) -> int:
     # By file identity, before the ledger is opened or any call is made: a
     # link or another spelling of the live or source database is that database.
+    # Each path is normalised once, and the meter gets that exact string.
+    ledger, db = db_path(args.ledger), args.db or default_db(env)
+    if not db.is_file():
+        raise Refused(f"--db {db} is not a file")
     for name, other in (("the live workflow database", default_db(env)),
-                        ("the --db source database", args.db)):
-        if same_file(args.ledger, other):
-            raise Refused(f"--ledger {args.ledger} is {name}; experiment rows "
+                        ("the --db source database", db)):
+        if same_file(ledger, other):
+            raise Refused(f"--ledger {ledger} is {name}; experiment rows "
                           "never go to the live ledger")
-    env = jev_env(env, args.ledger, args.out / "corpus")
+    env = jev_env(env, ledger, args.out / "corpus")
     word = jev_meter.ready("jev", env)
     if word != "ready":
-        raise Refused(f"the experiment ledger {args.ledger} refused: {word}")
+        raise Refused(f"the experiment ledger {ledger} refused: {word}")
     exclude = set()
     if args.exclude:
         for line in Path(args.exclude).read_text(encoding="utf-8").splitlines():
             if line.strip():
                 row = json.loads(line)
                 exclude.add((row["repository"], row["head"]))
-    chosen = draw(candidates(args.db), exclude=exclude)
+    chosen = draw(candidates(db), exclude=exclude)
     home = env.get("HOME")
     for one in chosen:
         hit = private_path(one["state"], home)
@@ -459,20 +480,20 @@ def cmd_faithful(args, out, env) -> int:
 
 def default_db(env=None) -> Path:
     env = os.environ if env is None else env
-    return Path(env.get("HOME", "~")).expanduser() / ".local/share/sd/sd.db"
+    return db_path(Path(env.get("HOME", "~")).expanduser() / ".local/share/sd/sd.db")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jev_experiment.py", description=__doc__.splitlines()[0])
     verbs = parser.add_subparsers(dest="verb", required=True)
     rec = verbs.add_parser("reconcile", help="step 0: entry 1's counts under each extraction")
-    rec.add_argument("--db", type=Path, default=default_db())
+    rec.add_argument("--db", type=db_path, help="default: the live workflow database")
     rec.add_argument("--since", default=ENTRY1_FROM)
     rec.add_argument("--until", default=ENTRY1_TO)
     verbs.add_parser("heuristic", help="step 3: check the frozen heuristic's SHA-256")
     fai = verbs.add_parser("faithful", help="step 1: re-ask Jev on 50 rebuilt states")
-    fai.add_argument("--db", type=Path, default=default_db())
-    fai.add_argument("--ledger", type=Path, required=True, help="the experiment database")
+    fai.add_argument("--db", type=db_path, help="default: the live workflow database")
+    fai.add_argument("--ledger", type=db_path, required=True, help="the experiment database")
     fai.add_argument("--out", type=Path, required=True, help="a new folder for the answers")
     fai.add_argument("--exclude", help="an earlier attempt's answers.jsonl; its heads are not drawn")
     return parser

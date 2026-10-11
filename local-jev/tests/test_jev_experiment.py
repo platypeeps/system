@@ -119,9 +119,9 @@ class TheHeuristic(unittest.TestCase):
                                         "standard"), "standard")
 
 
-#: The class from review rounds 1 and 2: the boundary before (and after) an
-#: absolute or home path token in text sent to the hosted call. One row per
-#: boundary form, as (id, text, whether it must halt). PR body, failure table.
+#: The class from review rounds 1 to 3: an absolute or home path token in
+#: text sent to the hosted call. One row per form, as (id, text, whether it
+#: must halt). PR body, failure table.
 BOUNDARIES = (
     ("B01 start of string", "/opt/private/file.py", True),
     ("B02 whitespace", "never skip\t/opt/private/file.py", True),
@@ -145,9 +145,29 @@ BOUNDARIES = (
     ("B20 other punctuation", "!/opt/a/b #/opt/a/b -/opt/a/b @/opt/a/b", True),
     ("B21 typographic quote", "matched \u201c/opt/private/file.py\u201d", True),
     ("B22 glued after a word", "foo/opt/private/file.py", False),
-    ("B23 relative paths", "src/a.py ./a/b.py ../c/d.py docs/**/*.md", False),
+    ("B23 relative paths", "src/a.py docs/**", False),
     ("B24 fractions and and/or", "1/2 of the paths, and/or a / b", False),
     ("B25 glued after a closing bracket", "app/(site)/styles/a.css x[0]/y/z {a}/b/c", False),
+    # Round 3: deny by default. A path sign is a hit whatever follows it;
+    # one form per row, so no row passes on another form's hit.
+    ("R01 one segment", "/secret", True),
+    ("R02 one segment in a sentence", "never skip /private.txt", True),
+    ("R03 one segment after a quote", 'matched "/secret"', True),
+    ("R04 one segment in parentheses", "matched (/x)", True),
+    ("R05 file: URL, one segment", "file:/secret", True),
+    ("R06 ~user with no slash", "see ~someone", True),
+    ("R07 a tilde after a word", "x~/notes.md", True),
+    ("R08 Windows drive, slash", "C:/work", True),
+    ("R09 Windows drive, backslash", "D:\\work\\a.txt", True),
+    ("R10 UNC path", "\\\\server\\share", True),
+    ("R11 shell variable", "$TMPDIR/x", True),
+    ("R12 braced shell variable", "${XDG_CONFIG_HOME}/y", True),
+    ("R13 Windows variable", "%USERPROFILE%", True),
+    ("R14 glued after a word and a dot", "rule./etc/passwd", True),
+    ("R15 dot relative, false halt", "./a/b.py", True),
+    ("R16 dot-dot relative, false halt", "../c/d.py", True),
+    ("R17 glob after a star, false halt", "docs/**/*.md", True),
+    ("R18 backup file tilde, false halt", "a.py~", True),
 )
 
 
@@ -293,6 +313,68 @@ class TheFaithfulnessCheck(StubServer):
         code, _out = self.faithful()
         self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])
+
+    def test_another_spelling_of_the_ledger_is_the_same_ledger(self):
+        # The meter strips `JEV_METER_DB`, so the identity check must judge
+        # the path the meter will open, not the one typed (review round 3).
+        live = self.config / ".local/share/sd/sd.db"
+        live.parent.mkdir(parents=True)
+        initialise(live)
+        with contextlib.closing(sqlite3.connect(self.db)) as source:
+            rows = source.execute("SELECT kind, key, timestamp, body FROM state").fetchall()
+        with contextlib.closing(sqlite3.connect(self.ledger)) as target, target:
+            target.executemany("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, ?, ?)",
+                               rows)
+        source = self.ledger
+        for ledger, db in ((f"{live} ", self.db), (f" {live}\n", self.db),
+                           (f"{source} ", source), (f"{source}\t", source)):
+            with self.subTest(ledger=ledger):
+                Stub.seen = []
+                self.ledger, self.db = ledger, db
+                self.out = Path(tempfile.mkdtemp()) / "faithful"
+                code, _out = self.faithful()
+                self.assertEqual(code, 2)
+                self.assertEqual(Stub.seen, [])
+        for path in (live, source):
+            with contextlib.closing(sqlite3.connect(path)) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(),
+                                 (0,), path)
+
+    def test_the_source_is_opened_as_named_and_read_only(self):
+        # `?` in --db once ended the path inside the read-only URI, so the
+        # file the identity check judged was not the file opened, and the
+        # `mode=ro` that followed was read as part of another parameter.
+        Stub.choice_value = "standard"
+        with contextlib.closing(sqlite3.connect(self.db)) as source:
+            rows = source.execute("SELECT kind, key, timestamp, body FROM state").fetchall()
+        with contextlib.closing(sqlite3.connect(self.ledger)) as target, target:
+            target.executemany("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, ?, ?)",
+                               rows)
+        self.db = f"{self.ledger}?x=1"
+        code, _out = self.faithful()
+        self.assertEqual(code, 2)
+        self.assertEqual(Stub.seen, [])
+        with contextlib.closing(sqlite3.connect(self.ledger)) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(), (0,))
+
+    def test_the_default_source_is_the_live_database_of_the_given_home(self):
+        # The live check reads `env`'s HOME; the default --db must read the
+        # same HOME, not the process's.
+        live = self.config / ".local/share/sd/sd.db"
+        live.parent.mkdir(parents=True)
+        live.write_bytes(self.db.read_bytes())
+        out = io.StringIO()
+        code = experiment.main(["reconcile", "--since", "2026-09-22", "--until", "2026-09-25"],
+                               out=out, env={"HOME": str(self.config)})
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["extractions"]["A"]["heads"], 60)
+
+    def test_one_name_is_one_file_before_the_file_exists(self):
+        # On a satellite `sd_db` sends the default path to the hub, so a
+        # ledger named as the live database needs no local file to be it.
+        missing = self.config / "nowhere/sd.db"
+        self.assertTrue(experiment.same_file(missing, Path(f"{missing} ")))
+        self.assertFalse(experiment.same_file(missing, self.config / "elsewhere/sd.db"))
 
     def test_a_ledger_that_refuses_stops_the_run(self):
         self.ledger = Path(tempfile.mkdtemp()) / "missing.db"
