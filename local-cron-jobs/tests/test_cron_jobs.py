@@ -43,6 +43,7 @@ CRON_LABEL_ARM = re.compile(r"[^\s(]*\.cron\.\*\)")
 CRON_LABEL_ARM_EOL = re.compile(r"[^\s(]*\.cron\.\*\)\n")
 SCRIPT = pathlib.Path(os.environ.get("CRON_JOBS_TEST_SCRIPT") or FOLDER / "cron-jobs.sh")
 LIB_CONFIG = FOLDER.parent / "lib" / "config.sh"
+LIB_BOUNDED = FOLDER.parent / "lib" / "bounded.sh"
 
 # The fake agent: one file for argv and one for the environment it was
 # started with, NUL-separated so a value holding a newline cannot split. It
@@ -78,6 +79,7 @@ class Fixture:
         shutil.copy(script, self.folder / "cron-jobs.sh")
         (self.tmp / "lib").mkdir()
         shutil.copy(LIB_CONFIG, self.tmp / "lib" / "config.sh")
+        shutil.copy(LIB_BOUNDED, self.tmp / "lib" / "bounded.sh")
         self.config = self.tmp / "config"
         self.conf_dir = self.config / "cron-jobs"
         self.jobs = self.conf_dir / "jobs"
@@ -1529,6 +1531,98 @@ class EveryRunLeavesAnOutcomeTest(unittest.TestCase):
         text = self.log_text()
         self.assertEqual(len(re.findall(r"\] [0-9T:+-]+ (?:done|FAILED rc=)", text)), 1)
         self.assertIn("FAILED rc=7", text)
+
+
+# The fake `sd`: one line per call, its arguments, then it exits with
+# FAKE_SD_EXIT (0 when unset). FAKE_SD_SLEEP, when set, makes it hang first.
+FAKE_SD = """#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_SD_LOG"
+[ -z "$FAKE_SD_SLEEP" ] || sleep "$FAKE_SD_SLEEP"
+exit "${FAKE_SD_EXIT:-0}"
+"""
+
+
+class RunReportTest(unittest.TestCase):
+    """Every run that owes an outcome files one run report, and the report
+    cannot hold the run up or change its exit code (sd:3292)."""
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.sd = self.fx.tmp / "sd"
+        self.sd.write_text(FAKE_SD)
+        self.sd.chmod(self.sd.stat().st_mode | stat.S_IXUSR)
+        self.sd_log = self.fx.tmp / "sd-calls"
+
+    def exec_job(self, job="demo", timeout=60, **extra):
+        return self.fx.exec_job(job, {"SD_REPORT_BIN": str(self.sd),
+                                      "FAKE_SD_LOG": str(self.sd_log), **extra},
+                                timeout=timeout)
+
+    def reports(self):
+        if not self.sd_log.exists():
+            return []
+        return self.sd_log.read_text().splitlines()
+
+    def test_a_run_the_trap_ends_files_its_report(self):
+        # REGRESSION. An unusable JOB_DIR ends the run through the EXIT trap,
+        # which wrote the outcome and filed no report, so the failure never
+        # reached Tasks.
+        missing = self.fx.tmp / "no-such-directory"
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  'JOB_COMMAND="true"\n'
+                                  f'JOB_DIR="{missing}"\n')
+        result = self.exec_job()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        reports = self.reports()
+        self.assertEqual(len(reports), 1, reports)
+        self.assertRegex(reports[0], r"^reports ingest demo --run-id [0-9TZ]+-[0-9]+ "
+                                     r"--started \S+ --ended \S+ --exit-code 1 --offset 0 ")
+
+    def test_a_deleted_definition_files_its_report(self):
+        # REGRESSION. `load_job` exits through the trap too.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.exec_job().returncode, 0)
+        (self.fx.jobs / "demo.job").unlink()
+        self.assertNotEqual(self.exec_job().returncode, 0)
+        reports = self.reports()
+        self.assertEqual(len(reports), 2, reports)
+        self.assertIn("--exit-code 0 ", reports[0])
+        self.assertNotIn("--exit-code 0 ", reports[1])
+
+    def test_a_run_that_reaches_the_end_files_one_report_only(self):
+        # PIN. The trap must not file a second report for a run whose own end
+        # already filed one.
+        for command, code in (("true", 0), ("exit 7", 7)):
+            with self.subTest(command=command):
+                self.sd_log.unlink(missing_ok=True)
+                self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="{command}"\n')
+                self.assertEqual(self.exec_job().returncode, code)
+                reports = self.reports()
+                self.assertEqual(len(reports), 1, reports)
+                self.assertIn(f"--exit-code {code} ", reports[0])
+
+    def test_a_hung_report_is_bounded_and_keeps_the_exit_code(self):
+        # REGRESSION. `sd reports ingest` ran unbounded, so a hung database
+        # call held the run, and its lock, for as long as it hung.
+        for command, code in (("true", 0), ("exit 7", 7)):
+            with self.subTest(command=command):
+                self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="{command}"\n')
+                started = time.monotonic()
+                result = self.exec_job(timeout=20, FAKE_SD_SLEEP="60",
+                                       CRON_JOBS_REPORT_TIMEOUT="1")
+                self.assertLess(time.monotonic() - started, 15)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn("report was not recorded", result.stderr)
+
+    def test_a_failed_report_keeps_the_exit_code(self):
+        # PIN. A report that fails is logged; the job's own code stands.
+        for command, code in (("true", 0), ("exit 7", 7)):
+            with self.subTest(command=command):
+                self.fx.write_job("demo", f'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="{command}"\n')
+                result = self.exec_job(FAKE_SD_EXIT="3")
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn("report was not recorded", result.stderr)
 
 
 class LaunchdLifetimeTest(unittest.TestCase):
