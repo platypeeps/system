@@ -175,6 +175,10 @@ BOUNDARIES = (
     ("R22 percent-encoded slash", "%2Fetc%2Fpasswd", True),
     ("R23 command substitution", "$(pwd)", True),
     ("R24 spaced slash, false halt", "a / b", True),
+    ("R25 ANSI colour before a path", "\x1b[31m/etc/passwd\x1b[0m", True),
+    ("R26 C1 control before a path", "\x9b31m/etc/passwd", True),
+    ("R27 file: URL without a slash", "FILE:private.txt", True),
+    ("R28 profile: is not a scheme", "profile: standard", False),
 )
 
 

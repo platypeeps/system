@@ -285,13 +285,16 @@ def criteria(order=TIERS) -> str:
 
 #: A path sign anywhere in a string, deny by default (review round 3; rounds
 #: 1 and 2 listed path shapes and each missed one): any `~` or `\`, any `$`
-#: or `%` with something other than space after it, and any `/` that no
-#: letter, digit, closing bracket or other `/` comes right before. So `/x`,
-#: `/ x`, `"/x"`, `file:/x`, `C:/x`, `./x`, `$VAR`, `%VAR%` and `%2F` match,
-#: whatever follows; `src/a.py`, `foo/opt/x`, `1/2`, `and/or`, `25% off` and
-#: a route group such as `app/(site)/x` do not. A false halt costs a resume
-#: the operator reviews; a miss sends a path off the machine.
-ABSOLUTE = re.compile(r"[~\\]|[$%]\S|(?<![A-Za-z0-9)\]}/])/")
+#: or `%` with something other than space after it, any control character
+#: (an ANSI colour code ends in a letter that would glue a slash), any `file:`
+#: scheme, and any `/` that no letter, digit, closing bracket or other `/`
+#: comes right before. So `/x`, `/ x`, `"/x"`, `file:x`, `C:/x`, `./x`,
+#: `$VAR`, `%VAR%` and `%2F` match, whatever follows; `src/a.py`,
+#: `foo/opt/x`, `1/2`, `and/or`, `25% off` and a route group such as
+#: `app/(site)/x` do not. A false halt costs a resume the operator reviews;
+#: a miss sends a path off the machine.
+ABSOLUTE = re.compile(r"[~\\\x00-\x1f\x7f-\x9f]|[$%]\S|(?<![A-Za-z0-9])(?i:file):"
+                      r"|(?<![A-Za-z0-9)\]}/])/")
 
 
 def private_path(state: str, home: str | None) -> str | None:
