@@ -247,11 +247,14 @@ class TheMove(Lane, BrowserSession):
             status, _, answer = self.move("hold")
         self.assertEqual((status, answer.get("reload")), (409, True), answer)
 
-    def test_cancel_calls_exactly_lane_cancel_with_the_item(self):
+    def test_cancel_calls_exactly_lane_cancel_with_the_item_and_revision(self):
+        # sd:3284: `lane cancel` also releases a running entry (pack sd:3282), so a Cancel the page showed on a
+        # pending row must not land after the runner claimed it: the verb checks the revision under its lock.
         status, _, answer = self.move("cancel", item=9)
         self.assertEqual((status, answer["ok"], answer["action"]), (200, True, "cancel"))
         self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"],
-                                        ["-C", str(self.checkout), "lane", "cancel", "9"]])
+                                        ["-C", str(self.checkout), "lane", "cancel", "9", "--expected-revision",
+                                         self.lane_revision()]])
 
     def test_a_refused_cancel_is_the_answer(self):
         with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:9 has no pending entry in this lane"}):

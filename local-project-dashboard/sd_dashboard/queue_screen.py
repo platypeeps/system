@@ -16,9 +16,10 @@ The five states, from each entry's `status`:
 
 Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel|retry`, the queue's only writers. It compares the
 page's revision (a digest of the pending order, the holds and each blocked entry's head) with a fresh `lane list` first
-and refuses a stale one. `move`, `hold` and `release` then pass the fresh list's lane revision (the pending order and
-holds, the one `lane list` prints) as `--expected-revision`, and the verb checks it again under the queue's lock, so a
-write that lands between the two checks is refused too. `cancel` takes no revision, so its check stays best effort.
+and refuses a stale one. `move`, `hold`, `release` and `cancel` then pass the fresh list's lane revision (the pending
+order and holds, the one `lane list` prints) as `--expected-revision`, and the verb checks it again under the queue's
+lock, so a write that lands between the two checks is refused too. `cancel` needs it most: it also releases a running
+entry (pack sd:3282), so a Cancel on a pending row the runner claimed since must not reach it.
 The runner reads the queue again at each item boundary, so an edit takes effect there.
 
 Retry and Approve act on a blocked row (sd:3012): `lane retry <item>` queues its last entry again at the same head with
@@ -278,7 +279,7 @@ def move(payload: dict):
                 else ["retry", item, "--expected-head", values["head"]] if again else [action, item])
         if action == "approve":
             verb.append("--manual")
-        if action in ("up", "down", "top", "hold", "release"):
+        if action in ("up", "down", "top", "hold", "release", "cancel"):
             # The fresh list matched the page, so its lane revision is the page's; the verb checks it under its lock.
             verb += ["--expected-revision", lane_revision(entries)]
         answer = _run([command("sd-ship"), "-C", path, "lane", *verb], WRITE_SECONDS)
