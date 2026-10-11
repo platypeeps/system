@@ -16,6 +16,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1241,3 +1242,65 @@ class TheCallContext(MeteringCase):
         load = self.last(["noul", "is it?"])["load_avg"]
         self.assertIsInstance(load, float)
         self.assertGreaterEqual(load, 0.0)
+
+
+#: The command pack checkout whose lib/ holds the sd_db the meter imports
+#: (sd:3279), as `jev_meter.use_pack_library` names it.
+PACK = Path(os.environ.get("SD_PACK_ROOT")
+            or Path.home() / "repos/platypeeps/sd-ai-command-pack")
+
+
+class TheMeterImportsThePacksLib(unittest.TestCase):
+    """`sd_db` is the pack's `lib/`, in a process of its own: this suite has
+    already imported one copy, and `sys.modules` would answer for the rest."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def word(self, pack, *, isolated=False, home=None, **env):
+        """What `jev_meter.ready("jev")` says in a fresh interpreter."""
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import jev_meter, os; "
+                "print(jev_meter.ready('jev', os.environ))")
+        # Never the operator's store: an absent file unless the case names one.
+        child = dict(os.environ, **{"JEV_METER_DB": str(self.root / "absent.db"), **env})
+        child.pop("SD_PACK_ROOT", None)
+        if pack is not None:
+            child["SD_PACK_ROOT"] = str(pack)
+        if home is not None:
+            child["HOME"] = str(home)
+        done = subprocess.run(
+            [sys.executable, *(["-I"] if isolated else []), "-c", code,
+             str(Path(jev_meter.__file__).resolve().parent)],
+            capture_output=True, text=True, env=child, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
+
+    def stub_pack(self, root):
+        lib = Path(root) / "lib/sd_db"
+        lib.mkdir(parents=True)
+        (lib / "__init__.py").write_text(
+            "raise ImportError('the stub pack lib answered')\n", encoding="utf-8")
+        return Path(root)
+
+    def test_the_named_packs_lib_is_the_sd_db_the_meter_imports(self):
+        """The copy PYTHONPATH offers comes second to SD_PACK_ROOT's lib/."""
+        pack = self.stub_pack(self.root / "stub-pack")
+        library = str(Path(sd_db.__file__).resolve().parents[1])
+        self.assertEqual(self.word(pack, PYTHONPATH=library), jev_meter.NO_LIBRARY)
+
+    def test_with_no_sd_pack_root_the_home_clone_is_the_pack(self):
+        home = self.root / "home"
+        self.stub_pack(home / "repos/platypeeps/sd-ai-command-pack")
+        library = str(Path(sd_db.__file__).resolve().parents[1])
+        self.assertEqual(self.word(None, home=home, PYTHONPATH=library), jev_meter.NO_LIBRARY)
+
+    def test_an_isolated_interpreter_finds_the_ledger_through_the_packs_lib(self):
+        """No PYTHONPATH reaches `-I`; the pack's lib/ is the only way in."""
+        pack = self.root / "real-pack"
+        pack.mkdir()
+        (pack / "lib").symlink_to(PACK / "lib")
+        db = self.root / "sd.db"
+        initialise(db)
+        self.assertEqual(self.word(pack, isolated=True, JEV_METER_DB=str(db)), jev_meter.READY)

@@ -27,6 +27,10 @@ import unittest.mock
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent.parent
+#: The command pack checkout whose lib/ holds the sd_db the verifier imports
+#: (sd:3279), as the script names it.
+PACK = Path(os.environ.get("SD_PACK_ROOT")
+            or Path.home() / "repos/platypeeps/sd-ai-command-pack")
 sys.path.insert(0, str(FOLDER.parent / "lib"))
 import system_tools_config  # noqa: E402
 
@@ -1495,11 +1499,18 @@ class OffsiteVerify(Fixture):
         (self.work / "home").mkdir()
         return root
 
-    def run_verify(self, root: Path, *extra: str) -> subprocess.CompletedProcess:
+    def run_verify(
+        self, root: Path, *extra: str, pack: Path | None = None, isolated: bool = False
+    ) -> subprocess.CompletedProcess:
+        """`pack` is SD_PACK_ROOT. `isolated` runs `python -I`, which drops
+        PYTHONPATH and the cwd, so only the pack's lib/ and the interpreter's
+        own packages can supply `sd_db`."""
         environment = dict(os.environ, HOME=str(self.work / "home"))
+        if pack is not None:
+            environment["SD_PACK_ROOT"] = str(pack)
         return subprocess.run(
-            [sys.executable, str(OFFSITE_VERIFY), "--root", str(root),
-             "--allow-local-root", *extra],
+            [sys.executable, *(["-I"] if isolated else []), str(OFFSITE_VERIFY),
+             "--root", str(root), "--allow-local-root", *extra],
             capture_output=True,
             text=True,
             env=environment,
@@ -1520,6 +1531,35 @@ class OffsiteVerify(Fixture):
         self.assertIn("restore validator accepts the restored copy", result.stdout)
         tables = len(self._writer_counts(root / "sd-backups" / "2026-09-21" / "sd.db"))
         self.assertIn(f"{tables}/{tables} tables match the manifest", result.stdout)
+
+    def test_the_named_packs_lib_is_the_sd_db_the_verifier_imports(self) -> None:
+        # sd:3279: SD_PACK_ROOT's lib/ goes first, ahead of the copy the
+        # interpreter or PYTHONPATH offers, so the stub is what answers.
+        root = self.build_share()
+        lib = self.work / "stub-pack" / "lib" / "sd_db"
+        lib.mkdir(parents=True)
+        (lib / "__init__.py").write_text("raise ImportError('the stub pack lib answered')\n")
+
+        result = self.run_verify(root, pack=self.work / "stub-pack")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            "the sd_db restore validator could not be imported (the stub pack lib answered)",
+            result.stderr,
+        )
+
+    def test_an_isolated_interpreter_verifies_through_the_packs_lib(self) -> None:
+        # No PYTHONPATH reaches `-I`: the pack's lib/ is the only way to sd_db
+        # unless the interpreter holds a copy, and the real one passes.
+        root = self.build_share()
+        pack = self.work / "real-pack"
+        pack.mkdir()
+        (pack / "lib").symlink_to(PACK / "lib")
+
+        result = self.run_verify(root, pack=pack, isolated=True)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("restore validator accepts the restored copy", result.stdout)
 
     def test_row_count_drift_fails_and_names_the_table(self) -> None:
         root = self.build_share()

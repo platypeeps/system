@@ -26,9 +26,11 @@ not be opened, `errors.sd_db.<provider>.<window>` when one sample was refused.
 None of it changes the exit: the JSONL is still appended and the process still
 exits 0. `--db PATH` names another database; `--no-db` skips the rows.
 
-The job runs this under the pack's virtualenv interpreter, the one with
-`sd_db` installed; under any other python3 the import fails into
-`errors.sd_db` and the JSONL half still lands, which is the point of the try.
+`sd_db` is the command pack checkout's `lib/` (sd:3279): `SD_PACK_ROOT`
+names the checkout, else the home clone. That folder goes first on `sys.path`,
+so no copy installed in the interpreter answers in its place. With no
+`lib/sd_db` there, the import fails into `errors.sd_db` and the JSONL half
+still lands, which is the point of the try.
 
   agent-meter.py [--out PATH] [--db PATH | --no-db] [--providers claude,codex] [--timeout S]
 """
@@ -44,6 +46,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import system_tools_config  # noqa: E402
+
+sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack").expanduser() / "lib"))
 
 TOOL = "agent-meter"
 # The config directory's own ledger. Created on first use; a ledger named by
@@ -139,7 +143,7 @@ def write_rows(record, a) -> None:
     """One `meter` cost row per provider per window, or the reason there is none.
 
     Every failure is an `errors` entry on the record and never an exception:
-    the import (the job's interpreter has `sd_db`; a bare python3 does not),
+    the import (the pack's `lib/` holds `sd_db`; a pack without it does not),
     the open (no database, a schema this library does not match), a refusal
     per window (a provider the registry does not name, a percentage codexbar
     reported outside 0..100: the library's `MeterRefused` and only that), or

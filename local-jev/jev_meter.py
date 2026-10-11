@@ -2,16 +2,17 @@
 
 `jev.py` is standalone: stdlib only, no package to install, runnable from a
 cron `JOB_COMMAND` on a machine that has nothing else. This module keeps that
-true. It imports `sd_db` **inside the call**, catches everything, and returns
-a word saying what it did. There is no path through it that raises, and no
-path through it that runs before the answer has been printed.
+true. It imports `sd_db` **inside the call**, from the command pack's `lib/`,
+catches everything, and returns a word saying what it did. There is no path
+through it that raises, and no path through it that runs before the answer has
+been printed.
 
 That is the whole contract, and it is the one the item states: a missing,
 unmigrated or unwritable database degrades to no recording, never to a failed
 or slowed judgment. Six things go wrong here in practice -- `sd_db` is not
-installed, the file does not exist, the schema is older than the library, the
-disk is read-only, the row is refused, the table is locked -- and every one of
-them is the same answer to the caller, which is nothing.
+in the pack's `lib/`, the file does not exist, the schema is older than the
+library, the disk is read-only, the row is refused, the table is locked -- and
+every one of them is the same answer to the caller, which is nothing.
 
 **Switching it off.** `JEV_METER=0` (or `off`, `false`, `no`, `disabled`)
 records nothing. Unset means on, the same default the kill switch uses and for
@@ -35,6 +36,8 @@ rows. `JEV_METER_BUSY_MS` sets another bound, and 0 restores the old one.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 from sqlite3 import OperationalError
 
 #: The words the kill switch accepts, so a reader who knows one knows both.
@@ -46,10 +49,23 @@ BUSY_MS = 250
 #: What `record` returns. Only `written` means a row exists.
 WRITTEN = "written"
 SWITCHED_OFF = "switched off"
-NO_LIBRARY = "sd_db is not installed here"
+NO_LIBRARY = "sd_db is not in the command pack's lib/ here"
 NO_STORE = "no database to record in"
 REFUSED = "the ledger refused the row"
 CONTENDED = "the ledger was busy; the measurement was dropped"
+
+
+def use_pack_library(env) -> None:
+    """Put the command pack checkout's `lib/` first on `sys.path` (sd:3279).
+
+    `SD_PACK_ROOT` names the checkout, as for `sd-db.sh`; unset, it is the
+    home clone. Every `sd_db` import below follows this call, so no copy
+    installed in the interpreter answers in its place. A pack without
+    `lib/sd_db` leaves the import to fail into `NO_LIBRARY`. Call it inside
+    the `try` that imports: it may raise, like the import.
+    """
+    root = (env.get("SD_PACK_ROOT") or "").strip() or Path.home() / "repos/platypeeps/sd-ai-command-pack"
+    sys.path.insert(0, str(Path(root).expanduser() / "lib"))
 
 
 def switched_on(env) -> bool:
@@ -75,6 +91,7 @@ def ready(arm: str, env=None) -> str:
     if not switched_on(env):
         return SWITCHED_OFF
     try:
+        use_pack_library(env)
         from sd_db.database import connect
         from sd_db.judgment import ARMS
     except Exception:
@@ -141,6 +158,7 @@ def write(event: dict, env=None) -> tuple:
     if not switched_on(env):
         return SWITCHED_OFF, None
     try:
+        use_pack_library(env)
         from sd_db.database import connect
         from sd_db.judgment import record as write_row
     except Exception:                        # pragma: no cover - import shape
