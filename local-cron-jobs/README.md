@@ -168,6 +168,16 @@ retried once. If it fails again, `install` prints `failed: <job> (<launchctl
 message>)` instead of `installed:` and exits 1. `install --all` goes on to the
 next job and names every failed job at the end (sd:2574).
 
+`install` and `uninstall` take the job's lock before they touch launchd, because
+`bootout` stops a running job. While a run holds the lock, they print
+`<job>: a run is in progress; retry after it ends`, change nothing and exit 1.
+They refuse the same way when they cannot test the lock. The lock sits beside
+the log launchd names for the loaded label, so a label that another checkout
+installed is judged by that checkout's runs. They keep the lock until the label
+is back, so a slot that fires mid-install logs `skipped`. `--all` goes on to the
+next job. The `machine-setup` cron stage prints `FAILED` for that job and goes
+on; its next update retries (sd:3317).
+
 Every plist names `PATH`, `HOME` and `SYSTEM_TOOLS_CONFIG`, the root `install`
 ran under: launchd gives a job only the environment its plist names, so `exec`
 finds the job file under a non-default root too (sd:2519). A plist installed
