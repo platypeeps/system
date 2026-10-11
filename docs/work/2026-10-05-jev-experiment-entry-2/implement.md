@@ -105,6 +105,7 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
     Check: 400 variants per arm answered, plus 20 finding pairs per model arm.
 
 12. **Analysis** (`report`). The analysis plan in the pre-registration, in its order, into `results.md` with the query for each number.
+    Before each pooled H1 look, thin each arm's skip labels per population to the lowest `skip.<arm>.rate` across every included population, seeded, as `design.md` "Pooled H1" says.
     Check: every hypothesis is held, failed or not decidable, with its n against the sample-size table; the decision rule's line is named.
 
 13. **Privacy review.** The eight rules in `design.md` on the draft's numbers and quotes.

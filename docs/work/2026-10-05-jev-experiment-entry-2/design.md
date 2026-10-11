@@ -210,7 +210,7 @@ The label is written to the experiment ledger only with `label`, source `review-
 **Deviation from the registration** (operator, on #14764). The pre-registration draws one sheet over C1 and C2 together.
 Each population now gets its own sheet with the same draws, seed and caps, as C3 already does: C1 now, C2 after step 15.
 Reason: C1 is sealed and exploratory (#14288) and is labelled before C2 seals; a joint draw could drop C1 rows already labelled and let them take confirmatory C2 slots.
-Pooled estimates weight each row by its own population's sampling rate, as the C3 rule below does.
+Pooled disagreement-draw estimates weight each row by its own population's sampling rate. Pooled H1 thins instead; see "Pooled H1" below.
 
 - **Disagreement draw**: every head where the five arms disagree on review or `skip`: at least one answers `skip` and at least one does not.
   Above 150, a seeded random draw stratified by disagreement pattern keeps 150, and each row carries its stratum weight.
@@ -221,7 +221,16 @@ So a head is a disagreement when the arms asked about it split, and each arm's s
 
 The key records which draw each row came from; the sheet does not.
 If the extension (C3) runs, C3 gets its own sheet from the same two draws over C3 heads alone.
-Pooled H1 uses one common skip-draw rate per arm, the lowest of C1+C2 and C3; the other population's labelled skips are thinned at random to it, so Clopper-Pearson stays exact.
+**Pooled H1** (review round 1 of step 8). Separate sheets give each population its own skip-draw rate per arm: 300 of 400 model skips in one and 20 of 20 in another are rates 0.75 and 1.
+Pooled as they stand, the second is overrepresented, and no weighting keeps the Clopper-Pearson interval exact.
+So before any pooled H1 look, the first (C1+C2) and the one after the extension alike, each arm is thinned on its own:
+
+- Each population's sheet records the arm's rate, `drawn / pool`, as `skip.<arm>.rate` in `sheet-<population>.json`; no model skip means no rate.
+- The common rate is the lowest rate of every population included in that look (C1, C2, and C3 once it runs), among those with a rate.
+- Each population's drawn model skips are thinned to it by Bernoulli draws: in `(repository, head)` order, a row stays when `random.Random(f"2764:thin:<arm>:<population>").random()` is below the common rate over its population's rate.
+  The population that sets the common rate keeps every row.
+- Every model skip of every included population then has the same chance, the common rate, of being in the pooled sample, so the pooled sample is uniform and the interval stays exact.
+  A thinned-out row keeps its label; it is left out of the pooled H1 look only.
 Pooled disagreement-draw estimates weight each row by its own population's sampling rate.
 Order is shuffled with the same seed.
 

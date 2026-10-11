@@ -1972,7 +1972,10 @@ def label_kit(rows: list[dict], answers: dict, heuristic, seed: int = SEED):
         for head in drawn:
             keyed(head).update({f"{arm}_skip_draw": 1,
                                 f"{arm}_skip_weight": len(pool) / len(drawn)})
-        skips[arm] = {"pool": len(pool), "drawn": len(drawn)}
+        # The sampling rate a pooled H1 look thins every population to the
+        # lowest of (design.md, review round 1); none without a model skip.
+        skips[arm] = {"pool": len(pool), "drawn": len(drawn),
+                      "rate": len(drawn) / len(pool) if pool else None}
     order = random.Random(f"{seed}:order")
     entries = [key[ident] for ident in sorted(key)]
     order.shuffle(entries)

@@ -2059,7 +2059,8 @@ class TheReplay(CompareCase):
         summary = json.loads(printed)
         self.assertEqual((summary["rows"], summary["disagreement"], summary["skip"]),
                          (2, {"pool": 2, "drawn": 2, "strata": 2},
-                          {"jev": {"pool": 0, "drawn": 0}, "kev": {"pool": 2, "drawn": 2}}))
+                          {"jev": {"pool": 0, "drawn": 0, "rate": None},
+                           "kev": {"pool": 2, "drawn": 2, "rate": 1.0}}))
         key = sheet_rows(self.folder / "labels" / "key-C1.csv")
         self.assertEqual(sorted((k["commit"], k["hosted"], k["jev"], k["kev"], k["pattern"])
                                 for k in key),
@@ -2208,8 +2209,10 @@ class TheLabelSheet(unittest.TestCase):
         answers = kit_answers(heads, kev=range(0, 350), jev=range(100, 430))
         sheet, key, summary = self.kit(rows, answers)
         self.assertEqual(summary["disagreement"], {"pool": 430, "drawn": 150, "strata": 3})
-        self.assertEqual(summary["skip"], {"jev": {"pool": 330, "drawn": 300},
-                                           "kev": {"pool": 350, "drawn": 300}})
+        # Each arm's sampling rate, which a pooled H1 look thins every
+        # population to the lowest of (review round 1).
+        self.assertEqual(summary["skip"], {"jev": {"pool": 330, "drawn": 300, "rate": 300 / 330},
+                                           "kev": {"pool": 350, "drawn": 300, "rate": 300 / 350}})
         drawn = [k for k in key if k["disagreement_draw"] == "1"]
         self.assertEqual(len(drawn), 150)
         # Each stratum's rows weigh their stratum's heads over its drawn rows.
@@ -2227,7 +2230,8 @@ class TheLabelSheet(unittest.TestCase):
                                                          haiku=(9,)))
         self.assertEqual((summary["disagreement"], summary["skip"]),
                          ({"pool": 3, "drawn": 3, "strata": 3},
-                          {"jev": {"pool": 2, "drawn": 2}, "kev": {"pool": 1, "drawn": 1}}))
+                          {"jev": {"pool": 2, "drawn": 2, "rate": 1.0},
+                           "kev": {"pool": 1, "drawn": 1, "rate": 1.0}}))
         self.assertEqual({k["disagreement_weight"] for k in key}, {"1.0"})
 
     def test_a_head_outside_the_hosted_scope_votes_without_the_hosted_arms(self):
@@ -2242,8 +2246,8 @@ class TheLabelSheet(unittest.TestCase):
                           by_commit[sha(2)]["haiku"], by_commit[sha(2)]["pattern"],
                           by_commit[sha(2)]["kev_skip_draw"]), ("0", "", "", "RR-S-", "1"))
         self.assertEqual(by_commit[sha(0)]["hosted"], "1")
-        self.assertEqual(summary["skip"], {"jev": {"pool": 1, "drawn": 1},
-                                           "kev": {"pool": 2, "drawn": 2}})
+        self.assertEqual(summary["skip"], {"jev": {"pool": 1, "drawn": 1, "rate": 1.0},
+                                           "kev": {"pool": 2, "drawn": 2, "rate": 1.0}})
 
     def test_the_draws_read_production_answers(self):
         # The cutoff reads the top probability, not the confidence (operator,
@@ -2259,7 +2263,7 @@ class TheLabelSheet(unittest.TestCase):
         self.assertEqual(sorted(by_commit), [sha(2)])
         self.assertEqual((by_commit[sha(2)]["kev"], by_commit[sha(2)]["kev_raw"]),
                          ("skip", "skip"))
-        self.assertEqual(summary["skip"]["kev"], {"pool": 1, "drawn": 1})
+        self.assertEqual(summary["skip"]["kev"], {"pool": 1, "drawn": 1, "rate": 1.0})
 
     def test_a_head_routed_to_skip_holds_no_model_skip(self):
         rows = [kit_row(0, routed="skip"), kit_row(1, paths=(), lines=0)]
@@ -2267,8 +2271,9 @@ class TheLabelSheet(unittest.TestCase):
                                                           haiku=(0,)))
         # Head 0: every arm says skip. Head 1: only the heuristic does.
         self.assertEqual([(k["commit"], k["pattern"]) for k in key], [(sha(1), "RSRRR")])
-        self.assertEqual(summary["skip"], {"jev": {"pool": 0, "drawn": 0},
-                                           "kev": {"pool": 0, "drawn": 0}})
+        # No model skip: no rate, so this population sets no minimum.
+        self.assertEqual(summary["skip"], {"jev": {"pool": 0, "drawn": 0, "rate": None},
+                                           "kev": {"pool": 0, "drawn": 0, "rate": None}})
 
     def test_a_head_without_a_state_is_left_out_and_counted(self):
         rows = [kit_row(0), dict(kit_row(1), state=None, routed=None)]
