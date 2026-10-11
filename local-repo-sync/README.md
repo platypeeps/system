@@ -65,10 +65,8 @@ tracks (the switch fails and nothing moves), and leaves a checkout on a
 branch alone. In the command pack (it has
 `bin/sd_install.py`) it then runs `make setup`. It moves the system
 checkout first, whatever the conf or argument order (sd:3218); it knows
-that checkout by `local-repo-sync/repo-sync.sh`. When the pack's
-`lib/sd_db` `SCHEMA_VERSION` changed, it prints the steps: stop the dashboard,
-the runner and `sd-serve`, run the pack's `bin/sd-db backup`, then
-`bin/sd-db migrate`. It runs neither. It exits 1 when any checkout failed.
+that checkout by `local-repo-sync/repo-sync.sh`. It exits 1 when any
+checkout failed.
 
 When it moves system or the pack, refresh first stops `sd-serve` and the
 dashboard (`<prefix>.sd-serve` and `<prefix>.sd-dashboard`, the prefix from
@@ -87,8 +85,37 @@ they stay stopped and refresh exits 1, so no `hub-pin` goes out: migrate,
 then refresh again. `~/.local/state/repo-sync/refresh-stopped` lists each
 one stopped and not started yet, so a refresh after a kill or a failed
 start starts them. This is steps 1 and 5 of D2 in the pack's design for
-moving `sd_db` into the pack (sd:2997); its migrate and rollback record are
-not here.
+moving `sd_db` into the pack (sd:2997).
+
+Refresh also migrates the database (D2, sd:3345). It reads the database's
+`user_version` (`REPO_SYNC_SD_DB`) and the `SCHEMA_VERSION` of the `lib/sd_db`
+the pack moves to at every refresh, never the checkout movement. When the
+database is below, and before anything moves, it runs the pack's
+`bin/sd-db backup --no-row-prune` into a fresh folder under
+`~/.local/state/repo-sync/refresh-backups/`. No retention prunes that folder,
+so the backup stays until you remove it. Then it writes the rollback point,
+`~/.local/state/repo-sync/refresh-intent`: the system and pack shas, the
+version and the backup. A failed backup or record write moves nothing and
+starts the services again.
+
+After the moves it runs `bin/sd-db migrate`. Each migration commits on its own,
+so a failure can leave earlier ones applied. Then refresh moves the pack back
+to the record's sha. When the database reads above the record's version, it
+restores the backup with that pack's `bin/sd-db restore`: the target's library
+would migrate the restored copy through the migration that just failed. Then it
+moves system back and runs `make setup`, deletes the record, starts the
+services and exits 1 with no `hub-pin`. A restore leaves its record
+unresolved, and the runner dispatches nothing until `sd restore resume`.
+
+A rerun reuses a record left and never replaces it, so recovery lands at the
+first run's pair and version. It reads the record, the version and the
+checkouts, and migrates forward or recovers again. An unreadable record, a
+missing backup or one at another version, or a recovery step that fails keeps
+the record and the services stopped, pushes no `hub-pin` and exits 1: put the
+database and checkouts right by hand, then delete the record. Refresh deletes
+the record just before it starts the services, since a backup stops being a
+rollback point once a service writes. Before `hub-pin` it reads the version
+again; behind the pack's, it pushes nothing.
 
 `refresh` drains the lanes before it moves anything (sd:3099). POSIX sh
 cannot hold a flock, so `refresh_drain.py`, a stdlib helper beside the
@@ -194,8 +221,8 @@ finishes the move and runs `make setup` and the update again, even with HEAD
 at the pin or with no pack checkout in the conf. With no `hub-pin` tag yet, or with every checkout already there, it
 does nothing and drains nothing. On the hub it says so and does nothing. If
 the move changed `SCHEMA_VERSION`,
-`follow` prints the hub's migrate note; the hub's own refresh printed it
-too.
+`follow` prints the hub's migrate note. A satellite never migrates: the hub's
+refresh migrated the hub's database before it pushed `hub-pin`.
 
 One-time setup per satellite; `follow` itself detaches a checkout that is on
 a branch:
@@ -374,6 +401,9 @@ offline.
 real lock files, held from another process, and an `sd` stub.
 `tests/test_follow.py` covers the `hub-pin` tag push and `follow` with the same
 bare-origin fixtures, one origin shared by a hub and a satellite checkout.
+`tests/test_refresh_migrate.py` covers the backup, migrate and recovery
+against a real database and the pinned pack's real `bin/sd-db` and `lib/sd_db`
+(`SD_ACCEPTANCE_PACK`, else `.ci/pack`), with fixture migrations after its last.
 
 One case reads the conf files in this folder instead of building a tree:
 `ShippedConfTest` enumerates the shipped `repos.*.conf.example` files, plus

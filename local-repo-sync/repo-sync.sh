@@ -524,8 +524,9 @@ pin_schema() {
     | sed -n 's/^SCHEMA_VERSION = \([0-9][0-9]*\).*/\1/p' | head -1
 }
 
-# Moves pinned checkout $1 to origin's default branch, still detached.
-# Prints the old and new sha; returns 1 when any step failed. Refreshing the
+# Checks and fetches pinned checkout $1, then queues its move to origin's
+# default branch in $TMPD/plan, so the rollback point is in place before
+# anything moves. Returns 1 when a check or the fetch failed. Refreshing the
 # checkout this script runs from is safe: git replaces each file rather than
 # rewriting it, and the shell keeps reading the old one.
 refresh_one() {
@@ -556,7 +557,7 @@ refresh_one() {
     echo "!!! failed: $r_dir has no origin/HEAD, origin/main or origin/master; still at $r_short"
     return 1
   fi
-  pin_move "$r_dir" "origin/$r_def" refresh refreshed
+  printf '%s\n' "$r_dir${US}origin/$r_def" >> "$TMPD/plan"
 }
 
 # Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),
@@ -598,7 +599,10 @@ pin_move() {
   fi
   m_s_old=$(pin_schema "$m_dir" "$m_old")
   m_s_new=$(pin_schema "$m_dir" HEAD)
-  if [ -n "$m_s_new" ] && [ "$m_s_old" != "$m_s_new" ]; then
+  # With a refresh record, this refresh migrates the database itself.
+  if [ "$3" = refresh ] && [ -e "$REFRESH_INTENT" ]; then
+    :
+  elif [ -n "$m_s_new" ] && [ "$m_s_old" != "$m_s_new" ]; then
     echo "note: lib/sd_db SCHEMA_VERSION ${m_s_old:-none} -> $m_s_new; the database needs a migrate."
     echo "  Stop the dashboard, the runner and sd-serve, then run:"
     echo "    $m_dir/bin/sd-db backup"
@@ -678,13 +682,18 @@ stop_consumers() {
 # Starts each listed consumer, once the database's schema is the pack lib's:
 # code at another schema refuses the database. A listed one still loaded is
 # the old process, so it is stopped first. A line leaves the list only once
-# launchd shows the fresh load. Returns 1, the list kept, when the schema
-# differs or cannot be read, or a step fails.
+# launchd shows the fresh load. Returns 1, the list kept, while a refresh
+# record is left (its backup is a rollback point only while nothing writes),
+# when the schema differs or cannot be read, or when a step fails.
 start_consumers() {
   [ -s "$REFRESH_STOPPED" ] || return 0
+  if [ -e "$REFRESH_INTENT" ]; then
+    echo "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")($REFRESH_INTENT is left: its migrate is not settled)"
+    return 1
+  fi
   c_pack=$(hub_dir pack)
-  c_lib=$(sed -n 's/^SCHEMA_VERSION = \([0-9][0-9]*\).*/\1/p' "$c_pack/lib/sd_db/schema.py" 2>/dev/null | head -1)
-  c_db=$(sqlite3 -readonly "${REPO_SYNC_SD_DB:-$HOME/.local/share/sd/sd.db}" 'PRAGMA user_version' 2>/dev/null || :)
+  c_lib=$(lib_version "$c_pack")
+  c_db=$(db_version "$REFRESH_DB" || :)
   if [ -z "$c_lib" ] || [ "$c_db" != "$c_lib" ]; then
     echo "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")(database schema ${c_db:-unknown}, the pack's lib/ ${c_lib:-unknown})"
     echo "  after $c_pack/bin/sd-db backup and $c_pack/bin/sd-db migrate, refresh again to start them"
@@ -714,6 +723,231 @@ start_consumers() {
     echo "started $c_label"
   done
   rm -f "$REFRESH_STOPPED"
+}
+
+# --- the refresh record (pack design D2, sd:3345) ---------------------------
+# Refresh migrates the database when its schema is below the SCHEMA_VERSION of
+# the pack's lib/ it moves to. It reads the database and the library at every
+# refresh, never the checkout movement, so a rerun finds what a killed run
+# left. Before anything moves, it backs the database up and writes this
+# record: the system and pack shas, the schema version and that backup, the
+# one rollback point. Every rerun reuses the record and never replaces it, so
+# a failed migrate lands at the pair and version from before the first run,
+# however many runs a refresh takes. It lives outside the database, which a
+# restore replaces. Refresh deletes it just before it starts the services:
+# once one writes, the backup is no longer a rollback point.
+REFRESH_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-intent"
+# Each refresh backup gets its own folder here, outside the backup root that
+# retention prunes, so it stays until the operator removes it.
+REFRESH_BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-backups"
+REFRESH_DB="${REPO_SYNC_SD_DB:-$HOME/.local/share/sd/sd.db}"
+
+# Prints the schema version, the user_version, of database file $1. Returns 1
+# when it cannot be read: no answer, never a version. Not -readonly: that
+# cannot open a WAL database whose -shm went with its last connection, as
+# it does once the services stop. The PRAGMA writes nothing, and the -f
+# check keeps sqlite3 from creating a database that is not there.
+db_version() {
+  [ -f "$1" ] || return 1
+  d_v=$(sqlite3 "$1" 'PRAGMA user_version' 2>/dev/null) || return 1
+  case $d_v in ''|*[!0-9]*) return 1 ;; esac
+  echo "$d_v"
+}
+
+# Prints the SCHEMA_VERSION of the lib/sd_db checked out in pack $1, or nothing.
+lib_version() {
+  sed -n 's/^SCHEMA_VERSION = \([0-9][0-9]*\).*/\1/p' "$1/lib/sd_db/schema.py" 2>/dev/null | head -1
+}
+
+# Prints the rev $TMPD/plan moves checkout $1 to, else HEAD.
+planned_rev() {
+  p_real=$(cd "$1" && pwd -P)
+  while IFS=$US read -r p_dir p_rev; do
+    if [ "$(cd "$p_dir" && pwd -P)" = "$p_real" ]; then echo "$p_rev"; return 0; fi
+  done < "$TMPD/plan"
+  echo HEAD
+}
+
+# Reads the record into i_sys, i_pack, i_schema and i_backup. Returns 1, with
+# the reason in i_why, when it cannot be read, a field is malformed, or its
+# backup is missing or not at its schema version: an unknown rollback point.
+read_intent() {
+  if ! i_text=$(cat "$REFRESH_INTENT" 2>/dev/null); then
+    i_why="$REFRESH_INTENT cannot be read"; return 1
+  fi
+  i_sys=$(printf '%s\n' "$i_text" | sed -n 's/^system=//p' | head -1)
+  i_pack=$(printf '%s\n' "$i_text" | sed -n 's/^pack=//p' | head -1)
+  i_schema=$(printf '%s\n' "$i_text" | sed -n 's/^schema=//p' | head -1)
+  i_backup=$(printf '%s\n' "$i_text" | sed -n 's/^backup=//p' | head -1)
+  i_why="$REFRESH_INTENT is malformed"
+  printf '%s\n' "$i_pack" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' || return 1
+  [ -z "$i_sys" ] || printf '%s\n' "$i_sys" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' || return 1
+  case $i_schema in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$i_backup" ] || return 1
+  if ! i_got=$(db_version "$i_backup/sd.db"); then
+    i_why="its backup $i_backup/sd.db is missing or unreadable"; return 1
+  fi
+  if [ "$i_got" != "$i_schema" ]; then
+    i_why="its backup $i_backup reads schema $i_got, not the record's $i_schema"; return 1
+  fi
+}
+
+# Deletes the record; returns 1 when it is still there.
+forget_intent() {
+  rm -f "$REFRESH_INTENT"
+  if [ -e "$REFRESH_INTENT" ]; then
+    echo "!!! failed: cannot delete $REFRESH_INTENT"
+    return 1
+  fi
+  echo "refresh: deleted $REFRESH_INTENT; the backup $i_backup stays until you remove it"
+}
+
+# Design D2 step 2, with the services stopped and the moves planned. Returns
+# 0 to move: a record is left and checks out, none is needed, or the backup
+# and the record were written. Returns 1, nothing moved and no record, so the
+# services start again; 2, the rollback point unknown, so they stay stopped.
+rollback_point() {
+  if [ -e "$REFRESH_INTENT" ]; then
+    if ! read_intent; then
+      echo "!!! refused: $REFRESH_INTENT is left by a migrate that did not finish, and its rollback point is unknown: $i_why"
+      echo "  nothing moved; the services stay stopped and no hub-pin goes out; put the database and checkouts right by hand, then delete $REFRESH_INTENT"
+      return 2
+    fi
+    echo "refresh: $REFRESH_INTENT is left: system ${i_sys:-none}, pack $i_pack, schema $i_schema, backup $i_backup; reused, no new backup"
+    return 0
+  fi
+  p_pack=$(hub_dir pack)
+  [ -n "$p_pack" ] || return 0
+  p_rev=$(planned_rev "$p_pack")
+  p_lib=$(pin_schema "$p_pack" "$p_rev")
+  if [ -z "$p_lib" ] || [ ! -e "$REFRESH_DB" ]; then return 0; fi
+  if ! p_db=$(db_version "$REFRESH_DB"); then
+    echo "!!! refused: cannot read the schema version of $REFRESH_DB, so whether it needs a migrate is unknown; nothing moved"
+    return 1
+  fi
+  [ "$p_db" -lt "$p_lib" ] || return 0
+  p_root="$REFRESH_BACKUPS/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  echo "--- $p_pack/bin/sd-db backup: the database is at schema $p_db, the pack's lib/ at $p_rev at $p_lib"
+  if ! "$p_pack/bin/sd-db" backup --destination "$p_root" --no-row-prune < /dev/null; then
+    echo "!!! refused: the backup before the migrate failed; nothing moved, no record written"
+    return 1
+  fi
+  p_backup=""
+  for p_found in "$p_root"/*; do
+    [ -d "$p_found" ] || continue
+    [ -z "$p_backup" ] || { p_backup=""; break; }
+    p_backup=$p_found
+  done
+  if [ -z "$p_backup" ] || [ "$(db_version "$p_backup/sd.db" || :)" != "$p_db" ]; then
+    echo "!!! refused: $p_root holds no one backup at schema $p_db; nothing moved, no record written"
+    return 1
+  fi
+  p_sys=$(hub_dir system)
+  p_sys_sha=""
+  if [ -n "$p_sys" ]; then p_sys_sha=$(git -C "$p_sys" rev-parse HEAD); fi
+  p_pack_sha=$(git -C "$p_pack" rev-parse HEAD)
+  if ! { mkdir -p "${REFRESH_INTENT%/*}" \
+      && printf 'system=%s\npack=%s\nschema=%s\nbackup=%s\n' "$p_sys_sha" "$p_pack_sha" "$p_db" "$p_backup" \
+        > "$REFRESH_INTENT.tmp" \
+      && mv -f "$REFRESH_INTENT.tmp" "$REFRESH_INTENT"; } 2> /dev/null; then
+    echo "!!! refused: cannot write $REFRESH_INTENT; nothing moved; the backup $p_backup stays"
+    return 1
+  fi
+  echo "refresh: wrote $REFRESH_INTENT: system ${p_sys_sha:-none}, pack $p_pack_sha, schema $p_db, backup $p_backup"
+}
+
+# Moves checkout $1 back to sha $2, detached.
+back_to() {
+  [ "$(git -C "$1" rev-parse HEAD 2>/dev/null)" != "$2" ] || return 0
+  if git -C "$1" switch -q --detach --no-overwrite-ignore "$2"; then
+    echo "refresh: put $1 back at $(git -C "$1" rev-parse --short HEAD)"
+    return 0
+  fi
+  echo "!!! failed: cannot put $1 back at $2; by hand: git -C '$1' switch --detach $2"
+  return 1
+}
+
+# Design D2 step 4's recovery: puts the database and both checkouts back at
+# the record. The pack goes first, so the restore runs the lib/ that took the
+# backup: the target's would migrate the restored copy up through the
+# migration that just failed. Then the restore, when the database reads above
+# the record's version; then system and make setup. Deletes the record once
+# the database is at the checked-out library's schema. Returns 1 at the first
+# step that fails or cannot tell, with the record kept.
+recover() {
+  v_pack=$(hub_dir pack)
+  v_sys=$(hub_dir system)
+  back_to "$v_pack" "$i_pack" || return 1
+  if ! v_db=$(db_version "$REFRESH_DB"); then
+    echo "!!! failed: cannot read the schema version of $REFRESH_DB; by hand: $v_pack/bin/sd-db restore '$i_backup'"
+    return 1
+  fi
+  if [ "$v_db" -gt "$i_schema" ]; then
+    echo "--- $v_pack/bin/sd-db restore $i_backup: schema $v_db back to $i_schema"
+    if ! "$v_pack/bin/sd-db" restore "$i_backup" < /dev/null; then
+      echo "!!! failed: the restore of $i_backup"
+      return 1
+    fi
+    v_db=$(db_version "$REFRESH_DB" || :)
+    if [ "$v_db" != "$i_schema" ]; then
+      echo "!!! failed: the restore left $REFRESH_DB at schema ${v_db:-unknown}, not $i_schema"
+      return 1
+    fi
+    echo "note: the runner dispatches nothing until \`sd restore resume\` clears the restore record"
+  elif [ "$v_db" -lt "$i_schema" ]; then
+    echo "!!! failed: $REFRESH_DB reads schema $v_db, below the record's $i_schema"
+    return 1
+  fi
+  if [ -n "$i_sys" ] && [ -n "$v_sys" ]; then back_to "$v_sys" "$i_sys" || return 1; fi
+  if [ -f "$v_pack/bin/sd_install.py" ]; then
+    echo "--- make setup at $(git -C "$v_pack" rev-parse --short HEAD)"
+    if ! make -C "$v_pack" setup; then
+      echo "!!! failed: make setup at the record's pack; by hand: make -C '$v_pack' setup"
+      return 1
+    fi
+  fi
+  if [ "$(lib_version "$v_pack")" != "$i_schema" ]; then
+    echo "!!! failed: the record's pack $i_pack holds lib/ schema $(lib_version "$v_pack"), not the database's $i_schema"
+    return 1
+  fi
+  forget_intent
+}
+
+# Design D2 steps 4 and 5, with a record left: migrates the database to the
+# checked-out pack's schema, or recovers to the record. Returns 0 there with
+# the record deleted; 1 recovered, record deleted, as a failed migrate; 2
+# stuck, the record and the stopped services kept for the operator.
+settle() {
+  if ! read_intent; then
+    echo "!!! failed: $i_why"
+    return 2
+  fi
+  s_pack=$(hub_dir pack)
+  s_lib=$(lib_version "$s_pack")
+  s_db=$(db_version "$REFRESH_DB" || :)
+  if [ -n "$s_lib" ] && [ -n "$s_db" ] && [ "$s_db" -lt "$s_lib" ]; then
+    echo "--- $s_pack/bin/sd-db migrate: schema $s_db to $s_lib"
+    "$s_pack/bin/sd-db" migrate < /dev/null || echo "!!! failed: $s_pack/bin/sd-db migrate"
+    s_db=$(db_version "$REFRESH_DB" || :)
+  fi
+  if [ -n "$s_lib" ] && [ "$s_db" = "$s_lib" ]; then
+    forget_intent || return 2
+    return 0
+  fi
+  echo "refresh: the database reads schema ${s_db:-unknown}, the pack's lib/ ${s_lib:-unknown}; recovering to $REFRESH_INTENT"
+  recover || return 2
+  return 1
+}
+
+# Design D2 step 6: satellites follow only a hub whose database is at its
+# pack's schema, so the version is read again before hub-pin.
+pin_ready() {
+  q_lib=$(lib_version "$(hub_dir pack)")
+  if [ -z "$q_lib" ] || [ ! -e "$REFRESH_DB" ]; then return 0; fi
+  q_db=$(db_version "$REFRESH_DB" || :)
+  [ "$q_db" != "$q_lib" ] || return 0
+  echo "!!! failed: hub-pin not published: the database reads schema ${q_db:-unknown}, the pack's lib/ $q_lib; refresh again to migrate"
+  return 1
 }
 
 # Refreshes each path given, or with none every pinned checkout in the conf.
@@ -747,6 +981,10 @@ refresh() {
   while IFS= read -r r_target; do
     if hub_checkout "$r_target" > /dev/null; then r_hub=1; fi
   done < "$TMPD/ordered"
+  # A record left by a refresh that did not finish is settled first,
+  # whatever this one moves: nothing may start the services before that.
+  [ ! -e "$REFRESH_INTENT" ] || r_hub=1
+  : > "$TMPD/plan"
   if [ -n "$r_hub" ] && ! stop_consumers; then
     echo "!!! refused: a library consumer did not stop; nothing moved"
     r_failed=1
@@ -754,11 +992,33 @@ refresh() {
     # The list is on fd 3, so a git or make that reads stdin cannot eat it.
     while IFS= read -r r_target <&3; do
       refresh_one "$r_target" || r_failed=$((r_failed + 1))
-      echo
     done 3< "$TMPD/ordered"
+    echo
+    r_point=0
+    if [ -n "$r_hub" ]; then rollback_point || r_point=$?; fi
+    if [ "$r_point" -ne 0 ]; then
+      r_failed=$((r_failed + 1))
+    else
+      while IFS=$US read -r r_dir r_rev <&3; do
+        pin_move "$r_dir" "$r_rev" refresh refreshed || r_failed=$((r_failed + 1))
+        echo
+      done 3< "$TMPD/plan"
+      if [ -e "$REFRESH_INTENT" ]; then
+        r_settle=0
+        settle || r_settle=$?
+        if [ "$r_settle" -ne 0 ]; then r_failed=$((r_failed + 1)); fi
+        if [ "$r_settle" -eq 2 ]; then
+          echo "!!! the services stay stopped and $REFRESH_INTENT stays, so no hub-pin goes out; refresh again to retry, or put the database and checkouts right by hand"
+        fi
+      fi
+    fi
   fi
   # A failed move still starts them: the checkouts stay where git left them.
+  # A record left keeps them stopped.
   start_consumers || r_failed=$((r_failed + 1))
+  if [ "$r_failed" -eq 0 ] && ! pin_ready; then
+    r_failed=$((r_failed + 1))
+  fi
   if [ "$r_failed" -eq 0 ] && ! push_pins; then
     r_failed=$((r_failed + 1))
   fi
@@ -2004,15 +2264,28 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              refuses a checkout with uncommitted changes or a submodule,
              never overwrites an ignored file, and leaves a checkout on a
              branch alone. In the command pack (bin/sd_install.py) it then
-             runs `make setup`. When the pack's lib/sd_db SCHEMA_VERSION changed it
-             prints the backup and migrate steps and runs neither. Moving
+             runs `make setup`. Moving
              system or the pack, it boots out <prefix>.sd-serve and
              <prefix>.sd-dashboard first, waiting up to 10 s for each to
              unload, and bootstraps them after, once the
              database's user_version is the pack lib's SCHEMA_VERSION;
              otherwise they stay stopped, listed in
              ~/.local/state/repo-sync/refresh-stopped for the next refresh,
-             and refresh exits 1. Prints the
+             and refresh exits 1. When the database (REPO_SYNC_SD_DB) is
+             below the SCHEMA_VERSION of the lib/sd_db the pack moves to,
+             it first runs the pack's `bin/sd-db backup` into
+             ~/.local/state/repo-sync/refresh-backups/, which no retention
+             prunes, and writes ~/.local/state/repo-sync/refresh-intent: the
+             system and pack shas, the version and the backup. A failed
+             backup or record write moves nothing. After the moves it runs
+             `bin/sd-db migrate`. On a failure it moves the pack back to the
+             record's sha, restores the backup there when the version moved,
+             moves system back, runs `make setup`, starts the services and
+             exits 1 with no hub-pin. A rerun reuses a record left, never
+             replaces it, and migrates or recovers from what it reads. An
+             unreadable record, a missing backup or a failed recovery keeps
+             the record and the services stopped and exits 1. The record
+             goes just before the services start. Prints the
              old and new sha; exits 1 if any checkout failed. After a
              refresh with no failure, the hub pushes one annotated tag,
              hub-pin, to the system origin for `follow`: it names the
@@ -2080,8 +2353,10 @@ environment:
   MACHINE_SETUP_STATE where to look for the recorded profile
                       (default: ~/.config/machine-setup)
   REPO_SYNC_SD_DB     the sd workflow database hygiene reads, read-only,
-                      to list branches named for a done item (default:
-                      ~/.local/share/sd/sd.db; absent means none listed)
+                      to list branches named for a done item, and whose
+                      schema version refresh reads (default:
+                      ~/.local/share/sd/sd.db; absent means none listed
+                      and nothing to migrate)
   JEV_REPO_SYNC_HYGIENE
                       0, off, false, no or disabled switches off the Jev
                       shadow ordering of nightly's hygiene report; unset
