@@ -899,8 +899,9 @@ def sealed(db, folder: Path, home: str | None) -> list[str]:
     each C1 head in that scope and none for a head outside it; and a note on
     sd:2764 carries that file's SHA-256. Every line must be a final record of
     that arm's run (`record_faults`): an identity alone is not an answer.
-    Jev's reused lines must be step 1's answers, read again from the
-    faithfulness result the manifest bound (`reuse_faults`)."""
+    The faithfulness gate must pass again on the registration and result
+    the manifest names, and Jev's reused lines must be step 1's answers
+    (`reuse_faults`)."""
     with contextlib.closing(open_ro(db)) as connection:
         notes = [body for (body,) in connection.execute(
             "SELECT body FROM note WHERE item = ?", (ITEM,))]
@@ -908,6 +909,20 @@ def sealed(db, folder: Path, home: str | None) -> list[str]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
     if manifest.get("population", {}).get("sha256") != file_sha256(population):
         return [f"no replay manifest names {population.name} as it is now"]
+    # The gate again, on what the manifest says the replay ran under: the
+    # registered text, bound by the operator's note to step 1's result.
+    bound = manifest.get("registration") or {}
+    try:
+        registered(REGISTRATION)
+        if (bound.get("commit"), bound.get("sha256")) != (REGISTRATION_COMMIT, REGISTERED_SHA256) \
+                or not bound.get("document"):
+            raise Refused("the manifest names no registration")
+        faithful, reuse = faithful_gate(Path(manifest.get("faithful_folder") or "."), db, bound,
+                                        manifest["population"]["sha256"])
+    except Refused as why:
+        return [f"the faithfulness gate does not pass: {why}"]
+    if manifest.get("faithful") != faithful:
+        return ["the faithfulness result is not the one the replay ran on"]
     rows = read_jsonl(population)
     missing = []
     for arm in MODEL_ARMS:
@@ -923,15 +938,8 @@ def sealed(db, folder: Path, home: str | None) -> list[str]:
             missing.append(f"{arm}'s scope moved since its replay")
             continue
         written = read_jsonl(path)
-        # Jev's reused lines are read against step 1's records, as the replay wrote them.
-        reuse, step1 = {}, Path(manifest.get("faithful_folder") or ".") / "answers.jsonl"
-        if arm == "jev":
-            if not step1.is_file() or file_sha256(step1) != manifest.get("faithful", {}).get("answers"):
-                missing.append("the faithfulness result jev's replay reused is not readable "
-                               "as it was when the replay started")
-                continue
-            reuse = {(r["repository"], r["head"]): r for r in read_jsonl(step1)}
-        faults = record_faults(written, arm, run.get("run_id")) or reuse_faults(written, reuse, heads)
+        faults = record_faults(written, arm, run.get("run_id")) or reuse_faults(
+            written, reuse if arm == "jev" else {}, heads)
         lines = collections.Counter((r.get("repository"), r.get("head")) for r in written)
         if faults:
             missing.append(f"{path.name} holds {len(faults)} line(s) that are not final "

@@ -1952,6 +1952,28 @@ class TheReplay(CompareCase):
         answers.write_text(step1)
         self.assertEqual(self.labels_c1()[0], 0)
 
+    def test_c1_seals_only_where_the_faithfulness_gate_passes_again(self):
+        # Codex, class pass: the seal took the manifest's registration and
+        # faithfulness result on its word; it runs the gate again on them.
+        for arm in ("kev", "jev", "haiku"):
+            self.assertEqual(self.replay(arm)[0], 0)
+        self.seal("kev", "jev", "haiku")
+        path = self.folder / "manifest.json"
+        honest = path.read_text()
+        empty = Path(tempfile.mkdtemp())
+        (empty / "answers.jsonl").write_text("")
+        for name, change in (("no registration", lambda m: m.pop("registration")),
+                             ("an empty faithfulness result",
+                              lambda m: m.update(faithful_folder=str(empty)))):
+            with self.subTest(name=name):
+                manifest = json.loads(honest)
+                change(manifest)
+                path.write_text(json.dumps(manifest))
+                self.assertEqual(self.labels_c1()[0], 2)
+                self.assertFalse((self.folder / "labels").exists())
+        path.write_text(honest)
+        self.assertEqual(self.labels_c1()[0], 0)
+
     def test_only_jevs_lines_may_claim_a_reused_answer(self):
         # Only Jev was asked in step 1: a reused line on another arm is not
         # that arm's answer, and its missing cost would escape the cap.
