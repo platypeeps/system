@@ -64,12 +64,11 @@ changes or a submodule, never overwrites an ignored file that origin now
 tracks (the switch fails and nothing moves), and leaves a checkout on a
 branch alone. In the command pack (it has
 `bin/sd_install.py`) it then runs `make setup`. It moves the system
-checkout first, whatever the conf or argument order: the pack's setup
-installs `sd_db` from it and refuses a system older than the copy installed
-(sd:3218). When local-sd-db's
-`SCHEMA_VERSION` changed, it prints the steps: stop the dashboard, the runner
-and `sd-serve`, run `sd-db.sh backup`, then `sd-db.sh migrate`. It runs
-neither. It exits 1 when any checkout failed.
+checkout first, whatever the conf or argument order (sd:3218); it knows
+that checkout by `local-repo-sync/repo-sync.sh`. When the pack's
+`lib/sd_db` `SCHEMA_VERSION` changed, it prints the steps: stop the dashboard,
+the runner and `sd-serve`, run the pack's `bin/sd-db backup`, then
+`bin/sd-db migrate`. It runs neither. It exits 1 when any checkout failed.
 
 `refresh` drains the lanes before it moves anything (sd:3099). POSIX sh
 cannot hold a flock, so `refresh_drain.py`, a stdlib helper beside the

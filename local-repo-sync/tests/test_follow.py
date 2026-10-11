@@ -201,6 +201,24 @@ class HubPushTest(unittest.TestCase):
         self.assertEqual(mains, [f.git(f.bare(r), "rev-parse", "refs/heads/main") for r in (system, pack)])
         self.assertIn("hub-pin : system", result.stdout)
 
+    def test_a_system_checkout_without_local_sd_db_is_still_the_system(self):
+        """NEW (sd:3279). The pack owns sd_db and design step 2.8 deletes
+        local-sd-db/sd_db, so refresh knows the system checkout by
+        local-repo-sync/repo-sync.sh alone: the hub pin still names it."""
+        f = self.fixture()
+        system, pack = f.system_repo(), f.pack_repo()
+        f.git(system, "rm", "-q", "-r", "local-sd-db")
+        f.git(system, "commit", "-q", "-m", "drop local-sd-db")
+        f.git(system, "push", "-q", "origin", "main")
+        for repo in (system, pack):
+            f.pin(repo)
+            f.advance_origin(repo)
+
+        result = f.run("refresh", expect=0)
+
+        self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
+        self.assertIn("hub-pin : system", result.stdout)
+
     def test_hub_pin_may_move_backwards(self):
         """NEW. A hub-pin tag on a commit the new pin does not descend from is
         replaced: that one tag may move backwards."""

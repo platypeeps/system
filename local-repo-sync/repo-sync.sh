@@ -420,16 +420,17 @@ side_branch_diverged() {
 }
 
 # A satellite follows the hub (sd:3100): `$HOME/.config/sd/hub.json`, the
-# file local-sd-db's hub.py reads, makes this machine one.
+# file sd_db's hub.py reads, makes this machine one.
 is_satellite() {
   [ -e "$HOME/.config/sd/hub.json" ]
 }
 
 # Prints which hub checkout $1 is, `system` or `pack`, or returns 1. Only
-# `follow` moves these on a satellite.
+# `follow` moves these on a satellite. System by this script alone: the pack
+# owns sd_db, and system's local-sd-db goes (sd:3279).
 hub_checkout() {
   if [ -f "$1/bin/sd_install.py" ]; then echo pack
-  elif [ -f "$1/local-sd-db/sd_db/schema.py" ] && [ -f "$1/local-repo-sync/repo-sync.sh" ]; then echo system
+  elif [ -f "$1/local-repo-sync/repo-sync.sh" ]; then echo system
   else return 1
   fi
 }
@@ -515,10 +516,11 @@ sync() {
   echo "all repos synced"
 }
 
-# The SCHEMA_VERSION that local-sd-db holds at commit $2 of checkout $1, or
-# nothing when that commit has no local-sd-db.
+# The SCHEMA_VERSION that the pack's lib/sd_db holds at commit $2 of checkout
+# $1, or nothing when that commit has no lib/sd_db. Only the pack's: it owns
+# sd_db, and system's frozen local-sd-db is not the library the hub runs (sd:3279).
 pin_schema() {
-  git -C "$1" show "$2:local-sd-db/sd_db/schema.py" 2>/dev/null \
+  git -C "$1" show "$2:lib/sd_db/schema.py" 2>/dev/null \
     | sed -n 's/^SCHEMA_VERSION = \([0-9][0-9]*\).*/\1/p' | head -1
 }
 
@@ -559,7 +561,7 @@ refresh_one() {
 
 # Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),
 # which reports "$4: <old> -> <new>". Then `make setup` in the pack, and the
-# migrate steps when local-sd-db's SCHEMA_VERSION changed. Returns 1 when a
+# migrate steps when lib/sd_db's SCHEMA_VERSION changed. Returns 1 when a
 # step failed.
 pin_move() {
   m_dir=$1; m_rev=$2
@@ -597,10 +599,10 @@ pin_move() {
   m_s_old=$(pin_schema "$m_dir" "$m_old")
   m_s_new=$(pin_schema "$m_dir" HEAD)
   if [ -n "$m_s_new" ] && [ "$m_s_old" != "$m_s_new" ]; then
-    echo "note: local-sd-db SCHEMA_VERSION ${m_s_old:-none} -> $m_s_new; the database needs a migrate."
+    echo "note: lib/sd_db SCHEMA_VERSION ${m_s_old:-none} -> $m_s_new; the database needs a migrate."
     echo "  Stop the dashboard, the runner and sd-serve, then run:"
-    echo "    $m_dir/local-sd-db/sd-db.sh backup"
-    echo "    $m_dir/local-sd-db/sd-db.sh migrate"
+    echo "    $m_dir/bin/sd-db backup"
+    echo "    $m_dir/bin/sd-db migrate"
     echo "  and start them again. $3 migrates nothing."
   fi
   return "$m_rc"
@@ -623,9 +625,9 @@ refresh() {
       return 0
     fi
   fi
-  # System moves first, whatever the conf or argument order: the pack's make
-  # setup installs sd_db from the system checkout and refuses one older than
-  # the copy installed (sd:3218).
+  # System moves first, whatever the conf or argument order. The reason, the
+  # pack's make setup installing sd_db from system (sd:3218), went with the
+  # move into the pack (sd:2997); the order stays because it costs nothing.
   while IFS= read -r r_target; do
     [ "$(hub_checkout "$r_target" || true)" != system ] || printf '%s\n' "$r_target"
   done < "$TMPD/targets" > "$TMPD/ordered"
@@ -1883,7 +1885,7 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              refuses a checkout with uncommitted changes or a submodule,
              never overwrites an ignored file, and leaves a checkout on a
              branch alone. In the command pack (bin/sd_install.py) it then
-             runs `make setup`. When local-sd-db's SCHEMA_VERSION changed it
+             runs `make setup`. When the pack's lib/sd_db SCHEMA_VERSION changed it
              prints the backup and migrate steps and runs neither. Prints the
              old and new sha; exits 1 if any checkout failed. After a
              refresh with no failure, the hub pushes one annotated tag,

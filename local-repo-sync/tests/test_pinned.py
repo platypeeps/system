@@ -437,8 +437,44 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual([], [c for c in f.git_verbs() if c.startswith("submodule")])
 
     def test_refresh_prints_the_migrate_remedy_when_the_schema_changes(self):
-        """NEW. A new local-sd-db SCHEMA_VERSION needs a migrate. Refresh
-        names the steps and runs none of them."""
+        """NEW. A new SCHEMA_VERSION in the pack's lib/sd_db needs a migrate
+        (sd:3279: the pack owns sd_db). Refresh names the pack's bin/sd-db
+        steps and runs none of them."""
+        f = self.fixture()
+        repo = f.repo()
+        schema = "lib/sd_db/schema.py"
+        (repo / "lib" / "sd_db").mkdir(parents=True)
+        f.commit(repo, schema, "SCHEMA_VERSION = 24\n", "schema 24")
+        f.git(repo, "push", "-q", "origin", "main")
+        f.pin(repo)
+        f.advance_origin(repo, path=schema, content="SCHEMA_VERSION = 25\n")
+
+        result = f.run("refresh", expect=0)
+
+        self.assertIn("SCHEMA_VERSION 24 -> 25", result.stdout)
+        self.assertIn(f"{repo}/bin/sd-db backup", result.stdout)
+        self.assertIn(f"{repo}/bin/sd-db migrate", result.stdout)
+        migrates = [c for c in f.git_verbs() if "migrate" in c]
+        self.assertEqual([], migrates)
+
+    def test_refresh_is_quiet_about_an_unchanged_schema(self):
+        """NEW. No migrate remedy when SCHEMA_VERSION did not move."""
+        f = self.fixture()
+        repo = f.repo()
+        schema = "lib/sd_db/schema.py"
+        (repo / "lib" / "sd_db").mkdir(parents=True)
+        f.commit(repo, schema, "SCHEMA_VERSION = 24\n", "schema 24")
+        f.git(repo, "push", "-q", "origin", "main")
+        f.pin(repo)
+        f.advance_origin(repo)
+
+        result = f.run("refresh", expect=0)
+
+        self.assertNotIn("migrate", result.stdout)
+
+    def test_systems_frozen_copy_is_not_the_schema(self):
+        """NEW (sd:3279). System's local-sd-db is frozen, then deleted; it is
+        not the library the hub runs, so its schema file asks for nothing."""
         f = self.fixture()
         repo = f.repo()
         schema = "local-sd-db/sd_db/schema.py"
@@ -450,27 +486,7 @@ class RefreshTest(unittest.TestCase):
 
         result = f.run("refresh", expect=0)
 
-        self.assertIn("SCHEMA_VERSION 24 -> 25", result.stdout)
-        self.assertIn("sd-db.sh migrate", result.stdout)
-        self.assertIn("sd-db.sh backup", result.stdout)
-        migrates = [c for c in f.git_verbs() if "migrate" in c]
-        self.assertEqual([], migrates)
-
-    def test_refresh_is_quiet_about_an_unchanged_schema(self):
-        """NEW. No migrate remedy when SCHEMA_VERSION did not move."""
-        f = self.fixture()
-        repo = f.repo()
-        schema = "local-sd-db/sd_db/schema.py"
-        (repo / "local-sd-db" / "sd_db").mkdir(parents=True)
-        f.commit(repo, schema, "SCHEMA_VERSION = 24\n", "schema 24")
-        f.git(repo, "push", "-q", "origin", "main")
-        f.pin(repo)
-        f.advance_origin(repo)
-
-        result = f.run("refresh", expect=0)
-
         self.assertNotIn("migrate", result.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()
