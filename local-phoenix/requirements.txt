@@ -70,7 +70,7 @@ keyring==25.7.0
 ldap3==2.9.1
 lia-web==0.3.1
 logfire-api==4.41.0
-Mako==1.4.1
+Mako==1.4.2
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mcp==1.29.0
