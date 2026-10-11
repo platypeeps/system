@@ -870,6 +870,14 @@ class LibraryLag(unittest.TestCase):
         shutil.rmtree(self.checkout / ".git")
         self.assertIsNone(self.check()["library_commit"])
 
+    def test_install_built_from_another_tree_skips(self):
+        # The pack builds sd_db from its own lib/ (sd:2997): its commit is not
+        # one of this checkout's, so there is nothing to compare (sd:3322).
+        self.direct_url = json.dumps({"subdirectory": "lib", "url": "file:///fixture/pack",
+                                      "vcs_info": {"commit_id": "0" * 40, "vcs": "git"}})
+        with patch.object(runtime, "_run", side_effect=AssertionError("git must not run for another tree's build")):
+            self.assertIsNone(self.check()["library_commit"])
+
     def test_unknown_installed_commit_is_refused(self):
         self.vcs_install("0" * 40)
         with self.assertRaisesRegex(runtime.RuntimeRefused, "not a commit of this checkout"):
