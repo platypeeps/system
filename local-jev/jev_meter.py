@@ -58,7 +58,7 @@ CONTENDED = "the ledger was busy; the measurement was dropped"
 def use_pack_library(env) -> None:
     """Put the command pack checkout's `lib/` first on `sys.path` (sd:3279).
 
-    `SD_PACK_ROOT` names the checkout, as for `sd-db.sh`; unset, it is the
+    `SD_PACK_ROOT` names the checkout, as for `sd-db`; unset, it is the
     home clone. Every `sd_db` import below follows this call, so no copy
     installed in the interpreter answers in its place. A pack without
     `lib/sd_db` leaves the import to fail into `NO_LIBRARY`. Call it inside

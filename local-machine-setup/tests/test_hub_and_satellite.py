@@ -3,7 +3,7 @@
 Step 8: the hub runs `<prefix>.sd-serve`, and the `sd` stage says when the
 profile or the config folder lacks it and when a `hub.json` sits on the hub.
 Step 9: the `satellite` stage, criterion 7 and a build mismatch, against a
-loopback `sd-db.sh serve` over a database in the case's own folder.
+loopback `sd-db serve` over a database in the case's own folder.
 
 Every case runs machine-setup.sh against a fixture home, with the stubs of
 test_backbone on PATH: `launchctl` never reaches the real one, and nothing
@@ -25,7 +25,7 @@ from tests.test_backbone import DRIFT_WORDS, FOLDER, PACK, ROOT, ROUTE_PRESENT, 
 from sd_db.migrate import initialise
 
 LABEL = f"{fixture_config.LABEL_PREFIX}.sd-serve"
-SD_DB_SH = ROOT / "local-sd-db/sd-db.sh"
+SD_DB = PACK / "bin/sd-db"
 REGISTRY = """\
 bills:
   fixture: { cost: subscription }
@@ -53,15 +53,16 @@ class TheServeAgent(unittest.TestCase):
     def test_personal_agent_names_the_serve_agent(self):
         self.assertIn(LABEL, manifest("personal.agent"))
 
-    def test_the_template_execs_this_checkouts_serve_on_the_tailnet(self):
+    def test_the_template_execs_the_packs_serve_on_the_tailnet(self):
         for template in (fixture_config.AGENTS / f"{LABEL}.plist",
                          FOLDER / f"examples/launchagents/{LABEL}.plist"):
             with self.subTest(template=template.relative_to(ROOT)):
                 plist = plistlib.loads(fixture_config.render(template, LABEL, "/home/someone", ROOT).encode())
                 self.assertEqual(plist["Label"], LABEL)
-                # An absolute path into this repository (gap (f)), and no
-                # `--loopback`: the tailnet listener of step 7.
-                self.assertEqual(plist["ProgramArguments"], [f"{ROOT}/local-sd-db/sd-db.sh", "serve"])
+                # An absolute path into the pack (gap (f)), and no `--loopback`:
+                # the tailnet listener of step 7.
+                self.assertEqual(plist["ProgramArguments"],
+                                 ["/home/someone/repos/platypeeps/sd-ai-command-pack/bin/sd-db", "serve"])
                 # launchd's own PATH holds no `tailscale`, which the listener runs.
                 self.assertIn("/opt/homebrew/bin", plist["EnvironmentVariables"]["PATH"].split(":"))
                 self.assertTrue(plist["KeepAlive"])
@@ -143,7 +144,7 @@ class TheHub(Case):
 
 
 class Hub:
-    """A loopback `sd-db.sh serve` over a fresh database, with a registry beside it."""
+    """A loopback `sd-db serve` over a fresh database, with a registry beside it."""
 
     def __init__(self, root, *, version=None):
         self.root = pathlib.Path(root)
@@ -153,14 +154,14 @@ class Hub:
         (self.root / "providers.yaml").write_text(REGISTRY)
         self.token_file = self.root / "sd.db.serve.token"
         self.log = self.root / "serve.log"
-        command = ["sh", str(SD_DB_SH), "serve"]
+        command = [sys.executable, str(SD_DB), "serve"]
         if version is not None:
             # Another tag of the same build: the package says `version`.
             command = [sys.executable, "-c",
                        f"import sys, sd_db; sd_db.__version__ = {version!r}; "
                        "from sd_db import serve; sys.exit(serve.main(sys.argv[1:]))"]
         # The pack's lib/ on both sides, whatever this interpreter has
-        # installed: the shim runs the pack's bin/sd-db, which reads lib/,
+        # installed: the pack's bin/sd-db reads lib/,
         # and the satellite's stub python runs that lib/ too (sd:3279).
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "PYTHON": sys.executable,
                "PYTHONPATH": str(PACK / "lib"), "SD_PACK_ROOT": str(PACK)}
@@ -332,7 +333,7 @@ class TheSatellite(Case):
 
         drift = markers(self.satellite("--apply"))
         self.assertEqual(drift, [f"  DIFFERS sd_db package version: satellite {sd_db.__version__}, hub 0.0.9 — "
-                                 "upgrade the hub's sd_db, restart its `sd-db.sh serve`, then rerun"])
+                                 "run `repo-sync.sh refresh` on the hub, then rerun"])
         self.assertFalse(self.fixture.registry.exists())
 
     def test_a_local_database_is_extra_and_hub_json_is_not_written(self):
@@ -413,7 +414,7 @@ class TheSatellite(Case):
     def test_the_stage_runs_the_packs_lib_satellite_and_names_no_system_source(self):
         # sd:3279: the build that must match the hub's is the pack's lib/, which every
         # caller runs, not a copy installed in the interpreter. And --apply must never
-        # install system's frozen local-sd-db: the stage names no source checkout.
+        # install a source checkout: the stage names none.
         (self.profiles / "work.satellite").write_text("hub.example.test\n")
         pack = self.root / "pack"
         (pack / "lib/sd_db").mkdir(parents=True)

@@ -103,13 +103,15 @@ class PinFixture(HygieneFixture):
         self.launchd = self.tmp / "launchd"
         self.launchd.mkdir()
         self.database = self.tmp / "sd.db"
-        # The drain reads the repo registry through this checkout's sd-db.sh;
-        # the stub prints REPO_LIST, or fails with REPO_LIST_RC.
-        sd_db = self.tmp / "local-sd-db" / "sd-db.sh"
-        sd_db.parent.mkdir()
-        sd_db.write_text('[ "$1 $2" = "repo list" ] || exit 2\n'
+        # The drain reads the repo registry through the pack's bin/sd-db
+        # (SD_PACK_ROOT); the stub prints REPO_LIST, or fails with REPO_LIST_RC.
+        self.sd_pack = self.tmp / "sd-pack-stub"
+        sd_db = self.sd_pack / "bin" / "sd-db"
+        sd_db.parent.mkdir(parents=True)
+        sd_db.write_text('#!/bin/sh\n[ "$1 $2" = "repo list" ] || exit 2\n'
                          '[ -z "${REPO_LIST_RC:-}" ] || { echo "sd-db: boom" >&2; exit "$REPO_LIST_RC"; }\n'
                          'cat "${REPO_LIST:-/dev/null}"\n')
+        sd_db.chmod(0o755)
         self.sd_log = self.tmp / "sd.log"
         self.lanes = self.tmp / "lanes"
         self.lanes.mkdir()
@@ -120,7 +122,7 @@ class PinFixture(HygieneFixture):
     def run(self, *args, expect=0, extra_env=None):
         env = {"MAKE_LOG": str(self.make_log), "SD_LOG": str(self.sd_log),
                "SD_LANE_ROOT": str(self.lanes), "LAUNCHD_STATE": str(self.launchd),
-               "REPO_SYNC_SD_DB": str(self.database), "SYSTEM_TOOLS_LABEL_PREFIX": "local.system-tools",
+               "REPO_SYNC_SD_DB": str(self.database), "SD_PACK_ROOT": str(self.sd_pack), "SYSTEM_TOOLS_LABEL_PREFIX": "local.system-tools",
                "XDG_STATE_HOME": str(self.tmp / "state"), **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 
@@ -517,22 +519,6 @@ class RefreshTest(unittest.TestCase):
         f.git(repo, "push", "-q", "origin", "main")
         f.pin(repo)
         f.advance_origin(repo)
-
-        result = f.run("refresh", expect=0)
-
-        self.assertNotIn("migrate", result.stdout)
-
-    def test_systems_frozen_copy_is_not_the_schema(self):
-        """NEW (sd:3279). System's local-sd-db is frozen, then deleted; it is
-        not the library the hub runs, so its schema file asks for nothing."""
-        f = self.fixture()
-        repo = f.repo()
-        schema = "local-sd-db/sd_db/schema.py"
-        (repo / "local-sd-db" / "sd_db").mkdir(parents=True)
-        f.commit(repo, schema, "SCHEMA_VERSION = 24\n", "schema 24")
-        f.git(repo, "push", "-q", "origin", "main")
-        f.pin(repo)
-        f.advance_origin(repo, path=schema, content="SCHEMA_VERSION = 25\n")
 
         result = f.run("refresh", expect=0)
 

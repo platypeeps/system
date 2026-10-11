@@ -817,8 +817,8 @@ stage_repos() {
 # A file git does not ignore is reported and never written: the block is
 # per machine, and a tracked copy would publish it.
 local_blocks() {
-  if ! rows=$("$ROOT/local-sd-db/sd-db.sh" repo list 2>/dev/null </dev/null); then
-    echo "  SKIP    CLAUDE.local.md shared keys: sd-db.sh repo list failed"
+  if ! rows=$("$SD_PACK_ROOT/bin/sd-db" repo list 2>/dev/null </dev/null); then
+    echo "  SKIP    CLAUDE.local.md shared keys: sd-db repo list failed"
     return 0
   fi
   # `sd-db: <path>  <url>  ...  <runner merge>`: two spaces between fields,
@@ -1342,7 +1342,7 @@ stage_tooling() {
 # doctor's question (doctor_sd below); this stage asks only whether the
 # pieces exist, which is the question `update --apply` can act on.
 #
-# One database path, and not an override: `sd-db.sh init` creates this file
+# One database path, and not an override: `sd-db init` creates this file
 # and no other, and the library and the dashboard both default to
 # it. An SD_DB_PATH used to move it here alone, so the stage and doctor
 # could check a file no agent opened (sd:1177). A service config that names
@@ -1367,7 +1367,7 @@ sd_hub_only() { # label
   return 1
 }
 # The interpreter the satellite stage runs the pack's lib/sd_db under: the
-# pack's, as sd-db.sh picks it.
+# pack's.
 SD_DB_PYTHON="${SD_DB_PYTHON:-$SD_PACK_ROOT/.venv/bin/python}"
 # Runs a module of the pack's lib/sd_db under `-I`: argv is the lib/ folder,
 # then the module's arguments. -I keeps PYTHONPATH and the working directory
@@ -1429,7 +1429,7 @@ stage_sd() {
     # Named so --fail-on-drift sees it: an agent loaded against no database
     # restarts on its throttle interval forever and still reads `ok loaded`.
     echo "  MISSING database $SD_DB — no database yet"
-    run "$ROOT/local-sd-db/sd-db.sh" init
+    run "$SD_PACK_ROOT/bin/sd-db" init
   fi
   sd_database_elsewhere | while IFS= read -r elsewhere; do
     echo "  DIFFERS database: $elsewhere, not $SD_DB — this stage builds and doctor checks only $SD_DB; remove the key or point it there"
@@ -1546,8 +1546,8 @@ stage_satellite() {
   if [ "$APPLY" -eq 1 ]; then set -- "$@" --apply; fi
   # On a build mismatch the remedy is `repo-sync.sh follow`, which moves the
   # pack to the hub's pin. No source checkout is named: self-install (sd:2802)
-  # exported this checkout's frozen local-sd-db, not the hub's build, and from
-  # lib/ it finds no venv to install into, so it refuses (sd:3279).
+  # exported a source checkout, not the hub's build, and from lib/ it finds no
+  # venv to install into, so it refuses (sd:3279).
   if out=$("$SD_DB_PYTHON" -I -c "$SD_DB_RUN_LIB" "$SD_PACK_ROOT/lib" sd_db.satellite "$@" 2>&1 </dev/null); then
     printf '%s\n' "$out"
   else
@@ -3476,7 +3476,7 @@ doctor_profile() {
 doctor_fail() { echo "  FAIL    $*"; fails=$((fails + 1)); }
 
 # One read of the database. Not `sqlite3 -readonly`: the library keeps the
-# file in WAL mode (local-sd-db/sd_db/database.py), and a read-only open of
+# file in WAL mode (the pack's lib/sd_db/database.py), and a read-only open of
 # a WAL database whose -wal and -shm sidecars are absent — every database
 # nothing currently holds open — fails with "unable to open database file
 # (14)", which doctor would then report as a corrupted database. An ordinary
@@ -3550,7 +3550,7 @@ doctor_sd() {
       echo "  ok      database $SD_DB passes integrity_check"
       db_ok=1
     else
-      doctor_fail "database $SD_DB integrity_check: $integrity — restore a dated backup: local-sd-db/sd-db.sh restore /Volumes/local/Backup/sd-backups/<date>"
+      doctor_fail "database $SD_DB integrity_check: $integrity — restore a dated backup: sd-db restore /Volumes/local/Backup/sd-backups/<date>"
       db_ok=0
     fi
   fi
@@ -3630,9 +3630,9 @@ doctor_sd_versions() {
   if [ -n "$db_schema" ] && [ "$db_schema" != "$lib_schema" ]; then
     doctor_fail "database schema $db_schema DIFFERS from the pack's lib/ $lib_schema — after a backup, with sd-dashboard and sd-serve stopped: $SD_PACK_ROOT/bin/sd-db migrate"
   fi
-  # `sd-db.sh serve` runs system's frozen copy when its plist sets a selector.
+  # An older sd-serve plist may still set SD_DB_LIBRARY, which no sd-db reads now.
   selector=$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" SD_DB_LIBRARY)
-  [ -z "$selector" ] || doctor_fail "$LABEL_PREFIX.sd-serve sets SD_DB_LIBRARY=$selector, so it runs system's frozen local-sd-db — remove the key from its plist, then kickstart it"
+  [ -z "$selector" ] || doctor_fail "$LABEL_PREFIX.sd-serve sets SD_DB_LIBRARY=$selector, which the pack's sd-db ignores — remove the key from its plist, then kickstart it"
   # The pack's own interpreter may be absent; one the operator named must exist.
   seen=" "
   plist_py=$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-dashboard.plist" SD_DASHBOARD_PYTHON)
@@ -3658,6 +3658,45 @@ doctor_sd_versions() {
   done
 }
 
+# Config that still names the retired local-sd-db folder (sd:3281): installed
+# LaunchAgents, the plist templates and the cron job files. Each runs the
+# forwarder, which warns and runs the pack's bin/sd-db until it is deleted. A machine whose config names none passes; a folder that cannot
+# be searched fails, because an unread folder says nothing.
+doctor_retired_sd_db() {
+  retired=""
+  unknown=0
+  for place in "$AGENT_DIR" "$SYSTEM_TOOLS_CONFIG/cron-jobs/jobs"; do
+    [ -d "$place" ] || continue
+    if hits=$(grep -rlF -D skip local-sd-db "$place" 2>/dev/null); then
+      retired="$retired
+$hits"
+    elif [ $? -ne 1 ]; then
+      doctor_fail "cannot search $place for config that names the retired local-sd-db"
+      unknown=1
+    fi
+  done
+  for plist in "$HOME/Library/LaunchAgents/$LABEL_PREFIX".*.plist; do
+    [ -f "$plist" ] || continue
+    if grep -qF local-sd-db "$plist" 2>/dev/null; then
+      retired="$retired
+$plist"
+    elif [ $? -ne 1 ]; then
+      doctor_fail "cannot read $plist to check that it no longer names local-sd-db"
+      unknown=1
+    fi
+  done
+  if [ -z "$retired" ]; then
+    [ "$unknown" -eq 0 ] && echo "  ok      no config names the retired local-sd-db"
+    return 0
+  fi
+  while IFS= read -r named; do
+    [ -n "$named" ] || continue
+    doctor_fail "$named names the retired local-sd-db, now only a forwarder to be deleted — point it at $SD_PACK_ROOT/bin/sd-db, then reinstall it ($(basename "$SELF") update agents --apply for a plist, cron-jobs.sh install <job> for a job)"
+  done <<EOF
+$retired
+EOF
+}
+
 # `doctor sd`: the checks above alone, for the test suite and for a quick
 # read after touching one of the pieces. Same exit code rule as doctor.
 cmd_doctor_sd() {
@@ -3665,6 +3704,7 @@ cmd_doctor_sd() {
   echo "== doctor sd"
   doctor_profile
   doctor_sd
+  doctor_retired_sd_db
   echo
   if [ "$fails" -gt 0 ]; then
     echo "  $fails hard failure(s)"
@@ -4060,6 +4100,7 @@ cmd_doctor() {
   # installed library versions. Loaded-or-not for the agents is above;
   # this is whether what they run against is sound.
   doctor_sd
+  doctor_retired_sd_db
 
   echo
   echo "  folders without a filled .env (.env.example present, .env absent):"
@@ -4816,7 +4857,7 @@ case "$VERB" in
   # refuses skips. PYTHON is CI's venv; a machine runs it with its own.
   # The suite seeds its fixture database through sd_db -- nothing outside
   # the library opens the database or creates a table, and
-  # local-sd-db/tests/test_one_store.py greps the repository to keep it so --
+  # tests/test_one_store.py greps the repository to keep it so --
   # so the pack's lib/, the sd_db doctor reads, goes on PYTHONPATH (sd:3279).
   test)
     shift

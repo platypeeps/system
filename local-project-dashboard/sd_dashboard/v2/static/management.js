@@ -8,7 +8,7 @@ const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
 const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };
-const SDDB = '~/repos/system/local-sd-db/sd-db.sh';
+const SDDB = '~/repos/platypeeps/sd-ai-command-pack/bin/sd-db';
 
 // ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
 let DOC = null, READ = '', GRANT = null;
@@ -242,7 +242,7 @@ const grantTally = () => DOC?.grant ? html`<span>machine merge grant <b>${GRANT.
   : html`<span><span class="g-unknown" aria-hidden="true">▨</span> machine merge grant not read: ${why('grant')}</span>`;
 function renderRepos() {
   const el = document.getElementById('view-repos');
-  if (!DOC.repos) { put(el, unknown('The repo table was not read', why('repos'), 'sd-db.sh repo list')); return; }
+  if (!DOC.repos) { put(el, unknown('The repo table was not read', why('repos'), 'sd-db repo list')); return; }
   if (repoParam) return renderRepoPage(el);
   const rows = repoRows(), shown = pageOf(rows, RS);
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
@@ -310,7 +310,7 @@ function renderRepoPage(el) {
       ${setRow(html`<code>lane_host</code> <button class="help" type="button" aria-label="Help: lane_host" data-help="<b>The machine that runs this repo's merge lane.</b> <b>hub</b>, where every row starts, or a machine's short host name, lower-cased. Only that machine takes this repo's ship lock; every other refuses.">${I('circle-help')}</button>`, r.lane,
         html`<input class="fld" type="text" data-set="lane_host" list="lane-hosts" value="${r.lane}" aria-label="Move lane to" autocomplete="off" spellcheck="false"><datalist id="lane-hosts">${laneHosts().map(h => html`<option value="${h}"></option>`)}</datalist>`, html` data-key="lane_host"`)}
       ${setRow(html`<code>mode</code>`, r.mode || html`<span class="no">unset</span>`, lock('no sd-db verb writes it'))}
-      ${setRow(html`<code>ci</code>`, r.ci, lock('sd-db.sh repo ci'))}
+      ${setRow(html`<code>ci</code>`, r.ci, lock('sd-db repo ci'))}
       ${setRow(html`<code>pieces_source</code>`, r.pieces, lock('moves only by migration'))}
       ${setRow('registered', html`<time class="rel" datetime="${r.created}"></time> <span class="no">· updated</span> <time class="rel" datetime="${r.updated}"></time>`)}
     </section>
@@ -498,14 +498,14 @@ function registerCommands() {
   const C = shell.commands;
   C.register(
     // Repo rows: the two sd-db verbs, each an Undo-able flip of one column. build: they post /api/repos/<verb>.
-    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db.sh repo add registers it first',
+    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo runner-merge ${shq(o.path)} ${o.row.merge === 'auto' ? 'manual' : 'auto'}`, executes: true,
       run: o => flipRepo('runner-merge', o), undo: undoOf },
-    { id: 'repo.managed', on: 'repo', label: 'Switch managed', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db.sh repo add registers it first',
+    { id: 'repo.managed', on: 'repo', label: 'Switch managed', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo managed ${shq(o.path)} ${o.row.managed === 'yes' ? 'no' : 'yes'}`, executes: true,
       run: o => flipRepo('managed', o), undo: undoOf },
     // sd:3075: Move lane needs a host, so it opens the repo's settings page, where the lane_host field proposes the move.
-    { id: 'repo.lane-host', on: 'repo', label: 'Move lane', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db.sh repo add registers it first',
+    { id: 'repo.lane-host', on: 'repo', label: 'Move lane', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
       run: o => { location.href = `?view=repos&repo=${encodeURIComponent(o.path)}`; return `Move lane: ${o.label}'s settings page opens`; } },
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
@@ -750,7 +750,7 @@ function selectRow(id, open) {
       <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd></dl>
       ${r.registered ? html`<p><a class="btn quiet" href="?view=repos&amp;repo=${encodeURIComponent(r.path)}">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
-        : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db.sh repo add ${r.path}</code> registers it.</p>`}${git}${act}`;
+        : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}`;
   } else if (kind === 'proc') {
     const p = SESS.processes[+key]; if (!p) return;
     h = html`<p class="kind"><span class="g-ok">●</span> sd-* process</p><h2>${p.command}</h2><dl><dt>PID</dt><dd>${p.pid}</dd><dt>Running for</dt><dd>${p.elapsed}</dd></dl>

@@ -25,7 +25,7 @@ __version__ = "0.1.0"
 def pack_library():
     """The command pack checkout's `lib/`, which holds `sd_db` (sd:2997).
 
-    `SD_PACK_ROOT` names the checkout, as for `sd-db.sh`; unset, it is the
+    `SD_PACK_ROOT` names the checkout, as for `sd-db`; unset, it is the
     home clone. `bootstrap.py` and the restart probe put this folder first on
     `sys.path`, so no copy installed in the interpreter answers in its place.
     Here and not in `runtime`, so the bootstrap reads it before it runs that

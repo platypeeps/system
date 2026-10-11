@@ -315,7 +315,7 @@ in argv.
 
 The answer is recorded and not used. The scanner's own verdict is the shadow
 answer, so the output and the exit code stay exactly as without `jev`.
-`sd-db.sh judgments compare --stage JEV_SECRET_SCAN` reports how often Kev
+`sd-db judgments compare --stage JEV_SECRET_SCAN` reports how often Kev
 agrees.
 
 | Variable | Default | Meaning |

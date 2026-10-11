@@ -12,7 +12,7 @@ and **exactly one** of two verbs.
 
 ```sh
 JOB_SCHEDULE="45 4 * * *"
-JOB_COMMAND="sh \"$HOME/repos/system/local-sd-db/sd-db.sh\" backup"
+JOB_COMMAND="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup"
 ```
 
 - **`JOB_COMMAND`** runs a shell command under `bash -c`.

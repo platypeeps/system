@@ -8,7 +8,7 @@ detached child and not a bounded wait.
 
 **It only records.** No answer from here reaches a caller. Each arm writes one
 `judgment` row through `jev_meter`, with the Jev row's pair id, and the report
-`sd-db.sh judgments compare` pairs them up. Each also writes one trace corpus
+`sd-db judgments compare` pairs them up. Each also writes one trace corpus
 record, through `jev.to_corpus`, with the request, the reply and the call id.
 
 **It sends what Jev was sent.** The request file holds the payload after

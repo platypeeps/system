@@ -58,11 +58,11 @@ found them was a human running the lint by hand.
 **A new folder needs a row, and nothing makes one for you.** Status lives in
 the database here — `docs/work/.status-source` says `row` — and the import
 that used to create the row now names each retired repository, exits 0 and
-creates nothing (`_retired` in `local-sd-db/sd_db/jobs/cli.py`; #264) — and
+creates nothing (`_retired` in `sd_db/jobs/cli.py`; #264) — and
 every repository is retired. So a folder written today has no row and no
 readable status until you run, from this repo's root:
 
-    ./local-sd-db/sd-db.sh work register docs/work/<item>/prd.md
+    $SD_PACK_ROOT/bin/sd-db work register docs/work/<item>/prd.md
 
 It takes the title and the date from the prd's frontmatter, the commit from
 git (and the branch too, when the checkout is on one that is not the default;

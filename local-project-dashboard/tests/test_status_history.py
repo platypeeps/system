@@ -13,6 +13,7 @@ grep proves there is no other path.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import unittest
@@ -25,8 +26,9 @@ from support import ScreenCase
 #: The repository root: this file is `<root>/local-project-dashboard/tests/`.
 ROOT = Path(__file__).resolve().parents[2]
 
-#: The one function allowed to write the column, and the file it lives in.
-THE_ONE_WRITER = Path("local-sd-db/sd_db/writes.py")
+#: The one function allowed to write the column lives in the command pack, not in this repository.
+PACK = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack")
+THE_ONE_WRITER = PACK / "lib/sd_db/writes.py"
 
 
 class ThreeStatusChanges(ScreenCase):
@@ -112,24 +114,19 @@ class ThreeStatusChanges(ScreenCase):
         hits = [line for line in found.stdout.splitlines() if line.strip()]
         outside = [
             line for line in hits
-            if not line.startswith(f"{THE_ONE_WRITER}:")
-            and ":tests/" not in line
+            if ":tests/" not in line
             and "/tests/" not in line.split(":", 1)[0]
         ]
         self.assertEqual(
             outside, [],
-            "`item.status` is written by `sd_db.writes.transition` and by nothing "
+            "`item.status` is written by `sd_db.writes.transition` in the command pack and by nothing "
             "else; these lines are a second writer",
         )
-        self.assertTrue(
-            any(line.startswith(f"{THE_ONE_WRITER}:") for line in hits),
-            "the one writer is still there -- a grep that finds nothing at all "
-            "is a grep whose pattern has stopped matching",
-        )
+        # The pack's file, read directly: a grep that finds nothing at all is a grep whose pattern has stopped matching.
         self.assertEqual(
-            len([line for line in hits if line.startswith(f"{THE_ONE_WRITER}:")]),
+            THE_ONE_WRITER.read_text().count("UPDATE item SET status"),
             1,
-            "and there is exactly one of it inside that file",
+            "and there is exactly one of it inside the pack's writes.py",
         )
 
 

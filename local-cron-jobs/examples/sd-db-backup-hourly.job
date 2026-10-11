@@ -7,7 +7,7 @@
 # `--require-mount /Volumes/local` is asked before anything is written: with
 # the disk detached, /Volumes/local is an ordinary directory on the boot disk,
 # and a snapshot written there restores and compares perfectly on the disk it
-# was meant to leave. The refusal exits 1 and mails through sd-db.sh, so a
+# was meant to leave. The refusal exits 1 and mails through sd-db, so a
 # detached drive is reported every hour until it is reattached.
 #
 # Retention is by age, one rolling week: `--keep-days 7` deletes verified
@@ -33,5 +33,5 @@ JOB_SCHEDULE="50 * * * *"
 JOB_TIMEOUT="20m"
 SD_DB_BACKUP_HOURLY_MOUNT=""
 [ -n "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || SD_DB_BACKUP_HOURLY_MOUNT=" --require-mount /Volumes/local"
-JOB_COMMAND="\"$ROOT/../local-sd-db/sd-db.sh\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep-days 7 --no-row-prune"
+JOB_COMMAND="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep-days 7 --no-row-prune"
 unset SD_DB_BACKUP_HOURLY_MOUNT

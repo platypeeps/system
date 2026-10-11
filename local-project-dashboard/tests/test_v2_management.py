@@ -703,7 +703,7 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
         self.assertIn('data-key="lane_host"', page)
         self.assertIn('data-set="lane_host"', page)
         self.assertEqual(re.findall(r'<option value="([^"]+)"></option>', page.split('id="lane-hosts"')[1]), ["hub", "build-3"])
-        self.assertEqual(out["R"]["cmd"], f"~/repos/system/local-sd-db/sd-db.sh repo lane-host '{path}' 'build-2'")
+        self.assertEqual(out["R"]["cmd"], f"~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo lane-host '{path}' 'build-2'")
         # sd:3284: the queue lives in the hub database, so the move takes the pending entries with it.
         self.assertIn("Pending entries follow", out["R"]["note"])
         self.assertEqual([(p, b) for p, b, _ in out["posts"]],

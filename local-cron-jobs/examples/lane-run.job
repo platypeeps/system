@@ -1,7 +1,7 @@
 # Merge lane for every repository this machine hosts (sd:3003). One job file,
 # the same on every machine: `lane run --hosted` runs the lane of each managed
 # repository whose lane host is this machine, one after another. `NULL` means
-# the hub. Move a repository's lane with `sd-db.sh repo lane-host <path>
+# the hub. Move a repository's lane with `sd-db repo lane-host <path>
 # <host>|hub` or the dashboard's Move lane control; the next run follows it.
 # It replaces one job file per repository, hub or satellite.
 #

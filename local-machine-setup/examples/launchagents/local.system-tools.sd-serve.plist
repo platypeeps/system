@@ -16,7 +16,7 @@
 	<string>@LABEL@</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>@ROOT@/local-sd-db/sd-db.sh</string>
+		<string>@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db</string>
 		<string>serve</string>
 	</array>
 	<key>EnvironmentVariables</key>

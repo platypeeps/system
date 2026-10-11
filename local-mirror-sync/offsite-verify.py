@@ -6,7 +6,7 @@ destination, `backup-verify-monthly` was never defined let alone loaded, and
 the gap was found by losing six files of uncommitted work rather than by any
 check reporting it. So this is not a file-exists test. It pulls the newest
 database snapshot back off the share and hands it to `sd_db.backup`'s own
-restore validator -- the one `sd-db.sh restore` runs, checking integrity, the
+restore validator -- the one `sd-db restore` runs, checking integrity, the
 schema version, the table set, every table's columns and the foreign keys --
 then compares the counts it returns against the manifest the snapshot was
 written with, and re-hashes every companion file the manifest names. It does
@@ -251,7 +251,7 @@ def verify_database(root: Path, report: Report, *, max_age_hours: float, now: da
             return
         report.ok(f"restored {database.stat().st_size} bytes to a local copy")
 
-        # THE restore validation, not a second one. `sd-db.sh restore` refuses
+        # THE restore validation, not a second one. `sd-db restore` refuses
         # a candidate this rejects, and an earlier version of this file kept
         # its own weaker contract: integrity_check, foreign_key_check and row
         # counts all pass on a database whose table set restore will not

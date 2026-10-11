@@ -4,7 +4,7 @@ SHARED_LOCAL_KEYS in claude_settings.py is the one source. The stage writes
 those keys into the SD-AI-COMMAND-PACK:LOCAL block of each auto repo checked
 out here, and keeps the repo's own keys, its comments and every line outside
 the block. A manual repo, a repo not checked out and a file git does not ignore
-are never written. `sd-db.sh repo list` is a stub; the repos are fixtures.
+are never written. `sd-db repo list` is a stub, the pack's `bin/sd-db`; the repos are fixtures.
 """
 
 import pathlib
@@ -31,6 +31,7 @@ class LocalBlock(base.SyntheticHome):
 
         self.keys = claude_settings.SHARED_LOCAL_KEYS
         self.rows = []
+        self.pack = self.home / "pack"
         self.auto = self.checkout(self.home / "repos/auto-one")
         self.add_row("~/repos/auto-one", "auto")
 
@@ -43,13 +44,14 @@ class LocalBlock(base.SyntheticHome):
 
     def add_row(self, path, merge):
         self.rows.append(f"sd-db: {path}  https://example.test/x.git  file  yes  local  off  {merge}")
-        base.write_exec(self.repo / "local-sd-db/sd-db.sh",
+        base.write_exec(self.pack / "bin/sd-db",
                         "#!/bin/sh\ncat <<'EOF'\n" + "\n".join(self.rows) + "\nEOF\n")
 
     def run_repos(self, *flags):
         env = {"HOME": str(self.home), "MACHINE_SETUP_STATE": str(self.state),
                "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
-               **fixture_config.env(), "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX}
+               **fixture_config.env(), "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX,
+               "SD_PACK_ROOT": str(self.pack)}
         result = subprocess.run([str(self.folder / "machine-setup.sh"), "update", "repos", *flags],
                                 env=env, capture_output=True, text=True, cwd=self.cwd,
                                 stdin=subprocess.DEVNULL, timeout=60)
@@ -127,8 +129,8 @@ class LocalBlock(base.SyntheticHome):
         self.assertEqual((self.auto / "CLAUDE.local.md").read_text(), text)
 
     def test_a_failed_repo_list_is_a_skip(self):
-        base.write_exec(self.repo / "local-sd-db/sd-db.sh", "#!/bin/sh\nexit 1\n")
+        base.write_exec(self.pack / "bin/sd-db", "#!/bin/sh\nexit 1\n")
 
         out = self.run_repos("--apply")
 
-        self.assertIn("SKIP    CLAUDE.local.md shared keys: sd-db.sh repo list failed", out)
+        self.assertIn("SKIP    CLAUDE.local.md shared keys: sd-db repo list failed", out)

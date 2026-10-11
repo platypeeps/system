@@ -6,7 +6,7 @@ to the system origin: it names the pinned system sha, and its message carries
 that tag with `follow`, fetches the pack sha from the pack origin, drains its
 own lanes, and moves both checkouts to exactly that pair, never to origin's
 default branch. Each origin is a local bare repository; the lane root, `sd`
-and `sd-db.sh` are the fixtures of `test_refresh_drain.py`.
+and the pack's `bin/sd-db` are the fixtures of `test_refresh_drain.py`.
 
 Each case names its kind, as in `test_repo_sync.py`. A NEW case was written
 before `follow` and the push existed and seen to fail against the script
@@ -80,8 +80,7 @@ class FollowFixture(DrainFixture):
 
     def system_repo(self, rel="a/system"):
         repo = self.repo(rel)
-        bodies = {"local-sd-db/sd_db/schema.py": "SCHEMA_VERSION = 24\n",
-                  "local-repo-sync/repo-sync.sh": "",
+        bodies = {"local-repo-sync/repo-sync.sh": "",
                   "local-machine-setup/machine-setup.sh": MACHINE_SETUP_STUB,
                   "local-agent-prompt/agent-prompt.sh": AGENT_PROMPT_STUB,
                   SHARED_MD: "shared rules\n"}
@@ -200,24 +199,6 @@ class HubPushTest(unittest.TestCase):
         self.assertEqual("", f.refs(pack))
         self.assertEqual("refs/tags/hub-pin", f.refs(system))
         self.assertEqual(mains, [f.git(f.bare(r), "rev-parse", "refs/heads/main") for r in (system, pack)])
-        self.assertIn("hub-pin : system", result.stdout)
-
-    def test_a_system_checkout_without_local_sd_db_is_still_the_system(self):
-        """NEW (sd:3279). The pack owns sd_db and design step 2.8 deletes
-        local-sd-db/sd_db, so refresh knows the system checkout by
-        local-repo-sync/repo-sync.sh alone: the hub pin still names it."""
-        f = self.fixture()
-        system, pack = f.system_repo(), f.pack_repo()
-        f.git(system, "rm", "-q", "-r", "local-sd-db")
-        f.git(system, "commit", "-q", "-m", "drop local-sd-db")
-        f.git(system, "push", "-q", "origin", "main")
-        for repo in (system, pack):
-            f.pin(repo)
-            f.advance_origin(repo)
-
-        result = f.run("refresh", expect=0)
-
-        self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
         self.assertIn("hub-pin : system", result.stdout)
 
     def test_hub_pin_may_move_backwards(self):

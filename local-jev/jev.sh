@@ -96,7 +96,7 @@ done
 
 # The meter loads `sd_db` from the command pack's lib/ (jev_meter.py, sd:3279),
 # so the interpreter no longer decides which copy runs. Pick it the way
-# sd-db.sh does: PYTHON, then SD_DB_PYTHON, then the command pack's venv, then
+# sd-db does: PYTHON, then SD_DB_PYTHON, then the command pack's venv, then
 # python3.
 if [ -z "${PYTHON:-}" ]; then
   for candidate in "${SD_DB_PYTHON:-}" \

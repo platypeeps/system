@@ -397,7 +397,7 @@ class ExclusionTest(unittest.TestCase):
         self.assertEqual("held\n", (f.tmp / "during").read_text())
 
     def test_a_registered_repo_with_no_lane_folder_is_held(self):
-        """NEW (review round 4). A repository in the registry (`sd-db.sh repo
+        """NEW (review round 4). A repository in the registry (`sd-db repo
         list`, which `lane run --hosted` reads) and not in the conf, whose
         lane never ran: the drain makes and holds its lock, named after the
         checkout's folder."""

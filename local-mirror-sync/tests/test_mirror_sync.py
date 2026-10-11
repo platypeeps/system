@@ -1470,7 +1470,7 @@ class OffsiteVerify(Fixture):
         A toy two-table database would be refused for its schema alone, and
         then every failure test below would pass for the wrong reason. The
         fixture is the library's own: nothing outside `sd_db` opens the
-        database, and `local-sd-db/tests/test_one_store.py` greps this
+        database, and `tests/test_one_store.py` greps this
         repository to keep it that way.
         """
         from sd_db.testing import make_store
@@ -1684,7 +1684,7 @@ class OffsiteVerify(Fixture):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_foreign_key_violations_fail(self) -> None:
-        # `sd-db.sh restore` refuses a snapshot in this state -- it is a
+        # `sd-db restore` refuses a snapshot in this state -- it is a
         # forensic copy, not a restorable one -- so integrity_check and
         # matching counts must not be enough to report a good backup.
         from sd_db.testing import break_foreign_keys
@@ -2156,7 +2156,7 @@ class NasCopy(unittest.TestCase):
         # launchd runs missed jobs together at wake, and a copy could read a
         # snapshot directory that is not finished. `&&` in one job does.
         _schedule, command = self.job("sd-db-backup")
-        snapshot = command.index("sd-db.sh")
+        snapshot = command.index("bin/sd-db")
         preflight = command.index("--preflight-only")
         copy = command.index("mirror-sync.sh")
         self.assertLess(snapshot, preflight)
@@ -2222,7 +2222,7 @@ class WriterPreflight(unittest.TestCase):
 
     def test_the_snapshot_checks_the_disk_before_it_writes_anything(self) -> None:
         # /Volumes/local with the disk detached is a directory on the boot
-        # disk. sd-db.sh asks before it writes; the job has to pass the flag.
+        # disk. sd-db asks before it writes; the job has to pass the flag.
         env = {key: value for key, value in os.environ.items() if key != "SD_DB_BACKUP_DESTINATION"}
         run = subprocess.run(
             ["/bin/bash", "-c",

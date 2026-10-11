@@ -511,7 +511,7 @@ class ItemKind(BrowserSession):
         bump so the next connection reads the narrow list. Only the CHECK is
         older; the property under test is the CHECK and nothing else. The
         edit goes through the library's own `connect`, because
-        `local-sd-db/tests/test_one_store.py` is the one place that may open
+        `tests/test_one_store.py` is the one place that may open
         this file any other way.
         """
         item = self.item("Errand", kind="task")

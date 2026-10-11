@@ -7,7 +7,7 @@ from pathlib import Path
 # -I ignores PYTHONPATH and the caller's working directory. This dashboard
 # package goes on the path, then the command pack's lib/ ahead of it, so
 # `sd_db` is the pack's and never a copy installed in this interpreter
-# (sd:3279); the adjacent local-sd-db source must never shadow it either.
+# (sd:3279).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sd_dashboard import pack_library  # noqa: E402 - needs the path above
 

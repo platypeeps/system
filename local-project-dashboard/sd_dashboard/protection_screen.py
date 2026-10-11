@@ -145,7 +145,7 @@ def render(connection, *, parameters):
     columns.append(Column("reason", "Reason", _reason, text=lambda row: row.get("reason") or "" if row["status"] == "unknown" else ""))
     listing = Listing("protection", columns, rows, path="/protection", query=query, page_number=number,
                       selected=selected,
-                      empty="No repositories registered. Register one with sd-db.sh repo add PATH, then run sd shadow sync.")
+                      empty="No repositories registered. Register one with sd-db repo add PATH, then run sd shadow sync.")
     return page("Protection", "protection",
         tag("p", "What each registered repository's default branch enforces, as the nightly collector last read it. "
                  "Unprotected first, then unknown, then protected.", class_="lead"),

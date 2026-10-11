@@ -13,7 +13,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 - **Operator**: the person who runs these tools on their machines; their values never enter this repository.
 - **Config folder**: the per-machine folder outside the checkout that holds private values (convention 3).
 - **Command pack**: the public repository `platypeeps/sd-ai-command-pack`; it ships the `sd` workflow commands (`sd`, `sd-ship`, `sd-docs-lint`).
-- **Workflow database**: the SQLite store behind `sd`, built by `local-sd-db`; a work item in it is written `sd:<n>`.
+- **Workflow database**: the SQLite store behind `sd`, built by the command pack's `sd_db` library; a work item in it is written `sd:<n>`.
 - **Jev**: an optional hosted model from TypeSafe, wrapped by `local-jev`; see the Jev section.
 
 ## This repository is public
@@ -38,10 +38,10 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 ## Structure
 
-- `local-sd-db` is a Python package (`sd_db`); its test entrypoint is `sd-db.sh test`.
-- `sd-db.sh` database verbs run an installed copy when it is built for a newer schema than the checkout; `SD_DB_LIBRARY` forces a side.
-- `local-sd-db` keeps its build backend in `_build.py`, so nothing is fetched to build it.
-- One hub holds the workflow database; a satellite reaches it over the tailnet; setup and refusals: `local-sd-db/README.md`.
+- The library `sd_db` and its entrypoint `bin/sd-db` live in the command pack, not here; callers run `$SD_PACK_ROOT/bin/sd-db` (default `~/repos/platypeeps/sd-ai-command-pack`).
+- `local-sd-db/sd-db.sh` only warns and execs the pack's `bin/sd-db`, so a config installed before the move still runs; `machine-setup.sh doctor` lists the config that names it, and the file goes once the doctor is clean.
+- `tests/test_retired_folder.py` allows that file alone in `local-sd-db/` and fails a tracked line outside `docs/work` that names the folder.
+- One hub holds the workflow database; a satellite reaches it over the tailnet; setup and refusals: `local-machine-setup/README.md`.
   - A satellite runs no hub-only agent: `SD_HUB_ONLY_AGENTS` in `local-machine-setup/machine-setup.sh` is the one list.
   - A verb that needs a lock or a directory beside the database refuses with `HubOnly` off the hub; do not add a remote path for it.
 - `local-project-dashboard` runs the workflow dashboard; `dashboard.sh test` runs its suite, and `preflight`, `install`, `health` manage the server.
