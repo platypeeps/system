@@ -5,7 +5,8 @@ item in one of five states (merging, next, building, blocked, landed), with load
 The only write is `/api/queue/move`: it runs `sd-ship lane move|hold|release|cancel|retry` with exactly the page's item and
 place, under the session cookie, CSRF and Origin checks, and refuses a revision the queue has moved past. Retry and Approve
 (`retry --manual`) show on blocked rows only when `sd-ship lane retry --help` names `--expected-head` (sd:3012); Approve
-only on a manual repo. Both carry the head the row showed.
+only on a manual repo. Both carry the head the row showed. Release on a running row runs `lane cancel` with the claim the
+row showed as `--expected-claim` (sd:3337), and a claim that moved on since is a 409.
 
 `sd-ship` and `sd` are stubs on PATH that answer from a fixture and log their arguments; no test reaches a real lane.
 One test runs the pinned pack's own `sd-ship` on a queue under a temporary `SD_LANE_ROOT`, so the order the page asks
@@ -169,8 +170,19 @@ class TheRows(Lane, ScreenCase):
         merging = self.doc()["lanes"][0]["rows"][0]
         self.assertEqual((merging["host"], merging["step"], merging["lease_until"], merging["claim_age"]), (None, None, None, 600))
 
-    def test_the_claim_token_never_reaches_the_page(self):
-        self.assertNotIn("claim-token-3", json.dumps(self.doc()))
+    def test_the_claim_token_reaches_the_page_only_as_the_running_rows_claim(self):
+        # sd:3337: Release sends back the claim the row showed, `<holder token>:<step>`, for `--expected-claim`.
+        doc = self.doc()
+        self.assertEqual(doc["lanes"][0]["rows"][0]["claim"], "claim-token-3:merge")
+        self.assertEqual(json.dumps(doc).count("claim-token-3"), 1)
+
+    def test_a_running_entry_without_a_token_or_step_has_no_claim(self):
+        # An entry an earlier pack wrote names no claim, so there is nothing a Release could bind to.
+        for drop in ("holder", "step"):
+            entries = self.entries()
+            entries[5] = {key: value for key, value in entries[5].items() if key != drop}
+            self.list(entries)
+            self.assertIsNone(self.doc()["lanes"][0]["rows"][0]["claim"], drop)
 
     def test_every_managed_repository_has_a_lane_even_without_a_lane_folder(self):
         # sd:3284: the queue lives in the hub database, so a lane hosted elsewhere has no folder on this machine.
@@ -383,9 +395,45 @@ class TheMove(Lane, BrowserSession):
     def test_an_unregistered_repository_or_unknown_action_runs_nothing(self):
         status, _, _ = self.post("/api/queue/move", {"repo": self.tmp.name, "item": 12, "action": "up", "revision": "x"})
         self.assertEqual((status, self.calls()), (400, []))
-        for action in ("delete", "reclaim"):  # reclaim: Release returns after pack sd:3330 binds lane cancel to a claim
-            status, _, _ = self.move(action)
-            self.assertEqual((action, status, self.calls()), (action, 400, []))
+        status, _, _ = self.move("delete")
+        self.assertEqual((status, self.calls()), (400, []))
+
+    def reclaim(self, claim="claim-token-3:merge", revision=None):
+        payload = {"repo": str(self.checkout), "item": 3, "action": "reclaim", "revision": revision or self.revision()}
+        if claim is not None:
+            payload["claim"] = claim
+        return self.post("/api/queue/move", payload)
+
+    def test_release_calls_lane_cancel_with_the_claim_the_row_showed(self):
+        # sd:3337: `--expected-claim` binds the release to the claim the page read, in the verb's transaction
+        # (pack sd:3330). The pending order is not what Release acts on, so no `--expected-revision`.
+        status, _, answer = self.reclaim()
+        self.assertEqual((status, answer["ok"], answer["action"]), (200, True, "reclaim"), answer)
+        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"],
+                                        ["-C", str(self.checkout), "lane", "cancel", "3", "--expected-claim",
+                                         "claim-token-3:merge"]])
+
+    def test_a_claim_the_lane_refuses_as_stale_asks_the_page_to_read_again(self):
+        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:3 is not running under claim claim-token-3:merge",
+                                          "QUEUE_CODE": "stale_claim"}):
+            status, _, answer = self.reclaim()
+        self.assertEqual((status, answer.get("reload")), (409, True), answer)
+        self.assertIn("moved on", answer["error"])
+
+    def test_a_release_the_lane_refuses_is_the_answer(self):
+        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:3 is running under pid 4242 on this machine; it is not stuck",
+                                          "QUEUE_CODE": "holder_alive"}):
+            status, _, answer = self.reclaim()
+        self.assertEqual((status, answer["error"]), (400, "sd:3 is running under pid 4242 on this machine; it is not stuck"))
+
+    def test_release_without_a_whole_claim_runs_nothing(self):
+        for claim in (None, "", "claim-token-3", ":merge", "claim-token-3:", 7, "x" * 300 + ":merge"):
+            status, _, _ = self.reclaim(claim=claim)
+            self.assertEqual((claim, status, self.calls()), (claim, 400, []))
+        payload = {"repo": str(self.checkout), "item": 9, "action": "cancel", "revision": self.revision(),
+                   "claim": "claim-token-3:merge"}
+        status, _, _ = self.post("/api/queue/move", payload)
+        self.assertEqual((status, self.calls()), (400, []))
 
     def test_a_lane_refusal_is_the_answer(self):
         with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:12 is running; the queue changes only between items"}):
@@ -420,8 +468,17 @@ connection.close()
 """
 
 
-class TheRealLane(BrowserSession):
-    """The pinned pack's `sd-ship lane` on a temporary lane root: the page's reorder is what `lane list` shows.
+#: The host name the pinned pack's lane writes as a holder's `host`.
+HOST = """\
+import sys
+sys.path.insert(0, sys.argv[1])
+import sd_lane
+print(sd_lane.this_host())
+"""
+
+
+class RealLane(BrowserSession):
+    """The pinned pack's `sd-ship lane` on a temporary lane root, seeded with `seeds()`.
 
     The pack keeps the queue in the hub database (pack sd:3282), so the entries go there through its own writer:
     a `<lane>/queue/queue.json` is only an earlier version's file, which `lane list` imports by publishing each
@@ -443,14 +500,13 @@ class TheRealLane(BrowserSession):
         (home / ".local/share/sd/sd.db").symlink_to(self.path)
         root = Path(self.tmp.name) / "lanes"
         (root / "system" / "lane" / "queue").mkdir(parents=True)
-        entries = [{"id": f"seed-{n}", "item": n, "title": f"item {n}", "status": "pending", "position": n,
-                    "expected_head": "e" * 40, "repository": "example/system", "branch": f"b{n}"} for n in (1, 2, 3)]
         pack = pinned_pack()
         ship = pack / "bin" / "sd-ship"
         self.assertTrue(ship.is_file(), f"no pinned sd-ship at {ship}")
-        subprocess.run([sys.executable, "-c", SEED, str(pack / "bin"), str(self.path), "example/system",
-                        json.dumps(entries)], check=True, capture_output=True, text=True,
-                       env={**os.environ, "HOME": str(home)})
+        self.host = subprocess.run([sys.executable, "-c", HOST, str(pack / "bin")], check=True, capture_output=True,
+                                   text=True, env={**os.environ, "HOME": str(home)}).stdout.strip()
+        self.pack, self.home = pack, home
+        self.store(self.seeds())
         bin_dir = Path(self.tmp.name) / "bin"
         bin_dir.mkdir()
         (bin_dir / "sd-ship").write_text(f'#!/bin/sh\nexec "{sys.executable}" "{ship}" "$@"\n')
@@ -460,9 +516,25 @@ class TheRealLane(BrowserSession):
         patch.start()
         self.addCleanup(patch.stop)
 
+    def store(self, entries):
+        """Write `entries` through the pinned pack's own `sd_lane.store`, as a runner's write would land."""
+        subprocess.run([sys.executable, "-c", SEED, str(self.pack / "bin"), str(self.path), "example/system",
+                        json.dumps(entries)], check=True, capture_output=True, text=True,
+                       env={**os.environ, "HOME": str(self.home)})
+
+    def seeds(self):
+        return [{"id": f"seed-{n}", "item": n, "title": f"item {n}", "status": "pending", "position": n,
+                 "expected_head": "e" * 40, "repository": "example/system", "branch": f"b{n}"} for n in (1, 2, 3)]
+
+    def entries(self):
+        return queue_screen.lane_list(str(self.checkout))["entries"]
+
     def order(self):
-        listed = queue_screen.lane_list(str(self.checkout))
-        return [entry["item"] for entry in listed["entries"] if entry["status"] == "pending"]
+        return [entry["item"] for entry in self.entries() if entry["status"] == "pending"]
+
+
+class TheRealLane(RealLane):
+    """The page's reorder is what the pinned pack's `lane list` shows."""
 
     def test_a_reorder_from_the_page_is_the_order_lane_list_shows(self):
         lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
@@ -489,6 +561,87 @@ class TheRealLane(BrowserSession):
                                                               "revision": lane["revision"]})
         self.assertEqual((status, answer.get("reload")), (409, True), answer)
         self.assertEqual(self.order(), [2, 1, 3])
+
+
+class TheRealRelease(RealLane):
+    """Release on the pinned pack's `lane cancel --expected-claim` (sd:3337): the claim the row showed is released, and
+    a claim that moved on since the read is refused with nothing changed, whatever the page's revision says."""
+
+    step = "prepare"
+
+    def holder(self):
+        return {"host": "build-2", "pid": 4242, "token": "claim-token"}
+
+    def running(self, **change):
+        return {**super().seeds()[0], "status": "running", "step": self.step, "started_at": "2026-09-06T11:50:00Z",
+                "lease_until": "2026-09-06T13:00:00Z", "holder": self.holder(), "enqueued_on": "build-2", **change}
+
+    def seeds(self):
+        return [self.running(), *super().seeds()[1:]]
+
+    def read(self):
+        """What the page read: its lane and the running row with the claim Release sends."""
+        lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
+        merging = lane["rows"][0]
+        self.assertEqual((merging["state"], merging["item"]), ("merging", 1))
+        return lane, merging
+
+    def release(self, lane, merging):
+        return self.post("/api/queue/move", {"repo": str(self.checkout), "item": 1, "action": "reclaim",
+                                             "revision": lane["revision"], "claim": merging["claim"]})
+
+    def refused_unchanged(self, lane, merging):
+        """The release of a claim that moved on is a 409, the lane is as the runner left it and the revision held."""
+        before = self.entries()
+        self.assertEqual(queue_screen.revision(before), lane["revision"])  # the page's revision cannot tell
+        status, _, answer = self.release(lane, merging)
+        self.assertEqual((status, answer.get("reload")), (409, True), answer)
+        self.assertEqual(self.entries(), before)
+
+    def test_release_puts_a_stuck_prepare_back_to_pending(self):
+        lane, merging = self.read()
+        self.assertEqual(merging["claim"], "claim-token:prepare")
+        status, _, answer = self.release(lane, merging)
+        self.assertEqual((status, answer.get("ok")), (200, True), answer)
+        self.assertEqual([(entry["item"], entry["status"]) for entry in self.entries()],
+                         [(1, "pending"), (2, "pending"), (3, "pending")])
+
+    def test_release_fails_a_stuck_merge(self):
+        self.store([self.running(step="merge")])
+        lane, merging = self.read()
+        status, _, answer = self.release(lane, merging)
+        self.assertEqual((status, answer.get("ok")), (200, True), answer)
+        self.assertEqual(self.entries()[0]["status"], "failed")
+
+    def test_a_prepare_that_reached_merge_since_the_read_is_refused(self):
+        # The old Release's race (sd:3284 review): a prepare read, then merge, must not be failed.
+        lane, merging = self.read()
+        self.store([self.running(step="merge", lease_until="2026-09-06T14:00:00Z")])
+        self.refused_unchanged(lane, merging)
+        self.assertEqual((self.entries()[0]["status"], self.entries()[0]["step"]), ("running", "merge"))
+
+    def test_a_reclaim_at_the_same_revision_is_refused(self):
+        # The entry was reclaimed and claimed again at the same step: the pending order never moved, a new token holds it.
+        lane, merging = self.read()
+        self.store([self.running(holder={"host": "build-3", "pid": 77, "token": "another-claim"})])
+        self.refused_unchanged(lane, merging)
+        self.assertEqual(self.entries()[0]["holder"]["token"], "another-claim")
+
+    def test_a_finished_entry_is_refused(self):
+        lane, merging = self.read()
+        done = {key: value for key, value in self.running().items() if key not in ("holder", "step", "lease_until")}
+        self.store([{**done, "status": "merged", "finished_at": "2026-09-06T12:05:00Z", "merge_commit": "f" * 40}])
+        self.refused_unchanged(lane, merging)
+        self.assertEqual(self.entries()[0]["status"], "merged")
+
+    def test_release_of_a_holder_alive_on_this_machine_is_refused(self):
+        self.store([self.running(holder={"host": self.host, "pid": os.getpid(), "token": "claim-token"})])
+        lane, merging = self.read()
+        before = self.entries()
+        status, _, answer = self.release(lane, merging)
+        self.assertEqual(status, 400, answer)
+        self.assertIn("not stuck", answer["error"])
+        self.assertEqual(self.entries(), before)
 
 
 class TheScript(Lane, ScreenCase):
@@ -522,7 +675,57 @@ class TheScript(Lane, ScreenCase):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
         merging = next(row for row in lanes.split("<li ")[1:] if 'data-state="merging"' in row)
         self.assertIn("<b>merge</b> on <b>hub-1</b> · claimed 10m 0s ago · lease to 13:20 · head " + "a" * 12, merging)
-        self.assertNotIn("<button", merging)  # read-only until pack sd:3330
+
+    def test_a_running_row_with_a_claim_offers_release(self):
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertEqual(re.findall(r'data-act="reclaim" data-item="(\d+)" data-claim="([\w:-]+)"', lanes),
+                         [("3", "claim-token-3:merge")])
+        offered = [row for row in lanes.split("<li ")[1:] if 'data-act="reclaim"' in row]
+        self.assertEqual([re.search(r'data-state="(\w+)"', row)[1] for row in offered], ["merging"])
+
+    def test_a_running_row_without_a_holder_offers_no_release(self):
+        entries = self.entries()
+        entries[5] = {key: value for key, value in entries[5].items() if key != "holder"}
+        self.list(entries)
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertNotIn('data-act="reclaim"', lanes)
+
+    def release(self, answer, move=(200, {"ok": True, "action": "reclaim", "item": 3, "edits": "Edits take effect at the next item boundary."})):
+        """Click Release on sd:3; the confirm answers `answer` and records what it asked."""
+        claim = queue_screen.document(self.connection, now=NOW)["lanes"][0]["rows"][0]["claim"]
+        return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
+                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '3', act: 'reclaim', claim: {json.dumps(claim)} }} }}); R.lanes = ELS.lanes.html;", move)
+
+    def test_release_asks_first_naming_the_holder_step_outcome_and_command(self):
+        out = self.release(True)
+        asked = out["asked"]
+        self.assertIn("sd:3", asked["title"])
+        self.assertIn("hub-1", asked["title"])
+        self.assertIn("hub-1 claimed it 10m 0s ago, at merge.", asked["body"])
+        self.assertIn("A merge it already started may still land", asked["body"])
+        self.assertEqual(asked["cli"], f"sd-ship -C '{self.checkout}' lane cancel 3 --expected-claim 'claim-token-3:merge'")
+        revision = queue_screen.document(self.connection, now=NOW)["lanes"][0]["revision"]
+        self.assertEqual(out["posts"][0][1], {"repo": str(self.checkout), "item": 3, "action": "reclaim",
+                                              "revision": revision, "claim": "claim-token-3:merge"})
+        self.assertIn("sd:3 released from its holder.", out["R"]["lanes"])
+
+    def test_release_in_prepare_says_the_entry_goes_back_to_pending(self):
+        entries = self.entries()
+        entries[5] = {**entries[5], "step": "prepare"}
+        self.list(entries)
+        out = self.release(True)
+        self.assertIn("goes back to pending at its place", out["asked"]["body"])
+        self.assertNotIn("may still land", out["asked"]["body"])
+        self.assertEqual(out["posts"][0][1]["claim"], "claim-token-3:prepare")
+
+    def test_release_kept_at_the_confirm_posts_nothing(self):
+        out = self.release(False)
+        self.assertEqual((out["posts"], out["gets"]), ([], ["/api/queue"]))
+
+    def test_a_release_of_a_claim_that_moved_on_says_so_in_its_lane(self):
+        out = self.release(True, move=(409, {"error": "sd:3 moved on since the page read it.", "reload": True}))
+        self.assertIn('<p class="fail" role="alert">sd:3 not released from its holder: sd:3 moved on since the page read it.</p>',
+                      out["R"]["lanes"])
 
     def test_a_running_entry_past_its_lease_lights_caution(self):
         entries = self.entries()
