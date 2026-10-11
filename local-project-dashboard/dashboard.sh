@@ -77,12 +77,11 @@ cmd_queue_open() {
   echo "opened $queue_key in Obsidian"
 }
 
-# Production uses the command pack's installed sd_db build. -I ignores the
-# caller's PYTHONPATH and working directory; the bootstrap adds only this
-# dashboard package. The source checkout is available only to the test verb.
-# The server refuses to start when that installed build lacks the last commit
-# touching local-sd-db/sd_db in this checkout (sd:962, the #395 class).
-SD_DB="$DIR/../local-sd-db"
+# sd_db is the command pack checkout's lib/ (sd:2997), here and in the test
+# verb. -I ignores the caller's PYTHONPATH and working directory; the
+# bootstrap adds only this dashboard package and that lib/, and the server
+# refuses any other copy, an installed one included (sd:3279).
+SD_DB="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}/lib"
 # The server's interpreter, and so the one the tiles a Resources view runs
 # inherit. One default, read by `serve`, `preflight`, `install`, `health` and
 # `grants`, so the path `grants` probes is the path `serve` would run.
@@ -199,7 +198,7 @@ usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | instal
                    All reads/writes use `sd_db`. Binds loopback; optional ip_origin
                    adds a listener on this node's Tailscale IP with peer authentication.
                    --config, --port and --database select explicit settings
-  preflight        read config, installed library, database, LaunchAgent and
+  preflight        read config, the pack's library, database, LaunchAgent and
                    Tailscale Serve; print a reviewable plan and fingerprint
   install          preview by default. --apply --expected-fingerprint SHA
                    replaces the LaunchAgent with backups and health checks;
@@ -251,7 +250,10 @@ environment:
                               .env and documents.conf are read from its
                               project-dashboard/, cron job files from
                               cron-jobs/jobs
-  SD_DASHBOARD_PYTHON         interpreter containing installed sd_db, for
+  SD_PACK_ROOT                the command pack checkout whose lib/ holds the
+                              sd_db every verb runs (default
+                              ~/repos/platypeeps/sd-ai-command-pack)
+  SD_DASHBOARD_PYTHON         interpreter for
                               serve, preflight, install and health (default
                               command-pack .venv/bin/python). A Resources view
                               runs sd_tile.py as a child of the server, so this

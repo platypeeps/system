@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import pack_library
+
 #: The launchd label prefix is shared by every system service, so a
 #: second install under another prefix keeps its own labels.
 LABEL_PREFIX = os.environ.get("SYSTEM_TOOLS_LABEL_PREFIX", "local.system-tools")
@@ -218,39 +220,11 @@ def build_digests(*, library_root=None, dashboard_root=None):
             for name, entries in (("library_digest", library), ("dashboard_digest", dashboard))}
 
 
-def _installed_library_commit():
-    """The commit pip provisioned sd_db from, or None for a path install.
-
-    A VCS install records `vcs_info.commit_id` in direct_url.json; a path
-    install (`pip install ./local-sd-db`, as both CIs do) records `dir_info`
-    and no commit, so there is nothing to compare and the caller skips.
-    A build from another tree (the pack's `lib/`, sd:2997) records a commit
-    this checkout does not hold, so it skips too (sd:3322).
-    """
-    import importlib.metadata
-
-    try:
-        text = importlib.metadata.distribution("sd-db").read_text("direct_url.json")
-        record = json.loads(text) if text else None
-    except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
-        return None
-    if not isinstance(record, dict) or record.get("subdirectory") != "local-sd-db":
-        return None
-    vcs_info = record.get("vcs_info")
-    commit = vcs_info.get("commit_id") if isinstance(vcs_info, dict) else None
-    return commit if isinstance(commit, str) and commit else None
-
-
-def _checkout_library_commit(checkout):
-    """The last commit that touched the library source in this checkout, or None.
-
-    None when git is absent or the checkout is not a git repository: the
-    dashboard can run from a copy that is neither, and then nothing can say
-    what the pages expect.
-    """
+def _pack_commit(pack):
+    """The pack checkout's HEAD, or None when git is absent or the pack is not a repository."""
     if shutil.which("git") is None:
         return None
-    result = _run(["git", "-C", str(checkout), "log", "-1", "--format=%H", "--", "local-sd-db/sd_db"], check=False)
+    result = _run(["git", "-C", str(pack), "rev-parse", "HEAD"], check=False)
     if result.returncode:
         if "not a git repository" in result.stderr:
             return None
@@ -258,42 +232,24 @@ def _checkout_library_commit(checkout):
     return result.stdout.strip() or None
 
 
-def _library_lag(checkout):
-    """Refuse an installed sd_db that lacks the checkout's last library commit.
-
-    `dashboard.sh serve` runs the checkout's pages under -I against the pack's
-    installed build, and #395 shipped a page calling a library name the
-    installed copy did not have; the commit message asked for a deploy first,
-    and nothing enforced it. Both sides already record a commit, so compare
-    them here, beside the schema check. Returns the installed commit, or None
-    when either side cannot be read (a path install, no git, no repository).
-    """
-    installed = _installed_library_commit()
-    if installed is None:
-        return None
-    required = _checkout_library_commit(checkout)
-    if required is None:
-        return None
-    # rc 1 is "not an ancestor": the installed commit is older than the
-    # library's last change, or sits on a branch that never took it. Either
-    # way the pages may call a name the build lacks, and the remedy is the same.
-    result = _run(["git", "-C", str(checkout), "merge-base", "--is-ancestor", required, installed], check=False)
-    if result.returncode == 1:
-        raise RuntimeRefused(f"installed sd_db {installed} lacks the checkout's library commit {required}; run make setup in the pack, then start the dashboard")
-    if result.returncode:
-        raise RuntimeRefused(f"installed sd_db {installed} is not a commit of this checkout ({(result.stderr or result.stdout).strip()[:200]}); run make setup in the pack, then start the dashboard")
-    return installed
-
-
 def installed_library(database):
-    """Prove the runtime uses an installed build, one no older than the checkout, and can read this database."""
+    """Prove the runtime uses the pack checkout's `lib/sd_db` and can read this database.
+
+    The pack owns `sd_db` and step 3 of its move uninstalls the venv copy
+    (sd:3280), so any other copy is refused here, a pack-built one in
+    site-packages included: a service on another copy than the pack's made
+    the hub refuse satellite writes for two hours (sd:3279). With no copy,
+    nothing can lag the checkout, so the commit check of sd:962 has gone.
+    """
     import sd_db
     import sd_db.writing  # every production dashboard must support the writing stage
     from sd_db.schema import SCHEMA_VERSION
 
     library = Path(sd_db.__file__).resolve()
-    if not library.is_relative_to(Path(sys.prefix).resolve()) or "site-packages" not in library.parts:
-        raise RuntimeRefused(f"sd_db must be an installed build in this interpreter, not {library}")
+    expected = pack_library()
+    if library.parent != expected / "sd_db":
+        raise RuntimeRefused(f"sd_db must be the command pack's lib/ at {expected}, not {library}; "
+                             "start the dashboard through dashboard.sh, or set SD_PACK_ROOT to the pack checkout")
     try:
         connection = sd_db.connect(database, write=False)
         try:
@@ -303,8 +259,8 @@ def installed_library(database):
     except (OSError, sd_db.SdDbError) as error:
         raise RuntimeRefused(str(error)) from error
     if version != SCHEMA_VERSION:
-        raise RuntimeRefused(f"database schema {version} differs from installed schema {SCHEMA_VERSION}; migrate explicitly with services stopped")
-    library_commit = _library_lag(HERE.parent)
+        raise RuntimeRefused(f"database schema {version} differs from the pack's schema {SCHEMA_VERSION}; migrate explicitly with services stopped")
+    library_commit = _pack_commit(expected.parent)
     return {"python": sys.executable, "library": str(library), "schema": version, "library_commit": library_commit, **build_digests()}
 
 
