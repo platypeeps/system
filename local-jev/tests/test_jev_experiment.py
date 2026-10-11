@@ -1000,10 +1000,13 @@ class TheReplay(CompareCase):
         self.assertIn("no cost", manifest["arms"]["jev"]["halted"])
 
     def test_a_call_stopped_before_its_answer_keeps_its_reserved_charge(self):
-        def stop(row, env=None):
-            raise KeyboardInterrupt("stopped between the call and its answer line")
+        real = experiment.ask_arm
+
+        def stop(*args):
+            real(*args)
+            raise KeyboardInterrupt("stopped between the call and its answer")
         with unittest.mock.patch.object(experiment, "reserve", return_value=0.42, create=True):
-            with unittest.mock.patch.object(experiment.jev_meter, "write", stop):
+            with unittest.mock.patch.object(experiment, "ask_arm", stop):
                 with self.assertRaises(KeyboardInterrupt):
                     self.replay("jev", "--cap", "1.0")
             code, _out = self.replay("jev", "--cap", "1.0")
@@ -1121,15 +1124,15 @@ class TheReplay(CompareCase):
         self.assertEqual(len(Stub.seen), 4)
 
     def test_a_run_stopped_after_a_call_does_not_ask_that_head_again(self):
-        real = experiment.jev_meter.write
+        real = experiment.ask_arm
         calls = []
 
-        def stop_on_second(row, env=None):
-            calls.append(row)
+        def stop_on_second(*args):
+            calls.append(real(*args))
             if len(calls) == 2:
-                raise KeyboardInterrupt("stopped between the call and its answer line")
-            return real(row, env)
-        with unittest.mock.patch.object(experiment.jev_meter, "write", stop_on_second):
+                raise KeyboardInterrupt("stopped between the call and its answer")
+            return calls[-1]
+        with unittest.mock.patch.object(experiment, "ask_arm", stop_on_second):
             with self.assertRaises(KeyboardInterrupt):
                 self.replay("kev")
         self.assertTrue((self.folder / "replay" / "kev.asking").exists())
@@ -1140,6 +1143,40 @@ class TheReplay(CompareCase):
         kev_calls = [s for s in Arm.seen if s["path"] == "/v1/systemone"]
         self.assertEqual(len(kev_calls), 5)
         self.assertFalse((self.folder / "replay" / "kev.asking").exists())
+
+    def test_a_ledger_that_refuses_a_row_halts_and_keeps_the_answer(self):
+        with unittest.mock.patch.object(experiment.jev_meter, "write",
+                                        return_value=("refused", None)):
+            self.assertEqual(self.replay("kev")[0], 1)
+        kev_calls = lambda: [s for s in Arm.seen if s["path"] == "/v1/systemone"]  # noqa: E731
+        self.assertEqual((len(kev_calls()), self.answers("kev")), (1, []))
+        self.assertEqual(self.replay("kev")[0], 0)
+        found = self.answers("kev")
+        self.assertEqual({(a["outcome"], a["ledger"]) for a in found}, {("ok", "written")})
+        self.assertEqual((len(found), len(kev_calls())), (5, 5))
+        self.assertEqual(self.rows(), [("kev", "JEV_SD_REVIEW", "jev-entry-2-replay", "ok", 5)])
+
+    def test_a_row_written_before_a_stop_is_not_written_twice(self):
+        real = experiment.jev_meter.write
+
+        def write_then_stop(row, env=None):
+            said = real(row, env)
+            raise KeyboardInterrupt(f"stopped after the ledger said {said[0]}")
+        with unittest.mock.patch.object(experiment.jev_meter, "write", write_then_stop):
+            with self.assertRaises(KeyboardInterrupt):
+                self.replay("kev")
+        self.assertEqual(self.replay("kev")[0], 0)
+        self.assertEqual(self.rows(), [("kev", "JEV_SD_REVIEW", "jev-entry-2-replay", "ok", 5)])
+        self.assertEqual(len(self.answers("kev")), 5)
+
+    def test_an_unreadable_ledger_on_resume_refuses_and_asks_nothing(self):
+        with unittest.mock.patch.object(experiment.jev_meter, "write",
+                                        return_value=("refused", None)):
+            self.assertEqual(self.replay("kev")[0], 1)
+        before = len(Arm.seen)
+        with unittest.mock.patch.object(experiment, "recorded", return_value=None):
+            self.assertEqual(self.replay("kev")[0], 2)
+        self.assertEqual(len(Arm.seen), before)
 
     def seal(self, *arms):
         """A note on sd:2764 carrying each arm's answer file hash."""

@@ -1144,6 +1144,34 @@ def spent(replay: Path) -> float:
     return total
 
 
+def recorded(ledger: Path, row: dict) -> bool | None:
+    """Whether the ledger holds this head's row; None when it cannot be read."""
+    try:
+        with contextlib.closing(open_ro(ledger)) as connection:
+            return connection.execute(
+                "SELECT 1 FROM judgment WHERE run_id = ? AND pair = ? AND arm = ?",
+                (row["run_id"], row["pair"], row["arm"])).fetchone() is not None
+    except Exception:                        # unknown, never "not there"
+        return None
+
+
+def settle(ledger: Path, row: dict, env) -> str:
+    """Write an answered head's ledger row once, with one retry: "written"
+    once it is there, else the reason. The model is never asked again here,
+    and a row already written is not written twice."""
+    said = "unreadable"
+    for _attempt in range(2):
+        found = recorded(ledger, row)
+        if found is None:
+            return "unreadable"
+        if found:
+            return "written"
+        said, _id = jev_meter.write(row, env)
+        if said == "written":
+            return said
+    return said
+
+
 def now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
@@ -1217,7 +1245,16 @@ def cmd_replay(args, out, env) -> int:
         if "reserved" not in cut:
             raise Refused(f"{marker} predates cost reservations; its call's cost is unknown, "
                           "so settle it by hand before a resume")
-        if (cut["repository"], cut["head"]) not in done:
+        if "line" in cut and (cut["repository"], cut["head"]) not in done:
+            # Answered: its ledger row goes in, then its line, with no call.
+            said = settle(ledger, cut["ledger_row"], env)
+            if said != "written":
+                raise Refused(f"the ledger did not take the row {marker.name} holds ({said}); "
+                              "nothing was asked")
+            with answers.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(dict(cut["line"], ledger=said), sort_keys=True) + "\n")
+            done.add((cut["repository"], cut["head"]))
+        elif (cut["repository"], cut["head"]) not in done:
             row = next((r for r in rows if (r["repository"], r["head"]) == (cut["repository"],
                                                                             cut["head"])), {})
             with answers.open("a", encoding="utf-8") as fh:
@@ -1274,8 +1311,8 @@ def cmd_replay(args, out, env) -> int:
         if arm in HOSTED and total + 2 * bound > args.cap:
             return halt(f"spend cap: ${total:.4f} spent, and the next head reserves "
                         f"${2 * bound:.4f} of ${args.cap:.2f}")
-        marker.write_text(json.dumps({"repository": row["repository"], "head": row["head"],
-                                      "reserved": 2 * bound}), encoding="utf-8")
+        asking = {"repository": row["repository"], "head": row["head"], "reserved": 2 * bound}
+        write_json(marker, asking)
         event, attempts = ask_arm(arm, payload, definition, conf, env)
         usd = sum(bound if a["usd"] is None else a["usd"] for a in attempts)
         owner_repo = row["repository"].lower().replace("/", ".")
@@ -1284,7 +1321,6 @@ def cmd_replay(args, out, env) -> int:
                           pair=pair, question_id=jev.named(f"{QID}:{owner_repo}:{row['head'][:12]}"),
                           primitive="choice", questions=1, prompt_hash=prompt_hash,
                           run_id=run_id, changed="no", load_avg=jev.load_avg())
-        said, _id = jev_meter.write(ledger_row, env)
         tier = TIERS[int(event["answer"]) - 1] if event.get("answer") else None
         span = {k: ledger_row.get(k) for k in ("caller", "stage", "arm", "pair", "primitive",
                                                "provider", "model", "outcome", "cause", "answer",
@@ -1300,7 +1336,15 @@ def cmd_replay(args, out, env) -> int:
                     provider=event.get("provider"), model=event.get("model"),
                     tokens_in=event.get("tokens_in"), tokens_out=event.get("tokens_out"),
                     server_ms=event.get("server_ms"), usd=usd, attempts=attempts,
-                    redacted=taken, ledger=said, reused=None, at=now())
+                    redacted=taken, reused=None, at=now())
+        # The answer waits in the marker until the ledger takes its row; a
+        # ledger that will not halts the run, and a resume records it with no call.
+        write_json(marker, dict(asking, ledger_row=ledger_row, line=line))
+        said = settle(ledger, ledger_row, env)
+        if said != "written":
+            return halt(f"the ledger did not take a {name} row ({said}); its answer waits "
+                        f"in {marker.name}, and a resume records it without a call")
+        line["ledger"] = said
         with answers.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, sort_keys=True) + "\n")
         marker.unlink()
