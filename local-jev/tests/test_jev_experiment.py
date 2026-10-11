@@ -1432,6 +1432,16 @@ class TheReplay(CompareCase):
                 self.replay(arm)
         return self.folder / "replay"
 
+    def test_identity_only_lines_do_not_seal_c1(self):
+        for arm in ("kev", "jev", "haiku"):
+            self.assertEqual(self.replay(arm)[0], 0)
+        path = self.folder / "replay" / "haiku.jsonl"
+        path.write_text("".join(json.dumps({"repository": a["repository"], "head": a["head"]})
+                                + "\n" for a in self.answers("haiku")))
+        self.seal("kev", "jev", "haiku")
+        self.assertEqual(self.labels_c1()[0], 2)
+        self.assertFalse((self.folder / "labels").exists())
+
     def test_a_line_cut_off_by_a_stop_is_dropped_and_its_head_not_asked_again(self):
         replay = self.stop_after_first_call("kev")
         (replay / "kev.jsonl").write_text('{"repository": "owner/repo", "head": "' + sha(0)[:10])

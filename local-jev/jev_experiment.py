@@ -861,7 +861,8 @@ def sealed(db, folder: Path, home: str | None) -> list[str]:
     primary replay finished, unhalted, on the `population.jsonl` beside it and
     on the scope that file gives it now; its answer file holds one line for
     each C1 head in that scope and none for a head outside it; and a note on
-    sd:2764 carries that file's SHA-256."""
+    sd:2764 carries that file's SHA-256. Every line must be a final record of
+    that arm's run (`record_faults`): an identity alone is not an answer."""
     with contextlib.closing(open_ro(db)) as connection:
         notes = [body for (body,) in connection.execute(
             "SELECT body FROM note WHERE item = ?", (ITEM,))]
@@ -883,8 +884,13 @@ def sealed(db, folder: Path, home: str | None) -> list[str]:
         if run.get("scope") != scope_of(heads):
             missing.append(f"{arm}'s scope moved since its replay")
             continue
-        lines = collections.Counter((r.get("repository"), r.get("head")) for r in read_jsonl(path))
-        if any(lines[ident] != 1 for ident in c1) or set(lines) - wanted:
+        written = read_jsonl(path)
+        faults = record_faults(written, arm, run.get("run_id"))
+        lines = collections.Counter((r.get("repository"), r.get("head")) for r in written)
+        if faults:
+            missing.append(f"{path.name} holds {len(faults)} line(s) that are not final "
+                           f"answers, such as {faults[0]}")
+        elif any(lines[ident] != 1 for ident in c1) or set(lines) - wanted:
             missing.append(f"{path.name} does not hold one answer for each of its {len(c1)} C1 heads")
         elif not any(file_sha256(path) in body for body in notes):
             missing.append(f"no note on sd:{ITEM} carries the SHA-256 of {path.name}")
