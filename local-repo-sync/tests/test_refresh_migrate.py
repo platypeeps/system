@@ -85,7 +85,7 @@ class MigrateFixture(FollowFixture):
 
         self.system = self.system_repo()
         self.pack = self.repo("a/pack")
-        for name in ("sd-db", "sd_lib.py", "sd_library_guard.py"):
+        for name in ("sd-db", "sd_lib.py"):
             (self.pack / "bin").mkdir(exist_ok=True)
             shutil.copy2(source / "bin" / name, self.pack / "bin" / name)
         (self.pack / "bin" / "sd_install.py").write_text("")
