@@ -557,7 +557,7 @@ class DoctorTest(unittest.TestCase):
             "/home/someone/repos/system/local-sd-db/sd-db", "serve"]}))
         code, out = self.doctor()
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    {plist} names local-sd-db, which is deleted", out)
+        self.assertIn(f"FAIL    {plist} names the retired local-sd-db, now only a forwarder to be deleted", out)
         self.assertIn("bin/sd-db", out)
 
     def test_a_cron_job_file_naming_the_retired_folder_fails(self):
@@ -568,7 +568,28 @@ class DoctorTest(unittest.TestCase):
         job.write_text('JOB_COMMAND="\\"$ROOT/../local-sd-db/sd-db\\" backup"\n')
         code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    {job} names local-sd-db, which is deleted", out)
+        self.assertIn(f"FAIL    {job} names the retired local-sd-db, now only a forwarder to be deleted", out)
+
+    def test_an_installed_cron_plist_naming_the_retired_folder_fails(self):
+        self.fixture.make_database()
+        agents = self.fixture.home / "Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        plist = agents / "local.system-tools.cron.credentials-nightly.plist"
+        plist.write_bytes(plistlib.dumps({"Label": "local.system-tools.cron.credentials-nightly", "ProgramArguments": [
+            "/bin/sh", "-c", "/home/someone/repos/system/local-sd-db/sd-db.sh credentials"]}))
+        code, out = self.doctor()
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    {plist} names the retired local-sd-db", out)
+
+    def test_a_per_host_cron_job_file_naming_the_retired_folder_fails(self):
+        self.fixture.make_database()
+        config = self.config_copy()
+        job = config / "cron-jobs/jobs/host-a/credentials-nightly.job"
+        job.parent.mkdir(parents=True)
+        job.write_text('JOB_COMMAND="\\"$ROOT/../local-sd-db/sd-db.sh\\" credentials"\n')
+        code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    {job} names the retired local-sd-db", out)
 
     def test_a_plist_template_naming_the_retired_folder_fails(self):
         self.fixture.make_database()
@@ -578,7 +599,7 @@ class DoctorTest(unittest.TestCase):
             "@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db", "@ROOT@/local-sd-db/sd-db"))
         code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    {template} names local-sd-db, which is deleted", out)
+        self.assertIn(f"FAIL    {template} names the retired local-sd-db, now only a forwarder to be deleted", out)
 
     def test_a_job_folder_that_cannot_be_searched_is_not_a_pass(self):
         self.fixture.make_database()

@@ -3659,8 +3659,8 @@ doctor_sd_versions() {
 }
 
 # Config that still names the retired local-sd-db folder (sd:3281): installed
-# LaunchAgents, the plist templates and the cron job files. Each runs a script
-# that is gone. A machine whose config names none passes; a folder that cannot
+# LaunchAgents, the plist templates and the cron job files. Each runs the
+# forwarder, which warns and runs the pack's bin/sd-db until it is deleted. A machine whose config names none passes; a folder that cannot
 # be searched fails, because an unread folder says nothing.
 doctor_retired_sd_db() {
   retired=""
@@ -3691,7 +3691,7 @@ $plist"
   fi
   while IFS= read -r named; do
     [ -n "$named" ] || continue
-    doctor_fail "$named names local-sd-db, which is deleted — point it at $SD_PACK_ROOT/bin/sd-db, then reinstall it ($(basename "$SELF") update agents --apply for a plist, cron-jobs.sh install <job> for a job)"
+    doctor_fail "$named names the retired local-sd-db, now only a forwarder to be deleted — point it at $SD_PACK_ROOT/bin/sd-db, then reinstall it ($(basename "$SELF") update agents --apply for a plist, cron-jobs.sh install <job> for a job)"
   done <<EOF
 $retired
 EOF

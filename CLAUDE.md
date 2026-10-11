@@ -39,7 +39,8 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 ## Structure
 
 - The library `sd_db` and its entrypoint `bin/sd-db` live in the command pack, not here; callers run `$SD_PACK_ROOT/bin/sd-db` (default `~/repos/platypeeps/sd-ai-command-pack`).
-- `tests/test_retired_folder.py` fails a tracked line outside `docs/work` that names the retired `local-sd-db` folder.
+- `local-sd-db/sd-db.sh` only warns and execs the pack's `bin/sd-db`, so a config installed before the move still runs; `machine-setup.sh doctor` lists the config that names it, and the file goes once the doctor is clean.
+- `tests/test_retired_folder.py` allows that file alone in `local-sd-db/` and fails a tracked line outside `docs/work` that names the folder.
 - One hub holds the workflow database; a satellite reaches it over the tailnet; setup and refusals: `local-machine-setup/README.md`.
   - A satellite runs no hub-only agent: `SD_HUB_ONLY_AGENTS` in `local-machine-setup/machine-setup.sh` is the one list.
   - A verb that needs a lock or a directory beside the database refuses with `HubOnly` off the hub; do not add a remote path for it.

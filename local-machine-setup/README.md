@@ -34,7 +34,7 @@ change I made on this machine back into its profile*.
                                        # another database, is a FAIL;
                                        # on every profile, a LaunchAgent, plist
                                        # template or cron job file that still
-                                       # names the retired local-sd-db is a FAIL
+                                       # names the retired local-sd-db, now a forwarder, is a FAIL
 ./machine-setup.sh doctor sd           # those sd checks alone
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
 ./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy), claude update, brew cleanup + mas upgrade
