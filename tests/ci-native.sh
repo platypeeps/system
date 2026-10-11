@@ -116,6 +116,16 @@ python3 tests/test_instruction_caps.py
 # this line.
 python3 tests/test_entrypoint_mode.py
 
+# Nothing here opens the sd database or names a second test harness: the
+# library and its harness live in the pack. Git and stdlib only, so they run
+# here before the venv, and the guard below demands these lines.
+python3 tests/test_one_store.py
+python3 tests/test_one_double.py
+
+# No tracked file outside docs/work names the retired local-sd-db folder
+# (sd:3281). Git and stdlib only, so it runs here before the venv.
+python3 tests/test_retired_folder.py
+
 # tests/check.sh itself against stub suites (sd:2719, sd:2720): how many
 # jobs it runs at once and where it fetches the pinned pack from. Stdlib
 # and git only, so it runs here before the venv, and the guard below
@@ -129,8 +139,8 @@ python3 tests/test_check_script.py
 # the list: every folder holding tests/test_*.py must be named by a
 # run_suite line, and this fails naming each one that is not. It
 # keys on the tests directory and not on a subcommand, because no
-# verb is common to all of them: local-sd-db answers `check` and
-# local-repo-sync answers `test` because `check` was already taken.
+# verb is common to all of them: local-repo-sync answers `test` because
+# `check` was already taken.
 # Like the lint, it belongs in the preflight and not behind
 # run_suite, which asserts a unittest summary this prints none of.
 #
@@ -184,7 +194,7 @@ done < "$macos_only"
 # it.
 for test_file in tests/test_*.py; do
   [ -e "$test_file" ] || continue
-  if ! grep -Eq "^[[:space:]]*python3 $(ere_literal "$test_file")([[:space:]]|$)" "$script"; then
+  if ! grep -Eq "^[[:space:]]*(python3|run_suite [^[:space:]]+ \"\\\$PYTHON\") $(ere_literal "$test_file")([[:space:]]|$)" "$script"; then
     unwired="$unwired $test_file"
   fi
 done
@@ -262,7 +272,9 @@ case "$SUITE_LEG" in
     # job that runs `plugin lock --check` gates the `print` plugin, not
     # this repository's own manifest, so nothing else reads this lock.
     python3 "$SD_ACCEPTANCE_PACK/bin/sd" plugin lock --check .
-    run_suite shared sh local-sd-db/sd-db.sh check
+    # A root suite that needs the venv's sd_db runs here, not in the
+    # preflight; the guard above accepts a run_suite line naming it.
+    run_suite writing-declaration "$PYTHON" tests/test_writing_declaration.py -v
     ;;
   dashboard)
     run_suite dashboard sh local-project-dashboard/dashboard.sh test
@@ -273,6 +285,7 @@ case "$SUITE_LEG" in
     run_suite agent-prompt sh local-agent-prompt/agent-prompt.sh test -v
     run_suite health-check sh local-health-check/health-check.sh test -v
     run_suite cron-jobs sh local-cron-jobs/cron-jobs.sh test -v
+    run_suite agent-meter "$PYTHON" local-agent-meter/tests/test_agent_meter.py -v
     run_suite dependabot sh local-dependabot/dependabot.sh test -v
     run_suite herdr sh local-herdr/herdr.sh test -v
     run_suite deploy sh local-deploy/deploy.sh test -v

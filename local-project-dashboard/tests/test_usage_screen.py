@@ -17,10 +17,10 @@ from sd_dashboard import operations_screen
 from support import NOW, ScreenCase, record_cost
 from test_workflow_actions import BrowserSession
 
-SD_DB = Path(__file__).resolve().parents[2] / "local-sd-db"
-#: The pack whose `bin/sd-db` the verb runs (sd:3279). `sd-db.sh` defaults `SD_PACK_ROOT` under `$HOME`, which these
+#: The pack whose `bin/sd-db` the verb runs (sd:3279). The verb defaults `SD_PACK_ROOT` under `$HOME`, which these
 #: tests point at a temporary store, so name the pack the real home holds unless the gate already set one.
 PACK = os.environ.get("SD_PACK_ROOT") or str(Path.home() / "repos/platypeeps/sd-ai-command-pack")
+SD_DB = Path(PACK) / "lib"
 
 
 class Seeds:
@@ -57,7 +57,7 @@ class UsageScreen(Seeds, ScreenCase):
                          "2026-09: $41.00 spent, $5.00 held, against the invoice line.",
                          'data-gauge="capped" data-percent="45"',
                          "<td>capped</td><td>kimi</td><td>author</td><td>3</td><td>$40.00</td><td>$5.00</td>",
-                         'value="2026-09"', "sd-db.sh usage --month 2026-09"):
+                         'value="2026-09"', "sd-db usage --month 2026-09"):
             self.assertIn(expected, page)
         self.assertNotIn(" title=", page)
         empty = self.render("/operations", {"area": ["usage"], "month": ["2026-08"]})
@@ -200,7 +200,7 @@ class UsageScreen(Seeds, ScreenCase):
 
 
 def _home_store(self):
-    """`ScreenCase.setUp` with the store where `sd-db.sh` looks for it."""
+    """`ScreenCase.setUp` with the store where `sd-db` looks for it."""
     self.tmp = tempfile.TemporaryDirectory()
     self.addCleanup(self.tmp.cleanup)
     self.home = Path(self.tmp.name)
@@ -234,7 +234,7 @@ class UsageApi(Seeds, BrowserSession):
                          "sending")
         environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB), "SD_PACK_ROOT": PACK}
         environment.pop("XDG_STATE_HOME", None)
-        printed = subprocess.run([str(SD_DB / "sd-db.sh"), "usage", "--month", "2026-09", "--json"],
+        printed = subprocess.run([str(Path(PACK) / "bin/sd-db"), "usage", "--month", "2026-09", "--json"],
                                  capture_output=True, text=True, input="", env=environment)
         self.assertEqual(printed.returncode, 0, printed.stderr)
         self.assertIn("bound 1 sending row(s)", printed.stderr)
@@ -246,7 +246,7 @@ class UsageApi(Seeds, BrowserSession):
         self.month()
         environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB), "SD_PACK_ROOT": PACK}
         environment.pop("XDG_STATE_HOME", None)
-        verb = subprocess.run([str(SD_DB / "sd-db.sh"), "usage", "--month", "2026-09", "--json"],
+        verb = subprocess.run([str(Path(PACK) / "bin/sd-db"), "usage", "--month", "2026-09", "--json"],
                               capture_output=True, text=True, input="", env=environment)
         self.assertEqual(verb.returncode, 0, verb.stdout + verb.stderr)
         status, headers, body = self.request("/api/usage?month=2026-09", headers={"Cookie": self.cookie})
@@ -317,7 +317,7 @@ class MergedCaps(Seeds, BrowserSession):
         body = self.request(f"/api/usage?month={self.this_month}", headers={"Cookie": self.cookie})[2]
         environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB), "SD_PACK_ROOT": PACK}
         environment.pop("XDG_STATE_HOME", None)
-        verb = subprocess.run([str(SD_DB / "sd-db.sh"), "usage", "--month", self.this_month, "--json"],
+        verb = subprocess.run([str(Path(PACK) / "bin/sd-db"), "usage", "--month", self.this_month, "--json"],
                               capture_output=True, text=True, input="", env=environment)
         self.assertEqual(verb.returncode, 0, verb.stdout + verb.stderr)
         self.assertEqual(body, verb.stdout)

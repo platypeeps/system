@@ -2,7 +2,7 @@
 
 This page records history, not rules.
 The mechanism lives in the command pack's `WORKFLOW.md` (the `repo.ci` section).
-`local-sd-db` holds the `repo.ci` column (sd:1843).
+The workflow database holds the `repo.ci` column (sd:1843).
 
 ## Who turned Actions off, and why
 
@@ -19,7 +19,7 @@ Do not turn them back on to "fix" a missing check; the local gate is the check n
 
 Do not trust a list in prose; ask the workflow database:
 
-    local-sd-db/sd-db.sh repo list
+    $SD_PACK_ROOT/bin/sd-db repo list
 
 A row whose `ci` field reads `local` gates merges locally.
 Twenty-two repositories read `local` on 2026-09-29.
@@ -54,7 +54,7 @@ A merge done outside `sd-ship` never gets that status, so it cannot pass protect
 
 ## How to check a repository
 
-- **Mode:** the `ci` field of `sd-db.sh repo list`.
+- **Mode:** the `ci` field of `sd-db repo list`.
 - **Required check:** the branch protection or ruleset names `sd/local-gate`.
 - **Workflows:** `gh workflow list --all` shows no CI workflow, or shows it as `disabled_manually`.
 - **Actions on a private repository:** the repository's Actions settings show Actions disabled.
@@ -66,7 +66,7 @@ Then run the command pack's `sd ci local` (sd:1914) from its checkout.
 It is a dry run; `--apply` writes. It needs `admin` on the repository.
 It makes three changes together, each skipped when it already holds:
 
-1. It sets `repo.ci` to `local`, as `sd-db.sh repo ci <path> local` does.
+1. It sets `repo.ci` to `local`, as `sd-db repo ci <path> local` does.
 2. It makes `sd/local-gate` the one required check, in branch protection or the ruleset.
 3. It disables Actions on a private repository, or only the declared CI workflows on a public one.
 

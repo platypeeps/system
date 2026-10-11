@@ -103,7 +103,8 @@ class EnvFile(unittest.TestCase):
         self.assertIn(f"copy mezmo-pipeline/.env.example to {self.conf}/mezmo-pipeline/.env", done.stderr)
 
 
-SD_DB = LIB.parent / "local-sd-db"
+#: The `sd_db` twin lives in the command pack's `lib/` (`SD_PACK_ROOT`).
+SD_DB = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"
 
 
 class CronJobDirs(unittest.TestCase):

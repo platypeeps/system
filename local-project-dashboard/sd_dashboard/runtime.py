@@ -133,7 +133,7 @@ def _check_direct_serve(config, status):
 def peer_login(peer):
     """Identify the TCP peer through the local Tailscale daemon, never headers.
 
-    The rules are `sd_db.tailnet`'s, shared with `sd-db.sh serve`: a tagged,
+    The rules are `sd_db.tailnet`'s, shared with `sd-db serve`: a tagged,
     expired or mismatched node has no login."""
     from sd_db import tailnet
 

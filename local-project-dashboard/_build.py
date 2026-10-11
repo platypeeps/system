@@ -1,21 +1,18 @@
 """The build backend, in the folder, with no dependencies.
 
-A copy of `local-sd-db/_build.py` with different constants. The two are meant
-to be diffable: everything below `_members` is byte-identical, so a reviewer
-can confirm the mechanism is unchanged and read only the metadata above it.
-
-Sharing one backend between the two folders was the alternative. It was not
-taken because `backend-path` resolves against the package directory, so a
-shared module would have to sit outside both and would then be missing from
-each sdist -- trading a readable duplicate for an unbuildable one.
+The obvious choice, setuptools, is a dependency the machine may not have and
+pip fetches it from the network to build the wheel, which makes an offline
+install fail for a reason that has nothing to do with this package. A wheel is
+a zip file with three metadata members and this package is pure Python, so
+the backend is stdlib only.
 
 `sd_dashboard` imports `sd_db`, so this package declares that dependency.
-Installs still pass `--no-index`: the requirement is satisfied by installing
-`local-sd-db` into the same environment first, never by reaching a network.
+Installs still pass `--no-index`: the requirement is satisfied by the command
+pack's `lib/` in the same environment, never by reaching a network.
 
-There is deliberately no `build_editable`, for the reason the sibling gives:
-an editable install puts the checkout back on `sys.path` and a file missing
-from the package would still import.
+There is deliberately no `build_editable`: an editable install puts the
+checkout back on `sys.path` and a file missing from the package would still
+import.
 """
 
 from __future__ import annotations

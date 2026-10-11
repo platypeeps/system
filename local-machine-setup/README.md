@@ -31,7 +31,10 @@ change I made on this machine back into its profile*.
                                        # no sqlite3 on PATH, Funnel on the
                                        # dashboard's :8443 origin, :8443 held by
                                        # another route, or a service config naming
-                                       # another database, is a FAIL
+                                       # another database, is a FAIL;
+                                       # on every profile, a LaunchAgent, plist
+                                       # template or cron job file that still
+                                       # names the retired local-sd-db is a FAIL
 ./machine-setup.sh doctor sd           # those sd checks alone
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
 ./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy), claude update, brew cleanup + mas upgrade
@@ -147,9 +150,9 @@ Run in order. Pass one as the second argument to run it alone.
 | `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
 | `envs` | install the `.env` of each folder listed in `ENVS` into `$SYSTEM_TOOLS_CONFIG/<tool>/.env` from `envs/<profile>/<folder>.env`, falling back to `envs/common/`, always 0600. Templates hold non-secret defaults only | — |
 | `prompts` | shared agent system prompt into each tool's global instructions | `local-agent-prompt` |
-| `repos` | clone/pull the repo fleet; write the shared `CLAUDE.local.md` keys (`SHARED_LOCAL_KEYS` in `claude_settings.py`) into each auto repo's `SD-AI-COMMAND-PACK:LOCAL` block, keeping the repo's own keys (a file git does not ignore is reported, not written) | `local-repo-sync`, `local-sd-db` |
+| `repos` | clone/pull the repo fleet; write the shared `CLAUDE.local.md` keys (`SHARED_LOCAL_KEYS` in `claude_settings.py`) into each auto repo's `SD-AI-COMMAND-PACK:LOCAL` block, keeping the repo's own keys (a file git does not ignore is reported, not written) | `local-repo-sync`, the pack's `bin/sd-db` |
 | `cron` | install launch agents: the profile's `.cron` jobs plus every job in this host's own folder (`cron-jobs/jobs/<host>/`). A `CRON_JOBS_EXTRA_DIRS` job runs only when the profile names it. Any other job that `local-cron-jobs` installed is `EXTRA` and is uninstalled. An agent under `<prefix>.cron.` that `local-cron-jobs` did not install is `FOREIGN` and stays in place, even when the profile names it; one whose plist cannot be read is `UNKNOWN` and stays too. The stage knows its own plists by their label and their `cron-jobs.sh exec <job>` command, which every installed job carries. A job in `local-cron-jobs/retired-jobs.txt` is never installed; one that `local-cron-jobs` installed is `EXTRA` and is uninstalled, and a `note` line names a profile or host folder that still lists it. When the host folder cannot be read, the stage prints `MISSING host job list` and uninstalls only retired jobs | `local-cron-jobs` |
-| `sd` | the workflow database (`sd-db.sh init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard`. Runs before `agents`, because the dashboard opens the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db`. On the hub, a profile without `<prefix>.sd-serve` or a config folder without its template is `MISSING`, and a `~/.config/sd/hub.json` is `EXTRA` and stays | `local-sd-db`, `tailscale` |
+| `sd` | the workflow database (`bin/sd-db init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard`. Runs before `agents`, because the dashboard opens the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db`. On the hub, a profile without `<prefix>.sd-serve` or a config folder without its template is `MISSING`, and a `~/.config/sd/hub.json` is `EXTRA` and stays | the pack's `bin/sd-db`, `tailscale` |
 | `satellite` | on a profile with a `.satellite`: writes `~/.config/sd/hub.json`, checks that the pack's `lib/sd_db`, which every caller runs, is the hub's build (`DIFFERS` names both values; `local-repo-sync/repo-sync.sh follow` moves the pack to the hub's pin, sd:3279), and installs the hub's `providers.yaml`. A local `sd.db` is `EXTRA` and stops the stage; a hub that does not answer is `SKIP`. On a satellite (a `.satellite` or a `hub.json`, and no hub agent in the profile), each hub-only job in `SD_HUB_ONLY_AGENTS` that is installed or loaded is `EXTRA` and stays. Where `jev` is on `PATH`, a missing jev shadow file is `MISSING`, and `--apply` runs `jev shadow on` (sd:2838). Installs no LaunchAgent | `sd_db.satellite` from `$SD_PACK_ROOT/lib` under `SD_DB_PYTHON` (default: the pack's virtualenv) |
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
@@ -302,16 +305,16 @@ and `candidates`, so they cannot drift apart.
 One machine runs each profile.
 `personal` is the sd hub: it holds the workflow database and serves it.
 A profile with a `.satellite` file is a satellite of that hub.
-`local-sd-db/README.md` describes the server, its refusals and `hub.json`.
+The pack's `lib/sd_db` holds the server, its refusals and `hub.json` (`serve.py`, `hub.py`).
 
-On the hub, `local.system-tools.sd-serve` runs `local-sd-db/sd-db.sh serve`, the tailnet listener on port 8769.
+On the hub, `local.system-tools.sd-serve` runs the pack's `bin/sd-db serve`, the tailnet listener on port 8769.
 It admits only the untagged nodes of the node's owner, by `tailscale whois`, and carries no token.
 
 1. Copy `examples/launchagents/local.system-tools.sd-serve.plist` to the config folder's `launchagents/`.
 2. List `local.system-tools.sd-serve` in `personal.agent`.
 3. Run `machine-setup.sh update agents --apply`. The agent loads in the operator's `gui/<uid>` domain.
 
-- The plist names an absolute path to `local-sd-db/sd-db.sh`; rename that folder or file, and reload the plist.
+- The plist names `@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db`; move the pack checkout, and edit and reload the plist.
 - The plist sets `PATH`, because launchd's own `PATH` does not find `tailscale`.
 - The server never creates a database. Under the wrong home it exits and names the path; `KeepAlive` retries every 30 seconds.
 - The `sd` stage reports the label or the template `MISSING`, and a `~/.config/sd/hub.json` on the hub `EXTRA`.

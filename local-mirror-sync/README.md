@@ -155,7 +155,7 @@ python3 ./offsite-verify.py --root DIR   # against another share or a fixture
 
 A file-exists check proves nothing, so this does not run one. It **runs the
 restore**: it copies the newest `sd-db-backup` snapshot directory off the share
-and calls `sd_db.backup.restore()` -- the whole verb `sd-db.sh restore` runs --
+and calls `sd_db.backup.restore()` -- the whole verb `sd-db restore` runs --
 against a throwaway home. That is safe from a cron job because the snapshot is
 copied first, so nothing writes to the share; `home` is a temporary directory,
 so the restored database, configuration and journals land there and the live

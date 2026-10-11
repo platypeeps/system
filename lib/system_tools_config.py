@@ -90,7 +90,7 @@ def cron_job_dirs(environ: dict[str, str] | None = None) -> list[Path]:
     it. `<host>` is `CRON_JOBS_HOST`, else the short host name, lower-cased;
     other hosts' folders are never listed. Both variables come from the
     environment, else from `<config>/cron-jobs/.env`, as in the script.
-    Change this, its twin in local-sd-db's `sd_db/config.py` and `job_dirs` in
+    Change this, its twin in the pack's `lib/sd_db/config.py` and `job_dirs` in
     `local-cron-jobs/cron-jobs.sh` together.
     """
     env = os.environ if environ is None else environ

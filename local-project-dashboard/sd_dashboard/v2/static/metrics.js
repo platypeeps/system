@@ -20,19 +20,19 @@
     const d = DOC, u = d.usage, put1 = (id, e) => { EV[id] = e; return id; };
     if (!u.error) {
       u.bills.forEach(b => put1(`bill:${b.name}`, { type: 'bill', kind: `Bill · ${u.month}`, title: `${b.name} · ${b.cost_basis}`, label: `${b.name} bill`, bill: b.name, basis: b.cost_basis, cap: b.cap,
-        facts: [['Spent', money(b.spent)], ['Estimated', money(b.estimated)], ['Held', money(b.held)], ['Cap', b.cap == null ? 'none' : money(b.cap)], ['Room', b.room == null ? '—' : money(b.room)], ['Source', 'usage.read: cost run + bound rows']], cli: `sd-db.sh usage --month ${u.month}` }));
+        facts: [['Spent', money(b.spent)], ['Estimated', money(b.estimated)], ['Held', money(b.held)], ['Cap', b.cap == null ? 'none' : money(b.cap)], ['Room', b.room == null ? '—' : money(b.room)], ['Source', 'usage.read: cost run + bound rows']], cli: `sd-db usage --month ${u.month}` }));
       u.meter.forEach(m => put1(`win:${m.provider}:${m.window_minutes}`, { kind: 'Budget window', title: `${m.provider} · ${m.window_minutes} min`, s: pctState(m.used_percent),
-        facts: [['Used', `${m.used_percent}%`], ['Bill', m.bill], ['Read', m.timestamp], ['Source', 'cost, source meter']], cli: 'sd-db.sh usage --json' }));
+        facts: [['Used', `${m.used_percent}%`], ['Bill', m.bill], ['Read', m.timestamp], ['Source', 'cost, source meter']], cli: 'sd-db usage --json' }));
       u.roles.forEach((r, i) => put1(`role:${i}`, { kind: `Usage · ${u.month}`, title: `${r.bill || '-'} · ${r.provider || '-'} · ${r.role || '-'}`,
-        facts: [['Calls', r.calls], ['Spent', money(r.spent)], ['Held', money(r.held)], ['Tokens in', fmt(r.tokens_in)], ['Tokens out', fmt(r.tokens_out)]], cli: `sd-db.sh usage --month ${u.month}` }));
+        facts: [['Calls', r.calls], ['Spent', money(r.spent)], ['Held', money(r.held)], ['Tokens in', fmt(r.tokens_in)], ['Tokens out', fmt(r.tokens_out)]], cli: `sd-db usage --month ${u.month}` }));
       put1('spend', { kind: `Spend · ${u.month}`, title: `${money(u.spent)} spent, ${money(u.held)} held`, facts: u.bills.map(b => [b.name, `${money(b.spent)}${b.cap == null ? '' : ` of ${money(b.cap)}`}`]),
-        note: 'Dollars only. Subscription and plan bills spend windows, shown beside the dollars.', cli: `sd-db.sh usage --month ${u.month}` });
+        note: 'Dollars only. Subscription and plan bills spend windows, shown beside the dollars.', cli: `sd-db usage --month ${u.month}` });
       put1('bound', { kind: 'Usage · bound rows', title: `${plural(u.bound.length, 'bound row')}`, s: u.bound.length ? 'caution' : 'ok',
         facts: u.bound.map(r => [`${r.bill || '—'} · ${r.provider || '—'}`, `${money(r.usd)} · ${r.timestamp}`]),
-        note: 'Money a provider may have billed for a lost response; counted at the bound until corrected against the invoice.', cli: `sd-db.sh usage --month ${u.month}` });
+        note: 'Money a provider may have billed for a lost response; counted at the bound until corrected against the invoice.', cli: `sd-db usage --month ${u.month}` });
     }
     if (!d.trend.error) d.trend.series.forEach(s => s.points.forEach(([day, p, at], i) => put1(`t:${s.provider}:${day}`, { kind: 'Window reading', title: `${s.provider} · ${day}`, s: pctState(p),
-      facts: [['Used', `${p}%`], ['Window', `${d.trend.window} min (7 days)`], ['Reading', `last meter row of the day · ${at}`], ['Source', 'reads.meter_days']], cli: 'sd-db.sh usage --json' })));
+      facts: [['Used', `${p}%`], ['Window', `${d.trend.window} min (7 days)`], ['Reading', `last meter row of the day · ${at}`], ['Source', 'reads.meter_days']], cli: 'sd-db usage --json' })));
     if (!d.numbers.error) d.numbers.rows.forEach(n => put1(`num:${n.key}`, { kind: 'The week', title: n.label, s: n.value == null ? 'unknown' : 'ok', facts: [['Value', numText(n)], ...n.inputs, ['Source', 'reads.weekly_numbers']], cli: '/operations?area=usage' }));
     if (!d.scorecard.error) d.scorecard.rows.forEach(r => put1(`sc:${r.provider}`, { type: 'provider', kind: 'Provider · this month', title: r.provider, label: r.provider, p: r.provider, s: scState(r),
       facts: [['Author rank', r.author_rank ?? '—'], ['Reviewer rank', r.reviewer_rank ?? '—'], ['Passes', r.passes], ['Blocking', r.blocking], ['$/pass', money(r.usd_per_pass)], ['Skipped', r.fallthrough], ['State', r.enabled ? 'enabled' : `disabled: ${r.reason || '—'}`]],

@@ -20,7 +20,7 @@ from .pages import page, tile
 #: accepts in its path. The registry puts no rule on a bill name:
 #: `registry.parse` takes every key of the `bills` mapping, and the loader's
 #: key is whatever stands before the first unquoted colon (`_split_key` in
-#: `local-sd-db/sd_db/yaml_lite.py`), so the bound is this route's own and
+#: `lib/sd_db/yaml_lite.py` in the pack), so the bound is this route's own and
 #: is the services route's, character for character, 200 at most (#435's
 #: verification round: a 100 bound here left a name the services route
 #: would take answering 404). `_bill_caps` renders a form only for a name

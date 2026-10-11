@@ -65,7 +65,7 @@
     const busyLanes = DOC.lanes.filter(l => l.rows.length || said[l.path]), idle = DOC.lanes.filter(l => !busyLanes.includes(l));
     put($('lanes'), html`${DOC.problems.map(p => html`<p class="fail" role="alert">▨ ${p.repo}: lane not read. ${p.error}</p>`)}${busyLanes.map(lane)}${idle.length
       ? html`<p class="idle">Idle: ${idle.map((l, i) => html`${i ? ' · ' : ''}<code>${l.repo}</code> (lane on ${l.host})`)}</p>`
-      : DOC.lanes.length ? '' : html`<p class="done">No managed repository's lane was read. sd-db.sh repo managed PATH yes adds one.</p>`}`);
+      : DOC.lanes.length ? '' : html`<p class="done">No managed repository's lane was read. sd-db repo managed PATH yes adds one.</p>`}`);
   }
 
   async function load() {

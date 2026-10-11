@@ -92,9 +92,9 @@ def seed(case):
                                      attention=True, attention_basis="job exited 7")["item"]["id"]
     ids["clean"] = reporting.ingest(case.connection, job="weekly-scan", run_id="r2", started="2026-09-06T13:00:00Z",
                                     ended="2026-09-06T13:01:00Z", exit_code=0, text="x" * 2000,
-                                    source_path="sd-db.sh scan")["item"]["id"]
+                                    source_path="sd-db scan")["item"]["id"]
     done = reporting.ingest(case.connection, job="weekly-scan", run_id="r0", started="2026-09-05T13:00:00Z",
-                            ended="2026-09-05T13:01:00Z", exit_code=0, text="old", source_path="sd-db.sh scan")
+                            ended="2026-09-05T13:01:00Z", exit_code=0, text="old", source_path="sd-db scan")
     ids["done"] = done["item"]["id"]
     # `ingest` stamps the real clock; backdate each report to its run, as the store would hold it (seeding, not a writer).
     for key, at in (("failed", "2026-09-08T08:16:00+00:00"), ("clean", "2026-09-06T13:01:00+00:00"), ("done", "2026-09-05T13:01:00+00:00")):

@@ -59,7 +59,7 @@ def entrypoints(entries):
 class TheTree(unittest.TestCase):
     def test_every_entrypoint_is_tracked_executable(self):
         found = entrypoints(index())
-        self.assertIn("local-sd-db/sd-db.sh", found, "the enumeration found no entrypoints")
+        self.assertIn("local-repo-sync/repo-sync.sh", found, "the enumeration found no entrypoints")
         bad = sorted(p for p, mode in found.items() if mode != "100755")
         self.assertEqual([], bad, "tracked without the executable bit; run "
                          "`git update-index --chmod=+x <path>` for each")

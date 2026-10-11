@@ -32,12 +32,12 @@ from .test_jev import Stub, StubServer
 
 # `sd_db` is installed into the environment that runs this suite in CI, the
 # same install the library's own tests use. A checkout with no install reads
-# the package from the folder beside this one, because a suite that skipped
+# the package from the pack's `lib/` (`SD_PACK_ROOT`), because a suite that skipped
 # here would be a green that measured nothing -- and skips fail this repo's CI.
 try:  # pragma: no cover - one branch per machine
     import sd_db  # noqa: F401
 except ImportError:  # pragma: no cover - one branch per machine
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "local-sd-db"))
+    sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"))
 
 from sd_db.database import connect  # noqa: E402
 from sd_db.judgment import by_stage  # noqa: E402

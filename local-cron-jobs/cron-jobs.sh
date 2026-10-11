@@ -84,7 +84,7 @@ LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 JOBS_DIR="$CONF_DIR/jobs"
 # This machine's own jobs: jobs/<host>/, lower-cased so the folder name does
 # not depend on how the machine happens to capitalise itself. The same rule is
-# in lib/system_tools_config.py and local-sd-db's sd_db/config.py
+# in lib/system_tools_config.py and the pack's lib/sd_db/config.py
 # (cron_job_dirs); change all three together.
 JOB_HOST="$(printf '%s' "${CRON_JOBS_HOST:-$(hostname -s 2>/dev/null || hostname)}" | tr '[:upper:]' '[:lower:]')"
 HOST_JOBS_DIR="$JOBS_DIR/$JOB_HOST"

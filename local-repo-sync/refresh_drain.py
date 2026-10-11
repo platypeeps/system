@@ -20,7 +20,7 @@ foreground and starts no fsmonitor daemon. TERM, INT and HUP do not end
 this process before the child; it waits for it.
 
 A lane whose runner never ran has no lock file yet: every folder under the
-lane root, every repository in the registry (`sd-db.sh repo list`, which
+lane root, every repository in the registry (`sd-db repo list`, which
 `lane run --hosted` reads; for `refresh` only) and every name in
 REPO_SYNC_LANE_NAMES (the conf's checkouts) gets one, made and held here; a
 lane is named after its checkout's folder. A pass that takes a new lock
@@ -166,10 +166,11 @@ def wait_gate(env, deadline, limit):
 
 
 def registry_names(script, env):
-    """The checkout folder names of every repository `sd-db.sh repo list` holds."""
-    sd_db = pathlib.Path(script).resolve().parent.parent / "local-sd-db" / "sd-db.sh"
+    """The checkout folder names of every repository `sd-db repo list` holds."""
+    pack = pathlib.Path(env.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+    sd_db = pack.expanduser() / "bin" / "sd-db"
     try:
-        out = subprocess.run(["sh", str(sd_db), "repo", "list"], capture_output=True,
+        out = subprocess.run([str(sd_db), "repo", "list"], capture_output=True,
                              text=True, env=env, timeout=120)
     except subprocess.TimeoutExpired:
         raise Refused(f"{sd_db} repo list did not answer in 120s", manual=True) from None

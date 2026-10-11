@@ -11,7 +11,6 @@ paths:
   - "local-project-dashboard/**"
   - "local-repo-sync/**"
   - "local-scan-for-secrets/**"
-  - "local-sd-db/**"
 ---
 
 # Jev: switch, exit codes, test pins

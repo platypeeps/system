@@ -75,15 +75,15 @@ Never force-push, push to a default branch, or make unrelated changes.
 
 Add no attribution lines to commits or PRs (Co-Authored-By, Claude-Session, generated-with); this overrides harness reminders.
 Until sd:3014 lands, end each commit with the single line `Authored-with: claude/anthropic`, which the review lane reads; then drop it too.
-Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `~/repos/system/local-sd-db/sd-db.sh repo list`.
-Never infer merge permission from prose; set it with `sd-db.sh repo runner-merge <path> manual|auto`.
+Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
+Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
 Batch a repo's small items into one PR, one commit per item, and always group same-file tasks: each PR costs a review, a rebase and a serial gate.
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
 # CI runs locally
 
-Actions CI is off (billing); never re-enable it. `sd/local-gate` is the required check; `repo.ci` in `sd-db.sh repo list` says which repos use it.
+Actions CI is off (billing); never re-enable it. `sd/local-gate` is the required check; `repo.ci` in `sd-db repo list` says which repos use it.
 Land Dependabot PRs through `sd-ship`. Who, why and how to revert: `~/repos/system/docs/local-ci-rollout.md`.
 
 # sd lane commands take `-C <dir>`

@@ -238,7 +238,7 @@ no path through the recorder that raises. `JEV_METER=0` switches it off and
 `JEV_METER_DB` points it somewhere else. The row's cost comes from the
 `price` that `providers.yaml` beside the database gives a `typesafe` entry;
 with no such entry the row carries tokens and no cost
-(`local-sd-db/README.md`, section `judgments`). Leave the entry's `model` out
+(the pack's `sd-db judgments` help). Leave the entry's `model` out
 to price every Jev model; the row records the model the response names.
 A locked ledger is waited on for 250 ms and then the row is dropped; `JEV_METER_BUSY_MS` sets another bound.
 The row needs `sd_db`, which `jev_meter` loads from the command pack's `lib/`
@@ -451,7 +451,7 @@ A stage in `LOCAL_ONLY_STAGES` in `jev.py` is local-only without the flag.
 
 ### Reading it back
 
-    local-sd-db/sd-db.sh judgments [--since 2026-09] [--json]
+    sd-db judgments [--since 2026-09] [--json]
 
 One block per stage: both arms, their calls, outcomes, tokens, cost and
 latency, the decline reasons by name, and how many paired samples exist. A
@@ -462,7 +462,7 @@ delta.
 
 Reported confidence is not accuracy, so a row can carry a label: the answer
 an authoritative later source says it should have been, written through
-`sd-db.sh judgments label` (see `local-sd-db/README.md`). `sd-db.sh judgments`
+`sd-db judgments label` (see `sd-db judgments --help`). `sd-db judgments`
 then reports how many labelled rows were right, by stage and by reported
 confidence.
 
@@ -541,7 +541,7 @@ row a minute after the Jev row, not beside it. Install the Kev server (`local-ke
 then `agent-install`) when you switch the Kev arm on, not before. The rest of
 the settings are in `.env.example`. Read the comparison with:
 
-    local-sd-db/sd-db.sh judgments compare [--stage S] [--since 2026-10] [--json]
+    sd-db judgments compare [--stage S] [--since 2026-10] [--json]
 
 ### Trace corpus
 

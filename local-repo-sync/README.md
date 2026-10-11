@@ -126,7 +126,7 @@ pack's lanes read it. While a lock is held, that lane's `lane run` exits at
 once and its queued entries stay pending. A running lane keeps its lock until
 its run ends, so refresh waits for it. A lane whose runner never ran has no
 lock yet. The helper makes and holds one for every folder under the lane
-root, every repository in the registry (`sd-db.sh repo list`) and every
+root, every repository in the registry (`sd-db repo list`) and every
 checkout in the conf, since a lane is named after its checkout's folder. A
 registry it cannot read refuses with nothing moved. Each pass tries every
 lock first and keeps the ones it gets, then waits for the busy ones, so

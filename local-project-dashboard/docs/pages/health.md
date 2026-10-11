@@ -22,7 +22,7 @@ calls no service and reads no credential.
   A repository whose alerts were not re-read in 48 hours is a caution row.
   The sync reads one page of 100 alerts, so a longer list shows as `100+`.
 - Credentials (sd:2203) reads the latest `credentials:nightly` heartbeat that
-  `sd-db.sh credentials` writes from `credentials-nightly.job`: the GitHub PAT
+  `sd-db credentials` writes from `credentials-nightly.job`: the GitHub PAT
   (present, accepted, expiry), `gh auth status`, `HA_TOKEN` against `HA_URL`,
   and `claude mcp list`. An expiry lights caution 30 days ahead and warning 7
   days ahead; a heartbeat older than 48 hours is a caution row.

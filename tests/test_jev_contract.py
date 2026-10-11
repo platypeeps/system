@@ -109,18 +109,13 @@ SUITE_RUNNER = "tests/ci-native.sh"
 
 #: Folders that name `jev` without asking it anything, named here rather than
 #: pattern-matched away so that a day one of them does starts an argument.
-#: `local-bin-links` puts `jev` on PATH. `local-sd-db` is the
-#: store the calls are recorded in: `sd_db/judgment.py` names the two arms a
-#: row can carry, one of which is spelled `jev`, and a schema that could not
-#: name the thing it counts would be a worse schema. It holds no key, opens no
-#: socket and would still be correct if this folder were deleted.
+#: `local-bin-links` puts `jev` on PATH.
 #: `local-machine-setup` runs `jev shadow on` on a satellite whose shadow file
 #: is missing (sd:2838): it sets a switch, asks Jev nothing, and skips the step
 #: where `jev` is not on PATH.
 NOT_CALLERS = frozenset({
     "local-bin-links",
     "local-machine-setup",
-    "local-sd-db",
 })
 
 
@@ -409,7 +404,7 @@ GATE_RE = re.compile(
 RECORD_WINDOW = 200
 
 #: The ledger's own grammar and cap, copied from
-#: `local-sd-db/sd_db/judgment.py`. A name that fails either is not refused,
+#: the pack's `lib/sd_db/judgment.py`. A name that fails either is not refused,
 #: it is silently filed under `unknown` -- which is a row that counts toward
 #: nothing and reads exactly like a row from a caller that never named itself.
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -778,7 +773,7 @@ class EveryCallerNamesItselfInTheLedger(unittest.TestCase):
     """A row filed under `unknown` counts toward nothing.
 
     `jev` records one row per judgment, and the per-stage report in
-    `local-sd-db/sd_db/judgment.py` groups by stage and arm. A caller that
+    the pack's `lib/sd_db/judgment.py` groups by stage and arm. A caller that
     passes neither `--caller` nor `--stage` still gets its row -- under
     `unknown`, beside every other unnamed caller's, in a block no reader can
     attribute and no arm can be compared against. That is the shape this
@@ -985,7 +980,7 @@ class EveryCallerNamesItselfInTheLedger(unittest.TestCase):
         )
         self.assertEqual(
             bad, [],
-            "a name fails the grammar `local-sd-db/sd_db/judgment.py` "
+            "a name fails the grammar the pack's `lib/sd_db/judgment.py` "
             "enforces, so `jev` drops it and the row files under `unknown` "
             f"with nothing said: {bad}",
         )

@@ -325,7 +325,7 @@ class RuntimeSafety(unittest.TestCase):
                 runtime._check_node({"origin": ORIGIN, "operator_login": "owner@example.test"})
 
     def test_wrong_library_health_rolls_back(self):
-        self.health["library"] = "/checkout/local-sd-db/sd_db/__init__.py"
+        self.health["library"] = "/checkout/system/sd_db/__init__.py"
         with self.assertRaisesRegex(runtime.RuntimeRefused, "different schema or library"):
             self.install(self.plan())
         self.assertEqual(self.target.read_bytes(), self.old)
@@ -455,7 +455,7 @@ class RuntimeSafety(unittest.TestCase):
     def test_runtime_refuses_a_source_library_before_opening_a_database(self):
         import sd_db
 
-        with patch.object(sd_db, "__file__", "/source/local-sd-db/sd_db/__init__.py"):
+        with patch.object(sd_db, "__file__", "/source/system/sd_db/__init__.py"):
             with self.assertRaisesRegex(runtime.RuntimeRefused, "the command pack's lib/"):
                 REAL_LIBRARY_CHECK(self.home / "missing.db")
         self.assertFalse((self.home / "missing.db").exists())
@@ -708,7 +708,7 @@ class BuildIdentity(unittest.TestCase):
         self.assertIsInstance(ended[0], server.CodeChanged)
 
     def test_a_changed_build_that_cannot_start_leaves_the_old_server_serving(self):
-        """sd:3018: a merge that also moves local-sd-db/sd_db leaves the installed library behind.
+        """sd:3018: a merge that also moves the pack's lib/sd_db leaves the installed library behind.
 
         The replacement would fail `installed_library`, and launchd would restart it in a loop. The
         probe here stands in for the new checkout's start refusing that lag. The old server keeps
@@ -821,8 +821,8 @@ class PackLibrary(unittest.TestCase):
         self.assertIn(str(self.pack / "lib"), str(refused.exception))
         self.assertIn(str(installed), str(refused.exception))
 
-    def test_systems_frozen_copy_and_another_packs_lib_are_refused(self):
-        for folder in ("system/local-sd-db", "other-pack/lib"):
+    def test_a_source_copy_and_another_packs_lib_are_refused(self):
+        for folder in ("system/sd_db", "other-pack/lib"):
             with self.subTest(folder=folder), self.assertRaisesRegex(runtime.RuntimeRefused, "the command pack's lib/"):
                 self.check(self.copy_at(folder))
 

@@ -22,18 +22,15 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           action per line; an empty plan prints nothing and exits 0:
             report needs <folder> install (<path>)  a LaunchAgent plist, or the
                     code that writes one, changed; never applied
-            restart sd-serve    local-sd-db/ changed
             restart dashboard   local-project-dashboard/ changed
-          Changes under tests/ and to *.md files restart nothing. sd_db and
-          its schema are the command pack's lib/, which repo-sync.sh refresh
-          moves, so no change here installs or migrates it (sd:3279).
-  apply   print the reports, then refuse with exit 1 before any restart when
-          `lsof` cannot answer for port 8769. Then
-          restart. sd-serve: skip with a report while a session is open on
-          port 8769, else `launchctl kickstart -k` and wait for a new
-          listener. dashboard: kickstart -k, then `dashboard.sh health
-          --wait DEPLOY_WAIT`. A service whose agent is not loaded is skipped. Stops at
-          the first failed check and exits 1 naming it.
+          Changes under tests/ and to *.md files restart nothing. sd_db, its
+          schema and sd-serve are the command pack's, which repo-sync.sh
+          refresh moves, so no change here restarts, installs or migrates
+          them (sd:3281).
+  apply   print the reports, then restart. dashboard: `launchctl kickstart
+          -k`, then `dashboard.sh health --wait DEPLOY_WAIT`. A service whose
+          agent is not loaded is skipped. Stops at the first failed check and
+          exits 1 naming it.
   upgrade [--from SHA]
           refuse unless this checkout is on main and clean; `git fetch
           origin`, then fast-forward to origin/main (refuse on divergence).
@@ -41,14 +38,13 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           $XDG_STATE_HOME/system/deploy/deployed (default
           ~/.local/state/system/deploy/deployed); with no record, --from is
           required, and --from always overrides it. An empty plan records the
-          new sha and exits 0. An open sd-serve session refuses. Then apply,
-          and a start of each agent an older upgrade left stopped (the file
-          `stopped` beside the record): sd-serve, then the dashboard
-          (`health --wait`); a start whose wait fails boots its agent out
-          again, and a failure names the rerun that finishes; it bootstraps
-          only those launchd does not hold. It records the new sha only when
-          every step passed, sd-serve was not held back by a session and no
-          LaunchAgent install is reported, so a rerun replays the same range.
+          new sha and exits 0. Then apply, and a start of each agent an older
+          upgrade left stopped (the file `stopped` beside the record):
+          sd-serve, then the dashboard (`health --wait`); a start whose wait
+          fails boots its agent out again, and a failure names the rerun that
+          finishes; it bootstraps only those launchd does not hold. It records
+          the new sha only when every step passed and no LaunchAgent install
+          is reported, so a rerun replays the same range.
   test    run the unittest suite (tests/); extra arguments go to unittest.
 
 env:
@@ -83,11 +79,9 @@ plan() {
   RANGE="$1..$2"
   git -C "$ROOT" rev-parse -q --verify "$1^{commit}" >/dev/null || { echo "deploy: not a commit: $1" >&2; exit 1; }
   git -C "$ROOT" rev-parse -q --verify "$2^{commit}" >/dev/null || { echo "deploy: not a commit: $2" >&2; exit 1; }
-  # sd_db and its schema are the pack's lib/ (sd:3279): the dashboard and
-  # sd-serve run it, refresh moves it, and system's frozen local-sd-db/sd_db
-  # is no service's library, so no change here installs or migrates one.
+  # sd_db, its schema and sd-serve are the pack's (sd:3281): refresh moves
+  # them, so no change here restarts sd-serve or installs or migrates a library.
   installs
-  [ -z "$(changed local-sd-db/)" ] || echo "restart sd-serve"
   [ -z "$(changed local-project-dashboard/)" ] || echo "restart dashboard"
 }
 
@@ -144,34 +138,12 @@ serve_pids() {
   return 1
 }
 
-# Everything that can refuse runs here, before the first restart.
-preflight() {
-  case "$1" in
-    sd-serve)
-      held sd-serve || return 0
-      # One satellite session is one TCP connection to the listener (serve.py).
-      sessions=$(serve_pids ESTABLISHED) || refuse "sd-serve: lsof cannot tell whether a satellite session is open"
-      old_listener=$(serve_pids LISTEN) || refuse "sd-serve: lsof cannot read the listener" ;;
-  esac
-}
-
-restart_serve() {
-  if [ -n "$sessions" ]; then
-    echo "report sd-serve not restarted: a session is open on port $SERVE_PORT; rerun apply when it closes"
-    held_back=1
-    return 0
-  fi
-  launchctl kickstart -k "gui/$(id -u)/$PREFIX.sd-serve" || fail "sd-serve kickstart"
-  await_listener
-  echo "restarted sd-serve: listener pid $new"
-}
-
-# Waits for a listener on sd-serve's port other than old_listener; sets new.
+# Waits for a listener on sd-serve's port after a start; sets new.
 await_listener() {
   waited=0
   while :; do
     new=$(serve_pids LISTEN) || fail "sd-serve listener check (lsof)"
-    if [ -n "$new" ] && [ "$new" != "$old_listener" ]; then
+    if [ -n "$new" ]; then
       return 0
     fi
     [ "$waited" -lt "${DEPLOY_WAIT:-30}" ] || fail "sd-serve listener check (no new listener on port $SERVE_PORT)"
@@ -191,11 +163,8 @@ apply() {
   reports=$(printf '%s\n' "$actions" | grep '^report') || true
   [ -z "$reports" ] || printf '%s\n' "$reports"
   services=$(printf '%s\n' "$actions" | sed -n 's/^restart //p')
-  for service in $services; do preflight "$service"; done
   for service in $services; do
     case "$service" in
-      sd-serve) held sd-serve || { skip sd-serve sd-serve; continue; }
-        restart_serve ;;
       dashboard) held sd-dashboard || { skip dashboard sd-dashboard; continue; }
         launchctl kickstart -k "gui/$(id -u)/$PREFIX.sd-dashboard" || fail "dashboard kickstart"
         sh "$ROOT/local-project-dashboard/dashboard.sh" health --wait "${DEPLOY_WAIT:-30}" || fail "dashboard health"
@@ -263,17 +232,8 @@ upgrade() {
     record "$to"
     return 0
   fi
-  case "$actions" in *"restart sd-serve"*)
-    if held sd-serve; then
-      sessions=$(serve_pids ESTABLISHED) || refuse "sd-serve: lsof cannot tell whether a satellite session is open"
-      [ -z "$sessions" ] || refuse "sd-serve: a session is open on port $SERVE_PORT; rerun upgrade when it closes"
-      old_listener=$(serve_pids LISTEN) || refuse "sd-serve: lsof cannot read the listener"
-    fi ;;
-  esac
-  held_back=""
   apply "$from" "$to"
   start_stopped
-  [ -z "$held_back" ] || { echo "deploy: sd-serve still runs the old code; $to not recorded; rerun upgrade" >&2; exit 1; }
   # A restart keeps the old LaunchAgent: recording would drop the report.
   case "$actions" in *"install ("*)
     echo "deploy: a LaunchAgent install is pending (reports above); $to not recorded; install it, then record it: deploy.sh upgrade --from $to" >&2
