@@ -975,6 +975,10 @@ CHEAP = {"provider": "jev", "model": "m", "outcome": "ok", "cause": None, "answe
          "confidence": 0.5, "probabilities": "0.1,0.6,0.2,0.1", "usd": 0.01, "tokens_in": 238}
 
 
+#: The remote of the replay's public checkout: `owner/repo`, the checkpoints' repository.
+REPO_URL = "https://github.com/owner/repo.git"
+
+
 class TheReplay(CompareCase):
     """Step 5 against loopback stubs: Jev, Kev, Anthropic and the collector."""
 
@@ -991,9 +995,11 @@ class TheReplay(CompareCase):
         self.live.parent.mkdir(parents=True)
         initialise(self.live)
         self.db = checkpoint_db([])
+        # The checkpoints' repository is public: step 1 draws from it.
         public = checkout(["a.py", "pkg/mod.py"])
-        register(self.db, public, "public")
-        self.slug = f"owner/{public.parent.name}"
+        subprocess.run(["git", "-C", str(public), "remote", "set-url", "origin", REPO_URL],
+                       check=True)
+        register(self.db, public, "public", remote=REPO_URL)
         self.population = self.folder / "population.jsonl"
         self.write_population(["a.py"])
         retry = unittest.mock.patch.object(experiment, "RETRY_WAIT", 0)
@@ -1187,15 +1193,19 @@ class TheReplay(CompareCase):
         return path
 
     def test_an_open_or_unregistered_prediction_refuses_before_any_call(self):
-        text = experiment.REGISTRATION.read_bytes()[:experiment.REGISTERED_BYTES]
+        text = experiment.REGISTRATION.read_bytes()
         h3 = b"PREDICTION (operator, 2026-10-05): H3 holds"
         for name, draft in (
+                # The replay's hosted scope is the 2026-10-11 amendment's.
+                ("without the amendment", text[:experiment.REGISTERED_BYTES]),
+                ("an edited amendment", text.replace(b"30 C1 heads", b"59 C1 heads")),
                 ("blank", text + b"\nPREDICTION (operator, 2026-10-11): ___\n"),
                 ("whitespace", text + b"\nPREDICTION (operator, 2026-10-11):   \t\n"),
                 ("unconfirmed", text + b"\nPREDICTION (operator, drafted, UNCONFIRMED): x\n"),
                 ("empty", b""),
                 ("edited", text.replace(h3, b"PREDICTION (operator, 2026-10-05): H3 fails"))):
             with self.subTest(name=name):
+                self.folder = Path(tempfile.mkdtemp())       # no earlier run's manifest
                 code, _out = self.replay("jev", "--preregistration", str(self.draft(draft)))
                 self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])
@@ -1841,31 +1851,38 @@ class TheReplay(CompareCase):
 
     def test_a_draw_that_is_not_the_registered_stratification_refuses(self):
         # Round 14:47Z: half the draw comes from moved heads, or every moved
-        # head of the public pool when it holds fewer. The stored `moved`
-        # flags all claim a moved head; the gate reads the checkpoints.
-        public = {"repository": self.slug}
-        self.checkpoint(92, 93, tier="standard", repository=self.slug)
-        self.checkpoint(95)
-        self.write_faithful([(92, "standard", public), (93, "standard", public)])
-        self.assertEqual(self.replay("kev")[0], 0)    # the public pool holds no moved head
-        self.checkpoint(94, repository=self.slug)    # now it holds one
-        for name, lines, listed in (
-                ("no moved head, one left in the public pool",
-                 [(92, "standard", public), (93, "standard", public)], None),
-                ("every head moved", [(90, "cheap"), (95, "cheap")], None),
-                ("a drawn repository git cannot list now",
-                 [(92, "standard", public), (93, "standard", public)], {})):
+        # head of the public pool when it holds fewer, all from public managed
+        # repositories. The stored `moved` flags all claim a moved head; the
+        # gate reads the checkpoints and the public checkouts.
+        self.enterContext(unittest.mock.patch.object(experiment, "FAITHFUL_COUNT", 4))
+        self.checkpoint(92, 93, 96, tier="standard")
+        self.checkpoint(98, repository="other/repo")
+        self.checkpoint(99, tier="standard", repository="other/repo")
+        fewer = [(90, "cheap"), (92, "standard"), (93, "standard"), (96, "standard")]
+        self.write_faithful(fewer)
+        self.assertEqual(self.replay("kev")[0], 0)    # 90 is the pool's one moved head
+        self.checkpoint(94, 95, 97)                    # now the pool holds four
+        other = {"repository": "other/repo"}
+        for name, lines, git in (
+                ("one moved head of four in the pool", fewer, None),
+                ("every head moved", [(90, "cheap"), (94, "cheap"), (95, "cheap"),
+                                      (97, "cheap")], None),
+                ("half moved, two from a repository that is not public",
+                 [(90, "cheap"), (98, "cheap", other), (99, "standard", other),
+                  (92, "standard")], None),
+                ("half moved, git cannot read the public checkout",
+                 [(90, "cheap"), (94, "cheap"), (92, "standard"), (93, "standard")],
+                 lambda *_argv: None)):
             with self.subTest(name=name):
                 self.folder = Path(tempfile.mkdtemp())
                 self.write_faithful(lines)
                 with contextlib.ExitStack() as stack:
-                    if listed is not None:
-                        stack.enter_context(unittest.mock.patch.object(
-                            experiment, "public_repos", return_value=listed))
+                    if git is not None:
+                        stack.enter_context(unittest.mock.patch.object(experiment, "git", git))
                     self.assertEqual(self.replay("jev")[0], 2)
                 self.assertEqual(Stub.seen, [])
         self.folder = Path(tempfile.mkdtemp())
-        self.write_faithful([(94, "cheap", public), (92, "standard", public)])
+        self.write_faithful([(90, "cheap"), (94, "cheap"), (92, "standard"), (93, "standard")])
         self.assertEqual(self.replay("jev")[0], 0)
 
     def test_a_step_one_no_answer_is_reused_never_asked_again(self):
@@ -1892,6 +1909,48 @@ class TheReplay(CompareCase):
                 manifest = json.loads((self.folder / "manifest.json").read_text())
                 self.assertEqual((manifest["arms"]["jev"]["reused"],
                                   manifest["arms"]["jev"]["no_answer"]), (2, 1))
+
+    def test_a_reused_line_that_is_not_step_ones_answer_refuses_a_resume(self):
+        # Codex, class pass: a resume took a line's `reused` claim on its word.
+        self.checkpoint(0)
+        self.checkpoint(1, tier="standard")
+        self.write_faithful([(0, "cheap"), (1, "cheap")])
+        for name, change in (("another tier", lambda first, second: (
+                                  dict(first, tier="skip"), second)),
+                             ("a head step 1 never asked", lambda first, second: (
+                                  first, dict(second, head=sha(3))))):
+            with self.subTest(name=name):
+                self.folder = Path(tempfile.mkdtemp())
+                replay = self.stop_after_first_call("jev")   # heads 0 and 1 reused, 2 asked
+                lines = change(*map(json.loads, (replay / "jev.jsonl").read_text().splitlines()))
+                (replay / "jev.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+                before = len(Stub.seen)
+                self.assertEqual(self.replay("jev")[0], 2)
+                self.assertEqual(len(Stub.seen), before)
+
+    def test_a_reused_line_that_is_not_step_ones_answer_does_not_seal_c1(self):
+        # Codex, class pass: the seal took a line's `reused` claim on its word.
+        self.checkpoint(0)
+        self.checkpoint(1, tier="standard")
+        self.write_faithful([(0, "cheap"), (1, "cheap")])
+        for arm in ("kev", "jev", "haiku"):
+            self.assertEqual(self.replay(arm)[0], 0)
+        path = self.folder / "replay" / "jev.jsonl"
+        honest = path.read_bytes()
+        lines = [json.loads(line) for line in honest.splitlines()]
+        lines[0]["tier"] = "skip"
+        path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+        self.seal("kev", "jev", "haiku")
+        self.assertEqual(self.labels_c1()[0], 2)          # head 0's step 1 answer was cheap
+        path.write_bytes(honest)
+        self.seal("jev")
+        answers = self.faithful / "answers.jsonl"
+        step1 = answers.read_text()
+        answers.write_text(step1 + "\n")
+        self.assertEqual(self.labels_c1()[0], 2)          # step 1's result changed since
+        self.assertFalse((self.folder / "labels").exists())
+        answers.write_text(step1)
+        self.assertEqual(self.labels_c1()[0], 0)
 
     def test_only_jevs_lines_may_claim_a_reused_answer(self):
         # Only Jev was asked in step 1: a reused line on another arm is not

@@ -371,7 +371,7 @@ def public_paths(db) -> frozenset:
     return frozenset().union(*public_repos(db).values())
 
 
-def public_repos(db) -> dict[str, frozenset]:
+def public_repos(db, failed: set | None = None) -> dict[str, frozenset]:
     """Each public managed repository's `owner/name`, lower-cased, with every
     path `git ls-files` lists in its local checkouts, read once per run. A
     managed repository is public when its last observed visibility is.
@@ -381,7 +381,8 @@ def public_repos(db) -> dict[str, frozenset]:
     the checkout's own `origin` must be that remote (codex pass on round 4).
     A repository not read as public, a checkout whose `origin` differs or is
     missing, or one git cannot list, adds nothing: unknown is not public.
-    Checkouts of one repository add to one entry."""
+    Checkouts of one repository add to one entry. `failed`, when given,
+    gets each public repository with a checkout git could not answer for."""
     from sd_db import protection
     from sd_db.paths import home_absolute
     with contextlib.closing(open_ro(db)) as connection:
@@ -394,10 +395,12 @@ def public_repos(db) -> dict[str, frozenset]:
         root = home_absolute(repo["repo"])
         origin = git(root, "config", "--get", "remote.origin.url")
         slug = protection.github_slug(origin.decode("utf-8", "replace").strip()) if origin else None
-        if slug is None or not repo["slug"] or "/".join(slug).lower() != repo["slug"].lower():
-            continue
-        listed = git(root, "ls-files", "-z")
+        ours = bool(slug and repo["slug"] and "/".join(slug).lower() == repo["slug"].lower())
+        listed = git(root, "ls-files", "-z") if ours else None
         if listed is None:
+            # Another repository's checkout is not a failure; no answer is.
+            if failed is not None and (origin is None or ours):
+                failed.add(repo["slug"] or str(root))
             continue
         names = tracked.setdefault(repo["slug"].lower(), set())
         for raw in listed.split(b"\0"):
@@ -895,7 +898,9 @@ def sealed(db, folder: Path, home: str | None) -> list[str]:
     on the scope that file gives it now; its answer file holds one line for
     each C1 head in that scope and none for a head outside it; and a note on
     sd:2764 carries that file's SHA-256. Every line must be a final record of
-    that arm's run (`record_faults`): an identity alone is not an answer."""
+    that arm's run (`record_faults`): an identity alone is not an answer.
+    Jev's reused lines must be step 1's answers, read again from the
+    faithfulness result the manifest bound (`reuse_faults`)."""
     with contextlib.closing(open_ro(db)) as connection:
         notes = [body for (body,) in connection.execute(
             "SELECT body FROM note WHERE item = ?", (ITEM,))]
@@ -918,7 +923,15 @@ def sealed(db, folder: Path, home: str | None) -> list[str]:
             missing.append(f"{arm}'s scope moved since its replay")
             continue
         written = read_jsonl(path)
-        faults = record_faults(written, arm, run.get("run_id"))
+        # Jev's reused lines are read against step 1's records, as the replay wrote them.
+        reuse, step1 = {}, Path(manifest.get("faithful_folder") or ".") / "answers.jsonl"
+        if arm == "jev":
+            if not step1.is_file() or file_sha256(step1) != manifest.get("faithful", {}).get("answers"):
+                missing.append("the faithfulness result jev's replay reused is not readable "
+                               "as it was when the replay started")
+                continue
+            reuse = {(r["repository"], r["head"]): r for r in read_jsonl(step1)}
+        faults = record_faults(written, arm, run.get("run_id")) or reuse_faults(written, reuse, heads)
         lines = collections.Counter((r.get("repository"), r.get("head")) for r in written)
         if faults:
             missing.append(f"{path.name} holds {len(faults)} line(s) that are not final "
@@ -1003,6 +1016,10 @@ REGISTRATION_COMMIT = "fe5b904d5fa1ee2e95c2ecce62ff113f5ca4c854"
 #: below the registered text, so the document must begin with these bytes.
 REGISTERED_BYTES = 33408
 REGISTERED_SHA256 = "c6a9d61eacc2986407de3c670b594fd3ba48a0adb06c3e5454ea915e20aea297"
+#: The same through the 2026-10-11 amendment (decision #14288), which sets
+#: the hosted arms' scope this replay runs on; a later one goes below it.
+AMENDED_BYTES = 42701
+AMENDED_SHA256 = "bd94faff6e16c917c8c1ecf53398b1dec5d57b2364a6fe17c7fb780c5927363a"
 #: Step 6's check: a blank operator prediction, or a drafted one not confirmed.
 UNREGISTERED = re.compile(r"^PREDICTION \(operator[^)]*\):[ \t_]*$|^PREDICTION .*UNCONFIRMED",
                           re.M)
@@ -1030,12 +1047,16 @@ def registered(path: Path) -> dict:
     """The registration the manifest freezes: the commit, the registered
     text's hash, and the whole document's. Refused unless the document begins
     with the text registered at `REGISTRATION_COMMIT`, which holds every
-    required prediction, and while any `PREDICTION` line in it is blank,
+    required prediction, then the 2026-10-11 amendment the replay's scope
+    follows, and while any `PREDICTION` line in it is blank,
     whitespace or `UNCONFIRMED`, an amendment's included."""
     data = path.read_bytes()
     if hashlib.sha256(data[:REGISTERED_BYTES]).hexdigest() != REGISTERED_SHA256:
         raise Refused(f"{path.name} does not begin with the text registered at "
                       f"{REGISTRATION_COMMIT[:12]}; an amendment goes below it, never in it")
+    if hashlib.sha256(data[:AMENDED_BYTES]).hexdigest() != AMENDED_SHA256:
+        raise Refused(f"{path.name} does not carry the 2026-10-11 amendment as written, which "
+                      "sets the hosted arms' scope; a later amendment goes below it")
     open_lines = UNREGISTERED.findall(data.decode("utf-8"))
     if open_lines:
         raise Refused(f"{len(open_lines)} PREDICTION line(s) in {path.name} are blank or "
@@ -1084,6 +1105,34 @@ def unanswered(tries: list) -> str:
     return "timeout" if last is None else "invalid" if last == 0 else "unavailable"
 
 
+def reused_line(found: dict) -> dict:
+    """The answer line's fields that a step 1 record gives its head: a
+    registered failure stays one, counted and not asked again."""
+    answer = found["answer"] or {}
+    return dict(tier=answer.get("choice"), probabilities=answer.get("probabilities"),
+                confidence=answer.get("confidence"),
+                outcome="ok" if answer else unanswered(found["tries"]),
+                attempts=found["tries"], usd=None)
+
+
+def reuse_faults(lines: list, reuse: dict, rows: list[dict]) -> list[str]:
+    """Why answer lines disagree with step 1's records, one reason each: a
+    head whose state equals its record's must carry that record's answer,
+    reused; no other line may claim reuse."""
+    states = {(r["repository"], r["head"]): r["state"] for r in rows}
+    faults = []
+    for line in lines:
+        ident = (line.get("repository"), line.get("head"))
+        found = reuse.get(ident)
+        if found is not None and found.get("state") == states.get(ident):
+            if not line.get("reused") or any(
+                    line.get(k) != v for k, v in reused_line(found).items()):
+                faults.append("a line that is not step 1's answer for its head")
+        elif line.get("reused"):
+            faults.append("a reused line with no step 1 answer for its head and state")
+    return faults
+
+
 def faithful_gate(folder: Path, db, registration: dict, population_sha: str) -> tuple[dict, dict]:
     """Step 1's passing result, bound to this replay: its answers' hash, and
     every record by head for Jev to reuse, a no-answer included. Nothing it
@@ -1122,17 +1171,19 @@ def faithful_gate(folder: Path, db, registration: dict, population_sha: str) -> 
                       f"{len(lines)} answers match, {FAITHFUL_PASS} of {FAITHFUL_COUNT} needed; "
                       "nothing was asked")
     moved, half = {ident for ident in seen if found[ident]["moved"]}, FAITHFUL_COUNT // 2
+    # Step 1 draws from public managed repositories only. Which paths they
+    # track moves with every merge, so the seeded sample is not drawn again:
+    # the repositories and the moved cohort are what the gate can re-derive.
+    failed: set = set()
+    repos = public_repos(db, failed)
+    unlisted = sorted({repository.lower() for repository, _head in seen} - set(repos))
+    if failed or unlisted:
+        raise Refused(f"the faithfulness result in {folder} cannot be checked against the "
+                      f"public pool: git could not list {len(failed)} public checkout(s), and "
+                      f"{len(unlisted)} drawn repositories are not public managed ones; "
+                      "nothing was asked")
     left = set()
     if len(moved) < half:
-        # The pool reads what public checkouts track now, so only its moved
-        # heads are compared: the seeded sample of the rest moves with it. A
-        # drawn repository git cannot list now leaves its moved heads unknown.
-        repos = public_repos(db)
-        unlisted = sorted({repository.lower() for repository, _head in seen} - set(repos))
-        if unlisted:
-            raise Refused(f"the faithfulness result in {folder} drew from {len(unlisted)} "
-                          "repositories no public checkout lists now, so the moved heads its "
-                          "draw had to take are unknown; nothing was asked")
         pool, _halted = public_pool(list(found.values()), repos, None, frozenset())
         left = {(c["repository"], c["head"]) for c in pool if c["moved"]} - moved
     if len(moved) > half or left:
@@ -1569,7 +1620,7 @@ def cmd_replay(args, out, env) -> int:
                 fh.flush()
                 os.fsync(fh.fileno())
     kept = read_jsonl(answers) if answers.exists() else []
-    faults = record_faults(kept, arm, run_id)
+    faults = record_faults(kept, arm, run_id) or reuse_faults(kept, reuse, rows)
     if faults:
         raise Refused(f"{answers.name} holds lines that are not final answers of this run: "
                       f"{faults[0]}; nothing was asked")
@@ -1592,6 +1643,7 @@ def cmd_replay(args, out, env) -> int:
     manifest.setdefault("instance", secrets.token_hex(8))
     manifest.update(
         registration=registration, faithful=faithful,
+        faithful_folder=str(args.faithful.resolve()),
         heuristic_sha256=HEURISTIC_SHA256, pack=PACK_SHA, system=git_head(FOLDER.parent),
         population={"file": args.population.name, "sha256": population_sha})
     write_json(manifest_path, manifest)
@@ -1681,13 +1733,7 @@ def cmd_replay(args, out, env) -> int:
                 "population": row["population"], "arm": arm, "run_id": run_id}
         found = reuse.get(ident)
         if found is not None and found.get("state") == row["state"]:
-            # A registered failure stays one: its head is counted, not asked again.
-            answer = found["answer"] or {}
-            line.update(tier=answer.get("choice"), probabilities=answer.get("probabilities"),
-                        confidence=answer.get("confidence"),
-                        outcome="ok" if answer else unanswered(found["tries"]),
-                        attempts=found["tries"], usd=None,
-                        reused=args.faithful.name, at=now())
+            line.update(reused_line(found), reused=args.faithful.name, at=now())
             record(line, None)
             continue
         payload, taken = jev.redacted_payload(
