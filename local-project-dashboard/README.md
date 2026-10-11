@@ -8,8 +8,8 @@ the classic Today, Contributions, Writing,
 Operations, Protection, Skills, Documents, Designs, and individual Item pages.
 A `/backlog` address opens Tasks with the same filters (sd:2356); the classic
 Backlog was deleted in sd:2622. Its production launcher uses the
-command pack's provisioned Python interpreter and installed `sd_db` package;
-it refuses an adjacent source import or a mismatched database schema.
+command pack's provisioned Python interpreter and the pack checkout's `lib/sd_db`;
+it refuses any other copy of `sd_db` or a mismatched database schema.
 `./dashboard.sh serve` starts it on loopback;
 `./dashboard.sh test` runs its tests. Capture an ordinary task, edit its title,
 details, priority and due date, change its status, and add or resolve notes.
@@ -143,9 +143,10 @@ The shared library supplies this order to both the dashboard and `sd-status`.
 Each acknowledgement binds exact event IDs and the displayed revision; stale submissions refuse.
 Acknowledgement leaves notification delivery history and local task status separate.
 
-**Queue** at `/queue` shows each registered repository's `sd-ship lane` queue (sd:2585).
+**Queue** at `/queue` shows each managed repository's `sd-ship lane` queue (sd:2585), with the host that runs it.
+The queue lives in the hub database, so a lane hosted on another machine shows too, folder or not (sd:3284); lanes with no row share one Idle line.
 The header shows load5 with its 1- and 15-minute neighbours, and the gate slots in use against `sd gate status`'s cap.
-Each item is one row: merging (phase, elapsed), next (order, gate, head), building, blocked (status, step, the reason's first line, who acts), or landed today (pull request, merge commit).
+Each item is one row: merging (step, holder host, claim age, lease end; a passed lease lights caution), next (order, gate, head), building, blocked (status, step, the reason's first line, who acts), or landed today (pull request, merge commit).
 Blocked entries show for three days; older ones drop off.
 Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names; set `sd.lane_root` where builders write them.
 Up, down, top, hold, release and cancel run `sd-ship lane move|hold|release|cancel` and nothing else.
@@ -155,7 +156,8 @@ On a repository whose `runner_merge` is manual it also offers Approve, `lane ret
 Both pass the head the row showed as `--expected-head`; the verb refuses under the queue's lock an entry that ended at another head since the read.
 Both stay hidden until `sd-ship lane retry --help` names `--expected-head`, so a pack before sd:3268 shows neither.
 The page sends its revision, which covers the pending order, the holds and each blocked entry's head; a queue that changed since the read is refused, and the page reads it again.
-Move, hold and release pass the lane revision `lane list` prints as `--expected-revision`, so the verb checks it again under the queue's lock; cancel takes no revision, so its check is best effort.
+Move, hold, release and cancel pass the lane revision `lane list` prints as `--expected-revision`, so the verb checks it again under the queue's lock.
+Cancel needs it most: `lane cancel` also releases a running entry, so a Cancel on a row the runner claimed since is refused.
 The runner reads the queue at each item boundary, so an edit never changes a merge in progress.
 
 **Protection** at `/protection` is one table, one row per registered repository:
@@ -265,7 +267,7 @@ For a local service, put `{"port": 8767}` in
 ```
 
 The local URL is `http://127.0.0.1:8767`. The installer backs up the existing
-LaunchAgent and checks the new process, schema and installed library before
+LaunchAgent and checks the new process, schema and library before
 accepting the replacement. Local installation does not call Tailscale. See
 [RUNTIME.md](RUNTIME.md) for configuration, rollback boundaries and the
 private front door. Run in the foreground with `./dashboard.sh serve`, or run

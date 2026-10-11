@@ -18,6 +18,9 @@ from support import NOW, ScreenCase, record_cost
 from test_workflow_actions import BrowserSession
 
 SD_DB = Path(__file__).resolve().parents[2] / "local-sd-db"
+#: The pack whose `bin/sd-db` the verb runs (sd:3279). `sd-db.sh` defaults `SD_PACK_ROOT` under `$HOME`, which these
+#: tests point at a temporary store, so name the pack the real home holds unless the gate already set one.
+PACK = os.environ.get("SD_PACK_ROOT") or str(Path.home() / "repos/platypeeps/sd-ai-command-pack")
 
 
 class Seeds:
@@ -229,7 +232,7 @@ class UsageApi(Seeds, BrowserSession):
         self.assertIn('"held": 12.0', before)
         self.assertEqual(self.connection.execute("SELECT source FROM cost WHERE call_id = 'orphan'").fetchone()[0],
                          "sending")
-        environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB)}
+        environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB), "SD_PACK_ROOT": PACK}
         environment.pop("XDG_STATE_HOME", None)
         printed = subprocess.run([str(SD_DB / "sd-db.sh"), "usage", "--month", "2026-09", "--json"],
                                  capture_output=True, text=True, input="", env=environment)
@@ -241,7 +244,7 @@ class UsageApi(Seeds, BrowserSession):
 
     def test_the_api_serves_the_verbs_json_byte_for_byte(self):
         self.month()
-        environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB)}
+        environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB), "SD_PACK_ROOT": PACK}
         environment.pop("XDG_STATE_HOME", None)
         verb = subprocess.run([str(SD_DB / "sd-db.sh"), "usage", "--month", "2026-09", "--json"],
                               capture_output=True, text=True, input="", env=environment)
@@ -312,7 +315,7 @@ class MergedCaps(Seeds, BrowserSession):
 
     def test_the_api_and_the_verb_carry_the_merged_caps_in_the_same_bytes(self):
         body = self.request(f"/api/usage?month={self.this_month}", headers={"Cookie": self.cookie})[2]
-        environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB)}
+        environment = {**os.environ, "HOME": str(self.home), "PYTHONPATH": str(SD_DB), "SD_PACK_ROOT": PACK}
         environment.pop("XDG_STATE_HOME", None)
         verb = subprocess.run([str(SD_DB / "sd-db.sh"), "usage", "--month", self.this_month, "--json"],
                               capture_output=True, text=True, input="", env=environment)

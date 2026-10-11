@@ -14,6 +14,22 @@ it adds no asset pipeline and changes nothing about how `static/` is served.
 
 from __future__ import annotations
 
-__all__ = ["__version__"]
+import os
+from pathlib import Path
+
+__all__ = ["__version__", "pack_library"]
 
 __version__ = "0.1.0"
+
+
+def pack_library():
+    """The command pack checkout's `lib/`, which holds `sd_db` (sd:2997).
+
+    `SD_PACK_ROOT` names the checkout, as for `sd-db.sh`; unset, it is the
+    home clone. `bootstrap.py` and the restart probe put this folder first on
+    `sys.path`, so no copy installed in the interpreter answers in its place.
+    Here and not in `runtime`, so the bootstrap reads it before it runs that
+    module as `__main__`.
+    """
+    root = os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack"
+    return Path(root).expanduser().resolve() / "lib"

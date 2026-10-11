@@ -34,6 +34,11 @@ state holding a path sign, or a `/` in anything but a path a public managed
 repository tracks; Kev, which runs here, is asked about every state (the
 2026-10-11 amendment, decision #14288).
 
+**It draws only public-repository states** (operator, 2026-10-11): those of a
+public managed repository whose changed paths that repository still tracks.
+The privacy check runs on every state of that pool before the draw, so the
+sample leans to public-repository work and the results say so.
+
 Stdlib and `sd_db`, the one opener of the workflow database. Raw output goes
 to `--out`, outside the checkout.
 """
@@ -362,19 +367,26 @@ def git(root: str, *argv: str) -> bytes | None:
 
 
 def public_paths(db) -> frozenset:
-    """Every path `git ls-files` lists in a managed repository whose last
-    observed visibility is public, from its local checkout, read once per run.
+    """Every path a public managed repository tracks (`public_repos`)."""
+    return frozenset().union(*public_repos(db).values())
+
+
+def public_repos(db) -> dict[str, frozenset]:
+    """Each public managed repository's `owner/name`, lower-cased, with every
+    path `git ls-files` lists in its local checkouts, read once per run. A
+    managed repository is public when its last observed visibility is.
     Public is what `sd shadow sync` stored (`sd_db.protection.alerts`), the
     same reading Health's Security area uses. `protection.rows` lends an
     unobserved checkout the row of another with the same stored remote, so
     the checkout's own `origin` must be that remote (codex pass on round 4).
     A repository not read as public, a checkout whose `origin` differs or is
-    missing, or one git cannot list, adds nothing: unknown is not public."""
+    missing, or one git cannot list, adds nothing: unknown is not public.
+    Checkouts of one repository add to one entry."""
     from sd_db import protection
     from sd_db.paths import home_absolute
     with contextlib.closing(open_ro(db)) as connection:
         repos = protection.rows(connection)
-    tracked = set()
+    tracked: dict[str, set] = {}
     for repo in repos:
         part = (repo.get("alerts") or {}).get("secret_scanning")
         if not repo["managed"] or not isinstance(part, dict) or part.get("visibility") != "public":
@@ -387,14 +399,15 @@ def public_paths(db) -> frozenset:
         listed = git(root, "ls-files", "-z")
         if listed is None:
             continue
+        names = tracked.setdefault(repo["slug"].lower(), set())
         for raw in listed.split(b"\0"):
             try:
                 name = raw.decode("utf-8")
             except UnicodeDecodeError:
                 continue
             if name:
-                tracked.add(name)
-    return frozenset(tracked)
+                names.add(name)
+    return {slug: frozenset(names) for slug, names in tracked.items()}
 
 
 def private_path(state: str, home: str | None, public: frozenset = frozenset()) -> str | None:
@@ -455,18 +468,35 @@ def candidates(db) -> list[dict]:
     return sorted(found.values(), key=lambda c: (c["repository"], c["head"]))
 
 
+def public_pool(found: list[dict], repos: dict, home: str | None,
+                public: frozenset) -> tuple[list[dict], int]:
+    """The states step 1 may draw (operator, 2026-10-11): those of a public
+    managed repository whose changed paths it still tracks. Also how many of
+    them the privacy check halts, which must be none before any call."""
+    pool, halted = [], 0
+    for one in found:
+        tracked = repos.get(one["repository"].lower())
+        if tracked is None or not all(
+                path in tracked for path in json.loads(one["state"])["changed_paths"]):
+            continue
+        pool.append(one)
+        halted += private_path(one["state"], home, public) is not None
+    return pool, halted
+
+
 def draw(pool: list[dict], count: int = FAITHFUL_COUNT, seed: int = SEED,
          exclude=frozenset()) -> list[dict]:
-    """Half from moved heads, half from the rest, seeded; `exclude` holds the
-    heads an earlier attempt drew, so a second attempt uses new states."""
+    """Half from moved heads, or every moved head when there are fewer, the
+    rest from the others, seeded; `exclude` holds the heads an earlier attempt
+    drew, so a second attempt uses new states."""
     rng = random.Random(seed)
     usable = [c for c in pool if (c["repository"], c["head"]) not in exclude]
     moved = [c for c in usable if c["moved"]]
     kept = [c for c in usable if not c["moved"]]
-    half = count // 2
-    if len(moved) < half or len(kept) < count - half:
+    take = min(count // 2, len(moved))
+    if len(kept) < count - take:
         raise Refused(f"too few states to draw: {len(moved)} moved, {len(kept)} not")
-    return rng.sample(moved, half) + rng.sample(kept, count - half)
+    return rng.sample(moved, take) + rng.sample(kept, count - take)
 
 
 def jev_env(env, ledger: Path, corpus: Path) -> dict:
@@ -561,14 +591,14 @@ def cmd_faithful(args, out, env) -> int:
             if line.strip():
                 row = json.loads(line)
                 exclude.add((row["repository"], row["head"]))
-    chosen = draw(candidates(db), exclude=exclude)
-    home = env.get("HOME")
-    public = public_paths(db)
-    for one in chosen:
-        hit = private_path(one["state"], home, public)
-        if hit is not None:
-            raise Refused(f"privacy halt: a state for {one['head'][:12]} holds a path "
-                          "sign or an untracked path; the operator reviews before any resume")
+    repos = public_repos(db)
+    pool, halted = public_pool(candidates(db), repos, env.get("HOME"),
+                               frozenset().union(*repos.values()))
+    if halted:
+        raise Refused(f"privacy halt: {halted} of {len(pool)} states in the public pool "
+                      "hold a path sign or an untracked path; the operator reviews "
+                      "before any resume")
+    chosen = draw(pool, exclude=exclude)
     args.out.mkdir(parents=True, exist_ok=True)
     answers = args.out / "answers.jsonl"
     if answers.exists():
@@ -589,6 +619,8 @@ def cmd_faithful(args, out, env) -> int:
     summary = {"asked": len(chosen), "matched": matched,
                "answered": answered,
                "moved_drawn": sum(1 for c in chosen if c["moved"]),
+               "pool": len(pool), "pool_moved": sum(1 for c in pool if c["moved"]),
+               "pool_halted": halted, "population": "public managed repositories only",
                "threshold": FAITHFUL_PASS, "passed": matched >= FAITHFUL_PASS,
                "seed": SEED, "finished": datetime.datetime.now(datetime.timezone.utc)
                .isoformat(timespec="seconds")}

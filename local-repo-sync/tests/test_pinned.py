@@ -13,6 +13,7 @@ without it.
 
 import pathlib
 import shutil
+import subprocess
 import sys
 import unittest
 
@@ -46,6 +47,48 @@ esac
 """
 
 
+# launchd for refresh's library consumers (sd:3279): a file per loaded label
+# under LAUNCHD_STATE; print exits 113, launchctl's "could not find service",
+# for one that is not. bootout and bootstrap go to MAKE_LOG, so a case reads
+# their order against make setup. LAUNCHCTL_FAIL names the one call that
+# fails, "<verb> <label>"; LAUNCHCTL_PRINT_FAIL a label whose print fails
+# otherwise. LAUNCHCTL_UNLOAD_DELAY keeps a booted-out label loaded for that
+# many prints, as launchd can; LAUNCHCTL_NO_LOAD a label whose bootstrap
+# exits 0 and loads nothing. A bootstrap of a loaded label fails, as it does.
+LAUNCHCTL_STUB = """#!/bin/sh
+case "$1" in
+  print)
+    label=${2##*/}
+    [ "$label" != "${LAUNCHCTL_PRINT_FAIL:-}" ] || exit 5
+    if [ -e "$LAUNCHD_STATE/$label.pending" ]; then
+      n=$(cat "$LAUNCHD_STATE/$label.pending")
+      if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$LAUNCHD_STATE/$label.pending"; exit 0; fi
+      rm -f "$LAUNCHD_STATE/$label" "$LAUNCHD_STATE/$label.pending"
+    fi
+    [ -e "$LAUNCHD_STATE/$label" ] || exit 113
+    exit 0 ;;
+  bootout) label=${2##*/} ;;
+  bootstrap) label=$(basename "$3" .plist) ;;
+  *) echo "launchctl stub: unexpected $*" >&2; exit 2 ;;
+esac
+printf 'launchctl %s %s\\n' "$1" "$label" >> "$MAKE_LOG"
+[ "$1 $label" != "${LAUNCHCTL_FAIL:-}" ] || exit 5
+if [ "$1" = bootout ]; then
+  if [ -n "${LAUNCHCTL_UNLOAD_DELAY:-}" ]; then
+    echo "$LAUNCHCTL_UNLOAD_DELAY" > "$LAUNCHD_STATE/$label.pending"
+  else
+    rm -f "$LAUNCHD_STATE/$label"
+  fi
+else
+  [ ! -e "$LAUNCHD_STATE/$label" ] || exit 5
+  [ "$label" = "${LAUNCHCTL_NO_LOAD:-}" ] || : > "$LAUNCHD_STATE/$label"
+fi
+"""
+
+SERVE = "local.system-tools.sd-serve"
+DASHBOARD = "local.system-tools.sd-dashboard"
+
+
 class PinFixture(HygieneFixture):
     def __init__(self):
         super().__init__()
@@ -55,6 +98,11 @@ class PinFixture(HygieneFixture):
         self.others = 0
         (self.bin / "sd").write_text(SD_STUB)
         (self.bin / "sd").chmod(0o755)
+        (self.bin / "launchctl").write_text(LAUNCHCTL_STUB)
+        (self.bin / "launchctl").chmod(0o755)
+        self.launchd = self.tmp / "launchd"
+        self.launchd.mkdir()
+        self.database = self.tmp / "sd.db"
         # The drain reads the repo registry through this checkout's sd-db.sh;
         # the stub prints REPO_LIST, or fails with REPO_LIST_RC.
         sd_db = self.tmp / "local-sd-db" / "sd-db.sh"
@@ -71,7 +119,9 @@ class PinFixture(HygieneFixture):
 
     def run(self, *args, expect=0, extra_env=None):
         env = {"MAKE_LOG": str(self.make_log), "SD_LOG": str(self.sd_log),
-               "SD_LANE_ROOT": str(self.lanes), **(extra_env or {})}
+               "SD_LANE_ROOT": str(self.lanes), "LAUNCHD_STATE": str(self.launchd),
+               "REPO_SYNC_SD_DB": str(self.database), "SYSTEM_TOOLS_LABEL_PREFIX": "local.system-tools",
+               "XDG_STATE_HOME": str(self.tmp / "state"), **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 
     def head(self, repo):
@@ -437,8 +487,44 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual([], [c for c in f.git_verbs() if c.startswith("submodule")])
 
     def test_refresh_prints_the_migrate_remedy_when_the_schema_changes(self):
-        """NEW. A new local-sd-db SCHEMA_VERSION needs a migrate. Refresh
-        names the steps and runs none of them."""
+        """NEW. A new SCHEMA_VERSION in the pack's lib/sd_db needs a migrate
+        (sd:3279: the pack owns sd_db). Refresh names the pack's bin/sd-db
+        steps and runs none of them."""
+        f = self.fixture()
+        repo = f.repo()
+        schema = "lib/sd_db/schema.py"
+        (repo / "lib" / "sd_db").mkdir(parents=True)
+        f.commit(repo, schema, "SCHEMA_VERSION = 24\n", "schema 24")
+        f.git(repo, "push", "-q", "origin", "main")
+        f.pin(repo)
+        f.advance_origin(repo, path=schema, content="SCHEMA_VERSION = 25\n")
+
+        result = f.run("refresh", expect=0)
+
+        self.assertIn("SCHEMA_VERSION 24 -> 25", result.stdout)
+        self.assertIn(f"{repo}/bin/sd-db backup", result.stdout)
+        self.assertIn(f"{repo}/bin/sd-db migrate", result.stdout)
+        migrates = [c for c in f.git_verbs() if "migrate" in c]
+        self.assertEqual([], migrates)
+
+    def test_refresh_is_quiet_about_an_unchanged_schema(self):
+        """NEW. No migrate remedy when SCHEMA_VERSION did not move."""
+        f = self.fixture()
+        repo = f.repo()
+        schema = "lib/sd_db/schema.py"
+        (repo / "lib" / "sd_db").mkdir(parents=True)
+        f.commit(repo, schema, "SCHEMA_VERSION = 24\n", "schema 24")
+        f.git(repo, "push", "-q", "origin", "main")
+        f.pin(repo)
+        f.advance_origin(repo)
+
+        result = f.run("refresh", expect=0)
+
+        self.assertNotIn("migrate", result.stdout)
+
+    def test_systems_frozen_copy_is_not_the_schema(self):
+        """NEW (sd:3279). System's local-sd-db is frozen, then deleted; it is
+        not the library the hub runs, so its schema file asks for nothing."""
         f = self.fixture()
         repo = f.repo()
         schema = "local-sd-db/sd_db/schema.py"
@@ -450,26 +536,143 @@ class RefreshTest(unittest.TestCase):
 
         result = f.run("refresh", expect=0)
 
-        self.assertIn("SCHEMA_VERSION 24 -> 25", result.stdout)
-        self.assertIn("sd-db.sh migrate", result.stdout)
-        self.assertIn("sd-db.sh backup", result.stdout)
-        migrates = [c for c in f.git_verbs() if "migrate" in c]
-        self.assertEqual([], migrates)
-
-    def test_refresh_is_quiet_about_an_unchanged_schema(self):
-        """NEW. No migrate remedy when SCHEMA_VERSION did not move."""
-        f = self.fixture()
-        repo = f.repo()
-        schema = "local-sd-db/sd_db/schema.py"
-        (repo / "local-sd-db" / "sd_db").mkdir(parents=True)
-        f.commit(repo, schema, "SCHEMA_VERSION = 24\n", "schema 24")
-        f.git(repo, "push", "-q", "origin", "main")
-        f.pin(repo)
-        f.advance_origin(repo)
-
-        result = f.run("refresh", expect=0)
-
         self.assertNotIn("migrate", result.stdout)
+
+
+class ConsumersTest(unittest.TestCase):
+    """sd:3279: refresh stops the hub's sd_db consumers before it moves the
+    pack or system, and starts them once the database's schema is the pack
+    lib's. Each imports lazily, so a running one would load new modules
+    into an old process. Design D2 steps 1 and 5."""
+
+    def setUp(self):
+        self.f = PinFixture()
+        self.addCleanup(self.f.destroy)
+        self.pack = self.f.repo("a/pack")
+        (self.pack / "bin").mkdir()
+        (self.pack / "lib/sd_db").mkdir(parents=True)
+        self.f.commit(self.pack, "bin/sd_install.py", "", "installer")
+        self.f.commit(self.pack, "lib/sd_db/schema.py", "SCHEMA_VERSION = 5\n", "schema 5")
+        self.f.git(self.pack, "push", "-q", "origin", "main")
+        self.f.pin(self.pack)
+        self.new = self.f.advance_origin(self.pack)
+        self.schema(5)
+        self.load(SERVE, DASHBOARD)
+        self.stopped = self.f.tmp / "state/repo-sync/refresh-stopped"
+
+    def schema(self, version):
+        # The sqlite3 CLI, as refresh reads it: only sd_db opens the store from Python.
+        subprocess.run(["sqlite3", str(self.f.database), f"PRAGMA user_version = {version}"], check=True)
+
+    def load(self, *labels):
+        for label in labels:
+            (self.f.launchd / label).touch()
+
+    def loaded(self):
+        return sorted(p.name for p in self.f.launchd.iterdir() if p.suffix != ".pending")
+
+    def test_consumers_stop_before_the_move_and_start_after_it(self):
+        self.f.run("refresh", expect=0)
+        self.assertEqual([f"launchctl bootout {SERVE}", f"launchctl bootout {DASHBOARD}",
+                          f"-C {self.pack} setup",
+                          f"launchctl bootstrap {SERVE}", f"launchctl bootstrap {DASHBOARD}"],
+                         self.f.make_calls())
+        self.assertEqual(self.new, self.f.head(self.pack))
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_a_database_at_another_schema_leaves_them_stopped_until_a_rerun(self):
+        self.schema(4)
+        result = self.f.run("refresh", expect=1)
+        self.assertEqual([], self.loaded())
+        self.assertIn("database schema 4, the pack's lib/ 5", result.stdout)
+        self.assertIn(f"{self.pack}/bin/sd-db migrate", result.stdout)
+        self.assertEqual(f"{SERVE}\n{DASHBOARD}\n", self.stopped.read_text())
+        self.schema(5)
+        self.f.run("refresh", expect=0)
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_a_stop_that_fails_moves_nothing_and_starts_the_stopped_one_again(self):
+        before = self.f.head(self.pack)
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_FAIL": f"bootout {DASHBOARD}"})
+        self.assertIn("nothing moved", result.stdout)
+        self.assertEqual(before, self.f.head(self.pack))
+        self.assertNotIn(f"-C {self.pack} setup", self.f.make_calls())
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        # Its bootout fails again on start, so it stays listed for the next refresh.
+        self.assertEqual(f"{DASHBOARD}\n", self.stopped.read_text())
+
+    def test_a_move_that_fails_still_starts_them(self):
+        self.f.run("refresh", expect=1, extra_env={"MAKE_RC": "2"})
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+
+    def test_a_start_that_fails_stays_listed_for_the_rerun(self):
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_FAIL": f"bootstrap {SERVE}"})
+        self.assertIn(f"bootstrap {SERVE}", result.stdout)
+        self.assertEqual([], self.loaded())
+        self.assertEqual(f"{SERVE}\n{DASHBOARD}\n", self.stopped.read_text())
+        self.f.run("refresh", expect=0)
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+
+    def test_a_refresh_killed_between_stop_and_start_is_finished_by_the_next(self):
+        # The state a kill after both bootouts leaves: both listed, neither loaded.
+        for label in (SERVE, DASHBOARD):
+            (self.f.launchd / label).unlink()
+        self.stopped.parent.mkdir(parents=True)
+        self.stopped.write_text(f"{SERVE}\n{DASHBOARD}\n")
+        self.f.run("refresh", expect=0)
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    # Round 2, class: a launchd state refresh assumed and never confirmed.
+
+    def test_the_move_waits_until_launchd_has_unloaded_them(self):
+        seen = self.f.tmp / "seen"
+        self.f.run("refresh", expect=0, extra_env={
+            "LAUNCHCTL_UNLOAD_DELAY": "3", "MAKE_HOOK": f'ls "$LAUNCHD_STATE" > {seen}'})
+        self.assertEqual("", seen.read_text())
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_an_unload_that_never_comes_moves_nothing_and_keeps_the_record(self):
+        before = self.f.head(self.pack)
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_UNLOAD_DELAY": "100000"})
+        self.assertIn(f"{SERVE} did not unload", result.stdout)
+        self.assertIn("nothing moved", result.stdout)
+        self.assertEqual(before, self.f.head(self.pack))
+        self.assertNotIn(f"-C {self.pack} setup", self.f.make_calls())
+        self.assertIn(SERVE, self.stopped.read_text())
+
+    def test_a_print_that_fails_is_no_answer_and_moves_nothing(self):
+        before = self.f.head(self.pack)
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_PRINT_FAIL": DASHBOARD})
+        self.assertIn(f"launchctl print {DASHBOARD}", result.stdout)
+        self.assertEqual(before, self.f.head(self.pack))
+
+    def test_a_listed_consumer_still_loaded_is_restarted_not_counted(self):
+        # A registration that outlived its bootout, or a refresh killed after
+        # the list write and before the bootout: still the old process.
+        self.stopped.parent.mkdir(parents=True)
+        self.stopped.write_text(f"{SERVE}\n{DASHBOARD}\n")
+        other = self.f.repo("a/other")
+        self.f.run("refresh", str(other), expect=0)
+        self.assertEqual([f"launchctl bootout {SERVE}", f"launchctl bootstrap {SERVE}",
+                          f"launchctl bootout {DASHBOARD}", f"launchctl bootstrap {DASHBOARD}"],
+                         self.f.make_calls())
+        self.assertFalse(self.stopped.exists())
+
+    def test_a_bootstrap_that_loads_nothing_keeps_the_record(self):
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_NO_LOAD": SERVE})
+        self.assertIn(f"{SERVE} did not load", result.stdout)
+        self.assertIn(SERVE, self.stopped.read_text())
+
+    def test_a_refresh_of_no_hub_checkout_stops_nothing(self):
+        other = self.f.repo("a/other")
+        self.f.pin(other)
+        self.f.advance_origin(other)
+        self.f.run("refresh", str(other), expect=0)
+        self.assertEqual([], [c for c in self.f.make_calls() if c.startswith("launchctl")])
 
 
 if __name__ == "__main__":

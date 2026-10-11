@@ -420,16 +420,17 @@ side_branch_diverged() {
 }
 
 # A satellite follows the hub (sd:3100): `$HOME/.config/sd/hub.json`, the
-# file local-sd-db's hub.py reads, makes this machine one.
+# file sd_db's hub.py reads, makes this machine one.
 is_satellite() {
   [ -e "$HOME/.config/sd/hub.json" ]
 }
 
 # Prints which hub checkout $1 is, `system` or `pack`, or returns 1. Only
-# `follow` moves these on a satellite.
+# `follow` moves these on a satellite. System by this script alone: the pack
+# owns sd_db, and system's local-sd-db goes (sd:3279).
 hub_checkout() {
   if [ -f "$1/bin/sd_install.py" ]; then echo pack
-  elif [ -f "$1/local-sd-db/sd_db/schema.py" ] && [ -f "$1/local-repo-sync/repo-sync.sh" ]; then echo system
+  elif [ -f "$1/local-repo-sync/repo-sync.sh" ]; then echo system
   else return 1
   fi
 }
@@ -515,10 +516,11 @@ sync() {
   echo "all repos synced"
 }
 
-# The SCHEMA_VERSION that local-sd-db holds at commit $2 of checkout $1, or
-# nothing when that commit has no local-sd-db.
+# The SCHEMA_VERSION that the pack's lib/sd_db holds at commit $2 of checkout
+# $1, or nothing when that commit has no lib/sd_db. Only the pack's: it owns
+# sd_db, and system's frozen local-sd-db is not the library the hub runs (sd:3279).
 pin_schema() {
-  git -C "$1" show "$2:local-sd-db/sd_db/schema.py" 2>/dev/null \
+  git -C "$1" show "$2:lib/sd_db/schema.py" 2>/dev/null \
     | sed -n 's/^SCHEMA_VERSION = \([0-9][0-9]*\).*/\1/p' | head -1
 }
 
@@ -559,7 +561,7 @@ refresh_one() {
 
 # Moves checkout $1 to commit $2, detached, as `refresh` or `follow` ($3),
 # which reports "$4: <old> -> <new>". Then `make setup` in the pack, and the
-# migrate steps when local-sd-db's SCHEMA_VERSION changed. Returns 1 when a
+# migrate steps when lib/sd_db's SCHEMA_VERSION changed. Returns 1 when a
 # step failed.
 pin_move() {
   m_dir=$1; m_rev=$2
@@ -597,13 +599,121 @@ pin_move() {
   m_s_old=$(pin_schema "$m_dir" "$m_old")
   m_s_new=$(pin_schema "$m_dir" HEAD)
   if [ -n "$m_s_new" ] && [ "$m_s_old" != "$m_s_new" ]; then
-    echo "note: local-sd-db SCHEMA_VERSION ${m_s_old:-none} -> $m_s_new; the database needs a migrate."
+    echo "note: lib/sd_db SCHEMA_VERSION ${m_s_old:-none} -> $m_s_new; the database needs a migrate."
     echo "  Stop the dashboard, the runner and sd-serve, then run:"
-    echo "    $m_dir/local-sd-db/sd-db.sh backup"
-    echo "    $m_dir/local-sd-db/sd-db.sh migrate"
+    echo "    $m_dir/bin/sd-db backup"
+    echo "    $m_dir/bin/sd-db migrate"
     echo "  and start them again. $3 migrates nothing."
   fi
   return "$m_rc"
+}
+
+# The hub's long-running sd_db consumers, in start order (sd:3279). Each
+# imports lazily from the system and pack checkouts, so none may run while
+# they move: a new module in an old process serves a mixed build. Refresh
+# stops them before the move and starts them after it (pack design D2,
+# steps 1 and 5). REFRESH_STOPPED lists each one stopped and not started
+# again, written before its bootout, so a killed refresh's rerun starts it.
+CONSUMERS="sd-serve sd-dashboard"
+REFRESH_STOPPED="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-stopped"
+LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+
+# Prints launchd's state of label $1, loaded or unloaded. 113 is launchctl's
+# "could not find service"; any other failure is no answer and returns 1.
+svc_state() {
+  # set -e would end the caller's $( ) subshell at a 113 before the case.
+  s_rc=0
+  launchctl print "gui/$(id -u)/$1" > /dev/null 2>&1 || s_rc=$?
+  case $s_rc in
+    0) echo loaded ;;
+    113) echo unloaded ;;
+    *) return 1 ;;
+  esac
+}
+
+# Waits up to 10 s until label $1 reads $2. bootout and bootstrap can return
+# before launchd has changed the registration (the dashboard's
+# _wait_unloaded, sd:3279). No answer keeps waiting, so it is never a pass.
+svc_wait() {
+  w_n=0
+  while [ "$(svc_state "$1" || :)" != "$2" ]; do
+    w_n=$((w_n + 1))
+    [ "$w_n" -le 50 ] || return 1
+    sleep 0.2
+  done
+}
+
+# Boots out label $1 and waits until launchd has unloaded it.
+svc_stop() {
+  if ! launchctl bootout "gui/$(id -u)/$1"; then
+    echo "!!! failed: launchctl bootout $1"
+    return 1
+  fi
+  if ! svc_wait "$1" unloaded; then
+    echo "!!! failed: $1 did not unload within 10 s of its bootout"
+    return 1
+  fi
+}
+
+# Boots out each loaded consumer, listed first. Returns 1 when launchd gives
+# no answer, a list write fails, or one does not unload.
+stop_consumers() {
+  mkdir -p "$(dirname "$REFRESH_STOPPED")" || return 1
+  for c in $CONSUMERS; do
+    c_label="$LABEL_PREFIX.$c"
+    if ! c_state=$(svc_state "$c_label"); then
+      echo "!!! failed: launchctl print $c_label gave no answer"
+      return 1
+    fi
+    [ "$c_state" = loaded ] || continue
+    if ! grep -qxF "$c_label" "$REFRESH_STOPPED" 2>/dev/null; then
+      { cat "$REFRESH_STOPPED" 2>/dev/null || :; echo "$c_label"; } > "$REFRESH_STOPPED.tmp" \
+        && mv "$REFRESH_STOPPED.tmp" "$REFRESH_STOPPED" || return 1
+    fi
+    svc_stop "$c_label" || return 1
+    echo "stopped $c_label"
+  done
+}
+
+# Starts each listed consumer, once the database's schema is the pack lib's:
+# code at another schema refuses the database. A listed one still loaded is
+# the old process, so it is stopped first. A line leaves the list only once
+# launchd shows the fresh load. Returns 1, the list kept, when the schema
+# differs or cannot be read, or a step fails.
+start_consumers() {
+  [ -s "$REFRESH_STOPPED" ] || return 0
+  c_pack=$(hub_dir pack)
+  c_lib=$(sed -n 's/^SCHEMA_VERSION = \([0-9][0-9]*\).*/\1/p' "$c_pack/lib/sd_db/schema.py" 2>/dev/null | head -1)
+  c_db=$(sqlite3 -readonly "${REPO_SYNC_SD_DB:-$HOME/.local/share/sd/sd.db}" 'PRAGMA user_version' 2>/dev/null || :)
+  if [ -z "$c_lib" ] || [ "$c_db" != "$c_lib" ]; then
+    echo "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")(database schema ${c_db:-unknown}, the pack's lib/ ${c_lib:-unknown})"
+    echo "  after $c_pack/bin/sd-db backup and $c_pack/bin/sd-db migrate, refresh again to start them"
+    return 1
+  fi
+  for c in $CONSUMERS; do
+    c_label="$LABEL_PREFIX.$c"
+    grep -qxF "$c_label" "$REFRESH_STOPPED" || continue
+    if ! c_state=$(svc_state "$c_label"); then
+      echo "!!! failed: launchctl print $c_label gave no answer; left stopped, refresh again to start it"
+      return 1
+    fi
+    if [ "$c_state" = loaded ] && ! svc_stop "$c_label"; then
+      echo "  left listed; refresh again to restart it"
+      return 1
+    fi
+    if ! launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$c_label.plist"; then
+      echo "!!! failed: launchctl bootstrap $c_label; left stopped, refresh again to start it"
+      return 1
+    fi
+    if ! svc_wait "$c_label" loaded; then
+      echo "!!! failed: $c_label did not load within 10 s of its bootstrap; left listed, refresh again to start it"
+      return 1
+    fi
+    grep -vxF "$c_label" "$REFRESH_STOPPED" > "$REFRESH_STOPPED.tmp" || :
+    mv "$REFRESH_STOPPED.tmp" "$REFRESH_STOPPED" || return 1
+    echo "started $c_label"
+  done
+  rm -f "$REFRESH_STOPPED"
 }
 
 # Refreshes each path given, or with none every pinned checkout in the conf.
@@ -623,9 +733,9 @@ refresh() {
       return 0
     fi
   fi
-  # System moves first, whatever the conf or argument order: the pack's make
-  # setup installs sd_db from the system checkout and refuses one older than
-  # the copy installed (sd:3218).
+  # System moves first, whatever the conf or argument order. The reason, the
+  # pack's make setup installing sd_db from system (sd:3218), went with the
+  # move into the pack (sd:2997); the order stays because it costs nothing.
   while IFS= read -r r_target; do
     [ "$(hub_checkout "$r_target" || true)" != system ] || printf '%s\n' "$r_target"
   done < "$TMPD/targets" > "$TMPD/ordered"
@@ -633,11 +743,22 @@ refresh() {
     [ "$(hub_checkout "$r_target" || true)" = system ] || printf '%s\n' "$r_target"
   done < "$TMPD/targets" >> "$TMPD/ordered"
   r_failed=0
-  # The list is on fd 3, so a git or make that reads stdin cannot eat it.
-  while IFS= read -r r_target <&3; do
-    refresh_one "$r_target" || r_failed=$((r_failed + 1))
-    echo
-  done 3< "$TMPD/ordered"
+  r_hub=""
+  while IFS= read -r r_target; do
+    if hub_checkout "$r_target" > /dev/null; then r_hub=1; fi
+  done < "$TMPD/ordered"
+  if [ -n "$r_hub" ] && ! stop_consumers; then
+    echo "!!! refused: a library consumer did not stop; nothing moved"
+    r_failed=1
+  else
+    # The list is on fd 3, so a git or make that reads stdin cannot eat it.
+    while IFS= read -r r_target <&3; do
+      refresh_one "$r_target" || r_failed=$((r_failed + 1))
+      echo
+    done 3< "$TMPD/ordered"
+  fi
+  # A failed move still starts them: the checkouts stay where git left them.
+  start_consumers || r_failed=$((r_failed + 1))
   if [ "$r_failed" -eq 0 ] && ! push_pins; then
     r_failed=$((r_failed + 1))
   fi
@@ -845,8 +966,8 @@ follow() {
   done 3< "$TMPD/moves"
   echo "----------------------------------------"
   # The two update stages that need the locks run here, with the lanes still
-  # held, so they never run under a lane run (sd:3168): satellite installs the
-  # hub's sd_db into the pack's venv, and bin relinks the commands. Neither
+  # held, so they never run under a lane run (sd:3168): satellite writes the
+  # hub's hub.json and providers.yaml, and bin relinks the commands. Neither
   # loads or unloads a LaunchAgent. A full update would not do: its cron and agents stages
   # reinstall this job's own LaunchAgent, and launchd then boots out the
   # running follow mid-update. Those stages run in the job's chained update,
@@ -1883,8 +2004,15 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              refuses a checkout with uncommitted changes or a submodule,
              never overwrites an ignored file, and leaves a checkout on a
              branch alone. In the command pack (bin/sd_install.py) it then
-             runs `make setup`. When local-sd-db's SCHEMA_VERSION changed it
-             prints the backup and migrate steps and runs neither. Prints the
+             runs `make setup`. When the pack's lib/sd_db SCHEMA_VERSION changed it
+             prints the backup and migrate steps and runs neither. Moving
+             system or the pack, it boots out <prefix>.sd-serve and
+             <prefix>.sd-dashboard first, waiting up to 10 s for each to
+             unload, and bootstraps them after, once the
+             database's user_version is the pack lib's SCHEMA_VERSION;
+             otherwise they stay stopped, listed in
+             ~/.local/state/repo-sync/refresh-stopped for the next refresh,
+             and refresh exits 1. Prints the
              old and new sha; exits 1 if any checkout failed. After a
              refresh with no failure, the hub pushes one annotated tag,
              hub-pin, to the system origin for `follow`: it names the

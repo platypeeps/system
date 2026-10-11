@@ -64,12 +64,31 @@ changes or a submodule, never overwrites an ignored file that origin now
 tracks (the switch fails and nothing moves), and leaves a checkout on a
 branch alone. In the command pack (it has
 `bin/sd_install.py`) it then runs `make setup`. It moves the system
-checkout first, whatever the conf or argument order: the pack's setup
-installs `sd_db` from it and refuses a system older than the copy installed
-(sd:3218). When local-sd-db's
-`SCHEMA_VERSION` changed, it prints the steps: stop the dashboard, the runner
-and `sd-serve`, run `sd-db.sh backup`, then `sd-db.sh migrate`. It runs
-neither. It exits 1 when any checkout failed.
+checkout first, whatever the conf or argument order (sd:3218); it knows
+that checkout by `local-repo-sync/repo-sync.sh`. When the pack's
+`lib/sd_db` `SCHEMA_VERSION` changed, it prints the steps: stop the dashboard,
+the runner and `sd-serve`, run the pack's `bin/sd-db backup`, then
+`bin/sd-db migrate`. It runs neither. It exits 1 when any checkout failed.
+
+When it moves system or the pack, refresh first stops `sd-serve` and the
+dashboard (`<prefix>.sd-serve` and `<prefix>.sd-dashboard`, the prefix from
+`SYSTEM_TOOLS_LABEL_PREFIX`) with `launchctl bootout` (sd:3279). Each imports
+`sd_db` lazily from those checkouts, so a running one would load new modules
+into an old process. After each bootout it waits up to 10 s until
+`launchctl print` says the service is gone; `bootout` can return first.
+A bootout that fails or does not unload, or a `print` that fails other
+than with 113 ("could not find service"), moves nothing, starts the ones
+it stopped and exits 1. After the moves, failed or not, it bootstraps each
+stopped one again, `sd-serve` first, but only when the database's
+`user_version` equals the pack's `lib/sd_db` `SCHEMA_VERSION`. A listed
+one still loaded is the old process, so it is booted out first. Its line
+leaves the list only once `launchctl print` shows the new load. Otherwise
+they stay stopped and refresh exits 1, so no `hub-pin` goes out: migrate,
+then refresh again. `~/.local/state/repo-sync/refresh-stopped` lists each
+one stopped and not started yet, so a refresh after a kill or a failed
+start starts them. This is steps 1 and 5 of D2 in the pack's design for
+moving `sd_db` into the pack (sd:2997); its migrate and rollback record are
+not here.
 
 `refresh` drains the lanes before it moves anything (sd:3099). POSIX sh
 cannot hold a flock, so `refresh_drain.py`, a stdlib helper beside the
@@ -134,7 +153,7 @@ as `refresh` does, then switches the checkout, detached and with
 pack. Then, with the lanes still held, it runs the system checkout's
 `local-machine-setup/machine-setup.sh update bin --apply` and
 `update satellite --apply`, each bounded at 450 s (sd:3168). The satellite
-stage installs the hub's `sd_db` into the pack's venv and the bin stage
+stage writes the hub's `hub.json` and `providers.yaml` and the bin stage
 relinks commands, so neither may run under a lane run. It runs no other
 stage: the cron and agents stages can reinstall the follow job's own
 LaunchAgent, and launchd would boot out the running follow. Neither stage's

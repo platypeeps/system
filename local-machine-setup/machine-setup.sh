@@ -1366,9 +1366,15 @@ sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
 }
-# The interpreter whose installed sd_db the satellite stage checks: the
+# The interpreter the satellite stage runs the pack's lib/sd_db under: the
 # pack's, as sd-db.sh picks it.
 SD_DB_PYTHON="${SD_DB_PYTHON:-$SD_PACK_ROOT/.venv/bin/python}"
+# Runs a module of the pack's lib/sd_db under `-I`: argv is the lib/ folder,
+# then the module's arguments. -I keeps PYTHONPATH and the working directory
+# out, and lib/ goes first, so no copy installed in the interpreter answers
+# (sd:3279): every sd_db caller runs that lib/.
+SD_DB_RUN_LIB='import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module(sys.argv.pop(1), run_name="__main__", alter_sys=True)'
+
 
 # One read of `tailscale serve status` for the dashboard's port. The route
 # is the line `https://<node>.<tailnet domain>:8443 (tailnet only)` followed
@@ -1489,9 +1495,10 @@ stage_satellite_jev_shadow() {
 
 # A satellite of the sd hub (step 9 of the second-machine plan): the
 # profile's `.satellite` names the hub as `host` or `host:port`. The checks
-# run in the installed library (`sd_db.satellite`, under `-I`), because the
-# build that must match the hub's is the one the pack runs, not this
-# checkout. The stage installs no LaunchAgent and no sd cron job.
+# run in the pack's lib/ (`sd_db.satellite`, under `-I`), because the build
+# that must match the hub's is the one every caller runs, not this checkout
+# and not a copy in the pack's venv (sd:3279). The stage installs no
+# LaunchAgent and no sd cron job.
 stage_satellite() {
   echo "== satellite"
   hubs=$(manifest satellite)
@@ -1529,14 +1536,19 @@ stage_satellite() {
     echo "  MISSING sd_db: no interpreter at $SD_DB_PYTHON — install the pack (python3 bin/sd_install.py --user), then rerun"
     return 0
   fi
+  # Without it the import falls through to a copy installed in the interpreter.
+  if [ ! -f "$SD_PACK_ROOT/lib/sd_db/__init__.py" ]; then
+    echo "  MISSING sd_db: no $SD_PACK_ROOT/lib/sd_db/__init__.py — move the pack to the hub's pin: local-repo-sync/repo-sync.sh follow"
+    return 0
+  fi
   set -- --hub "$host"
   [ -z "$port" ] || set -- "$@" --port "$port"
   if [ "$APPLY" -eq 1 ]; then set -- "$@" --apply; fi
-  # On a build mismatch, --apply installs the hub's build from HEAD or origin/main of
-  # this checkout (sd:2802). An environment variable, not a flag: an older
-  # installed sd_db.satellite ignores it instead of refusing the flag.
-  if out=$(SD_DB_SOURCE_CHECKOUT="${SD_DB_SOURCE_CHECKOUT:-$ROOT}" \
-      "$SD_DB_PYTHON" -I -m sd_db.satellite "$@" 2>&1 </dev/null); then
+  # On a build mismatch the remedy is `repo-sync.sh follow`, which moves the
+  # pack to the hub's pin. No source checkout is named: self-install (sd:2802)
+  # exported this checkout's frozen local-sd-db, not the hub's build, and from
+  # lib/ it finds no venv to install into, so it refuses (sd:3279).
+  if out=$("$SD_DB_PYTHON" -I -c "$SD_DB_RUN_LIB" "$SD_PACK_ROOT/lib" sd_db.satellite "$@" 2>&1 </dev/null); then
     printf '%s\n' "$out"
   else
     rc=$?
@@ -3597,49 +3609,52 @@ EOF
   doctor_sd_versions
 }
 
-# The installed sd_db in each virtualenv, beside the schema version in the
-# database and the one this checkout is built for, naming any that differs
-# (prd.md:173-175). The virtualenvs are the pack's — what dashboard.sh serve
-# defaults to — and whatever SD_DASHBOARD_PYTHON names, in the environment
-# or in the installed plist.
-# `-I` so a PYTHONPATH cannot stand in for the installed copy; the file path
-# is checked for the same reason, criterion 1's last clause.
+# The pack's lib/sd_db, which every caller runs (sd:3279), beside the schema
+# version in the database, and the interpreters that run it: the pack's,
+# which `dashboard.sh serve` defaults to, and whatever SD_DASHBOARD_PYTHON
+# names, in the environment or in the installed plist. Each must import
+# sd_db from that lib/ under `-I`, so neither a PYTHONPATH nor a copy
+# installed in the interpreter stands in for it.
 doctor_sd_versions() {
-  checkout_schema=$(sed -n 's/^SCHEMA_VERSION *= *\([0-9][0-9]*\).*/\1/p' "$ROOT/local-sd-db/sd_db/schema.py" | head -1)
-  checkout_dist=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$ROOT/local-sd-db/pyproject.toml" | head -1)
+  lib="$SD_PACK_ROOT/lib"
+  lib_schema=$(sed -n 's/^SCHEMA_VERSION *= *\([0-9][0-9]*\).*/\1/p' "$lib/sd_db/schema.py" 2>/dev/null | head -1)
   db_schema=""
   if [ -f "$SD_DB" ] && command -v sqlite3 >/dev/null 2>&1; then
     db_schema=$(sd_sqlite 'PRAGMA user_version;' 2>/dev/null || :)
   fi
-  echo "  --      sd_db in this checkout: ${checkout_dist:-?} built for schema ${checkout_schema:-?}; database at schema ${db_schema:-none}"
-  if [ -n "$db_schema" ] && [ "$db_schema" != "$checkout_schema" ]; then
-    echo "  WARN    database schema $db_schema DIFFERS from this checkout's $checkout_schema — after a backup, with sd-dashboard and sd-serve stopped: local-sd-db/sd-db.sh migrate"
+  if [ -z "$lib_schema" ]; then
+    doctor_fail "no sd_db at $lib — move the pack to a commit that holds lib/sd_db: local-repo-sync/repo-sync.sh refresh on the hub, follow on a satellite"
+    return 0
   fi
+  echo "  --      sd_db in the pack's lib/ $lib: built for schema $lib_schema; database at schema ${db_schema:-none}"
+  if [ -n "$db_schema" ] && [ "$db_schema" != "$lib_schema" ]; then
+    doctor_fail "database schema $db_schema DIFFERS from the pack's lib/ $lib_schema — after a backup, with sd-dashboard and sd-serve stopped: $SD_PACK_ROOT/bin/sd-db migrate"
+  fi
+  # `sd-db.sh serve` runs system's frozen copy when its plist sets a selector.
+  selector=$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" SD_DB_LIBRARY)
+  [ -z "$selector" ] || doctor_fail "$LABEL_PREFIX.sd-serve sets SD_DB_LIBRARY=$selector, so it runs system's frozen local-sd-db — remove the key from its plist, then kickstart it"
+  # The pack's own interpreter may be absent; one the operator named must exist.
   seen=" "
-  for py in "$SD_PACK_ROOT/.venv/bin/python" "${SD_DASHBOARD_PYTHON:-}" \
-            "$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-dashboard.plist" SD_DASHBOARD_PYTHON)"; do
+  plist_py=$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-dashboard.plist" SD_DASHBOARD_PYTHON)
+  for py in "$SD_PACK_ROOT/.venv/bin/python" "${SD_DASHBOARD_PYTHON:-}" "$plist_py"; do
     [ -n "$py" ] || continue
     case "$seen" in *" $py "*) continue ;; esac
     seen="$seen$py "
     if [ ! -x "$py" ]; then
-      echo "  --      no interpreter at $py (sd_db version not read)"
+      case " ${SD_DASHBOARD_PYTHON:-} $plist_py " in
+        *" $py "*) doctor_fail "no interpreter at $py, which SD_DASHBOARD_PYTHON names" ;;
+        *) echo "  --      no interpreter at $py (not checked)" ;;
+      esac
       continue
     fi
-    if ! info=$("$py" -I -c 'import importlib.metadata as m, sd_db, sd_db.schema as s; print(m.version("sd-db"), s.SCHEMA_VERSION, sd_db.__file__)' 2>&1); then
-      doctor_fail "$py has no importable sd_db ($(printf '%s\n' "$info" | tail -1)) — install: local-sd-db/sd-db.sh install $(dirname "$(dirname "$py")")"
+    if ! file=$("$py" -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import sd_db; print(sd_db.__file__)' "$lib" 2>&1); then
+      doctor_fail "$py cannot import sd_db from $lib ($(printf '%s\n' "$file" | tail -1))"
       continue
     fi
-    dist=${info%% *}; rest=${info#* }; schema=${rest%% *}; file=${rest#* }
     case "$file" in
-      "$ROOT"/*) doctor_fail "$py resolves sd_db from this checkout ($file), not an installed copy"; continue ;;
+      "$lib"/*) echo "  ok      $py imports sd_db from $lib" ;;
+      *) doctor_fail "$py resolves sd_db from $file, not the pack's lib/ $lib" ;;
     esac
-    if [ -n "$db_schema" ] && [ "$schema" != "$db_schema" ]; then
-      doctor_fail "$py: sd_db $dist built for schema $schema DIFFERS from the database's $db_schema — install the matching build: local-sd-db/sd-db.sh install $(dirname "$(dirname "$py")")"
-    elif [ "$schema" != "$checkout_schema" ]; then
-      echo "  WARN    $py: sd_db $dist built for schema $schema DIFFERS from this checkout's $checkout_schema — migrate, then: local-sd-db/sd-db.sh install $(dirname "$(dirname "$py")")"
-    else
-      echo "  ok      $py: sd_db $dist, schema $schema"
-    fi
   done
 }
 
@@ -4643,8 +4658,9 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    need filling in on this machine; on a profile with an sd
                    agent, also the database (integrity_check), the
                    dashboard's tailscale route and its answer
-                   over the HTTPS name, and the sd_db build in each
-                   virtualenv beside the database's schema version; no
+                   over the HTTPS name, and the pack's lib/sd_db, the one
+                   each sd interpreter imports, beside the database's
+                   schema version; no
                    sqlite3 on PATH, the dashboard's origin under Funnel,
                    :8443 held by another route, a service config naming
                    another database, or an env.sh that fails when sourced,
@@ -4801,10 +4817,10 @@ case "$VERB" in
   # The suite seeds its fixture database through sd_db -- nothing outside
   # the library opens the database or creates a table, and
   # local-sd-db/tests/test_one_store.py greps the repository to keep it so --
-  # so this checkout's local-sd-db goes on PYTHONPATH.
+  # so the pack's lib/, the sd_db doctor reads, goes on PYTHONPATH (sd:3279).
   test)
     shift
-    PYTHONPATH="$DIR/../local-sd-db${PYTHONPATH:+:$PYTHONPATH}" \
+    PYTHONPATH="$SD_PACK_ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" \
       exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
     ;;
   upgrade) cmd_upgrade ;;

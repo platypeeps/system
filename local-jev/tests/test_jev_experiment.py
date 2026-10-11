@@ -395,16 +395,20 @@ class TheFaithfulnessCheck(StubServer):
         self.ledger = Path(tempfile.mkdtemp()) / "experiment.db"
         initialise(self.ledger)
         self.out = Path(tempfile.mkdtemp()) / "faithful"
+        # The checkpoints name the public checkout's repository: step 1 draws
+        # only from public managed repositories (operator, 2026-10-11).
+        public = checkout(["a.py", "pkg/mod.py"])
+        self.slug = f"owner/{public.parent.name}"
         rows = []
         for n in range(30):
             rows.append((f"ship:{n}", f"2026-09-23T00:00:{n:02d}+00:00",
-                         {"repository": "owner/repo", "head": f"m{n:039d}",
+                         {"repository": self.slug, "head": f"m{n:039d}",
                           "passes": [a_pass(f"m{n:039d}", tier="skip")]}))
             rows.append((f"ship:k{n}", f"2026-09-24T00:00:{n:02d}+00:00",
-                         {"repository": "owner/repo", "head": f"k{n:039d}",
+                         {"repository": self.slug, "head": f"k{n:039d}",
                           "passes": [a_pass(f"k{n:039d}")]}))
         self.db = checkpoint_db(rows)
-        register(self.db, checkout(["a.py", "pkg/mod.py"]), "public")
+        register(self.db, public, "public")
 
     def env(self, **extra):
         # A live switch in the parent's environment must not reach the child.
@@ -446,14 +450,90 @@ class TheFaithfulnessCheck(StubServer):
         """The 60 checkpoints again, each changing `paths`."""
         with contextlib.closing(connect(self.db)) as connection:
             connection.execute("DELETE FROM state")
-            for n in range(30):
-                for prefix, tier in (("m", "skip"), ("k", "standard")):
-                    head = f"{prefix}{n:039d}"
-                    connection.execute(
-                        "INSERT INTO state (kind, key, timestamp, body) VALUES"
-                        " ('checkpoint', 'ship:x', '2026-09-25T00:00:00+00:00', ?)",
-                        (json.dumps({"repository": "o/r", "head": head, "passes": [
-                            a_pass(head, tier=tier, paths=paths)]}),))
+        self.add(self.slug, "m", 30, tier="skip", paths=paths)
+        self.add(self.slug, "k", 30, paths=paths)
+
+    def add(self, repository, prefix, count, tier="standard", paths=("a.py",),
+            reason="no category matched; default tier standard"):
+        """`count` more checkpoints of `repository`, heads `prefix` and a number."""
+        with contextlib.closing(connect(self.db)) as connection:
+            for n in range(count):
+                head = f"{prefix}{n:039d}"
+                connection.execute(
+                    "INSERT INTO state (kind, key, timestamp, body) VALUES"
+                    " ('checkpoint', 'ship:x', '2026-09-25T00:00:00+00:00', ?)",
+                    (json.dumps({"repository": repository, "head": head, "passes": [
+                        a_pass(head, tier=tier, paths=paths, reason=reason)]}),))
+
+    def answers(self):
+        return [json.loads(line) for line in (self.out / "answers.jsonl").read_text().splitlines()]
+
+    def test_only_public_repository_states_are_drawn(self):
+        # Operator, 2026-10-11: the pool is the states of public managed
+        # repositories. A private repository tracking the same path, and a
+        # repository no row names, stay out of it.
+        Stub.choice_value = "standard"
+        private = checkout(["a.py"])
+        register(self.db, private, "private")
+        self.add(f"owner/{private.parent.name}", "p", 30, tier="skip")
+        self.add(f"owner/{private.parent.name}", "q", 30)
+        self.add("other/repo", "u", 30, tier="skip")
+        code, out = self.faithful()
+        summary = json.loads(out)
+        self.assertEqual(code, 1, out)
+        self.assertEqual((summary["pool"], summary["pool_moved"], summary["pool_halted"]),
+                         (60, 30, 0))
+        self.assertEqual((summary["asked"], summary["moved_drawn"]), (50, 25))
+        self.assertEqual({one["repository"] for one in self.answers()}, {self.slug})
+
+    def test_a_public_state_whose_path_is_no_longer_tracked_is_left_out(self):
+        # "whose paths are still tracked": such a state leaves the pool
+        # rather than halting the run.
+        Stub.choice_value = "standard"
+        self.add(self.slug, "g", 10, tier="skip", paths=("a.py", "gone.py"))
+        code, out = self.faithful()
+        summary = json.loads(out)
+        self.assertEqual(code, 1, out)
+        self.assertEqual((summary["pool"], summary["pool_halted"]), (60, 0))
+        self.assertFalse(any(one["head"].startswith("g") for one in self.answers()))
+
+    def test_fewer_moved_states_than_half_are_all_drawn(self):
+        # Operator, 2026-10-11: keep 25 moved if the pool has 25, else all.
+        Stub.choice_value = "standard"
+        with contextlib.closing(connect(self.db)) as connection:
+            connection.execute("DELETE FROM state")
+        self.add(self.slug, "m", 10, tier="skip")
+        self.add(self.slug, "k", 60)
+        code, out = self.faithful()
+        summary = json.loads(out)
+        self.assertEqual(code, 1, out)          # 40 of 50 is below 46
+        self.assertEqual((summary["asked"], summary["matched"], summary["moved_drawn"],
+                          summary["pool_moved"]), (50, 40, 10, 10))
+        self.assertEqual(sum(one["moved"] for one in self.answers()), 10)
+
+    def test_too_few_states_in_the_pool_refuses_before_any_call(self):
+        with contextlib.closing(connect(self.db)) as connection:
+            connection.execute("DELETE FROM state")
+        self.add(self.slug, "m", 10, tier="skip")
+        self.add(self.slug, "k", 39)
+        code, _out = self.faithful()
+        self.assertEqual(code, 2)
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_pool_state_the_privacy_check_halts_is_counted(self):
+        repos = {self.slug.lower(): frozenset({"a.py"})}
+        states = [{"repository": self.slug, "head": "h", "moved": False,
+                   "state": experiment.state_of(["a.py"], 1, reason)}
+                  for reason in ("no category matched", "never skip /Users/someone/x.py")]
+        pool, halted = experiment.public_pool(states, repos, None, frozenset({"a.py"}))
+        self.assertEqual((len(pool), halted), (2, 1))
+
+    def test_a_halt_anywhere_in_the_pool_stops_the_run_before_any_call(self):
+        # The whole pool is checked, not only the 50 drawn.
+        self.add(self.slug, "h", 1, tier="skip", reason="never skip /Users/someone/x.py")
+        code, _out = self.faithful()
+        self.assertEqual(code, 2)
+        self.assertEqual(Stub.seen, [])
 
     def test_a_tracked_public_path_reaches_the_call(self):
         Stub.choice_value = "standard"
