@@ -15,6 +15,9 @@ file holds the steps built so far:
   reads routing only: no finding, review count or status.
 * `labels objective` (step 4) writes blocking@head per head of one
   population; it refuses C1 until its answer files are sealed, and C2.
+* `replay --arm jev|kev|haiku` (step 5) asks one model arm once per head on
+  the same redacted payload, under the stopping rule: registration guard,
+  frozen heuristic, ledger isolation, privacy halt, one retry, spend cap.
 
 **It reads the workflow database read-only.** Every query opens it through
 `sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
@@ -517,13 +520,13 @@ def same_file(one: Path, other: Path) -> bool:
         return False
 
 
-def cmd_faithful(args, out, env) -> int:
-    # By file identity, before the ledger is opened or any call is made: a
-    # link or another spelling of the live or source database is that database.
-    # Each path is normalised once, and the meter gets that exact string.
-    # `--ledger` and `--db` are `db_path` results already; a second pass
-    # would strip a resolved name that ends in space.
-    ledger, db = args.ledger, args.db or default_db(env)
+def isolated(ledger: Path, db: Path, env) -> None:
+    """Refuse an experiment ledger that is the live or the source database.
+    By file identity, before the ledger is opened or any call is made: a link
+    or another spelling of either is that database. Each path is normalised
+    once, and the meter gets that exact string. `--ledger` and `--db` are
+    `db_path` results already; a second pass would strip a resolved name that
+    ends in space."""
     if str(ledger) != str(ledger).strip():
         raise Refused(f"--ledger resolves to {str(ledger)!r}, which ends in space; "
                       "the meter would strip it and open another file")
@@ -534,6 +537,11 @@ def cmd_faithful(args, out, env) -> int:
         if same_file(ledger, other):
             raise Refused(f"--ledger {ledger} is {name}; experiment rows "
                           "never go to the live ledger")
+
+
+def cmd_faithful(args, out, env) -> int:
+    ledger, db = args.ledger, args.db or default_db(env)
+    isolated(ledger, db, env)
     env = jev_env(env, ledger, args.out / "corpus")
     word = jev_meter.ready("jev", env)
     if word != "ready":
@@ -920,6 +928,306 @@ def cmd_labels(args, out, env) -> int:
     return 0
 
 
+# --- step 5: the replay harness -----------------------------------------------
+
+#: The pre-registration, and the commit that registered it (step 6, #178).
+REGISTRATION = FOLDER.parent / "docs/experiments/2026-10-05-jev-entry-2-preregistration.md"
+REGISTRATION_COMMIT = "fe5b904d5fa1ee2e95c2ecce62ff113f5ca4c854"
+#: Step 6's check: a blank operator prediction, or a drafted one not confirmed.
+UNREGISTERED = re.compile(r"^PREDICTION \(operator[^)]*\): _*$|^PREDICTION .*UNCONFIRMED", re.M)
+
+#: The ledger's run id for the replay's rows; step 1's rows carry none.
+RUN_ID = "jev-entry-2-replay"
+#: The arms that leave the machine, the stopping rule's spend cap over them,
+#: and Jev's list price per million input tokens (output is free).
+HOSTED = ("jev", "haiku")
+SPEND_CAP = 10.0
+JEV_USD_IN = 0.042
+#: Where the spans go, and the Phoenix project they file under (design.md, "Traces").
+TRACES_URL = "http://127.0.0.1:4338/v1/traces"
+PROJECT = "jev-experiment-entry-2"
+QID = "sd-review-tier"
+
+
+def registered(path: Path) -> str:
+    """The pre-registration's SHA-256, or Refused while a prediction is open."""
+    data = path.read_bytes()
+    open_lines = UNREGISTERED.findall(data.decode("utf-8"))
+    if open_lines:
+        raise Refused(f"{len(open_lines)} PREDICTION line(s) in {path.name} are blank or "
+                      "UNCONFIRMED; the replay starts after the registration (step 6)")
+    return hashlib.sha256(data).hexdigest()
+
+
+def replay_env(env, ledger: Path, traces: str) -> dict:
+    """The arms' environment: `<config>/jev/.env` and the Kev service's
+    settings as defaults below the caller's, as `jev.sh` reads them, then the
+    experiment ledger, no comparison child, no shadow, and the run id."""
+    import jev  # noqa: F401 - puts lib/ on the path
+    import system_tools_config
+    child = dict(system_tools_config.read_env("jev", env))
+    child.update(env)
+    kev = system_tools_config.read_env("kev", env)
+    for name in ("KEV_API_KEY", "KEV_MODEL"):
+        if name not in child and kev.get(name, "") not in ("", "change-me", "changeme"):
+            child[name] = kev[name]
+    if not child.get("JEV_COMPARE_KEV_URL") and kev.get("KEV_PORT"):
+        child["JEV_COMPARE_KEV_URL"] = f"http://127.0.0.1:{kev['KEV_PORT']}/v1/systemone"
+    child.update({"JEV_METER": "1", "JEV_METER_DB": str(ledger), "JEV_COMPARE_STAGES": "",
+                  "JEV_SHADOW": "off", "JEV_ENABLED": "on", "JEV_TRACES_URL": traces})
+    return child
+
+
+def ask_once(arm: str, payload: dict, definition: dict, conf: dict, env) -> dict:
+    """One call to one arm, as the ledger row it makes: never raises."""
+    import jev
+    import jev_compare
+    event: dict = {}
+    try:
+        if arm == "jev":
+            event.update(provider=jev.PROVIDER, model=None)
+            started = time.monotonic()
+            try:
+                response = jev.post(conf, payload)
+            finally:
+                event["duration_ms"] = int(round((time.monotonic() - started) * 1000))
+            event.update(jev.usage_of(response), model=response.get("model"))
+            event["usd"] = (event.get("tokens_in") or 0) * JEV_USD_IN / 1e6
+            answer = jev.answer_of(response, QID)
+            event.update(answer=jev.position_of(answer.get("choice"), definition["criteria"]),
+                         confidence=jev.confidence_of(answer),
+                         probabilities=jev.distribution_of(answer, definition))
+        else:
+            job = {"payload": payload}
+            got = (jev_compare.kev_arm(job, env) if arm == "kev"
+                   else jev_compare.haiku_arm(job, env, "anthropic"))
+            event.update({k: v for k, v in got.items() if not k.startswith("_")})
+        if event.get("answer") is None:
+            raise jev_compare.Declined("invalid", "invalid", "no tier in the answer")
+        event.update(outcome="ok", cause=None)
+    except jev_compare.Declined as exc:
+        got = getattr(exc, "event", None) or {}
+        event.update({k: v for k, v in got.items() if not k.startswith("_")})
+        event.update(exc.error, outcome=exc.outcome, cause=exc.cause)
+    except Exception as exc:                 # a failed call is a row, never a traceback
+        word = "timeout" if isinstance(exc, TimeoutError) or "timed out" in str(exc) \
+            else "unavailable"
+        event.update(jev.error_of(exc), outcome=word, cause=word)
+    event.setdefault("provider", arm)
+    return event
+
+
+def ask_arm(arm, payload, definition, conf, env) -> tuple[dict, list]:
+    """The stopping rule's one retry after 30 s: the final call's row, and
+    every attempt's outcome, wait and cost."""
+    attempts = []
+    for attempt in range(2):
+        if attempt:
+            time.sleep(RETRY_WAIT)
+        event = ask_once(arm, payload, definition, conf, env)
+        attempts.append({"outcome": event["outcome"], "wait_ms": event.get("duration_ms"),
+                         "usd": event.get("usd")})
+        if event["outcome"] == "ok":
+            break
+    return event, attempts
+
+
+def write_json(path: Path, value) -> None:
+    """Whole or not at all: a reader never sees half a manifest."""
+    part = path.with_name(path.name + ".part")
+    part.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(part, path)
+
+
+def answer_file(arm: str, rerun: str | None, manifest: dict) -> tuple[str, str]:
+    """(manifest key, run id) of the run to write: the primary, or the last
+    unfinished rerun, or a new numbered one. Refused when the primary has
+    finished and no rerun was asked for."""
+    runs = manifest.get("arms", {})
+    if rerun is None:
+        if runs.get(arm, {}).get("finished"):
+            raise Refused(f"{arm}'s replay finished; a second run needs --rerun REASON "
+                          "and is reported as a second run")
+        return arm, RUN_ID
+    number = 2
+    while f"{arm}.run{number}" in runs:
+        if not runs[f"{arm}.run{number}"].get("finished"):
+            return f"{arm}.run{number}", f"{RUN_ID}-{number}"
+        number += 1
+    return f"{arm}.run{number}", f"{RUN_ID}-{number}"
+
+
+def spent(replay: Path) -> float:
+    """Hosted spend so far, over every run's answers."""
+    total = 0.0
+    for path in replay.glob("*.jsonl"):
+        if path.name.split(".")[0] in HOSTED:
+            total += sum(row.get("usd") or 0.0 for row in read_jsonl(path))
+    return total
+
+
+def now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def git_head(root: Path) -> str | None:
+    found = git(str(root), "rev-parse", "HEAD")
+    return found.decode().strip() if found else None
+
+
+def cmd_replay(args, out, env) -> int:
+    import jev
+    import jev_compare
+    import jev_trace
+    arm = args.arm
+    # Every refusal comes before the first call, and before any file is written.
+    registration = registered(args.preregistration)
+    frozen_heuristic()
+    ledger, db = args.ledger, args.db or default_db(env)
+    isolated(ledger, db, env)
+    env = replay_env(env, ledger, args.traces)
+    word = jev_meter.ready(arm, env)
+    if word != "ready":
+        raise Refused(f"the experiment ledger {ledger} refused the {arm} arm: {word}")
+    conf = None
+    if arm == "jev":
+        conf = jev.settings(env)
+        _why, reason = jev.why_unusable(conf, env)
+        if reason:
+            raise Refused(f"Jev cannot answer here: {reason}")
+        # The stopping rule's one retry is the only one.
+        conf["retries"] = 0
+    elif arm == "haiku":
+        key = jev_compare.haiku_conf("anthropic", env)["key"]
+        if not key or key.lower() in jev.PLACEHOLDER_KEYS:
+            raise Refused("no JEV_COMPARE_ANTHROPIC_KEY; the Haiku arm runs on the anthropic "
+                          "transport only")
+    population_text = args.population.read_bytes()
+    population_sha = hashlib.sha256(population_text).hexdigest()
+    rows = [r for r in read_jsonl(args.population) if r.get("state")]
+    folder = args.out
+    replay = folder / "replay"
+    manifest_path = folder / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    if manifest.get("population", {}).get("sha256", population_sha) != population_sha:
+        raise Refused(f"{args.population} is not the population this replay started on")
+    name, run_id = answer_file(arm, args.rerun, manifest)
+    if arm in HOSTED:
+        public = public_paths(db)
+        halted = [r for r in rows if private_path(r["state"], env.get("HOME"), public)]
+        if halted:
+            raise Refused(f"privacy halt: {len(halted)} of {len(rows)} states hold a path sign "
+                          "or a path no public managed repository tracks; nothing was sent, "
+                          "and the operator reviews before any resume")
+    reuse = {}
+    if arm == "jev" and args.reuse:
+        for one in read_jsonl(args.reuse):
+            if isinstance(one.get("answer"), dict) and one["answer"].get("choice") in TIERS:
+                reuse[(one["repository"], one["head"])] = one
+    replay.mkdir(parents=True, exist_ok=True)
+    answers = replay / f"{name}.jsonl"
+    marker = replay / f"{name}.asking"
+    if answers.exists():
+        # A line cut off by a stop belongs to the head the marker names.
+        data = answers.read_bytes()
+        if not data.endswith(b"\n"):
+            answers.write_bytes(data[:data.rfind(b"\n") + 1])
+    done = {(r["repository"], r["head"]) for r in read_jsonl(answers)} if answers.exists() else set()
+    if marker.exists():
+        # A run stopped between its call and its answer line: the call may
+        # have been made, so the head is not asked again.
+        cut = json.loads(marker.read_text(encoding="utf-8"))
+        if (cut["repository"], cut["head"]) not in done:
+            row = next((r for r in rows if (r["repository"], r["head"]) == (cut["repository"],
+                                                                            cut["head"])), {})
+            with answers.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(dict(cut, alias=row.get("alias"),
+                                         population=row.get("population"), arm=arm, tier=None,
+                                         outcome="interrupted", usd=None, run_id=run_id,
+                                         at=now()), sort_keys=True) + "\n")
+            done.add((cut["repository"], cut["head"]))
+        marker.unlink()
+    entry = manifest.setdefault("arms", {}).setdefault(name, {})
+    entry.update(file=f"replay/{answers.name}", run_id=run_id, reason=args.rerun,
+                 started=entry.get("started") or now(), halted=None)
+    manifest.update(
+        registration={"commit": REGISTRATION_COMMIT, "sha256": registration},
+        heuristic_sha256=HEURISTIC_SHA256, pack=PACK_SHA, system=git_head(FOLDER.parent),
+        population={"file": args.population.name, "sha256": population_sha})
+    write_json(manifest_path, manifest)
+    definition = {"type": "choice", "instructions": QUESTION,
+                  "criteria": jev.parse_mapping(criteria())}
+    questions = {QID: definition}
+    prompt_hash = jev.sha256([questions, {QID: list(definition["criteria"])}])[:16]
+    patterns = jev.settings(env)["privacy"]
+    model = env.get("JEV_MODEL") or jev.DEFAULT_MODEL
+    total = spent(replay)
+    sent = 0
+    for row in rows:
+        ident = (row["repository"], row["head"])
+        if ident in done:
+            continue
+        line = {"repository": row["repository"], "head": row["head"], "alias": row["alias"],
+                "population": row["population"], "arm": arm, "run_id": run_id}
+        found = reuse.get(ident)
+        if found is not None and found.get("state") == row["state"]:
+            answer = found["answer"]
+            line.update(tier=answer["choice"], probabilities=answer.get("probabilities"),
+                        confidence=answer.get("confidence"), outcome="ok",
+                        attempts=found.get("tries"), usd=None,
+                        reused=args.reuse.parent.name, at=now())
+            with answers.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(line, sort_keys=True) + "\n")
+            continue
+        if arm in HOSTED and total >= args.cap:
+            entry.update(halted=f"spend cap: ${total:.4f} of ${args.cap:.2f}")
+            write_json(manifest_path, manifest)
+            sys.stderr.write(f"jev_experiment: {entry['halted']}; the run stops here\n")
+            return 1
+        payload, taken = jev.redacted_payload(
+            jev.build_payload(json.loads(row["state"]), questions, model), patterns)
+        marker.write_text(json.dumps({"repository": row["repository"], "head": row["head"]}),
+                          encoding="utf-8")
+        event, attempts = ask_arm(arm, payload, definition, conf, env)
+        usd = sum(a["usd"] or 0.0 for a in attempts)
+        owner_repo = row["repository"].lower().replace("/", ".")
+        pair = hashlib.sha256(f"{run_id}:{row['repository']}:{row['head']}".encode()).hexdigest()[:16]
+        ledger_row = dict(event, caller="jev-experiment", stage="JEV_SD_REVIEW", arm=arm,
+                          pair=pair, question_id=jev.named(f"{QID}:{owner_repo}:{row['head'][:12]}"),
+                          primitive="choice", questions=1, prompt_hash=prompt_hash,
+                          run_id=run_id, changed="no", load_avg=jev.load_avg())
+        said, _id = jev_meter.write(ledger_row, env)
+        tier = TIERS[int(event["answer"]) - 1] if event.get("answer") else None
+        span = {k: ledger_row.get(k) for k in ("caller", "stage", "arm", "pair", "primitive",
+                                               "provider", "model", "outcome", "cause", "answer",
+                                               "confidence", "tokens_in", "tokens_out",
+                                               "duration_ms")}
+        sent += jev_trace.export(span, env, project=PROJECT, extra=(
+            ("jev.repo_alias", row["alias"]), ("jev.tier", tier), ("jev.usd", usd),
+            ("jev.population", row["population"]))) == jev_trace.SENT
+        values = (event.get("probabilities") or "").split(",")
+        line.update(tier=tier, confidence=event.get("confidence"),
+                    probabilities=dict(zip(TIERS, map(float, values))) if len(values) == 4 else None,
+                    outcome=event["outcome"], cause=event.get("cause"),
+                    provider=event.get("provider"), model=event.get("model"),
+                    tokens_in=event.get("tokens_in"), tokens_out=event.get("tokens_out"),
+                    server_ms=event.get("server_ms"), usd=usd, attempts=attempts,
+                    redacted=taken, ledger=said, reused=None, at=now())
+        with answers.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True) + "\n")
+        marker.unlink()
+        total += usd
+    written = read_jsonl(answers) if answers.exists() else []
+    entry.update(finished=now(), answers=len(written),
+                 no_answer=sum(1 for r in written if r.get("tier") is None),
+                 reused=sum(1 for r in written if r.get("reused")),
+                 spans_sent=entry.get("spans_sent", 0) + sent, hosted_usd=round(total, 6))
+    write_json(manifest_path, manifest)
+    json.dump({"arm": name, **entry}, out, indent=2, sort_keys=True)
+    out.write("\n")
+    return 0
+
+
 # --- entry --------------------------------------------------------------------
 
 def default_db(env=None) -> Path:
@@ -951,11 +1259,22 @@ def build_parser() -> argparse.ArgumentParser:
     obj.add_argument("--db", type=db_path, help="default: the live workflow database")
     obj.add_argument("--out", type=Path, required=True,
                      help="the experiment data folder, holding population.jsonl")
+    rep = verbs.add_parser("replay", help="step 5: ask one model arm about every head")
+    rep.add_argument("--arm", choices=MODEL_ARMS, required=True)
+    rep.add_argument("--population", type=Path, required=True, help="population.jsonl")
+    rep.add_argument("--out", type=Path, required=True, help="the experiment data folder")
+    rep.add_argument("--ledger", type=db_path, required=True, help="the experiment database")
+    rep.add_argument("--db", type=db_path, help="default: the live workflow database")
+    rep.add_argument("--reuse", type=Path, help="step 1's answers.jsonl; Jev is not asked again")
+    rep.add_argument("--cap", type=float, default=SPEND_CAP, help="hosted spend cap in US dollars")
+    rep.add_argument("--traces", default=TRACES_URL, help="the OTLP traces endpoint")
+    rep.add_argument("--rerun", metavar="REASON", help="a second run, reported as one")
+    rep.add_argument("--preregistration", type=Path, default=REGISTRATION, help=argparse.SUPPRESS)
     return parser
 
 
 VERBS = {"reconcile": cmd_reconcile, "heuristic": cmd_heuristic, "faithful": cmd_faithful,
-         "population": cmd_population, "labels": cmd_labels}
+         "population": cmd_population, "labels": cmd_labels, "replay": cmd_replay}
 
 
 def main(argv=None, out=None, env=None) -> int:

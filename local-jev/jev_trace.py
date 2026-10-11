@@ -126,8 +126,11 @@ def attributes(pairs) -> list:
     return out
 
 
-def span_of(event: dict, now_ns: int | None = None) -> dict:
-    """The OTLP/JSON request body for one event."""
+def span_of(event: dict, now_ns: int | None = None, project: str = "jev",
+            extra=()) -> dict:
+    """The OTLP/JSON request body for one event. `project` names the Phoenix
+    project; `extra` adds (key, value) attributes, held to `safe` as the
+    event's are."""
     end = time.time_ns() if now_ns is None else now_ns
     duration = event.get("duration_ms")
     start = end - int(duration) * 1_000_000 if isinstance(duration, int) else end
@@ -151,6 +154,7 @@ def span_of(event: dict, now_ns: int | None = None) -> dict:
         ("gen_ai.usage.output_tokens", tokens_out),
     ]
     pairs += [(f"jev.{name}", event.get(name)) for name in FIELDS]
+    pairs += list(extra)
     status = {"code": STATUS_OK}
     if outcome not in (None, "ok"):
         status = {"code": STATUS_ERROR,
@@ -167,7 +171,7 @@ def span_of(event: dict, now_ns: int | None = None) -> dict:
     }
     # Phoenix files spans by project; without the key they land in `default`.
     resource = attributes([("service.name", "jev"),
-                           ("openinference.project.name", "jev"),
+                           ("openinference.project.name", project),
                            ("telemetry.sdk.language", "python")])
     return {"resourceSpans": [{
         "resource": {"attributes": resource},
@@ -175,14 +179,15 @@ def span_of(event: dict, now_ns: int | None = None) -> dict:
     }]}
 
 
-def export(event: dict, env=None, opener=None) -> str:
-    """Post one event as a span. Never raises; the return value is for the suite."""
+def export(event: dict, env=None, opener=None, project: str = "jev", extra=()) -> str:
+    """Post one event as a span. Never raises; the return value is for the
+    suite, and for a caller that counts the spans it sent."""
     env = os.environ if env is None else env
     try:
         url = url_of(env)
         if not url:
             return SWITCHED_OFF
-        body = json.dumps(span_of(event)).encode("utf-8")
+        body = json.dumps(span_of(event, project=project, extra=extra)).encode("utf-8")
         request = urllib.request.Request(
             url, data=body, method="POST",
             headers={"Content-Type": "application/json"})

@@ -871,3 +871,205 @@ class TheObjectiveLabels(unittest.TestCase):
     def test_c2_refuses_until_step_15_seals_it(self):
         code, found, _db = self.labels([], ["h8"], population="C2")
         self.assertEqual((code, found), (2, {}))
+
+
+from .test_jev_compare import Arm, CompareCase  # noqa: E402
+
+#: What the Haiku stub answers for the tier question.
+HAIKU_REPLY = json.dumps({"probabilities": {"skip": 0.1, "cheap": 0.1, "standard": 0.7,
+                                            "deep": 0.1}})
+
+
+def sha(n):
+    """A head SHA no span may carry."""
+    return (f"{n}feedface" + "ab" * 20)[:40]
+
+
+class TheReplay(CompareCase):
+    """Step 5 against loopback stubs: Jev, Kev, Anthropic and the collector."""
+
+    HEADS = 5
+
+    def setUp(self):
+        super().setUp()
+        Arm.reply = HAIKU_REPLY
+        self.folder = Path(tempfile.mkdtemp()) / "experiment"
+        self.folder.mkdir()
+        self.ledger = self.folder / "experiment.db"
+        initialise(self.ledger)
+        self.live = self.config / ".local/share/sd/sd.db"
+        self.live.parent.mkdir(parents=True)
+        initialise(self.live)
+        self.db = checkpoint_db([])
+        register(self.db, checkout(["a.py", "pkg/mod.py"]), "public")
+        self.population = self.folder / "population.jsonl"
+        self.write_population(["a.py"])
+        retry = unittest.mock.patch.object(experiment, "RETRY_WAIT", 0)
+        retry.start()
+        self.addCleanup(retry.stop)
+
+    def write_population(self, paths):
+        self.state = experiment.state_of(paths, 3, "no category matched; default tier standard")
+        self.population.write_text("".join(json.dumps({
+            "repository": "owner/repo", "head": sha(n), "alias": "R01",
+            "population": "C1" if n < 2 else "E", "state": self.state}) + "\n"
+            for n in range(self.HEADS)))
+
+    def env(self, **extra):
+        return super().env(JEV_TRACES_TIMEOUT="5", JEV_COMPARE_ANTHROPIC_KEY="test-key", **extra)
+
+    def replay(self, arm, *more, env=None):
+        return run(["replay", "--arm", arm, "--population", str(self.population),
+                    "--out", str(self.folder), "--ledger", str(self.ledger), "--db", str(self.db),
+                    "--traces", self.base + "/v1/traces", *more], env or self.env())
+
+    def answers(self, name):
+        path = self.folder / "replay" / f"{name}.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def rows(self, db=None):
+        with contextlib.closing(connect(db or self.ledger, write=False)) as connection:
+            return [tuple(r) for r in connection.execute(
+                "SELECT arm, stage, run_id, outcome, count(*) FROM judgment"
+                " GROUP BY arm, stage, run_id, outcome ORDER BY arm")]
+
+    def spans(self):
+        return [s for s in Arm.seen if s["path"] == "/v1/traces"]
+
+    def test_five_heads_write_fifteen_answers_fifteen_spans_and_no_live_row(self):
+        for arm in ("kev", "jev", "haiku"):
+            code, out = self.replay(arm)
+            self.assertEqual(code, 0, out)
+        found = [line for arm in ("kev", "jev", "haiku") for line in self.answers(arm)]
+        self.assertEqual(len(found), 15)
+        self.assertEqual({(a["arm"], a["tier"]) for a in found},
+                         {("kev", "deep"), ("jev", "skip"), ("haiku", "standard")})
+        self.assertEqual(len(self.spans()), 15)
+        resource = self.spans()[0]["body"]["resourceSpans"][0]["resource"]["attributes"]
+        self.assertIn({"key": "openinference.project.name",
+                       "value": {"stringValue": "jev-experiment-entry-2"}}, resource)
+        self.assertNotIn("feedface", json.dumps([s["body"] for s in self.spans()]))
+        self.assertEqual(self.rows(), [
+            ("haiku", "JEV_SD_REVIEW", "jev-entry-2-replay", "ok", 5),
+            ("jev", "JEV_SD_REVIEW", "jev-entry-2-replay", "ok", 5),
+            ("kev", "JEV_SD_REVIEW", "jev-entry-2-replay", "ok", 5)])
+        self.assertEqual(self.rows(self.live), [])
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertEqual(manifest["registration"]["commit"], experiment.REGISTRATION_COMMIT)
+        self.assertEqual(manifest["population"]["sha256"],
+                         hashlib.sha256(self.population.read_bytes()).hexdigest())
+        self.assertEqual(manifest["heuristic_sha256"], experiment.HEURISTIC_SHA256)
+        self.assertEqual(manifest["arms"]["kev"]["spans_sent"], 5)
+
+    def test_the_payload_is_the_one_step_one_sends(self):
+        experiment.ask_jev(self.state, self.env(JEV_METER="0"), sleep=lambda _s: None)
+        self.assertEqual(self.replay("jev")[0], 0)
+        first, replayed = Stub.seen[0]["payload"], Stub.seen[1]["payload"]
+        self.assertEqual(first, replayed)
+
+    def test_a_second_run_without_rerun_refuses(self):
+        self.assertEqual(self.replay("kev")[0], 0)
+        before = len(Arm.seen)
+        self.assertEqual(self.replay("kev")[0], 2)
+        self.assertEqual(len(Arm.seen), before)
+        code, _out = self.replay("kev", "--rerun", "the stub moved")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.answers("kev.run2")), 5)
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertEqual(manifest["arms"]["kev.run2"]["reason"], "the stub moved")
+
+    def test_the_cap_halts_at_the_configured_spend(self):
+        Stub.input_tokens = 10_000_000          # $0.42 a call at Jev's list price
+        code, _out = self.replay("jev", "--cap", "1.0")
+        self.assertEqual(code, 1)
+        self.assertEqual((len(Stub.seen), len(self.answers("jev"))), (3, 3))
+        code, _out = self.replay("jev", "--cap", "1.0")
+        self.assertEqual((code, len(Stub.seen)), (1, 3))
+
+    def test_an_open_prediction_refuses_before_any_call(self):
+        for line in ("PREDICTION (operator, 2026-10-05): ___",
+                     "PREDICTION (operator, drafted, UNCONFIRMED): H1 holds."):
+            with self.subTest(line=line):
+                draft = Path(tempfile.mkdtemp()) / "pre.md"
+                draft.write_text(f"# x\n\n{line}\n")
+                code, _out = self.replay("jev", "--preregistration", str(draft))
+                self.assertEqual(code, 2)
+        self.assertEqual(Stub.seen, [])
+        self.assertFalse((self.folder / "replay").exists())
+
+    def test_a_changed_heuristic_refuses(self):
+        with unittest.mock.patch.object(experiment, "HEURISTIC_SHA256", "0" * 64):
+            self.assertEqual(self.replay("kev")[0], 2)
+        self.assertEqual(Arm.seen, [])
+
+    def test_the_live_ledger_and_a_refusing_ledger_stop_the_replay(self):
+        for ledger in (self.live, self.folder / "missing" / "x.db"):
+            with self.subTest(ledger=ledger):
+                self.ledger = ledger
+                self.assertEqual(self.replay("kev")[0], 2)
+        self.assertEqual((Arm.seen, self.rows(self.live)), ([], []))
+
+    def test_a_private_state_halts_hosted_arms_and_not_kev(self):
+        self.write_population(["secret/plan.md"])
+        for arm in ("jev", "haiku"):
+            self.assertEqual(self.replay(arm)[0], 2)
+        self.assertEqual((Stub.seen, self.spans()), ([], []))
+        self.assertEqual(self.replay("kev")[0], 0)
+
+    def test_a_failed_call_is_retried_once_then_recorded_as_no_answer(self):
+        Stub.status = 500
+        code, _out = self.replay("jev")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(Stub.seen), 10)
+        found = self.answers("jev")
+        self.assertEqual({(a["tier"], a["outcome"], len(a["attempts"])) for a in found},
+                         {(None, "unavailable", 2)})
+        self.assertEqual(self.rows(), [("jev", "JEV_SD_REVIEW", "jev-entry-2-replay",
+                                        "unavailable", 5)])
+
+    def test_step_one_answers_are_reused_for_the_same_state(self):
+        reuse = Path(tempfile.mkdtemp()) / "faithful-2" / "answers.jsonl"
+        reuse.parent.mkdir()
+        reuse.write_text("".join(json.dumps({
+            "repository": "owner/repo", "head": sha(n), "state": state,
+            "answer": {"choice": "cheap", "confidence": 0.9, "probabilities": {"cheap": 0.9}},
+            "tries": [{"exit": 0, "wait_ms": 300}]}) + "\n"
+            for n, state in ((0, self.state), (1, "{}"))))
+        self.assertEqual(self.replay("jev", "--reuse", str(reuse))[0], 0)
+        found = {a["head"]: a for a in self.answers("jev")}
+        self.assertEqual((found[sha(0)]["reused"], found[sha(0)]["tier"]),
+                         ("faithful-2", "cheap"))
+        self.assertIsNone(found[sha(1)]["reused"])   # another state is asked again
+        self.assertEqual(len(Stub.seen), 4)
+
+    def test_a_run_stopped_after_a_call_does_not_ask_that_head_again(self):
+        real = experiment.jev_meter.write
+        calls = []
+
+        def stop_on_second(row, env=None):
+            calls.append(row)
+            if len(calls) == 2:
+                raise KeyboardInterrupt("stopped between the call and its answer line")
+            return real(row, env)
+        with unittest.mock.patch.object(experiment.jev_meter, "write", stop_on_second):
+            with self.assertRaises(KeyboardInterrupt):
+                self.replay("kev")
+        self.assertTrue((self.folder / "replay" / "kev.asking").exists())
+        self.assertEqual(self.replay("kev")[0], 0)
+        found = self.answers("kev")
+        self.assertEqual(len(found), 5)
+        self.assertEqual([a["outcome"] for a in found].count("interrupted"), 1)
+        kev_calls = [s for s in Arm.seen if s["path"] == "/v1/systemone"]
+        self.assertEqual(len(kev_calls), 5)
+        self.assertFalse((self.folder / "replay" / "kev.asking").exists())
+
+    def test_a_line_cut_off_by_a_stop_is_dropped_and_its_head_not_asked_again(self):
+        replay = self.folder / "replay"
+        replay.mkdir()
+        (replay / "kev.jsonl").write_text('{"repository": "owner/repo", "head": "' + sha(0)[:10])
+        (replay / "kev.asking").write_text(json.dumps({"repository": "owner/repo",
+                                                       "head": sha(0)}))
+        self.assertEqual(self.replay("kev")[0], 0)
+        found = self.answers("kev")
+        self.assertEqual(([a["outcome"] for a in found].count("interrupted"), len(found)), (1, 5))
+        self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/systemone"]), 4)
