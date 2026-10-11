@@ -1044,35 +1044,101 @@ def registered(path: Path) -> dict:
             "document": hashlib.sha256(data).hexdigest()}
 
 
+def unit(value) -> bool:
+    """A number from 0 to 1, as a probability or a confidence is."""
+    return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+
+
+def faithful_fault(one, source: dict | None) -> str | None:
+    """Why a step 1 record is not one `ask_jev` result about its registered
+    faithfulness head, else None. Every field the replay reuses is read:
+    the state, the answer and its distribution, and the attempts, which end
+    in the answer or, with no answer, hold the one retry."""
+    if not isinstance(one, dict) or source is None:
+        return "a head the faithfulness draw cannot give"
+    if one.get("state") != source["state"]:
+        return "a state that is not its head's"
+    answer, tries = one.get("answer"), one.get("tries")
+    if not isinstance(tries, list) or not 1 <= len(tries) <= 2 or not all(
+            isinstance(t, dict) and (t.get("exit") is None or type(t.get("exit")) is int)
+            and type(t.get("wait_ms")) is int and t["wait_ms"] >= 0 for t in tries):
+        return "attempts that are not one or two `ask_jev` attempts"
+    if answer is None:
+        return None if len(tries) == 2 else "no answer before the one retry"
+    if not isinstance(answer, dict) or answer.get("choice") not in TIERS:
+        return "an answer that is not a tier"
+    if tries[-1]["exit"] != 0:
+        return "an answer from an attempt that failed"
+    probabilities, confidence = answer.get("probabilities"), answer.get("confidence")
+    if not (probabilities is None or isinstance(probabilities, dict)
+            and set(probabilities) == set(TIERS) and all(map(unit, probabilities.values()))) \
+            or not (confidence is None or unit(confidence)):
+        return "a distribution or a confidence that is not numbers from 0 to 1"
+    return None
+
+
+def unanswered(tries: list) -> str:
+    """A step 1 head's outcome when it got no answer, as its last attempt
+    ended: no exit is a timeout, exit 0 an answer that was not a tier."""
+    last = tries[-1]["exit"]
+    return "timeout" if last is None else "invalid" if last == 0 else "unavailable"
+
+
 def faithful_gate(folder: Path, db, registration: dict, population_sha: str) -> tuple[dict, dict]:
     """Step 1's passing result, bound to this replay: its answers' hash, and
-    its answers by head for Jev to reuse. Nothing it stores is taken as
-    proof: it must hold exactly FAITHFUL_COUNT records, one per distinct
-    registered faithfulness head (an E head with a recorded reading) with
-    that head's rebuilt state, and the answers whose choice equals the
-    recorded tier, recounted here, must reach FAITHFUL_PASS. A note on
-    sd:2764 must carry its hash with this registration's and population's."""
+    every record by head for Jev to reuse, a no-answer included. Nothing it
+    stores is taken as proof: it must hold exactly FAITHFUL_COUNT records,
+    each a `faithful_fault`-free answer about a distinct registered
+    faithfulness head (an E head with a recorded reading) with that head's
+    rebuilt state. The draw must be the registered stratification, read from
+    the checkpoints: half from moved heads, or every moved head of the public
+    pool when it holds fewer. The answers whose choice equals the recorded
+    tier, recounted here, must reach FAITHFUL_PASS. A note on sd:2764 must
+    carry its hash with this registration's and population's."""
     answers = folder / "answers.jsonl"
     if not answers.is_file():
         raise Refused(f"no faithfulness result in {folder}; the full replay starts after "
                       "step 1 passes; nothing was asked")
-    lines = read_jsonl(answers)
+    try:
+        lines = read_jsonl(answers)
+    except ValueError:
+        raise Refused(f"the faithfulness result in {folder} holds a line that is not JSON; "
+                      "nothing was asked") from None
     found = {(c["repository"], c["head"]): c for c in candidates(db)}
     seen, matched = set(), 0
     for one in lines:
-        ident = (one.get("repository"), one.get("head"))
-        source = found.get(ident)
-        answer = one.get("answer")
-        if source is None or ident in seen or one.get("state") != source["state"] or not (
-                answer is None or isinstance(answer, dict) and answer.get("choice") in (*TIERS, None)):
+        ident = (one.get("repository"), one.get("head")) if isinstance(one, dict) else None
+        if ident and not all(isinstance(part, str) for part in ident):
+            ident = None
+        fault = "a head twice" if ident in seen else faithful_fault(one, found.get(ident))
+        if fault:
             raise Refused(f"the faithfulness result in {folder} holds a record that is not one "
-                          "answer about a registered faithfulness head; nothing was asked")
+                          f"answer about a registered faithfulness head ({fault}); "
+                          "nothing was asked")
         seen.add(ident)
-        matched += answer is not None and answer.get("choice") == source["recorded"]
+        matched += one["answer"] is not None and one["answer"]["choice"] == found[ident]["recorded"]
     if len(lines) != FAITHFUL_COUNT or matched < FAITHFUL_PASS:
         raise Refused(f"the faithfulness result in {folder} did not pass: {matched} of "
                       f"{len(lines)} answers match, {FAITHFUL_PASS} of {FAITHFUL_COUNT} needed; "
                       "nothing was asked")
+    moved, half = {ident for ident in seen if found[ident]["moved"]}, FAITHFUL_COUNT // 2
+    left = set()
+    if len(moved) < half:
+        # The pool reads what public checkouts track now, so only its moved
+        # heads are compared: the seeded sample of the rest moves with it. A
+        # drawn repository git cannot list now leaves its moved heads unknown.
+        repos = public_repos(db)
+        unlisted = sorted({repository.lower() for repository, _head in seen} - set(repos))
+        if unlisted:
+            raise Refused(f"the faithfulness result in {folder} drew from {len(unlisted)} "
+                          "repositories no public checkout lists now, so the moved heads its "
+                          "draw had to take are unknown; nothing was asked")
+        pool, _halted = public_pool(list(found.values()), repos, None, frozenset())
+        left = {(c["repository"], c["head"]) for c in pool if c["moved"]} - moved
+    if len(moved) > half or left:
+        raise Refused(f"the faithfulness result in {folder} is not the registered draw: "
+                      f"{len(moved)} of its heads moved, and the draw takes {half}, or every "
+                      "moved head of the public pool when it holds fewer; nothing was asked")
     bound = {"answers": file_sha256(answers)}
     wanted = (bound["answers"], registration["document"], population_sha)
     with contextlib.closing(open_ro(db)) as connection:
@@ -1082,8 +1148,7 @@ def faithful_gate(folder: Path, db, registration: dict, population_sha: str) -> 
         raise Refused(f"no note on sd:{ITEM} binds the faithfulness result to this registration "
                       f"and population; after review, note: faithful {wanted[0]} "
                       f"registration {wanted[1]} population {wanted[2]}; nothing was asked")
-    return bound, {(one["repository"], one["head"]): one for one in lines
-                   if isinstance(one.get("answer"), dict) and one["answer"].get("choice") in TIERS}
+    return bound, {(one["repository"], one["head"]): one for one in lines}
 
 
 def scope(arm: str, rows: list[dict], db, home: str | None) -> list[dict]:
@@ -1254,8 +1319,9 @@ LINE_FIELDS = ("repository", "head", "arm", "run_id", "outcome", "tier", "usd", 
 def record_faults(lines: list, arm: str, run_id: str) -> list[str]:
     """Why lines are not this run's final records, one reason each: another
     arm or run, a missing field, an outcome that is neither an answer with a
-    tier nor an explicit no-answer, a cost that is not a number (a reused
-    answer excepted), or a head twice."""
+    tier nor an explicit no-answer, a reused answer on an arm step 1 did not
+    ask, a cost that is not a number (a reused answer excepted), or a head
+    twice."""
     faults, seen = [], set()
     for line in lines:
         missing = [k for k in LINE_FIELDS if k not in line]
@@ -1267,6 +1333,8 @@ def record_faults(lines: list, arm: str, run_id: str) -> list[str]:
         elif not ((line["outcome"] == "ok" and line["tier"] in TIERS)
                   or (line["outcome"] in NO_ANSWER and line["tier"] is None)):
             faults.append(f"outcome {line['outcome']!r} with tier {line['tier']!r}")
+        elif line.get("reused") and arm != "jev":
+            faults.append(f"a reused answer on the {arm} arm; only Jev was asked in step 1")
         elif not (usd is None and line.get("reused")) and (
                 isinstance(usd, bool) or not isinstance(usd, (int, float))
                 or not math.isfinite(usd) or usd < 0):
@@ -1613,10 +1681,12 @@ def cmd_replay(args, out, env) -> int:
                 "population": row["population"], "arm": arm, "run_id": run_id}
         found = reuse.get(ident)
         if found is not None and found.get("state") == row["state"]:
-            answer = found["answer"]
-            line.update(tier=answer["choice"], probabilities=answer.get("probabilities"),
-                        confidence=answer.get("confidence"), outcome="ok",
-                        attempts=found.get("tries"), usd=None,
+            # A registered failure stays one: its head is counted, not asked again.
+            answer = found["answer"] or {}
+            line.update(tier=answer.get("choice"), probabilities=answer.get("probabilities"),
+                        confidence=answer.get("confidence"),
+                        outcome="ok" if answer else unanswered(found["tries"]),
+                        attempts=found["tries"], usd=None,
                         reused=args.faithful.name, at=now())
             record(line, None)
             continue

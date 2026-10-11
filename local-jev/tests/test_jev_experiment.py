@@ -991,7 +991,9 @@ class TheReplay(CompareCase):
         self.live.parent.mkdir(parents=True)
         initialise(self.live)
         self.db = checkpoint_db([])
-        register(self.db, checkout(["a.py", "pkg/mod.py"]), "public")
+        public = checkout(["a.py", "pkg/mod.py"])
+        register(self.db, public, "public")
+        self.slug = f"owner/{public.parent.name}"
         self.population = self.folder / "population.jsonl"
         self.write_population(["a.py"])
         retry = unittest.mock.patch.object(experiment, "RETRY_WAIT", 0)
@@ -1000,28 +1002,42 @@ class TheReplay(CompareCase):
         self.enterContext(unittest.mock.patch.object(experiment, "FAITHFUL_PASS", 1))
         self.enterContext(unittest.mock.patch.object(experiment, "FAITHFUL_COUNT", 2))
         self.faithful = self.folder.parent / "faithful-2"
-        self.checkpoint(90, 91)
+        # The registered draw: half moved (head 90), half not (head 91).
+        self.checkpoint(90)
+        self.checkpoint(91, tier="standard")
         self.write_faithful([(90, "cheap"), (91, "cheap")])
 
-    def checkpoint(self, *heads):
-        """E heads with a recorded reading of `cheap`: the faithfulness draw's source."""
+    def checkpoint(self, *heads, tier="cheap", repository="owner/repo"):
+        """E heads with a recorded reading of `tier` where the rule routed
+        `standard`: the faithfulness draw's source, moved unless `tier` is
+        `standard`."""
         with contextlib.closing(connect(self.db)) as connection:
             for n in heads:
                 connection.execute(
                     "INSERT INTO state (kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
                     (f"ship:{n}", "2026-09-22T00:00:00+00:00", json.dumps({
-                        "repository": "owner/repo", "head": sha(n), "reviewed_head": None,
-                        "passes": [a_pass(sha(n), tier="cheap")]})))
+                        "repository": repository, "head": sha(n), "reviewed_head": None,
+                        "passes": [a_pass(sha(n), tier=tier)]})))
 
     def write_faithful(self, lines, match=True, state=None):
-        """Step 1's answers: (head, choice) per line, each claiming `match`."""
+        """Step 1's answers as `ask_jev` writes them: (head, choice) per line,
+        or (head, choice, fields) to change a record, each claiming `match`.
+        A choice of None is no answer after the one retry."""
         source = {c["head"]: c for c in experiment.candidates(self.db)}
+        records = []
+        for n, choice, *fields in lines:
+            answer = {"type": "choice", "choice": choice, "confidence": 0.9,
+                      "probabilities": {**dict.fromkeys(experiment.TIERS, 0.0), choice: 0.9}}
+            tries = [{"exit": 0, "wait_ms": 300, "error": []}]
+            if choice is None:
+                answer, tries = None, [{"exit": 1, "wait_ms": 300, "error": ["refused"]}] * 2
+            records.append(dict({
+                "repository": "owner/repo", "head": sha(n), "recorded": "cheap", "match": match,
+                "moved": True, "state": state or source.get(sha(n), {}).get("state", "{}"),
+                "answer": answer, "tries": tries}, **(fields[0] if fields else {})))
         self.faithful.mkdir(exist_ok=True)
-        (self.faithful / "answers.jsonl").write_text("".join(json.dumps({
-            "repository": "owner/repo", "head": sha(n), "recorded": "cheap", "match": match,
-            "state": state or source.get(sha(n), {}).get("state", "{}"),
-            "answer": {"choice": choice, "confidence": 0.9, "probabilities": {choice: 0.9}},
-            "tries": [{"exit": 0, "wait_ms": 300}]}) + "\n" for n, choice in lines))
+        (self.faithful / "answers.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records))
         # Stored claims the gate must not trust: each line's flag and a summary.
         claimed = len(lines) if match else 0
         (self.faithful / "summary.json").write_text(json.dumps({
@@ -1252,7 +1268,8 @@ class TheReplay(CompareCase):
                                         "unavailable", 5)])
 
     def test_step_one_answers_are_reused_for_the_same_state(self):
-        self.checkpoint(0, 1)
+        self.checkpoint(0)
+        self.checkpoint(1, tier="standard")
         self.write_faithful([(0, "cheap"), (1, "cheap")])
         population = [json.loads(line) for line in self.population.read_text().splitlines()]
         population[1]["state"] = "{}"                 # head 1's population state differs
@@ -1785,6 +1802,106 @@ class TheReplay(CompareCase):
                 self.write_faithful(lines, **kwargs)
                 self.assertEqual(self.replay("jev")[0], 2)
                 self.assertEqual(Stub.seen, [])
+
+    def test_a_faithfulness_record_not_as_step_one_writes_it_refuses(self):
+        # Class pass, round 14:47Z: every field the replay reuses is checked
+        # as `ask_jev` writes it, so a record cannot pass as an answer.
+        three = {**dict.fromkeys(experiment.TIERS, 0.0), "cheap": 3.0}
+        failed = {"exit": 1, "wait_ms": 300, "error": []}
+        for name, fields in (
+                ("an answer without a choice", {"answer": {"type": "choice", "choice": None}}),
+                ("a probability above 1", {"answer": {"type": "choice", "choice": "cheap",
+                                                      "confidence": 0.9, "probabilities": three}}),
+                ("probabilities without every tier", {"answer": {
+                    "type": "choice", "choice": "cheap", "confidence": 0.9,
+                    "probabilities": {"cheap": 0.9}}}),
+                ("a confidence that is not a number", {"answer": {
+                    "type": "choice", "choice": "cheap", "confidence": "high",
+                    "probabilities": dict.fromkeys(experiment.TIERS, 0.25)}}),
+                ("an answer from a failed attempt", {"tries": [failed]}),
+                ("three attempts", {"tries": [failed, failed, {"exit": 0, "wait_ms": 1}]}),
+                ("no answer before the one retry", {"answer": None, "tries": [failed]}),
+                ("attempts that are not a list", {"tries": "none"})):
+            with self.subTest(name=name):
+                self.folder = Path(tempfile.mkdtemp())       # no earlier run's manifest
+                self.write_faithful([(90, "cheap"), (91, "cheap", fields)])
+                self.assertEqual(self.replay("jev")[0], 2)
+                self.assertEqual(Stub.seen, [])
+        for name, text in (("a line that is not JSON", "{\n"),
+                           ("a record that is not an object", "[1]\n"),
+                           ("a head that is not text", json.dumps(
+                               {"repository": ["owner/repo"], "head": sha(91)}) + "\n")):
+            with self.subTest(name=name):
+                self.folder = Path(tempfile.mkdtemp())
+                self.write_faithful([(90, "cheap")])
+                with (self.faithful / "answers.jsonl").open("a") as fh:
+                    fh.write(text)
+                self.assertEqual(self.replay("jev")[0], 2)
+                self.assertEqual(Stub.seen, [])
+
+    def test_a_draw_that_is_not_the_registered_stratification_refuses(self):
+        # Round 14:47Z: half the draw comes from moved heads, or every moved
+        # head of the public pool when it holds fewer. The stored `moved`
+        # flags all claim a moved head; the gate reads the checkpoints.
+        public = {"repository": self.slug}
+        self.checkpoint(92, 93, tier="standard", repository=self.slug)
+        self.checkpoint(95)
+        self.write_faithful([(92, "standard", public), (93, "standard", public)])
+        self.assertEqual(self.replay("kev")[0], 0)    # the public pool holds no moved head
+        self.checkpoint(94, repository=self.slug)    # now it holds one
+        for name, lines, listed in (
+                ("no moved head, one left in the public pool",
+                 [(92, "standard", public), (93, "standard", public)], None),
+                ("every head moved", [(90, "cheap"), (95, "cheap")], None),
+                ("a drawn repository git cannot list now",
+                 [(92, "standard", public), (93, "standard", public)], {})):
+            with self.subTest(name=name):
+                self.folder = Path(tempfile.mkdtemp())
+                self.write_faithful(lines)
+                with contextlib.ExitStack() as stack:
+                    if listed is not None:
+                        stack.enter_context(unittest.mock.patch.object(
+                            experiment, "public_repos", return_value=listed))
+                    self.assertEqual(self.replay("jev")[0], 2)
+                self.assertEqual(Stub.seen, [])
+        self.folder = Path(tempfile.mkdtemp())
+        self.write_faithful([(94, "cheap", public), (92, "standard", public)])
+        self.assertEqual(self.replay("jev")[0], 0)
+
+    def test_a_step_one_no_answer_is_reused_never_asked_again(self):
+        # Round 14:47Z: the reuse map dropped every no-answer record, so the
+        # replay asked those heads again: another retry pair, and a later
+        # answer in place of the registered failure.
+        self.checkpoint(0)
+        self.checkpoint(1, tier="standard")
+        for exits, outcome in (((1, 1), "unavailable"), ((None, None), "timeout"),
+                               ((1, 0), "invalid")):
+            with self.subTest(outcome=outcome):
+                self.folder = Path(tempfile.mkdtemp())
+                tries = [{"exit": code, "wait_ms": 300, "error": []} for code in exits]
+                self.write_faithful([(0, "cheap"), (1, None, {"tries": tries})])
+                before = len(Stub.seen)
+                self.assertEqual(self.replay("jev")[0], 0)
+                found = {a["head"]: a for a in self.answers("jev")}
+                self.assertEqual({h: (found[sha(h)]["reused"], found[sha(h)]["tier"],
+                                      found[sha(h)]["outcome"]) for h in (0, 1)},
+                                 {0: ("faithful-2", "cheap", "ok"),
+                                  1: ("faithful-2", None, outcome)})
+                self.assertEqual(found[sha(1)]["attempts"], tries)
+                self.assertEqual(len(Stub.seen) - before, 3)      # heads 2 to 4 only
+                manifest = json.loads((self.folder / "manifest.json").read_text())
+                self.assertEqual((manifest["arms"]["jev"]["reused"],
+                                  manifest["arms"]["jev"]["no_answer"]), (2, 1))
+
+    def test_only_jevs_lines_may_claim_a_reused_answer(self):
+        # Only Jev was asked in step 1: a reused line on another arm is not
+        # that arm's answer, and its missing cost would escape the cap.
+        line = {"repository": "owner/repo", "head": sha(0), "arm": "haiku",
+                "run_id": experiment.RUN_ID, "outcome": "ok", "tier": "cheap", "usd": None,
+                "reused": "faithful-2", "at": "2026-10-11T00:00:00+00:00"}
+        self.assertEqual(len(experiment.record_faults([line], "haiku", experiment.RUN_ID)), 1)
+        self.assertEqual(experiment.record_faults([dict(line, arm="jev")], "jev",
+                                                  experiment.RUN_ID), [])
 
     def test_a_faithfulness_result_for_another_registration_or_population_refuses(self):
         self.attest(registration="0" * 64)
