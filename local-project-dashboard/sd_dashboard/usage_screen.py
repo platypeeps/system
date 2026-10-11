@@ -150,5 +150,5 @@ def usage_panel(connection: sqlite3.Connection, *, now: str, parameters, month=N
         tag("h3", "Bound rows"),
         tag("p", "Money the provider may have billed for a response that was lost; counted at the bound, "
                  "labelled estimated, until corrected against the invoice.", class_="hint"),
-        bound, tag("span", hidden=True, data_cli=f"sd-db.sh usage --month {month.month}"),
+        bound, tag("span", hidden=True, data_cli=f"sd-db usage --month {month.month}"),
         id="usage", class_="usage-panel")

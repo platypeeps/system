@@ -39,7 +39,7 @@ the sync's ten keys it does not write, and `updated_at` is one -- so the
 days here are since the sync first saw the pull request open, `first_seen`,
 and the row says "first seen Nd ago" rather than "quiet Nd". That is age,
 the measure the pack's docstring set aside; a column for the tracker's own
-stamp is a `local-sd-db` change and not this one. `needs_you` only, as the
+stamp is a change to the pack's `sd_db` and not this one. `needs_you` only, as the
 pack read `needsYou` only: a pull request that is merely yours is not one
 that is waiting on you.
 

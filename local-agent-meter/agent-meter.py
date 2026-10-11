@@ -71,7 +71,7 @@ BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/
 # armed beside the job for several hours and nothing in the series showed it.
 DUP_GAP_S = 3600
 # Where `sd_db.connect` looks when given no path: `$HOME/.local/share/sd/sd.db`,
-# read at call time (`default_path` in `local-sd-db/sd_db/database.py`). Named
+# read at call time (`default_path` in the pack's `lib/sd_db/database.py`). Named
 # here for `--help` only; `--db` left unset hands None to the library, so the
 # two cannot drift.
 DEFAULT_DB = "~/.local/share/sd/sd.db"

@@ -3,8 +3,8 @@
 The production launcher uses the command pack's provisioned Python interpreter
 and the pack checkout's `lib/sd_db` (`SD_PACK_ROOT`, default
 `~/repos/platypeeps/sd-ai-command-pack`). It runs in isolated mode: a caller's
-`PYTHONPATH`, current directory, neighboring `local-sd-db` source and any copy
-installed in the interpreter cannot replace that library (sd:3279).
+`PYTHONPATH`, current directory and any copy installed in the interpreter
+cannot replace that library (sd:3279).
 The library moves when `repo-sync.sh refresh` moves the pack checkout.
 Migrate the database separately before replacing the dashboard.
 
@@ -131,7 +131,7 @@ It does not create a Serve route or expose a LAN listener.
 Each request resolves its TCP peer through `tailscale whois --json --proto=tcp`.
 Only the configured operator can access the dashboard.
 Tagged devices, forwarded identity headers, and unavailable identity evidence are refused.
-The peer rules live in `sd_db.tailnet`, which `sd-db.sh serve` shares; the installed library must carry that module.
+The peer rules live in `sd_db.tailnet`, which `sd-db serve` shares; the installed library must carry that module.
 The current node address and absence of a conflicting Serve listener are checked on each remote request.
 Session expiry, operator and origin binding, CSRF, HttpOnly, and SameSite remain enforced.
 The IP origin uses HTTP, so its cookie omits the browser's Secure attribute.
@@ -175,7 +175,7 @@ Usage's month section and `/api/usage` (`usage_screen.py`) read
 `sd_db.usage.read` -- `reads.usage_month` under the registry's merged caps, so
 a legacy row cap on a `start` bill is no cap there, as on the cost tile
 (sd:234 slice 12h) -- on the request's read-only connection and write
-nothing; the orphan sweep that `sd-db.sh usage` runs is the verb's alone. Provider enabled flags and both role orders save together, after the
+nothing; the orphan sweep that `sd-db usage` runs is the verb's alone. Provider enabled flags and both role orders save together, after the
 complete proposal passes the author/reviewer guard. Resources reuse bounded
 read-only collectors; research configuration is parsed as data, never executed.
 The obsolete Obsidian Skill Proposals action is replaced by the Skills workflow.

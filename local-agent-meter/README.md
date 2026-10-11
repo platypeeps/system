@@ -25,7 +25,7 @@ rows changes the exit, which stays 0.
 
     ./agent-meter.py                       # append one reading, write the rows
     ./agent-meter.py --out /tmp/probe.jsonl --no-db              # the JSONL line only
-    sh ../local-sd-db/sd-db.sh test -p test_agent_meter.py       # the collector's tests
+    PYTHONPATH=$SD_PACK_ROOT/lib python3 tests/test_agent_meter.py   # the collector's tests
 
 A probe store somewhere harmless: `--db` opens an existing database and never
 creates one, and the sample reads `providers.yaml` beside it for each provider's
@@ -41,9 +41,7 @@ The rows need `sd_db`, which the script loads from the command pack checkout's `
 the interpreter has installed (sd:3279). With no `lib/sd_db` there, the script still
 appends the JSONL line, with the missing import in `errors.sd_db`.
 
-The tests live in `local-sd-db/tests/test_agent_meter.py`, in the library's suite,
-because the CI workflow fails every leg on a folder that grows `tests/` without a
-`run_suite` line naming it; they move here when that line is added.
+The tests are `tests/test_agent_meter.py`, a `run_suite` line of `tests/ci-native.sh`.
 
 ## Schedule
 

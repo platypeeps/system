@@ -36,7 +36,7 @@ PACK_CRITERIA_SHA256 = "4de730c7968e4e31558dfc3f3e8cccb454d2e517b35e555f672c0324
 def checkpoint_db(rows) -> Path:
     """A database the migrations built, holding `rows` as checkpoints. Opened
     through `sd_db` alone: nothing outside it opens the database
-    (`local-sd-db/tests/test_one_store.py`)."""
+    (`tests/test_one_store.py`)."""
     path = Path(tempfile.mkdtemp()) / "sd.db"
     initialise(path)
     with contextlib.closing(connect(path)) as connection:

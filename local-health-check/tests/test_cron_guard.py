@@ -48,12 +48,13 @@ RUN_TIMEOUT = 300
 LAUNCHD = {"demo": ("5", "0"), "hang": ("5", "0"), "legacy": ("2", "2"),
            "green": ("5", "1")}
 
-# `sd_db` as `local-jev`'s metering suite finds it: installed, or the folder
-# beside this one. It builds the fixture HOME's ledger (sd:2799).
+# `sd_db` as `local-jev`'s metering suite finds it: installed, or the pack's
+# `lib/` (`SD_PACK_ROOT`). It builds the fixture HOME's ledger (sd:2799).
 try:  # pragma: no cover - one branch per machine
     import sd_db
 except ImportError:  # pragma: no cover - one branch per machine
-    sys.path.insert(0, str(HERE.parents[1] / "local-sd-db"))
+    sys.path.insert(0, str(pathlib.Path(os.environ.get("SD_PACK_ROOT")
+                                        or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"))
     import sd_db
 from sd_db.database import connect  # noqa: E402
 from sd_db.migrate import initialise  # noqa: E402

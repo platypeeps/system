@@ -5,7 +5,7 @@ surfaces for a status write: the board's drag, a bulk action, the item
 screen, `sd status` and the palette's status entry. Four are this
 dashboard's, and this module measures each against the one route that
 writes a status, `/api/items/<id>/status`; the route table of `server.py`
-calls `source:local-sd-db/sd_db/workflow.py::change_status` there and
+calls `source:lib/sd_db/workflow.py::change_status` in the pack there and
 nowhere else:
 
 * the **item screen** posts that route from its `Change status` form;
@@ -20,7 +20,7 @@ nowhere else:
 
 The fifth surface, the pack's `sd task status <item> <status>`, is the
 pack's to test. The library half, `change_status` itself and the two
-cancels, is `local-sd-db/tests/test_criterion_7.py`; the grep for a second
+cancels, is the pack's `tests/sd_db/test_criterion_7.py`; the grep for a second
 `UPDATE item SET status` is `test_status_history.py`'s.
 """
 

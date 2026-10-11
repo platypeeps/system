@@ -437,7 +437,7 @@ function registerCommands() {
   const C = window.shell.commands;
   const task = on => ({ id: `${on}.task`, on, label: 'Make task', key: 'k', risk: 'safe', journal: () => 'new', cli: o => `sd task add ${shq(o.label)}`, run: o => { window.shell.capture(o, '', `${on}.task`); return null; } }); // the filed task is the write
   // build: copy only. The dashboard shows no job log yet (Management has none either).
-  const log = on => ({ id: `${on}.log`, on, label: 'Show log', key: 'l', risk: 'safe', executes: false, when: o => (o.kind === 'mail' || logOf(o)) || 'this report came from sd-db.sh, not a job log', cli: o => `${CRON} logs ${o.job}`, run: () => 'Copy it into a terminal: the dashboard shows no job log yet' });
+  const log = on => ({ id: `${on}.log`, on, label: 'Show log', key: 'l', risk: 'safe', executes: false, when: o => (o.kind === 'mail' || logOf(o)) || 'this report came from sd-db, not a job log', cli: o => `${CRON} logs ${o.job}`, run: () => 'Copy it into a terminal: the dashboard shows no job log yet' });
   C.register(
     // build: Acknowledge posts /api/reports/<n>/acknowledge with the report's revision, the route v1's form posts. It is off,
     // with the library's reason, for a report an open followup holds or whose fields cannot be read.

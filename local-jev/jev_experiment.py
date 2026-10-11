@@ -150,16 +150,17 @@ def db_path(raw) -> Path:
 
 def open_ro(path: str | Path):
     # Through `sd_db`, because nothing outside it opens the database
-    # (`local-sd-db/tests/test_one_store.py`). Its `connect` opens the
+    # (`tests/test_one_store.py`). Its `connect` opens the
     # resolved path's `as_uri`, which escapes `?` and `#`, so the file opened
     # is the one named and `mode=ro` is the only parameter. No `db_path`
     # here: the caller's path is already the one its identity check judged,
-    # and resolving it again strips nothing. The checkout's own `sd_db` is
-    # the fallback, as in `jev_meter`'s tests.
+    # and resolving it again strips nothing. The pack's `lib/` is the
+    # fallback, as in `jev_meter`'s tests.
     try:
         from sd_db.database import connect
     except ImportError:
-        sys.path.insert(0, str(FOLDER.parent / "local-sd-db"))
+        sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT")
+                                     or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"))
         from sd_db.database import connect
     return connect(Path(path), write=False)
 

@@ -427,7 +427,7 @@ is_satellite() {
 
 # Prints which hub checkout $1 is, `system` or `pack`, or returns 1. Only
 # `follow` moves these on a satellite. System by this script alone: the pack
-# owns sd_db, and system's local-sd-db goes (sd:3279).
+# owns sd_db (sd:3279).
 hub_checkout() {
   if [ -f "$1/bin/sd_install.py" ]; then echo pack
   elif [ -f "$1/local-repo-sync/repo-sync.sh" ]; then echo system
@@ -518,7 +518,7 @@ sync() {
 
 # The SCHEMA_VERSION that the pack's lib/sd_db holds at commit $2 of checkout
 # $1, or nothing when that commit has no lib/sd_db. Only the pack's: it owns
-# sd_db, and system's frozen local-sd-db is not the library the hub runs (sd:3279).
+# sd_db (sd:3279).
 pin_schema() {
   git -C "$1" show "$2:lib/sd_db/schema.py" 2>/dev/null \
     | sed -n 's/^SCHEMA_VERSION = \([0-9][0-9]*\).*/\1/p' | head -1
@@ -2265,7 +2265,7 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              drain the lanes first: hold every lane's runner lock under the
              lane root (SD_LANE_ROOT, else sd.lane_root, else
              ~/.local/state/sd/lanes), making it for a lane folder, a
-             registered repository (sd-db.sh repo list) or a conf checkout
+             registered repository (sd-db repo list) or a conf checkout
              whose runner never ran, so `lane run` exits at once,
              and wait until each gate holder `sd gate status` listed once
              every lock was held has ended; a waiter or a later gate is no

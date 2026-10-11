@@ -160,7 +160,7 @@ def direct_context(headers, peer, frontdoor, lookup):
     if any(name.lower().startswith(("tailscale-", "x-forwarded-", "x-auth-"))
            or name.lower() in ("forwarded", "x-real-ip", "remote-user") for name in headers):
         return None
-    # The socket peer rule `sd-db.sh serve` applies too, in one place.
+    # The socket peer rule `sd-db serve` applies too, in one place.
     if tailnet.peer_address(peer) is None:
         return None
     if lookup(peer) != frontdoor.operator_login:

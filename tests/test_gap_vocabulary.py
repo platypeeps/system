@@ -2,7 +2,7 @@
 
 The pack owns the gap vocabulary: `sd-status` emits the ids, and the
 pack's `sd_lib` module accepts them as `ACKNOWLEDGEABLE_GAPS`. Two places here restate
-them: `GAP_IDS` in `local-sd-db/sd_db/protection.py`, which the nightly
+them: `GAP_IDS` in the pack's `lib/sd_db/protection.py`, which the nightly
 collector writes, and `GAPS` in the dashboard's `protection_screen.py`, which
 draws one column per id. Nothing held the three together, so an id added on one
 side only failed nothing, and the dashboard drew no column for it.
@@ -29,7 +29,6 @@ import sys
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PROTECTION = ROOT / "local-sd-db" / "sd_db" / "protection.py"
 SCREEN = ROOT / "local-project-dashboard" / "sd_dashboard" / "protection_screen.py"
 #: The gap the system reports as a status, never as a column of its own.
 STATUS_GAP = "unprotected"
@@ -65,7 +64,7 @@ class GapVocabulary(unittest.TestCase):
                          f"(pack only, {where} only) gap ids: the pack's ACKNOWLEDGEABLE_GAPS owns them")
 
     def test_the_collector_s_gap_ids_are_the_pack_s(self) -> None:
-        self.one_side_only(set(assigned(PROTECTION, "GAP_IDS")), "sd_db.protection.GAP_IDS")
+        self.one_side_only(set(assigned(pinned_pack() / "lib" / "sd_db" / "protection.py", "GAP_IDS")), "sd_db.protection.GAP_IDS")
 
     def test_the_dashboard_draws_a_column_for_each_of_the_pack_s_gap_ids(self) -> None:
         self.one_side_only({gap for gap, _ in assigned(SCREEN, "GAPS")}, "protection_screen.GAPS")

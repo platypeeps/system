@@ -1,5 +1,5 @@
 # The build backend is in this folder, not on PyPI, for the reason `_build.py`
-# gives and `local-sd-db/_build.py` gave first: a pure-Python package with no
+# gives: a pure-Python package with no
 # third-party dependencies does not need setuptools, and fetching setuptools
 # would make an offline install fail for a reason that has nothing to do with
 # this package.

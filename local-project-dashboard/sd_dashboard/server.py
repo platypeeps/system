@@ -139,7 +139,7 @@ def capture_followup(connection, *, followup_of=None, who, **values):
 
     `followup_of` is the item the form had selected, and it is optional: a
     followup item stands on its own (that is what makes it an item and not a
-    note, `local-sd-db/README.md`). Given, the link is written twice, once
+    note). Given, the link is written twice, once
     each way: the child carries `fields.followup_of`, and the parent gets a
     `comment` note naming the child -- a `comment`, never a `followup` note,
     which would put the item on Today's open followups as a note as well. The

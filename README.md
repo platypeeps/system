@@ -14,9 +14,8 @@ own README. There is no repository-wide build.
 | `lib` | The shared config resolver the tools source |
 | `docs` | Design documents and planned work (`docs/work/`) |
 
-The larger pieces are `local-sd-db` (a Python package holding the workflow
-database), `local-project-dashboard` (the dashboard over it) and
-`local-cron-jobs` (launchd-scheduled jobs). They pair
+The larger pieces are `local-project-dashboard` (the dashboard over the
+workflow database) and `local-cron-jobs` (launchd-scheduled jobs). They pair
 with the public command pack
 [`platypeeps/sd-ai-command-pack`](https://github.com/platypeeps/sd-ai-command-pack).
 

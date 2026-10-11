@@ -1,7 +1,7 @@
 """Tests for deploy.sh (sd:2725, sd:2812).
 
 Each case builds a throwaway git checkout with deploy.sh in `local-deploy/`
-and stub `dashboard.sh` and `sd-db.sh` entrypoints beside it,
+and a stub `dashboard.sh` entrypoint beside it,
 commits a change, and runs `plan` or `apply` over that commit. An `upgrade`
 case gives the checkout a bare repository as its origin and lands the change
 there, so its fetch reads a local path. `launchctl` and `lsof`
@@ -37,17 +37,11 @@ esac
 exit 0
 """
 
-# ESTABLISHED answers DEPLOY_TEST_SESSIONS; LISTEN answers pid 100 before a
-# kickstart and 200 after it, unless DEPLOY_TEST_NO_LISTENER is set. Like
-# `lsof -t`, it prints nothing and exits 1 for no match. DEPLOY_TEST_LSOF_FAIL
-# makes it fail with that code and a message, as a missing or broken lsof does.
+# LISTEN answers pid 100 before a kickstart and 200 after it, unless
+# DEPLOY_TEST_NO_LISTENER is set. Like `lsof -t`, it prints nothing and exits 1
+# for no match.
 LSOF = """#!/bin/sh
-if [ -n "$DEPLOY_TEST_LSOF_FAIL" ]; then
-  echo "lsof: cannot answer" >&2
-  exit "$DEPLOY_TEST_LSOF_FAIL"
-fi
 case "$*" in
-  *ESTABLISHED*) pids="$DEPLOY_TEST_SESSIONS" ;;
   *LISTEN*)
     if [ -e "$DEPLOY_TEST_KICKED" ]; then
       [ -n "$DEPLOY_TEST_NO_LISTENER" ] || pids=200
@@ -71,11 +65,6 @@ echo "{name} $*" >> "$DEPLOY_TEST_CALLS"
 exit "${{{status}:-0}}"
 """
 
-# Logs any call: no case may install sd_db through it now (sd:3279).
-SDDB = """#!/bin/sh
-echo "sd-db.sh $*" >> "$DEPLOY_TEST_CALLS"
-"""
-
 AGENTS = ("test.example.sd-dashboard", "test.example.sd-serve")
 
 
@@ -87,8 +76,6 @@ class DeployTest(unittest.TestCase):
         self.write("local-deploy/deploy.sh", (FOLDER / "deploy.sh").read_text())
         self.write("local-project-dashboard/dashboard.sh",
                    ENTRYPOINT.format(name="dashboard.sh", status="DEPLOY_TEST_HEALTH"))
-        self.write("local-sd-db/sd-db.sh", SDDB)
-        self.write("local-sd-db/sd_db/schema.py", "SCHEMA_VERSION = 1\n")
         self.git("init", "-q")
         self.commit()
         self.base = self.head()
@@ -149,18 +136,18 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.splitlines()
 
-    def test_plan_restarts_each_changed_service(self):
-        self.assertEqual(self.plan({"local-sd-db/sd-db.sh": "x\n",
-                                    "local-project-dashboard/sd_dashboard/app.py": "x\n"}),
-                         ["restart sd-serve", "restart dashboard"])
+    def test_plan_restarts_the_changed_dashboard(self):
+        self.assertEqual(self.plan({"local-project-dashboard/sd_dashboard/app.py": "x\n"}),
+                         ["restart dashboard"])
 
-    def test_plan_installs_and_restarts_nothing_for_systems_frozen_library(self):
-        """sd:3279: no service runs system's local-sd-db/sd_db; the dashboard and sd-serve
-        run the pack's lib/, which refresh moves. sd-serve restarts for its shim folder."""
-        self.assertEqual(self.plan({"local-sd-db/sd_db/remote.py": "x\n"}), ["restart sd-serve"])
+    def test_plan_restarts_and_installs_nothing_for_the_retired_sd_db_folder(self):
+        """sd:3281: sd_db, its schema and sd-serve are the pack's, which refresh moves; a
+        range that touches the retired folder, or deletes it, plans no sd-serve restart."""
+        self.assertEqual(self.plan({"local-sd-db/sd-db": "x\n", "local-sd-db/sd_db/remote.py": "x\n",
+                                    "local-sd-db/sd_db/schema/002_x.sql": "x\n"}), [])
 
     def test_plan_is_empty_for_tests_docs_and_other_folders(self):
-        self.assertEqual(self.plan({"local-sd-db/tests/test_x.py": "x\n",
+        self.assertEqual(self.plan({"local-herdr/tests/test_x.py": "x\n",
                                     "local-project-dashboard/README.md": "x\n",
                                     "local-herdr/herdr.sh": "x\n",
                                     "local-deploy/other.sh": "SD_DASHBOARD_PYTHON\n"}), [])
@@ -175,12 +162,6 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(self.plan({path: '"EnvironmentVariables": {}\n'}),
                          [f"report needs local-project-dashboard install ({path})", "restart dashboard"])
 
-    def test_plan_reports_no_migration_for_systems_frozen_schema(self):
-        """sd:3279: the schema is the pack's, and design step 2.8 deletes this copy."""
-        self.assertEqual(self.plan({"local-sd-db/sd_db/schema/002_x.sql": "x\n",
-                                    "local-project-dashboard/sd_dashboard/app.py": "x\n"}),
-                         ["restart sd-serve", "restart dashboard"])
-
     def test_apply_of_reports_only_calls_nothing(self):
         path = "local-machine-setup/examples/launchagents/test.example.sd-serve.plist"
         self.change({path: "<plist/>\n"})
@@ -189,56 +170,25 @@ class DeployTest(unittest.TestCase):
         self.assertIn(f"report needs local-machine-setup install ({path})", result.stdout)
         self.assertEqual(self.calls.read_text(), "")
 
-    def test_apply_restarts_each_service_in_its_safe_form(self):
-        self.change({"local-sd-db/sd-db.sh": "x\n",
-                     "local-project-dashboard/sd_dashboard/app.py": "x\n"})
+    def test_apply_restarts_the_dashboard_in_its_safe_form(self):
+        self.change({"local-project-dashboard/sd_dashboard/app.py": "x\n"})
         result = self.run_deploy("apply")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("restarted sd-serve: listener pid 200", result.stdout)
         calls = self.calls.read_text().splitlines()
         kicks = [call for call in calls if "kickstart" in call]
-        self.assertEqual(len(kicks), 2, calls)
+        self.assertEqual(len(kicks), 1, calls)
         self.assertTrue(kicks[0].startswith("launchctl kickstart -k gui/")
-                        and kicks[0].endswith("/test.example.sd-serve"), kicks)
-        self.assertTrue(kicks[1].endswith("/test.example.sd-dashboard"), kicks)
+                        and kicks[0].endswith("/test.example.sd-dashboard"), kicks)
         self.assertIn("dashboard.sh health --wait 1", calls)
 
     def test_apply_restarts_the_dashboard_whatever_copy_its_interpreter_holds(self):
         """sd:3279: the dashboard runs the pack's lib/ and refuses any other copy itself, so a
-        copy in its venv that differs from system's frozen local-sd-db is no reason to refuse;
-        the old refusal's remedy installed that frozen copy into the pack's venv."""
+        copy in its venv that differs from this checkout is no reason to refuse."""
         self.change({"local-project-dashboard/sd_dashboard/app.py": "x\n"})
         result = self.run_deploy("apply", DEPLOY_TEST_LAG="installed sd_db differs from this checkout")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("restarted dashboard", result.stdout)
         self.assertNotIn("lag-check", self.calls.read_text())
-        self.assertNotIn("sd-db.sh install", result.stdout + result.stderr)
-
-    def test_apply_refuses_when_lsof_cannot_answer(self):
-        self.change({"local-sd-db/sd-db.sh": "x\n"})
-        for code in ("127", "1", "2"):
-            with self.subTest(code=code):
-                self.calls.write_text("")
-                result = self.run_deploy("apply", DEPLOY_TEST_LSOF_FAIL=code)
-                self.assertEqual(result.returncode, 1)
-                self.assertIn(f"lsof exited {code}: lsof: cannot answer", result.stderr)
-                self.assertIn("deploy: refused before any restart: sd-serve: lsof cannot tell", result.stderr)
-                self.assertNotIn("kickstart", self.calls.read_text())
-
-    def test_apply_skips_sd_serve_while_a_satellite_session_is_open(self):
-        self.change({"local-sd-db/sd-db.sh": "x\n"})
-        result = self.run_deploy("apply", DEPLOY_TEST_SESSIONS="4242")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("report sd-serve not restarted: a session is open on port 8769", result.stdout)
-        self.assertNotIn("kickstart", self.calls.read_text())
-
-    def test_apply_fails_when_sd_serve_listener_does_not_return(self):
-        self.change({"local-sd-db/sd-db.sh": "x\n",
-                     "local-project-dashboard/sd_dashboard/app.py": "x\n"})
-        result = self.run_deploy("apply", DEPLOY_TEST_NO_LISTENER="1")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("sd-serve listener check", result.stderr)
-        self.assertNotIn("dashboard.sh health --wait 1", self.calls.read_text().splitlines())
 
     def test_apply_stops_at_a_failed_dashboard_health_check(self):
         self.change({"local-project-dashboard/sd_dashboard/app.py": "x\n"})
@@ -247,10 +197,10 @@ class DeployTest(unittest.TestCase):
         self.assertIn("deploy: dashboard health failed; stopped", result.stderr)
 
     def test_apply_skips_an_agent_that_is_not_loaded(self):
-        self.change({"local-sd-db/sd-db.sh": "x\n"})
-        result = self.run_deploy("apply", DEPLOY_TEST_UNLOADED="test.example.sd-serve")
+        self.change({"local-project-dashboard/sd_dashboard/app.py": "x\n"})
+        result = self.run_deploy("apply", DEPLOY_TEST_UNLOADED="test.example.sd-dashboard")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("skip sd-serve: test.example.sd-serve is not loaded", result.stdout)
+        self.assertIn("skip dashboard: test.example.sd-dashboard is not loaded", result.stdout)
         self.assertNotIn("kickstart", self.calls.read_text())
 
     def origin(self):
@@ -296,7 +246,7 @@ class DeployTest(unittest.TestCase):
 
     def test_upgrade_refuses_a_checkout_with_untracked_files(self):
         self.land({"local-project-dashboard/sd_dashboard/app.py": "x\n"})
-        self.write("local-sd-db/sd_db/stray.py", "x\n")
+        self.write("local-herdr/stray.py", "x\n")
         result = self.run_upgrade("--from", self.base)
         self.assertIn("has uncommitted or untracked files", result.stderr)
         self.assert_nothing_ran(result)
@@ -365,9 +315,9 @@ class DeployTest(unittest.TestCase):
                 self.assertIn("restarted dashboard", result.stdout)
                 self.assertEqual((self.head(), self.recorded()), (landed, landed))
 
-    def test_upgrade_installs_no_sd_db_and_stops_no_agent(self):
-        """sd:3279: a change to, or the deletion of, system's frozen local-sd-db/sd_db
-        installs nothing into any venv and needs no migration."""
+    def test_upgrade_over_the_retired_sd_db_folder_restarts_and_stops_nothing(self):
+        """sd:3281: a change to, or the deletion of, the retired local-sd-db folder
+        restarts nothing, stops no agent and needs no migration."""
         self.origin()
         self.change({"local-sd-db/sd_db/remote.py": "x\n"})
         self.git("rm", "-q", "-r", "local-sd-db/sd_db")
@@ -378,8 +328,7 @@ class DeployTest(unittest.TestCase):
         result = self.run_upgrade("--from", self.base)
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls.read_text()
-        self.assertNotIn("sd-db.sh", calls)
-        self.assertNotIn("bootout", calls)
+        self.assertEqual(calls, "")
         self.assertNotIn("migration", result.stdout + result.stderr)
         self.assertEqual(self.recorded(), landed)
 
@@ -419,7 +368,8 @@ class DeployTest(unittest.TestCase):
                                      DEPLOY_TEST_HEALTH="1")
 
     def test_a_missing_sd_serve_listener_after_bootstrap_boots_it_out_for_the_rerun(self):
-        self.fail_a_start_then_rerun("test.example.sd-serve", "local-sd-db/sd-db.sh", DEPLOY_TEST_NO_LISTENER="1")
+        self.fail_a_start_then_rerun("test.example.sd-serve", "local-project-dashboard/sd_dashboard/app.py",
+                                     DEPLOY_TEST_NO_LISTENER="1")
 
     def test_a_replay_bootstraps_no_marked_agent_that_launchd_holds(self):
         self.origin()
@@ -443,15 +393,6 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("restarted dashboard", result.stdout)
         self.assertEqual(self.recorded(), landed)
-
-    def test_upgrade_refuses_an_open_sd_serve_session_before_any_stop(self):
-        self.land({"local-sd-db/serve.conf": "x\n"})
-        self.record(self.base)
-        result = self.run_upgrade(DEPLOY_TEST_SESSIONS="4242")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("sd-serve: a session is open on port 8769; rerun upgrade when it closes", result.stderr)
-        self.assertNotIn("kickstart", self.calls.read_text())
-        self.assertEqual(self.recorded(), self.base)
 
     def test_upgrade_applies_but_does_not_record_a_pending_launchagent_install(self):
         path = "local-project-dashboard/sd_dashboard/runtime.py"

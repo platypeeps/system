@@ -27,7 +27,7 @@ from tests import fixture_config, plist_tools
 
 # The fixture database is built by the library, never by SQL here: only
 # sd_db opens the database and only its migration files create tables
-# (local-sd-db/tests/test_one_store.py greps the repository for both).
+# (tests/test_one_store.py greps the repository for both).
 # machine-setup.sh test puts the command pack's lib/ on PYTHONPATH (sd:3279).
 import sd_db
 from sd_db.database import set_schema_version
@@ -174,7 +174,7 @@ class Fixture:
                               cwd=str(self.tmp.name))
 
     def make_database(self, *, schema=None):
-        """`sd-db.sh init` as the library does it. A schema other than the
+        """`sd-db init` as the library does it. A schema other than the
         current one is set last, through the library, after which the
         library itself would refuse to write the file -- which is the state
         doctor's version report is for."""
@@ -262,7 +262,7 @@ class SetupAndStatusTest(unittest.TestCase):
     def test_setup_lists_the_database_init_and_the_route_as_actions(self):
         out = self.stage_lines("setup", "sd")
         self.assertIn("MISSING database", out)
-        self.assertRegex(out, r"\[dry-run\] \S+/local-sd-db/sd-db\.sh init")
+        self.assertRegex(out, r"\[dry-run\] \S+/bin/sd-db init")
         self.assertIn("MISSING tailscale serve https:8443 -> 127.0.0.1:8767", out)
         self.assertIn("[dry-run] tailscale serve --bg --https=8443 --set-path=/ http://127.0.0.1:8767", out)
         self.assertFalse(self.fixture.db.exists(), "a dry run created the database")
@@ -335,7 +335,7 @@ class SetupAndStatusTest(unittest.TestCase):
         self.assertNotRegex(out, DRIFT_WORDS)
 
     def test_sd_db_path_does_not_move_the_database(self):
-        # Nothing else honours it: sd-db.sh init, the library and
+        # Nothing else honours it: sd-db init, the library and
         # the dashboard all use the default. Moving only this stage's view
         # checked a file no agent opened.
         self.fixture.make_database()
@@ -374,7 +374,7 @@ class DoctorTest(unittest.TestCase):
         code, out = self.doctor()
         self.assertEqual(code, 1, out)
         self.assertRegex(out, r"FAIL    database \S+/sd\.db integrity_check: ")
-        self.assertIn("sd-db.sh restore", out)
+        self.assertIn("sd-db restore", out)
 
     def test_a_missing_database_is_named(self):
         code, out = self.doctor()
@@ -460,9 +460,9 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("sd-serve", out)  # sd:2974: the hub's listener stops too
 
     def test_an_interpreter_resolving_another_copy_is_named(self):
-        # An installed copy, a pack-built one included, or this checkout's frozen local-sd-db.
+        # An installed copy, a pack-built one included, or any other folder's sd_db.
         self.fixture.make_database()
-        for elsewhere in ("/venv/lib/site-packages/sd_db/__init__.py", f"{ROOT}/local-sd-db/sd_db/__init__.py"):
+        for elsewhere in ("/venv/lib/site-packages/sd_db/__init__.py", f"{ROOT}/elsewhere/sd_db/__init__.py"):
             with self.subTest(elsewhere=elsewhere):
                 code, out = self.doctor(STUB_SD_DB_FILE=elsewhere)
                 self.assertEqual(code, 1, out)
@@ -477,8 +477,8 @@ class DoctorTest(unittest.TestCase):
         self.assertIn(f"FAIL    no interpreter at {missing}, which SD_DASHBOARD_PYTHON names", out)
 
     def test_an_sd_serve_plist_that_picks_a_library_fails(self):
-        # An older or hand-edited plist can set SD_DB_LIBRARY, and `sd-db.sh serve`
-        # then runs system's frozen copy, not the pack's lib/ (the 2026-10-10 incident).
+        # An older or hand-edited plist can set SD_DB_LIBRARY, which the pack's
+        # sd-db ignores (the 2026-10-10 incident, sd:3281).
         self.fixture.make_database()
         agents = self.fixture.home / "Library/LaunchAgents"
         agents.mkdir(parents=True)
@@ -539,6 +539,80 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("SKIP    sd pieces not checked", out)
         self.assertNotIn("FAIL", out)
+        # A machine with no sd agent, a satellite among them, still passes the
+        # retired-folder check when no config names it.
+        self.assertIn("ok      no config names the retired local-sd-db", out)
+
+    # sd:3281: a missed machine shows up here, not as a job that runs a missing script.
+
+    def config_copy(self):
+        return fixture_config.copy_config(self.fixture.home / "copy")
+
+    def test_an_installed_plist_naming_the_retired_folder_fails(self):
+        self.fixture.make_database()
+        agents = self.fixture.home / "Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        plist = agents / "local.system-tools.sd-serve.plist"
+        plist.write_bytes(plistlib.dumps({"Label": "local.system-tools.sd-serve", "ProgramArguments": [
+            "/home/someone/repos/system/local-sd-db/sd-db", "serve"]}))
+        code, out = self.doctor()
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    {plist} names the retired local-sd-db, now only a forwarder to be deleted", out)
+        self.assertIn("bin/sd-db", out)
+
+    def test_a_cron_job_file_naming_the_retired_folder_fails(self):
+        self.fixture.make_database()
+        config = self.config_copy()
+        job = config / "cron-jobs/jobs/sd-db-backup.job"
+        job.parent.mkdir(parents=True)
+        job.write_text('JOB_COMMAND="\\"$ROOT/../local-sd-db/sd-db\\" backup"\n')
+        code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    {job} names the retired local-sd-db, now only a forwarder to be deleted", out)
+
+    def test_an_installed_cron_plist_naming_the_retired_folder_fails(self):
+        self.fixture.make_database()
+        agents = self.fixture.home / "Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        plist = agents / "local.system-tools.cron.credentials-nightly.plist"
+        plist.write_bytes(plistlib.dumps({"Label": "local.system-tools.cron.credentials-nightly", "ProgramArguments": [
+            "/bin/sh", "-c", "/home/someone/repos/system/local-sd-db/sd-db.sh credentials"]}))
+        code, out = self.doctor()
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    {plist} names the retired local-sd-db", out)
+
+    def test_a_per_host_cron_job_file_naming_the_retired_folder_fails(self):
+        self.fixture.make_database()
+        config = self.config_copy()
+        job = config / "cron-jobs/jobs/host-a/credentials-nightly.job"
+        job.parent.mkdir(parents=True)
+        job.write_text('JOB_COMMAND="\\"$ROOT/../local-sd-db/sd-db.sh\\" credentials"\n')
+        code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    {job} names the retired local-sd-db", out)
+
+    def test_a_plist_template_naming_the_retired_folder_fails(self):
+        self.fixture.make_database()
+        config = self.config_copy()
+        template = config / "machine-setup/launchagents/local.system-tools.sd-serve.plist"
+        template.write_text(template.read_text().replace(
+            "@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db", "@ROOT@/local-sd-db/sd-db"))
+        code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    {template} names the retired local-sd-db, now only a forwarder to be deleted", out)
+
+    def test_a_job_folder_that_cannot_be_searched_is_not_a_pass(self):
+        self.fixture.make_database()
+        config = self.config_copy()
+        jobs = config / "cron-jobs/jobs"
+        jobs.mkdir(parents=True)
+        (jobs / "a.job").write_text("JOB_COMMAND=true\n")
+        jobs.chmod(0)
+        self.addCleanup(jobs.chmod, 0o755)
+        code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    cannot search {jobs} for config that names the retired local-sd-db", out)
+        self.assertNotIn("ok      no config names", out)
 
 
 if __name__ == "__main__":

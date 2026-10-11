@@ -21,7 +21,7 @@ it for you. So a folder written today has no row and no readable status
 until you run, from the repository root:
 
 ```sh
-./local-sd-db/sd-db.sh work register docs/work/<item>/prd.md
+$SD_PACK_ROOT/bin/sd-db work register docs/work/<item>/prd.md
 ```
 
 Skip it and `sd-status` reports the item as `status-unreadable`. That is not

@@ -20,7 +20,7 @@ port adds no collector:
   each managed repository's `alerts`, which the nightly sync stores beside
   its protection. Health makes no GitHub call.
 - Credentials (sd:2203): the latest `credentials:nightly` heartbeat that
-  `sd-db.sh credentials` writes each night: presence, validity and expiry,
+  `sd-db credentials` writes each night: presence, validity and expiry,
   never a value. Expiry is judged against the request's time.
 
 The design source shows nine areas; the page leaves out its Attribution
@@ -61,7 +61,7 @@ __all__ = ["AREAS", "document"]
 AREAS = (
     ("disk", "Disk", "df -kPl · du -k -d 1 per disk.conf storage folder · git worktree list per registered repo",
      ("build output sizes (its presence is read, not its size)", "build output in worktrees not yet merged")),
-    ("cred", "Credentials", "sd-db.sh credentials (nightly) → state heartbeat credentials:nightly", ()),
+    ("cred", "Credentials", "sd-db credentials (nightly) → state heartbeat credentials:nightly", ()),
     ("wt", "Worktrees", "the fleet's .git/worktrees registrations",
      ("merged worktrees still on disk (merge-base --is-ancestor)",)),
     ("br", "Branches", "git for-each-ref --merged=origin/HEAD refs/heads per registered repo", ()),
@@ -218,9 +218,9 @@ def _protection_rows(found: list[dict]) -> tuple[list[dict], dict]:
         # An empty registry is not a protected fleet.
         rows.append({"id": "prot:none", "state": "unknown", "type": "check",
                      "what": "No repository registered: protection has nothing to read",
-                     "detail": "register one with sd-db.sh repo add PATH, then run sd shadow sync",
+                     "detail": "register one with sd-db repo add PATH, then run sd shadow sync",
                      "kind": "Branch protection", "facts": {"Registered": "0"},
-                     "cli": "sd-db.sh repo add PATH && sd shadow sync"})
+                     "cli": "sd-db repo add PATH && sd shadow sync"})
         return rows, {"counts": dict.fromkeys(ORDER, 0), "checks": [label for _, label in CHECKS], "columns": [],
                       "reasons": [], "at": None}
     order = sorted(rows, key=lambda row: (ORDER[row["status"]], -row["gaps"], row["name"]))
@@ -292,8 +292,8 @@ def _branch_rows(scan: dict) -> list[dict]:
         # An empty registry is not a fleet with nothing to delete.
         rows.append({"id": "br:none", "state": "unknown", "type": "check",
                      "what": "No repository registered: Branches has nothing to read",
-                     "detail": "register one with sd-db.sh repo add PATH", "kind": "Branches",
-                     "facts": {"Registered": "0"}, "cli": "sd-db.sh repo add PATH"})
+                     "detail": "register one with sd-db repo add PATH", "kind": "Branches",
+                     "facts": {"Registered": "0"}, "cli": "sd-db repo add PATH"})
     return rows
 
 
@@ -425,7 +425,7 @@ def _no_managed(area: str, name: str) -> dict:
     return {"id": f"{area}:none", "state": "unknown", "type": "check",
             "what": f"No managed repository: {name} has nothing to read",
             "detail": "the nightly sync reads alerts for managed repositories only",
-            "kind": name, "facts": {"Managed": "0"}, "cli": "sd-db.sh repo managed PATH yes && sd shadow sync"}
+            "kind": name, "facts": {"Managed": "0"}, "cli": "sd-db repo managed PATH yes && sd shadow sync"}
 
 
 def _not_read(area: str, name: str, unread: list[str]) -> dict:
@@ -535,7 +535,7 @@ def _security_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
 EXPIRY_CAUTION, EXPIRY_WARNING = 30, 7
 #: A heartbeat older than this means the nightly job has stopped.
 CREDENTIALS_STALE_HOURS = 48
-CREDENTIALS_CLI = "local-sd-db/sd-db.sh credentials"
+CREDENTIALS_CLI = "sd-db credentials"
 
 
 def read_credentials(connection: sqlite3.Connection) -> tuple[str, dict] | None:
