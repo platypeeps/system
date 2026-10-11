@@ -1,6 +1,6 @@
 """The v2 Queue page (sd:2585).
 
-What this slice promises: `/api/queue` draws each registered repository's lane from `sd-ship lane list`, one row per
+What this slice promises: `/api/queue` draws each managed repository's lane from `sd-ship lane list`, one row per
 item in one of five states (merging, next, building, blocked, landed), with load5 and the gate slots in the header.
 The only write is `/api/queue/move`: it runs `sd-ship lane move|hold|release|cancel|retry` with exactly the page's item and
 place, under the session cookie, CSRF and Origin checks, and refuses a revision the queue has moved past. Retry and Approve
@@ -45,7 +45,7 @@ STUB = """#!/bin/sh
 # A stand-in for sd-ship and sd: log the arguments, answer from the fixture.
 printf '%s\\n' "$*" >> "$QUEUE_LOG"
 case "$*" in
-  *"lane list") cat "$QUEUE_FIXTURE" ;;
+  *"lane list") if [ -f "$QUEUE_FIXTURE.$(basename "$2")" ]; then cat "$QUEUE_FIXTURE.$(basename "$2")"; else cat "$QUEUE_FIXTURE"; fi ;;
   "lane retry --help") if [ -n "$QUEUE_NO_RETRY" ]; then echo "invalid choice: 'retry'" >&2; exit 2; fi
      if [ -n "$QUEUE_OLD_RETRY" ]; then echo "usage: sd-ship lane retry [--manual] item"; else echo "usage: sd-ship lane retry [--manual] [--expected-head EXPECTED_HEAD] item"; fi ;;
   "gate status --json") printf '{"slots": 4, "holders": [{"slot": 1}], "waiters": [], "load": [1, 2, 3]}\\n' ;;
@@ -71,7 +71,7 @@ class Lane:
         git(self.checkout, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty",
             "-m", "Dashboard: a page (#161)")
         self.merged = git(self.checkout, "rev-parse", "HEAD")
-        self.repo(str(self.checkout))
+        upsert_repo(self.connection, str(self.checkout), remote="git@example.invalid:x.git", managed=1)
         self.lane = work / "lanes" / "system" / "lane"
         (self.lane / "logs").mkdir(parents=True)
         bin_dir = work / "bin"
@@ -113,8 +113,10 @@ class Lane:
              "expected_head": "5" * 40, "finished_at": "2026-09-06T09:00:00Z"},
             {"item": 4, "title": "Moved head", "status": "skipped", "reason": "the worktree's HEAD moved from the queued head",
              "expected_head": "4" * 40, "finished_at": "2026-09-06T09:30:00Z"},
-            {"item": 3, "title": "Merge the slice", "status": "running", "expected_head": "a" * 40,
-             "started_at": "2026-09-06T11:50:00Z"},
+            {"item": 3, "title": "Merge the slice", "status": "running", "expected_head": "a" * 40, "id": "e-3",
+             "started_at": "2026-09-06T11:50:00Z", "step": "merge", "lease_until": "2026-09-06T13:20:00Z",
+             "holder": {"host": "hub-1", "pid": 4242, "token": "claim-token-3"}, "enqueued_on": "hub-1",
+             "log_host": "hub-1"},
             {"item": 9, "title": "Old failure, since retried", "status": "pending", "expected_head": "b" * 40,
              "speculation": {"status": "success", "summary": "sd-check pass"}},
             {"item": 12, "title": "Queue page", "status": "pending", "expected_head": "c" * 40, "held": True},
@@ -137,9 +139,65 @@ class TheRows(Lane, ScreenCase):
             ("merging", 3), ("next", 9), ("next", 12), ("building", "queue-notes-1"), ("building", "sd1775-2"),
             ("blocked", 5), ("blocked", 4), ("landed", 7)])
 
-    def test_merging_names_its_phase_and_elapsed_time(self):
+    def test_merging_names_its_step_host_claim_age_and_lease(self):
         merging = self.doc()["lanes"][0]["rows"][0]
-        self.assertEqual((merging["phase"], merging["elapsed"], merging["head"]), ("merge", 600, "a" * 12))
+        self.assertEqual((merging["step"], merging["host"], merging["claim_age"], merging["lease_until"], merging["head"]),
+                         ("merge", "hub-1", 600, "2026-09-06T13:20:00Z", "a" * 12))
+
+    def test_the_step_comes_from_the_entry_not_a_prepare_log(self):
+        # sd:3284: the entry's `step` replaces the probe for a prepare log newer than the claim. The fixture's
+        # prepare log for sd:3 is newer than its claim, which the probe read as `merge`.
+        entries = self.entries()
+        entries[5] = {**entries[5], "step": "prepare"}
+        self.list(entries)
+        self.assertEqual(self.doc()["lanes"][0]["rows"][0]["step"], "prepare")
+
+    def test_a_holder_on_another_host_is_named(self):
+        # Pack sd:3283 runs an entry on any host; the hub's page shows the satellite that holds it.
+        entries = self.entries()
+        entries[5] = {**entries[5], "holder": {"host": "build-2", "pid": 77, "token": "t"}, "log_host": "build-2",
+                      "step": "prepare"}
+        self.list(entries)
+        merging = self.doc()["lanes"][0]["rows"][0]
+        self.assertEqual((merging["host"], merging["step"]), ("build-2", "prepare"))
+
+    def test_a_running_entry_without_holder_or_step_reads_unknown_not_guessed(self):
+        # An entry an earlier pack wrote: no holder, no step, no lease. The page shows each as not recorded.
+        entries = self.entries()
+        entries[5] = {key: value for key, value in entries[5].items() if key not in ("holder", "step", "lease_until", "log_host")}
+        self.list(entries)
+        merging = self.doc()["lanes"][0]["rows"][0]
+        self.assertEqual((merging["host"], merging["step"], merging["lease_until"], merging["claim_age"]), (None, None, None, 600))
+
+    def test_the_claim_token_never_reaches_the_page(self):
+        self.assertNotIn("claim-token-3", json.dumps(self.doc()))
+
+    def test_every_managed_repository_has_a_lane_even_without_a_lane_folder(self):
+        # sd:3284: the queue lives in the hub database, so a lane hosted elsewhere has no folder on this machine.
+        other = Path(self.tmp.name) / "satellite-only"
+        other.mkdir()
+        upsert_repo(self.connection, str(other), remote="git@example.invalid:y.git", managed=1)
+        self.connection.execute("UPDATE repo SET lane_host = 'build-2' WHERE path = ?", (str(other),))
+        unmanaged = Path(self.tmp.name) / "not-managed"
+        unmanaged.mkdir()
+        upsert_repo(self.connection, str(unmanaged), remote="git@example.invalid:z.git", managed=0)
+        self.connection.commit()
+        Path(f"{self.fixture}.satellite-only").write_text(json.dumps({"ok": True, "queue": str(
+            Path(self.tmp.name) / "lanes" / "satellite-only" / "lane" / "queue" / "queue.json"), "entries": [
+            {"item": 21, "title": "Run elsewhere", "status": "pending", "expected_head": "2" * 40}]}))
+        doc = self.doc()
+        self.assertEqual([(lane["repo"], lane["host"]) for lane in doc["lanes"]], [("satellite-only", "build-2"), ("system", "hub")])
+        self.assertEqual([row["item"] for row in doc["lanes"][0]["rows"]], [21])
+        self.assertEqual(doc["managed"], 2)
+        self.assertNotIn(["-C", str(unmanaged), "lane", "list"], self.calls())
+
+    def test_a_managed_repository_with_no_checkout_here_is_named_not_dropped(self):
+        gone = Path(self.tmp.name) / "gone"
+        upsert_repo(self.connection, str(gone), remote="git@example.invalid:g.git", managed=1)
+        self.connection.commit()
+        doc = self.doc()
+        self.assertEqual(([lane["repo"] for lane in doc["lanes"]], [p["repo"] for p in doc["problems"]]),
+                         (["system"], [str(gone)]))
 
     def test_next_rows_carry_order_gate_head_and_hold(self):
         first, second = self.doc()["lanes"][0]["rows"][1:3]
@@ -376,7 +434,7 @@ class TheRealLane(BrowserSession):
         git(self.checkout, "init", "-q", "-b", "main")
         origin = "https://github.com/example/system.git"
         git(self.checkout, "remote", "add", "origin", origin)
-        upsert_repo(self.connection, str(self.checkout), remote=origin)
+        upsert_repo(self.connection, str(self.checkout), remote=origin, managed=1)
         self.connection.commit()
         # `sd-ship` opens `$HOME/.local/share/sd/sd.db`; the fixture database stands there.
         home = Path(self.tmp.name) / "home"
@@ -458,6 +516,35 @@ class TheScript(Lane, ScreenCase):
             ("blocked", "caution", "▲", "BLOCKED"), ("blocked", "caution", "▲", "BLOCKED"), ("landed", "ok", "●", "LANDED")])
         self.assertIn("<b>operator acts</b>", lanes)
         self.assertIn("PR #161", lanes)
+
+    def test_the_merging_row_names_step_host_claim_age_and_lease(self):
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        merging = next(row for row in lanes.split("<li ")[1:] if 'data-state="merging"' in row)
+        self.assertIn("<b>merge</b> on <b>hub-1</b> · claimed 10m 0s ago · lease to 13:20 · head " + "a" * 12, merging)
+
+    def test_a_running_entry_past_its_lease_lights_caution(self):
+        entries = self.entries()
+        entries[5] = {**entries[5], "lease_until": "2026-09-06T11:55:00Z", "step": None, "holder": None}
+        self.list(entries)
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        merging = next(row for row in lanes.split("<li ")[1:] if 'data-state="merging"' in row)
+        self.assertIn('<span class="g g-caution" aria-hidden="true">▲</span>', merging)
+        self.assertIn("<b>step not recorded</b> on <b>host not recorded</b> · claimed 10m 0s ago · lease passed 11:55", merging)
+
+    def test_each_lane_names_its_host_and_idle_lanes_share_one_line(self):
+        other = Path(self.tmp.name) / "quiet"
+        other.mkdir()
+        upsert_repo(self.connection, str(other), remote="git@example.invalid:q.git", managed=1)
+        self.connection.execute("UPDATE repo SET lane_host = 'build-2' WHERE path = ?", (str(other),))
+        self.connection.commit()
+        Path(f"{self.fixture}.quiet").write_text(json.dumps({"ok": True, "queue": str(
+            Path(self.tmp.name) / "lanes" / "quiet" / "lane" / "queue" / "queue.json"), "entries": []}))
+        out = self.run_page("R.lanes = ELS.lanes.html; R.subhead = ELS.subhead.html;")
+        lanes = out["R"]["lanes"]
+        self.assertIn('<span class="host">lane on hub</span>', lanes)
+        self.assertNotIn('aria-labelledby="lane-quiet"', lanes)
+        self.assertIn('<p class="idle">Idle: <code>quiet</code> (lane on build-2)</p>', lanes)
+        self.assertIn("2 lanes of 2 managed repositories", out["R"]["subhead"])
 
     def test_only_next_rows_carry_controls_and_the_ends_are_off(self):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]

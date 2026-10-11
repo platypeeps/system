@@ -1,5 +1,5 @@
-// Queue (sd:2585): /api/queue (queue_screen.py), one section per repository lane, one row per item in its state:
-// merging, next, building, blocked, landed. Up, down, top, hold, release and cancel post /api/queue/move with the lane's
+// Queue (sd:2585): /api/queue (queue_screen.py), one section per managed repository's lane, one row per item in its state:
+// merging, next, building, blocked, landed. A lane with no row shares one Idle line, each with its host (sd:3284). Up, down, top, hold, release and cancel post /api/queue/move with the lane's
 // revision; the server runs sd-ship lane move|hold|release|cancel|retry, refuses a stale revision, and the page reads again.
 // Cancel asks first (sd:3012): no verb takes it back, so the entry must be enqueued again from its worktree.
 // A blocked row offers Retry (lane retry) and, on a runner_merge=manual repo, Approve (lane retry --manual), only when the
@@ -29,7 +29,7 @@
   }
   // Each state's glyph, label and fact line. A state's glyph carries it; colour only repeats it.
   const VIEW = {
-    merging: r => [G.live, 'MERGING', html`<b>${r.phase}</b> · ${dur(r.elapsed)} · head ${r.head || 'not recorded'}`],
+    merging: r => [r.lease_passed ? G.caution : G.live, 'MERGING', html`<b>${r.step || 'step not recorded'}</b> on <b>${r.host || 'host not recorded'}</b> · claimed ${r.claim_age == null ? 'at a time not recorded' : `${dur(r.claim_age)} ago`} · ${r.lease_until ? `lease ${r.lease_passed ? 'passed' : 'to'} ${at(r.lease_until)}` : 'lease not recorded'} · head ${r.head || 'not recorded'}`],
     next: r => [r.held ? G.caution : G.queued, `${r.held ? 'HELD' : 'NEXT'} ${r.position}`, html`gate <b>${r.gate}</b>${r.gate_summary ? ` (${r.gate_summary})` : ''} · head ${r.head || 'not recorded'}${r.held ? ' · skipped until released' : ''}`],
     building: r => [{ running: G.live, pass: G.ok, fail: G.warning }[r.gate] || G.unknown, 'BUILDING', html`gate <b>${r.gate}</b>${r.summary ? ` · ${r.summary}` : ''}${r.head ? ` · head ${r.head}` : ''} · log changed ${at(new Date(r.changed * 1000).toISOString())}`],
     blocked: r => [G.caution, 'BLOCKED', html`<b>${r.who} acts</b> · ${r.status}${r.step ? ` at ${r.step}` : ''} · ${r.reason} · head ${r.head || 'not recorded'}`],
@@ -43,7 +43,7 @@
   function lane(l) {
     const last = l.rows.filter(r => r.state === 'next').length, s = said[l.path];
     const count = st => l.rows.filter(r => r.state === st).length;
-    return html`<section class="lane" aria-labelledby="lane-${l.repo}"><header><h2 id="lane-${l.repo}">${l.repo}</h2><span class="n">${count('merging')} merging · ${last} next · ${count('blocked')} blocked · ${count('landed')} landed today</span><span class="src">${l.lane}</span></header>
+    return html`<section class="lane" aria-labelledby="lane-${l.repo}"><header><h2 id="lane-${l.repo}">${l.repo}</h2><span class="host">lane on ${l.host}</span><span class="n">${count('merging')} merging · ${last} next · ${count('blocked')} blocked · ${count('landed')} landed today</span><span class="src">${l.lane}</span></header>
       ${s ? (s.ok ? html`<p class="done" role="status">${s.text}</p>` : html`<p class="fail" role="alert">${s.text}</p>`) : ''}
       ${l.rows.length ? html`<ul class="qrows">${l.rows.map(r => row(l, r, last))}</ul>` : html`<p class="done">Nothing queued, gating or landed today in this lane.</p>`}</section>`;
   }
@@ -54,8 +54,11 @@
       <div><dt>gates running / cap</dt><dd>${gates.error ? html`▨ <small>${gates.error}</small>` : html`${gates.running} / ${gates.cap}<small>${gates.waiting} waiting</small>`}</dd></div>
       <div><dt>read</dt><dd>${at(DOC.read)}<small>${DOC.read.replace('T', ' ').replace('Z', ' UTC')}</small></dd></div>`);
     $('edits').textContent = DOC.edits;
-    put($('lanes'), html`${DOC.problems.map(p => html`<p class="fail" role="alert">▨ ${p.repo}: lane not read. ${p.error}</p>`)}${DOC.lanes.length ? DOC.lanes.map(lane)
-      : html`<p class="done">No registered repository has a lane folder${DOC.root ? ` under ${DOC.root}` : ''}. sd-ship lane enqueue makes one.</p>`}`);
+    // A lane with nothing to show (and no write result) folds into one line: the calm screen stays calm.
+    const busyLanes = DOC.lanes.filter(l => l.rows.length || said[l.path]), idle = DOC.lanes.filter(l => !busyLanes.includes(l));
+    put($('lanes'), html`${DOC.problems.map(p => html`<p class="fail" role="alert">▨ ${p.repo}: lane not read. ${p.error}</p>`)}${busyLanes.map(lane)}${idle.length
+      ? html`<p class="idle">Idle: ${idle.map((l, i) => html`${i ? ' · ' : ''}<code>${l.repo}</code> (lane on ${l.host})`)}</p>`
+      : DOC.lanes.length ? '' : html`<p class="done">No managed repository's lane was read. sd-db.sh repo managed PATH yes adds one.</p>`}`);
   }
 
   async function load() {
@@ -64,7 +67,7 @@
     try {
       DOC = await S.getJSON('/api/queue');
       S.state(DOC.problems.length ? { kind: 'partial', text: `${plural(DOC.problems.length, 'lane')} not read; the others are current.`, source: '/api/queue' } : null);
-      put($('subhead'), html`${plural(DOC.lanes.length, 'lane')} of ${plural(DOC.registered, 'registered repository', 'registered repositories')} · read ${at(DOC.read)}`);
+      put($('subhead'), html`${plural(DOC.lanes.length, 'lane')} of ${plural(DOC.managed, 'managed repository', 'managed repositories')} · read ${at(DOC.read)}`);
       const blocked = DOC.lanes.reduce((n, l) => n + l.rows.filter(x => x.state === 'blocked').length, 0);
       S.attention({ state: blocked ? 'caution' : 'ok', n: blocked, what: 'blocked' });
     } catch (err) {

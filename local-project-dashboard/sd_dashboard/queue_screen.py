@@ -1,13 +1,16 @@
 """Queue (sd:2585): each repository's `sd-ship lane` queue, one row per item in one of five states, and its reorder.
 
-Reads, per request: `sd-ship -C <repo> lane list` for each registered repository with a lane folder, the builder
-gate logs (`gate-*.log`) in that folder, `sd gate status --json` for the gate slots, and `os.getloadavg()` (macOS
-`vm.loadavg`). The pack owns the lane root; one `lane list` names it, as its `queue` path
-`<root>/<repo>/lane/queue/queue.json`, so this file repeats no rule for where lanes live.
+Reads, per request: `sd-ship -C <repo> lane list` for each managed repository, `READERS` at a time, the builder gate
+logs (`gate-*.log`) in its lane folder, `sd gate status --json` for the gate slots, and `os.getloadavg()` (macOS
+`vm.loadavg`). The queue lives in the hub database (pack sd:3282), so a lane hosted on another machine has entries but
+no folder here; every managed repository gets its section (sd:3284). The pack owns the lane root; one `lane list`
+names it, as its `queue` path `<root>/<repo>/lane/queue/queue.json`, so this file repeats no rule for where lanes live.
 
 The five states, from each entry's `status`:
 
-  merging   `running`: the runner holds it; phase is `merge` once its prepare log exists, else `prepare`.
+  merging   `running`: its holder's host, its `step` and claim age (since `started_at`), and its lease's end, each as
+            `lane list` prints it; a field an earlier pack did not write reads as not recorded, never guessed. A lease
+            that ended lights caution: the holder may be stuck, and only a reclaim or a release ends it.
   next      `pending`, in queue order; a `held` one keeps its place and the runner skips it.
   building  a builder gate log in the lane folder, changed in the last `BUILDING_HOURS`: empty while its gate runs.
   blocked   the newest entry of an item that `failed`, was `skipped` or stopped `prepared`, in the last `BLOCKED_DAYS`,
@@ -38,10 +41,13 @@ import re
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 LIST_SECONDS = 20
+#: `lane list` calls at once: each is one short process, and the page reads every managed repository.
+READERS = 8
 WRITE_SECONDS = 30
 GIT_SECONDS = 5
 BUILDING_HOURS = 6
@@ -134,17 +140,6 @@ def _pr(path: str, commit: str) -> str | None:
     return found[1] if found else None
 
 
-def _phase(entry: dict, logs: Path) -> str:
-    started = _when(entry.get("started_at")) or 0
-    for log in logs.glob(f"prepare-{entry.get('item')}-*.log"):
-        try:
-            if log.stat().st_mtime >= started:
-                return "merge"
-        except OSError:
-            continue
-    return "prepare"
-
-
 def _building(lane: Path, now: float) -> list[dict]:
     """Each builder gate log changed in the last `BUILDING_HOURS`, newest first."""
     rows = []
@@ -178,9 +173,12 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
         status, item = entry.get("status"), entry.get("item")
         base = {"item": item, "title": entry.get("title") or ""}
         if status == "running":
-            started = _when(entry.get("started_at"))
-            merging.append({**base, "state": "merging", "phase": _phase(entry, lane / "logs"),
-                            "elapsed": int(now - started) if started else None,
+            started, holder = _when(entry.get("started_at")), entry.get("holder")
+            holder = holder if isinstance(holder, dict) else {}  # never the token: it is the claim itself
+            merging.append({**base, "state": "merging", "step": entry.get("step") or None,
+                            "host": holder.get("host") or None, "claim_age": int(now - started) if started else None,
+                            "lease_until": entry.get("lease_until") or None,
+                            "lease_passed": (_when(entry.get("lease_until")) or now) < now,
                             "head": str(entry.get("expected_head") or "")[:12]})
         elif status == "pending":
             gate = entry.get("speculation") or {}
@@ -223,28 +221,26 @@ def document(connection, *, now: str = "") -> dict:
     from sd_db import repos
 
     clock = _when(now) or time.time()
-    merge = {os.path.expanduser(row["path"]): row["runner_merge"] for row in repos.registered(connection)}
-    paths = list(merge)
-    lanes, problems, root = [], [], None
-    for path in paths:
-        if not os.path.isdir(path):
-            continue
-        if root is not None and not (root / Path(path).resolve().name / "lane").is_dir():
-            continue
-        answer = lane_list(path)
+    managed = {os.path.expanduser(row["path"]): row for row in repos.registered(connection) if row["managed"]}
+    here = [path for path in managed if os.path.isdir(path)]
+    # A checkout missing here leaves its lane unread: `sd-ship -C` needs one. Named, never dropped.
+    problems = [{"repo": path, "error": "no checkout on this machine"} for path in managed if path not in here]
+    with ThreadPoolExecutor(max_workers=READERS) as pool:
+        answers = list(pool.map(lane_list, here))
+    lanes, root = [], None
+    for path, answer in zip(here, answers):
         if not answer.get("ok") or not isinstance(answer.get("queue"), str):
             problems.append({"repo": path, "error": answer.get("error") or "lane list named no queue"})
             continue
         lane = Path(answer["queue"]).parent.parent
         root = root or lane.parent.parent
-        if not lane.is_dir():
-            continue
         entries = answer.get("entries") or []
         lanes.append({"repo": Path(path).name, "path": path, "lane": str(lane), "revision": revision(entries),
-                      "runner_merge": merge[path], "rows": rows(entries, path=path, lane=lane, now=clock)})
+                      "runner_merge": managed[path]["runner_merge"], "host": managed[path]["lane_host"] or "hub",
+                      "rows": rows(entries, path=path, lane=lane, now=clock)})
     return {"read": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock)), "load": _load(), "gates": _gates(),
             "lanes": lanes, "problems": problems, "root": str(root) if root else None, "edits": EDITS,
-            "registered": len(paths), "retry": has_retry() if lanes else False}
+            "managed": len(managed), "retry": has_retry() if lanes else False}
 
 
 def move(payload: dict):
