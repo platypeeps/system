@@ -5,10 +5,12 @@ call goes to the loopback stub `test_jev` serves, so no case reads the
 operator's workflow database or reaches TypeSafe.
 """
 
+import collections
 import contextlib
 import hashlib
 import io
 import json
+import os
 import socket
 import subprocess
 import tempfile
@@ -18,6 +20,7 @@ import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import jev_compare
 import jev_experiment as experiment
 
 from .test_jev import Stub, StubServer
@@ -2386,3 +2389,407 @@ class TheThinning(unittest.TestCase):
             with self.subTest(common=common, own=own):
                 with self.assertRaises(experiment.Refused):
                     experiment.thinned(thinning_rows(5), "kev", "C1", common=common, own=own)
+
+
+class TheScannerBenchmark(CompareCase):
+    """Step 10: a corpus made here, and asked of the local Kev alone."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(unittest.mock.patch.object(experiment, "RETRY_WAIT", 0))
+        # The runner unsets hosted settings in its own process; this restores them.
+        self.enterContext(unittest.mock.patch.dict(os.environ))
+        self.out = Path(tempfile.mkdtemp()) / "experiment"
+
+    def scanner(self, step, *more, env=None, corpus=None):
+        if corpus is not None:
+            self.enterContext(unittest.mock.patch.object(experiment, "scanner_corpus",
+                                                         return_value=corpus))
+        return run(["scanner", step, "--out", str(self.out), *more], env or self.env())
+
+    def small(self):
+        """Two hits of each class, as the generator writes them."""
+        hits = experiment.scanner_corpus()
+        return [h for c in ("realistic", "documented", "placeholder")
+                for h in [h for h in hits if h["class"] == c][:2]]
+
+    def answers(self, form="caller"):
+        path = self.out / "scanner" / form / "kev.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_the_generator_reads_no_environment_variable_and_no_file(self):
+        class Untouchable(dict):
+            def __getitem__(self, key):
+                raise AssertionError(f"read the environment variable {key!r}")
+            get = __contains__ = __iter__ = __getitem__
+
+        def no_file(*args, **kwargs):
+            raise AssertionError(f"opened {args[:1]!r}")
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(os, "environ", Untouchable()))
+            for owner, name in ((os, "getenv"), (os, "open"), (io, "open"),
+                                (__import__("builtins"), "open"), (Path, "open"),
+                                (Path, "read_text"), (Path, "read_bytes")):
+                stack.enter_context(unittest.mock.patch.object(owner, name, no_file))
+            with self.assertRaises(AssertionError):      # the tripwires hold
+                os.environ.get("HOME")
+            hits = experiment.scanner_corpus()
+        self.assertEqual(len(hits), 2800)
+        by_class = {c: [h for h in hits if h["class"] == c]
+                    for c in ("realistic", "documented", "placeholder")}
+        self.assertEqual({c: (len(h), len({x["value"] for x in h})) for c, h in by_class.items()},
+                         {"realistic": (1200, 300), "documented": (400, 100),
+                          "placeholder": (1200, 300)})
+        self.assertEqual({h["label"] for h in by_class["realistic"]}, {"act"})
+        self.assertEqual({h["label"] for c in ("documented", "placeholder")
+                          for h in by_class[c]}, {"ignore"})
+        # Each value sits in the four contexts, the test fixture among them.
+        contexts = collections.Counter((h["value"], h["context"]) for h in hits)
+        self.assertEqual(set(contexts.values()), {1})
+        self.assertEqual({h["context"] for h in hits},
+                         {".env.example", "test fixture", "README", "source file"})
+        # A realistic fake is made afresh: none repeats across two corpora.
+        fakes = {json.loads(h["state"])["line"] for h in by_class["realistic"]}
+        again = {json.loads(h["state"])["line"] for h in experiment.scanner_corpus()
+                 if h["class"] == "realistic"}
+        self.assertEqual(fakes & again, set())
+        # Each hit as the scanner's caller sends it: `path:line:match`, the
+        # match alone, as `rg -o` gives it; a key block's match is its first line.
+        for hit in hits:
+            path, number, match = hit["caller"].rstrip("\n").split(":", 2)
+            self.assertEqual((path, hit["caller"].count("\n")),
+                             (experiment.CALLER_PATHS[hit["context"]], 1))
+            self.assertTrue(number.isdigit())
+            line = json.loads(hit["state"])["line"]
+            self.assertIn(match, line)
+            if "-----BEGIN " in line:
+                self.assertEqual(match, "-----BEGIN " + experiment.KEY_LABEL + "-----")
+            else:
+                self.assertNotEqual(match, line)
+
+    def test_the_runner_asks_kev_alone_and_holds_no_hosted_key(self):
+        os.environ.update(TYPESAFE_API_KEY="process-key", JEV_COMPARE_HAIKU_VIA="anthropic",
+                          JEV_COMPARE_ANTHROPIC_KEY="process-anthropic-key")
+        seen = []
+        real = jev_compare.kev_arm
+
+        def watched(job, env, opener=None):
+            seen.append((dict(env), dict(os.environ)))
+            return real(job, env, opener)
+        corpus = self.small()
+        self.assertEqual(self.scanner("generate", corpus=corpus)[0], 0)
+        env = self.env(JEV_COMPARE_HAIKU_VIA="anthropic", JEV_COMPARE_HAIKU_MODEL="m")
+        self.assertIn("TYPESAFE_API_KEY", env)
+        with unittest.mock.patch.object(jev_compare, "kev_arm", watched):
+            code, out = self.scanner("run", env=env)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(seen), 6)
+        for child, process in seen:
+            for names in (child, process):
+                self.assertEqual([n for n in names if n == "TYPESAFE_API_KEY"
+                                  or n.startswith("JEV_COMPARE_HAIKU_")
+                                  or n == "JEV_COMPARE_ANTHROPIC_KEY"], [])
+        self.assertEqual({s["path"] for s in Arm.seen}, {"/v1/systemone"})
+        self.assertEqual(Stub.seen, [])
+        found = self.answers()
+        self.assertEqual(sorted(a["id"] for a in found), sorted(h["id"] for h in corpus))
+        self.assertEqual({(a["outcome"], a["probability"]) for a in found}, {("ok", 0.81)})
+        summary = json.loads(out)
+        self.assertEqual((summary["realistic"]["missed_credentials"],
+                          summary["others"]["dismissed"]), (0, 0))
+
+    def test_the_runner_refuses_a_kev_that_is_not_on_loopback(self):
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        remote = [(2, 1, 6, "", ("198.51.100.7", 80))]
+        for url, resolved in (("http://192.0.2.1:9/v1/systemone", None),
+                              ("http://kev.example.test/v1/systemone", remote)):
+            with self.subTest(url=url), contextlib.ExitStack() as stack:
+                if resolved is not None:
+                    stack.enter_context(unittest.mock.patch.object(
+                        socket, "getaddrinfo", return_value=resolved))
+                code, _out = self.scanner("run", env=self.env(JEV_COMPARE_KEV_URL=url))
+                self.assertEqual(code, 2)
+        self.assertEqual((Arm.seen, self.answers()), ([], []))
+
+    def test_the_corpus_is_frozen_once_written(self):
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        self.assertEqual(self.scanner("generate")[0], 2)
+        path = self.out / "scanner" / "corpus.jsonl"
+        path.write_text(path.read_text().replace("act", "ignore"))
+        self.assertEqual(self.scanner("run")[0], 2)
+        self.assertEqual(Arm.seen, [])
+
+    def test_a_corpus_stopped_before_its_summary_is_made_again(self):
+        target = self.out / "scanner" / "corpus.jsonl"
+        target.parent.mkdir(parents=True)
+        target.write_text("{}\n")
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        self.assertEqual(len(target.read_text().splitlines()), 6)
+
+    def test_a_kev_outage_pauses_once_and_a_second_ends_the_arm(self):
+        self.enterContext(unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2))
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        Arm.status = 500
+        self.assertEqual(self.scanner("run")[0], 1)
+        self.assertEqual([a["outcome"] for a in self.answers()], ["unavailable"] * 2)
+        asked = len(Arm.seen)
+        # The pause holds without a resume, and until `kev.sh status` exits 0.
+        self.assertEqual(self.scanner("run")[0], 2)
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=False):
+            self.assertEqual(self.scanner("run", "--resume", "kev is up")[0], 2)
+        self.assertEqual(len(Arm.seen), asked)
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=True):
+            code, out = self.scanner("run", "--resume", "kev is up")
+        self.assertEqual(code, 0, out)
+        # The second outage ends the arm: each hit left is counted, not asked.
+        self.assertEqual([a["outcome"] for a in self.answers()],
+                         ["unavailable"] * 4 + ["ended"] * 2)
+        asked = len(Arm.seen)
+        Arm.status = 200
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=True):
+            self.assertEqual(self.scanner("run", "--resume", "once more")[0], 2)
+            self.assertEqual(self.scanner("run")[0], 0)
+        self.assertEqual(len(Arm.seen), asked)
+        self.assertEqual(len(self.answers()), 6)
+
+    def test_a_kev_outage_resumed_once_goes_on_when_kev_answers(self):
+        self.enterContext(unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2))
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        Arm.status = 500
+        self.assertEqual(self.scanner("run")[0], 1)
+        Arm.status = 200
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=True):
+            code, out = self.scanner("run", "--resume", "kev is up")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([a["outcome"] for a in self.answers()], ["unavailable"] * 2 + ["ok"] * 4)
+
+    def test_the_caller_form_sends_what_the_scanner_s_caller_sends(self):
+        script = (experiment.FOLDER.parent / "local-scan-for-secrets" / "scan-for-secrets.sh").read_text()
+        self.assertIn(f"noul '{experiment.CALLER_QUESTION}'", script)
+        self.assertIn("--gate 0.5", script)
+        self.assertIn("--state-format text", script)
+        corpus = self.small()
+        self.assertEqual(self.scanner("generate", corpus=corpus)[0], 0)
+        code, out = self.scanner("run", "--form", "caller")
+        self.assertEqual(code, 0, out)
+        bodies = [s["body"] for s in Arm.seen]
+        self.assertEqual(sorted(b["state"] for b in bodies), sorted(h["caller"] for h in corpus))
+        self.assertEqual({json.dumps(b["questions"], sort_keys=True) for b in bodies},
+                         {json.dumps({"answer": {"type": "noul",
+                                                 "instructions": experiment.CALLER_QUESTION}},
+                                     sort_keys=True)})
+        self.assertEqual(len(self.answers("caller")), 6)
+
+    def test_the_draft_form_is_a_second_run_of_its_own(self):
+        corpus = self.small()
+        self.assertEqual(self.scanner("generate", corpus=corpus)[0], 0)
+        self.assertEqual(self.scanner("run")[0], 0)
+        caller = (self.out / "scanner" / "caller" / "kev.jsonl").read_bytes()
+        before = len(Arm.seen)
+        code, out = self.scanner("run", "--form", "draft")
+        self.assertEqual(code, 0, out)
+        bodies = [s["body"] for s in Arm.seen[before:]]
+        self.assertEqual(sorted(json.dumps(b["state"], sort_keys=True) for b in bodies),
+                         sorted(json.dumps(json.loads(h["state"]), sort_keys=True)
+                                for h in corpus))
+        self.assertEqual({q["instructions"] for b in bodies for q in b["questions"].values()},
+                         {experiment.SCANNER_QUESTION})
+        self.assertEqual(len(self.answers("draft")), 6)
+        self.assertEqual((self.out / "scanner" / "caller" / "kev.jsonl").read_bytes(), caller)
+        self.assertEqual(json.loads(out)["form"], "draft")
+
+
+#: The two public repositories the injection test draws from, and another
+#: public one it must not (design.md, "Injection test").
+INJECTION_REMOTES = {"platypeeps/system": "https://github.com/platypeeps/system.git",
+                     "platypeeps/sd-ai-command-pack":
+                         "https://github.com/platypeeps/sd-ai-command-pack.git",
+                     "owner/other": "https://github.com/owner/other.git"}
+#: One reply both Haiku questions read: a tier distribution and a probability.
+BOTH_REPLY = json.dumps({"probabilities": {"skip": 0.1, "cheap": 0.1, "standard": 0.7,
+                                           "deep": 0.1}, "probability": 0.3})
+
+
+class TheInjectionTest(CompareCase):
+    """Step 11 against loopback stubs: crafted paths and appended finding text."""
+
+    def setUp(self):
+        super().setUp()
+        Arm.reply = BOTH_REPLY
+        self.enterContext(unittest.mock.patch.object(experiment, "RETRY_WAIT", 0))
+        self.enterContext(unittest.mock.patch.object(experiment, "INJECTION_BASES", 3))
+        self.enterContext(unittest.mock.patch.object(experiment, "INJECTION_FINDINGS", 2))
+        self.enterContext(unittest.mock.patch.dict(os.environ))
+        self.routed = []
+
+        def route(paths, lines, policy):
+            self.routed.append(list(paths))
+            return "standard", "no category matched; default tier standard"
+        self.enterContext(unittest.mock.patch.object(experiment, "pinned_router",
+                                                     lambda pack: route))
+        self.out = Path(tempfile.mkdtemp()) / "experiment"
+        self.out.mkdir()
+        self.db = checkpoint_db([])
+        self.roots, rows, n = {}, [], 0
+        reason = "no category matched; default tier standard"
+        for slug, url in INJECTION_REMOTES.items():
+            # Each repository's own text, so no two share a head.
+            root, first, second = committed({"a.py": f"{slug}\n"},
+                                            {"a.py": f"{slug}\n2\n", "docs/b.md": "x\n"})
+            subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin", url], check=True)
+            register(self.db, root, "public", remote=url)
+            self.roots[slug] = root
+            for head in (first, second):
+                n += 1
+                # The system repository's first head routed cheap: not a base.
+                routed = "cheap" if (slug, head) == ("platypeeps/system", first) else "standard"
+                rows.append({"repository": slug, "head": head, "alias": f"R{n:02d}",
+                             "paper": False, "population": "E", "routed": routed,
+                             "state": experiment.state_of(["a.py", "docs/b.md"], 3, reason)})
+                self.finding(slug, head, f"a.py drops the error the caller needs ({n})")
+        (self.out / "population.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.rows = rows
+
+    def finding(self, slug, head, summary):
+        one = reviewed(head, "blocking")
+        one["report"]["findings"][0]["summary"] = summary
+        with contextlib.closing(connect(self.db)) as connection:
+            connection.execute(
+                "INSERT INTO state (kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                (f"ship:{head}", "2026-09-22T00:00:00+00:00",
+                 json.dumps({"repository": slug, "head": head, "passes": [one]})))
+
+    def build(self):
+        return run(["injection", "build", "--out", str(self.out), "--db", str(self.db),
+                    "--pack", str(self.out)])
+
+    def items(self):
+        path = self.out / "injection" / "items.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def ask(self, arm, *more):
+        return run(["injection", "run", "--arm", arm, "--out", str(self.out),
+                    "--db", str(self.db), *more],
+                   self.env(JEV_COMPARE_ANTHROPIC_KEY="test-key"))
+
+    def answers(self, arm):
+        path = self.out / "injection" / f"{arm}.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_every_base_state_comes_from_one_of_the_two_public_repositories(self):
+        code, _ = self.build()
+        self.assertEqual(code, 0)
+        items = self.items()
+        bases = {(i["repository"], i["head"]) for i in items if i["kind"] == "tier"}
+        self.assertEqual(len(bases), 3)
+        # Every head of the two qualifies but the one routed cheap; other's two never do.
+        self.assertEqual({slug for slug, _ in bases},
+                         {"platypeeps/system", "platypeeps/sd-ai-command-pack"})
+        self.assertNotIn(("platypeeps/system", self.rows[0]["head"]), bases)
+        findings = [i for i in items if i["kind"] == "finding"]
+        self.assertEqual(len(findings), 4)
+        self.assertTrue(all(i["repository"] != "owner/other" for i in findings))
+        summary = json.loads((self.out / "injection" / "items.json").read_text())
+        self.assertEqual((summary["candidates"], summary["bases"], summary["items"]),
+                         (3, 3, 3 * 9 + 4))
+
+    def test_each_variant_differs_from_its_twin_by_one_path(self):
+        self.build()
+        items = self.items()
+        twins = {i["base"]: i for i in items if i["kind"] == "tier" and i["variant"] is None}
+        variants = [i for i in items if i["kind"] == "tier" and i["variant"]]
+        self.assertEqual(len(variants), 3 * 4 * 2)
+        for item in variants:
+            twin, state = json.loads(twins[item["base"]]["state"]), json.loads(item["state"])
+            crafted = experiment.CRAFTED[item["variant"]]
+            self.assertEqual(set(state["changed_paths"]) - set(twin["changed_paths"]), {crafted})
+            self.assertTrue(set(twin["changed_paths"]) <= set(state["changed_paths"]))
+            self.assertEqual(state["changed_paths"], sorted(state["changed_paths"]))
+            self.assertEqual((state["path_count"], state["lines_moved"],
+                              state["changed_paths_omitted"]),
+                             (twin["path_count"] + 1, twin["lines_moved"], 0))
+            said = twin["deterministic_routing_said"]
+            self.assertEqual(state["deterministic_routing_said"],
+                             said + experiment.ECHO.format(path=crafted) if item["echo"] else said)
+            # Rules ran on the variant's own paths.
+            self.assertIn(state["changed_paths"], self.routed)
+            self.assertIn(item["rules"], experiment.TIERS)
+            self.assertIn(item["heuristic"], experiment.TIERS)
+        self.assertEqual(len(experiment.CRAFTED["P4"].split("skip")) - 1, 20)
+        pairs = collections.defaultdict(dict)
+        for item in items:
+            if item["kind"] == "finding":
+                pairs[item["finding"]][item["form"]] = json.loads(item["state"])["f1"]
+        for pair in pairs.values():
+            self.assertEqual(pair["appended"], pair["clean"] + " " + experiment.APPENDED)
+
+    def test_the_build_is_frozen_once_written(self):
+        self.assertEqual(self.build()[0], 0)
+        self.assertEqual(self.build()[0], 2)
+
+    def test_too_few_base_states_refuses(self):
+        with unittest.mock.patch.object(experiment, "INJECTION_BASES", 4):
+            code, _ = self.build()
+        self.assertEqual(code, 2)
+        self.assertEqual(self.items(), [])
+
+    def test_every_arm_answers_each_item_once(self):
+        self.build()
+        count = len(self.items())
+        for arm in ("kev", "jev", "haiku"):
+            code, printed = self.ask(arm)
+            self.assertEqual(code, 0, arm)
+            lines = self.answers(arm)
+            self.assertEqual(len(lines), count, arm)
+            self.assertEqual({line["outcome"] for line in lines}, {"ok"}, arm)
+            tiers = [line for line in lines if line["id"].startswith("b")]
+            self.assertTrue(all(line["tier"] in experiment.TIERS for line in tiers), arm)
+            found = [line for line in lines if line["id"].startswith("f")]
+            self.assertTrue(all(0 <= line["probability"] <= 1 for line in found), arm)
+        self.assertEqual(len(Stub.seen), count)
+        # A second run asks nothing again.
+        before = len(Arm.seen)
+        self.assertEqual(self.ask("kev")[0], 0)
+        self.assertEqual(len(Arm.seen), before)
+
+    def test_a_hosted_arm_refuses_a_path_no_public_repository_tracks_now(self):
+        self.build()
+        subprocess.run(["git", "-C", str(self.roots["platypeeps/sd-ai-command-pack"]), "rm",
+                        "-q", "--cached", "docs/b.md"], check=True)
+        for arm in ("jev", "haiku"):
+            code, _ = self.ask(arm)
+            self.assertEqual(code, 2, arm)
+            self.assertEqual(self.answers(arm), [], arm)
+        self.assertEqual((Stub.seen, Arm.seen), ([], []))
+
+    def test_a_call_stopped_before_its_line_is_recorded_and_not_asked_again(self):
+        self.build()
+        first = self.items()[0]["id"]
+        (self.out / "injection" / "haiku.asking").write_text(
+            json.dumps({"id": first, "reserved": 0.25}))
+        self.assertEqual(self.ask("haiku")[0], 0)
+        lines = self.answers("haiku")
+        self.assertEqual((lines[0]["id"], lines[0]["outcome"], lines[0]["usd"]),
+                         (first, "interrupted", 0.25))
+        self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/messages"]),
+                         len(self.items()) - 1)
+        self.assertFalse((self.out / "injection" / "haiku.asking").exists())
+
+    def test_an_edited_item_file_refuses_before_any_call(self):
+        self.build()
+        with (self.out / "injection" / "items.jsonl").open("a") as fh:
+            fh.write("\n")
+        self.assertEqual(self.ask("kev")[0], 2)
+        self.assertEqual(Arm.seen, [])
+
+    def test_a_line_cut_by_a_stop_is_trimmed_and_its_item_asked_again(self):
+        self.build()
+        self.assertEqual(self.ask("kev")[0], 0)
+        path = self.out / "injection" / "kev.jsonl"
+        text = path.read_text()
+        last = text.rstrip("\n").rfind("\n") + 1
+        path.write_text(text[:last + 20])
+        before = len(Arm.seen)
+        self.assertEqual(self.ask("kev")[0], 0)
+        self.assertEqual(len(Arm.seen), before + 1)
+        self.assertEqual(path.read_text().count("\n"), len(self.items()))
