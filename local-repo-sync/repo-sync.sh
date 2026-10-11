@@ -781,7 +781,10 @@ read_intent() {
   i_backup=$(printf '%s\n' "$i_text" | sed -n 's/^backup=//p' | head -1)
   i_why="$REFRESH_INTENT is malformed"
   printf '%s\n' "$i_pack" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' || return 1
-  [ -z "$i_sys" ] || printf '%s\n' "$i_sys" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' || return 1
+  # Empty only on a hub with no system checkout in the conf.
+  if [ -n "$i_sys" ] || [ -n "$(hub_dir system)" ]; then
+    printf '%s\n' "$i_sys" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' || return 1
+  fi
   case $i_schema in ''|*[!0-9]*) return 1 ;; esac
   [ -n "$i_backup" ] || return 1
   if ! i_got=$(db_version "$i_backup/sd.db"); then
@@ -842,10 +845,15 @@ rollback_point() {
     echo "!!! refused: $p_root holds no one backup at schema $p_db; nothing moved, no record written"
     return 1
   fi
+  # A sha that cannot be read is no rollback point: an empty one would skip
+  # that checkout's move back.
   p_sys=$(hub_dir system)
   p_sys_sha=""
-  if [ -n "$p_sys" ]; then p_sys_sha=$(git -C "$p_sys" rev-parse HEAD); fi
-  p_pack_sha=$(git -C "$p_pack" rev-parse HEAD)
+  if { [ -n "$p_sys" ] && ! p_sys_sha=$(git -C "$p_sys" rev-parse HEAD); } \
+      || ! p_pack_sha=$(git -C "$p_pack" rev-parse HEAD); then
+    echo "!!! refused: cannot read the system or pack sha; nothing moved, no record written; the backup $p_backup stays"
+    return 1
+  fi
   if ! { mkdir -p "${REFRESH_INTENT%/*}" \
       && printf 'system=%s\npack=%s\nschema=%s\nbackup=%s\n' "$p_sys_sha" "$p_pack_sha" "$p_db" "$p_backup" \
         > "$REFRESH_INTENT.tmp" \
@@ -883,8 +891,11 @@ recover() {
     return 1
   fi
   if [ "$v_db" -gt "$i_schema" ]; then
-    echo "--- $v_pack/bin/sd-db restore $i_backup: schema $v_db back to $i_schema"
-    if ! "$v_pack/bin/sd-db" restore "$i_backup" < /dev/null; then
+    # sd_db's restore verb, from this lib/ alone: bin/sd-db would take a
+    # provisioned copy that matches the partly migrated database, and that
+    # copy migrates the restored one up to its own version.
+    echo "--- sd_db restore $i_backup from $v_pack/lib: schema $v_db back to $i_schema"
+    if ! PYTHONPATH="$v_pack/lib" python3 -P -m sd_db.jobs.cli restore "$i_backup" < /dev/null; then
       echo "!!! failed: the restore of $i_backup"
       return 1
     fi
@@ -925,12 +936,18 @@ settle() {
   s_pack=$(hub_dir pack)
   s_lib=$(lib_version "$s_pack")
   s_db=$(db_version "$REFRESH_DB" || :)
+  s_ran=0
   if [ -n "$s_lib" ] && [ -n "$s_db" ] && [ "$s_db" -lt "$s_lib" ]; then
     echo "--- $s_pack/bin/sd-db migrate: schema $s_db to $s_lib"
-    "$s_pack/bin/sd-db" migrate < /dev/null || echo "!!! failed: $s_pack/bin/sd-db migrate"
+    # A failed migrate recovers whatever the version reads: its exit is
+    # the one proof the run ended where it meant to.
+    "$s_pack/bin/sd-db" migrate < /dev/null || s_ran=$?
     s_db=$(db_version "$REFRESH_DB" || :)
+    if [ "$s_ran" -ne 0 ]; then
+      echo "!!! failed: $s_pack/bin/sd-db migrate exited $s_ran"
+    fi
   fi
-  if [ -n "$s_lib" ] && [ "$s_db" = "$s_lib" ]; then
+  if [ "$s_ran" -eq 0 ] && [ -n "$s_lib" ] && [ "$s_db" = "$s_lib" ]; then
     forget_intent || return 2
     return 0
   fi

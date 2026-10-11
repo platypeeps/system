@@ -438,10 +438,16 @@ class RefreshMigrateTest(unittest.TestCase):
 
     def test_a_kill_after_the_first_of_two_migrations_finishes_both_before_a_start(self):
         f = self.f
-        f.upstream_migrations(f.good("one"))
-        self.killed_after_the_move(f)
-        f.sd_db("migrate")
+        first = f.upstream_migrations(f.good("one"))
         target = f.upstream_migrations(f.good("two"))
+        self.killed_after_the_move(f)
+        self.assertEqual(target, f.head(f.pack))
+        # What a kill between the two migrations' commits leaves: the real
+        # migrate of the first alone, from the commit that adds it.
+        f.git(f.pack, "switch", "-q", "--detach", first)
+        f.sd_db("migrate")
+        f.git(f.pack, "switch", "-q", "--detach", target)
+        self.assertEqual(f.n + 1, f.version())
         f.run("refresh", expect=0)
         self.assertEqual(f.n + 2, f.version())
         self.assertEqual(1, len(f.backup_dirs()))
@@ -449,6 +455,56 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertEqual([f"{SERVE} schema={f.n + 2} record=no", f"{DASHBOARD} schema={f.n + 2} record=no"],
                          f.starts())
         self.assertEqual((f.head(f.system), target), f.hub_pin(f.system))
+
+    def test_a_migrate_that_exits_nonzero_after_its_last_commit_recovers(self):
+        """Review round 0, finding 2: the exit is the proof, not the version.
+        The target's bin/sd-db runs the real migrate, then exits 1, as a
+        process killed after its last commit does."""
+        f = self.f
+        f.upstream_migrations(f.good("one"))
+        entry = f.upstream / "bin" / "sd-db"
+        last = "    raise SystemExit(dispatch_verb(sys.argv[1:]))\n"
+        text = entry.read_text()
+        self.assertIn(last, text)
+        entry.write_text(text.replace(last, "    dispatch_verb(sys.argv[1:])\n    raise SystemExit(1)\n"))
+        f.git(f.upstream, "commit", "-q", "-am", "sd-db exits 1 after its verb")
+        f.git(f.upstream, "push", "-q", "origin", "main")
+        result = f.run("refresh", expect=1)
+        self.assertIn("migrate exited 1", result.stdout)
+        self.assert_at_first_pair(f)
+        self.assertEqual(1, len(f.restores()))
+
+    def test_a_restore_ignores_a_provisioned_copy_at_the_partial_version(self):
+        """Review round 0, finding 3: bin/sd-db restore would take a .venv
+        copy built for the partly migrated database, which migrates the
+        restored copy up to its own version."""
+        f = self.f
+        f.upstream_migrations(f.good("one"))
+        venv = f.pack / ".venv/lib/python3.14/site-packages/sd_db"
+        shutil.copytree(f.upstream / "lib/sd_db", venv, ignore=shutil.ignore_patterns("__pycache__"))
+        f.upstream_migrations(f.bad("two"))
+        f.run("refresh", expect=1)
+        self.assert_at_first_pair(f)
+
+    def test_a_sha_that_cannot_be_read_writes_no_record(self):
+        """Review round 0, finding 1: an empty system sha in the record would
+        skip system's move back."""
+        f = self.f
+        f.upstream_migrations(f.good("one"))
+        f.wrap_git("before", "*'/a/system rev-parse HEAD'",
+                   'if [ -d "$XDG_STATE_HOME/repo-sync/refresh-backups" ]; then echo boom >&2; exit 1; fi')
+        result = f.run("refresh", expect=1)
+        self.assertIn("cannot read the system or pack sha; nothing moved, no record written", result.stdout)
+        self.assertFalse(f.record.exists())
+        self.assertEqual((f.a_system, f.a_pack), (f.head(f.system), f.head(f.pack)))
+        self.assertEqual(f.n, f.version())
+        self.assertEqual([DASHBOARD, SERVE], f.loaded())
+        self.assertEqual(1, len(f.backup_dirs()))
+
+    def test_a_record_with_no_system_sha_is_unknown_on_a_hub_with_system(self):
+        f = self.f
+        backup = f.take_backup()
+        self.refused_on_record(f.record_text("", f.a_pack, f.n, backup))
 
     def recovery_state(self, f, point):
         """The state a kill at `point` of a recovery leaves: the pack moved to
