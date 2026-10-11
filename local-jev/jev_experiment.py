@@ -1136,11 +1136,16 @@ def answer_file(arm: str, rerun: str | None, manifest: dict) -> tuple[str, str]:
 
 
 def spent(replay: Path) -> float:
-    """Hosted spend so far, over every run's answers."""
+    """Hosted spend so far, over every run's answers, plus the reservation of
+    each call still waiting in a marker; a marker without one counts as
+    unbounded."""
     total = 0.0
     for path in replay.glob("*.jsonl"):
         if path.name.split(".")[0] in HOSTED:
             total += sum(row.get("usd") or 0.0 for row in read_jsonl(path))
+    for path in replay.glob("*.asking"):
+        if path.name.split(".")[0] in HOSTED:
+            total += json.loads(path.read_text(encoding="utf-8")).get("reserved", math.inf)
     return total
 
 
@@ -1221,6 +1226,10 @@ def cmd_replay(args, out, env) -> int:
         raise Refused(f"{args.preregistration.name} changed since this replay started; "
                       "every arm and resume runs under one registration")
     name, run_id = answer_file(arm, args.rerun, manifest)
+    if name not in manifest.get("arms", {}) and any(
+            (folder / "replay" / f"{name}{suffix}").exists() for suffix in (".jsonl", ".asking")):
+        raise Refused(f"replay/{name}.jsonl or its marker exists, and no manifest names it; "
+                      "its registration, population and scope are unknown")
     if manifest.get("arms", {}).get(name, {}).get("scope", scope_of(rows)) != scope_of(rows):
         raise Refused(f"{name}'s heads differ from those it started on: the public pool moved; "
                       "nothing was sent")

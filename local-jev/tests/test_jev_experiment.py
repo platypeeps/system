@@ -1178,6 +1178,20 @@ class TheReplay(CompareCase):
             self.assertEqual(self.replay("kev")[0], 2)
         self.assertEqual(len(Arm.seen), before)
 
+    def test_answers_no_manifest_names_refuse(self):
+        self.assertEqual(self.replay("kev")[0], 0)
+        (self.folder / "manifest.json").unlink()
+        self.assertEqual(self.replay("kev")[0], 2)
+
+    def test_another_arm_s_waiting_call_counts_against_the_cap(self):
+        replay = self.folder / "replay"
+        replay.mkdir()
+        (replay / "jev.asking").write_text(json.dumps({"repository": "owner/repo",
+                                                       "head": sha(0), "reserved": 0.84}))
+        with unittest.mock.patch.object(experiment, "reserve", return_value=0.42, create=True):
+            self.assertEqual(self.replay("haiku", "--cap", "1.0")[0], 1)
+        self.assertEqual([s for s in Arm.seen if s["path"] == "/v1/messages"], [])
+
     def seal(self, *arms):
         """A note on sd:2764 carrying each arm's answer file hash."""
         stamp = "2026-10-11T00:00:00+00:00"
@@ -1220,21 +1234,28 @@ class TheReplay(CompareCase):
         code, printed = self.labels_c1()
         self.assertEqual((code, json.loads(printed)["all"]["heads"]), (0, 2))
 
+    def stop_after_first_call(self, arm):
+        """A run stopped after its first call, before that call's answer."""
+        real = experiment.ask_arm
+
+        def stop(*args):
+            real(*args)
+            raise KeyboardInterrupt("stopped between the call and its answer")
+        with unittest.mock.patch.object(experiment, "ask_arm", stop):
+            with self.assertRaises(KeyboardInterrupt):
+                self.replay(arm)
+        return self.folder / "replay"
+
     def test_a_line_cut_off_by_a_stop_is_dropped_and_its_head_not_asked_again(self):
-        replay = self.folder / "replay"
-        replay.mkdir()
+        replay = self.stop_after_first_call("kev")
         (replay / "kev.jsonl").write_text('{"repository": "owner/repo", "head": "' + sha(0)[:10])
-        (replay / "kev.asking").write_text(json.dumps({"repository": "owner/repo",
-                                                       "head": sha(0), "reserved": 0.0}))
         self.assertEqual(self.replay("kev")[0], 0)
         found = self.answers("kev")
         self.assertEqual(([a["outcome"] for a in found].count("interrupted"), len(found)), (1, 5))
-        self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/systemone"]), 4)
+        self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/systemone"]), 5)
 
     def test_a_marker_without_a_reservation_refuses(self):
-        replay = self.folder / "replay"
-        replay.mkdir()
-        (replay / "jev.asking").write_text(json.dumps({"repository": "owner/repo",
-                                                       "head": sha(0)}))
+        marker = self.stop_after_first_call("jev") / "jev.asking"
+        marker.write_text(json.dumps({"repository": "owner/repo", "head": sha(0)}))
         self.assertEqual(self.replay("jev")[0], 2)
-        self.assertEqual(Stub.seen, [])
+        self.assertEqual(len(Stub.seen), 1)
