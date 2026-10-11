@@ -276,9 +276,10 @@ class CronReports(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); cron = root / "cron"; (cron / "logs").mkdir(parents=True)
             shutil.copy2(HERE.parent / "local-cron-jobs/cron-jobs.sh", cron / "cron-jobs.sh")
-            # cron-jobs.sh sources the shared config helper beside it, and reads
-            # job files from <config>/cron-jobs/jobs.
+            # cron-jobs.sh sources the shared config and bounded-step helpers
+            # beside it, and reads job files from <config>/cron-jobs/jobs.
             (root / "lib").mkdir(); shutil.copy2(HERE.parent / "lib/config.sh", root / "lib/config.sh")
+            shutil.copy2(HERE.parent / "lib/bounded.sh", root / "lib/bounded.sh")
             jobs = root / "config/cron-jobs/jobs"; jobs.mkdir(parents=True)
             (jobs / "fixture.job").write_text('JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="printf \'REPORT BODY\\n\'"\nJOB_DIR=' + str(root) + "\n")
             (cron / "logs/fixture.log").write_text("PREVIOUS RUN\n")

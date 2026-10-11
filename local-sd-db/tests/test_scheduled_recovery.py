@@ -29,9 +29,11 @@ class ScheduledRecovery(unittest.TestCase):
         self.cron = self.root / "system/local-cron-jobs"
         self.cron.mkdir(parents=True)
         shutil.copy2(SYSTEM / "local-cron-jobs/cron-jobs.sh", self.cron / "cron-jobs.sh")
-        # cron-jobs.sh sources the shared config helper from its checkout.
+        # cron-jobs.sh sources the shared config and bounded-step helpers
+        # from its checkout.
         (self.cron.parent / "lib").mkdir()
         shutil.copy2(SYSTEM / "lib/config.sh", self.cron.parent / "lib/config.sh")
+        shutil.copy2(SYSTEM / "lib/bounded.sh", self.cron.parent / "lib/bounded.sh")
         # The job files are private config: cron-jobs.sh reads them from
         # <config>/cron-jobs/jobs, and the repository ships them as examples.
         self.config = self.root / "config"
