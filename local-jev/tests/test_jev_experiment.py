@@ -9,7 +9,6 @@ import contextlib
 import hashlib
 import io
 import json
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +16,7 @@ from pathlib import Path
 import jev_experiment as experiment
 
 from .test_jev import Stub, StubServer
-from .test_jev_metering import initialise
+from .test_jev_metering import connect, initialise
 from .test_jev_compare import SD_DB_PATH
 
 #: The pack's `bin/sd_jev.py` `_jev_state` and `_jev_criteria` output at
@@ -27,11 +26,12 @@ PACK_CRITERIA_SHA256 = "4de730c7968e4e31558dfc3f3e8cccb454d2e517b35e555f672c0324
 
 
 def checkpoint_db(rows) -> Path:
-    """A database with the `state` columns the steps read, holding `rows`."""
+    """A database the migrations built, holding `rows` as checkpoints. Opened
+    through `sd_db` alone: nothing outside it opens the database
+    (`local-sd-db/tests/test_one_store.py`)."""
     path = Path(tempfile.mkdtemp()) / "sd.db"
-    with contextlib.closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute("CREATE TABLE state (id INTEGER PRIMARY KEY, kind TEXT,"
-                           " key TEXT, timestamp TEXT, body TEXT, resolved_at TEXT)")
+    initialise(path)
+    with contextlib.closing(connect(path)) as connection:
         for key, stamp, body in rows:
             connection.execute(
                 "INSERT INTO state (kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
@@ -264,9 +264,9 @@ class TheFaithfulnessCheck(StubServer):
         self.assertEqual(code, 1)                  # 25 of 50 is below 46
         self.assertEqual(len(Stub.seen), 50)
         self.assertNotIn("--unsure-below", json.dumps(Stub.seen))
-        with contextlib.closing(sqlite3.connect(self.ledger)) as connection:
-            stages = connection.execute(
-                "SELECT stage, arm, count(*) FROM judgment GROUP BY stage, arm").fetchall()
+        with contextlib.closing(connect(self.ledger, write=False)) as connection:
+            stages = [tuple(row) for row in connection.execute(
+                "SELECT stage, arm, count(*) FROM judgment GROUP BY stage, arm")]
         self.assertEqual(stages, [("JEV_SD_REVIEW", "jev", 50)])
         answers = [json.loads(line) for line in (self.out / "answers.jsonl").read_text().splitlines()]
         self.assertEqual(len(answers), 50)
@@ -282,7 +282,7 @@ class TheFaithfulnessCheck(StubServer):
         self.assertEqual(Stub.seen, [])
 
     def test_a_state_with_a_home_path_halts_before_any_call(self):
-        with contextlib.closing(sqlite3.connect(self.db)) as connection, connection:
+        with contextlib.closing(connect(self.db)) as connection:
             connection.execute("DELETE FROM state")
             for n in range(30):
                 for prefix, tier in (("m", "skip"), ("k", "standard")):
@@ -308,15 +308,15 @@ class TheFaithfulnessCheck(StubServer):
             code, _out = self.faithful()
             self.assertEqual(code, 2, ledger)
         self.assertEqual(Stub.seen, [])
-        with contextlib.closing(sqlite3.connect(live)) as connection:
-            self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(), (0,))
+        with contextlib.closing(connect(live, write=False)) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone()[0], 0)
 
     def test_the_source_database_is_refused_as_the_experiment_ledger(self):
         # The checkpoints sit in the ledger file, so only the identity check
         # can refuse: the draw would succeed and the calls would be made.
-        with contextlib.closing(sqlite3.connect(self.db)) as source:
+        with contextlib.closing(connect(self.db, write=False)) as source:
             rows = source.execute("SELECT kind, key, timestamp, body FROM state").fetchall()
-        with contextlib.closing(sqlite3.connect(self.ledger)) as target, target:
+        with contextlib.closing(connect(self.ledger)) as target:
             target.executemany("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, ?, ?)",
                                rows)
         self.db = self.out.parent / "same.db"
@@ -331,9 +331,9 @@ class TheFaithfulnessCheck(StubServer):
         live = self.config / ".local/share/sd/sd.db"
         live.parent.mkdir(parents=True)
         initialise(live)
-        with contextlib.closing(sqlite3.connect(self.db)) as source:
+        with contextlib.closing(connect(self.db, write=False)) as source:
             rows = source.execute("SELECT kind, key, timestamp, body FROM state").fetchall()
-        with contextlib.closing(sqlite3.connect(self.ledger)) as target, target:
+        with contextlib.closing(connect(self.ledger)) as target:
             target.executemany("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, ?, ?)",
                                rows)
         source = self.ledger
@@ -347,9 +347,9 @@ class TheFaithfulnessCheck(StubServer):
                 self.assertEqual(code, 2)
                 self.assertEqual(Stub.seen, [])
         for path in (live, source):
-            with contextlib.closing(sqlite3.connect(path)) as connection:
-                self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(),
-                                 (0,), path)
+            with contextlib.closing(connect(path, write=False)) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone()[0],
+                                 0, path)
 
     def test_a_resolved_name_ending_in_space_is_judged_as_resolved(self):
         # Adversarial review of round 3: the live path resolves to a name
@@ -374,16 +374,16 @@ class TheFaithfulnessCheck(StubServer):
                 self.assertEqual(code, 2)
                 self.assertEqual(Stub.seen, [])
         for path in (spaced, plain):
-            with contextlib.closing(sqlite3.connect(path)) as connection:
-                self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(),
-                                 (0,), path)
+            with contextlib.closing(connect(path, write=False)) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone()[0],
+                                 0, path)
 
     def test_a_source_resolving_to_a_name_ending_in_space_is_read_as_resolved(self):
         # The source read must open the file the identity check judged, not
         # that name stripped, which here is the ledger itself.
-        with contextlib.closing(sqlite3.connect(self.db)) as source:
+        with contextlib.closing(connect(self.db, write=False)) as source:
             rows = source.execute("SELECT kind, key, timestamp, body FROM state").fetchall()
-        with contextlib.closing(sqlite3.connect(self.ledger)) as target, target:
+        with contextlib.closing(connect(self.ledger)) as target:
             target.executemany("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, ?, ?)",
                                rows)
         spaced = Path(f"{self.ledger} ")
@@ -399,17 +399,17 @@ class TheFaithfulnessCheck(StubServer):
         # file the identity check judged was not the file opened, and the
         # `mode=ro` that followed was read as part of another parameter.
         Stub.choice_value = "standard"
-        with contextlib.closing(sqlite3.connect(self.db)) as source:
+        with contextlib.closing(connect(self.db, write=False)) as source:
             rows = source.execute("SELECT kind, key, timestamp, body FROM state").fetchall()
-        with contextlib.closing(sqlite3.connect(self.ledger)) as target, target:
+        with contextlib.closing(connect(self.ledger)) as target:
             target.executemany("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, ?, ?)",
                                rows)
         self.db = f"{self.ledger}?x=1"
         code, _out = self.faithful()
         self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])
-        with contextlib.closing(sqlite3.connect(self.ledger)) as connection:
-            self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(), (0,))
+        with contextlib.closing(connect(self.ledger, write=False)) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone()[0], 0)
 
     def test_the_default_source_is_the_live_database_of_the_given_home(self):
         # The live check reads `env`'s HOME; the default --db must read the

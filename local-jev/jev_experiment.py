@@ -11,8 +11,9 @@ file holds the steps built so far:
 * `faithful` (step 1) rebuilds 50 states from stored checkpoints and asks Jev
   once each, the way the pack asks it, writing to the experiment's own ledger.
 
-**It reads the workflow database read-only.** Every query opens it with
-`mode=ro`; nothing here writes a checkpoint or a live ledger row.
+**It reads the workflow database read-only.** Every query opens it through
+`sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
+nothing here writes a checkpoint or a live ledger row.
 
 **It never writes the live ledger.** A Jev call runs `jev.sh` with
 `JEV_METER_DB` pointed at the experiment database, both comparison switches
@@ -22,7 +23,8 @@ refuses that database.
 **It sends no absolute path.** A state holding one halts the run before the
 call (the stopping rule's privacy halt).
 
-Stdlib only, like `jev.py`. Raw output goes to `--out`, outside the checkout.
+Stdlib and `sd_db`, the one opener of the workflow database. Raw output goes
+to `--out`, outside the checkout.
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ import json
 import os
 import random
 import re
-import sqlite3
 import subprocess
 import sys
 import time
@@ -101,13 +102,20 @@ def db_path(raw) -> Path:
     return Path(os.path.realpath(os.path.expanduser(str(raw).strip())))
 
 
-def open_ro(path: str | Path) -> sqlite3.Connection:
-    # `as_uri` escapes `?` and `#`, so the file opened is the one named and
-    # `mode=ro` is the only parameter. No `db_path` here: the caller's path
-    # is already the one its identity check judged.
-    connection = sqlite3.connect(f"{Path(path).absolute().as_uri()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    return connection
+def open_ro(path: str | Path):
+    # Through `sd_db`, because nothing outside it opens the database
+    # (`local-sd-db/tests/test_one_store.py`). Its `connect` opens the
+    # resolved path's `as_uri`, which escapes `?` and `#`, so the file opened
+    # is the one named and `mode=ro` is the only parameter. No `db_path`
+    # here: the caller's path is already the one its identity check judged,
+    # and resolving it again strips nothing. The checkout's own `sd_db` is
+    # the fallback, as in `jev_meter`'s tests.
+    try:
+        from sd_db.database import connect
+    except ImportError:
+        sys.path.insert(0, str(FOLDER.parent / "local-sd-db"))
+        from sd_db.database import connect
+    return connect(Path(path), write=False)
 
 
 def checkpoints(db, since: str, until: str):
