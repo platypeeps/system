@@ -14,6 +14,7 @@ from sd_db.testing.wire import hub_only
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 ENTRYPOINT = PACKAGE_ROOT / "sd-db.sh"
+ACCEPTANCE_PACK = Path(os.environ.get("SD_ACCEPTANCE_PACK", PACKAGE_ROOT.parent.parent / "pack"))
 
 REGISTRY = """\
 bills:
@@ -248,8 +249,10 @@ class TheFailureMailWithoutNotifyOnPath(CliCase):
                             encoding="utf-8")
         notifier.chmod(0o755)
         # HOME has no database, so the backup fails whether or not `sd_db` imports.
+        # The pack's bin/sd-db runs it (sd:3279) and mails through SD_NOTIFY,
+        # which sd-db.sh names as this tree's notify.sh.
         environment = {"HOME": str(self.home), "PATH": "/usr/bin:/bin",
-                       "PYTHON": sys.executable}
+                       "PYTHON": sys.executable, "SD_PACK_ROOT": str(ACCEPTANCE_PACK)}
         done = subprocess.run([str(entrypoint), "backup"], capture_output=True, text=True,
                               input="", env=environment, check=False)
         self.assertEqual(done.returncode, 1, done.stderr)

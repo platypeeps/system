@@ -42,6 +42,11 @@ class ScheduledRecovery(unittest.TestCase):
         for job in ("sd-db-backup", "sd-db-backup-hourly", "shadow-sync-nightly"):
             shutil.copy2(SYSTEM / f"local-cron-jobs/examples/{job}.job", self.jobs / f"{job}.job")
         (self.cron.parent / "local-sd-db").symlink_to(SYSTEM / "local-sd-db", target_is_directory=True)
+        # sd-db.sh runs the pack's bin/sd-db (sd:3279). An installed job names
+        # no SD_PACK_ROOT, so the pack stands where the default looks.
+        default_pack = self.fixture.path / "repos/platypeeps/sd-ai-command-pack"
+        default_pack.parent.mkdir(parents=True)
+        default_pack.symlink_to(PACK, target_is_directory=True)
         self.env = self.fixture.environment({"PATH": os.environ["PATH"], "PYTHON": sys.executable})
         self.env["SYSTEM_TOOLS_CONFIG"] = str(self.config)
         # cron-jobs.sh names its plists with the same prefix the library reads.

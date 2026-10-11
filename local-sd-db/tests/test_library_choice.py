@@ -78,7 +78,8 @@ class LibraryCase(unittest.TestCase):
         environment = {key: value for key, value in os.environ.items()
                        if key not in ("PYTHONPATH", "SD_DB_LIBRARY", "SD_DB_PYTHON",
                                       "XDG_STATE_HOME")}
-        environment.update(HOME=str(self.home), PYTHON=str(python), **extra)
+        # Unset runs the pack's bin/sd-db (sd:3279); `auto` is this copy's old default.
+        environment.update(HOME=str(self.home), PYTHON=str(python), **{"SD_DB_LIBRARY": "auto", **extra})
         # Bounded: the checkout's `serve` answering instead would serve forever.
         done = subprocess.run([str(ENTRYPOINT), *args], capture_output=True, text=True,
                               input="", env=environment, check=False, timeout=60)
