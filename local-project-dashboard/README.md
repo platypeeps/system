@@ -162,6 +162,8 @@ Both stay hidden until `sd-ship lane retry --help` names `--expected-head`, so a
 The page sends its revision, which covers the pending order, the holds and each blocked entry's head; a queue that changed since the read is refused, and the page reads it again.
 Move, hold, release and cancel pass the lane revision `lane list` prints as `--expected-revision`, so the verb checks it again under the queue's lock.
 Cancel needs it most: `lane cancel` also releases a running entry, so a Cancel on a row the runner claimed since is refused.
+Only a refusal the verb reports as written-nothing says the queue is unchanged (sd:3339).
+A hub fault, a timeout or an exit without a refusal may follow a landed write: the page says the outcome is not known and reads the lane again.
 The runner reads the queue at each item boundary, so an edit never changes a merge in progress.
 
 **Protection** at `/protection` is one table, one row per registered repository:

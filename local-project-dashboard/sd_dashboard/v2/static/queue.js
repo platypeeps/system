@@ -127,7 +127,10 @@
       const order = out.pending ? ` Order now: ${out.pending.map(n => `sd:${n}`).join(', ')}.` : '';
       said[l.path] = { ok: true, text: `sd:${item} ${DONE[action]}.${order} ${out.edits || ''}` };
     } catch (err) {
-      said[l.path] = { ok: false, text: `sd:${item} not ${DONE[action]}: ${err.message}${err.stale ? '' : ' The queue is unchanged.'}` };
+      // Only a 4xx wrote nothing (queue_screen.move); a 502, another status or no answer may follow a landed write (sd:3339).
+      said[l.path] = { ok: false, text: err.status >= 400 && err.status < 500
+        ? `sd:${item} not ${DONE[action]}: ${err.message}${err.stale ? '' : ' The queue is unchanged.'}`
+        : `Not known whether sd:${item} was ${DONE[action]}: ${err.message} The lane below was read again; check sd:${item} there before you act again.` };
     }
     busy = false;
     await load();
