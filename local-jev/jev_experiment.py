@@ -45,6 +45,7 @@ import contextlib
 import datetime
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -969,6 +970,9 @@ RUN_ID = "jev-entry-2-replay"
 HOSTED = ("jev", "haiku")
 SPEND_CAP = 10.0
 JEV_USD_IN = 0.042
+#: A token is at least one byte, so a payload's UTF-8 length bounds its input
+#: tokens; this margin covers the provider's own prompt around it.
+TEMPLATE_TOKENS = 8192
 #: Where the spans go, and the Phoenix project they file under (design.md, "Traces").
 TRACES_URL = "http://127.0.0.1:4338/v1/traces"
 PROJECT = "jev-experiment-entry-2"
@@ -1010,6 +1014,27 @@ def scope_of(rows: list[dict]) -> dict:
     return {"heads": len(heads), "sha256": hashlib.sha256(json.dumps(heads).encode()).hexdigest()}
 
 
+def reserve(arm: str, payload: dict, definition: dict, env) -> float:
+    """The most one attempt can cost, held against the cap before it is made;
+    0 for Kev, which runs here."""
+    if arm not in HOSTED:
+        return 0.0
+    import jev_compare
+    tokens = len(json.dumps(payload).encode("utf-8")) + TEMPLATE_TOKENS
+    if arm == "jev":
+        return tokens * JEV_USD_IN / 1e6
+    usd_in = jev_compare.price(env, "JEV_COMPARE_HAIKU_USD_IN", jev_compare.DEFAULT_USD_IN)
+    usd_out = jev_compare.price(env, "JEV_COMPARE_HAIKU_USD_OUT", jev_compare.DEFAULT_USD_OUT)
+    return (tokens * usd_in + jev_compare.output_cap(definition) * usd_out) / 1e6
+
+
+def dollars(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a finite amount of 0 or more")
+    return value
+
+
 def replay_env(env, ledger: Path, traces: str) -> dict:
     """The arms' environment: `<config>/jev/.env` and the Kev service's
     settings as defaults below the caller's, as `jev.sh` reads them, then the
@@ -1043,7 +1068,9 @@ def ask_once(arm: str, payload: dict, definition: dict, conf: dict, env) -> dict
             finally:
                 event["duration_ms"] = int(round((time.monotonic() - started) * 1000))
             event.update(jev.usage_of(response), model=response.get("model"))
-            event["usd"] = (event.get("tokens_in") or 0) * JEV_USD_IN / 1e6
+            # No count is an unknown cost, never a free call.
+            event["usd"] = (None if event.get("tokens_in") is None
+                            else event["tokens_in"] * JEV_USD_IN / 1e6)
             answer = jev.answer_of(response, QID)
             event.update(answer=jev.position_of(answer.get("choice"), definition["criteria"]),
                          confidence=jev.confidence_of(answer),
@@ -1187,13 +1214,17 @@ def cmd_replay(args, out, env) -> int:
         # A run stopped between its call and its answer line: the call may
         # have been made, so the head is not asked again.
         cut = json.loads(marker.read_text(encoding="utf-8"))
+        if "reserved" not in cut:
+            raise Refused(f"{marker} predates cost reservations; its call's cost is unknown, "
+                          "so settle it by hand before a resume")
         if (cut["repository"], cut["head"]) not in done:
             row = next((r for r in rows if (r["repository"], r["head"]) == (cut["repository"],
                                                                             cut["head"])), {})
             with answers.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(dict(cut, alias=row.get("alias"),
                                          population=row.get("population"), arm=arm, tier=None,
-                                         outcome="interrupted", usd=None, run_id=run_id,
+                                         outcome="interrupted", usd=cut["reserved"],
+                                         run_id=run_id,
                                          at=now()), sort_keys=True) + "\n")
             done.add((cut["repository"], cut["head"]))
         marker.unlink()
@@ -1213,6 +1244,12 @@ def cmd_replay(args, out, env) -> int:
     model = env.get("JEV_MODEL") or jev.DEFAULT_MODEL
     total = spent(replay)
     sent = 0
+
+    def halt(why):
+        entry.update(halted=why)
+        write_json(manifest_path, manifest)
+        sys.stderr.write(f"jev_experiment: {why}; the run stops here\n")
+        return 1
     for row in rows:
         ident = (row["repository"], row["head"])
         if ident in done:
@@ -1229,17 +1266,18 @@ def cmd_replay(args, out, env) -> int:
             with answers.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(line, sort_keys=True) + "\n")
             continue
-        if arm in HOSTED and total >= args.cap:
-            entry.update(halted=f"spend cap: ${total:.4f} of ${args.cap:.2f}")
-            write_json(manifest_path, manifest)
-            sys.stderr.write(f"jev_experiment: {entry['halted']}; the run stops here\n")
-            return 1
         payload, taken = jev.redacted_payload(
             jev.build_payload(json.loads(row["state"]), questions, model), patterns)
-        marker.write_text(json.dumps({"repository": row["repository"], "head": row["head"]}),
-                          encoding="utf-8")
+        # Both attempts are reserved before the first, and the marker keeps the
+        # reservation: a stop before the answer line charges it, never $0.
+        bound = reserve(arm, payload, definition, env)
+        if arm in HOSTED and total + 2 * bound > args.cap:
+            return halt(f"spend cap: ${total:.4f} spent, and the next head reserves "
+                        f"${2 * bound:.4f} of ${args.cap:.2f}")
+        marker.write_text(json.dumps({"repository": row["repository"], "head": row["head"],
+                                      "reserved": 2 * bound}), encoding="utf-8")
         event, attempts = ask_arm(arm, payload, definition, conf, env)
-        usd = sum(a["usd"] or 0.0 for a in attempts)
+        usd = sum(bound if a["usd"] is None else a["usd"] for a in attempts)
         owner_repo = row["repository"].lower().replace("/", ".")
         pair = hashlib.sha256(f"{run_id}:{row['repository']}:{row['head']}".encode()).hexdigest()[:16]
         ledger_row = dict(event, caller="jev-experiment", stage="JEV_SD_REVIEW", arm=arm,
@@ -1267,6 +1305,10 @@ def cmd_replay(args, out, env) -> int:
             fh.write(json.dumps(line, sort_keys=True) + "\n")
         marker.unlink()
         total += usd
+        if arm in HOSTED and event["outcome"] == "ok" and event.get("usd") is None:
+            return halt(f"an answer reported no cost; it is charged its reservation, ${usd:.4f}")
+        if arm in HOSTED and usd > 2 * bound:
+            return halt(f"a head cost ${usd:.4f}, above its reservation of ${2 * bound:.4f}")
     written = read_jsonl(answers) if answers.exists() else []
     entry.update(finished=now(), answers=len(written),
                  no_answer=sum(1 for r in written if r.get("tier") is None),
@@ -1316,7 +1358,7 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--ledger", type=db_path, required=True, help="the experiment database")
     rep.add_argument("--db", type=db_path, help="default: the live workflow database")
     rep.add_argument("--reuse", type=Path, help="step 1's answers.jsonl; Jev is not asked again")
-    rep.add_argument("--cap", type=float, default=SPEND_CAP, help="hosted spend cap in US dollars")
+    rep.add_argument("--cap", type=dollars, default=SPEND_CAP, help="hosted spend cap in US dollars")
     rep.add_argument("--traces", default=TRACES_URL, help="the OTLP traces endpoint")
     rep.add_argument("--rerun", metavar="REASON", help="a second run, reported as one")
     rep.add_argument("--preregistration", type=Path, default=REGISTRATION, help=argparse.SUPPRESS)

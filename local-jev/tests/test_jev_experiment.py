@@ -980,13 +980,44 @@ class TheReplay(CompareCase):
         manifest = json.loads((self.folder / "manifest.json").read_text())
         self.assertEqual(manifest["arms"]["kev.run2"]["reason"], "the stub moved")
 
-    def test_the_cap_halts_at_the_configured_spend(self):
+    def test_the_cap_reserves_both_attempts_before_each_head(self):
         Stub.input_tokens = 10_000_000          # $0.42 a call at Jev's list price
-        code, _out = self.replay("jev", "--cap", "1.0")
-        self.assertEqual(code, 1)
-        self.assertEqual((len(Stub.seen), len(self.answers("jev"))), (3, 3))
-        code, _out = self.replay("jev", "--cap", "1.0")
-        self.assertEqual((code, len(Stub.seen)), (1, 3))
+        with unittest.mock.patch.object(experiment, "reserve", return_value=0.42, create=True):
+            code, _out = self.replay("jev", "--cap", "1.0")
+            self.assertEqual(code, 1)
+            self.assertEqual((len(Stub.seen), len(self.answers("jev"))), (1, 1))
+            self.assertLessEqual(sum(a["usd"] for a in self.answers("jev")), 1.0)
+            code, _out = self.replay("jev", "--cap", "1.0")
+        self.assertEqual((code, len(Stub.seen)), (1, 1))
+
+    def test_an_answer_with_no_cost_is_charged_its_reservation_and_halts(self):
+        Stub.drop_usage = True
+        with unittest.mock.patch.object(experiment, "reserve", return_value=0.01, create=True):
+            code, _out = self.replay("jev")
+        self.assertEqual((code, len(Stub.seen)), (1, 1))
+        self.assertEqual([a["usd"] for a in self.answers("jev")], [0.01])
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertIn("no cost", manifest["arms"]["jev"]["halted"])
+
+    def test_a_call_stopped_before_its_answer_keeps_its_reserved_charge(self):
+        def stop(row, env=None):
+            raise KeyboardInterrupt("stopped between the call and its answer line")
+        with unittest.mock.patch.object(experiment, "reserve", return_value=0.42, create=True):
+            with unittest.mock.patch.object(experiment.jev_meter, "write", stop):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.replay("jev", "--cap", "1.0")
+            code, _out = self.replay("jev", "--cap", "1.0")
+        self.assertEqual(code, 1)                   # 0.84 kept, so no second head fits
+        self.assertEqual([(a["outcome"], a["usd"]) for a in self.answers("jev")],
+                         [("interrupted", 0.84)])
+        self.assertEqual(len(Stub.seen), 1)
+
+    def test_a_cap_that_is_not_a_finite_amount_is_refused(self):
+        for cap in ("nan", "inf", "-1"):
+            with self.subTest(cap=cap), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    self.replay("jev", "--cap", cap)
+        self.assertEqual(Stub.seen, [])
 
     def draft(self, text):
         path = Path(tempfile.mkdtemp()) / "pre.md"
@@ -1157,8 +1188,16 @@ class TheReplay(CompareCase):
         replay.mkdir()
         (replay / "kev.jsonl").write_text('{"repository": "owner/repo", "head": "' + sha(0)[:10])
         (replay / "kev.asking").write_text(json.dumps({"repository": "owner/repo",
-                                                       "head": sha(0)}))
+                                                       "head": sha(0), "reserved": 0.0}))
         self.assertEqual(self.replay("kev")[0], 0)
         found = self.answers("kev")
         self.assertEqual(([a["outcome"] for a in found].count("interrupted"), len(found)), (1, 5))
         self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/systemone"]), 4)
+
+    def test_a_marker_without_a_reservation_refuses(self):
+        replay = self.folder / "replay"
+        replay.mkdir()
+        (replay / "jev.asking").write_text(json.dumps({"repository": "owner/repo",
+                                                       "head": sha(0)}))
+        self.assertEqual(self.replay("jev")[0], 2)
+        self.assertEqual(Stub.seen, [])
