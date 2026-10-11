@@ -13,7 +13,7 @@ without it.
 
 import pathlib
 import shutil
-import sqlite3
+import subprocess
 import sys
 import unittest
 
@@ -561,9 +561,8 @@ class ConsumersTest(unittest.TestCase):
         self.stopped = self.f.tmp / "state/repo-sync/refresh-stopped"
 
     def schema(self, version):
-        connection = sqlite3.connect(self.f.database)
-        connection.execute(f"PRAGMA user_version = {version}")
-        connection.close()
+        # The sqlite3 CLI, as refresh reads it: only sd_db opens the store from Python.
+        subprocess.run(["sqlite3", str(self.f.database), f"PRAGMA user_version = {version}"], check=True)
 
     def load(self, *labels):
         for label in labels:
