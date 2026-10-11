@@ -1406,10 +1406,14 @@ def cmd_replay(args, out, env) -> int:
     answers = replay / f"{name}.jsonl"
     marker = replay / f"{name}.asking"
     if answers.exists():
-        # A line cut off by a stop belongs to the head the marker names.
-        data = answers.read_bytes()
-        if not data.endswith(b"\n"):
-            answers.write_bytes(data[:data.rfind(b"\n") + 1])
+        # A line cut off by a stop belongs to the head the marker names. Only
+        # that suffix goes, in place: a failure here never loses a whole line.
+        with answers.open("r+b") as fh:
+            data = fh.read()
+            if data and not data.endswith(b"\n"):
+                fh.truncate(data.rfind(b"\n") + 1)
+                fh.flush()
+                os.fsync(fh.fileno())
     kept = read_jsonl(answers) if answers.exists() else []
     faults = record_faults(kept, arm, run_id)
     if faults:

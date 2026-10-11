@@ -1596,3 +1596,32 @@ class TheReplay(CompareCase):
         self.assertEqual([a["outcome"] for a in found], ["unavailable"] * 4 + ["ended"])
         entry = json.loads((self.folder / "manifest.json").read_text())["arms"]["kev"]
         self.assertEqual(entry["outages"], 2)
+
+    def test_a_failed_tail_repair_keeps_every_complete_line(self):
+        real, calls = experiment.ask_arm, []
+
+        def stop_third(*args, **kwargs):
+            calls.append(args[0])
+            if len(calls) == 3:
+                raise KeyboardInterrupt("stopped before the third call")
+            return real(*args, **kwargs)
+        with unittest.mock.patch.object(experiment, "ask_arm", stop_third):
+            with self.assertRaises(KeyboardInterrupt):
+                self.replay("kev")
+        answers = self.folder / "replay" / "kev.jsonl"
+        with answers.open("a") as fh:
+            fh.write('{"repository": "owner/repo", "head": "' + sha(2)[:10])
+
+        def emptied(path, data):
+            path.open("wb").close()
+            raise OSError("disk full")
+        with unittest.mock.patch.object(Path, "write_bytes", emptied), \
+                unittest.mock.patch.object(experiment.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.replay("kev")
+        self.assertEqual(len(self.answers("kev")), 2)
+        before = len([s for s in Arm.seen if s["path"] == "/v1/systemone"])
+        self.assertEqual(self.replay("kev")[0], 0)
+        self.assertEqual([a["outcome"] for a in self.answers("kev")],
+                         ["ok", "ok", "interrupted", "ok", "ok"])
+        self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/systemone"]), before + 2)
