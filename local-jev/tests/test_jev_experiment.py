@@ -40,28 +40,40 @@ def checkpoint_db(rows) -> Path:
     return path
 
 
-def checkout(tracked, untracked=()):
+def checkout(tracked, untracked=(), remote=True):
     """A git checkout whose index lists `tracked`; `untracked` files sit
-    beside them on disk."""
+    beside them on disk. Its `origin` is the remote `register` records,
+    unless `remote` is false."""
     root = Path(tempfile.mkdtemp()) / "checkout"
     for name in (*tracked, *untracked):
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text("x\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(root)], check=True)
+    if remote:
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", remote_of(root)],
+                       check=True)
     if tracked:
         subprocess.run(["git", "-C", str(root), "add", "--", *tracked], check=True)
     return root
 
 
-def register(db, root, visibility, managed=1):
+def remote_of(root):
+    return f"https://github.com/owner/{root.parent.name}.git"
+
+
+def register(db, root, visibility, managed=1, remote=None):
     """`root` as a repository row with its last observed visibility, the way
-    `sd shadow sync` stores it (`sd_db.protection.alerts`)."""
+    `sd shadow sync` stores it (`sd_db.protection.alerts`). A `visibility` of
+    None leaves the row unobserved, so `protection.rows` lends it the row of a
+    checkout with the same remote."""
     stamp = "2026-10-10T00:00:00+00:00"
-    body = {"alerts": {"secret_scanning": {"visibility": visibility}}} if visibility else {}
+    body = {"alerts": {"secret_scanning": {"visibility": visibility}}}
     with contextlib.closing(connect(db)) as connection:
         connection.execute(
             "INSERT INTO repo (path, remote, created_at, updated_at, managed) VALUES (?, ?, ?, ?, ?)",
-            (str(root), f"https://github.com/owner/{root.parent.name}.git", stamp, stamp, managed))
+            (str(root), remote or remote_of(root), stamp, stamp, managed))
+        if visibility is None:
+            return
         connection.execute(
             "INSERT INTO repo_protection (repo, observed_at, status, body) VALUES (?, ?, 'unknown', ?)",
             (str(root), stamp, json.dumps(body)))
@@ -225,7 +237,8 @@ BOUNDARIES = (
 NEAR_MISSES = frozenset((
     "opt/private/file.py", "opt/a/b", "srv/c/d", "opt/x/y", "srv/z/w", "srv/x",
     "notes/a.md", "etc/passwd", "secret/file.py", "private/file.py", "work/a.txt",
-    "a/b.py", "c/d.py", "var/lib/y", "src/a.py", "styles/a.css", "y/z", "b/c", "x/y"))
+    "a/b.py", "c/d.py", "var/lib/y", "src/a.py", "styles/a.css", "y/z", "b/c", "x/y",
+    "a.py", "README.md"))
 
 
 class TheBoundaryClass(unittest.TestCase):
@@ -233,12 +246,15 @@ class TheBoundaryClass(unittest.TestCase):
     even when the path after its root is a tracked public one."""
 
     def test_each_boundary_form(self):
+        # A changed path passes only as a whole tracked path, so a prose
+        # row that passes as a reason halts as a changed path.
         for row, text, halts in BOUNDARIES:
-            for state in (experiment.state_of(["a.py", text], 1, "r"),
-                          experiment.state_of(["a.py"], 1, text)):
+            for state, expected in (
+                    (experiment.state_of(["a.py", text], 1, "r"), halts or text not in NEAR_MISSES),
+                    (experiment.state_of(["a.py"], 1, text), halts)):
                 with self.subTest(row):
                     found = experiment.private_path(state, None, NEAR_MISSES)
-                    self.assertEqual(found is not None, halts, f"{row}: {text!r}")
+                    self.assertEqual(found is not None, expected, f"{row}: {text!r}")
 
 
 class ThePublicAllowlist(unittest.TestCase):
@@ -256,14 +272,39 @@ class ThePublicAllowlist(unittest.TestCase):
 
     def halts(self, text):
         return [experiment.private_path(state, None, self.allowed) is not None
-                for state in (experiment.state_of(["a.py", text], 1, "r"),
-                              experiment.state_of(["a.py"], 1, text))]
+                for state in (experiment.state_of(["pkg/mod.py", text], 1, "r"),
+                              experiment.state_of(["pkg/mod.py"], 1, text))]
 
     def test_a_tracked_public_path_passes(self):
         self.assertEqual(self.allowed, frozenset({"pkg/mod.py", ".github/ci.yml"}))
-        for text in ("pkg/mod.py", ".github/ci.yml", "touches `pkg/mod.py`.",
-                     '"**pkg/mod.py**", then (pkg/mod.py);'):
+        for text in ("pkg/mod.py", ".github/ci.yml"):
             self.assertEqual(self.halts(text), [False, False], text)
+        for text in ("touches `pkg/mod.py`.", '"**pkg/mod.py**", then (pkg/mod.py);'):
+            self.assertEqual(self.halts(text), [True, False], text)
+
+    def test_an_untracked_top_level_changed_path_halts(self):
+        # Codex pass on round 4: a changed path with no `/` skipped the
+        # allowlist. A changed path passes only as a whole tracked path.
+        for path in ("private.txt", "a.py", "pkg"):
+            state = experiment.state_of(["pkg/mod.py", path], 1, "r")
+            self.assertIsNotNone(experiment.private_path(state, None, self.allowed), path)
+
+    def test_a_checkout_whose_origin_is_not_the_row_s_adds_nothing(self):
+        # Codex pass on round 4: `protection.rows` lends a public sibling's
+        # visibility by the stored remote, so the checkout must be that remote.
+        db = checkpoint_db([])
+        public = checkout(["a/listed.py"])
+        register(db, public, "public")
+        twin = checkout(["d/twin.py"])
+        subprocess.run(["git", "-C", str(twin), "remote", "set-url", "origin", remote_of(public)],
+                       check=True)
+        register(db, twin, None, remote=remote_of(public))
+        no_origin = checkout(["b/no-origin.py"], remote=False)
+        register(db, no_origin, None, remote=remote_of(public))
+        other = checkout(["c/other.py"])
+        register(db, other, None, remote=remote_of(public))
+        # The twin is a checkout of the public remote, so it borrows rightly.
+        self.assertEqual(experiment.public_paths(db), frozenset({"a/listed.py", "d/twin.py"}))
 
     def test_a_root_or_prefix_before_a_tracked_path_halts(self):
         for text in ("/pkg/mod.py", "./pkg/mod.py", "../pkg/mod.py", "~/pkg/mod.py",
@@ -312,7 +353,8 @@ class TheRebuiltState(unittest.TestCase):
         for path in ("/Users/someone/x.py", "/etc/hosts", "~/notes.md", "src/home/x/Users/y"):
             state = experiment.state_of(["a.py", path], 1, "r")
             self.assertIsNotNone(experiment.private_path(state, None), path)
-        self.assertIsNone(experiment.private_path(experiment.state_of(["a.py"], 1, "r"), None))
+        self.assertIsNone(experiment.private_path(experiment.state_of(["a.py"], 1, "r"), None,
+                                                  frozenset({"a.py"})))
 
     def test_an_absolute_path_inside_a_string_is_found(self):
         for reason in ("never skip /opt/private/file.py", "matched (/srv/x)",
@@ -322,7 +364,8 @@ class TheRebuiltState(unittest.TestCase):
         for reason in ("no category matched; default tier standard",
                        "docs and tests only; half of the paths"):
             state = experiment.state_of(["a.py", "README.md"], 1, reason)
-            self.assertIsNone(experiment.private_path(state, None), reason)
+            self.assertIsNone(experiment.private_path(state, None, frozenset({"a.py", "README.md"})),
+                              reason)
 
 
 class TheFaithfulnessCheck(StubServer):
@@ -342,6 +385,7 @@ class TheFaithfulnessCheck(StubServer):
                          {"repository": "owner/repo", "head": f"k{n:039d}",
                           "passes": [a_pass(f"k{n:039d}")]}))
         self.db = checkpoint_db(rows)
+        register(self.db, checkout(["a.py", "pkg/mod.py"]), "public")
 
     def env(self, **extra):
         # A live switch in the parent's environment must not reach the child.
@@ -394,7 +438,6 @@ class TheFaithfulnessCheck(StubServer):
 
     def test_a_tracked_public_path_reaches_the_call(self):
         Stub.choice_value = "standard"
-        register(self.db, checkout(["pkg/mod.py"]), "public")
         self.restate(("pkg/mod.py",))
         code, out = self.faithful()
         self.assertEqual(code, 1, out)          # 25 of 50 match the stub
@@ -402,8 +445,8 @@ class TheFaithfulnessCheck(StubServer):
         self.assertEqual(Stub.seen[0]["payload"]["state"]["changed_paths"], ["pkg/mod.py"])
 
     def test_a_tracked_private_path_halts_before_any_call(self):
-        register(self.db, checkout(["pkg/mod.py"]), "private")
-        self.restate(("pkg/mod.py",))
+        register(self.db, checkout(["secret/plan.md"]), "private")
+        self.restate(("secret/plan.md",))
         code, _out = self.faithful()
         self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])

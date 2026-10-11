@@ -320,12 +320,25 @@ def public_path(piece: str, public: frozenset) -> bool:
     return path_token(piece) in public
 
 
+def git(root: str, *argv: str) -> bytes | None:
+    """`git -C root argv` output, or None when git cannot answer."""
+    try:
+        done = subprocess.run(["git", "-C", root, *argv], capture_output=True,
+                              timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
 def public_paths(db) -> frozenset:
     """Every path `git ls-files` lists in a managed repository whose last
     observed visibility is public, from its local checkout, read once per run.
     Public is what `sd shadow sync` stored (`sd_db.protection.alerts`), the
-    same reading Health's Security area uses. A repository not read as
-    public, or a checkout git cannot list, adds nothing: unknown is not public."""
+    same reading Health's Security area uses. `protection.rows` lends an
+    unobserved checkout the row of another with the same stored remote, so
+    the checkout's own `origin` must be that remote (codex pass on round 4).
+    A repository not read as public, a checkout whose `origin` differs or is
+    missing, or one git cannot list, adds nothing: unknown is not public."""
     from sd_db import protection
     from sd_db.paths import home_absolute
     with contextlib.closing(open_ro(db)) as connection:
@@ -335,14 +348,15 @@ def public_paths(db) -> frozenset:
         part = (repo.get("alerts") or {}).get("secret_scanning")
         if not repo["managed"] or not isinstance(part, dict) or part.get("visibility") != "public":
             continue
-        try:
-            done = subprocess.run(["git", "-C", home_absolute(repo["repo"]), "ls-files", "-z"],
-                                  capture_output=True, timeout=60, check=False)
-        except (OSError, subprocess.TimeoutExpired):
+        root = home_absolute(repo["repo"])
+        origin = git(root, "config", "--get", "remote.origin.url")
+        slug = protection.github_slug(origin.decode("utf-8", "replace").strip()) if origin else None
+        if slug is None or not repo["slug"] or "/".join(slug).lower() != repo["slug"].lower():
             continue
-        if done.returncode != 0:
+        listed = git(root, "ls-files", "-z")
+        if listed is None:
             continue
-        for raw in done.stdout.split(b"\0"):
+        for raw in listed.split(b"\0"):
             try:
                 name = raw.decode("utf-8")
             except UnicodeDecodeError:
@@ -354,7 +368,8 @@ def public_paths(db) -> frozenset:
 
 def private_path(state: str, home: str | None, public: frozenset = frozenset()) -> str | None:
     """The first string in the state that holds a path sign, or a `/` in a
-    token that is not a tracked public path, else None."""
+    token that is not a tracked public path, else None. A changed path passes
+    only as a whole tracked public path, `/` or not (codex pass on round 4)."""
     def strings(value):
         if isinstance(value, str):
             yield value
@@ -365,7 +380,12 @@ def private_path(state: str, home: str | None, public: frozenset = frozenset()) 
         elif isinstance(value, list):
             for item in value:
                 yield from strings(item)
-    for text in strings(json.loads(state)):
+    found = json.loads(state)
+    paths = found.get("changed_paths") if isinstance(found, dict) else None
+    for path in paths if isinstance(paths, list) else ():
+        if path not in public:
+            return str(path)
+    for text in strings(found):
         if SIGNS.search(text) or (home and home in text):
             return text
         if any("/" in piece and not public_path(piece, public) for piece in text.split()):
