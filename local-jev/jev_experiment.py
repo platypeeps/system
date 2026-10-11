@@ -954,8 +954,13 @@ def cmd_labels(args, out, env) -> int:
 #: The pre-registration, and the commit that registered it (step 6, #178).
 REGISTRATION = FOLDER.parent / "docs/experiments/2026-10-05-jev-entry-2-preregistration.md"
 REGISTRATION_COMMIT = "fe5b904d5fa1ee2e95c2ecce62ff113f5ca4c854"
+#: The file's length and SHA-256 at that commit. An amendment is appended
+#: below the registered text, so the document must begin with these bytes.
+REGISTERED_BYTES = 33408
+REGISTERED_SHA256 = "c6a9d61eacc2986407de3c670b594fd3ba48a0adb06c3e5454ea915e20aea297"
 #: Step 6's check: a blank operator prediction, or a drafted one not confirmed.
-UNREGISTERED = re.compile(r"^PREDICTION \(operator[^)]*\): _*$|^PREDICTION .*UNCONFIRMED", re.M)
+UNREGISTERED = re.compile(r"^PREDICTION \(operator[^)]*\):[ \t_]*$|^PREDICTION .*UNCONFIRMED",
+                          re.M)
 
 #: The ledger's run id for the replay's rows; step 1's rows carry none.
 RUN_ID = "jev-entry-2-replay"
@@ -970,14 +975,22 @@ PROJECT = "jev-experiment-entry-2"
 QID = "sd-review-tier"
 
 
-def registered(path: Path) -> str:
-    """The pre-registration's SHA-256, or Refused while a prediction is open."""
+def registered(path: Path) -> dict:
+    """The registration the manifest freezes: the commit, the registered
+    text's hash, and the whole document's. Refused unless the document begins
+    with the text registered at `REGISTRATION_COMMIT`, which holds every
+    required prediction, and while any `PREDICTION` line in it is blank,
+    whitespace or `UNCONFIRMED`, an amendment's included."""
     data = path.read_bytes()
+    if hashlib.sha256(data[:REGISTERED_BYTES]).hexdigest() != REGISTERED_SHA256:
+        raise Refused(f"{path.name} does not begin with the text registered at "
+                      f"{REGISTRATION_COMMIT[:12]}; an amendment goes below it, never in it")
     open_lines = UNREGISTERED.findall(data.decode("utf-8"))
     if open_lines:
         raise Refused(f"{len(open_lines)} PREDICTION line(s) in {path.name} are blank or "
                       "UNCONFIRMED; the replay starts after the registration (step 6)")
-    return hashlib.sha256(data).hexdigest()
+    return {"commit": REGISTRATION_COMMIT, "sha256": REGISTERED_SHA256,
+            "document": hashlib.sha256(data).hexdigest()}
 
 
 def scope(arm: str, rows: list[dict], db, home: str | None) -> list[dict]:
@@ -1149,6 +1162,9 @@ def cmd_replay(args, out, env) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
     if manifest.get("population", {}).get("sha256", population_sha) != population_sha:
         raise Refused(f"{args.population} is not the population this replay started on")
+    if manifest.get("registration", registration) != registration:
+        raise Refused(f"{args.preregistration.name} changed since this replay started; "
+                      "every arm and resume runs under one registration")
     name, run_id = answer_file(arm, args.rerun, manifest)
     if manifest.get("arms", {}).get(name, {}).get("scope", scope_of(rows)) != scope_of(rows):
         raise Refused(f"{name}'s heads differ from those it started on: the public pool moved; "
@@ -1185,7 +1201,7 @@ def cmd_replay(args, out, env) -> int:
     entry.update(file=f"replay/{answers.name}", run_id=run_id, reason=args.rerun, scope=scope_of(rows),
                  started=entry.get("started") or now(), halted=None)
     manifest.update(
-        registration={"commit": REGISTRATION_COMMIT, "sha256": registration},
+        registration=registration,
         heuristic_sha256=HEURISTIC_SHA256, pack=PACK_SHA, system=git_head(FOLDER.parent),
         population={"file": args.population.name, "sha256": population_sha})
     write_json(manifest_path, manifest)

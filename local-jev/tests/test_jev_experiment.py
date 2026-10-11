@@ -988,16 +988,38 @@ class TheReplay(CompareCase):
         code, _out = self.replay("jev", "--cap", "1.0")
         self.assertEqual((code, len(Stub.seen)), (1, 3))
 
-    def test_an_open_prediction_refuses_before_any_call(self):
-        for line in ("PREDICTION (operator, 2026-10-05): ___",
-                     "PREDICTION (operator, drafted, UNCONFIRMED): H1 holds."):
-            with self.subTest(line=line):
-                draft = Path(tempfile.mkdtemp()) / "pre.md"
-                draft.write_text(f"# x\n\n{line}\n")
-                code, _out = self.replay("jev", "--preregistration", str(draft))
+    def draft(self, text):
+        path = Path(tempfile.mkdtemp()) / "pre.md"
+        path.write_bytes(text if isinstance(text, bytes) else text.encode())
+        return path
+
+    def test_an_open_or_unregistered_prediction_refuses_before_any_call(self):
+        text = experiment.REGISTRATION.read_bytes()[:experiment.REGISTERED_BYTES]
+        h3 = b"PREDICTION (operator, 2026-10-05): H3 holds"
+        for name, draft in (
+                ("blank", text + b"\nPREDICTION (operator, 2026-10-11): ___\n"),
+                ("whitespace", text + b"\nPREDICTION (operator, 2026-10-11):   \t\n"),
+                ("unconfirmed", text + b"\nPREDICTION (operator, drafted, UNCONFIRMED): x\n"),
+                ("empty", b""),
+                ("edited", text.replace(h3, b"PREDICTION (operator, 2026-10-05): H3 fails"))):
+            with self.subTest(name=name):
+                code, _out = self.replay("jev", "--preregistration", str(self.draft(draft)))
                 self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])
         self.assertFalse((self.folder / "replay").exists())
+
+    def test_the_registration_is_frozen_across_arms_and_a_resume(self):
+        document = self.draft(experiment.REGISTRATION.read_bytes())
+        self.assertEqual(self.replay("kev", "--preregistration", str(document))[0], 0)
+        with document.open("ab") as fh:
+            fh.write(b"\n## Amendment, later\n\nA line added after the replay started.\n")
+        self.assertEqual(self.replay("jev", "--preregistration", str(document))[0], 2)
+        self.assertEqual(self.replay("kev", "--preregistration", str(document),
+                                     "--rerun", "x")[0], 2)
+        self.assertEqual(Stub.seen, [])
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertEqual(manifest["registration"]["document"],
+                         hashlib.sha256(experiment.REGISTRATION.read_bytes()).hexdigest())
 
     def test_a_changed_heuristic_refuses(self):
         with unittest.mock.patch.object(experiment, "HEURISTIC_SHA256", "0" * 64):
