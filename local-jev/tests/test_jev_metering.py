@@ -30,14 +30,11 @@ import jev_meter
 
 from .test_jev import Stub, StubServer
 
-# `sd_db` is installed into the environment that runs this suite in CI, the
-# same install the library's own tests use. A checkout with no install reads
-# the package from the pack's `lib/` (`SD_PACK_ROOT`), because a suite that skipped
-# here would be a green that measured nothing -- and skips fail this repo's CI.
-try:  # pragma: no cover - one branch per machine
-    import sd_db  # noqa: F401
-except ImportError:  # pragma: no cover - one branch per machine
-    sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"))
+# `sd_db` comes from the command pack's `lib/`, the copy the meter itself
+# imports (sd:3279); the pack no longer installs one into an interpreter
+# (sd:3280), so an installed copy is not looked for.
+jev_meter.use_pack_library(os.environ)
+import sd_db  # noqa: E402
 
 from sd_db.database import connect  # noqa: E402
 from sd_db.judgment import by_stage  # noqa: E402
@@ -1264,7 +1261,10 @@ class TheMeterImportsThePacksLib(unittest.TestCase):
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import jev_meter, os; "
                 "print(jev_meter.ready('jev', os.environ))")
         # Never the operator's store: an absent file unless the case names one.
-        child = dict(os.environ, **{"JEV_METER_DB": str(self.root / "absent.db"), **env})
+        # The meter is on here whatever the caller's shell pins: these cases
+        # ask where the library comes from, not whether metering is off.
+        child = dict(os.environ, **{"JEV_METER": "1",
+                                    "JEV_METER_DB": str(self.root / "absent.db"), **env})
         child.pop("SD_PACK_ROOT", None)
         if pack is not None:
             child["SD_PACK_ROOT"] = str(pack)
