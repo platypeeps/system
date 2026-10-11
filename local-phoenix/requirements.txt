@@ -70,7 +70,7 @@ keyring==25.7.0
 ldap3==2.9.1
 lia-web==0.3.1
 logfire-api==4.41.0
-Mako==1.4.1
+Mako==1.4.2
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mcp==1.29.0
@@ -105,7 +105,7 @@ pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pycparser==3.0
 pydantic==2.12.5
-pydantic-ai-slim==2.33.0
+pydantic-ai-slim==2.53.0
 pydantic-graph==2.33.0
 pydantic-monty==0.0.19
 pydantic-monty-runtime==0.0.19
@@ -135,7 +135,7 @@ sqlean.py==3.50.4.5
 sqlglot==30.15.0
 sse-starlette==3.4.8
 starlette==1.6.0
-strawberry-graphql==0.320.4
+strawberry-graphql==0.327.2
 tenacity==9.1.4
 threadpoolctl==3.6.0
 tiktoken==0.14.0
