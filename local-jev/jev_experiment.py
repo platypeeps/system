@@ -1861,8 +1861,8 @@ def cmd_replay(args, out, env) -> int:
 
 #: The five arms, in the key's column order and the pattern's letter order.
 ARMS = ("rules", "heuristic", "jev", "kev", "haiku")
-#: Production's cutoff: `--unsure-below 0.6`, which `jev choice` reads on the
-#: answer's confidence (pre-registration, "Production answer").
+#: Production's cutoff, read on the answer's top probability as the
+#: pre-registration's "Production answer" says (operator, on #14765).
 UNSURE_BELOW = 0.6
 #: The draws' caps, and the arms whose every model skip is drawn; Haiku's are
 #: labelled only where they fall in the disagreement draw (H1).
@@ -1882,14 +1882,16 @@ KEY_COLUMNS = ("row", "repo", "commit", "population", "hosted", *ARMS,
 
 
 def production(line: dict | None, routed: str) -> str | None:
-    """An arm's production answer: its tier at or above the cutoff, the
-    rules' tier below it or when the call failed, and None when the arm was
-    not asked about the head."""
+    """An arm's production answer: its tier when its top probability is at
+    or above the cutoff; the rules' tier below it, with no distribution, or
+    when the call failed; None when the arm was not asked about the head."""
     if line is None:
         return None
-    confidence = line.get("confidence")
-    if line.get("outcome") == "ok" and line.get("tier") in TIERS and unit(confidence) \
-            and confidence >= UNSURE_BELOW:
+    found = line.get("probabilities")
+    top = max(found.values()) if isinstance(found, dict) and found \
+        and all(map(unit, found.values())) else None
+    if line.get("outcome") == "ok" and line.get("tier") in TIERS and top is not None \
+            and top >= UNSURE_BELOW:
         return line["tier"]
     return routed
 

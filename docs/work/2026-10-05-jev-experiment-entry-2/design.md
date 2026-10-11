@@ -211,7 +211,7 @@ The label is written to the experiment ledger only with `label`, source `review-
   Above 150, a seeded random draw stratified by disagreement pattern keeps 150, and each row carries its stratum weight.
 - **Skip draw**: every Jev and Kev model skip. Above 300 for an arm, a seeded simple random draw keeps 300 of that arm's.
 
-Both draws read production answers. A hosted arm not asked about a head (outside the public pool, decision #14288) has no vote there, not the rules' tier it never gave.
+Both draws read production answers: an arm's tier when its top probability is at least 0.6, as the pre-registration defines it, not its confidence (operator, on #14765). A hosted arm not asked about a head (outside the public pool, decision #14288) has no vote there, not the rules' tier it never gave.
 So a head is a disagreement when the arms asked about it split, and each arm's skip draw covers the heads it was asked about; the key's `hosted` column marks the pool.
 
 The key records which draw each row came from; the sheet does not.

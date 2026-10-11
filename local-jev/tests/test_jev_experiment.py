@@ -2041,9 +2041,13 @@ class TheReplay(CompareCase):
                     "--out", str(self.folder)], self.env())
 
     def test_the_c1_sheet_opens_only_once_c1_is_sealed(self):
-        # Step 8 on a real replay: Jev's stub answers `skip` at confidence 1,
-        # so each C1 head it was asked about is a model skip; head 1 holds a
-        # private path, so only Kev, the rules and the heuristic answer it.
+        # Step 8 on a real replay. Kev answers `skip` with top probability 0.9
+        # at confidence 0.3, so each C1 head is a Kev model skip; Jev's stub
+        # gives no probability above 0, so it falls back to the rules' tier.
+        # Head 1 holds a private path: Jev and Haiku were not asked about it.
+        Arm.kev_answer = {"type": "choice", "choice": "skip", "confidence": 0.3,
+                          "probabilities": {"skip": 0.9, "cheap": 0.04, "standard": 0.03,
+                                            "deep": 0.03}}
         self.write_population(["a.py"], private=(1,))
         for arm in ("kev", "jev", "haiku"):
             self.assertEqual(self.replay(arm)[0], 0)
@@ -2053,11 +2057,14 @@ class TheReplay(CompareCase):
         code, printed = self.sheet_c1()
         self.assertEqual(code, 0, printed)
         summary = json.loads(printed)
-        self.assertEqual((summary["rows"], summary["disagreement"], summary["skip"]["jev"]),
-                         (1, {"pool": 1, "drawn": 1, "strata": 1}, {"pool": 1, "drawn": 1}))
+        self.assertEqual((summary["rows"], summary["disagreement"], summary["skip"]),
+                         (2, {"pool": 2, "drawn": 2, "strata": 2},
+                          {"jev": {"pool": 0, "drawn": 0}, "kev": {"pool": 2, "drawn": 2}}))
         key = sheet_rows(self.folder / "labels" / "key-C1.csv")
-        self.assertEqual([(k["commit"], k["hosted"], k["jev"], k["pattern"]) for k in key],
-                         [(sha(0), "1", "skip", "RRSRR")])
+        self.assertEqual(sorted((k["commit"], k["hosted"], k["jev"], k["kev"], k["pattern"])
+                                for k in key),
+                         [(sha(0), "1", "standard", "skip", "RRRSR"),
+                          (sha(1), "0", "", "skip", "RR-S-")])
         self.assertEqual(summary["inputs"]["replay/jev.jsonl"],
                          hashlib.sha256((self.folder / "replay" / "jev.jsonl").read_bytes())
                          .hexdigest())
@@ -2079,10 +2086,14 @@ def kit_row(n, routed="standard", paths=("src/a.py",), lines=30, population="C1"
             "state": experiment.state_of(list(paths), lines, REASON)}
 
 
-def kit_line(arm, n, tier, confidence=0.9, outcome="ok"):
+def kit_line(arm, n, tier, top=0.9, confidence=0.9, outcome="ok"):
+    """An answer line whose distribution puts `top` on `tier`."""
+    tier = tier if outcome == "ok" else None
     return {"repository": "owner/repo", "head": sha(n), "arm": arm,
-            "run_id": experiment.RUN_ID, "outcome": outcome,
-            "tier": tier if outcome == "ok" else None, "confidence": confidence,
+            "run_id": experiment.RUN_ID, "outcome": outcome, "tier": tier,
+            "confidence": confidence,
+            "probabilities": tier and {t: top if t == tier else (1 - top) / 3
+                                       for t in experiment.TIERS},
             "usd": 0.0, "at": "2026-10-11T00:00:00+00:00"}
 
 
@@ -2236,12 +2247,14 @@ class TheLabelSheet(unittest.TestCase):
                                            "kev": {"pool": 2, "drawn": 2}})
 
     def test_the_draws_read_production_answers(self):
+        # The cutoff reads the top probability, not the confidence (operator,
+        # on #14765): each line here has one above 0.6 and the other below.
         heads = range(4)
         rows = [kit_row(n) for n in heads]
-        answers = kit_answers(heads, kev_0=kit_line("kev", 0, "skip", confidence=0.59),
+        answers = kit_answers(heads, kev_0=kit_line("kev", 0, "skip", top=0.59),
                               jev_1=kit_line("jev", 1, None, outcome="timeout"),
-                              kev_2=kit_line("kev", 2, "skip", confidence=0.6),
-                              haiku_3=kit_line("haiku", 3, "skip", confidence=None))
+                              kev_2=kit_line("kev", 2, "skip", top=0.6, confidence=0.1),
+                              haiku_3=dict(kit_line("haiku", 3, "skip"), probabilities=None))
         _sheet, key, summary = self.kit(rows, answers)
         by_commit = {k["commit"]: k for k in key}
         self.assertEqual(sorted(by_commit), [sha(2)])
