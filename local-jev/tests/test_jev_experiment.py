@@ -1075,7 +1075,7 @@ class TheReplay(CompareCase):
         hidden = experiment.state_of(["secret/plan.md"], 3, reason)
         self.population.write_text("".join(json.dumps({
             "repository": "owner/repo", "head": sha(n), "alias": "R01", "paper": False,
-            "population": "C1" if n < 2 else "E",
+            "population": "C1" if n < 2 else "E", "routed": "standard",
             "state": hidden if n in private else self.state}) + "\n"
             for n in range(self.HEADS)))
 
@@ -2035,3 +2035,274 @@ class TheReplay(CompareCase):
         self.write_faithful([(91, "cheap"), (90, "cheap")])
         self.assertEqual(self.replay("jev")[0], 2)
         self.assertEqual(Stub.seen, [])
+
+    def sheet_c1(self):
+        return run(["labels", "sheet", "--population", "C1", "--db", str(self.db),
+                    "--out", str(self.folder)], self.env())
+
+    def test_the_c1_sheet_opens_only_once_c1_is_sealed(self):
+        # Step 8 on a real replay: Jev's stub answers `skip` at confidence 1,
+        # so each C1 head it was asked about is a model skip; head 1 holds a
+        # private path, so only Kev, the rules and the heuristic answer it.
+        self.write_population(["a.py"], private=(1,))
+        for arm in ("kev", "jev", "haiku"):
+            self.assertEqual(self.replay(arm)[0], 0)
+        self.assertEqual(self.sheet_c1()[0], 2)               # no seal on sd:2764 yet
+        self.assertFalse((self.folder / "labels").exists())
+        self.seal("kev", "jev", "haiku")
+        code, printed = self.sheet_c1()
+        self.assertEqual(code, 0, printed)
+        summary = json.loads(printed)
+        self.assertEqual((summary["rows"], summary["disagreement"], summary["skip"]["jev"]),
+                         (1, {"pool": 1, "drawn": 1, "strata": 1}, {"pool": 1, "drawn": 1}))
+        key = sheet_rows(self.folder / "labels" / "key-C1.csv")
+        self.assertEqual([(k["commit"], k["hosted"], k["jev"], k["pattern"]) for k in key],
+                         [(sha(0), "1", "skip", "RRSRR")])
+        self.assertEqual(summary["inputs"]["replay/jev.jsonl"],
+                         hashlib.sha256((self.folder / "replay" / "jev.jsonl").read_bytes())
+                         .hexdigest())
+
+
+def sheet_rows(path):
+    import csv
+    with path.open(newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+#: A routing reason, a path and an alias that name no arm.
+REASON = "no category matched; default tier standard"
+
+
+def kit_row(n, routed="standard", paths=("src/a.py",), lines=30, population="C1"):
+    return {"repository": "owner/repo", "head": sha(n), "alias": "R01", "paper": False,
+            "population": population, "routed": routed,
+            "state": experiment.state_of(list(paths), lines, REASON)}
+
+
+def kit_line(arm, n, tier, confidence=0.9, outcome="ok"):
+    return {"repository": "owner/repo", "head": sha(n), "arm": arm,
+            "run_id": experiment.RUN_ID, "outcome": outcome,
+            "tier": tier if outcome == "ok" else None, "confidence": confidence,
+            "usd": 0.0, "at": "2026-10-11T00:00:00+00:00"}
+
+
+def kit_answers(heads, kev=(), jev=(), haiku=(), hosted=None, **lines):
+    """Each model arm's answer per head: `standard` unless its head is named in
+    that arm's skips; a hosted arm answers only the heads in `hosted`.
+    `lines` replaces whole lines, keyed `<arm>_<head>`."""
+    hosted = set(heads if hosted is None else hosted)
+    found = {}
+    for arm, skips in (("kev", kev), ("jev", jev), ("haiku", haiku)):
+        asked = heads if arm == "kev" else [n for n in heads if n in hosted]
+        found[arm] = {}
+        for n in asked:
+            line = lines.get(f"{arm}_{n}") or kit_line(arm, n, "skip" if n in skips else
+                                                       "standard")
+            found[arm][("owner/repo", sha(n))] = line
+    return found
+
+
+class TheLabelSheet(unittest.TestCase):
+    """Step 8: the blinded hand-label sheet, its Markdown copy and its key."""
+
+    def setUp(self):
+        self.out = Path(tempfile.mkdtemp()) / "experiment"
+        self.heuristic = experiment.frozen_heuristic()
+
+    def kit(self, rows, answers, seed=experiment.SEED):
+        return experiment.label_kit(rows, answers, self.heuristic, seed=seed)
+
+    def write(self, rows, answers):
+        self.out.mkdir(parents=True, exist_ok=True)
+        (self.out / "population.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows))
+        (self.out / "replay").mkdir(exist_ok=True)
+        for arm, lines in answers.items():
+            (self.out / "replay" / f"{arm}.jsonl").write_text(
+                "".join(json.dumps(line) + "\n" for line in lines.values()))
+
+    def sheet(self, *populations, db=None, unsealed=()):
+        argv = ["labels", "sheet", "--db", str(db or checkpoint_db([])), "--out", str(self.out)]
+        for name in populations or ("C1",):
+            argv += ["--population", name]
+        with unittest.mock.patch.object(experiment, "sealed", return_value=list(unsealed)):
+            return run(argv)
+
+    def test_the_sheet_names_no_arm_and_shows_no_finding(self):
+        heads = range(6)
+        rows = [kit_row(n) for n in heads]
+        self.write(rows, kit_answers(heads, kev=(0, 1), jev=(1, 2), haiku=(3,)))
+        finding = "FINDING-TEXT the token is logged in clear"
+        db = checkpoint_db([("ship:a", "2026-09-10T00:00:00+00:00", {
+            "repository": "owner/repo", "head": sha(0),
+            "passes": [dict(a_pass(sha(0)), report=dict(a_pass(sha(0))["report"], findings=[
+                {"disposition": "blocking", "severity": "high", "title": finding}]))]})])
+        (self.out / "labels").mkdir()
+        (self.out / "labels" / "C1.jsonl").write_text(json.dumps({"head": sha(0),
+                                                                  "note": finding}) + "\n")
+        with unittest.mock.patch.object(experiment, "checkpoints",
+                                        side_effect=AssertionError("read a checkpoint")):
+            code, printed = self.sheet(db=db)
+        self.assertEqual(code, 0, printed)
+        labels = self.out / "labels"
+        csv_text = (labels / "sheet-C1.csv").read_text()
+        markdown = (labels / "sheet-C1.md").read_text()
+        self.assertEqual(csv_text.splitlines()[0], ",".join(experiment.SHEET_COLUMNS))
+        for text in (csv_text, markdown):
+            for arm in experiment.ARMS:
+                self.assertNotIn(arm, text.lower())
+            self.assertNotIn("FINDING", text)
+            self.assertNotIn("blocking", text)
+        found = sheet_rows(labels / "sheet-C1.csv")
+        self.assertEqual(len(found), 4)
+        self.assertEqual({(r["label"], r["sure"], r["note"]) for r in found}, {("", "", "")})
+        self.assertTrue(all(set(r["candidates"].split(", ")) <= set(experiment.TIERS)
+                            for r in found))
+
+    def test_the_key_maps_every_row(self):
+        heads = range(8)
+        rows = [kit_row(n) for n in heads]
+        self.write(rows, kit_answers(heads, kev=(0, 1, 5), jev=(1, 2), haiku=(3, 7)))
+        self.assertEqual(self.sheet()[0], 0)
+        labels = self.out / "labels"
+        sheet = sheet_rows(labels / "sheet-C1.csv")
+        key = sheet_rows(labels / "key-C1.csv")
+        self.assertEqual([r["row"] for r in sheet], [str(n) for n in range(1, len(sheet) + 1)])
+        self.assertEqual([(k["row"], k["commit"], k["repo"]) for k in key],
+                         [(r["row"], r["commit"], r["repo"]) for r in sheet])
+        by_commit = {k["commit"]: k for k in key}
+        self.assertEqual({c: (k["rules"], k["kev"], k["jev"], k["haiku"])
+                          for c, k in by_commit.items() if c in (sha(1), sha(7))},
+                         {sha(1): ("standard", "skip", "skip", "standard"),
+                          sha(7): ("standard", "standard", "standard", "skip")})
+        for row in sheet:
+            given = {by_commit[row["commit"]][arm] for arm in experiment.ARMS} - {""}
+            self.assertEqual(set(row["candidates"].split(", ")), given)
+
+    def test_the_order_is_stable_for_the_seed(self):
+        heads = range(40)
+        rows = [kit_row(n) for n in heads]
+        answers = kit_answers(heads, kev=range(0, 40, 2), jev=range(0, 40, 3))
+        first = self.kit(rows, answers)
+        again = self.kit(list(reversed(rows)), answers)
+        self.assertEqual(first, again)
+        other = self.kit(rows, answers, seed=experiment.SEED + 1)
+        self.assertEqual(sorted(r["commit"] for r in other[0]),
+                         sorted(r["commit"] for r in first[0]))
+        self.assertNotEqual([r["commit"] for r in other[0]], [r["commit"] for r in first[0]])
+
+    def test_each_draw_keeps_its_cap_or_every_head(self):
+        heads = range(500)
+        rows = [kit_row(n) for n in heads]
+        # 430 disagreements in three patterns; 350 Kev model skips, 330 Jev's.
+        answers = kit_answers(heads, kev=range(0, 350), jev=range(100, 430))
+        sheet, key, summary = self.kit(rows, answers)
+        self.assertEqual(summary["disagreement"], {"pool": 430, "drawn": 150, "strata": 3})
+        self.assertEqual(summary["skip"], {"jev": {"pool": 330, "drawn": 300},
+                                           "kev": {"pool": 350, "drawn": 300}})
+        drawn = [k for k in key if k["disagreement_draw"] == "1"]
+        self.assertEqual(len(drawn), 150)
+        # Each stratum's rows weigh their stratum's heads over its drawn rows.
+        self.assertAlmostEqual(sum(float(k["disagreement_weight"]) for k in drawn), 430)
+        self.assertEqual({k["pattern"] for k in drawn}, {"RRRSR", "RRSSR", "RRSRR"})
+        for arm, pool in (("kev", 350), ("jev", 330)):
+            chosen = [k for k in key if k[f"{arm}_skip_draw"] == "1"]
+            self.assertEqual(len(chosen), 300)
+            self.assertTrue(all(k[arm] == "skip" for k in chosen))
+            self.assertAlmostEqual(sum(float(k[f"{arm}_skip_weight"]) for k in chosen), pool)
+        self.assertEqual(len(sheet), len(key))
+        self.assertEqual(len({k["commit"] for k in key}), len(key))
+        few = [kit_row(n) for n in range(10)]
+        _sheet, key, summary = self.kit(few, kit_answers(range(10), kev=(1,), jev=(1, 2),
+                                                         haiku=(9,)))
+        self.assertEqual((summary["disagreement"], summary["skip"]),
+                         ({"pool": 3, "drawn": 3, "strata": 3},
+                          {"jev": {"pool": 2, "drawn": 2}, "kev": {"pool": 1, "drawn": 1}}))
+        self.assertEqual({k["disagreement_weight"] for k in key}, {"1.0"})
+
+    def test_a_head_outside_the_hosted_scope_votes_without_the_hosted_arms(self):
+        heads = range(4)
+        rows = [kit_row(n) for n in heads]
+        # Jev and Haiku were asked about heads 0 and 1 only; Kev about all four.
+        _sheet, key, summary = self.kit(rows, kit_answers(heads, kev=(0, 2), jev=(1,),
+                                                          hosted=(0, 1)))
+        by_commit = {k["commit"]: k for k in key}
+        self.assertEqual(sorted(by_commit), sorted([sha(0), sha(1), sha(2)]))
+        self.assertEqual((by_commit[sha(2)]["hosted"], by_commit[sha(2)]["jev"],
+                          by_commit[sha(2)]["haiku"], by_commit[sha(2)]["pattern"],
+                          by_commit[sha(2)]["kev_skip_draw"]), ("0", "", "", "RR-S-", "1"))
+        self.assertEqual(by_commit[sha(0)]["hosted"], "1")
+        self.assertEqual(summary["skip"], {"jev": {"pool": 1, "drawn": 1},
+                                           "kev": {"pool": 2, "drawn": 2}})
+
+    def test_the_draws_read_production_answers(self):
+        heads = range(4)
+        rows = [kit_row(n) for n in heads]
+        answers = kit_answers(heads, kev_0=kit_line("kev", 0, "skip", confidence=0.59),
+                              jev_1=kit_line("jev", 1, None, outcome="timeout"),
+                              kev_2=kit_line("kev", 2, "skip", confidence=0.6),
+                              haiku_3=kit_line("haiku", 3, "skip", confidence=None))
+        _sheet, key, summary = self.kit(rows, answers)
+        by_commit = {k["commit"]: k for k in key}
+        self.assertEqual(sorted(by_commit), [sha(2)])
+        self.assertEqual((by_commit[sha(2)]["kev"], by_commit[sha(2)]["kev_raw"]),
+                         ("skip", "skip"))
+        self.assertEqual(summary["skip"]["kev"], {"pool": 1, "drawn": 1})
+
+    def test_a_head_routed_to_skip_holds_no_model_skip(self):
+        rows = [kit_row(0, routed="skip"), kit_row(1, paths=(), lines=0)]
+        _sheet, key, summary = self.kit(rows, kit_answers(range(2), kev=(0,), jev=(0,),
+                                                          haiku=(0,)))
+        # Head 0: every arm says skip. Head 1: only the heuristic does.
+        self.assertEqual([(k["commit"], k["pattern"]) for k in key], [(sha(1), "RSRRR")])
+        self.assertEqual(summary["skip"], {"jev": {"pool": 0, "drawn": 0},
+                                           "kev": {"pool": 0, "drawn": 0}})
+
+    def test_a_head_without_a_state_is_left_out_and_counted(self):
+        rows = [kit_row(0), dict(kit_row(1), state=None, routed=None)]
+        _sheet, key, summary = self.kit(rows, kit_answers([0], kev=(0,)))
+        self.assertEqual((len(key), summary["heads"], summary["left_out"]),
+                         (1, 1, {"no-state": 1}))
+
+    def test_c1_refuses_until_sealed_and_reads_nothing(self):
+        self.write([kit_row(0)], kit_answers([0], kev=(0,)))
+        db = checkpoint_db([])
+        unread = AssertionError("read a file before the seal")
+        with unittest.mock.patch.object(Path, "read_bytes", side_effect=unread), \
+                unittest.mock.patch.object(Path, "read_text", side_effect=unread):
+            code, _printed = self.sheet(db=db, unsealed=["no note carries kev.jsonl's SHA-256"])
+        self.assertEqual(code, 2)
+        self.assertFalse((self.out / "labels").exists())
+
+    def test_c2_refuses_until_step_15_seals_it(self):
+        self.write([kit_row(0, population="C2")], kit_answers([0], kev=(0,)))
+        for populations in (("C2",), ("C1", "C2")):
+            with self.subTest(populations=populations):
+                self.assertEqual(self.sheet(*populations)[0], 2)
+                self.assertFalse((self.out / "labels").exists())
+
+    def test_a_stopped_run_finishes_and_a_filled_sheet_is_never_overwritten(self):
+        heads = range(6)
+        self.write([kit_row(n) for n in heads], kit_answers(heads, kev=(0, 1), jev=(2,)))
+        real, calls = experiment.os.replace, []
+
+        def stop_second(*args):
+            calls.append(args)
+            if len(calls) == 2:
+                raise KeyboardInterrupt("stopped between two files")
+            return real(*args)
+        with unittest.mock.patch.object(experiment.os, "replace", stop_second):
+            with self.assertRaises(KeyboardInterrupt):
+                self.sheet()
+        code, printed = self.sheet()
+        self.assertEqual(code, 0, printed)
+        labels = self.out / "labels"
+        names = sorted(p.name for p in labels.iterdir())
+        self.assertEqual(names, ["key-C1.csv", "sheet-C1.csv", "sheet-C1.json", "sheet-C1.md"])
+        written = {p.name: p.read_bytes() for p in labels.iterdir()}
+        self.assertEqual(self.sheet(), (code, printed))           # the same bytes again
+        filled = (labels / "sheet-C1.csv").read_text().replace(",,,\n", ",skip,3,\n", 1)
+        (labels / "sheet-C1.csv").write_text(filled)
+        self.assertEqual(self.sheet()[0], 2)
+        self.assertEqual((labels / "sheet-C1.csv").read_text(), filled)
+        self.assertEqual((labels / "key-C1.csv").read_bytes(), written["key-C1.csv"])

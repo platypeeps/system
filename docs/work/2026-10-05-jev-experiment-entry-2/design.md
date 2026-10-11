@@ -211,13 +211,16 @@ The label is written to the experiment ledger only with `label`, source `review-
   Above 150, a seeded random draw stratified by disagreement pattern keeps 150, and each row carries its stratum weight.
 - **Skip draw**: every Jev and Kev model skip. Above 300 for an arm, a seeded simple random draw keeps 300 of that arm's.
 
+Both draws read production answers. A hosted arm not asked about a head (outside the public pool, decision #14288) has no vote there, not the rules' tier it never gave.
+So a head is a disagreement when the arms asked about it split, and each arm's skip draw covers the heads it was asked about; the key's `hosted` column marks the pool.
+
 The key records which draw each row came from; the sheet does not.
 If the extension (C3) runs, C3 gets its own sheet from the same two draws over C3 heads alone.
 Pooled H1 uses one common skip-draw rate per arm, the lowest of C1+C2 and C3; the other population's labelled skips are thinned at random to it, so Clopper-Pearson stays exact.
 Pooled disagreement-draw estimates weight each row by its own population's sampling rate.
 Order is shuffled with the same seed.
 
-**Sheet.** `labels/sheet.csv` in the raw data folder, with a Markdown copy for reading:
+**Sheet.** `labels/sheet-<populations>.csv` in the raw data folder, such as `sheet-C1.csv`, with a Markdown copy for reading:
 
 | Column | Content |
 |---|---|
@@ -232,7 +235,7 @@ Order is shuffled with the same seed.
 | `sure` | blank: 1 guess, 2 fairly sure, 3 sure |
 | `note` | blank |
 
-The key, `labels/key.csv`, maps `row` to each arm's answer.
+The key, `labels/key-<populations>.csv`, maps `row` to each arm's answer and draw weights; `sheet-<populations>.json` holds the counts and the input files' SHA-256.
 It stays closed until the labels are complete; the SHA-256 of the filled sheet goes on sd:2764 before the key opens.
 The sheet shows no review finding, so the two label sources stay independent.
 
@@ -347,7 +350,7 @@ Expected hosted spend for the replay of 2,222 heads is under $5, nearly all of i
 | `population.jsonl` | one state per head, with alias, base, head, routed tier, blocking@head |
 | `replay/<arm>.jsonl` | one answer per head: tier, distribution, tokens, cost, wait |
 | `experiment.db` | the experiment ledger, through `JEV_METER_DB` (see Ledger isolation) |
-| `labels/` | `sheet.csv`, `sheet.md`, `key.csv`, the filled sheet |
+| `labels/` | `sheet-<populations>.csv`, `.md` and `.json`, `key-<populations>.csv`, the filled sheet |
 | `injection/`, `scanner/` | inputs, answers |
 | `results.md` | each hypothesis, its number, its query |
 
