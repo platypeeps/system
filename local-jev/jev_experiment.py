@@ -17,7 +17,7 @@ file holds the steps built so far:
   population; it refuses C1 until its answer files are sealed, and C2.
 * `replay --arm jev|kev|haiku` (step 5) asks one model arm once per head on
   the same redacted payload, under the stopping rule: registration guard,
-  frozen heuristic, ledger isolation, privacy halt, one retry, spend cap.
+  frozen heuristic, ledger isolation, public-pool scope, one retry, spend cap.
 
 **It reads the workflow database read-only.** Every query opens it through
 `sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
@@ -28,9 +28,10 @@ nothing here writes a checkpoint or a live ledger row.
 empty, shadow off and traces off, and refuses to start while `jev_meter.ready`
 refuses that database.
 
-**It sends no path but a public one.** A state holding a path sign, or a `/`
-in anything but a path a public managed repository tracks, halts the run
-before the call (the stopping rule's privacy halt).
+**It sends no path but a public one.** A hosted arm is never asked about a
+state holding a path sign, or a `/` in anything but a path a public managed
+repository tracks; Kev, which runs here, is asked about every state (the
+2026-10-11 amendment, decision #14288).
 
 Stdlib and `sd_db`, the one opener of the workflow database. Raw output goes
 to `--out`, outside the checkout.
@@ -959,6 +960,23 @@ def registered(path: Path) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def scope(arm: str, rows: list[dict], db, home: str | None) -> list[dict]:
+    """The heads an arm is asked about: every head with a state for Kev; for a
+    hosted arm, only a state whose every path a public managed repository
+    tracks (decision #14288 on sd:2764). No other state leaves the machine."""
+    rows = [r for r in rows if r.get("state")]
+    if arm not in HOSTED:
+        return rows
+    public = public_paths(db)
+    return [r for r in rows if private_path(r["state"], home, public) is None]
+
+
+def scope_of(rows: list[dict]) -> dict:
+    """What fixes a scope across a resume and a seal: its heads, hashed."""
+    heads = sorted([r["repository"], r["head"]] for r in rows)
+    return {"heads": len(heads), "sha256": hashlib.sha256(json.dumps(heads).encode()).hexdigest()}
+
+
 def replay_env(env, ledger: Path, traces: str) -> dict:
     """The arms' environment: `<config>/jev/.env` and the Kev service's
     settings as defaults below the caller's, as `jev.sh` reads them, then the
@@ -1104,7 +1122,7 @@ def cmd_replay(args, out, env) -> int:
                           "transport only")
     population_text = args.population.read_bytes()
     population_sha = hashlib.sha256(population_text).hexdigest()
-    rows = [r for r in read_jsonl(args.population) if r.get("state")]
+    rows = scope(arm, read_jsonl(args.population), db, env.get("HOME"))
     folder = args.out
     replay = folder / "replay"
     manifest_path = folder / "manifest.json"
@@ -1112,13 +1130,9 @@ def cmd_replay(args, out, env) -> int:
     if manifest.get("population", {}).get("sha256", population_sha) != population_sha:
         raise Refused(f"{args.population} is not the population this replay started on")
     name, run_id = answer_file(arm, args.rerun, manifest)
-    if arm in HOSTED:
-        public = public_paths(db)
-        halted = [r for r in rows if private_path(r["state"], env.get("HOME"), public)]
-        if halted:
-            raise Refused(f"privacy halt: {len(halted)} of {len(rows)} states hold a path sign "
-                          "or a path no public managed repository tracks; nothing was sent, "
-                          "and the operator reviews before any resume")
+    if manifest.get("arms", {}).get(name, {}).get("scope", scope_of(rows)) != scope_of(rows):
+        raise Refused(f"{name}'s heads differ from those it started on: the public pool moved; "
+                      "nothing was sent")
     reuse = {}
     if arm == "jev" and args.reuse:
         for one in read_jsonl(args.reuse):
@@ -1148,7 +1162,7 @@ def cmd_replay(args, out, env) -> int:
             done.add((cut["repository"], cut["head"]))
         marker.unlink()
     entry = manifest.setdefault("arms", {}).setdefault(name, {})
-    entry.update(file=f"replay/{answers.name}", run_id=run_id, reason=args.rerun,
+    entry.update(file=f"replay/{answers.name}", run_id=run_id, reason=args.rerun, scope=scope_of(rows),
                  started=entry.get("started") or now(), halted=None)
     manifest.update(
         registration={"commit": REGISTRATION_COMMIT, "sha256": registration},

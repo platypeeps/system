@@ -908,11 +908,15 @@ class TheReplay(CompareCase):
         retry.start()
         self.addCleanup(retry.stop)
 
-    def write_population(self, paths):
-        self.state = experiment.state_of(paths, 3, "no category matched; default tier standard")
+    def write_population(self, paths, private=()):
+        """Heads 0 and 1 are C1; a head in `private` holds a path no public repository tracks."""
+        reason = "no category matched; default tier standard"
+        self.state = experiment.state_of(paths, 3, reason)
+        hidden = experiment.state_of(["secret/plan.md"], 3, reason)
         self.population.write_text("".join(json.dumps({
-            "repository": "owner/repo", "head": sha(n), "alias": "R01",
-            "population": "C1" if n < 2 else "E", "state": self.state}) + "\n"
+            "repository": "owner/repo", "head": sha(n), "alias": "R01", "paper": False,
+            "population": "C1" if n < 2 else "E",
+            "state": hidden if n in private else self.state}) + "\n"
             for n in range(self.HEADS)))
 
     def env(self, **extra):
@@ -1009,12 +1013,35 @@ class TheReplay(CompareCase):
                 self.assertEqual(self.replay("kev")[0], 2)
         self.assertEqual((Arm.seen, self.rows(self.live)), ([], []))
 
-    def test_a_private_state_halts_hosted_arms_and_not_kev(self):
-        self.write_population(["secret/plan.md"])
-        for arm in ("jev", "haiku"):
-            self.assertEqual(self.replay(arm)[0], 2)
-        self.assertEqual((Stub.seen, self.spans()), ([], []))
-        self.assertEqual(self.replay("kev")[0], 0)
+    def test_hosted_arms_are_asked_about_the_public_pool_only_and_kev_about_all(self):
+        self.write_population(["a.py"], private=(1, 3))
+        for arm in ("jev", "haiku", "kev"):
+            self.assertEqual(self.replay(arm)[0], 0)
+        self.assertEqual([len(self.answers(arm)) for arm in ("jev", "haiku", "kev")], [3, 3, 5])
+        self.assertEqual({a["head"] for a in self.answers("jev") + self.answers("haiku")},
+                         {sha(0), sha(2), sha(4)})
+        sent = json.dumps(Stub.seen + [s for s in Arm.seen if s["path"] == "/v1/messages"])
+        self.assertNotIn("secret", sent)
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertEqual([manifest["arms"][arm]["scope"]["heads"] for arm in ("jev", "kev")],
+                         [3, 5])
+
+    def test_a_resume_whose_public_pool_moved_refuses(self):
+        real = experiment.jev_meter.write
+        calls = []
+
+        def stop_on_second(row, env=None):
+            calls.append(row)
+            if len(calls) == 2:
+                raise KeyboardInterrupt("stopped")
+            return real(row, env)
+        with unittest.mock.patch.object(experiment.jev_meter, "write", stop_on_second):
+            with self.assertRaises(KeyboardInterrupt):
+                self.replay("jev")
+        before = len(Stub.seen)
+        with unittest.mock.patch.object(experiment, "public_paths", return_value=frozenset()):
+            self.assertEqual(self.replay("jev")[0], 2)
+        self.assertEqual(len(Stub.seen), before)
 
     def test_a_failed_call_is_retried_once_then_recorded_as_no_answer(self):
         Stub.status = 500
