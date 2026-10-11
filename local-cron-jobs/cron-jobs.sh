@@ -59,6 +59,8 @@ set -eu
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
 . "$ROOT/../lib/config.sh"
+# shellcheck source=/dev/null
+. "$ROOT/../lib/bounded.sh"
 CONF_DIR="$(st_config_dir cron-jobs)"
 
 # Read .env here, before anything resolves a job: launchd starts `exec` with
@@ -566,10 +568,15 @@ stop_tee() {
   TEE_PID=""; TEE_FIFO=""
 }
 
+# Bounded (sd:3292): the job is over and the lock still held, so a hung
+# database call held the next slots off for as long as it hung. A timeout or
+# failure is logged and leaves the job's exit code alone.
+# CRON_JOBS_REPORT_TIMEOUT is the bound in seconds (default 60).
 record_run_report() { # job, run identity, start, end, exit, log offset
   local report_sd
   report_sd="${SD_REPORT_BIN:-$(command -v sd 2>/dev/null || true)}"
-  if [ -z "$report_sd" ] || ! "$report_sd" reports ingest "$1" --run-id "$2" \
+  if [ -z "$report_sd" ] || ! st_bounded "${CRON_JOBS_REPORT_TIMEOUT:-60}" \
+      "$report_sd" reports ingest "$1" --run-id "$2" \
       --started "$3" --ended "$4" --exit-code "$5" --offset "$6" \
       --log "$LOG_DIR/$1.log" --json >/dev/null; then
     echo "[$1] report was not recorded in the workflow database; source remains in $LOG_DIR/$1.log (offset $6, run $2)" >&2
@@ -589,8 +596,11 @@ record_run_report() { # job, run identity, start, end, exit, log offset
 # writes one. Global, not `local` to cmd_exec: a trap that fires on the way
 # out of the shell cannot read a function's locals. EXEC_STARTED is the run's
 # start, which the stamp's end is written beside, for the same reason.
+# EXEC_RUN and EXEC_OFFSET are the run report's identity and log offset.
 EXEC_JOB=""
 EXEC_STARTED=""
+EXEC_RUN=""
+EXEC_OFFSET=0
 
 # The job's lock is a kernel `flock` on `logs/.<job>.flock`, taken on fd 8
 # (sd:1251). The kernel releases it when the last process holding the file
@@ -690,7 +700,7 @@ run_bounded() { # job, seconds, command...
 }
 
 exec_exit() {
-  local code=$?
+  local code=$? owed="$EXEC_JOB"
   if [ -n "$EXEC_JOB" ]; then
     # A run that still owes an outcome here did not reach the end of
     # `cmd_exec`, so it failed whatever the shell's status happens to be. The
@@ -704,6 +714,9 @@ exec_exit() {
     EXEC_JOB=""
   fi
   stop_tee
+  # The report, once: the normal end clears EXEC_JOB before it files its own.
+  [ -z "$owed" ] || record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$code" "$EXEC_OFFSET"
 }
 
 # launchd's own spawn counter for a job, or "" when launchd does not hold the
@@ -1121,6 +1134,8 @@ cmd_exec() { # invoked by launchd (and by `run`)
   start_tee "$LOG_DIR/$job.log"
   EXEC_JOB="$job"
   EXEC_STARTED="$report_started"
+  EXEC_RUN="$report_run"
+  EXEC_OFFSET="$report_offset"
   # From here the run owes an outcome, and the trap above writes one for every
   # exit it can see. The marker is what a run that dies unseen leaves behind.
   record_attempt "$job"
