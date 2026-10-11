@@ -2527,3 +2527,199 @@ class TheScannerBenchmark(CompareCase):
                         self.env())
         self.assertEqual(code, 0, out)
         self.assertEqual([a["outcome"] for a in self.answers()], ["unavailable"] * 2 + ["ok"] * 4)
+
+
+#: The two public repositories the injection test draws from, and another
+#: public one it must not (design.md, "Injection test").
+INJECTION_REMOTES = {"platypeeps/system": "https://github.com/platypeeps/system.git",
+                     "platypeeps/sd-ai-command-pack":
+                         "https://github.com/platypeeps/sd-ai-command-pack.git",
+                     "owner/other": "https://github.com/owner/other.git"}
+#: One reply both Haiku questions read: a tier distribution and a probability.
+BOTH_REPLY = json.dumps({"probabilities": {"skip": 0.1, "cheap": 0.1, "standard": 0.7,
+                                           "deep": 0.1}, "probability": 0.3})
+
+
+class TheInjectionTest(CompareCase):
+    """Step 11 against loopback stubs: crafted paths and appended finding text."""
+
+    def setUp(self):
+        super().setUp()
+        Arm.reply = BOTH_REPLY
+        self.enterContext(unittest.mock.patch.object(experiment, "RETRY_WAIT", 0))
+        self.enterContext(unittest.mock.patch.object(experiment, "INJECTION_BASES", 3))
+        self.enterContext(unittest.mock.patch.object(experiment, "INJECTION_FINDINGS", 2))
+        self.enterContext(unittest.mock.patch.dict(os.environ))
+        self.routed = []
+
+        def route(paths, lines, policy):
+            self.routed.append(list(paths))
+            return "standard", "no category matched; default tier standard"
+        self.enterContext(unittest.mock.patch.object(experiment, "pinned_router",
+                                                     lambda pack: route))
+        self.out = Path(tempfile.mkdtemp()) / "experiment"
+        self.out.mkdir()
+        self.db = checkpoint_db([])
+        self.roots, rows, n = {}, [], 0
+        reason = "no category matched; default tier standard"
+        for slug, url in INJECTION_REMOTES.items():
+            # Each repository's own text, so no two share a head.
+            root, first, second = committed({"a.py": f"{slug}\n"},
+                                            {"a.py": f"{slug}\n2\n", "docs/b.md": "x\n"})
+            subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin", url], check=True)
+            register(self.db, root, "public", remote=url)
+            self.roots[slug] = root
+            for head in (first, second):
+                n += 1
+                # The system repository's first head routed cheap: not a base.
+                routed = "cheap" if (slug, head) == ("platypeeps/system", first) else "standard"
+                rows.append({"repository": slug, "head": head, "alias": f"R{n:02d}",
+                             "paper": False, "population": "E", "routed": routed,
+                             "state": experiment.state_of(["a.py", "docs/b.md"], 3, reason)})
+                self.finding(slug, head, f"a.py drops the error the caller needs ({n})")
+        (self.out / "population.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.rows = rows
+
+    def finding(self, slug, head, summary):
+        one = reviewed(head, "blocking")
+        one["report"]["findings"][0]["summary"] = summary
+        with contextlib.closing(connect(self.db)) as connection:
+            connection.execute(
+                "INSERT INTO state (kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                (f"ship:{head}", "2026-09-22T00:00:00+00:00",
+                 json.dumps({"repository": slug, "head": head, "passes": [one]})))
+
+    def build(self):
+        return run(["injection", "build", "--out", str(self.out), "--db", str(self.db),
+                    "--pack", str(self.out)])
+
+    def items(self):
+        path = self.out / "injection" / "items.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def ask(self, arm, *more):
+        return run(["injection", "run", "--arm", arm, "--out", str(self.out),
+                    "--db", str(self.db), *more],
+                   self.env(JEV_COMPARE_ANTHROPIC_KEY="test-key"))
+
+    def answers(self, arm):
+        path = self.out / "injection" / f"{arm}.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_every_base_state_comes_from_one_of_the_two_public_repositories(self):
+        code, _ = self.build()
+        self.assertEqual(code, 0)
+        items = self.items()
+        bases = {(i["repository"], i["head"]) for i in items if i["kind"] == "tier"}
+        self.assertEqual(len(bases), 3)
+        # Every head of the two qualifies but the one routed cheap; other's two never do.
+        self.assertEqual({slug for slug, _ in bases},
+                         {"platypeeps/system", "platypeeps/sd-ai-command-pack"})
+        self.assertNotIn(("platypeeps/system", self.rows[0]["head"]), bases)
+        findings = [i for i in items if i["kind"] == "finding"]
+        self.assertEqual(len(findings), 4)
+        self.assertTrue(all(i["repository"] != "owner/other" for i in findings))
+        summary = json.loads((self.out / "injection" / "items.json").read_text())
+        self.assertEqual((summary["candidates"], summary["bases"], summary["items"]),
+                         (3, 3, 3 * 9 + 4))
+
+    def test_each_variant_differs_from_its_twin_by_one_path(self):
+        self.build()
+        items = self.items()
+        twins = {i["base"]: i for i in items if i["kind"] == "tier" and i["variant"] is None}
+        variants = [i for i in items if i["kind"] == "tier" and i["variant"]]
+        self.assertEqual(len(variants), 3 * 4 * 2)
+        for item in variants:
+            twin, state = json.loads(twins[item["base"]]["state"]), json.loads(item["state"])
+            crafted = experiment.CRAFTED[item["variant"]]
+            self.assertEqual(set(state["changed_paths"]) - set(twin["changed_paths"]), {crafted})
+            self.assertTrue(set(twin["changed_paths"]) <= set(state["changed_paths"]))
+            self.assertEqual(state["changed_paths"], sorted(state["changed_paths"]))
+            self.assertEqual((state["path_count"], state["lines_moved"],
+                              state["changed_paths_omitted"]),
+                             (twin["path_count"] + 1, twin["lines_moved"], 0))
+            said = twin["deterministic_routing_said"]
+            self.assertEqual(state["deterministic_routing_said"],
+                             said + experiment.ECHO.format(path=crafted) if item["echo"] else said)
+            # Rules ran on the variant's own paths.
+            self.assertIn(state["changed_paths"], self.routed)
+            self.assertIn(item["rules"], experiment.TIERS)
+            self.assertIn(item["heuristic"], experiment.TIERS)
+        self.assertEqual(len(experiment.CRAFTED["P4"].split("skip")) - 1, 20)
+        pairs = collections.defaultdict(dict)
+        for item in items:
+            if item["kind"] == "finding":
+                pairs[item["finding"]][item["form"]] = json.loads(item["state"])["f1"]
+        for pair in pairs.values():
+            self.assertEqual(pair["appended"], pair["clean"] + " " + experiment.APPENDED)
+
+    def test_the_build_is_frozen_once_written(self):
+        self.assertEqual(self.build()[0], 0)
+        self.assertEqual(self.build()[0], 2)
+
+    def test_too_few_base_states_refuses(self):
+        with unittest.mock.patch.object(experiment, "INJECTION_BASES", 4):
+            code, _ = self.build()
+        self.assertEqual(code, 2)
+        self.assertEqual(self.items(), [])
+
+    def test_every_arm_answers_each_item_once(self):
+        self.build()
+        count = len(self.items())
+        for arm in ("kev", "jev", "haiku"):
+            code, printed = self.ask(arm)
+            self.assertEqual(code, 0, arm)
+            lines = self.answers(arm)
+            self.assertEqual(len(lines), count, arm)
+            self.assertEqual({line["outcome"] for line in lines}, {"ok"}, arm)
+            tiers = [line for line in lines if line["id"].startswith("b")]
+            self.assertTrue(all(line["tier"] in experiment.TIERS for line in tiers), arm)
+            found = [line for line in lines if line["id"].startswith("f")]
+            self.assertTrue(all(0 <= line["probability"] <= 1 for line in found), arm)
+        self.assertEqual(len(Stub.seen), count)
+        # A second run asks nothing again.
+        before = len(Arm.seen)
+        self.assertEqual(self.ask("kev")[0], 0)
+        self.assertEqual(len(Arm.seen), before)
+
+    def test_a_hosted_arm_refuses_a_path_no_public_repository_tracks_now(self):
+        self.build()
+        subprocess.run(["git", "-C", str(self.roots["platypeeps/sd-ai-command-pack"]), "rm",
+                        "-q", "--cached", "docs/b.md"], check=True)
+        for arm in ("jev", "haiku"):
+            code, _ = self.ask(arm)
+            self.assertEqual(code, 2, arm)
+            self.assertEqual(self.answers(arm), [], arm)
+        self.assertEqual((Stub.seen, Arm.seen), ([], []))
+
+    def test_a_call_stopped_before_its_line_is_recorded_and_not_asked_again(self):
+        self.build()
+        first = self.items()[0]["id"]
+        (self.out / "injection" / "haiku.asking").write_text(
+            json.dumps({"id": first, "reserved": 0.25}))
+        self.assertEqual(self.ask("haiku")[0], 0)
+        lines = self.answers("haiku")
+        self.assertEqual((lines[0]["id"], lines[0]["outcome"], lines[0]["usd"]),
+                         (first, "interrupted", 0.25))
+        self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/messages"]),
+                         len(self.items()) - 1)
+        self.assertFalse((self.out / "injection" / "haiku.asking").exists())
+
+    def test_an_edited_item_file_refuses_before_any_call(self):
+        self.build()
+        with (self.out / "injection" / "items.jsonl").open("a") as fh:
+            fh.write("\n")
+        self.assertEqual(self.ask("kev")[0], 2)
+        self.assertEqual(Arm.seen, [])
+
+    def test_a_line_cut_by_a_stop_is_trimmed_and_its_item_asked_again(self):
+        self.build()
+        self.assertEqual(self.ask("kev")[0], 0)
+        path = self.out / "injection" / "kev.jsonl"
+        text = path.read_text()
+        last = text.rstrip("\n").rfind("\n") + 1
+        path.write_text(text[:last + 20])
+        before = len(Arm.seen)
+        self.assertEqual(self.ask("kev")[0], 0)
+        self.assertEqual(len(Arm.seen), before + 1)
+        self.assertEqual(path.read_text().count("\n"), len(self.items()))
