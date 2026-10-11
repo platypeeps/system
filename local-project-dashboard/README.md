@@ -8,8 +8,8 @@ the classic Today, Contributions, Writing,
 Operations, Protection, Skills, Documents, Designs, and individual Item pages.
 A `/backlog` address opens Tasks with the same filters (sd:2356); the classic
 Backlog was deleted in sd:2622. Its production launcher uses the
-command pack's provisioned Python interpreter and installed `sd_db` package;
-it refuses an adjacent source import or a mismatched database schema.
+command pack's provisioned Python interpreter and the pack checkout's `lib/sd_db`;
+it refuses any other copy of `sd_db` or a mismatched database schema.
 `./dashboard.sh serve` starts it on loopback;
 `./dashboard.sh test` runs its tests. Capture an ordinary task, edit its title,
 details, priority and due date, change its status, and add or resolve notes.
@@ -267,7 +267,7 @@ For a local service, put `{"port": 8767}` in
 ```
 
 The local URL is `http://127.0.0.1:8767`. The installer backs up the existing
-LaunchAgent and checks the new process, schema and installed library before
+LaunchAgent and checks the new process, schema and library before
 accepting the replacement. Local installation does not call Tailscale. See
 [RUNTIME.md](RUNTIME.md) for configuration, rollback boundaries and the
 private front door. Run in the foreground with `./dashboard.sh serve`, or run

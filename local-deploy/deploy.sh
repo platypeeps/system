@@ -1,8 +1,8 @@
 #!/bin/sh
 # After a merge to this checkout, restart only the sd services the merge
 # changed, each in its safe form, and report what a restart cannot apply:
-# a LaunchAgent change (an install) or a schema change (a migration) (sd:2725).
-# `upgrade` wraps the whole hub upgrade: pull, install sd_db, apply (sd:2812).
+# a LaunchAgent change (an install) (sd:2725).
+# `upgrade` wraps the whole hub upgrade: pull, apply, record (sd:2812).
 # Usage: deploy.sh plan|apply <from-sha> <to-sha>|upgrade [--from SHA]|test|help
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,20 +20,15 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
 
   plan    read `git diff --name-only from..to` in this checkout and print one
           action per line; an empty plan prints nothing and exits 0:
-            report needs migration (<paths>); restart after migrate
-                    local-sd-db's schema changed; nothing restarts
-            report needs sd_db install: ...  local-sd-db/sd_db/ changed; the
-                    dashboard imports an installed copy
             report needs <folder> install (<path>)  a LaunchAgent plist, or the
                     code that writes one, changed; never applied
             restart sd-serve    local-sd-db/ changed
-            restart dashboard   local-project-dashboard/ or local-sd-db/sd_db/
-          Changes under tests/ and to *.md files restart nothing.
+            restart dashboard   local-project-dashboard/ changed
+          Changes under tests/ and to *.md files restart nothing. sd_db and
+          its schema are the command pack's lib/, which repo-sync.sh refresh
+          moves, so no change here installs or migrates it (sd:3279).
   apply   print the reports, then refuse with exit 1 before any restart when
-          `lsof` cannot answer for port 8769, or when the dashboard's
-          installed sd_db differs in content from this checkout's
-          local-sd-db/sd_db (sd_dashboard.runtime._build_manifest on both,
-          run under the interpreter its plist names). Then
+          `lsof` cannot answer for port 8769. Then
           restart. sd-serve: skip with a report while a session is open on
           port 8769, else `launchctl kickstart -k` and wait for a new
           listener. dashboard: kickstart -k, then `dashboard.sh health
@@ -46,15 +41,12 @@ usage: deploy.sh plan <from-sha> <to-sha> | apply <from-sha> <to-sha> |
           $XDG_STATE_HOME/system/deploy/deployed (default
           ~/.local/state/system/deploy/deployed); with no record, --from is
           required, and --from always overrides it. An empty plan records the
-          new sha and exits 0. A migration report refuses, and so does an
-          open sd-serve session, both before the first stop. A `needs sd_db install` report installs into each
-          venv a loaded agent's plist names (`*_PYTHON`), and first stops
-          every loaded sd agent ($PREFIX.sd-*.plist) whose interpreter
-          lives there with `launchctl bootout`. Then `local-sd-db/sd-db.sh install
-          <venv>`, apply, and a start of each stopped agent: sd-serve, then
-          the dashboard (`health --wait`); a start whose wait fails boots its agent out again. A failure
-          after the first stop leaves them stopped and names the rerun
-          that finishes; it bootstraps only those launchd does not hold. It records the new sha only when
+          new sha and exits 0. An open sd-serve session refuses. Then apply,
+          and a start of each agent an older upgrade left stopped (the file
+          `stopped` beside the record): sd-serve, then the dashboard
+          (`health --wait`); a start whose wait fails boots its agent out
+          again, and a failure names the rerun that finishes; it bootstraps
+          only those launchd does not hold. It records the new sha only when
           every step passed, sd-serve was not held back by a session and no
           LaunchAgent install is reported, so a rerun replays the same range.
   test    run the unittest suite (tests/); extra arguments go to unittest.
@@ -91,18 +83,12 @@ plan() {
   RANGE="$1..$2"
   git -C "$ROOT" rev-parse -q --verify "$1^{commit}" >/dev/null || { echo "deploy: not a commit: $1" >&2; exit 1; }
   git -C "$ROOT" rev-parse -q --verify "$2^{commit}" >/dev/null || { echo "deploy: not a commit: $2" >&2; exit 1; }
-  # New dashboard code may read a schema that does not exist yet,
-  # and migrate.py wants both stopped: a schema change holds every restart.
-  schema=$(changed 'local-sd-db/sd_db/schema*' | tr '\n' ' ')
-  [ -z "$schema" ] || echo "report needs migration (${schema% }); restart after migrate"
-  # The dashboard imports an installed sd_db, not this
-  # checkout's: a library change reaches them only through an install.
-  library=$(changed local-sd-db/sd_db/)
-  [ -z "$library" ] || echo "report needs sd_db install: local-sd-db/sd-db.sh install <venv> for the dashboard's interpreter, before apply"
+  # sd_db and its schema are the pack's lib/ (sd:3279): the dashboard and
+  # sd-serve run it, refresh moves it, and system's frozen local-sd-db/sd_db
+  # is no service's library, so no change here installs or migrates one.
   installs
-  [ -z "$schema" ] || return 0
   [ -z "$(changed local-sd-db/)" ] || echo "restart sd-serve"
-  [ -z "$library$(changed local-project-dashboard/)" ] || echo "restart dashboard"
+  [ -z "$(changed local-project-dashboard/)" ] || echo "restart dashboard"
 }
 
 # Exits 0 when launchd holds the agent, else 1.
@@ -125,15 +111,16 @@ fail() {
   exit 1
 }
 
-# STOPPED lists the agents upgrade stopped and has not started again. They
-# stay stopped on a failure, so none runs on a half-replaced sd_db.
+# STOPPED lists the agents an upgrade stopped and has not started again.
+# This version stops none; an older one stopped them to install sd_db, and a
+# start whose wait fails stops its agent again (sd:3279).
 stopped_hint() {
   [ -z "${STOPPED:-}" ] || [ ! -s "$STOPPED" ] ||
     echo "deploy: left stopped: $(tr '\n' ' ' < "$STOPPED" | sed 's/ $//'); finish the upgrade with: sh $ROOT/local-deploy/deploy.sh upgrade --from $from" >&2
 }
 
 # One upgrade at a time, from the first check to the record: a second one
-# could start an agent while the first still replaces sd_db. flock(2) on
+# could start an agent while the first still restarts it. flock(2) on
 # upgrade.lock, held by the descriptor the upgrade inherits through exec: the
 # kernel drops it when the upgrade ends, so no lock outlives its holder.
 LOCKER='import fcntl, os, sys
@@ -157,32 +144,6 @@ serve_pids() {
   return 1
 }
 
-# The consumer's installed sd_db against this checkout's, file by file, with
-# the dashboard's own build manifest. Not _library_lag: it compares commits,
-# and a `sd-db.sh install` wheel records none, so it passes every such build.
-LAG='import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1] + "/local-project-dashboard")
-import sd_db
-from sd_dashboard.runtime import _build_manifest
-installed = dict(_build_manifest(Path(sd_db.__file__).resolve().parent))
-checkout = dict(_build_manifest(Path(sys.argv[1]) / "local-sd-db/sd_db"))
-differ = sorted(n for n in installed.keys() | checkout.keys() if installed.get(n) != checkout.get(n))
-if differ:
-    sys.exit("installed sd_db differs from this checkout in " + str(len(differ)) + " file(s): " + " ".join(differ[:5]))'
-
-interpreter() { # agent, plist variable naming its interpreter
-  plist="$HOME/Library/LaunchAgents/$PREFIX.$1.plist"
-  py=$(plutil -extract "EnvironmentVariables.$2" raw -o - "$plist" 2>/dev/null) || py=""
-  [ -n "$py" ] || refuse "$1: cannot read $2 from $plist"
-}
-
-library_current() { # agent, plist variable naming its interpreter
-  interpreter "$1" "$2"
-  why=$("$py" -I -c "$LAG" "$ROOT" 2>&1) ||
-    refuse "$1: $(printf '%s\n' "$why" | tail -1); provision: local-sd-db/sd-db.sh install $(dirname "$(dirname "$py")"), then rerun apply"
-}
-
 # Everything that can refuse runs here, before the first restart.
 preflight() {
   case "$1" in
@@ -191,7 +152,6 @@ preflight() {
       # One satellite session is one TCP connection to the listener (serve.py).
       sessions=$(serve_pids ESTABLISHED) || refuse "sd-serve: lsof cannot tell whether a satellite session is open"
       old_listener=$(serve_pids LISTEN) || refuse "sd-serve: lsof cannot read the listener" ;;
-    dashboard) ! held sd-dashboard || library_current sd-dashboard SD_DASHBOARD_PYTHON ;;
   esac
 }
 
@@ -229,8 +189,6 @@ skip() { # service, agent
 apply() {
   actions=$(plan "$1" "$2")
   reports=$(printf '%s\n' "$actions" | grep '^report') || true
-  # Upgrade has just installed sd_db; its report would ask for that again.
-  [ -z "${installed:-}" ] || reports=$(printf '%s\n' "$reports" | grep -v '^report needs sd_db install') || true
   [ -z "$reports" ] || printf '%s\n' "$reports"
   services=$(printf '%s\n' "$actions" | sed -n 's/^restart //p')
   for service in $services; do preflight "$service"; done
@@ -246,17 +204,6 @@ apply() {
   done
 }
 
-# The interpreter dashboard.sh and sd-db.sh each run when the
-# agent's plist names none.
-DEFAULT_PYTHON="$HOME/repos/platypeeps/sd-ai-command-pack/.venv/bin/python"
-
-# Every sd agent's label, from the plists launchd reads; not a fixed list.
-agents() {
-  for plist in "$HOME/Library/LaunchAgents/$PREFIX".sd-*.plist; do
-    [ ! -e "$plist" ] || basename "$plist" .plist
-  done
-}
-
 loaded() {
   launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1
 }
@@ -265,61 +212,9 @@ stopped() {
   [ -s "$STOPPED" ] && grep -qxF "$1" "$STOPPED"
 }
 
-# The interpreter a `*_PYTHON` variable in the agent's plist names, or nothing;
-# an unreadable plist names nothing. Parsed as JSON: sed cut a path short at
-# its escaped quote (sd:2837). A plist of another shape exits 1, and every
-# caller refuses on it: a consumer missed would run on the replaced sd_db.
-NAMED='import json, re, sys
-try:
-    plist = json.load(sys.stdin)
-except ValueError:
-    plist = {}
-env = plist.get("EnvironmentVariables", {}) if isinstance(plist, dict) else None
-if not isinstance(env, dict):
-    sys.exit(sys.argv[1] + ": EnvironmentVariables is not a dictionary")
-named = [value for key, value in env.items() if re.fullmatch("[A-Z_]*_PYTHON", key)]
-if not all(isinstance(value, str) for value in named):
-    sys.exit(sys.argv[1] + ": a *_PYTHON variable is not a string")
-print(named[0] if named else "")'
-
-named_python() {
-  plutil -convert json -o - "$HOME/Library/LaunchAgents/$1.plist" 2>/dev/null |
-    "${PYTHON:-python3}" -c "$NAMED" "$1"
-}
-
-# Where sd_db installs: the venv of each loaded or stopped agent whose plist
-# names its interpreter (the dashboard's).
-venvs() {
-  for label in $(agents); do
-    loaded "$label" || stopped "$label" || continue
-    named=$(named_python "$label") || return 1
-    [ -z "$named" ] || dirname "$(dirname "$named")"
-  done
-}
-
-# The loaded agents whose interpreter lives in a venv named on stdin: they
-# must not run while sd_db there is replaced.
-consumers() {
-  targets=$(cat)
-  for label in $(agents); do
-    loaded "$label" || continue
-    named=$(named_python "$label") || return 1
-    venv=$(dirname "$(dirname "${named:-$DEFAULT_PYTHON}")")
-    printf '%s\n' "$targets" | grep -qxF "$venv" || continue
-    printf '%s\n' "$label"
-  done
-}
-
-stop_agent() {
-  launchctl bootout "gui/$(id -u)/$1" || fail "$1 bootout"
-  stopped "$1" || echo "$1" >> "$STOPPED"
-  echo "stopped $1"
-}
-
 # A marked agent that launchd holds already is not bootstrapped again; it
 # still passes its check.
 start_agent() {
-  [ "$1" != "$PREFIX.sd-dashboard" ] || library_current sd-dashboard SD_DASHBOARD_PYTHON
   loaded "$1" || launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist" || fail "$1 bootstrap"
   starting="$1"
   case "$1" in
@@ -350,7 +245,7 @@ upgrade() {
       *) echo "deploy: unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
   done
-  # The agents this upgrade stopped, one label a line, each once; a rerun starts them.
+  # The agents an upgrade stopped, one label a line, each once; a rerun starts them.
   STOPPED="$(dirname "$STATE")/stopped"
   mkdir -p "$(dirname "$STATE")"
   [ "$(git -C "$ROOT" symbolic-ref -q --short HEAD)" = main ] || refuse "$ROOT is not on main"
@@ -368,41 +263,13 @@ upgrade() {
     record "$to"
     return 0
   fi
-  case "$actions" in *"report needs migration"*)
-    printf '%s\n' "$actions" | grep '^report' || true
-    refuse "the range needs a migration; migrate and restart by hand, then record it: deploy.sh upgrade --from $to" ;;
-  esac
-  # Every agent that runs from a venv the install replaces stops first: each
-  # imports sd_db lazily and must never see a half-replaced library. Every
-  # refusal that needs no new sd_db comes before the first stop.
-  list=""; stopping=""; installed=""
-  case "$actions" in *"report needs sd_db install"*)
-    # Assigned first, so a refusal inside them stops the script.
-    list=$(venvs) || refuse "cannot read an sd agent's interpreter from its plist"
-    list=$(printf '%s\n' "$list" | sort -u | sed '/^$/d')
-    stopping=$(printf '%s\n' "$list" | consumers) ||
-      refuse "cannot read an sd agent's interpreter from its plist" ;;
-  esac
-  case "$actions
-$stopping" in *"restart sd-serve"*|*.sd-serve*)
+  case "$actions" in *"restart sd-serve"*)
     if held sd-serve; then
       sessions=$(serve_pids ESTABLISHED) || refuse "sd-serve: lsof cannot tell whether a satellite session is open"
       [ -z "$sessions" ] || refuse "sd-serve: a session is open on port $SERVE_PORT; rerun upgrade when it closes"
       old_listener=$(serve_pids LISTEN) || refuse "sd-serve: lsof cannot read the listener"
     fi ;;
   esac
-  for label in $stopping; do stop_agent "$label"; done
-  if [ -n "$list" ]; then
-    # A here-document keeps the loop in this shell and each path whole.
-    while IFS= read -r venv; do
-      [ -n "$venv" ] || continue
-      sh "$ROOT/local-sd-db/sd-db.sh" install "$venv" || fail "sd_db install into $venv"
-      echo "installed sd_db into $venv"
-    done <<EOF
-$list
-EOF
-    installed=1
-  fi
   held_back=""
   apply "$from" "$to"
   start_stopped

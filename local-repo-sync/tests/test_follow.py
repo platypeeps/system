@@ -14,6 +14,7 @@ without them; a PIN case keeps behaviour the change had to preserve.
 """
 
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -199,6 +200,24 @@ class HubPushTest(unittest.TestCase):
         self.assertEqual("", f.refs(pack))
         self.assertEqual("refs/tags/hub-pin", f.refs(system))
         self.assertEqual(mains, [f.git(f.bare(r), "rev-parse", "refs/heads/main") for r in (system, pack)])
+        self.assertIn("hub-pin : system", result.stdout)
+
+    def test_a_system_checkout_without_local_sd_db_is_still_the_system(self):
+        """NEW (sd:3279). The pack owns sd_db and design step 2.8 deletes
+        local-sd-db/sd_db, so refresh knows the system checkout by
+        local-repo-sync/repo-sync.sh alone: the hub pin still names it."""
+        f = self.fixture()
+        system, pack = f.system_repo(), f.pack_repo()
+        f.git(system, "rm", "-q", "-r", "local-sd-db")
+        f.git(system, "commit", "-q", "-m", "drop local-sd-db")
+        f.git(system, "push", "-q", "origin", "main")
+        for repo in (system, pack):
+            f.pin(repo)
+            f.advance_origin(repo)
+
+        result = f.run("refresh", expect=0)
+
+        self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
         self.assertIn("hub-pin : system", result.stdout)
 
     def test_hub_pin_may_move_backwards(self):
@@ -920,7 +939,9 @@ class FollowUpdateTest(unittest.TestCase):
             capture_output=True, text=True, timeout=60, check=True,
             env={"HOME": str(f.tmp / "home"), "BIN_LINKS_DIR": str(links), "PATH": f"{links}:/usr/bin:/bin"})
         self.assertRegex(status.stdout.splitlines()[-1], proof["bin"])
-        library = (root / "local-sd-db" / "sd_db" / "satellite.py").read_text()
+        # The stage runs the pack's lib/sd_db (sd:3279).
+        pack = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+        library = (pack / "lib" / "sd_db" / "satellite.py").read_text()
         self.assertIn('out.write(f"  {word:<7} {text}\\n")', library)
         self.assertIn('_line(out, "ok", f"sd_db {built[\'package\']} build {built[\'build\']} matches the hub\'s")',
                       library)

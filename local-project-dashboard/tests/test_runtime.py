@@ -18,6 +18,7 @@ from unittest.mock import patch
 from sd_dashboard import runtime
 
 REAL_LIBRARY_CHECK = runtime.installed_library
+REAL_HERE = runtime.HERE
 
 
 ORIGIN = "https://fixture.example.ts.net:8443"
@@ -345,20 +346,21 @@ class RuntimeSafety(unittest.TestCase):
         import sd_db
         from sd_db.migrate import initialise
 
-        prefix = self.home / "venv"
-        package = prefix / "lib/python3.13/site-packages/sd_db"
+        pack = self.home.resolve() / "pack"
+        package = pack / "lib/sd_db"
         package.mkdir(parents=True)
         source = package / "__init__.py"
-        source.write_text("# first installed build\n")
+        source.write_text("# first library build\n")
         database = self.home / "sd.db"
         initialise(database)
         config = json.loads(self.config.read_text())
         config["database"] = str(database)
         self.config.write_text(json.dumps(config))
-        with patch.object(sd_db, "__file__", str(source)), patch.object(sys, "prefix", str(prefix)), \
+        with patch.object(sd_db, "__file__", str(source)), patch.dict(os.environ, {"SD_PACK_ROOT": str(pack)}), \
+                patch.object(runtime, "_pack_commit", return_value=None), \
                 patch.object(runtime, "installed_library", side_effect=REAL_LIBRARY_CHECK):
             before = self.plan()
-            source.write_text("# second installed build, unchanged schema and path\n")
+            source.write_text("# second library build, unchanged schema and path\n")
             after = self.plan()
             self.assertEqual(before["runtime"]["library"], after["runtime"]["library"])
             self.assertEqual(before["runtime"]["schema"], after["runtime"]["schema"])
@@ -454,7 +456,7 @@ class RuntimeSafety(unittest.TestCase):
         import sd_db
 
         with patch.object(sd_db, "__file__", "/source/local-sd-db/sd_db/__init__.py"):
-            with self.assertRaisesRegex(runtime.RuntimeRefused, "installed build"):
+            with self.assertRaisesRegex(runtime.RuntimeRefused, "the command pack's lib/"):
                 REAL_LIBRARY_CHECK(self.home / "missing.db")
         self.assertFalse((self.home / "missing.db").exists())
 
@@ -756,132 +758,124 @@ class BuildIdentity(unittest.TestCase):
         """sd:3018: a probe that cannot even start is a failed start check."""
         self.assert_keeps_serving([str(self.root / "missing-interpreter")], True)
 
-class LibraryLag(unittest.TestCase):
-    """`installed_library` refuses an installed sd_db older than the checkout's library (the #395 class).
+class PackLibrary(unittest.TestCase):
+    """`installed_library` accepts only the command pack checkout's own `lib/sd_db` (sd:3279).
 
-    The checkout is a temporary git repository with two commits touching
-    `local-sd-db/sd_db`; the installed build is a fake distribution whose
-    `direct_url.json` names one of them, as pip writes it for a VCS install.
+    The pack owns the library (sd:2997) and its step 3 uninstalls the venv copy, so the
+    dashboard reads `$SD_PACK_ROOT/lib` and proves it did. A copy in site-packages, a
+    pack-built one included, is refused: on 2026-10-10 a service that ran another copy
+    than the pack's made the hub refuse every satellite write for two hours.
     """
 
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="dashboard-library-lag-")
+        temporary = tempfile.TemporaryDirectory(prefix="dashboard-pack-library-")
         self.addCleanup(temporary.cleanup)
-        self.home = Path(temporary.name)
-        self.checkout = self.home / "system"
-        (self.checkout / "local-sd-db/sd_db").mkdir(parents=True)
-        # The dashboard reads the checkout it sits in; `build_digests` reads
-        # this package from the same root, so the fixture carries one file.
-        (self.checkout / "local-project-dashboard/sd_dashboard").mkdir(parents=True)
-        (self.checkout / "local-project-dashboard/sd_dashboard/__init__.py").write_text("")
+        # Resolved: macOS links /var to /private/var, and the check compares resolved paths.
+        self.home = Path(temporary.name).resolve()
+        self.pack = self.home / "pack"
+        (self.pack / "lib/sd_db").mkdir(parents=True)
+        self.source = self.pack / "lib/sd_db/__init__.py"
+        self.source.write_text("# the pack's library\n")
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.email", "fixture@example.test")
         self.git("config", "user.name", "Fixture")
-        self.first = self.library_commit("# first library\n")
-        self.second = self.library_commit("# second library\n")
-        prefix = self.home / "venv"
-        package = prefix / "lib/python3.13/site-packages/sd_db"
-        package.mkdir(parents=True)
-        source = package / "__init__.py"
-        source.write_text("# installed build\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "library")
+        self.commit = self.git("rev-parse", "HEAD")
+        # `build_digests` reads the dashboard package from HERE too.
+        (self.home / "dashboard/sd_dashboard").mkdir(parents=True)
+        (self.home / "dashboard/sd_dashboard/__init__.py").write_text("")
         self.database = self.home / "sd.db"
         from sd_db.migrate import initialise
         initialise(self.database)
-        import sd_db
         self.addCleanup(patch.stopall)
-        patch.object(runtime, "HERE", self.checkout / "local-project-dashboard").start()
-        patch.object(sd_db, "__file__", str(source)).start()
-        patch.object(sys, "prefix", str(prefix)).start()
-        self.direct_url = None
-        patch("importlib.metadata.distribution", side_effect=self.distribution).start()
+        patch.object(runtime, "HERE", self.home / "dashboard").start()
+        patch.dict(os.environ, {"SD_PACK_ROOT": str(self.pack)}).start()
 
     def git(self, *arguments):
-        return subprocess.run(["git", "-C", str(self.checkout), *arguments], check=True, capture_output=True, text=True).stdout.strip()
+        return subprocess.run(["git", "-C", str(self.pack), *arguments], check=True, capture_output=True, text=True).stdout.strip()
 
-    def library_commit(self, text):
-        (self.checkout / "local-sd-db/sd_db/__init__.py").write_text(text)
-        self.git("add", "-A")
-        self.git("commit", "-q", "-m", "library")
-        return self.git("rev-parse", "HEAD")
+    def check(self, source):
+        import sd_db
+        with patch.object(sd_db, "__file__", str(source)):
+            return runtime.installed_library(self.database)
 
-    def distribution(self, name):
-        self.assertEqual(name, "sd-db")
-        direct_url = self.direct_url
+    def copy_at(self, folder):
+        package = self.home / folder / "sd_db"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("# another copy\n")
+        return package / "__init__.py"
 
-        class Distribution:
-            @staticmethod
-            def read_text(filename):
-                return direct_url if filename == "direct_url.json" else None
-        return Distribution()
+    def test_the_packs_lib_passes_and_names_the_packs_commit(self):
+        result = self.check(self.source)
+        self.assertEqual(result["library"], str(self.source.resolve()))
+        self.assertEqual(result["library_commit"], self.commit)
 
-    def vcs_install(self, commit):
-        self.direct_url = json.dumps({"subdirectory": "local-sd-db", "url": "file:///fixture/system",
-                                      "vcs_info": {"commit_id": commit, "requested_revision": commit, "vcs": "git"}})
+    def test_a_pack_built_install_in_site_packages_is_refused(self):
+        # What `make setup` installs into the pack's .venv until step 3 (sd:3280).
+        prefix = self.home / "venv"
+        installed = self.copy_at("venv/lib/python3.13/site-packages")
+        with patch.object(sys, "prefix", str(prefix)), \
+                self.assertRaisesRegex(runtime.RuntimeRefused, "the command pack's lib/") as refused:
+            self.check(installed)
+        self.assertIn(str(self.pack / "lib"), str(refused.exception))
+        self.assertIn(str(installed), str(refused.exception))
 
-    def check(self):
-        return runtime.installed_library(self.database)
+    def test_systems_frozen_copy_and_another_packs_lib_are_refused(self):
+        for folder in ("system/local-sd-db", "other-pack/lib"):
+            with self.subTest(folder=folder), self.assertRaisesRegex(runtime.RuntimeRefused, "the command pack's lib/"):
+                self.check(self.copy_at(folder))
 
-    def test_stale_library_is_refused_naming_both_commits(self):
-        self.vcs_install(self.first)
-        with self.assertRaisesRegex(runtime.RuntimeRefused, "lacks the checkout's library commit") as refused:
-            self.check()
-        message = str(refused.exception)
-        self.assertIn(self.first, message)
-        self.assertIn(self.second, message)
-        self.assertIn("make setup", message)
-
-    def test_library_from_a_branch_without_the_commit_is_refused(self):
-        # A valid commit of this checkout that never took the second library
-        # change: not older, but the pages may still call a name it lacks.
-        self.git("checkout", "-q", "-b", "elsewhere", self.first)
-        divergent = self.library_commit("# divergent library\n")
-        self.git("checkout", "-q", "main")
-        self.vcs_install(divergent)
-        with self.assertRaisesRegex(runtime.RuntimeRefused, "lacks the checkout's library commit") as refused:
-            self.check()
-        self.assertIn(divergent, str(refused.exception))
-        self.assertIn(self.second, str(refused.exception))
-
-    def test_current_library_passes_and_is_recorded(self):
-        self.vcs_install(self.second)
-        self.assertEqual(self.check()["library_commit"], self.second)
-        # A later commit elsewhere in the checkout does not move the library.
-        (self.checkout / "README.md").write_text("unrelated\n")
-        self.git("add", "-A")
-        self.git("commit", "-q", "-m", "unrelated")
-        self.assertEqual(self.check()["library_commit"], self.second)
-
-    def test_path_install_without_vcs_info_skips(self):
-        self.direct_url = json.dumps({"url": "file:///fixture/system/local-sd-db", "dir_info": {}})
-        with patch.object(runtime, "_run", side_effect=AssertionError("git must not run for a path install")):
-            self.assertIsNone(self.check()["library_commit"])
-
-    def test_no_distribution_or_no_direct_url_skips(self):
-        import importlib.metadata
-        with patch("importlib.metadata.distribution", side_effect=importlib.metadata.PackageNotFoundError("sd-db")):
-            self.assertIsNone(self.check()["library_commit"])
-        self.direct_url = None
-        self.assertIsNone(self.check()["library_commit"])
-
-    def test_without_git_or_outside_a_repository_skips(self):
-        self.vcs_install(self.first)
+    def test_a_pack_that_is_not_a_git_checkout_passes_with_no_commit(self):
+        shutil.rmtree(self.pack / ".git")
+        self.assertIsNone(self.check(self.source)["library_commit"])
         with patch("shutil.which", return_value=None):
-            self.assertIsNone(self.check()["library_commit"])
-        shutil.rmtree(self.checkout / ".git")
-        self.assertIsNone(self.check()["library_commit"])
+            self.assertIsNone(self.check(self.source)["library_commit"])
 
-    def test_install_built_from_another_tree_skips(self):
-        # The pack builds sd_db from its own lib/ (sd:2997): its commit is not
-        # one of this checkout's, so there is nothing to compare (sd:3322).
-        self.direct_url = json.dumps({"subdirectory": "lib", "url": "file:///fixture/pack",
-                                      "vcs_info": {"commit_id": "0" * 40, "vcs": "git"}})
-        with patch.object(runtime, "_run", side_effect=AssertionError("git must not run for another tree's build")):
-            self.assertIsNone(self.check()["library_commit"])
+    def test_a_git_that_fails_is_refused_not_read_as_no_commit(self):
+        failed = subprocess.CompletedProcess([], 128, "", "fatal: unreadable index")
+        with patch.object(runtime, "_run", return_value=failed), \
+                self.assertRaisesRegex(runtime.RuntimeRefused, "unreadable index"):
+            self.check(self.source)
 
-    def test_unknown_installed_commit_is_refused(self):
-        self.vcs_install("0" * 40)
-        with self.assertRaisesRegex(runtime.RuntimeRefused, "not a commit of this checkout"):
-            self.check()
+    def test_with_no_sd_pack_root_the_home_clone_is_the_pack(self):
+        with patch.dict(os.environ, clear=True), patch.object(Path, "home", return_value=self.home):
+            self.assertEqual(runtime.pack_library(), self.home / "repos/platypeeps/sd-ai-command-pack/lib")
+
+    def test_the_launcher_imports_sd_db_from_the_packs_lib(self):
+        # The real dashboard.sh and bootstrap under -I, with an interpreter that holds an
+        # installed sd_db (the gate's venv does): the pack's lib/ must answer first.
+        marker = self.home / "pack-library-ran"
+        self.source.write_text(f"open({str(marker)!r}, 'w').write(__file__)\n"
+                               "raise ImportError('the fixture pack library loaded')\n")
+        config = self.home / "dashboard.json"
+        config.write_text(json.dumps({"port": 8787, "database": str(self.database)}))
+        result = subprocess.run([str(REAL_HERE / "dashboard.sh"), "preflight", "--config", str(config)],
+                                env={**os.environ, "SD_DASHBOARD_PYTHON": sys.executable, "HOME": str(self.home)},
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("the fixture pack library loaded", result.stderr)
+        self.assertEqual(marker.read_text(), str(self.source))
+
+    def test_the_restart_probe_imports_sd_db_from_the_packs_lib(self):
+        from unittest.mock import Mock
+        from sd_dashboard import server
+        marker = self.home / "probe-library-ran"
+        self.source.write_text(f"open({str(marker)!r}, 'w').write(__file__)\n"
+                               "raise ImportError('the fixture pack library loaded')\n")
+        config = self.home / "dashboard.json"
+        config.write_text(json.dumps({"port": 8787}))
+        root = self.home / "dashboard"
+        (root / "dashboard.sh").write_text("#!/bin/sh\nexit 0\n")
+        (root / "dashboard.sh").chmod(0o755)
+        (root / "sd_dashboard/server.py").write_text("import sd_db\n")
+        listening = Mock(server_address=("127.0.0.1", 8787))
+        with patch.object(runtime, "installed_library"), patch.object(server, "build", return_value=listening):
+            server.main(["--config", str(config), "--port", "8787"])
+        probe = subprocess.run(listening.restart_probe, capture_output=True, text=True, timeout=60,
+                               stdin=subprocess.DEVNULL, check=False)
+        self.assertIn("the fixture pack library loaded", probe.stderr)
+        self.assertEqual(marker.read_text(), str(self.source))
 
 
 class LaunchEnvironment(unittest.TestCase):
@@ -910,6 +904,12 @@ class LaunchEnvironment(unittest.TestCase):
         with patch.dict(os.environ, {"JEV_JOB_TRIAGE": "off"}, clear=False):
             environment = runtime._launch_environment()
         self.assertEqual(environment["JEV_JOB_TRIAGE"], "off")
+
+    def test_the_pack_root_passes_through(self):
+        # sd:3279: install checks the pack's lib/ under SD_PACK_ROOT, so the agent runs that pack, not the default.
+        with patch.dict(os.environ, {"SD_PACK_ROOT": "/packs/sd-ai-command-pack"}, clear=False):
+            environment = runtime._launch_environment()
+        self.assertEqual(environment["SD_PACK_ROOT"], "/packs/sd-ai-command-pack")
 
 
 class QuickNoteEnvironment(unittest.TestCase):

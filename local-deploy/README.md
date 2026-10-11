@@ -2,12 +2,12 @@
 
 After a merge to this checkout, restart only the sd services the merge changed (sd:2725).
 Each restart uses its safe form, and each is checked before the next one starts.
-A LaunchAgent change or a schema change is reported, never applied.
+A LaunchAgent change is reported, never applied.
 
 ```sh
 local-deploy/deploy.sh plan <from-sha> <to-sha>    # print the actions
 local-deploy/deploy.sh apply <from-sha> <to-sha>   # run them
-local-deploy/deploy.sh upgrade [--from SHA]        # pull main, install, apply, record
+local-deploy/deploy.sh upgrade [--from SHA]        # pull main, apply, record
 ```
 
 ## What a change maps to
@@ -19,27 +19,23 @@ Changes under a `tests/` folder and to `*.md` files restart nothing.
 | --- | --- |
 | `local-sd-db/` | restart sd-serve |
 | `local-project-dashboard/` | restart dashboard |
-| `local-sd-db/sd_db/` | report `needs sd_db install`, then restart sd-serve and dashboard |
 | a `*.plist` or `*.plist.template`, or `.py`/`.sh` lines that name launchd keys or the plist environment | report `needs <folder> install`; the service still restarts |
-| `local-sd-db/sd_db/schema.py` or `local-sd-db/sd_db/schema/` | report `needs migration; restart after migrate`; nothing restarts, since new code may read a schema not yet there |
 
 The install check greps changed lines, because the dashboard writes its plist in code.
 It skips `local-deploy/`, which names those keys but writes no plist.
 A plist value computed outside those lines goes unseen.
 
-The dashboard imports an installed `sd_db`, not this checkout's.
-A library change reaches it only after `local-sd-db/sd-db.sh install <venv>` for its interpreter.
+`sd_db` and its schema live in the command pack's `lib/` (sd:3279).
+The dashboard and sd-serve run that `lib/`, and `local-repo-sync/repo-sync.sh refresh` moves it.
+So no change in this checkout installs `sd_db` or needs a migration.
+System's frozen `local-sd-db/sd_db` is no service's library, unless sd-serve's plist sets `SD_DB_LIBRARY`.
+`local-machine-setup/machine-setup.sh doctor sd` fails that plist.
 
 ## How `apply` restarts each service
 
-`apply` prints the reports, then refuses with exit 1 before any restart in two cases:
-
-- `lsof` cannot answer for port 8769: it is missing, or exits other than 1 with no output (its "no match").
-- The dashboard's installed `sd_db` differs in content from the checkout's `local-sd-db/sd_db`.
-  The check runs `source:local-project-dashboard/sd_dashboard/runtime.py::_build_manifest` on both and compares them file by file.
-  It does not use `_library_lag`: that compares commits, and a wheel from `sd-db.sh install` records none.
-  It runs under the interpreter the agent's plist names (`SD_DASHBOARD_PYTHON`).
-  The refusal names the `sd-db.sh install <venv>` that provisions it.
+`apply` prints the reports, then refuses with exit 1 before any restart when `lsof` cannot answer for port 8769.
+It is missing, or exits other than 1 with no output (its "no match").
+The dashboard checks its own library when it starts: the pack's `lib/sd_db` and no other copy.
 
 Then it restarts each service:
 
@@ -51,7 +47,7 @@ Then it restarts each service:
 - The label prefix is `SYSTEM_TOOLS_LABEL_PREFIX`, default `local.system-tools`.
 - A service whose agent launchd does not hold is skipped, so a satellite skips sd-serve.
 - sd-serve is skipped with a report while any TCP connection on port 8769 is established.
-  One satellite session is one connection (`local-sd-db/sd_db/serve.py`).
+  One satellite session is one connection (`sd_db/serve.py` in the pack's `lib/`).
   Run `apply` again once the session closes.
 - `apply` stops at the first failed check and exits 1 naming it.
 
@@ -72,22 +68,14 @@ sh ~/repos/system/local-deploy/deploy.sh upgrade
 3. It reads the last deployed sha from `${XDG_STATE_HOME:-$HOME/.local/state}/system/deploy/deployed`.
    The first run has no record: give `--from SHA`, the sha the services run now. `--from` always overrides the record.
 4. An empty plan records the new sha and exits 0.
-5. A plan that needs a migration refuses. Migrate and restart by hand, then record with `upgrade --from <new sha>`.
-6. Every refusal that needs no new `sd_db` comes before the first stop: an open sd-serve session.
-7. A `needs sd_db install` plan installs into each venv a loaded agent's plist names with a `*_PYTHON` variable.
-   Before that, every loaded sd agent (`<prefix>.sd-*.plist`) whose interpreter lives in such a venv stops.
-   An agent whose plist names no interpreter runs the pack venv's, the default of both entrypoints.
-   Each one imports `sd_db` lazily, so none may run while the library is replaced.
-   Each stops with `launchctl bootout`.
-8. It runs `local-sd-db/sd-db.sh install <venv>` once per venv, then `apply` for the agents still loaded.
-   Inside upgrade, `apply` prints no `needs sd_db install` report and no `skip` line for an agent upgrade stopped.
-9. It starts each stopped agent: sd-serve (a new listener), then the dashboard (`health --wait`).
-   An agent whose wait fails after its bootstrap is booted out again, so it stays stopped.
-10. A failure after the first stop leaves every stopped agent stopped, never running on a mixed library.
-    It exits 1 and prints the rerun that finishes: `sh <checkout>/local-deploy/deploy.sh upgrade --from <from>`.
-    The file `stopped` beside the record lists them, each label once, so the rerun installs into their venvs and starts them.
-    The rerun bootstraps only a listed agent that launchd does not hold; a held one still passes its wait.
-11. It records the new sha only when every step passed and no session held sd-serve back.
+5. An open sd-serve session refuses before any restart.
+6. It runs `apply`. Inside upgrade, `apply` prints no `skip` line for an agent listed in `stopped`.
+7. It starts each agent listed in the file `stopped` beside the record: sd-serve (a new listener), then the dashboard (`health --wait`).
+   This version stops no agent. An older one stopped them to install `sd_db`; the list lets a rerun finish that upgrade.
+   An agent whose wait fails after its bootstrap is booted out again and stays listed.
+   It exits 1 and prints the rerun that finishes: `sh <checkout>/local-deploy/deploy.sh upgrade --from <from>`.
+   The rerun bootstraps only a listed agent that launchd does not hold; a held one still passes its wait.
+8. It records the new sha only when every step passed and no session held sd-serve back.
    A `needs <folder> install` report also holds the record: install the agent, then record with `upgrade --from <new sha>`.
    After a failure the old record stays, so a rerun replays the same range; the restarts are idempotent.
 

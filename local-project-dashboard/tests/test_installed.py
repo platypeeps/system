@@ -6,7 +6,7 @@ succeeds from the checkout because the checkout is on `sys.path`. It is that a
 **built and installed** copy imports, because that is the path consumers use.
 
 One thing differs here. `sd_dashboard` declares a dependency on `sd-db`, so
-the environment below installs the sibling first, from its folder, offline.
+the environment below installs it first, from the command pack's lib/, offline.
 That is the real shape: two wheels in one environment, nothing fetched.
 
 The test is slow -- it builds two wheels and creates a virtual environment --
@@ -28,7 +28,8 @@ import zipfile
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-SIBLING = PACKAGE_ROOT.parent / "local-sd-db"
+# The command pack's lib/ holds sd_db (sd:2997), as for dashboard.sh.
+SIBLING = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"
 
 
 def clean_environment():
