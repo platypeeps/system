@@ -56,7 +56,7 @@ in its own checkout and still get the shared core.
 | File | What it is |
 |---|---|
 | `core.md` | The stance, the four-part finding format, the confidence tags, and the caveats. Shared by every lens. |
-| `lenses/writing-draft.md` | Blog/article drafts with a `research.md` behind them. Takes `{DRAFT_PATH}` and `{RESEARCH_PATH}`. |
+| `lenses/writing-draft.md` | Blog/article drafts with a `research.md` behind them. Takes `{DRAFT_PATH}` and `{RESEARCH_PATH}`, and reads the repository's `profile/guardrails.md` when it has one. |
 | `lenses/research-brief.md` | Research briefs: load-bearing claims, numbers, the unstated assumption. |
 | `adversarial-gate.sh` | Entrypoint — `render`, `run`, `rank`, `lenses`, `test`. |
 | `rank.py` | The optional Jev ordering: parse the findings, ask one question each, reorder and label. Never removes one. |
@@ -138,7 +138,7 @@ take, not one you omit. `jev off` and an unkeyed machine stop it too.
 It does not decide whether a claim is true. It reads the repository, not the sources the
 repository cites, so a citation-strength finding from it is a question addressed to a
 human, not an answer. Whoever calls it is responsible for saying so wherever the output
-lands — `pack.py` stamps that sentence into the head of every `adversarial.md` it writes.
+lands — `sd writing adversarial` stamps that sentence into the head of every `adversarial.md` it writes.
 
 It is also not a gate by itself: nothing here blocks a publish. The calling repo decides
 what an unresolved finding means. In the writing pack it blocks `review -> ready`; in the
