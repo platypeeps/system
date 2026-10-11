@@ -1045,32 +1045,43 @@ def registered(path: Path) -> dict:
 
 
 def faithful_gate(folder: Path, db, registration: dict, population_sha: str) -> tuple[dict, dict]:
-    """Step 1's passing result, bound to this replay: its files' hashes, and
-    its answers by head for Jev to reuse. Refused when it is missing, did not
-    pass on a recount of its answers, or no note on sd:2764 carries the
-    hashes of both its files with this registration's and population's: the
-    full replay starts only after the faithfulness gate passes."""
-    answers, summary_path = folder / "answers.jsonl", folder / "summary.json"
-    if not answers.is_file() or not summary_path.is_file():
+    """Step 1's passing result, bound to this replay: its answers' hash, and
+    its answers by head for Jev to reuse. Nothing it stores is taken as
+    proof: it must hold exactly FAITHFUL_COUNT records, one per distinct
+    registered faithfulness head (an E head with a recorded reading) with
+    that head's rebuilt state, and the answers whose choice equals the
+    recorded tier, recounted here, must reach FAITHFUL_PASS. A note on
+    sd:2764 must carry its hash with this registration's and population's."""
+    answers = folder / "answers.jsonl"
+    if not answers.is_file():
         raise Refused(f"no faithfulness result in {folder}; the full replay starts after "
                       "step 1 passes; nothing was asked")
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     lines = read_jsonl(answers)
-    matched = sum(1 for one in lines if one.get("match") is True)
-    if not (summary.get("passed") is True and summary.get("threshold") == FAITHFUL_PASS
-            and summary.get("asked") == len(lines) and summary.get("matched") == matched
-            and matched >= FAITHFUL_PASS):
+    found = {(c["repository"], c["head"]): c for c in candidates(db)}
+    seen, matched = set(), 0
+    for one in lines:
+        ident = (one.get("repository"), one.get("head"))
+        source = found.get(ident)
+        answer = one.get("answer")
+        if source is None or ident in seen or one.get("state") != source["state"] or not (
+                answer is None or isinstance(answer, dict) and answer.get("choice") in (*TIERS, None)):
+            raise Refused(f"the faithfulness result in {folder} holds a record that is not one "
+                          "answer about a registered faithfulness head; nothing was asked")
+        seen.add(ident)
+        matched += answer is not None and answer.get("choice") == source["recorded"]
+    if len(lines) != FAITHFUL_COUNT or matched < FAITHFUL_PASS:
         raise Refused(f"the faithfulness result in {folder} did not pass: {matched} of "
-                      f"{len(lines)} answers match, {FAITHFUL_PASS} needed; nothing was asked")
-    bound = {"answers": file_sha256(answers), "summary": file_sha256(summary_path)}
-    wanted = (bound["answers"], bound["summary"], registration["document"], population_sha)
+                      f"{len(lines)} answers match, {FAITHFUL_PASS} of {FAITHFUL_COUNT} needed; "
+                      "nothing was asked")
+    bound = {"answers": file_sha256(answers)}
+    wanted = (bound["answers"], registration["document"], population_sha)
     with contextlib.closing(open_ro(db)) as connection:
         notes = [body for (body,) in connection.execute(
             "SELECT body FROM note WHERE item = ?", (ITEM,))]
     if not any(all(value in body for value in wanted) for body in notes):
         raise Refused(f"no note on sd:{ITEM} binds the faithfulness result to this registration "
-                      f"and population; after review, note: faithful {' '.join(wanted[:2])} "
-                      f"registration {wanted[2]} population {wanted[3]}; nothing was asked")
+                      f"and population; after review, note: faithful {wanted[0]} "
+                      f"registration {wanted[1]} population {wanted[2]}; nothing was asked")
     return bound, {(one["repository"], one["head"]): one for one in lines
                    if isinstance(one.get("answer"), dict) and one["answer"].get("choice") in TIERS}
 
@@ -1263,6 +1274,17 @@ def record_faults(lines: list, arm: str, run_id: str) -> list[str]:
         elif (line["repository"], line["head"]) in seen:
             faults.append("a head answered twice")
         seen.add((line.get("repository"), line.get("head")))
+    # `ended` is earned, not claimed: only Kev's heads after two outages the
+    # lines themselves show, recounted as the run counts them.
+    ended = [n for n, line in enumerate(lines) if line.get("outcome") == "ended"]
+    if ended:
+        streak = outages = 0
+        for line in lines[:ended[0]]:
+            streak = 0 if line.get("outcome") == "ok" else streak + 1
+            if streak >= KEV_OUTAGE:
+                outages, streak = outages + 1, 0
+        if arm != "kev" or outages < 2 or ended != list(range(ended[0], len(lines))):
+            faults.append("an ended line without two Kev outages before it")
     return faults
 
 

@@ -998,21 +998,35 @@ class TheReplay(CompareCase):
         retry.start()
         self.addCleanup(retry.stop)
         self.enterContext(unittest.mock.patch.object(experiment, "FAITHFUL_PASS", 1))
+        self.enterContext(unittest.mock.patch.object(experiment, "FAITHFUL_COUNT", 2))
         self.faithful = self.folder.parent / "faithful-2"
-        self.write_faithful([(99, "{}", True)])
+        self.checkpoint(90, 91)
+        self.write_faithful([(90, "cheap"), (91, "cheap")])
 
-    def write_faithful(self, lines, matched=None):
-        """Step 1's result: (head, state, match) per line, and a summary that
-        passes when `matched` reaches the threshold."""
+    def checkpoint(self, *heads):
+        """E heads with a recorded reading of `cheap`: the faithfulness draw's source."""
+        with contextlib.closing(connect(self.db)) as connection:
+            for n in heads:
+                connection.execute(
+                    "INSERT INTO state (kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                    (f"ship:{n}", "2026-09-22T00:00:00+00:00", json.dumps({
+                        "repository": "owner/repo", "head": sha(n), "reviewed_head": None,
+                        "passes": [a_pass(sha(n), tier="cheap")]})))
+
+    def write_faithful(self, lines, match=True, state=None):
+        """Step 1's answers: (head, choice) per line, each claiming `match`."""
+        source = {c["head"]: c for c in experiment.candidates(self.db)}
         self.faithful.mkdir(exist_ok=True)
         (self.faithful / "answers.jsonl").write_text("".join(json.dumps({
-            "repository": "owner/repo", "head": sha(n), "state": state, "match": match,
-            "answer": {"choice": "cheap", "confidence": 0.9, "probabilities": {"cheap": 0.9}},
-            "tries": [{"exit": 0, "wait_ms": 300}]}) + "\n" for n, state, match in lines))
-        matched = sum(m for _n, _s, m in lines) if matched is None else matched
+            "repository": "owner/repo", "head": sha(n), "recorded": "cheap", "match": match,
+            "state": state or source.get(sha(n), {}).get("state", "{}"),
+            "answer": {"choice": choice, "confidence": 0.9, "probabilities": {choice: 0.9}},
+            "tries": [{"exit": 0, "wait_ms": 300}]}) + "\n" for n, choice in lines))
+        # Stored claims the gate must not trust: each line's flag and a summary.
+        claimed = len(lines) if match else 0
         (self.faithful / "summary.json").write_text(json.dumps({
-            "asked": len(lines), "matched": matched, "threshold": experiment.FAITHFUL_PASS,
-            "passed": matched >= experiment.FAITHFUL_PASS}))
+            "asked": len(lines), "matched": claimed, "threshold": experiment.FAITHFUL_PASS,
+            "passed": claimed >= experiment.FAITHFUL_PASS}))
 
     def attest(self, more=(), registration=None):
         """A note on sd:2764 binding step 1's files to the registration and population."""
@@ -1020,10 +1034,10 @@ class TheReplay(CompareCase):
         document = Path(more[more.index("--preregistration") + 1]) if "--preregistration" in more \
             else experiment.REGISTRATION
         hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in (
-            self.faithful / "answers.jsonl", self.faithful / "summary.json", document,
-            self.population)]
+            self.faithful / "answers.jsonl", document, self.population,
+            self.faithful / "summary.json")]
         if registration is not None:
-            hashes[2] = registration
+            hashes[1] = registration
         stamp = "2026-10-11T00:00:00+00:00"
         with contextlib.closing(connect(self.db)) as connection:
             connection.execute(
@@ -1238,7 +1252,11 @@ class TheReplay(CompareCase):
                                         "unavailable", 5)])
 
     def test_step_one_answers_are_reused_for_the_same_state(self):
-        self.write_faithful([(0, self.state, True), (1, "{}", True)])
+        self.checkpoint(0, 1)
+        self.write_faithful([(0, "cheap"), (1, "cheap")])
+        population = [json.loads(line) for line in self.population.read_text().splitlines()]
+        population[1]["state"] = "{}"                 # head 1's population state differs
+        self.population.write_text("".join(json.dumps(r) + "\n" for r in population))
         self.assertEqual(self.replay("jev")[0], 0)
         found = {a["head"]: a for a in self.answers("jev")}
         self.assertEqual((found[sha(0)]["reused"], found[sha(0)]["tier"]),
@@ -1479,7 +1497,8 @@ class TheReplay(CompareCase):
                            ("another run", dict(other, run_id="jev-entry-2-replay-2")),
                            ("not final", dict(other, outcome="pending", tier=None)),
                            ("an answer with no tier", dict(other, tier=None)),
-                           ("no cost", dict(other, usd=None))):
+                           ("no cost", dict(other, usd=None)),
+                           ("ended with no outage", dict(other, outcome="ended", tier=None))):
             with self.subTest(name=name):
                 (replay / "kev.jsonl").write_text(json.dumps(line) + "\n")
                 self.assertEqual(self.replay("kev")[0], 2)
@@ -1750,11 +1769,22 @@ class TheReplay(CompareCase):
         self.assertFalse((self.folder / "replay").exists())
 
     def test_a_failing_faithfulness_result_refuses(self):
-        for name, matched in (("did not pass", 0), ("summary above its answers", 1)):
+        self.checkpoint(*range(92, 190))
+        for name, lines, kwargs in (
+                ("no answer matches, every flag says it does", [(90, "deep"), (91, "deep")], {}),
+                ("100 records, half matching", [(n, "cheap" if n % 2 else "deep")
+                                                for n in (90, 91, *range(92, 190))], {}),
+                ("one head twice", [(90, "cheap"), (90, "cheap")], {}),
+                ("one record", [(90, "cheap")], {}),
+                ("a head the draw cannot give", [(90, "cheap"), (250, "cheap")], {}),
+                ("a state that is not the head's", [(90, "cheap"), (91, "cheap")],
+                 {"state": "{}"}),
+                ("an answer that is not a tier", [(90, "cheap"), (91, "maybe")], {})):
             with self.subTest(name=name):
-                self.write_faithful([(99, "{}", False)], matched=matched)
+                self.folder = Path(tempfile.mkdtemp())       # no earlier run's manifest
+                self.write_faithful(lines, **kwargs)
                 self.assertEqual(self.replay("jev")[0], 2)
-        self.assertEqual(Stub.seen, [])
+                self.assertEqual(Stub.seen, [])
 
     def test_a_faithfulness_result_for_another_registration_or_population_refuses(self):
         self.attest(registration="0" * 64)
@@ -1766,12 +1796,12 @@ class TheReplay(CompareCase):
 
     def test_a_faithfulness_result_edited_after_its_note_refuses(self):
         self.attest()
-        self.write_faithful([(0, self.state, True)])
+        self.write_faithful([(91, "cheap"), (90, "cheap")])
         self.assertEqual(self.replay("jev", attest=False)[0], 2)
         self.assertEqual(Stub.seen, [])
 
     def test_a_faithfulness_result_changed_between_arms_refuses(self):
         self.assertEqual(self.replay("kev")[0], 0)
-        self.write_faithful([(0, self.state, True)])
+        self.write_faithful([(91, "cheap"), (90, "cheap")])
         self.assertEqual(self.replay("jev")[0], 2)
         self.assertEqual(Stub.seen, [])
