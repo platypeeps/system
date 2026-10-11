@@ -48,19 +48,41 @@ esac
 
 
 # launchd for refresh's library consumers (sd:3279): a file per loaded label
-# under LAUNCHD_STATE. bootout and bootstrap go to MAKE_LOG, so a case reads
-# their order against make setup; LAUNCHCTL_FAIL names the one call that
-# fails, "<verb> <label>".
+# under LAUNCHD_STATE; print exits 113, launchctl's "could not find service",
+# for one that is not. bootout and bootstrap go to MAKE_LOG, so a case reads
+# their order against make setup. LAUNCHCTL_FAIL names the one call that
+# fails, "<verb> <label>"; LAUNCHCTL_PRINT_FAIL a label whose print fails
+# otherwise. LAUNCHCTL_UNLOAD_DELAY keeps a booted-out label loaded for that
+# many prints, as launchd can; LAUNCHCTL_NO_LOAD a label whose bootstrap
+# exits 0 and loads nothing. A bootstrap of a loaded label fails, as it does.
 LAUNCHCTL_STUB = """#!/bin/sh
 case "$1" in
-  print) [ -e "$LAUNCHD_STATE/${2##*/}" ]; exit $? ;;
+  print)
+    label=${2##*/}
+    [ "$label" != "${LAUNCHCTL_PRINT_FAIL:-}" ] || exit 5
+    if [ -e "$LAUNCHD_STATE/$label.pending" ]; then
+      n=$(cat "$LAUNCHD_STATE/$label.pending")
+      if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$LAUNCHD_STATE/$label.pending"; exit 0; fi
+      rm -f "$LAUNCHD_STATE/$label" "$LAUNCHD_STATE/$label.pending"
+    fi
+    [ -e "$LAUNCHD_STATE/$label" ] || exit 113
+    exit 0 ;;
   bootout) label=${2##*/} ;;
   bootstrap) label=$(basename "$3" .plist) ;;
   *) echo "launchctl stub: unexpected $*" >&2; exit 2 ;;
 esac
 printf 'launchctl %s %s\\n' "$1" "$label" >> "$MAKE_LOG"
 [ "$1 $label" != "${LAUNCHCTL_FAIL:-}" ] || exit 5
-if [ "$1" = bootout ]; then rm -f "$LAUNCHD_STATE/$label"; else : > "$LAUNCHD_STATE/$label"; fi
+if [ "$1" = bootout ]; then
+  if [ -n "${LAUNCHCTL_UNLOAD_DELAY:-}" ]; then
+    echo "$LAUNCHCTL_UNLOAD_DELAY" > "$LAUNCHD_STATE/$label.pending"
+  else
+    rm -f "$LAUNCHD_STATE/$label"
+  fi
+else
+  [ ! -e "$LAUNCHD_STATE/$label" ] || exit 5
+  [ "$label" = "${LAUNCHCTL_NO_LOAD:-}" ] || : > "$LAUNCHD_STATE/$label"
+fi
 """
 
 SERVE = "local.system-tools.sd-serve"
@@ -548,7 +570,7 @@ class ConsumersTest(unittest.TestCase):
             (self.f.launchd / label).touch()
 
     def loaded(self):
-        return sorted(p.name for p in self.f.launchd.iterdir())
+        return sorted(p.name for p in self.f.launchd.iterdir() if p.suffix != ".pending")
 
     def test_consumers_stop_before_the_move_and_start_after_it(self):
         self.f.run("refresh", expect=0)
@@ -579,7 +601,8 @@ class ConsumersTest(unittest.TestCase):
         self.assertEqual(before, self.f.head(self.pack))
         self.assertNotIn(f"-C {self.pack} setup", self.f.make_calls())
         self.assertEqual([DASHBOARD, SERVE], self.loaded())
-        self.assertFalse(self.stopped.exists())
+        # Its bootout fails again on start, so it stays listed for the next refresh.
+        self.assertEqual(f"{DASHBOARD}\n", self.stopped.read_text())
 
     def test_a_move_that_fails_still_starts_them(self):
         self.f.run("refresh", expect=1, extra_env={"MAKE_RC": "2"})
@@ -602,6 +625,48 @@ class ConsumersTest(unittest.TestCase):
         self.f.run("refresh", expect=0)
         self.assertEqual([DASHBOARD, SERVE], self.loaded())
         self.assertFalse(self.stopped.exists())
+
+    # Round 2, class: a launchd state refresh assumed and never confirmed.
+
+    def test_the_move_waits_until_launchd_has_unloaded_them(self):
+        seen = self.f.tmp / "seen"
+        self.f.run("refresh", expect=0, extra_env={
+            "LAUNCHCTL_UNLOAD_DELAY": "3", "MAKE_HOOK": f'ls "$LAUNCHD_STATE" > {seen}'})
+        self.assertEqual("", seen.read_text())
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_an_unload_that_never_comes_moves_nothing_and_keeps_the_record(self):
+        before = self.f.head(self.pack)
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_UNLOAD_DELAY": "100000"})
+        self.assertIn(f"{SERVE} did not unload", result.stdout)
+        self.assertIn("nothing moved", result.stdout)
+        self.assertEqual(before, self.f.head(self.pack))
+        self.assertNotIn(f"-C {self.pack} setup", self.f.make_calls())
+        self.assertIn(SERVE, self.stopped.read_text())
+
+    def test_a_print_that_fails_is_no_answer_and_moves_nothing(self):
+        before = self.f.head(self.pack)
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_PRINT_FAIL": DASHBOARD})
+        self.assertIn(f"launchctl print {DASHBOARD}", result.stdout)
+        self.assertEqual(before, self.f.head(self.pack))
+
+    def test_a_listed_consumer_still_loaded_is_restarted_not_counted(self):
+        # A registration that outlived its bootout, or a refresh killed after
+        # the list write and before the bootout: still the old process.
+        self.stopped.parent.mkdir(parents=True)
+        self.stopped.write_text(f"{SERVE}\n{DASHBOARD}\n")
+        other = self.f.repo("a/other")
+        self.f.run("refresh", str(other), expect=0)
+        self.assertEqual([f"launchctl bootout {SERVE}", f"launchctl bootstrap {SERVE}",
+                          f"launchctl bootout {DASHBOARD}", f"launchctl bootstrap {DASHBOARD}"],
+                         self.f.make_calls())
+        self.assertFalse(self.stopped.exists())
+
+    def test_a_bootstrap_that_loads_nothing_keeps_the_record(self):
+        result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_NO_LOAD": SERVE})
+        self.assertIn(f"{SERVE} did not load", result.stdout)
+        self.assertIn(SERVE, self.stopped.read_text())
 
     def test_a_refresh_of_no_hub_checkout_stops_nothing(self):
         other = self.f.repo("a/other")

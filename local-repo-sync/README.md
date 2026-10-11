@@ -74,10 +74,15 @@ When it moves system or the pack, refresh first stops `sd-serve` and the
 dashboard (`<prefix>.sd-serve` and `<prefix>.sd-dashboard`, the prefix from
 `SYSTEM_TOOLS_LABEL_PREFIX`) with `launchctl bootout` (sd:3279). Each imports
 `sd_db` lazily from those checkouts, so a running one would load new modules
-into an old process. A bootout that fails moves nothing, starts the ones it
-stopped and exits 1. After the moves, failed or not, it bootstraps each
+into an old process. After each bootout it waits up to 10 s until
+`launchctl print` says the service is gone; `bootout` can return first.
+A bootout that fails or does not unload, or a `print` that fails other
+than with 113 ("could not find service"), moves nothing, starts the ones
+it stopped and exits 1. After the moves, failed or not, it bootstraps each
 stopped one again, `sd-serve` first, but only when the database's
-`user_version` equals the pack's `lib/sd_db` `SCHEMA_VERSION`. Otherwise
+`user_version` equals the pack's `lib/sd_db` `SCHEMA_VERSION`. A listed
+one still loaded is the old process, so it is booted out first. Its line
+leaves the list only once `launchctl print` shows the new load. Otherwise
 they stay stopped and refresh exits 1, so no `hub-pin` goes out: migrate,
 then refresh again. `~/.local/state/repo-sync/refresh-stopped` lists each
 one stopped and not started yet, so a refresh after a kill or a failed

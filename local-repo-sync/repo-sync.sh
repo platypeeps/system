@@ -618,27 +618,68 @@ CONSUMERS="sd-serve sd-dashboard"
 REFRESH_STOPPED="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-stopped"
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 
-# Boots out each loaded consumer. Returns 1 when a list write or a bootout fails.
+# Prints launchd's state of label $1, loaded or unloaded. 113 is launchctl's
+# "could not find service"; any other failure is no answer and returns 1.
+svc_state() {
+  # set -e would end the caller's $( ) subshell at a 113 before the case.
+  s_rc=0
+  launchctl print "gui/$(id -u)/$1" > /dev/null 2>&1 || s_rc=$?
+  case $s_rc in
+    0) echo loaded ;;
+    113) echo unloaded ;;
+    *) return 1 ;;
+  esac
+}
+
+# Waits up to 10 s until label $1 reads $2. bootout and bootstrap can return
+# before launchd has changed the registration (the dashboard's
+# _wait_unloaded, sd:3279). No answer keeps waiting, so it is never a pass.
+svc_wait() {
+  w_n=0
+  while [ "$(svc_state "$1" || :)" != "$2" ]; do
+    w_n=$((w_n + 1))
+    [ "$w_n" -le 50 ] || return 1
+    sleep 0.2
+  done
+}
+
+# Boots out label $1 and waits until launchd has unloaded it.
+svc_stop() {
+  if ! launchctl bootout "gui/$(id -u)/$1"; then
+    echo "!!! failed: launchctl bootout $1"
+    return 1
+  fi
+  if ! svc_wait "$1" unloaded; then
+    echo "!!! failed: $1 did not unload within 10 s of its bootout"
+    return 1
+  fi
+}
+
+# Boots out each loaded consumer, listed first. Returns 1 when launchd gives
+# no answer, a list write fails, or one does not unload.
 stop_consumers() {
   mkdir -p "$(dirname "$REFRESH_STOPPED")" || return 1
   for c in $CONSUMERS; do
     c_label="$LABEL_PREFIX.$c"
-    launchctl print "gui/$(id -u)/$c_label" > /dev/null 2>&1 || continue
+    if ! c_state=$(svc_state "$c_label"); then
+      echo "!!! failed: launchctl print $c_label gave no answer"
+      return 1
+    fi
+    [ "$c_state" = loaded ] || continue
     if ! grep -qxF "$c_label" "$REFRESH_STOPPED" 2>/dev/null; then
       { cat "$REFRESH_STOPPED" 2>/dev/null || :; echo "$c_label"; } > "$REFRESH_STOPPED.tmp" \
         && mv "$REFRESH_STOPPED.tmp" "$REFRESH_STOPPED" || return 1
     fi
-    if ! launchctl bootout "gui/$(id -u)/$c_label"; then
-      echo "!!! failed: launchctl bootout $c_label"
-      return 1
-    fi
+    svc_stop "$c_label" || return 1
     echo "stopped $c_label"
   done
 }
 
 # Starts each listed consumer, once the database's schema is the pack lib's:
-# code at another schema refuses the database. Returns 1, the list kept,
-# when the schema differs or cannot be read, or a bootstrap fails.
+# code at another schema refuses the database. A listed one still loaded is
+# the old process, so it is stopped first. A line leaves the list only once
+# launchd shows the fresh load. Returns 1, the list kept, when the schema
+# differs or cannot be read, or a step fails.
 start_consumers() {
   [ -s "$REFRESH_STOPPED" ] || return 0
   c_pack=$(hub_dir pack)
@@ -652,9 +693,20 @@ start_consumers() {
   for c in $CONSUMERS; do
     c_label="$LABEL_PREFIX.$c"
     grep -qxF "$c_label" "$REFRESH_STOPPED" || continue
-    if ! launchctl print "gui/$(id -u)/$c_label" > /dev/null 2>&1 \
-       && ! launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$c_label.plist"; then
+    if ! c_state=$(svc_state "$c_label"); then
+      echo "!!! failed: launchctl print $c_label gave no answer; left stopped, refresh again to start it"
+      return 1
+    fi
+    if [ "$c_state" = loaded ] && ! svc_stop "$c_label"; then
+      echo "  left listed; refresh again to restart it"
+      return 1
+    fi
+    if ! launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$c_label.plist"; then
       echo "!!! failed: launchctl bootstrap $c_label; left stopped, refresh again to start it"
+      return 1
+    fi
+    if ! svc_wait "$c_label" loaded; then
+      echo "!!! failed: $c_label did not load within 10 s of its bootstrap; left listed, refresh again to start it"
       return 1
     fi
     grep -vxF "$c_label" "$REFRESH_STOPPED" > "$REFRESH_STOPPED.tmp" || :
@@ -1955,7 +2007,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              runs `make setup`. When the pack's lib/sd_db SCHEMA_VERSION changed it
              prints the backup and migrate steps and runs neither. Moving
              system or the pack, it boots out <prefix>.sd-serve and
-             <prefix>.sd-dashboard first and bootstraps them after, once the
+             <prefix>.sd-dashboard first, waiting up to 10 s for each to
+             unload, and bootstraps them after, once the
              database's user_version is the pack lib's SCHEMA_VERSION;
              otherwise they stay stopped, listed in
              ~/.local/state/repo-sync/refresh-stopped for the next refresh,
