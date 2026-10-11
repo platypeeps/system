@@ -30,7 +30,8 @@ If Archify is unavailable, name the limitation and use a suitable available form
 In Claude Code a hook rewrites shell commands through `rtk`, a token-saving proxy (`git status` becomes `rtk git status`); Codex and opencode run them bare.
 Run meta commands such as `rtk gain` directly.
 If `rtk` output looks wrong, re-run through `rtk proxy <cmd>`; if that differs, use the bare command and say so.
-Run `grep -h` as `rtk proxy grep -h …`: the wrapper mangles `-h` (sd:1320).
+`rtk proxy` runs one program, not a shell: wrap pipes and loops as `rtk proxy sh -c '<cmd>'` (sd:1320).
+Run `grep`, `ls` or `tree` with a leading `-h` through `rtk proxy`: rtk reads it as `--help` (sd:1320).
 Give every `grep -r` over `~/repos` `-D skip`: a FIFO in a checkout blocks it forever.
 
 # GitHub
