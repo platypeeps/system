@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import sqlite3
 import subprocess
 import sys
@@ -270,19 +271,27 @@ def criteria(order=TIERS) -> str:
     return ",".join(f"{name}={TIER_CRITERIA[name]}" for name in order)
 
 
+#: An absolute or home path anywhere in a string: `/`, `~/` or a lone `~` at
+#: the start or after a space, quote, bracket or separator. A relative path
+#: such as `src/a.py` has no such boundary before its slash.
+ABSOLUTE = re.compile(r"""(?:^|[\s"'`(\[{<=:,;|])(?:/|~/|~(?=$|[\s"'`)\]}>,;]))""")
+
+
 def private_path(state: str, home: str | None) -> str | None:
-    """The first string in the state that is an absolute or home path, else None."""
+    """The first string in the state that holds an absolute or home path
+    anywhere in it, else None."""
     def strings(value):
         if isinstance(value, str):
             yield value
         elif isinstance(value, dict):
-            for item in value.values():
+            for key, item in value.items():
+                yield str(key)
                 yield from strings(item)
         elif isinstance(value, list):
             for item in value:
                 yield from strings(item)
     for text in strings(json.loads(state)):
-        if text.startswith(("/", "~")) or "/Users/" in text or "/home/" in text \
+        if ABSOLUTE.search(text) or "/Users/" in text or "/home/" in text \
                 or (home and home in text):
             return text
     return None
@@ -379,7 +388,22 @@ def ask_jev(state: str, env, subject: str | None = None, sleep=time.sleep) -> di
     return {"answer": None, "tries": tries}
 
 
+def same_file(one: Path, other: Path) -> bool:
+    """Whether two paths name one file; a path that does not exist names none."""
+    try:
+        return os.path.samefile(one, other)
+    except OSError:
+        return False
+
+
 def cmd_faithful(args, out, env) -> int:
+    # By file identity, before the ledger is opened or any call is made: a
+    # link or another spelling of the live or source database is that database.
+    for name, other in (("the live workflow database", default_db(env)),
+                        ("the --db source database", args.db)):
+        if same_file(args.ledger, other):
+            raise Refused(f"--ledger {args.ledger} is {name}; experiment rows "
+                          "never go to the live ledger")
     env = jev_env(env, args.ledger, args.out / "corpus")
     word = jev_meter.ready("jev", env)
     if word != "ready":
@@ -429,8 +453,9 @@ def cmd_faithful(args, out, env) -> int:
 
 # --- entry --------------------------------------------------------------------
 
-def default_db() -> Path:
-    return Path(os.environ.get("HOME", "~")).expanduser() / ".local/share/sd/sd.db"
+def default_db(env=None) -> Path:
+    env = os.environ if env is None else env
+    return Path(env.get("HOME", "~")).expanduser() / ".local/share/sd/sd.db"
 
 
 def build_parser() -> argparse.ArgumentParser:

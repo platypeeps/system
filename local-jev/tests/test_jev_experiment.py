@@ -141,6 +141,16 @@ class TheRebuiltState(unittest.TestCase):
             self.assertIsNotNone(experiment.private_path(state, None), path)
         self.assertIsNone(experiment.private_path(experiment.state_of(["src/a.py"], 1, "r"), None))
 
+    def test_an_absolute_path_inside_a_string_is_found(self):
+        for reason in ("never skip /opt/private/file.py", "matched (/srv/x)",
+                       "path=/var/lib/y", "see ~/notes.md first", "a, /etc/hosts"):
+            state = experiment.state_of(["src/a.py"], 1, reason)
+            self.assertIsNotNone(experiment.private_path(state, None), reason)
+        for reason in ("no category matched; default tier standard",
+                       "docs/a.md and tests/b.py; 1/2 of the paths"):
+            state = experiment.state_of(["src/a.py", "a/b/c.md"], 1, reason)
+            self.assertIsNone(experiment.private_path(state, None), reason)
+
 
 class TheFaithfulnessCheck(StubServer):
     """Step 1 end to end against the stub: the experiment ledger only."""
@@ -211,6 +221,34 @@ class TheFaithfulnessCheck(StubServer):
         self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])
         self.assertFalse((self.out / "answers.jsonl").exists())
+
+    def test_the_live_ledger_is_refused_as_the_experiment_ledger(self):
+        live = self.config / ".local/share/sd/sd.db"
+        live.parent.mkdir(parents=True)
+        initialise(live)
+        for ledger in (live, self.config / "link.db"):
+            if ledger.name == "link.db":
+                ledger.symlink_to(live)
+            self.ledger = ledger
+            code, _out = self.faithful()
+            self.assertEqual(code, 2, ledger)
+        self.assertEqual(Stub.seen, [])
+        with contextlib.closing(sqlite3.connect(live)) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(), (0,))
+
+    def test_the_source_database_is_refused_as_the_experiment_ledger(self):
+        # The checkpoints sit in the ledger file, so only the identity check
+        # can refuse: the draw would succeed and the calls would be made.
+        with contextlib.closing(sqlite3.connect(self.db)) as source:
+            rows = source.execute("SELECT kind, key, timestamp, body FROM state").fetchall()
+        with contextlib.closing(sqlite3.connect(self.ledger)) as target, target:
+            target.executemany("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, ?, ?)",
+                               rows)
+        self.db = self.out.parent / "same.db"
+        self.db.symlink_to(self.ledger)
+        code, _out = self.faithful()
+        self.assertEqual(code, 2)
+        self.assertEqual(Stub.seen, [])
 
     def test_a_ledger_that_refuses_stops_the_run(self):
         self.ledger = Path(tempfile.mkdtemp()) / "missing.db"
