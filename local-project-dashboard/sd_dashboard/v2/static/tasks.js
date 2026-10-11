@@ -41,7 +41,7 @@ addEventListener('DOMContentLoaded', () => {
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
-  const label = t => t.id ? `#${t.id}` : (t.kind === 'ops' ? 'ops' : 'no id');
+  const label = t => `#${t.id}`;
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
   function absorb(key, state) {
     const t = byKey(key); if (!t || !state?.item) return;
@@ -69,7 +69,6 @@ addEventListener('DOMContentLoaded', () => {
   function state(t) {
     if (t.status === 'done') return '';
     if (t.overdue || (t.due && days(t) < 0)) return 'warning';
-    if (t.kind === 'ops') return 'warning';
     if (t.due && days(t) <= 2) return 'caution';
     return '';
   }
@@ -81,9 +80,7 @@ addEventListener('DOMContentLoaded', () => {
     const lit = listed().filter(t => t.real).map(t => [t, state(t)]).filter(([, st]) => st);
     const worst = lit.some(([, st]) => st === 'warning') ? 'warning' : lit.length ? 'caution' : 'ok';
     const hits = lit.filter(([, st]) => st === worst).map(([t]) => t);
-    const ops = hits.filter(t => t.kind === 'ops').length;
-    const what = worst === 'ok' ? 'nothing due' : worst === 'caution' ? 'tasks due within 2 days'
-      : ops === hits.length ? 'failed syncs' : ops ? 'overdue tasks and failed syncs' : 'overdue tasks';
+    const what = worst === 'ok' ? 'nothing due' : worst === 'caution' ? 'tasks due within 2 days' : 'overdue tasks';
     window.shell.attention?.({ state: worst, n: hits.length, what });
   }
   function dueText(t) {
@@ -100,7 +97,6 @@ addEventListener('DOMContentLoaded', () => {
   // name why a move is off, in the reference's words where it had them.
   function legal(t, to) {
     if (t.status === to) return { ok: false, reason: 'Already here.' };
-    if (t.kind === 'ops') return { ok: false, reason: 'An ops row has no status to move. It clears when the next sync succeeds.' };
     if (t.assignment === 'running') return { ok: false, reason: 'A runner assignment is running. Status is locked until it ends.' };
     if (t.assignment === 'queued') return { ok: false, reason: 'A runner assignment is queued. Status is locked until it ends.' };
     if (t.kind === 'work' && to === 'done') return { ok: false, reason: 'Work items close through verified completion (sd work), not a status write.' };
@@ -109,7 +105,6 @@ addEventListener('DOMContentLoaded', () => {
   }
   function quadChange(t, q) {
     const Q = QUADS.find(x => x[0] === q);
-    if (t.kind === 'ops') return { ok: false, reason: 'An ops row has no priority or due date to set.' };
     if (!EDITABLE(t)) return { ok: false, reason: noEdit(t) };
     if (quadOf(t) === q) return { ok: false, reason: 'Already here.' };
     if (!Q[2] && t.urgentOtherwise) return { ok: false, reason: 'It is urgent for a reason a due date does not change (a waiting message or a report that needs attention).' };
@@ -136,9 +131,8 @@ addEventListener('DOMContentLoaded', () => {
   const walkable = t => String(t.recurrence || '').replace(/^RRULE:/i, '').split(';').every(p => PARTS.has(p.split('=')[0].trim().toUpperCase()));
   // A completion that opens nothing: a rule sd cannot walk, or one whose next date workflow.next_occurrence_due says is none.
   const ends = t => !walkable(t) || t.nextDue === null;
-  const cliMove = (t, to) => t.id ? `sd task status ${t.id} ${to}` : '';
+  const cliMove = (t, to) => `sd task status ${t.id} ${to}`;
   function cliQuad(t, ch) {
-    if (!t.id) return '';
     const a = [];
     if ('p' in ch) a.push(`--priority ${ch.p}`);
     if ('due' in ch) a.push(ch.due ? `--due ${ch.due}` : '--clear-due');
@@ -240,7 +234,7 @@ addEventListener('DOMContentLoaded', () => {
   // The text filter narrows on what a row shows: id, title, repo, status and kind, as v1's ?q= read the visible columns.
   find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
-  const words = t => `#${t.id ?? ''} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind}`.toLowerCase();
+  const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind}`.toLowerCase();
   const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
     && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && !t.parked === !F.parked.size && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
@@ -269,7 +263,7 @@ addEventListener('DOMContentLoaded', () => {
   const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
   // The rows' objects are the reader's (adopt below): it puts them after each read and retires a row the read stopped
   // listing. The Details' notes and assignments follow their row: once it is not listed, they run nothing either.
-  const objectOf = t => ({ id: t.key, type: t.kind === 'ops' ? 'ops row' : 'item', label: `${label(t)} ${t.title}`, item: t.id });
+  const objectOf = t => ({ id: t.key, type: 'item', label: `${label(t)} ${t.title}`, item: t.id });
   const live = key => { const o = C.get(key); return !!o && o.type !== 'not listed'; };
   function putAll() {
     Object.values(DET.items).forEach(d => {
@@ -284,8 +278,7 @@ addEventListener('DOMContentLoaded', () => {
     when: o => o.kind !== 'followup' ? `a ${o.kind} note has nothing to resolve` : o.resolved ? `resolved ${o.resolved.slice(0, 10)}` : true,
     cli: o => `sd note resolve ${o.note}`, consequence: () => 'Closes the followup. sd note has resolve and list only, so no verb reopens it.',
     run: o => done(o) });
-  const noId = 'no CLI: this row has no sd id';
-  const idOr = (o, f) => { const t = T(o); return t && t.id ? f(t) : noId; };
+  const rowOr = (o, f) => { const t = T(o); return t ? f(t) : 'no CLI: the task is no longer listed'; };
   const coarse = matchMedia('(pointer: coarse)');
   const NEXT = { planning: 'ready', ready: 'in_progress', in_progress: 'done', blocked: 'ready' };
   // Status moves: keys 1–5 in the menu, as on the board. The list row shows the next status as its button.
@@ -299,7 +292,7 @@ addEventListener('DOMContentLoaded', () => {
     id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban',
     primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
     when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
-    cli: o => idOr(o, t => cliMove(t, s)),
+    cli: o => rowOr(o, t => cliMove(t, s)),
     run: o => { const t = must(o); let from = t.status;
       return landing(moveTo(t.key, s, { sent: r => { from = r.status; }, check: r => moveOn(s, r) }).then(v => { landed(t.key); return v; }),
         () => `${label(t)} ${slabel(from)} → ${name} · ${cliMove(t, s)}`, v => moveTo(t.key, from, { rev: v.revision })); },
@@ -314,7 +307,7 @@ addEventListener('DOMContentLoaded', () => {
   const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check',
     primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
     when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
-    cli: o => idOr(o, t => cliMove(t, 'done')),
+    cli: o => rowOr(o, t => cliMove(t, 'done')),
     // build: next_due is workflow.next_occurrence_due, the date the completion computes. null is its "none": the
     // completion then ends the series and opens nothing, so the confirm says that (review, PR #46). The outcome is stated
     // in the design owner's three cases (sd:2250): a date the page has; a valid rule whose date the page has not read yet
@@ -342,31 +335,31 @@ addEventListener('DOMContentLoaded', () => {
     ...Object.values(STATUS_CMD), COMPLETE,
     // Edit sets priority and due date in one dialog. Its save carries the Undo, so the shell's own feedback stays safe.
     { id: 'item.edit', on: 'item', label: 'Edit', key: 'e', risk: 'safe', icon: 'pen-line',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : EDITABLE(t) || noEdit(t); },
-      cli: o => idOr(o, t => `sd task edit ${t.id} --priority ${t.p || 'N'} ${t.due ? '--due ' + t.due : '--due YYYY-MM-DD'}`),
+      when: o => { const t = T(o); return !t ? 'the task is no longer listed' : EDITABLE(t) || noEdit(t); },
+      cli: o => rowOr(o, t => `sd task edit ${t.id} --priority ${t.p || 'N'} ${t.due ? '--due ' + t.due : '--due YYYY-MM-DD'}`),
       run: o => { askEdit(T(o)); return `Editing ${label(T(o))}`; } },
     // Move to: the status moves without drag (touch, or anyone). One form lists every column; a refused one is off with its reason.
     { id: 'item.move', on: 'item', label: 'Move to', key: 'm', risk: 'safe', icon: 'kanban',
       primary: () => view === 'board' && coarse.matches,
       when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; const L = STATUSES.map(([s]) => legal(t, s)); return L.some(x => x.ok) || L.find(x => x.reason !== 'Already here.').reason; },
-      cli: o => idOr(o, t => `sd task status ${t.id} <status>`),
+      cli: o => rowOr(o, t => `sd task status ${t.id} <status>`),
       run: o => { askMove(T(o)); return null; } },
     // Priorities 1–4, workflow.edit_item's range, each a bulk edit with Undo (sd:3012 triage re-prioritizes in bulk). A row
     // already at the priority is refused as its write leaves, not by `when`: the bar offers only what every picked row is
     // on for, so a pick that mixes priorities would otherwise offer none.
     ...[1, 2, 3, 4].map(n => ({ id: `item.p${n}`, on: 'item', label: `Edit → P${n}`, risk: 'undo', bulk: true, icon: 'flag-triangle-right',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id to edit' : EDITABLE(t) || noEdit(t); },
-      cli: o => idOr(o, t => `sd task edit ${t.id} --priority ${n}`),
+      when: o => { const t = T(o); return !t ? 'the task is no longer listed' : EDITABLE(t) || noEdit(t); },
+      cli: o => rowOr(o, t => `sd task edit ${t.id} --priority ${n}`),
       run: o => { const t = must(o), was = t.p; return editRun(t, { p: n }, () => `${label(t)} P${was || '–'} → P${n}`, { check: r => r.p !== n || `it is already P${n}` }); },
       undo: undoOf })),
     // Close is sd task cancel (sd:3012): done, with a cancelled receipt and the reason, through progress.task_guard. A bulk
     // close asks once for one reason and runs every picked row with its own revision. No Undo: no sd verb takes it back.
     { id: 'item.close', on: 'item', label: 'Close', risk: 'confirm', executes: true, bulk: true, icon: 'ban',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id' : !CLOSES.includes(t.kind) ? `sd task cancel closes a task or followup; this is a ${t.kind} item`
+      when: o => { const t = T(o); return !t ? 'the task is no longer listed' : !CLOSES.includes(t.kind) ? `sd task cancel closes a task or followup; this is a ${t.kind} item`
         : t.status === 'done' ? 'it is done' : repeats(t) ? 'a recurring task cannot be cancelled; clear its recurrence first, or complete it'
         : t.assignment === 'running' || t.assignment === 'queued' ? `a runner assignment is ${t.assignment}` : true; },
       fields: () => [{ name: 'reason', label: 'Reason', required: true, placeholder: 'why nobody will do it', help: 'Recorded on each closed task. A close without a reason is refused.' }],
-      cli: (o, v = {}) => idOr(o, t => `sd task cancel ${t.id} --reason ${v.reason ? window.shell.shq(v.reason) : "'<why>'"}`),
+      cli: (o, v = {}) => rowOr(o, t => `sd task cancel ${t.id} --reason ${v.reason ? window.shell.shq(v.reason) : "'<why>'"}`),
       sends: o => `POST /api/items/${T(o).id}/cancel-task {reason}`,
       consequence: () => 'Each task closes as done, with a cancelled receipt and your reason. No sd verb takes it back.',
       run: (o, v) => { const t = must(o);
@@ -374,53 +367,53 @@ addEventListener('DOMContentLoaded', () => {
     // Unpark (sd:3012) clears parked_at through the item edit route, as the item page's Unpark does (sd:3007). No Undo:
     // only the nightly prune parks, so no write takes it back.
     { id: 'item.unpark', on: 'item', label: 'Unpark', risk: 'safe', executes: true, bulk: true, icon: 'archive-restore',
-      when: o => { const t = T(o); return !t?.id ? 'this row has no sd id' : !t.parked ? 'it is not parked' : true; },
-      cli: o => idOr(o, t => `sd task edit ${t.id} --unpark`),
+      when: o => { const t = T(o); return !t ? 'the task is no longer listed' : !t.parked ? 'it is not parked' : true; },
+      cli: o => rowOr(o, t => `sd task edit ${t.id} --unpark`),
       sends: o => `POST /api/items/${T(o).id} {parked_at: null}`,
       run: o => { const t = must(o);
         return landing(write(t.key, x => `/api/items/${x.id}`, { parked_at: null }), () => `${label(t)} unparked · sd task edit ${t.id} --unpark`); } },
     { id: 'item.note', on: 'item', label: 'Note', key: 'n', risk: 'safe', icon: 'notebook-pen',
-      when: o => !!T(o)?.id || 'this row has no sd id to attach a note to',
-      cli: o => idOr(o, t => `sd task note ${t.id} --kind comment --body "…"`),
+      when: o => !!T(o) || 'the task is no longer listed',
+      cli: o => rowOr(o, t => `sd task note ${t.id} --kind comment --body "…"`),
       run: o => { window.shell.capture(o); const r = document.querySelector('dialog.capture input[value="note"]'); if (r && !r.disabled) { r.checked = true; r.form.dispatchEvent(new Event('input')); } return 'Write the note'; } },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
-      cli: o => idOr(o, t => `sd task delete ${t.id}`),
+      cli: o => rowOr(o, t => `sd task delete ${t.id}`),
       consequence: () => 'The task, its notes and its history go. Its assignments stay in the runner log. This cannot be undone; to keep a record, move it to Done instead.' },
     // Artifact and cancel are sd work verbs (review item 17). build (sd:2200, the design's sd:2199): both post to the routes v1's
     // item page uses, /api/items/<id>/(relink|cancel), with the row's revision. The text only the operator has, a moved path or a
     // reason, is a confirm field; OK stays off until it is typed. Availability is progress.work_controls, read with the Details.
     // Neither has Undo: relinking back is another relink, and no sd verb reopens a cancelled item.
     { id: 'work.relink', on: 'item', label: 'Relink', key: 'l', risk: 'safe', executes: true, icon: 'link-2',
-      when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id' : t.kind !== 'work' ? `sd work relink acts on a work item; this is a ${t.kind}`
+      when: o => { const t = T(o), d = detOf(t); return !t ? 'the task is no longer listed' : t.kind !== 'work' ? `sd work relink acts on a work item; this is a ${t.kind}`
         : !d ? 'the artifact was not read for this row' : !d.work.relink ? d.work.reason : d.item.path ? true : 'the item has no artifact to relink'; },
       fields: o => { const d = detOf(T(o)); return [{ name: 'path', label: 'Moved path', required: true, placeholder: d.item.path,
         help: `Relative to ${d.item.repo}. The item keeps its history; only the artifact path changes.` }]; },
-      cli: (o, v = {}) => idOr(o, t => `sd work relink ${t.id} ${v.path ? window.shell.shq(v.path) : '<moved path>'}`),
+      cli: (o, v = {}) => rowOr(o, t => `sd work relink ${t.id} ${v.path ? window.shell.shq(v.path) : '<moved path>'}`),
       sends: o => `POST /api/items/${T(o).id}/relink {path}`,
       run: (o, v) => { const t = must(o);
         return landing(write(t.key, x => `/api/items/${x.id}/relink`, { path: v.path }), () => `${label(t)} relinked → ${v.path} · sd work relink ${t.id} ${window.shell.shq(v.path)}`); } },
     { id: 'work.cancel', on: 'item', label: 'Cancel', key: 'w', risk: 'confirm', executes: true, icon: 'ban',
-      when: o => { const t = T(o), d = detOf(t); return !t?.id ? 'this row has no sd id' : t.kind !== 'work' ? `sd work cancel acts on a work item; this is a ${t.kind}`
+      when: o => { const t = T(o), d = detOf(t); return !t ? 'the task is no longer listed' : t.kind !== 'work' ? `sd work cancel acts on a work item; this is a ${t.kind}`
         : t.status === 'done' ? 'the work item is done' : !d ? 'its cancel availability was not read for this row' : d.work.cancel || d.work.reason; },
       fields: () => [{ name: 'reason', label: 'Reason', required: true, placeholder: 'why the work stops', help: 'Recorded with the cancellation. A cancel without a reason is refused.' }],
-      cli: (o, v = {}) => idOr(o, t => `sd work cancel ${t.id} --reason ${v.reason ? window.shell.shq(v.reason) : "'<why>'"}`),
+      cli: (o, v = {}) => rowOr(o, t => `sd work cancel ${t.id} --reason ${v.reason ? window.shell.shq(v.reason) : "'<why>'"}`),
       sends: o => `POST /api/items/${T(o).id}/cancel {reason}`,
       consequence: () => 'Closes the work item as cancelled, with your reason. No sd verb takes it back.',
       run: (o, v) => { const t = must(o);
         return landing(write(t.key, x => `/api/items/${x.id}/cancel`, { reason: v.reason }), () => `${label(t)} cancelled · sd work cancel ${t.id} --reason ${window.shell.shq(v.reason)}`); } },
     // Recurrence: sd task edit --recur needs a due date; --clear-recur stops the series and clears its anchor, which Undo sets again.
     { id: 'item.recur', on: 'item', label: 'Edit → repeat weekly', risk: 'undo', icon: 'calendar-clock',
-      when: o => { const t = T(o), d = detOf(t); if (!t?.id) return 'this row has no sd id to edit'; if (!RECURS.includes(t.kind)) return `a ${t.kind} item cannot recur`;
+      when: o => { const t = T(o), d = detOf(t); if (!t) return 'the task is no longer listed'; if (!RECURS.includes(t.kind)) return `a ${t.kind} item cannot recur`;
         if (!EDITABLE(t)) return noEdit(t);
         if (!d) return 'recurrence was not read for this row';
         return d.item.recurrence ? `it repeats already: ${d.item.recurrence}` : t.due ? true : '--recur needs a due date'; },
-      cli: o => idOr(o, t => `sd task edit ${t.id} --recur FREQ=WEEKLY`),
+      cli: o => rowOr(o, t => `sd task edit ${t.id} --recur FREQ=WEEKLY`),
       run: o => { const t = must(o); return editRun(t, { recurrence: 'FREQ=WEEKLY' }, () => `${label(t)} repeats weekly`,
         { check: r => !repeats(r) || `it repeats already: ${r.recurrence}` }); }, undo: undoOf },
     { id: 'item.recur.clear', on: 'item', label: 'Edit → stop repeating', risk: 'undo', icon: 'calendar-clock',
       when: o => { const t = T(o), d = detOf(t); return !d ? 'recurrence was not read for this row' : !EDITABLE(t) ? noEdit(t) : d.item.recurrence ? true : 'the task does not repeat'; },
-      cli: o => idOr(o, t => `sd task edit ${t.id} --clear-recur`),
+      cli: o => rowOr(o, t => `sd task edit ${t.id} --clear-recur`),
       // The rule and anchor Undo sets again are the row's as the edit leaves, after any edit queued before it.
       run: o => { const t = must(o); return editRun(t, { recurrence: null }, () => `${label(t)} no longer repeats`,
         { check: r => repeats(r) || 'the task does not repeat', keep: ['recurrence', 'anchor'] }); },
@@ -481,7 +474,7 @@ addEventListener('DOMContentLoaded', () => {
       </div>` : ''}</div>`);
   }
   function renderMatrix() {
-    const v = visible().filter(t => t.status !== 'done' && t.kind !== 'ops');
+    const v = visible().filter(t => t.status !== 'done');
     const q = QUADS.map(([k, name, , , sub]) => {
       const rows = v.filter(t => quadOf(t) === k);
       const worst = rows.some(t => state(t) === 'warning') ? 'warning' : rows.some(t => state(t) === 'caution') ? 'caution' : '';
@@ -498,12 +491,12 @@ addEventListener('DOMContentLoaded', () => {
       <div class="axis y">Important <span class="rule">P1–P2</span></div>${q[0]}${q[1]}
       <div class="axis y">Not important</div>${q[2]}${q[3]}
     </div>
-    <p class="mnote">Done tasks and ops rows stay off the matrix. A drop edits the task: into Important sets P2, out of it sets P3; crossing into or out of Urgent asks you for the due date, because urgency comes from it. Cancel changes nothing.</p>`);
+    <p class="mnote">Done tasks stay off the matrix. A drop edits the task: into Important sets P2, out of it sets P3; crossing into or out of Urgent asks you for the due date, because urgency comes from it. Cancel changes nothing.</p>`);
   }
   // The list's sort, page and size (shell.list, sd:2682): priority first, 50 a page. Every column with an order sorts.
   const LIST = { sort: 'p', dir: 1, size: 50 }, L = { ...LIST, page: 1 };
   const ORDER = Object.fromEntries(STATUSES.map(([st], i) => [st, i]));
-  const SORTS = { id: t => t.id ?? Infinity, title: t => t.title.toLowerCase(), repo: t => t.repo.toLowerCase(), status: t => ORDER[t.status] ?? 99, p: t => t.p ?? 9,
+  const SORTS = { id: t => t.id, title: t => t.title.toLowerCase(), repo: t => t.repo.toLowerCase(), status: t => ORDER[t.status] ?? 99, p: t => t.p ?? 9,
     due: t => t.overdue && !t.due ? -99 : t.due ? days(t) : 999 };
   const COLS = [[null, html`<span class="sr">Select</span>`], [null, html`<span class="sr">State</span>`], ['id', 'Id', 'label'], ['title', 'Title', 'label'], ['repo', 'Repo', 'label'],
     ['status', 'Status', 'label'], ['p', 'P', 'label'], ['due', 'Due', 'label'], [null, html`<span class="sr">Actions</span>`]];
@@ -533,22 +526,21 @@ addEventListener('DOMContentLoaded', () => {
       : !tasks.length ? 'No open task, so nothing is selected.' : !visible().length ? 'No task matches these filters. Clear them to see the list.'
       : 'Select a task to see its fields and moves.'}</p>`); return; }
     const [dt] = dueText(t), act = C.bar(t.key), gone = !live(t.key);
-    put(el, html`<div class="kind"><span class="label">${t.kind === 'ops' ? 'Ops row' : t.kind}</span><span class="tag real">observed</span></div>
+    put(el, html`<div class="kind"><span class="label">${t.kind}</span><span class="tag real">observed</span></div>
       <h2>${t.title}</h2>
       <dl>
-        <dt>Id</dt><dd>${t.id ? '#' + t.id : 'not recorded'}</dd>
-        <dt>Status</dt><dd>${t.kind === 'ops' ? 'none (ops)' : slabel(t.status)}</dd>
+        <dt>Id</dt><dd>#${t.id}</dd>
+        <dt>Status</dt><dd>${slabel(t.status)}</dd>
         <dt>Priority</dt><dd>${t.p ? 'P' + t.p : 'not recorded'}</dd>
         <dt>Due</dt><dd>${t.due ? `${t.due} · ${dt}` : t.overdue ? 'overdue · date not recorded' : 'none'}</dd>
         <dt>Repo</dt><dd>${t.repo_path || t.repo}</dd>
         <dt>Urgent</dt><dd>${urgent(t) ? 'yes' : 'no'} <span class="why">(derived)</span></dd>
-        <dt>Quadrant</dt><dd>${t.kind === 'ops' || t.status === 'done' ? 'not placed' : QUADS.find(q => q[0] === quadOf(t))[1]}</dd>
+        <dt>Quadrant</dt><dd>${t.status === 'done' ? 'not placed' : QUADS.find(q => q[0] === quadOf(t))[1]}</dd>
         ${t.assignment ? html`<dt>Assignment</dt><dd>${t.assignment}</dd>` : ''}
       </dl>
-      <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>`
-        : String(act) ? act : html`<p class="why">No sd item behind this row; nothing to run. It clears when the next sync succeeds.</p>`}
+      <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
       ${more(t)}
-      ${t.id ? html`<p class="why">Delete asks first and cannot be undone; to keep a record, move the task to Done. <code>sd task</code> has no delete verb yet (sd:1899).</p>` : ''}
+      <p class="why">Delete asks first and cannot be undone; to keep a record, move the task to Done. <code>sd task</code> has no delete verb yet (sd:1899).</p>
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
   }
   // The v1 item page's sections (review item 17), each with the read it comes from. A row without a reading says so once.
@@ -643,7 +635,7 @@ addEventListener('DOMContentLoaded', () => {
   // build: a quadrant drop is an edit; it lands through the same write, toasts after, and Undo edits the fields back.
   function commitEdit(t, ch, words) {
     // A page dialog, not a shell command: it toasts on its own, with the same Undo a command gets.
-    editRun(t, ch, () => `${label(t)} ${words}${t.id ? ' · ' + cliQuad(t, ch) : ''}`).then(r => toast(r.text, () => r.undo().then(
+    editRun(t, ch, () => `${label(t)} ${words}${' · ' + cliQuad(t, ch)}`).then(r => toast(r.text, () => r.undo().then(
       ok => { if (ok) toast(`Edit undone · ${label(t)}`); }, err => failed(label(t), err))), err => failed(label(t), err));
   }
   function toQuad(key, q) {
@@ -727,7 +719,7 @@ addEventListener('DOMContentLoaded', () => {
       <p class="why">Now in ${slabel(t.status)}. A column this task cannot take is off and says why.</p>
       <div class="moves">${STATUSES.map(([s, name], i) => { const L = legal(t, s); return html`<div class="mv">
         <button class="btn${L.ok ? '' : ' quiet'}" type="submit" value="${s}" data-move="${s}"${L.ok ? '' : html` disabled aria-describedby="mv-${s}"`}><span>${name}</span><kbd>${i + 1}</kbd></button>
-        ${L.ok ? html`<code>${cliMove(t, s) || noId}</code>` : html`<p class="why" id="mv-${s}">${L.reason}</p>`}</div>`; })}</div>
+        ${L.ok ? html`<code>${cliMove(t, s)}</code>` : html`<p class="why" id="mv-${s}">${L.reason}</p>`}</div>`; })}</div>
       <div class="actions"><button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button></div></form>`);
     const f = dateDlg.querySelector('form');
     f.addEventListener('keydown', e => { const S = STATUSES[parseInt(e.key, 10) - 1], b = S && f.querySelector(`[data-move="${S[0]}"]`); if (b && !b.disabled) { e.preventDefault(); b.click(); } });
