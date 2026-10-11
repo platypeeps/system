@@ -3630,14 +3630,21 @@ doctor_sd_versions() {
   if [ -n "$db_schema" ] && [ "$db_schema" != "$lib_schema" ]; then
     doctor_fail "database schema $db_schema DIFFERS from the pack's lib/ $lib_schema — after a backup, with sd-dashboard and sd-serve stopped: $SD_PACK_ROOT/bin/sd-db migrate"
   fi
+  # `sd-db.sh serve` runs system's frozen copy when its plist sets a selector.
+  selector=$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-serve.plist" SD_DB_LIBRARY)
+  [ -z "$selector" ] || doctor_fail "$LABEL_PREFIX.sd-serve sets SD_DB_LIBRARY=$selector, so it runs system's frozen local-sd-db — remove the key from its plist, then kickstart it"
+  # The pack's own interpreter may be absent; one the operator named must exist.
   seen=" "
-  for py in "$SD_PACK_ROOT/.venv/bin/python" "${SD_DASHBOARD_PYTHON:-}" \
-            "$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-dashboard.plist" SD_DASHBOARD_PYTHON)"; do
+  plist_py=$(plist_env_value "$HOME/Library/LaunchAgents/$LABEL_PREFIX.sd-dashboard.plist" SD_DASHBOARD_PYTHON)
+  for py in "$SD_PACK_ROOT/.venv/bin/python" "${SD_DASHBOARD_PYTHON:-}" "$plist_py"; do
     [ -n "$py" ] || continue
     case "$seen" in *" $py "*) continue ;; esac
     seen="$seen$py "
     if [ ! -x "$py" ]; then
-      echo "  --      no interpreter at $py (not checked)"
+      case " ${SD_DASHBOARD_PYTHON:-} $plist_py " in
+        *" $py "*) doctor_fail "no interpreter at $py, which SD_DASHBOARD_PYTHON names" ;;
+        *) echo "  --      no interpreter at $py (not checked)" ;;
+      esac
       continue
     fi
     if ! file=$("$py" -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import sd_db; print(sd_db.__file__)' "$lib" 2>&1); then

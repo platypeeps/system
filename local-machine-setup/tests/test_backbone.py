@@ -468,6 +468,26 @@ class DoctorTest(unittest.TestCase):
                 self.assertEqual(code, 1, out)
                 self.assertRegex(out, rf"FAIL    \S+/python resolves sd_db from {re.escape(elsewhere)}, not the pack's lib/")
 
+    def test_a_named_interpreter_that_is_missing_fails(self):
+        # A failed probe is not a pass: an interpreter the operator named must exist.
+        self.fixture.make_database()
+        missing = self.fixture.home / "no-python"
+        code, out = self.doctor(SD_DASHBOARD_PYTHON=missing)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    no interpreter at {missing}, which SD_DASHBOARD_PYTHON names", out)
+
+    def test_an_sd_serve_plist_that_picks_a_library_fails(self):
+        # An older or hand-edited plist can set SD_DB_LIBRARY, and `sd-db.sh serve`
+        # then runs system's frozen copy, not the pack's lib/ (the 2026-10-10 incident).
+        self.fixture.make_database()
+        agents = self.fixture.home / "Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / "local.system-tools.sd-serve.plist").write_bytes(plistlib.dumps(
+            {"Label": "local.system-tools.sd-serve", "EnvironmentVariables": {"SD_DB_LIBRARY": "installed"}}))
+        code, out = self.doctor()
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL    local.system-tools.sd-serve sets SD_DB_LIBRARY=installed", out)
+
     def test_a_pack_without_lib_fails_and_names_the_move(self):
         self.fixture.make_database()
         code, out = self.doctor(SD_PACK_ROOT=self.fixture.home / "no-pack")
