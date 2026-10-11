@@ -10,6 +10,9 @@ file holds the steps built so far:
   pre-registration names, and refuses any other.
 * `faithful` (step 1) rebuilds 50 states from stored checkpoints and asks Jev
   once each, the way the pack asks it, writing to the experiment's own ledger.
+* `population` (step 2) lists every reviewed head of C1 and E with its state,
+  from the checkpoint or rebuilt with git and the pinned pack's router. It
+  reads routing only: no finding, review count or status.
 
 **It reads the workflow database read-only.** Every query opens it through
 `sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
@@ -60,6 +63,10 @@ HEURISTIC_SHA256 = "b637100886386bc803d23e276df6fa85b4aef438691f748cca482b41ebdf
 ENTRY1_FROM = "2026-09-21T06:55:07"
 ENTRY1_TO = "2026-09-29T20:10:00"
 
+#: Population C1's first day in UTC (pre-registration, "Populations"); C1
+#: runs to the day before E's first.
+C1_FROM = "2026-09-09"
+
 #: Population E's window in UTC: 2026-09-21 to 2026-10-05, both days whole.
 E_FROM = "2026-09-21"
 E_TO = "2026-10-06"
@@ -77,6 +84,12 @@ TIER_CRITERIA = {
             " and needs the most thorough review",
 }
 MAX_PATHS = 40
+
+#: The pack commit whose router and default policy rebuild a state from git
+#: (design.md, "From git"): the one the suite's `PACK_STATE_SHA256` was taken
+#: at. The pack's checkout, under HOME, as `jev.sh` finds its interpreter.
+PACK_SHA = "b6b58bb14aa5105eae7d62f2e70f0a38e1f4c61b"
+PACK_HOME = "repos/platypeeps/sd-ai-command-pack"
 
 #: What `sd-review` appends to the routing reason once Jev answered; the
 #: state Jev saw holds the reason before it (design.md, "Rebuilding each state").
@@ -567,6 +580,246 @@ def cmd_faithful(args, out, env) -> int:
     return 0 if summary["passed"] else 1
 
 
+# --- step 2: the population ---------------------------------------------------
+
+def head_of(body: dict) -> str | None:
+    """The head a checkpoint reviewed: `coalesce(reviewed_head, head)`."""
+    return body.get("reviewed_head") or body.get("head")
+
+
+def routing_view(one_pass: dict) -> dict:
+    """What the population may read of a pass: its head, its base, and the
+    report's subject, route and Jev reading. Never a finding, a review count
+    or a status, so a C1 outcome stays unread (pre-registration, "Unseen rule")."""
+    rep = report(one_pass)
+    return {"head": one_pass.get("head"), "base": one_pass.get("base"),
+            "subject": rep.get("subject"), "route": rep.get("route"), "jev": rep.get("jev")}
+
+
+def stored(view: dict) -> dict | None:
+    """The four inputs of `_jev_state` and the routed tier, when the pass
+    stored them all, else None."""
+    subject, route = view["subject"], view["route"]
+    if not isinstance(subject, dict) or not isinstance(route, dict):
+        return None
+    paths, lines, reason = subject.get("paths"), subject.get("lines"), route.get("reason")
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths) \
+            or type(lines) is not int or not isinstance(reason, str):
+        return None
+    reading_of = view["jev"] if isinstance(view["jev"], dict) else {}
+    return {"paths": paths, "lines": lines, "reason": routing_said(reason),
+            "routed": reading_of.get("routed_tier") or route.get("tier"),
+            "base": subject.get("base") or view["base"]}
+
+
+def numstat(root: str, base: str, head: str) -> tuple[list[str], int] | None:
+    """The pack's `changed`: sorted distinct paths and lines moved, or None."""
+    found = git(root, "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff",
+                "--no-textconv", f"{base}..{head}")
+    if found is None:
+        return None
+    paths, lines = set(), 0
+    for row in filter(None, found.decode("utf-8", "replace").split("\0")):
+        added, removed, name = row.split("\t", 2)
+        paths.add(name)
+        lines += sum(int(value) for value in (added, removed) if value.isdigit())
+    return sorted(paths), lines
+
+
+def pinned_router(pack: Path):
+    """`route(paths, lines, policy_text) -> (tier, reason)` from the pack's
+    `sd_route.py` and `sd-review`'s `DEFAULT_POLICY` at `PACK_SHA`, or None
+    when the pack checkout cannot show them. A repository's own
+    `.github/sd-review.json` at the head is laid over the default, as
+    `validate_policy` does; a draft is never assumed."""
+    import ast
+    import types
+    source = git(str(pack), "show", f"{PACK_SHA}:bin/sd_route.py")
+    script = git(str(pack), "show", f"{PACK_SHA}:bin/sd-review")
+    if source is None or script is None:
+        return None
+    module = types.ModuleType("sd_route_pinned")
+    exec(compile(source, "sd_route.py", "exec"), module.__dict__)  # noqa: S102 - the pinned pack
+    default = None
+    for node in ast.parse(script).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (
+            node.targets[0] if isinstance(node, ast.Assign) else None)
+        if isinstance(target, ast.Name) and target.id == "DEFAULT_POLICY":
+            default = ast.literal_eval(node.value)
+    if not isinstance(default, dict):
+        return None
+
+    def route(paths, lines, policy_text):
+        policy = dict(default)
+        if policy_text is not None:
+            policy.update({k: v for k, v in json.loads(policy_text).items() if k != "$schema"})
+        plan = module.route(paths, lines, False, policy)
+        return plan.tier, plan.reason
+    return route
+
+
+def clones(db) -> dict[str, list[str]]:
+    """Each managed repository's `owner/name`, lower-cased, with its local
+    checkouts whose `origin` is that remote."""
+    from sd_db import protection
+    from sd_db.paths import home_absolute
+    with contextlib.closing(open_ro(db)) as connection:
+        repos = protection.rows(connection)
+    found: dict[str, list[str]] = {}
+    for repo in repos:
+        root = home_absolute(repo["repo"])
+        if not repo["slug"] or not root:
+            continue
+        origin = git(root, "config", "--get", "remote.origin.url")
+        slug = protection.github_slug(origin.decode("utf-8", "replace").strip()) if origin else None
+        if slug and "/".join(slug).lower() == repo["slug"].lower():
+            found.setdefault(repo["slug"].lower(), []).append(root)
+    return found
+
+
+def holding(roots: list[str], head: str) -> str | None:
+    """The first checkout that still holds the head's objects."""
+    return next((root for root in roots
+                 if git(root, "cat-file", "-e", f"{head}^{{commit}}") is not None), None)
+
+
+def from_git(roots: list[str], head: str, bases: list, route) -> tuple[dict | None, str]:
+    """A state rebuilt with git and the pinned router, as (inputs, "") or
+    (None, why not). A base is a pass's commit, else the merge base with the
+    checkpoint's branch."""
+    if not roots:
+        return None, "no-clone"
+    root = holding(roots, head)
+    if root is None:
+        return None, "objects-gone"
+    if route is None:
+        return None, "no-router"
+    base = None
+    for candidate in filter(None, bases):
+        if re.fullmatch(r"[0-9a-f]{40}", candidate):
+            if git(root, "cat-file", "-e", f"{candidate}^{{commit}}") is not None:
+                base = candidate
+        else:
+            for ref in (f"origin/{candidate}", candidate):
+                merged = git(root, "merge-base", head, ref)
+                if merged:
+                    base = merged.decode().strip()
+                    break
+        if base:
+            break
+    if not base:
+        return None, "no-base"
+    changed = numstat(root, base, head)
+    if changed is None:
+        return None, "objects-gone"
+    policy = git(root, "show", f"{head}:.github/sd-review.json")
+    try:
+        tier, reason = route(changed[0], changed[1],
+                             policy.decode("utf-8") if policy is not None else None)
+    except Exception:                        # a policy the pinned router cannot read
+        return None, "policy-invalid"
+    return {"paths": changed[0], "lines": changed[1], "reason": reason, "routed": tier,
+            "base": base}, ""
+
+
+def population(db, route=None) -> tuple[list[dict], dict]:
+    """Every distinct reviewed head from C1's first day to E's last, keyed
+    `(repository, coalesce(reviewed_head, head))` of a checkpoint that lists
+    review passes, and tagged C1 or E by its first such checkpoint, with its state or the reason it has none, and a summary.
+    A state comes from the first pass at that head that stored one, else from
+    git; where git still holds a stored state's commits, it checks them."""
+    heads: dict[tuple, dict] = {}
+    views: dict[tuple, list] = {}
+    no_head = unreviewed = 0
+    for _id, key, stamp, body in checkpoints(db, C1_FROM, E_TO):
+        repository = body.get("repository") or ""
+        head = head_of(body)
+        if not passes(body):
+            # A gate receipt or a contribution names a head it did not review.
+            unreviewed += 1
+            continue
+        if not head:
+            no_head += 1
+            continue
+        heads.setdefault((repository, head), {"first": stamp, "checkpoint": key,
+                                              "branch_base": body.get("base")})
+        for one in passes(body):
+            view = routing_view(one)
+            if view["head"]:
+                views.setdefault((repository, view["head"]), []).append(view)
+    paper = set(extraction_entry1(checkpoints(db, ENTRY1_FROM, ENTRY1_TO)))
+    repos = clones(db)
+    rows = []
+    for (repository, head), seen in sorted(heads.items()):
+        at_head = views.get((repository, head), [])
+        found = next(filter(None, map(stored, at_head)), None)
+        first = next((v["jev"] for v in at_head
+                      if isinstance(v["jev"], dict) and v["jev"].get("tier")), None)
+        roots = repos.get(repository.lower(), [])
+        row = {"repository": repository, "head": head, "first_at": seen["first"],
+               "checkpoint": seen["checkpoint"],
+               "population": "C1" if seen["first"] < E_FROM else "E",
+               "recorded": raw_tier(first) if first else None,
+               "paper": (repository, head) in paper,
+               "source": "checkpoint", "dropped": None, "git_check": "unverified"}
+        row["e0"] = row["population"] == "E" and first is None
+        if found is None:
+            found, why = from_git(roots, head, [v["base"] for v in at_head]
+                                  + [seen["branch_base"]], route)
+            row.update(source="rebuilt-from-git" if found else None, dropped=why or None)
+        elif found["base"] and roots:
+            root = holding(roots, head)
+            again = numstat(root, found["base"], head) if root else None
+            if again is not None:
+                row["git_check"] = ("match" if again == (sorted(found["paths"]), found["lines"])
+                                    else "mismatch")
+        row["routed"] = found["routed"] if found else None
+        row["state"] = state_of(found["paths"], found["lines"], found["reason"]) if found else None
+        rows.append(row)
+    aliases = {name: f"R{n:02d}" for n, name in
+               enumerate(sorted({r["repository"] for r in rows}), 1)}
+    for row in rows:
+        row["alias"] = aliases[row["repository"]]
+    summary = {"no_head": no_head, "no_passes": unreviewed, "invalid_bodies": invalid_bodies(db, C1_FROM, E_TO),
+               "paper_heads": len(paper),
+               "paper_in_population": sum(1 for r in rows if r["paper"])}
+    for name in ("C1", "E"):
+        part = [r for r in rows if r["population"] == name]
+        dropped: dict[str, int] = {}
+        for r in part:
+            if r["dropped"]:
+                dropped[r["dropped"]] = dropped.get(r["dropped"], 0) + 1
+        summary[name] = {
+            "heads": len(part), "with_state": sum(1 for r in part if r["state"]),
+            "from_checkpoint": sum(1 for r in part if r["source"] == "checkpoint"),
+            "rebuilt_from_git": sum(1 for r in part if r["source"] == "rebuilt-from-git"),
+            "dropped": dropped, "e0": sum(1 for r in part if r["e0"]),
+            "git_check": {word: sum(1 for r in part if r["git_check"] == word)
+                          for word in ("match", "mismatch", "unverified")}}
+    return rows, {"summary": summary, "aliases": aliases}
+
+
+def cmd_population(args, out, env) -> int:
+    db = args.db or default_db(env)
+    target = args.out / "population.jsonl"
+    if target.exists():
+        raise Refused(f"{target} exists; the replay reads one population, by its hash")
+    pack = args.pack or Path(env.get("HOME", "~")).expanduser() / PACK_HOME
+    rows, found = population(db, route=pinned_router(pack))
+    args.out.mkdir(parents=True, exist_ok=True)
+    text = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    target.write_text(text, encoding="utf-8")
+    (args.out / "aliases.json").write_text(
+        json.dumps(found["aliases"], indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary = dict(found["summary"], pack=PACK_SHA,
+                   sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
+    (args.out / "population-summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    json.dump(summary, out, indent=2, sort_keys=True)
+    out.write("\n")
+    return 0
+
+
 # --- entry --------------------------------------------------------------------
 
 def default_db(env=None) -> Path:
@@ -587,10 +840,15 @@ def build_parser() -> argparse.ArgumentParser:
     fai.add_argument("--ledger", type=db_path, required=True, help="the experiment database")
     fai.add_argument("--out", type=Path, required=True, help="a new folder for the answers")
     fai.add_argument("--exclude", help="an earlier attempt's answers.jsonl; its heads are not drawn")
+    pop = verbs.add_parser("population", help="step 2: every reviewed head of C1 and E, with its state")
+    pop.add_argument("--db", type=db_path, help="default: the live workflow database")
+    pop.add_argument("--out", type=Path, required=True, help="the experiment data folder")
+    pop.add_argument("--pack", type=Path, help=f"the pack checkout; default ~/{PACK_HOME}")
     return parser
 
 
-VERBS = {"reconcile": cmd_reconcile, "heuristic": cmd_heuristic, "faithful": cmd_faithful}
+VERBS = {"reconcile": cmd_reconcile, "heuristic": cmd_heuristic, "faithful": cmd_faithful,
+         "population": cmd_population}
 
 
 def main(argv=None, out=None, env=None) -> int:

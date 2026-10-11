@@ -612,3 +612,161 @@ class TheFaithfulnessCheck(StubServer):
         code, _out = self.faithful()
         self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])
+
+
+def committed(files_then, files_now):
+    """A checkout with two commits and an `origin` as `register` records it:
+    (root, base sha, head sha)."""
+    root = checkout([])
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.test"]
+    shas = []
+    for files in (files_then, files_now):
+        for name, text in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(root), *ident, "commit", "-q", "--allow-empty",
+                        "-m", "x"], check=True)
+        shas.append(subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                                   capture_output=True, text=True).stdout.strip())
+    return root, shas[0], shas[1]
+
+
+class Tripwire(dict):
+    """A parsed JSON object that fails the case when an outcome is read."""
+
+    OUTCOMES = ("findings", "completed_reviews", "status", "outcomes", "requested_reviews")
+
+    def __getitem__(self, key):
+        if key in self.OUTCOMES:
+            raise AssertionError(f"read {key!r}")
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if key in self.OUTCOMES:
+            raise AssertionError(f"read {key!r}")
+        return super().get(key, default)
+
+
+class ThePopulation(unittest.TestCase):
+    """Step 2: one row per reviewed head, its state or why not, and no outcome."""
+
+    def setUp(self):
+        self.root, self.base, self.head = committed({"a.py": "1\n"},
+                                                    {"a.py": "1\n2\n3\n", "docs/b.md": "x\n"})
+        self.repo = f"owner/{self.root.parent.name}"
+
+    def body(self, head, *passes_, repo=None, **extra):
+        return dict({"repository": repo or self.repo, "head": head, "reviewed_head": None,
+                     "base": "main", "passes": list(passes_)}, **extra)
+
+    def build(self, rows, route=None):
+        db = checkpoint_db(rows)
+        register(db, self.root, "public")
+        found, summary = experiment.population(db, route=route)
+        return {r["head"]: r for r in found}, summary["summary"]
+
+    def test_a_duplicate_head_is_one_row_tagged_by_its_first_checkpoint(self):
+        reviewed = a_pass("h1", reason="no category matched; default tier standard")
+        rows, summary = self.build([
+            ("ship:a", "2026-09-10T00:00:00+00:00", self.body("h1", reviewed)),
+            ("ship:b", "2026-09-22T00:00:00+00:00", self.body("h1", a_pass("h1", tier="skip")))])
+        self.assertEqual(list(rows), ["h1"])
+        self.assertEqual((rows["h1"]["population"], summary["C1"]["heads"], summary["E"]["heads"]),
+                         ("C1", 1, 0))
+        # The state is the first pass's, without the suffix sd-review adds.
+        state = json.loads(rows["h1"]["state"])
+        self.assertEqual(state["deterministic_routing_said"],
+                         "no category matched; default tier standard")
+
+    def test_an_invalid_json_body_is_counted_and_skipped(self):
+        rows, summary = self.build([
+            ("ship:a", "2026-09-22T00:00:00+00:00", "{not json"),
+            ("ship:b", "2026-09-22T00:00:01+00:00", self.body("h2", a_pass("h2")))])
+        self.assertEqual(list(rows), ["h2"])
+        self.assertEqual(summary["invalid_bodies"], 1)
+
+    def test_a_declined_reading_is_e0_with_its_stored_state(self):
+        declined = a_pass("h3")
+        del declined["report"]["jev"]
+        rows, summary = self.build([("ship:a", "2026-09-23T00:00:00+00:00",
+                                     self.body("h3", declined))])
+        self.assertEqual((rows["h3"]["recorded"], rows["h3"]["e0"], rows["h3"]["routed"]),
+                         (None, True, "standard"))
+        self.assertIsNotNone(rows["h3"]["state"])
+        self.assertEqual(summary["E"]["e0"], 1)
+
+    def test_a_head_with_no_stored_subject_is_rebuilt_from_git(self):
+        bare = {"head": self.head, "base": self.base}
+        calls = []
+
+        def route(paths, lines, policy):
+            calls.append((paths, lines, policy))
+            return "cheap", "category docs starts at tier cheap"
+        rows, summary = self.build([("ship:a", "2026-09-12T00:00:00+00:00",
+                                     self.body(self.head, bare))], route=route)
+        row = rows[self.head]
+        self.assertEqual((row["source"], row["routed"], row["dropped"]),
+                         ("rebuilt-from-git", "cheap", None))
+        self.assertEqual(calls, [(["a.py", "docs/b.md"], 3, None)])
+        self.assertEqual(json.loads(row["state"]), {
+            "changed_paths": ["a.py", "docs/b.md"], "changed_paths_omitted": 0,
+            "path_count": 2, "lines_moved": 3,
+            "deterministic_routing_said": "category docs starts at tier cheap"})
+        self.assertEqual(summary["C1"]["rebuilt_from_git"], 1)
+
+    def test_a_head_whose_objects_are_gone_is_dropped_and_counted(self):
+        gone = "0" * 40
+        rows, summary = self.build([("ship:a", "2026-09-12T00:00:00+00:00",
+                                     self.body(gone, {"head": gone, "base": self.base}))],
+                                   route=lambda *a: ("standard", "r"))
+        self.assertEqual((rows[gone]["state"], rows[gone]["dropped"]), (None, "objects-gone"))
+        self.assertEqual(summary["C1"]["dropped"], {"objects-gone": 1})
+
+    def test_git_checks_a_stored_state(self):
+        good = a_pass(self.head, paths=("a.py", "docs/b.md"), lines=3)
+        good["report"]["subject"]["base"] = self.base
+        rows, summary = self.build([("ship:a", "2026-09-22T00:00:00+00:00",
+                                     self.body(self.head, good))])
+        self.assertEqual(rows[self.head]["git_check"], "match")
+        good["report"]["subject"]["lines"] = 9
+        rows, _summary = self.build([("ship:a", "2026-09-22T00:00:00+00:00",
+                                      self.body(self.head, good))])
+        self.assertEqual(rows[self.head]["git_check"], "mismatch")
+
+    def test_the_paper_subset_is_marked(self):
+        rows, summary = self.build([
+            ("ship:a", "2026-09-22T00:00:00+00:00", self.body("h4", a_pass("h4", tier="skip"))),
+            ("ship:b", "2026-10-02T00:00:00+00:00", self.body("h5", a_pass("h5")))])
+        self.assertEqual((rows["h4"]["paper"], rows["h5"]["paper"]), (True, False))
+        self.assertEqual(summary["paper_in_population"], 1)
+
+    def test_no_finding_review_count_or_status_is_read(self):
+        outcome = a_pass("h6")
+        outcome["report"].update(findings=[{"disposition": "blocking"}], completed_reviews=1,
+                                 status="blocked")
+        db = checkpoint_db([("ship:a", "2026-09-10T00:00:00+00:00",
+                             self.body("h6", outcome, status="clear"))])
+        real = json.loads
+        with unittest.mock.patch.object(experiment.json, "loads",
+                                        lambda text, **kw: real(text, object_hook=Tripwire, **kw)):
+            found, _summary = experiment.population(db)
+        self.assertEqual(len(found), 1)
+        self.assertNotIn("finding", json.dumps(found))
+
+    def test_the_verb_writes_the_file_once(self):
+        db = checkpoint_db([("ship:a", "2026-09-22T00:00:00+00:00", self.body("h7", a_pass("h7")))])
+        out = Path(tempfile.mkdtemp())
+        argv = ["population", "--db", str(db), "--out", str(out), "--pack", str(out / "none")]
+        code, printed = run(argv)
+        self.assertEqual(code, 0)
+        text = (out / "population.jsonl").read_bytes()
+        self.assertEqual(json.loads(printed)["sha256"], hashlib.sha256(text).hexdigest())
+        self.assertEqual(json.loads(text)["alias"], "R01")
+        self.assertEqual(run(argv)[0], 2)
+
+    def test_a_checkpoint_with_no_review_pass_adds_no_head(self):
+        rows, summary = self.build([
+            ("sd-gate-receipt:a", "2026-09-10T00:00:00+00:00", {"repository": self.repo, "head": "h8"}),
+            ("ship:b", "2026-09-22T00:00:00+00:00", self.body("h8", a_pass("h8")))])
+        self.assertEqual((rows["h8"]["population"], summary["no_passes"]), ("E", 1))
