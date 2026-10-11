@@ -128,6 +128,15 @@ class TheDocuments(ScreenCase):
         port = rows[self.ids["port"]]
         self.assertEqual((port["assignment"], port["allowed"]), ("running", []))
 
+    def test_every_row_is_a_task_table_row_with_its_id(self):
+        # sd:3289: the page lists the task table and nothing else, so every row carries the id of an item it names.
+        doc = tasks_screen.document(self.connection, now=NOW)
+        ids = {row["id"] for row in self.connection.execute("SELECT id FROM item")}
+        self.assertTrue(doc["rows"])
+        for row in doc["rows"]:
+            self.assertIsInstance(row["id"], int)
+            self.assertIn(row["id"], ids)
+
     def test_each_row_carries_its_age_bucket_and_the_document_names_the_buckets(self):
         # The age filter is the histogram's (sd:2589): each row's key is reads.age_bucket, and the document lists every
         # bucket with the label Operations draws, so a bar's ?age= names a chip the page shows.
@@ -1305,16 +1314,14 @@ R.undated = [cmd('item.complete').consequence(o), cmd('item.complete').danger(o)
         # The shell's confirm colour asks the command where it declares danger(o).
         self.assertIn("danger: c.danger ? !!c.danger(o) : c.risk === 'confirm'", SHELL_JS)
 
-    def test_work_ops_and_done_rows_have_neither_key_5_command(self):
-        port, ask, plan = self.ids["port"], self.ids["ask"], self.ids["plan"]
+    def test_work_and_done_rows_have_neither_key_5_command(self):
+        port, ask = self.ids["port"], self.ids["ask"]
         for row in self.doc["rows"]:
             if row["id"] == ask:
                 row["status"] = "done"
-            if row["id"] == plan:
-                row["kind"] = "ops"
         out = self.run_page(f"""const five = k => REG.filter(c => c.key === '5' && c.when(C.get(k)) === true).map(c => c.id);
-R.work = five('{port}'); R.done = five('{ask}'); R.ops = five('{plan}');""")
-        self.assertEqual(out["R"], {"work": [], "done": [], "ops": []})
+R.work = five('{port}'); R.done = five('{ask}');""")
+        self.assertEqual(out["R"], {"work": [], "done": []})
 
     def test_a_task_that_does_not_repeat_has_no_complete_occurrence(self):
         ask = self.ids["ask"]
@@ -1348,6 +1355,13 @@ R.work = five('{port}'); R.done = five('{ask}'); R.ops = five('{plan}');""")
         self.assertEqual(offsets.get(".toast:has(~ .bulkbar:not([hidden]))"), "3.5rem")
         self.assertEqual(offsets.get(".toast:not([hidden]) ~ .toast.plain:has(~ .bulkbar:not([hidden]))"), "7rem",
                          "a plain toast over a live Undo with the bulk bar up shares the Undo's offset")
+
+    def test_the_script_has_no_branch_for_a_row_without_an_sd_id(self):
+        # sd:3289: /api/tasks rows are item rows, each with an id (TheDocuments), so the mockup's id-less job rows are gone
+        # and with them the "no sd id" reasons and the `ops` kind, which item.kind does not allow.
+        self.assertNotIn("no sd id", TASKS_JS)
+        self.assertNotRegex(TASKS_JS, r"kind [!=]== 'ops'")
+        self.assertNotIn("'no id'", TASKS_JS)
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", TASKS_JS)
