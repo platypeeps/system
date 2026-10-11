@@ -905,6 +905,12 @@ class LaunchEnvironment(unittest.TestCase):
             environment = runtime._launch_environment()
         self.assertEqual(environment["JEV_JOB_TRIAGE"], "off")
 
+    def test_the_pack_root_passes_through(self):
+        # sd:3279: install checks the pack's lib/ under SD_PACK_ROOT, so the agent runs that pack, not the default.
+        with patch.dict(os.environ, {"SD_PACK_ROOT": "/packs/sd-ai-command-pack"}, clear=False):
+            environment = runtime._launch_environment()
+        self.assertEqual(environment["SD_PACK_ROOT"], "/packs/sd-ai-command-pack")
+
 
 class QuickNoteEnvironment(unittest.TestCase):
     """sd:2549: Notes runs `sd store`, so the LaunchAgent gets sd's directory and OBSIDIAN_VAULT from the installing shell."""
