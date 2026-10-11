@@ -27,6 +27,8 @@ import sys
 import tempfile
 import unittest
 
+from tests import fixture_config
+
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "machine-setup.sh"
 
@@ -135,6 +137,7 @@ class PortListeners(unittest.TestCase):
             system = str(mirror)
         environment = {"PATH": f"{self.bin}:{system}", "HOME": str(self.root),
                        "MACHINE_SETUP_STATE": str(self.root / "state"),
+                       **fixture_config.env(),
                        "MACHINE_SETUP_PROFILE_DIR": str(self.machine.parent / "profiles"),
                        "LSOF_FIXTURE": json.dumps(fixture or {}), "LSOF_CALLS": str(self.calls)}
         result = subprocess.run([str(self.machine), "candidates", "service"], env=environment,
