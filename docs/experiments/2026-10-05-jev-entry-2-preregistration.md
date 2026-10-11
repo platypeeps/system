@@ -562,3 +562,24 @@ Per stage, report the share of calls where Kev's answer matches the rule's basel
 **Left out.** The low-volume callers (mail intake, the health check, the Obsidian review and tasks) give about one question a day, which is too few.
 
 No A5 result can select, keep or drop an arm.
+
+## Amendment, 2026-10-11: the hosted arms' scope, and C1 (sd:2764)
+
+Written on 2026-10-11 MDT, before the first replay call of step 5 and before any C1 or C2 label is opened.
+It is an amendment under the rule at the top of this page. It follows the operator's decision note #14288 on sd:2764, which answers question #14285.
+
+**Why.** Step 2 built the populations without reading an outcome.
+C1 has 59 reviewed heads, not about 750: the 750 mixed E0 into C1. E has 2,071 heads, 2,063 with a state.
+Under the public-path rule, 29 of C1's 59 states and 1,160 of E's 2,063 hold a path no public managed repository tracks.
+The privacy halt would stop both hosted arms before their first call.
+
+**What changes.**
+
+- **Hosted scope.** Jev and Haiku are asked only about states whose every path a public managed repository tracks: 30 C1 heads and 903 E heads. Kev, which runs on this machine, is asked about every state. This replaces the stopping rule's "Hosted scope" line.
+- **Privacy halt.** A state that fails the check is left out of the hosted arms' scope, so it is never sent. The check is the same; it now selects heads instead of stopping the run.
+- **C1 is exploratory.** C2 alone is confirmatory, with C3 if the extension runs. Every C1 result is reported as exploratory.
+- **Results.** `results.md` names the pool bias: a hosted arm's numbers cover public-pool states only, and Kev's are given on that pool beside its full count.
+
+**What it does not change.** The question, H1 to H8, X1, their thresholds, decision rule lines 1 to 6, the stopping rule's other lines and every `PREDICTION` line stay as registered. C1 stays unseen until its answers are sealed.
+
+**What its author had seen.** Population counts, state counts and the public-path counts above. No finding, label or review status for a C1 or C2 head.
