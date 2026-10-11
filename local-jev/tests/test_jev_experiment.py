@@ -146,7 +146,7 @@ BOUNDARIES = (
     ("B21 typographic quote", "matched \u201c/opt/private/file.py\u201d", True),
     ("B22 glued after a word", "foo/opt/private/file.py", False),
     ("B23 relative paths", "src/a.py docs/**", False),
-    ("B24 fractions and and/or", "1/2 of the paths, and/or a / b", False),
+    ("B24 fractions and and/or", "1/2 of the paths, and/or, 25% off", False),
     ("B25 glued after a closing bracket", "app/(site)/styles/a.css x[0]/y/z {a}/b/c", False),
     # Round 3: deny by default. A path sign is a hit whatever follows it;
     # one form per row, so no row passes on another form's hit.
@@ -168,6 +168,13 @@ BOUNDARIES = (
     ("R16 dot-dot relative, false halt", "../c/d.py", True),
     ("R17 glob after a star, false halt", "docs/**/*.md", True),
     ("R18 backup file tilde, false halt", "a.py~", True),
+    # Found by the adversarial review of round 3.
+    ("R19 space after the root slash", "/ secret/file.py", True),
+    ("R20 tab after the root slash", "/\tprivate/file.py", True),
+    ("R21 Windows variable with brackets", "%ProgramFiles(x86)%", True),
+    ("R22 percent-encoded slash", "%2Fetc%2Fpasswd", True),
+    ("R23 command substitution", "$(pwd)", True),
+    ("R24 spaced slash, false halt", "a / b", True),
 )
 
 
@@ -340,6 +347,49 @@ class TheFaithfulnessCheck(StubServer):
                 self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(),
                                  (0,), path)
 
+    def test_a_resolved_name_ending_in_space_is_judged_as_resolved(self):
+        # Adversarial review of round 3: the live path resolves to a name
+        # ending in space, so a second strip judged a file nobody opens; and
+        # a ledger resolving to such a name is opened stripped by the meter.
+        live = self.config / ".local/share/sd/sd.db"
+        live.parent.mkdir(parents=True)
+        spaced = self.config / ".local/share/sd/live.db "
+        initialise(spaced)
+        live.symlink_to(spaced)
+        (self.config / "hard.db").hardlink_to(spaced)
+        plain = self.config / "plain.db"
+        initialise(plain)
+        initialise(self.config / "plain.db ")
+        (self.config / "to-spaced.db").symlink_to(self.config / "plain.db ")
+        for ledger in (self.config / "hard.db", self.config / "to-spaced.db"):
+            with self.subTest(ledger=ledger.name):
+                Stub.seen = []
+                self.ledger = ledger
+                self.out = Path(tempfile.mkdtemp()) / "faithful"
+                code, _out = self.faithful()
+                self.assertEqual(code, 2)
+                self.assertEqual(Stub.seen, [])
+        for path in (spaced, plain):
+            with contextlib.closing(sqlite3.connect(path)) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM judgment").fetchone(),
+                                 (0,), path)
+
+    def test_a_source_resolving_to_a_name_ending_in_space_is_read_as_resolved(self):
+        # The source read must open the file the identity check judged, not
+        # that name stripped, which here is the ledger itself.
+        with contextlib.closing(sqlite3.connect(self.db)) as source:
+            rows = source.execute("SELECT kind, key, timestamp, body FROM state").fetchall()
+        with contextlib.closing(sqlite3.connect(self.ledger)) as target, target:
+            target.executemany("INSERT INTO state (kind, key, timestamp, body) VALUES (?, ?, ?, ?)",
+                               rows)
+        spaced = Path(f"{self.ledger} ")
+        checkpoint_db([]).replace(spaced)
+        self.db = self.config / "source-link.db"
+        self.db.symlink_to(spaced)
+        code, _out = self.faithful()
+        self.assertEqual(code, 2)               # too few states to draw in the spaced file
+        self.assertEqual(Stub.seen, [])
+
     def test_the_source_is_opened_as_named_and_read_only(self):
         # `?` in --db once ended the path inside the read-only URI, so the
         # file the identity check judged was not the file opened, and the
@@ -372,8 +422,8 @@ class TheFaithfulnessCheck(StubServer):
     def test_one_name_is_one_file_before_the_file_exists(self):
         # On a satellite `sd_db` sends the default path to the hub, so a
         # ledger named as the live database needs no local file to be it.
-        missing = self.config / "nowhere/sd.db"
-        self.assertTrue(experiment.same_file(missing, Path(f"{missing} ")))
+        missing = experiment.db_path(self.config / "nowhere/sd.db")
+        self.assertTrue(experiment.same_file(missing, experiment.db_path(f"{missing} ")))
         self.assertFalse(experiment.same_file(missing, self.config / "elsewhere/sd.db"))
 
     def test_a_ledger_that_refuses_stops_the_run(self):

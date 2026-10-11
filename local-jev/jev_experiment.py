@@ -96,14 +96,16 @@ class Refused(RuntimeError):
 def db_path(raw) -> Path:
     """The one spelling of a database path that every identity check and every
     open after it uses: stripped as `jev_meter` strips `JEV_METER_DB`, `~`
-    expanded, links and `..` resolved (review round 3)."""
+    expanded, links and `..` resolved (review round 3). Apply it once: a
+    resolved name may end in space, which a second pass would strip."""
     return Path(os.path.realpath(os.path.expanduser(str(raw).strip())))
 
 
 def open_ro(path: str | Path) -> sqlite3.Connection:
     # `as_uri` escapes `?` and `#`, so the file opened is the one named and
-    # `mode=ro` is the only parameter.
-    connection = sqlite3.connect(f"{db_path(path).as_uri()}?mode=ro", uri=True)
+    # `mode=ro` is the only parameter. No `db_path` here: the caller's path
+    # is already the one its identity check judged.
+    connection = sqlite3.connect(f"{Path(path).absolute().as_uri()}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -282,15 +284,14 @@ def criteria(order=TIERS) -> str:
 
 
 #: A path sign anywhere in a string, deny by default (review round 3; rounds
-#: 1 and 2 listed path shapes and each missed one): any `~` or `\`, any
-#: `$NAME`, `${NAME}` or `%NAME%`, and any run of `/` that no letter, digit or
-#: closing bracket comes right before, once something other than space
-#: follows it. So `/x`, `"/x"`, `file:/x`, `C:/x` and `./x` match, whatever
-#: their segment count; `src/a.py`, `foo/opt/x`, `1/2`, `and/or`, `a / b` and
+#: 1 and 2 listed path shapes and each missed one): any `~` or `\`, any `$`
+#: or `%` with something other than space after it, and any `/` that no
+#: letter, digit, closing bracket or other `/` comes right before. So `/x`,
+#: `/ x`, `"/x"`, `file:/x`, `C:/x`, `./x`, `$VAR`, `%VAR%` and `%2F` match,
+#: whatever follows; `src/a.py`, `foo/opt/x`, `1/2`, `and/or`, `25% off` and
 #: a route group such as `app/(site)/x` do not. A false halt costs a resume
 #: the operator reviews; a miss sends a path off the machine.
-ABSOLUTE = re.compile(r"[~\\]|\$\{?[A-Za-z_]|%[A-Za-z_][A-Za-z0-9_]*%"
-                      r"|(?<![A-Za-z0-9)\]}/])/+[^\s/]")
+ABSOLUTE = re.compile(r"[~\\]|[$%]\S|(?<![A-Za-z0-9)\]}/])/")
 
 
 def private_path(state: str, home: str | None) -> str | None:
@@ -405,10 +406,10 @@ def ask_jev(state: str, env, subject: str | None = None, sleep=time.sleep) -> di
 
 
 def same_file(one: Path, other: Path) -> bool:
-    """Whether two paths name one file: equal once normalised, or one file by
+    """Whether two `db_path` results name one file: equal, or one file by
     identity. Equal names count even with no file there yet, because on a
-    satellite `sd_db` sends the default path to the hub."""
-    one, other = db_path(one), db_path(other)
+    satellite `sd_db` sends the default path to the hub. It normalises
+    nothing again: a second pass would judge a path nobody opens."""
     if one == other:
         return True
     try:
@@ -421,7 +422,12 @@ def cmd_faithful(args, out, env) -> int:
     # By file identity, before the ledger is opened or any call is made: a
     # link or another spelling of the live or source database is that database.
     # Each path is normalised once, and the meter gets that exact string.
-    ledger, db = db_path(args.ledger), args.db or default_db(env)
+    # `--ledger` and `--db` are `db_path` results already; a second pass
+    # would strip a resolved name that ends in space.
+    ledger, db = args.ledger, args.db or default_db(env)
+    if str(ledger) != str(ledger).strip():
+        raise Refused(f"--ledger resolves to {str(ledger)!r}, which ends in space; "
+                      "the meter would strip it and open another file")
     if not db.is_file():
         raise Refused(f"--db {db} is not a file")
     for name, other in (("the live workflow database", default_db(env)),
