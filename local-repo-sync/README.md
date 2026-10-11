@@ -133,7 +133,7 @@ as `refresh` does, then switches the checkout, detached and with
 pack. Then, with the lanes still held, it runs the system checkout's
 `local-machine-setup/machine-setup.sh update bin --apply` and
 `update satellite --apply`, each bounded at 450 s (sd:3168). The satellite
-stage installs the hub's `sd_db` into the pack's venv and the bin stage
+stage writes the hub's `hub.json` and `providers.yaml` and the bin stage
 relinks commands, so neither may run under a lane run. It runs no other
 stage: the cron and agents stages can reinstall the follow job's own
 LaunchAgent, and launchd would boot out the running follow. Neither stage's

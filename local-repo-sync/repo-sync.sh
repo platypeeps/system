@@ -847,8 +847,8 @@ follow() {
   done 3< "$TMPD/moves"
   echo "----------------------------------------"
   # The two update stages that need the locks run here, with the lanes still
-  # held, so they never run under a lane run (sd:3168): satellite installs the
-  # hub's sd_db into the pack's venv, and bin relinks the commands. Neither
+  # held, so they never run under a lane run (sd:3168): satellite writes the
+  # hub's hub.json and providers.yaml, and bin relinks the commands. Neither
   # loads or unloads a LaunchAgent. A full update would not do: its cron and agents stages
   # reinstall this job's own LaunchAgent, and launchd then boots out the
   # running follow mid-update. Those stages run in the job's chained update,

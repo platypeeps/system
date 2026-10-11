@@ -28,7 +28,8 @@ A plist value computed outside those lines goes unseen.
 `sd_db` and its schema live in the command pack's `lib/` (sd:3279).
 The dashboard and sd-serve run that `lib/`, and `local-repo-sync/repo-sync.sh refresh` moves it.
 So no change in this checkout installs `sd_db` or needs a migration.
-System's frozen `local-sd-db/sd_db` is no service's library.
+System's frozen `local-sd-db/sd_db` is no service's library, unless sd-serve's plist sets `SD_DB_LIBRARY`.
+`local-machine-setup/machine-setup.sh doctor sd` fails that plist.
 
 ## How `apply` restarts each service
 
