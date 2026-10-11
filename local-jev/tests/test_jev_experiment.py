@@ -5,10 +5,12 @@ call goes to the loopback stub `test_jev` serves, so no case reads the
 operator's workflow database or reaches TypeSafe.
 """
 
+import collections
 import contextlib
 import hashlib
 import io
 import json
+import os
 import socket
 import subprocess
 import tempfile
@@ -18,6 +20,7 @@ import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import jev_compare
 import jev_experiment as experiment
 
 from .test_jev import Stub, StubServer
@@ -2386,3 +2389,141 @@ class TheThinning(unittest.TestCase):
             with self.subTest(common=common, own=own):
                 with self.assertRaises(experiment.Refused):
                     experiment.thinned(thinning_rows(5), "kev", "C1", common=common, own=own)
+
+
+class TheScannerBenchmark(CompareCase):
+    """Step 10: a corpus made here, and asked of the local Kev alone."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(unittest.mock.patch.object(experiment, "RETRY_WAIT", 0))
+        # The runner unsets hosted settings in its own process; this restores them.
+        self.enterContext(unittest.mock.patch.dict(os.environ))
+        self.out = Path(tempfile.mkdtemp()) / "experiment"
+
+    def scanner(self, step, env=None, corpus=None):
+        if corpus is not None:
+            self.enterContext(unittest.mock.patch.object(experiment, "scanner_corpus",
+                                                         return_value=corpus))
+        return run(["scanner", step, "--out", str(self.out)], env or self.env())
+
+    def small(self):
+        """Two hits of each class, as the generator writes them."""
+        hits = experiment.scanner_corpus()
+        return [h for c in ("realistic", "documented", "placeholder")
+                for h in [h for h in hits if h["class"] == c][:2]]
+
+    def answers(self):
+        path = self.out / "scanner" / "kev.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_the_generator_reads_no_environment_variable_and_no_file(self):
+        class Untouchable(dict):
+            def __getitem__(self, key):
+                raise AssertionError(f"read the environment variable {key!r}")
+            get = __contains__ = __iter__ = __getitem__
+
+        def no_file(*args, **kwargs):
+            raise AssertionError(f"opened {args[:1]!r}")
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(os, "environ", Untouchable()))
+            for owner, name in ((os, "getenv"), (os, "open"), (io, "open"),
+                                (__import__("builtins"), "open"), (Path, "open"),
+                                (Path, "read_text"), (Path, "read_bytes")):
+                stack.enter_context(unittest.mock.patch.object(owner, name, no_file))
+            with self.assertRaises(AssertionError):      # the tripwires hold
+                os.environ.get("HOME")
+            hits = experiment.scanner_corpus()
+        self.assertEqual(len(hits), 2800)
+        by_class = {c: [h for h in hits if h["class"] == c]
+                    for c in ("realistic", "documented", "placeholder")}
+        self.assertEqual({c: (len(h), len({x["value"] for x in h})) for c, h in by_class.items()},
+                         {"realistic": (1200, 300), "documented": (400, 100),
+                          "placeholder": (1200, 300)})
+        self.assertEqual({h["label"] for h in by_class["realistic"]}, {"act"})
+        self.assertEqual({h["label"] for c in ("documented", "placeholder")
+                          for h in by_class[c]}, {"ignore"})
+        # Each value sits in the four contexts, the test fixture among them.
+        contexts = collections.Counter((h["value"], h["context"]) for h in hits)
+        self.assertEqual(set(contexts.values()), {1})
+        self.assertEqual({h["context"] for h in hits},
+                         {".env.example", "test fixture", "README", "source file"})
+        # A realistic fake is made afresh: none repeats across two corpora.
+        fakes = {json.loads(h["state"])["line"] for h in by_class["realistic"]}
+        again = {json.loads(h["state"])["line"] for h in experiment.scanner_corpus()
+                 if h["class"] == "realistic"}
+        self.assertEqual(fakes & again, set())
+
+    def test_the_runner_asks_kev_alone_and_holds_no_hosted_key(self):
+        os.environ.update(TYPESAFE_API_KEY="process-key", JEV_COMPARE_HAIKU_VIA="anthropic",
+                          JEV_COMPARE_ANTHROPIC_KEY="process-anthropic-key")
+        seen = []
+        real = jev_compare.kev_arm
+
+        def watched(job, env, opener=None):
+            seen.append((dict(env), dict(os.environ)))
+            return real(job, env, opener)
+        corpus = self.small()
+        self.assertEqual(self.scanner("generate", corpus=corpus)[0], 0)
+        env = self.env(JEV_COMPARE_HAIKU_VIA="anthropic", JEV_COMPARE_HAIKU_MODEL="m")
+        self.assertIn("TYPESAFE_API_KEY", env)
+        with unittest.mock.patch.object(jev_compare, "kev_arm", watched):
+            code, out = self.scanner("run", env=env)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(seen), 6)
+        for child, process in seen:
+            for names in (child, process):
+                self.assertEqual([n for n in names if n == "TYPESAFE_API_KEY"
+                                  or n.startswith("JEV_COMPARE_HAIKU_")
+                                  or n == "JEV_COMPARE_ANTHROPIC_KEY"], [])
+        self.assertEqual({s["path"] for s in Arm.seen}, {"/v1/systemone"})
+        self.assertEqual(Stub.seen, [])
+        found = self.answers()
+        self.assertEqual(sorted(a["id"] for a in found), sorted(h["id"] for h in corpus))
+        self.assertEqual({(a["outcome"], a["probability"]) for a in found}, {("ok", 0.81)})
+        summary = json.loads(out)
+        self.assertEqual((summary["realistic"]["missed_credentials"],
+                          summary["others"]["dismissed"]), (0, 0))
+
+    def test_the_runner_refuses_a_kev_that_is_not_on_loopback(self):
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        remote = [(2, 1, 6, "", ("198.51.100.7", 80))]
+        for url, resolved in (("http://192.0.2.1:9/v1/systemone", None),
+                              ("http://kev.example.test/v1/systemone", remote)):
+            with self.subTest(url=url), contextlib.ExitStack() as stack:
+                if resolved is not None:
+                    stack.enter_context(unittest.mock.patch.object(
+                        socket, "getaddrinfo", return_value=resolved))
+                code, _out = self.scanner("run", env=self.env(JEV_COMPARE_KEV_URL=url))
+                self.assertEqual(code, 2)
+        self.assertEqual((Arm.seen, self.answers()), ([], []))
+
+    def test_the_corpus_is_frozen_once_written(self):
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        self.assertEqual(self.scanner("generate")[0], 2)
+        path = self.out / "scanner" / "corpus.jsonl"
+        path.write_text(path.read_text().replace("act", "ignore"))
+        self.assertEqual(self.scanner("run")[0], 2)
+        self.assertEqual(Arm.seen, [])
+
+    def test_a_corpus_stopped_before_its_summary_is_made_again(self):
+        target = self.out / "scanner" / "corpus.jsonl"
+        target.parent.mkdir(parents=True)
+        target.write_text("{}\n")
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        self.assertEqual(len(target.read_text().splitlines()), 6)
+
+    def test_a_kev_outage_halts_until_resumed_by_name(self):
+        self.enterContext(unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2))
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        Arm.status = 500
+        self.assertEqual(self.scanner("run")[0], 1)
+        self.assertEqual([a["outcome"] for a in self.answers()], ["unavailable"] * 2)
+        asked = len(Arm.seen)
+        self.assertEqual(self.scanner("run")[0], 2)
+        self.assertEqual(len(Arm.seen), asked)
+        Arm.status = 200
+        code, out = run(["scanner", "run", "--out", str(self.out), "--resume", "kev is up"],
+                        self.env())
+        self.assertEqual(code, 0, out)
+        self.assertEqual([a["outcome"] for a in self.answers()], ["unavailable"] * 2 + ["ok"] * 4)

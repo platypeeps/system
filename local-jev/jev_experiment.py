@@ -22,6 +22,9 @@ file holds the steps built so far:
 * `labels sheet --population C1` (step 8) draws the blinded hand-label sheet,
   its Markdown copy and its key from one population's sealed answer files;
   it reads no finding, and refuses C2 until step 15 seals it.
+* `scanner generate|run` (step 10) writes the scanner corpus once, from no
+  environment variable and no file, then asks the local Kev alone about each
+  hit, with no hosted key in its process.
 
 **It reads the workflow database read-only.** Every query opens it through
 `sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
@@ -49,6 +52,7 @@ to `--out`, outside the checkout.
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import contextlib
 import datetime
@@ -61,6 +65,7 @@ import random
 import re
 import secrets
 import socket
+import string
 import subprocess
 import sys
 import time
@@ -1276,10 +1281,9 @@ def dollars(text: str) -> float:
     return value
 
 
-def replay_env(env, ledger: Path, traces: str) -> dict:
-    """The arms' environment: `<config>/jev/.env` and the Kev service's
-    settings as defaults below the caller's, as `jev.sh` reads them, then the
-    experiment ledger, no comparison child, no shadow, and the run id."""
+def arm_env(env) -> dict:
+    """`<config>/jev/.env` and the Kev service's settings as defaults below
+    the caller's, as `jev.sh` reads them."""
     import jev  # noqa: F401 - puts lib/ on the path
     import system_tools_config
     child = dict(system_tools_config.read_env("jev", env))
@@ -1290,6 +1294,13 @@ def replay_env(env, ledger: Path, traces: str) -> dict:
             child[name] = kev[name]
     if not child.get("JEV_COMPARE_KEV_URL") and kev.get("KEV_PORT"):
         child["JEV_COMPARE_KEV_URL"] = f"http://127.0.0.1:{kev['KEV_PORT']}/v1/systemone"
+    return child
+
+
+def replay_env(env, ledger: Path, traces: str) -> dict:
+    """The arms' environment (`arm_env`), then the experiment ledger, no
+    comparison child, no shadow, and the run id."""
+    child = arm_env(env)
     child.update({"JEV_METER": "1", "JEV_METER_DB": str(ledger), "JEV_COMPARE_STAGES": "",
                   "JEV_SHADOW": "off", "JEV_ENABLED": "on", "JEV_TRACES_URL": traces})
     return child
@@ -1576,9 +1587,36 @@ def git_head(root: Path) -> str | None:
     return found.decode().strip() if found else None
 
 
-def cmd_replay(args, out, env) -> int:
+def arm_conf(arm: str, env) -> dict | None:
+    """Jev's settings, or None for the comparison arms, once the arm can
+    answer: Jev keyed, Haiku keyed on the anthropic transport, Kev on this
+    machine. Refused otherwise, before any call."""
     import jev
     import jev_compare
+    if arm == "jev":
+        conf = jev.settings(env)
+        _why, reason = jev.why_unusable(conf, env)
+        if reason:
+            raise Refused(f"Jev cannot answer here: {reason}")
+        # The stopping rule's one retry is the only one.
+        conf["retries"] = 0
+        return conf
+    if arm == "haiku":
+        key = jev_compare.haiku_conf("anthropic", env)["key"]
+        if not key or key.lower() in jev.PLACEHOLDER_KEYS:
+            raise Refused("no JEV_COMPARE_ANTHROPIC_KEY; the Haiku arm runs on the anthropic "
+                          "transport only")
+        return None
+    fault = on_this_machine((env.get("JEV_COMPARE_KEV_URL") or jev_compare.DEFAULT_KEV_URL)
+                            .strip())
+    if fault:
+        raise Refused(f"Kev is asked about private states, so it must run here: {fault}; "
+                      "nothing was sent")
+    return None
+
+
+def cmd_replay(args, out, env) -> int:
+    import jev
     import jev_trace
     arm = args.arm
     # Every refusal comes before the first call, and before any file is written.
@@ -1590,25 +1628,7 @@ def cmd_replay(args, out, env) -> int:
     word = jev_meter.ready(arm, env)
     if word != "ready":
         raise Refused(f"the experiment ledger {ledger} refused the {arm} arm: {word}")
-    conf = None
-    if arm == "jev":
-        conf = jev.settings(env)
-        _why, reason = jev.why_unusable(conf, env)
-        if reason:
-            raise Refused(f"Jev cannot answer here: {reason}")
-        # The stopping rule's one retry is the only one.
-        conf["retries"] = 0
-    elif arm == "haiku":
-        key = jev_compare.haiku_conf("anthropic", env)["key"]
-        if not key or key.lower() in jev.PLACEHOLDER_KEYS:
-            raise Refused("no JEV_COMPARE_ANTHROPIC_KEY; the Haiku arm runs on the anthropic "
-                          "transport only")
-    else:
-        fault = on_this_machine((env.get("JEV_COMPARE_KEV_URL") or jev_compare.DEFAULT_KEV_URL)
-                                .strip())
-        if fault:
-            raise Refused(f"Kev is asked about private states, so it must run here: {fault}; "
-                          "nothing was sent")
+    conf = arm_conf(arm, env)
     population_text = args.population.read_bytes()
     population_sha = hashlib.sha256(population_text).hexdigest()
     everyone = read_jsonl(args.population)
@@ -2113,6 +2133,356 @@ def cmd_sheet(args, out, env) -> int:
     return 0
 
 
+# --- the item runner: steps 10 and 11 ----------------------------------------
+
+def answer_fields(event: dict, definition: dict) -> dict:
+    """An answer line's reading: a tier and its distribution for the tier
+    question, the yes probability for a `noul`. None when no answer came."""
+    if definition["type"] == "noul":
+        return {"probability": float(event["answer"]) if event.get("answer") else None}
+    values = (event.get("probabilities") or "").split(",")
+    return {"tier": TIERS[int(event["answer"]) - 1] if event.get("answer") else None,
+            "confidence": event.get("confidence"),
+            "probabilities": dict(zip(TIERS, map(float, values))) if len(values) == 4 else None}
+
+
+def trimmed(answers: Path) -> list[dict]:
+    """The answer file's lines, without a last line a stop cut off. Only that
+    suffix goes, in place, as the replay trims its own."""
+    if not answers.exists():
+        return []
+    with answers.open("r+b") as fh:
+        data = fh.read()
+        if data and not data.endswith(b"\n"):
+            fh.truncate(data.rfind(b"\n") + 1)
+            fh.flush()
+            os.fsync(fh.fileno())
+    return read_jsonl(answers)
+
+
+def ask_items(arm: str, items: list[dict], folder: Path, env, conf, *, cap=math.inf,
+              resume: str | None = None) -> int:
+    """Ask one arm once about each item, in order, through the replay's call
+    path (`ask_arm`), and append one line per item to `<folder>/<arm>.jsonl`.
+    Each item is an `id`, a `payload` and its question's `definition`.
+
+    The stopping rule, as the replay keeps it: one retry, the hosted spend
+    cap over every hosted arm's lines in the folder, and a Kev outage after
+    `KEV_OUTAGE` unanswered items in a row. A halt is saved in `<arm>.json`
+    before the line that caused it, and holds until `--resume REASON`.
+    Before each call `<arm>.asking` names the item and its reservation; a
+    stop before the item's line leaves it, and the next run records that item
+    `interrupted` at its reservation and never asks it again. Returns 0 when
+    every item has a line, 1 on a halt."""
+    folder.mkdir(parents=True, exist_ok=True)
+    answers, marker, saved = (folder / f"{arm}{suffix}" for suffix in (".jsonl", ".asking", ".json"))
+    state = json.loads(saved.read_text(encoding="utf-8")) if saved.exists() else {}
+    if state.get("halted") and not resume:
+        raise Refused(f"the {arm} arm halted: {state['halted']}; after review, run again with "
+                      "--resume REASON; nothing was asked")
+    kept = trimmed(answers)
+    known, done = {item["id"] for item in items}, set()
+    for line in kept:
+        if line.get("arm") != arm or line.get("id") not in known or line["id"] in done:
+            raise Refused(f"{answers.name} holds a line that is not one answer of the {arm} arm "
+                          f"about an item of this run ({line.get('id')!r}); nothing was asked")
+        done.add(line["id"])
+    if resume:
+        state.setdefault("resumes", []).append(
+            {"at": now(), "reason": resume, "halted": state.get("halted"), "lines": len(kept)})
+        state["halted"] = None
+        write_json(saved, state)
+
+    def append(line):
+        with answers.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True) + "\n")
+        marker.unlink(missing_ok=True)
+        done.add(line["id"])
+        kept.append(line)
+
+    def halt(why):
+        state["halted"] = why
+        write_json(saved, state)
+        sys.stderr.write(f"jev_experiment: {why}; the run stops here\n")
+        return 1
+
+    total = spent(folder, apart=marker)
+    if marker.exists():
+        cut = json.loads(marker.read_text(encoding="utf-8"))
+        if cut["id"] not in done:
+            # The call may have been made: charged its reservation, never asked again.
+            append({"id": cut["id"], "arm": arm, "outcome": "interrupted", "cause": "interrupted",
+                    "usd": cut["reserved"], "attempts": [], "at": now()})
+            total += cut["reserved"] if arm in HOSTED else 0.0
+        marker.unlink(missing_ok=True)
+    # Kev's streak of unanswered items since the last resume: a stop does not reset it.
+    since = state["resumes"][-1]["lines"] if state.get("resumes") else 0
+    streak = 0
+    for line in kept[since:]:
+        streak = 0 if line["outcome"] == "ok" else streak + 1
+    for item in items:
+        if item["id"] in done:
+            continue
+        payload, definition = item["payload"], item["definition"]
+        # Both attempts are reserved before the first, as in the replay.
+        bound = reserve(arm, payload, definition, env)
+        stop = stopping(arm, state, total=total, cap=cap, need=2 * bound)
+        if stop:
+            return halt(stop)
+        write_json(marker, {"id": item["id"], "reserved": 2 * bound})
+        event, attempts, stop = ask_arm(arm, payload, definition, conf, env, check=lambda tried,
+                                        more: stopping(arm, state, total=total, cap=cap,
+                                                       bound=bound, attempts=tried,
+                                                       need=bound if more else 0.0))
+        usd = sum(charge(a, bound) for a in attempts)
+        line = {"id": item["id"], "arm": arm, "outcome": event["outcome"],
+                "cause": event.get("cause"), **answer_fields(event, definition),
+                "provider": event.get("provider"), "model": event.get("model"),
+                "tokens_in": summed(attempts, "tokens_in"),
+                "tokens_out": summed(attempts, "tokens_out"),
+                "server_ms": event.get("server_ms"), "usd": usd, "attempts": attempts,
+                "redacted": item.get("redacted"), "at": now()}
+        streak = 0 if event["outcome"] == "ok" else streak + 1
+        if arm == "kev" and streak >= KEV_OUTAGE:
+            stop = stop or (f"Kev outage: {KEV_OUTAGE} items unanswered in a row; resume once "
+                            "`kev.sh status` exits 0")
+        total += usd if arm in HOSTED else 0.0
+        if stop:
+            code = halt(stop)
+            append(line)
+            return code
+        append(line)
+    return 0
+
+
+def percentile(values: list, share: float):
+    """The nearest-rank percentile, or None for no values."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(share * len(ordered)) - 1)] if ordered else None
+
+
+def waits(lines: list[dict]) -> dict:
+    """p50 and p95 of each item's whole wait, every attempt included."""
+    found = [sum(a.get("wait_ms") or 0 for a in line.get("attempts") or []) for line in lines]
+    return {"p50_ms": percentile(found, 0.5), "p95_ms": percentile(found, 0.95)}
+
+
+def frozen(folder: Path, name: str) -> tuple[list[dict], dict]:
+    """A corpus written once (`<name>.jsonl`) and its summary (`<name>.json`),
+    refused when the corpus no longer has the hash its summary recorded."""
+    summary_path, corpus = folder / f"{name}.json", folder / f"{name}.jsonl"
+    if not summary_path.exists() or not corpus.exists():
+        raise Refused(f"no {name} in {folder}; write it first; nothing was asked")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if file_sha256(corpus) != summary.get("sha256"):
+        raise Refused(f"{corpus.name} changed since it was written; one pass over the frozen "
+                      "corpus; nothing was asked")
+    return read_jsonl(corpus), summary
+
+
+def freeze(folder: Path, name: str, rows: list[dict], summary: dict) -> dict:
+    """Write a corpus once: refused once its summary exists. The corpus goes
+    first and its summary last, so a stop between them leaves no summary and
+    the next run writes both again; no run reads a corpus without one."""
+    folder.mkdir(parents=True, exist_ok=True)
+    if (folder / f"{name}.json").exists():
+        raise Refused(f"{name} in {folder} is written; it is frozen, and a second corpus "
+                      "goes in a folder of its own")
+    text = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows).encode("utf-8")
+    part = folder / f"{name}.jsonl.part"
+    part.write_bytes(text)
+    os.replace(part, folder / f"{name}.jsonl")
+    summary = dict(summary, sha256=hashlib.sha256(text).hexdigest(), written=now())
+    write_json(folder / f"{name}.json", summary)
+    return summary
+
+
+# --- step 10: the scanner benchmark --------------------------------------------
+
+#: The draft scanner question (pre-registration, H7), until sd:2761's caller
+#: defines its own (step 10b): a `noul`, `act` at 0.5 or more.
+SCANNER_QUESTION = (
+    "Should a human act on this hit as if it were a live credential? "
+    "Yes means: the value has the shape and randomness of an issued credential, wherever it sits. "
+    "No means: the value is a placeholder, a published example key or a template variable.")
+SCANNER_ACT = 0.5
+SCANNER_QID = "secret-hit"
+#: The four contexts of each value (design.md, "Scanner benchmark"): the file
+#: kind the state names, and the line the value sits on there.
+CONTEXTS = ((".env.example", "{var}={value}"), ("test fixture", '"{key}": "{value}",'),
+            ("README", "Set `{var}` to `{value}`."), ("source file", '{var} = "{value}"'))
+ALNUM = string.ascii_letters + string.digits
+#: How a private key's lines begin and end; the label is apart so this file
+#: holds no line a scanner reads as key material.
+KEY_LABEL = "PRIVATE KEY"
+#: A PKCS #8 RSA key's first 26 bytes: a 1,216-byte DER key, as a 2,048-bit key is.
+PKCS8_HEAD = bytes.fromhex("308204bc020100300d06092a864886f70d0101010500048204a6")
+
+
+def random_body(alphabet: str, length: int) -> str:
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def compact(value) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+
+def fake_jwt() -> str:
+    claims = {"sub": str(secrets.randbelow(10 ** 10)), "iat": 1_700_000_000 + secrets.randbelow(10 ** 8)}
+    return ".".join((b64url(compact({"alg": "HS256", "typ": "JWT"})), b64url(compact(claims)),
+                     secrets.token_urlsafe(32)))
+
+
+def key_block(inner: str) -> str:
+    """A private key as one line, its line breaks written `\\n`, as an
+    `.env` or a JSON string holds it."""
+    return "\\n".join((f"-----BEGIN {KEY_LABEL}-----", inner, f"-----END {KEY_LABEL}-----"))
+
+
+def fake_key() -> str:
+    body = base64.b64encode(PKCS8_HEAD + secrets.token_bytes(1190)).decode("ascii")
+    return key_block("\\n".join(body[n:n + 64] for n in range(0, len(body), 64)))
+
+
+#: Each realistic shape: its variable, the rule `scan-for-secrets.sh` names
+#: for it, a placeholder's prefix and full length, and a fresh fake.
+SHAPES = {
+    "github": ("GITHUB_TOKEN", "GitHub classic PAT", "ghp_", 36,
+               lambda: "ghp_" + random_body(ALNUM, 36)),
+    "aws": ("AWS_ACCESS_KEY_ID", "AWS access key ID", "AKIA", 16,
+            lambda: "AKIA" + random_body(string.ascii_uppercase + "234567", 16)),
+    "slack": ("SLACK_BOT_TOKEN", "Slack bot token", "xoxb-", 51,
+              lambda: f"xoxb-{random_body(string.digits, 12)}-{random_body(string.digits, 13)}"
+                      f"-{random_body(ALNUM, 24)}"),
+    "openai": ("OPENAI_API_KEY", "OpenAI API key (legacy)", "sk-", 48,
+               lambda: "sk-" + random_body(ALNUM, 48)),
+    "jwt": ("AUTH_TOKEN", "JWT", "eyJ", 40, fake_jwt),
+    "key": ("PRIVATE_KEY", "private key material", None, 64, fake_key),
+}
+REALISTIC_PER_SHAPE = 50
+#: Example keys vendors publish in their own documentation: AWS's two
+#: documented key pairs and jwt.io's sample token. Few are published, so
+#: each sits under 20 variable names to make the design's 100.
+DOCUMENTED = (
+    ("AWS_ACCESS_KEY_ID", "AWS access key ID", "AKIAIOSFODNN7EXAMPLE"),
+    ("AWS_SECRET_ACCESS_KEY", "AWS secret access key", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+    ("AWS_ACCESS_KEY_ID", "AWS access key ID", "AKIAI44QH8DHBEXAMPLE"),
+    ("AWS_SECRET_ACCESS_KEY", "AWS secret access key", "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY"),
+    ("AUTH_TOKEN", "JWT", ".".join((
+        b64url(compact({"alg": "HS256", "typ": "JWT"})),
+        b64url(compact({"sub": "1234567890", "name": "John Doe", "iat": 1516239022})),
+        "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"))),
+)
+DOCUMENTED_NAMES = ("", "_DEV", "_PROD", "_STAGING", "_CI", "_LOCAL", "_DEFAULT", "_PRIMARY",
+                    "_SECONDARY", "_BACKUP", "_OLD", "_NEW", "_1", "_2", "_3", "_A", "_B", "_US",
+                    "_EU", "_APP")
+#: A placeholder after a shape's prefix: a fill of 3, 6, 12 or the full
+#: length, or a word; and 10 forms around the variable's name. 50 a shape.
+FILLS = ("x", "X", "0", "*", ".")
+WORDS = ("...", "<token>", "<your-token>", "your-token-here", "YOUR_TOKEN", "REPLACE_ME",
+         "replace-me", "change-me", "changeme", "example", "dummy", "placeholder", "redacted",
+         "<redacted>", "${TOKEN}", "{{token}}", "TODO", "none", "null", "1234567890")
+
+
+def placeholders(var: str, prefix: str | None, full: int) -> list[str]:
+    name = var.lower()
+    wrap = key_block if prefix is None else (lambda inner: prefix + inner)
+    forms = ["change-me", "changeme", f"${{{var}}}", f"${var}", f"<{var}>", f"<your-{name}>",
+             f"{{{{ {name} }}}}", f"%{var}%", f"YOUR_{var}_HERE", "TODO"]
+    forms += [wrap(fill * length) for fill in FILLS for length in (3, 6, 12, full)]
+    return forms + [wrap(word) for word in WORDS]
+
+
+def scanner_corpus() -> list[dict]:
+    """The benchmark's hits: 300 realistic fakes, 100 documented examples and
+    300 placeholders, each in the four contexts. It reads no environment
+    variable and no file; each fake's body comes from `secrets`, so none was
+    ever issued, and none repeats across two runs."""
+    values = []
+    for shape, (var, rule, prefix, full, make) in SHAPES.items():
+        values += [("realistic", "act", shape, var, rule, make()) for _ in range(REALISTIC_PER_SHAPE)]
+    values += [("documented", "ignore", "documented", var + name, rule, value)
+               for var, rule, value in DOCUMENTED for name in DOCUMENTED_NAMES]
+    for shape, (var, rule, prefix, full, _make) in SHAPES.items():
+        values += [("placeholder", "ignore", shape, var, rule, value)
+                   for value in placeholders(var, prefix, full)]
+    hits = []
+    for number, (kind, label, shape, var, rule, value) in enumerate(values):
+        for context, form in CONTEXTS:
+            line = form.format(var=var, key=var.lower(), value=value)
+            hits.append({"id": f"h{len(hits):04d}", "value": number, "class": kind, "label": label,
+                         "shape": shape, "context": context,
+                         "state": json.dumps({"file_kind": context, "rule": rule, "line": line},
+                                             sort_keys=True)})
+    return hits
+
+
+def hosted_setting(name: str) -> bool:
+    """A setting no scanner hit may be near (design.md, "Kev only"): Jev's
+    key, every Haiku setting, and every hosted transport's key."""
+    import jev_compare
+    return (name == "TYPESAFE_API_KEY" or name.startswith("JEV_COMPARE_HAIKU_")
+            or any(name in spec["keys"] for spec in jev_compare.TRANSPORTS.values()))
+
+
+def scanner_summary(hits: list[dict], lines: list[dict]) -> dict:
+    """H7's counts: missed credentials (a realistic fake answered `ignore` in
+    any context) and missed hits, and how many other hits were dismissed. An
+    unanswered hit is neither, and counted apart."""
+    answered = {line["id"]: line["probability"] >= SCANNER_ACT for line in lines
+                if line.get("probability") is not None}
+    real = [h for h in hits if h["class"] == "realistic"]
+    other = [h for h in hits if h["class"] != "realistic"]
+    missed = [h for h in real if answered.get(h["id"]) is False]
+    dismissed = [h for h in other if answered.get(h["id"]) is False]
+    return {"hits": len(hits), "lines": len(lines), "no_answer": len(hits) - len(answered),
+            "realistic": {"hits": len(real), "answered": sum(h["id"] in answered for h in real),
+                          "credentials": len({h["value"] for h in real}),
+                          "missed_hits": len(missed),
+                          "missed_credentials": len({h["value"] for h in missed})},
+            "others": {"hits": len(other), "answered": sum(h["id"] in answered for h in other),
+                       "dismissed": len(dismissed)},
+            "wait": waits(lines)}
+
+
+def cmd_scanner(args, out, env) -> int:
+    folder = args.out / "scanner"
+    if args.step == "generate":
+        hits = scanner_corpus()
+        summary = freeze(folder, "corpus", hits, {
+            "question": SCANNER_QUESTION, "hits": len(hits),
+            "by_class": dict(collections.Counter(h["class"] for h in hits))})
+    else:
+        import jev
+        hits, summary = frozen(folder, "corpus")
+        if summary.get("question") != SCANNER_QUESTION:
+            raise Refused("the corpus was written for another question; nothing was asked")
+        # Kev only: this process, and the arm's settings, hold no hosted key.
+        for name in [name for name in os.environ if hosted_setting(name)]:
+            del os.environ[name]
+        child = {k: v for k, v in arm_env(env).items() if not hosted_setting(k)}
+        arm_conf("kev", child)
+        definition = {"type": "noul", "instructions": SCANNER_QUESTION}
+        # Not redacted: the hit is the subject, and it stays on loopback.
+        items = [{"id": hit["id"], "definition": definition,
+                  "payload": jev.build_payload(json.loads(hit["state"]),
+                                               {SCANNER_QID: definition}, jev.DEFAULT_MODEL)}
+                 for hit in hits]
+        code = ask_items("kev", items, folder, child, None, resume=args.resume)
+        summary = scanner_summary(hits, trimmed(folder / "kev.jsonl"))
+        if code:
+            json.dump(summary, out, indent=2, sort_keys=True)
+            out.write("\n")
+            return code
+    json.dump(summary, out, indent=2, sort_keys=True)
+    out.write("\n")
+    return 0
+
+
 # --- entry --------------------------------------------------------------------
 
 def default_db(env=None) -> Path:
@@ -2164,11 +2534,18 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--resume", metavar="REASON",
                      help="go on after a halt, once the operator has reviewed it")
     rep.add_argument("--preregistration", type=Path, default=REGISTRATION, help=argparse.SUPPRESS)
+    scn = verbs.add_parser("scanner", help="step 10: the scanner benchmark, Kev only")
+    scn.add_argument("step", choices=("generate", "run"),
+                     help="generate: write the corpus once; run: ask Kev about every hit")
+    scn.add_argument("--out", type=Path, required=True, help="the experiment data folder")
+    scn.add_argument("--resume", metavar="REASON",
+                     help="go on after a halt, once the operator has reviewed it")
     return parser
 
 
 VERBS = {"reconcile": cmd_reconcile, "heuristic": cmd_heuristic, "faithful": cmd_faithful,
-         "population": cmd_population, "labels": cmd_labels, "replay": cmd_replay}
+         "population": cmd_population, "labels": cmd_labels, "replay": cmd_replay,
+         "scanner": cmd_scanner}
 
 
 def main(argv=None, out=None, env=None) -> int:
