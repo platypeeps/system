@@ -321,6 +321,12 @@ def state_of(paths, lines: int, reason: str) -> str:
     }, sort_keys=True)
 
 
+def state_from(found: dict) -> str:
+    """A head's state from what `stored` or git gave: the one way step 1's
+    draw and step 2's population build one."""
+    return state_of(found["paths"], found["lines"], found["reason"])
+
+
 def criteria(order=TIERS) -> str:
     return ",".join(f"{name}={TIER_CRITERIA[name]}" for name in order)
 
@@ -448,25 +454,20 @@ def candidates(db) -> list[dict]:
     for _id, key, stamp, body in checkpoints(db, E_FROM, E_TO):
         for one in passes(body):
             got = reading(one)
-            rep = report(one)
-            subject, route = rep.get("subject"), rep.get("route")
             head = one.get("head")
             ident = (body.get("repository") or "", head)
             if not got or not head or ident in found:
                 continue
-            if not isinstance(subject, dict) or not isinstance(route, dict):
-                continue
-            paths, lines, reason = subject.get("paths"), subject.get("lines"), route.get("reason")
+            # The state the population gives a pass, from the same two functions.
+            kept = stored(routing_view(one))
             routed = got.get("routed_tier")
-            if not isinstance(paths, list) or type(lines) is not int \
-                    or not isinstance(reason, str) or routed not in TIERS \
-                    or raw_tier(got) not in TIERS:
+            if kept is None or routed not in TIERS or raw_tier(got) not in TIERS:
                 continue
             found[ident] = {
                 "repository": ident[0], "head": head, "checkpoint": key, "at": stamp,
                 "routed": routed, "recorded": raw_tier(got),
                 "moved": raw_tier(got) != routed,
-                "state": state_of(paths, lines, routing_said(reason)),
+                "state": state_from(kept),
             }
     return sorted(found.values(), key=lambda c: (c["repository"], c["head"]))
 
@@ -828,7 +829,7 @@ def population(db, route=None) -> tuple[list[dict], dict]:
                 row["git_check"] = ("match" if again == (sorted(found["paths"]), found["lines"])
                                     else "mismatch")
         row["routed"] = found["routed"] if found else None
-        row["state"] = state_of(found["paths"], found["lines"], found["reason"]) if found else None
+        row["state"] = state_from(found) if found else None
         rows.append(row)
     aliases = {name: f"R{n:02d}" for n, name in
                enumerate(sorted({r["repository"] for r in rows}), 1)}
@@ -919,11 +920,13 @@ def sealed(db, folder: Path, home: str | None) -> list[str]:
             raise Refused("the manifest names no registration")
         faithful, reuse = faithful_gate(Path(manifest.get("faithful_folder") or "."), db, bound,
                                         manifest["population"]["sha256"])
+        rows = read_jsonl(population)
+        for row in rows:
+            step_one(reuse, row)
     except Refused as why:
         return [f"the faithfulness gate does not pass: {why}"]
     if manifest.get("faithful") != faithful:
         return ["the faithfulness result is not the one the replay ran on"]
-    rows = read_jsonl(population)
     missing = []
     for arm in MODEL_ARMS:
         path = folder / "replay" / f"{arm}.jsonl"
@@ -1123,21 +1126,41 @@ def reused_line(found: dict) -> dict:
                 attempts=found["tries"], usd=None)
 
 
+def step_one(reuse: dict, row: dict) -> dict | None:
+    """The one map from a population head to what step 1 recorded for it:
+    its answer line's fields, or None when step 1 did not ask it. Step 1
+    asked about one state, and a head it asked is never asked again, so a
+    population state that differs refuses: asking would grant another
+    retry pair. The gate, the replay, a resume and the seal all read step 1
+    through here."""
+    found = reuse.get((row["repository"], row["head"]))
+    if found is None:
+        return None
+    if found["state"] != row.get("state"):
+        raise Refused(f"step 1 asked about head {row['head'][:12]} of {row['repository']} in "
+                      "another state than the population gives it, and a head step 1 asked "
+                      "is never asked again; nothing was asked")
+    return reused_line(found)
+
+
 def reuse_faults(lines: list, reuse: dict, rows: list[dict]) -> list[str]:
-    """Why answer lines disagree with step 1's records, one reason each: a
-    head whose state equals its record's must carry that record's answer,
+    """Why answer lines disagree with step 1's records (`step_one`), one
+    reason each: a head step 1 asked must carry that record's answer,
     reused; no other line may claim reuse."""
-    states = {(r["repository"], r["head"]): r["state"] for r in rows}
+    by_head = {(r["repository"], r["head"]): r for r in rows}
     faults = []
     for line in lines:
-        ident = (line.get("repository"), line.get("head"))
-        found = reuse.get(ident)
-        if found is not None and found.get("state") == states.get(ident):
-            if not line.get("reused") or any(
-                    line.get(k) != v for k, v in reused_line(found).items()):
+        row = by_head.get((line.get("repository"), line.get("head")))
+        try:
+            want = step_one(reuse, row) if row else None
+        except Refused:
+            faults.append("a line for a head step 1 asked about another state")
+            continue
+        if want is not None:
+            if not line.get("reused") or any(line.get(k) != v for k, v in want.items()):
                 faults.append("a line that is not step 1's answer for its head")
         elif line.get("reused"):
-            faults.append("a reused line with no step 1 answer for its head and state")
+            faults.append("a reused line with no step 1 answer for its head")
     return faults
 
 
@@ -1583,7 +1606,8 @@ def cmd_replay(args, out, env) -> int:
                           "nothing was sent")
     population_text = args.population.read_bytes()
     population_sha = hashlib.sha256(population_text).hexdigest()
-    rows = scope(arm, read_jsonl(args.population), db, env.get("HOME"))
+    everyone = read_jsonl(args.population)
+    rows = scope(arm, everyone, db, env.get("HOME"))
     folder = args.out
     replay = folder / "replay"
     manifest_path = folder / "manifest.json"
@@ -1614,6 +1638,10 @@ def cmd_replay(args, out, env) -> int:
         raise Refused(f"{name}'s heads differ from those it started on: the public pool moved; "
                       "nothing was sent")
     # Only Jev was asked in step 1; its answers there are reused, never asked again.
+    # Every arm, before any call: the population and step 1 agree on each
+    # head step 1 asked, a head with no population state included.
+    for row in everyone:
+        step_one(reuse, row)
     reuse = reuse if arm == "jev" else {}
     replay.mkdir(parents=True, exist_ok=True)
     answers = replay / f"{name}.jsonl"
@@ -1739,9 +1767,9 @@ def cmd_replay(args, out, env) -> int:
             break
         line = {"repository": row["repository"], "head": row["head"], "alias": row["alias"],
                 "population": row["population"], "arm": arm, "run_id": run_id}
-        found = reuse.get(ident)
-        if found is not None and found.get("state") == row["state"]:
-            line.update(reused_line(found), reused=args.faithful.name, at=now())
+        fields = step_one(reuse, row)
+        if fields is not None:
+            line.update(fields, reused=args.faithful.name, at=now())
             record(line, None)
             continue
         payload, taken = jev.redacted_payload(

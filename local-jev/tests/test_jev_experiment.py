@@ -1281,15 +1281,47 @@ class TheReplay(CompareCase):
         self.checkpoint(0)
         self.checkpoint(1, tier="standard")
         self.write_faithful([(0, "cheap"), (1, "cheap")])
-        population = [json.loads(line) for line in self.population.read_text().splitlines()]
-        population[1]["state"] = "{}"                 # head 1's population state differs
-        self.population.write_text("".join(json.dumps(r) + "\n" for r in population))
         self.assertEqual(self.replay("jev")[0], 0)
         found = {a["head"]: a for a in self.answers("jev")}
-        self.assertEqual((found[sha(0)]["reused"], found[sha(0)]["tier"]),
-                         ("faithful-2", "cheap"))
-        self.assertIsNone(found[sha(1)]["reused"])   # another state is asked again
-        self.assertEqual(len(Stub.seen), 4)
+        self.assertEqual({h: (found[sha(h)]["reused"], found[sha(h)]["tier"]) for h in (0, 1)},
+                         {0: ("faithful-2", "cheap"), 1: ("faithful-2", "cheap")})
+        self.assertEqual(len(Stub.seen), 3)                # heads 2 to 4 only
+
+    def test_a_head_step_one_asked_in_another_state_refuses_before_any_call(self):
+        # Lane review at ecc8b02: step 1's draw takes a head's first pass with
+        # a Jev reading, the population its first pass with a stored subject.
+        # An earlier unanswered pass gave head 0 another population state, and
+        # the replay asked it again: another retry pair, a failure replaced.
+        unanswered = {"head": sha(0), "report": {
+            "subject": {"head": sha(0), "paths": ["pkg/mod.py"], "lines": 9},
+            "route": {"tier": "standard", "reason": "no category matched; default tier standard"}}}
+        with contextlib.closing(connect(self.db)) as connection:
+            connection.execute(
+                "INSERT INTO state (kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                ("ship:0", "2026-09-22T00:00:00+00:00", json.dumps({
+                    "repository": "owner/repo", "head": sha(0), "reviewed_head": None,
+                    "passes": [unanswered, a_pass(sha(0), tier="cheap")]})))
+        self.checkpoint(1, tier="standard")
+        rows, _summary = experiment.population(self.db)     # step 2, as committed
+        self.population.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        source = {c["head"]: c["state"] for c in experiment.candidates(self.db)}
+        population = {r["head"]: r["state"] for r in rows}
+        self.assertNotEqual(population[sha(0)], source[sha(0)])
+        for name, choice in (("an answer", "cheap"), ("a registered failure", None)):
+            for arm in ("jev", "kev"):
+                with self.subTest(name=name, arm=arm):
+                    self.folder = Path(tempfile.mkdtemp())
+                    self.write_faithful([(0, choice), (1, "cheap")])
+                    self.assertEqual(self.replay(arm)[0], 2)
+                    self.assertEqual(Stub.seen, [])
+                    self.assertEqual(Arm.seen, [])
+                    self.assertFalse((self.folder / "replay").exists())
+        # A resume and the seal read lines through the same map.
+        reuse = {(r["repository"], r["head"]): r for r in
+                 map(json.loads, (self.faithful / "answers.jsonl").read_text().splitlines())}
+        line = {"repository": "owner/repo", "head": sha(0), "arm": "jev", "tier": "deep",
+                "outcome": "ok", "reused": None}
+        self.assertEqual(len(experiment.reuse_faults([line], reuse, rows)), 1)
 
     def test_a_run_stopped_after_a_call_does_not_ask_that_head_again(self):
         real = experiment.ask_arm
