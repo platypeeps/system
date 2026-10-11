@@ -1213,6 +1213,29 @@ class TheReplay(CompareCase):
         entry = json.loads((self.folder / "manifest.json").read_text())["arms"]["kev"]
         self.assertEqual((entry["outages"], bool(entry["finished"])), (2, True))
 
+    def test_a_resume_on_another_population_refuses(self):
+        self.stop_after_first_call("kev")
+        self.write_population(["pkg/mod.py"])
+        self.assertEqual(self.replay("kev")[0], 2)
+        self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/systemone"]), 1)
+
+    def test_a_head_that_costs_more_than_its_reservation_halts(self):
+        Stub.input_tokens = 10_000_000          # $0.42, far above a few kilobytes' bound
+        code, _out = self.replay("jev", "--cap", "1.0")
+        self.assertEqual((code, len(Stub.seen)), (1, 1))
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertIn("above its reservation", manifest["arms"]["jev"]["halted"])
+
+    def test_haiku_with_no_key_refuses(self):
+        self.assertEqual(self.replay("haiku", env=self.env_without("JEV_COMPARE_ANTHROPIC_KEY"))[0],
+                         2)
+        self.assertEqual(Arm.seen, [])
+
+    def env_without(self, name):
+        env = self.env()
+        env.pop(name)
+        return env
+
     def seal(self, *arms):
         """A note on sd:2764 carrying each arm's answer file hash."""
         stamp = "2026-10-11T00:00:00+00:00"
@@ -1247,13 +1270,17 @@ class TheReplay(CompareCase):
         self.seal("kev", "jev", "haiku")
         self.assertEqual(self.labels_c1()[0], 2)        # Haiku's file is partial
         self.assertEqual(self.replay("haiku")[0], 0)
+        self.assertEqual(self.labels_c1()[0], 2)        # its finished file's hash is not noted
         self.seal("haiku")
         registered = self.population.read_bytes()
         self.population.write_bytes(registered + self.population.read_bytes().splitlines(True)[0])
         self.assertEqual(self.labels_c1()[0], 2)        # not the population the replay read
         self.population.write_bytes(registered)
+        with unittest.mock.patch.object(experiment, "public_paths", return_value=frozenset()):
+            self.assertEqual(self.labels_c1()[0], 2)    # the hosted scope moved
         code, printed = self.labels_c1()
         self.assertEqual((code, json.loads(printed)["all"]["heads"]), (0, 2))
+        self.assertEqual(self.labels_c1()[0], 2)        # labels are written once
 
     def stop_after_first_call(self, arm):
         """A run stopped after its first call, before that call's answer."""
