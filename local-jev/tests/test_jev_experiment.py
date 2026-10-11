@@ -1192,6 +1192,27 @@ class TheReplay(CompareCase):
             self.assertEqual(self.replay("haiku", "--cap", "1.0")[0], 1)
         self.assertEqual([s for s in Arm.seen if s["path"] == "/v1/messages"], [])
 
+    def test_a_kev_outage_pauses_the_arm_once_and_a_second_ends_it(self):
+        Arm.status = 500
+        kev_calls = lambda: [s for s in Arm.seen if s["path"] == "/v1/systemone"]  # noqa: E731
+        with unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2, create=True):
+            self.assertEqual(self.replay("kev")[0], 1)          # two failed heads pause it
+            self.assertEqual(len(self.answers("kev")), 2)
+            before = len(kev_calls())
+            with unittest.mock.patch.object(experiment, "kev_up", return_value=False,
+                                            create=True):
+                self.assertEqual(self.replay("kev")[0], 2)      # still down: nothing asked
+            self.assertEqual(len(kev_calls()), before)
+            with unittest.mock.patch.object(experiment, "kev_up", return_value=True,
+                                            create=True):
+                self.assertEqual(self.replay("kev")[0], 0)      # resumed; a second outage ends it
+        found = self.answers("kev")
+        self.assertEqual([a["outcome"] for a in found],
+                         ["unavailable"] * 4 + ["ended"])
+        self.assertEqual(len(kev_calls()), 8)
+        entry = json.loads((self.folder / "manifest.json").read_text())["arms"]["kev"]
+        self.assertEqual((entry["outages"], bool(entry["finished"])), (2, True))
+
     def seal(self, *arms):
         """A note on sd:2764 carrying each arm's answer file hash."""
         stamp = "2026-10-11T00:00:00+00:00"

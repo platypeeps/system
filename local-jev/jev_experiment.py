@@ -17,7 +17,8 @@ file holds the steps built so far:
   population; it refuses C1 until its answer files are sealed, and C2.
 * `replay --arm jev|kev|haiku` (step 5) asks one model arm once per head on
   the same redacted payload, under the stopping rule: registration guard,
-  frozen heuristic, ledger isolation, public-pool scope, one retry, spend cap.
+  frozen heuristic, ledger isolation, public-pool scope, one retry, spend cap,
+  Kev outage.
 
 **It reads the workflow database read-only.** Every query opens it through
 `sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
@@ -973,6 +974,9 @@ JEV_USD_IN = 0.042
 #: A token is at least one byte, so a payload's UTF-8 length bounds its input
 #: tokens; this margin covers the provider's own prompt around it.
 TEMPLATE_TOKENS = 8192
+#: The stopping rule's Kev outage: this many failed heads in a row pause the
+#: arm; it resumes once after `kev.sh status` exits 0, and a second ends it.
+KEV_OUTAGE = 10
 #: Where the spans go, and the Phoenix project they file under (design.md, "Traces").
 TRACES_URL = "http://127.0.0.1:4338/v1/traces"
 PROJECT = "jev-experiment-entry-2"
@@ -1177,6 +1181,15 @@ def settle(ledger: Path, row: dict, env) -> str:
     return said
 
 
+def kev_up() -> bool:
+    """`kev.sh status` exits 0. A probe that fails or hangs is not up."""
+    try:
+        return subprocess.run(["sh", str(FOLDER.parent / "local-kev" / "kev.sh"), "status"],
+                              capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
@@ -1230,6 +1243,13 @@ def cmd_replay(args, out, env) -> int:
             (folder / "replay" / f"{name}{suffix}").exists() for suffix in (".jsonl", ".asking")):
         raise Refused(f"replay/{name}.jsonl or its marker exists, and no manifest names it; "
                       "its registration, population and scope are unknown")
+    paused = manifest.get("arms", {}).get(name, {})
+    resumed = None
+    if arm == "kev" and paused.get("outages") == 1 and not paused.get("resumed"):
+        if not kev_up():
+            raise Refused(f"{name} is paused after a Kev outage; it resumes once "
+                          "`kev.sh status` exits 0; nothing was asked")
+        resumed = now()
     if manifest.get("arms", {}).get(name, {}).get("scope", scope_of(rows)) != scope_of(rows):
         raise Refused(f"{name}'s heads differ from those it started on: the public pool moved; "
                       "nothing was sent")
@@ -1277,6 +1297,8 @@ def cmd_replay(args, out, env) -> int:
     entry = manifest.setdefault("arms", {}).setdefault(name, {})
     entry.update(file=f"replay/{answers.name}", run_id=run_id, reason=args.rerun, scope=scope_of(rows),
                  started=entry.get("started") or now(), halted=None)
+    if resumed:
+        entry["resumed"] = resumed
     manifest.update(
         registration=registration,
         heuristic_sha256=HEURISTIC_SHA256, pack=PACK_SHA, system=git_head(FOLDER.parent),
@@ -1289,7 +1311,7 @@ def cmd_replay(args, out, env) -> int:
     patterns = jev.settings(env)["privacy"]
     model = env.get("JEV_MODEL") or jev.DEFAULT_MODEL
     total = spent(replay)
-    sent = 0
+    sent = failures = 0
 
     def halt(why):
         entry.update(halted=why)
@@ -1362,6 +1384,25 @@ def cmd_replay(args, out, env) -> int:
             return halt(f"an answer reported no cost; it is charged its reservation, ${usd:.4f}")
         if arm in HOSTED and usd > 2 * bound:
             return halt(f"a head cost ${usd:.4f}, above its reservation of ${2 * bound:.4f}")
+        failures = 0 if event["outcome"] == "ok" else failures + 1
+        if arm == "kev" and failures >= KEV_OUTAGE:
+            entry["outages"] = entry.get("outages", 0) + 1
+            if entry["outages"] == 1:
+                return halt(f"Kev outage: {failures} heads failed in a row; the arm resumes "
+                            "once `kev.sh status` exits 0")
+            # A second outage ends the arm: each head left is counted, not asked.
+            entry["ended"] = "a second Kev outage"
+            left = {(r["repository"], r["head"]) for r in read_jsonl(answers)}
+            with answers.open("a", encoding="utf-8") as fh:
+                for other in rows:
+                    if (other["repository"], other["head"]) not in left:
+                        fh.write(json.dumps({
+                            "repository": other["repository"], "head": other["head"],
+                            "alias": other["alias"], "population": other["population"],
+                            "arm": arm, "run_id": run_id, "tier": None, "outcome": "ended",
+                            "cause": "a second Kev outage", "usd": 0.0, "at": now()},
+                            sort_keys=True) + "\n")
+            break
     written = read_jsonl(answers) if answers.exists() else []
     entry.update(finished=now(), answers=len(written),
                  no_answer=sum(1 for r in written if r.get("tier") is None),
